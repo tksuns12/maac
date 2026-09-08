@@ -24,6 +24,15 @@ actually published; no release tag or publication date is asserted here.
   and the asset-free `example.maac` and `evening-window.maac` examples.
 - A Python syntax and selected-semantics smoke checker plus an offline installed
   CLI acceptance runner.
+- Reusable local sound libraries with pinned imports, typed controls, presets,
+  and independent polyphonic voice/shared graphs. The synthesis palette adds
+  basic oscillators, ADSR, LFO, feed-forward FM, explicit morphing wavetables,
+  gain, one-pole filtering, mixing, and panning.
+- In-memory bundle APIs, library-export checking, a read-only `maac hash`
+  helper, and standalone version 2 plans with embedded graph/data/provenance.
+  Version 1 rendering remains supported.
+- A shared FM bell, wavetable pad, and bass library, reusable presets, and a
+  four-instance composition, with analytic and spectral regression fixtures.
 
 ### Changed
 
@@ -37,8 +46,8 @@ actually published; no release tag or publication date is asserted here.
 
 - The Rust implementation is a foundation subset; it does not claim full
   Document, Performance, Core Audio, or Locked Render conformance.
-- Tempo ramps, per-note expression, hits/messages, modulation, additional
-  processors, sample assets, arranged audio, external plug-ins, extensions,
+- Tempo ramps, per-note expression, hits/messages, top-level core modulation,
+  other processors, recorded-sample instruments, arranged audio, external plug-ins,
   transactional editing, MaaC Locked Render dependency-lock manifests
   (distinct from `Cargo.lock`), MIDI transport, GUI, and real-time playback
   remain deferred or outside the current interfaces. Recognized deferred
@@ -48,5 +57,5 @@ actually published; no release tag or publication date is asserted here.
 - Automated finite, non-silent sample measurements and repeatability checks do
   not establish cross-platform bit identity or human listening quality. The
   listening review is pending.
-- This is a source-only preparation; generated binaries, WAV files, and other
-  release artifacts are not included.
+- This is a source-only preparation; generated binaries and rendered audio are
+  not included. The starter library includes its small authored wavetable WAV.

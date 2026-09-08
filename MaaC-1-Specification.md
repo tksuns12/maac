@@ -42,6 +42,10 @@ Labels such as `chorus` may name a region. A label has no acoustic behavior. Fie
 
 An implementation states its profiles and its supported extension identifiers. A Document implementation MUST NOT advertise audio rendering merely because it can store an opaque processor state.
 
+### 1.3 Implemented local sound-library extension
+
+The normative [reusable instrument contract](docs/instruments.md) defines this repository's local-library extension: library documents, hash-pinned imports, instruments, presets, explicit WAV wavetables, and versioned `synth.* /1` voice/shared processors. It specifies the additional declaration and namespace rules, public control interfaces, synthesis behavior, and resource limits. These declarations opt into the extension; they do not change existing core processor behavior. The [capability matrix](docs/capabilities.md) identifies the implemented subset, and [performance-plan versions 1 and 2](docs/performance-plan.md) define the separate rendering interchange format.
+
 ## 2. File format and lexical rules
 
 The recommended source extension is `.maac`. Files are UTF-8. A file begins with:
@@ -497,7 +501,7 @@ connect bass_to_pan { from = &bass_synth:out; to = &bass_pan:in; }
 connect pan_to_master { from = &bass_pan:out; to = &master:in; }
 ```
 
-A `node` requires `type`, an exact versioned processor identifier string. `config` and `params` are records, both default empty. Config fields affect structure or initialization and cannot be automated. Parameter fields may be automated according to the descriptor. External nodes also require `implementation`, a module-asset reference, and may carry `state`, a blob-asset reference. Core nodes forbid `implementation` and `state` unless their own definition explicitly allows one; their reset state is specified below.
+A core `node` requires `type`, an exact versioned processor identifier string. The local sound-library extension alternatively permits an `instrument` reference and optional matching `preset`; `type` and `instrument` are mutually exclusive. `config` and `params` are records, both default empty. Config fields affect structure or initialization and cannot be automated. Parameter fields may be automated according to the descriptor. External nodes also require `implementation`, a module-asset reference, and may carry `state`, a blob-asset reference. Core nodes forbid `implementation` and `state` unless their own definition explicitly allows one; their reset state is specified below.
 
 `connect` requires `from` and `to` port references. Source and destination port kinds, dimensions, and channel counts must match exactly. Port kinds are audio with fixed channel count, scalar dimensionless control, or events with a declared event/protocol capability set. There is no implicit MIDI-to-audio conversion, channel duplication, mono/stereo conversion, gain change, or sample-rate conversion between engine nodes. Audio assets may have their own rate because their transport explicitly resamples them.
 

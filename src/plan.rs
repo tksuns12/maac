@@ -10,6 +10,8 @@
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Span};
 pub use crate::exact::Rational;
 use crate::exact::{parse_rational_with_limit, rational_parts, RationalError, MAX_RATIONAL_BITS};
+use crate::graph::{InstrumentProgram, ParameterRate, ParameterSpec};
+use crate::instrument_plan::InstrumentResources;
 use num_bigint::BigInt;
 use num_integer::Integer;
 use num_traits::{One, Signed, ToPrimitive, Zero};
@@ -18,7 +20,8 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::fmt;
 
-pub const PLAN_VERSION: u32 = 1;
+pub const LEGACY_PLAN_VERSION: u32 = 1;
+pub const PLAN_VERSION: u32 = 2;
 
 const MAX_RATIONAL_DECIMAL_DIGITS: usize = 1_235;
 
@@ -49,6 +52,15 @@ pub struct PlanLimits {
     pub max_voices: u32,
     pub max_voice_work: u64,
     pub max_work: u64,
+    pub max_instrument_programs: usize,
+    pub max_graph_nodes: usize,
+    pub max_graph_edges: usize,
+    pub max_instrument_controls: usize,
+    pub max_wavetables: usize,
+    pub max_embedded_samples: usize,
+    pub max_instrument_voices: u32,
+    pub max_voice_graph_states: usize,
+    pub max_execution_work: u64,
 }
 
 impl Default for PlanLimits {
@@ -73,6 +85,15 @@ impl Default for PlanLimits {
             max_voices: Self::MAX_VOICES,
             max_voice_work: Self::MAX_VOICE_WORK,
             max_work: Self::MAX_WORK,
+            max_instrument_programs: crate::graph::MAX_GRAPH_PROGRAMS,
+            max_graph_nodes: crate::graph::MAX_TOTAL_GRAPH_NODES,
+            max_graph_edges: crate::graph::MAX_TOTAL_GRAPH_EDGES,
+            max_instrument_controls: crate::graph::MAX_INSTRUMENT_CONTROLS,
+            max_wavetables: 64,
+            max_embedded_samples: crate::graph::MAX_EMBEDDED_SAMPLES,
+            max_instrument_voices: 4_096,
+            max_voice_graph_states: crate::graph::MAX_ALLOCATED_VOICE_GRAPH_STATES,
+            max_execution_work: crate::graph::MAX_EXECUTION_WORK,
         }
     }
 }
@@ -96,6 +117,15 @@ impl PlanLimits {
     pub const MAX_VOICES: u32 = 1_000_000;
     pub const MAX_VOICE_WORK: u64 = 5_000_000;
     pub const MAX_WORK: u64 = 20_000_000;
+    pub const MAX_INSTRUMENT_PROGRAMS: usize = crate::graph::MAX_GRAPH_PROGRAMS;
+    pub const MAX_GRAPH_NODES: usize = crate::graph::MAX_TOTAL_GRAPH_NODES;
+    pub const MAX_GRAPH_EDGES: usize = crate::graph::MAX_TOTAL_GRAPH_EDGES;
+    pub const MAX_INSTRUMENT_CONTROLS: usize = crate::graph::MAX_INSTRUMENT_CONTROLS;
+    pub const MAX_WAVETABLES: usize = 64;
+    pub const MAX_EMBEDDED_SAMPLES: usize = crate::graph::MAX_EMBEDDED_SAMPLES;
+    pub const MAX_INSTRUMENT_VOICES: u32 = 4_096;
+    pub const MAX_VOICE_GRAPH_STATES: usize = crate::graph::MAX_ALLOCATED_VOICE_GRAPH_STATES;
+    pub const MAX_EXECUTION_WORK: u64 = crate::graph::MAX_EXECUTION_WORK;
 
     /// Apply the foundation ceiling to a caller-supplied profile.  Hosts may
     /// tighten a limit for a smaller sandbox, but cannot use a larger profile
@@ -123,6 +153,21 @@ impl PlanLimits {
             max_voices: self.max_voices.min(Self::MAX_VOICES),
             max_voice_work: self.max_voice_work.min(Self::MAX_VOICE_WORK),
             max_work: self.max_work.min(Self::MAX_WORK),
+            max_instrument_programs: self
+                .max_instrument_programs
+                .min(Self::MAX_INSTRUMENT_PROGRAMS),
+            max_graph_nodes: self.max_graph_nodes.min(Self::MAX_GRAPH_NODES),
+            max_graph_edges: self.max_graph_edges.min(Self::MAX_GRAPH_EDGES),
+            max_instrument_controls: self
+                .max_instrument_controls
+                .min(Self::MAX_INSTRUMENT_CONTROLS),
+            max_wavetables: self.max_wavetables.min(Self::MAX_WAVETABLES),
+            max_embedded_samples: self.max_embedded_samples.min(Self::MAX_EMBEDDED_SAMPLES),
+            max_instrument_voices: self.max_instrument_voices.min(Self::MAX_INSTRUMENT_VOICES),
+            max_voice_graph_states: self
+                .max_voice_graph_states
+                .min(Self::MAX_VOICE_GRAPH_STATES),
+            max_execution_work: self.max_execution_work.min(Self::MAX_EXECUTION_WORK),
         }
     }
 }
@@ -534,7 +579,7 @@ impl PortRef {
 
 pub type EventTarget = PortRef;
 
-/// The four reference processors supported by the standalone foundation.
+/// The core processors and reusable instrument instances supported by plans.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Processor {
@@ -547,6 +592,11 @@ pub enum Processor {
     },
     Pan,
     Sum {
+        channels: u8,
+    },
+    Instrument {
+        program: String,
+        voices: u32,
         channels: u8,
     },
 }
@@ -574,11 +624,12 @@ impl Processor {
             Self::OnePole { .. } => "onepole",
             Self::Pan => "pan",
             Self::Sum { .. } => "sum",
+            Self::Instrument { .. } => "instrument",
         }
     }
 
     fn accepts_events(&self) -> bool {
-        matches!(self, Self::Sine { .. })
+        matches!(self, Self::Sine { .. } | Self::Instrument { .. })
     }
 
     fn parameter_allowed(&self, parameter: &str) -> bool {
@@ -587,12 +638,14 @@ impl Processor {
             Self::OnePole { .. } => parameter == "cutoff",
             Self::Pan => parameter == "pan",
             Self::Sum { .. } => false,
+            Self::Instrument { .. } => false,
         }
     }
 
     fn voice_capacity(&self) -> u64 {
         match self {
             Self::Sine { voices } => u64::from(*voices),
+            Self::Instrument { .. } => 0,
             _ => 0,
         }
     }
@@ -847,6 +900,8 @@ pub struct Plan {
     pub regions: Vec<Region>,
     #[serde(default)]
     pub source_mappings: Vec<SourceMapping>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instruments: Option<InstrumentResources>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -867,6 +922,8 @@ struct PlanWire {
     regions: Vec<Region>,
     #[serde(default)]
     source_mappings: Vec<SourceMapping>,
+    #[serde(default)]
+    instruments: Option<InstrumentResources>,
 }
 
 impl From<PlanWire> for Plan {
@@ -881,6 +938,7 @@ impl From<PlanWire> for Plan {
             automation: value.automation,
             regions: value.regions,
             source_mappings: value.source_mappings,
+            instruments: value.instruments,
         }
     }
 }
@@ -950,14 +1008,42 @@ impl Plan {
 
     pub fn validate_with_limits(&self, limits: &PlanLimits) -> Result<(), PlanError> {
         let limits = limits.bounded();
-        if self.version != PLAN_VERSION {
-            return Err(err(
-                "E_VERSION",
-                "version",
-                format!("unsupported performance-plan version {}", self.version),
-            ));
+        match self.version {
+            LEGACY_PLAN_VERSION => {
+                if self.instruments.is_some()
+                    || self
+                        .nodes
+                        .iter()
+                        .any(|node| matches!(node.processor, Processor::Instrument { .. }))
+                {
+                    return Err(err(
+                        "E_VERSION",
+                        "version",
+                        "version 1 plans cannot contain version 2 instrument resources",
+                    ));
+                }
+            }
+            PLAN_VERSION => {
+                if self.instruments.is_none() {
+                    return Err(err(
+                        "E_REFERENCE",
+                        "instruments",
+                        "version 2 plans require embedded instrument resources",
+                    ));
+                }
+            }
+            _ => {
+                return Err(err(
+                    "E_VERSION",
+                    "version",
+                    format!("unsupported performance-plan version {}", self.version),
+                ));
+            }
         }
         self.validate_counts(&limits)?;
+        if let Some(resources) = &self.instruments {
+            resources.validate()?;
+        }
         // Structural/resource limits are cheap and must run before any exact
         // clock integration.  Tempo validation still precedes output/event
         // time arithmetic below, so malformed BPM values cannot reach a
@@ -971,7 +1057,61 @@ impl Plan {
         self.validate_events(&limits)?;
         self.validate_regions(&limits)?;
         self.validate_source_mappings(&limits)?;
+        self.validate_instrument_work(&limits)?;
         Ok(())
+    }
+
+    /// Look up a reusable graph program embedded in this standalone plan.
+    pub fn instrument_program(&self, id: &str) -> Option<&InstrumentProgram> {
+        self.instruments
+            .as_ref()?
+            .programs
+            .iter()
+            .find(|program| program.id == id)
+    }
+
+    /// Return the processor metadata for an instrument instance's public
+    /// control. Core processors and unknown controls return `None`.
+    pub fn instrument_control_spec(&self, node: &Node, control: &str) -> Option<ParameterSpec> {
+        let Processor::Instrument { program, .. } = &node.processor else {
+            return None;
+        };
+        self.instrument_program(program)?.control_spec(control)
+    }
+
+    /// Resolve all public instrument controls, filling omitted instance values
+    /// from their program defaults. The node is validated as part of lookup.
+    pub fn resolved_node_params(
+        &self,
+        node: &Node,
+    ) -> Result<BTreeMap<String, Rational>, PlanError> {
+        let Processor::Instrument { program, .. } = &node.processor else {
+            return Ok(node.params.clone());
+        };
+        let program = self.instrument_program(program).ok_or_else(|| {
+            err(
+                "E_REFERENCE",
+                format!("nodes.{}.processor.program", node.id),
+                "instrument program does not exist",
+            )
+        })?;
+        let mut params = program
+            .controls
+            .iter()
+            .map(|(name, control)| (name.clone(), control.default.clone()))
+            .collect::<BTreeMap<_, _>>();
+        for (name, value) in &node.params {
+            let spec = program.control_spec(name).ok_or_else(|| {
+                err(
+                    "E_UNKNOWN_FIELD",
+                    format!("nodes.{}.params.{name}", node.id),
+                    "instrument has no such public control",
+                )
+            })?;
+            validate_parameter_spec(value, &spec, format!("nodes.{}.params.{name}", node.id))?;
+            params.insert(name.clone(), value.clone());
+        }
+        Ok(params)
     }
 
     fn validate_counts(&self, limits: &PlanLimits) -> Result<(), PlanError> {
@@ -1015,6 +1155,143 @@ impl Plan {
                 _ => None,
             })
             .fold(0usize, usize::saturating_add);
+        let mut resource_objects = 0usize;
+        if let Some(resources) = &self.instruments {
+            let graph_nodes = resources.programs.iter().fold(0usize, |total, program| {
+                total
+                    .saturating_add(program.voice.nodes.len())
+                    .saturating_add(program.shared.as_ref().map_or(0, |graph| graph.nodes.len()))
+            });
+            let graph_edges = resources.programs.iter().fold(0usize, |total, program| {
+                let count = |graph: &crate::graph::GraphProgram| {
+                    graph
+                        .connections
+                        .len()
+                        .saturating_add(graph.modulations.len())
+                };
+                total
+                    .saturating_add(count(&program.voice))
+                    .saturating_add(program.shared.as_ref().map_or(0, count))
+            });
+            let raw_samples = resources.wavetables.iter().fold(0usize, |total, table| {
+                total.saturating_add(table.samples.len())
+            });
+            if resources.programs.len() > limits.max_instrument_programs
+                || graph_nodes > limits.max_graph_nodes
+                || graph_edges > limits.max_graph_edges
+                || resources.wavetables.len() > limits.max_wavetables
+                || raw_samples > limits.max_embedded_samples
+                || resources
+                    .programs
+                    .iter()
+                    .any(|program| program.controls.len() > limits.max_instrument_controls)
+            {
+                return Err(err(
+                    "E_RESOURCE_LIMIT",
+                    "instruments",
+                    "instrument resource limit exceeded",
+                ));
+            }
+
+            let voice_graph_states = self.nodes.iter().fold(0usize, |total, node| {
+                let Processor::Instrument {
+                    program, voices, ..
+                } = &node.processor
+                else {
+                    return total;
+                };
+                let graph_nodes = resources
+                    .programs
+                    .iter()
+                    .find(|candidate| candidate.id == *program)
+                    .map_or(0, |program| program.voice.nodes.len());
+                total.saturating_add(graph_nodes.saturating_mul(*voices as usize))
+            });
+            if voice_graph_states > limits.max_voice_graph_states {
+                return Err(err(
+                    "E_RESOURCE_LIMIT",
+                    "instruments",
+                    "declared instrument voice graph state exceeds the plan limit",
+                ));
+            }
+
+            resource_objects = resources
+                .programs
+                .len()
+                .saturating_add(resources.wavetables.len())
+                .saturating_add(resources.wavetable_sources.len())
+                .saturating_add(resources.source_files.len())
+                .saturating_add(resources.dependencies.len())
+                .saturating_add(resources.libraries.len())
+                .saturating_add(graph_nodes)
+                .saturating_add(graph_edges)
+                .saturating_add(
+                    resources
+                        .programs
+                        .iter()
+                        .map(|program| {
+                            let graph_params = std::iter::once(&program.voice)
+                                .chain(program.shared.iter())
+                                .map(|graph| {
+                                    graph
+                                        .nodes
+                                        .iter()
+                                        .map(|node| node.params.len())
+                                        .fold(0usize, usize::saturating_add)
+                                })
+                                .fold(0usize, usize::saturating_add);
+                            2usize
+                                .saturating_add(program.shared.is_some() as usize)
+                                .saturating_add(program.controls.len())
+                                .saturating_add(graph_params)
+                                .saturating_add(program.source.span.is_some() as usize)
+                        })
+                        .fold(0usize, usize::saturating_add),
+                );
+
+            for (program_index, program) in resources.programs.iter().enumerate() {
+                if let Some(span) = program.source.span {
+                    if span.start > span.end || span.end > limits.max_json_bytes {
+                        return Err(err(
+                            "E_RANGE",
+                            format!("instruments.programs[{program_index}].source.span"),
+                            "program source span is not a bounded half-open byte range",
+                        ));
+                    }
+                }
+                for (stage, graph) in std::iter::once(("voice", &program.voice))
+                    .chain(program.shared.as_ref().map(|graph| ("shared", graph)))
+                {
+                    for (node_index, node) in graph.nodes.iter().enumerate() {
+                        for (name, value) in &node.params {
+                            rational_bit_limit(
+                                value,
+                                limits,
+                                format!(
+                                    "instruments.programs[{program_index}].{stage}.nodes[{node_index}].params.{name}"
+                                ),
+                            )?;
+                        }
+                    }
+                    for (edge_index, modulation) in graph.modulations.iter().enumerate() {
+                        rational_bit_limit(
+                            &modulation.depth,
+                            limits,
+                            format!(
+                                "instruments.programs[{program_index}].{stage}.modulations[{edge_index}].depth"
+                            ),
+                        )?;
+                    }
+                }
+                for (name, control) in &program.controls {
+                    rational_bit_limit(
+                        &control.default,
+                        limits,
+                        format!("instruments.programs[{program_index}].controls.{name}.default"),
+                    )?;
+                }
+            }
+        }
         if binary_payload_bytes > limits.max_json_bytes {
             return Err(err(
                 "E_RESOURCE_LIMIT",
@@ -1048,7 +1325,8 @@ impl Plan {
             .saturating_add(automation_points)
             .saturating_add(parameter_count)
             .saturating_add(span_count)
-            .saturating_add(path_component_count);
+            .saturating_add(path_component_count)
+            .saturating_add(resource_objects);
         if objects > limits.max_objects {
             return Err(err(
                 "E_RESOURCE_LIMIT",
@@ -1071,7 +1349,8 @@ impl Plan {
             .saturating_add(self.tempo.points.len())
             .saturating_add(parameter_count)
             .saturating_add(span_count)
-            .saturating_add(path_component_count);
+            .saturating_add(path_component_count)
+            .saturating_add(resource_objects);
         if work > limits.max_work as usize {
             return Err(err(
                 "E_RESOURCE_LIMIT",
@@ -1094,6 +1373,9 @@ impl Plan {
         };
         for node in &self.nodes {
             count_string(&node.id, format!("nodes.{}", node.id))?;
+            if let Processor::Instrument { program, .. } = &node.processor {
+                count_string(program, format!("nodes.{}.processor.program", node.id))?;
+            }
             for key in node.params.keys() {
                 count_string(key, format!("nodes.{}.params", node.id))?;
             }
@@ -1150,6 +1432,102 @@ impl Plan {
             count_string(&region.id, format!("regions.{}", region.id))?;
             if let Some(label) = &region.label {
                 count_string(label, format!("regions.{}.label", region.id))?;
+            }
+        }
+        if let Some(resources) = &self.instruments {
+            count_string(&resources.entry_source, "instruments.entry_source".into())?;
+            for (program_index, program) in resources.programs.iter().enumerate() {
+                let prefix = format!("instruments.programs[{program_index}]");
+                count_string(&program.id, format!("{prefix}.id"))?;
+                count_string(&program.source.file, format!("{prefix}.source.file"))?;
+                count_string(&program.source.object, format!("{prefix}.source.object"))?;
+                for (stage, graph) in std::iter::once(("voice", &program.voice))
+                    .chain(program.shared.as_ref().map(|graph| ("shared", graph)))
+                {
+                    count_string(&graph.output.node, format!("{prefix}.{stage}.output.node"))?;
+                    count_string(&graph.output.port, format!("{prefix}.{stage}.output.port"))?;
+                    if let Some(amplitude) = &graph.amplitude {
+                        count_string(amplitude, format!("{prefix}.{stage}.amplitude"))?;
+                    }
+                    for (node_index, node) in graph.nodes.iter().enumerate() {
+                        let node_path = format!("{prefix}.{stage}.nodes[{node_index}]");
+                        count_string(&node.id, format!("{node_path}.id"))?;
+                        if let crate::graph::GraphProcessor::Wavetable { table } = &node.processor {
+                            count_string(table, format!("{node_path}.processor.table"))?;
+                        }
+                        for name in node.params.keys() {
+                            count_string(name, format!("{node_path}.params"))?;
+                        }
+                    }
+                    for (edge_index, connection) in graph.connections.iter().enumerate() {
+                        let edge_path = format!("{prefix}.{stage}.connections[{edge_index}]");
+                        count_string(&connection.id, format!("{edge_path}.id"))?;
+                        count_string(&connection.from.node, format!("{edge_path}.from.node"))?;
+                        count_string(&connection.from.port, format!("{edge_path}.from.port"))?;
+                        count_string(&connection.to.node, format!("{edge_path}.to.node"))?;
+                        count_string(&connection.to.port, format!("{edge_path}.to.port"))?;
+                    }
+                    for (edge_index, modulation) in graph.modulations.iter().enumerate() {
+                        let edge_path = format!("{prefix}.{stage}.modulations[{edge_index}]");
+                        count_string(&modulation.id, format!("{edge_path}.id"))?;
+                        count_string(&modulation.from.node, format!("{edge_path}.from.node"))?;
+                        count_string(&modulation.from.port, format!("{edge_path}.from.port"))?;
+                        count_string(&modulation.to.node, format!("{edge_path}.to.node"))?;
+                        count_string(
+                            &modulation.to.parameter,
+                            format!("{edge_path}.to.parameter"),
+                        )?;
+                    }
+                }
+                for (name, control) in &program.controls {
+                    let control_path = format!("{prefix}.controls.{name}");
+                    count_string(name, control_path.clone())?;
+                    count_string(&control.target.node, format!("{control_path}.target.node"))?;
+                    count_string(
+                        &control.target.parameter,
+                        format!("{control_path}.target.parameter"),
+                    )?;
+                }
+            }
+            for (index, table) in resources.wavetables.iter().enumerate() {
+                count_string(&table.id, format!("instruments.wavetables[{index}].id"))?;
+            }
+            for (index, source) in resources.wavetable_sources.iter().enumerate() {
+                let prefix = format!("instruments.wavetable_sources[{index}]");
+                count_string(&source.table, format!("{prefix}.table"))?;
+                count_string(&source.file, format!("{prefix}.file"))?;
+                count_string(&source.object, format!("{prefix}.object"))?;
+                count_string(&source.path, format!("{prefix}.path"))?;
+                count_string(&source.hash, format!("{prefix}.hash"))?;
+            }
+            for (index, source) in resources.source_files.iter().enumerate() {
+                count_string(
+                    &source.path,
+                    format!("instruments.source_files[{index}].path"),
+                )?;
+                count_string(
+                    &source.hash,
+                    format!("instruments.source_files[{index}].hash"),
+                )?;
+            }
+            for (index, dependency) in resources.dependencies.iter().enumerate() {
+                let prefix = format!("instruments.dependencies[{index}]");
+                count_string(&dependency.source, format!("{prefix}.source"))?;
+                count_string(&dependency.alias, format!("{prefix}.alias"))?;
+                count_string(&dependency.path, format!("{prefix}.path"))?;
+                count_string(&dependency.hash, format!("{prefix}.hash"))?;
+            }
+            for (index, library) in resources.libraries.iter().enumerate() {
+                let prefix = format!("instruments.libraries[{index}]");
+                count_string(&library.file, format!("{prefix}.file"))?;
+                count_string(&library.object, format!("{prefix}.object"))?;
+                count_string(&library.version, format!("{prefix}.version"))?;
+                if let Some(creator) = &library.creator {
+                    count_string(creator, format!("{prefix}.creator"))?;
+                }
+                if let Some(license) = &library.license {
+                    count_string(license, format!("{prefix}.license"))?;
+                }
             }
         }
         count_string(&self.output.output.node, "output.output.node".into())?;
@@ -1401,6 +1779,52 @@ impl Plan {
                     }
                 }
                 Processor::Pan => {}
+                Processor::Instrument {
+                    program,
+                    voices,
+                    channels,
+                } => {
+                    validate_identifier_limit(
+                        program,
+                        format!("nodes.{}.processor.program", node.id),
+                        limits.max_id_bytes,
+                    )?;
+                    if *voices == 0 {
+                        return Err(err(
+                            "E_RANGE",
+                            format!("nodes.{}.processor.voices", node.id),
+                            "instrument voice capacity must be positive",
+                        ));
+                    }
+                    if *voices > limits.max_instrument_voices {
+                        return Err(err(
+                            "E_RESOURCE_LIMIT",
+                            format!("nodes.{}.processor.voices", node.id),
+                            "instrument voice capacity exceeds the published limit",
+                        ));
+                    }
+                    if *channels == 0 || *channels > limits.max_channels {
+                        return Err(err(
+                            "E_RANGE",
+                            format!("nodes.{}.processor.channels", node.id),
+                            "instrument channels must be mono or stereo",
+                        ));
+                    }
+                    let program = self.instrument_program(program).ok_or_else(|| {
+                        err(
+                            "E_REFERENCE",
+                            format!("nodes.{}.processor.program", node.id),
+                            "instrument program does not exist",
+                        )
+                    })?;
+                    if program.channels() != *channels {
+                        return Err(err(
+                            "E_PORT_TYPE",
+                            format!("nodes.{}.processor.channels", node.id),
+                            "instrument instance channels differ from its program",
+                        ));
+                    }
+                }
             }
             for (parameter, value) in &node.params {
                 rational_bit_limit(
@@ -1408,23 +1832,41 @@ impl Plan {
                     limits,
                     format!("nodes.{}.params.{}", node.id, parameter),
                 )?;
-                if !node.processor.parameter_allowed(parameter) {
-                    return Err(err(
-                        "E_UNKNOWN_FIELD",
+                if let Processor::Instrument { program, .. } = &node.processor {
+                    let spec = self
+                        .instrument_program(program)
+                        .and_then(|program| program.control_spec(parameter))
+                        .ok_or_else(|| {
+                            err(
+                                "E_UNKNOWN_FIELD",
+                                format!("nodes.{}.params.{}", node.id, parameter),
+                                "instrument has no such public control",
+                            )
+                        })?;
+                    validate_parameter_spec(
+                        value,
+                        &spec,
                         format!("nodes.{}.params.{}", node.id, parameter),
-                        format!(
-                            "parameter is not supported by core.{}",
-                            node.processor.kind()
-                        ),
-                    ));
+                    )?;
+                } else {
+                    if !node.processor.parameter_allowed(parameter) {
+                        return Err(err(
+                            "E_UNKNOWN_FIELD",
+                            format!("nodes.{}.params.{}", node.id, parameter),
+                            format!(
+                                "parameter is not supported by core.{}",
+                                node.processor.kind()
+                            ),
+                        ));
+                    }
+                    validate_parameter(
+                        &node.processor,
+                        parameter,
+                        value,
+                        &node.id,
+                        self.output.sample_rate_hz,
+                    )?;
                 }
-                validate_parameter(
-                    &node.processor,
-                    parameter,
-                    value,
-                    &node.id,
-                    self.output.sample_rate_hz,
-                )?;
             }
         }
         Ok(())
@@ -1813,21 +2255,48 @@ impl Plan {
                     "automation node does not exist",
                 )
             })?;
-            if !node.processor.parameter_allowed(&lane.target.port) {
-                return Err(err(
-                    "E_REFERENCE",
-                    format!("automation[{index}].target"),
-                    "automation parameter does not exist",
-                ));
+            if let Processor::Instrument { program, .. } = &node.processor {
+                let spec = self
+                    .instrument_program(program)
+                    .and_then(|program| program.control_spec(&lane.target.port))
+                    .ok_or_else(|| {
+                        err(
+                            "E_REFERENCE",
+                            format!("automation[{index}].target"),
+                            "instrument public control does not exist",
+                        )
+                    })?;
+                if spec.rate == ParameterRate::Reset {
+                    return Err(err(
+                        "E_CAPABILITY",
+                        format!("automation[{index}].target"),
+                        "reset-rate instrument controls cannot be automated",
+                    ));
+                }
+                for (point_index, point) in lane.points.iter().enumerate() {
+                    validate_parameter_spec(
+                        &point.value,
+                        &spec,
+                        format!("automation[{index}].points[{point_index}].value"),
+                    )?;
+                }
+            } else {
+                if !node.processor.parameter_allowed(&lane.target.port) {
+                    return Err(err(
+                        "E_REFERENCE",
+                        format!("automation[{index}].target"),
+                        "automation parameter does not exist",
+                    ));
+                }
+                validate_automation_parameter(
+                    &node.processor,
+                    &lane.target.port,
+                    &lane.points,
+                    limits,
+                    &format!("automation[{index}]"),
+                    self.output.sample_rate_hz,
+                )?;
             }
-            validate_automation_parameter(
-                &node.processor,
-                &lane.target.port,
-                &lane.points,
-                limits,
-                &format!("automation[{index}]"),
-                self.output.sample_rate_hz,
-            )?;
             rational_bit_limit(&lane.at, limits, format!("automation[{index}].at"))?;
             if lane.points.is_empty() {
                 return Err(err(
@@ -1987,6 +2456,108 @@ impl Plan {
         }
         Ok(())
     }
+
+    fn validate_instrument_work(&self, limits: &PlanLimits) -> Result<(), PlanError> {
+        let mut work = 0u64;
+        for node in &self.nodes {
+            let Processor::Instrument { program, .. } = &node.processor else {
+                continue;
+            };
+            let program = self.instrument_program(program).ok_or_else(|| {
+                err(
+                    "E_REFERENCE",
+                    format!("nodes.{}.processor.program", node.id),
+                    "instrument program does not exist",
+                )
+            })?;
+            let graph_cost = |graph: &crate::graph::GraphProgram| {
+                graph
+                    .nodes
+                    .len()
+                    .saturating_add(graph.connections.len())
+                    .saturating_add(graph.modulations.len()) as u64
+            };
+            if let Some(shared) = &program.shared {
+                work = work
+                    .saturating_add(self.output.total_frames.saturating_mul(graph_cost(shared)));
+            }
+
+            let amplitude = program.voice.amplitude.as_deref().ok_or_else(|| {
+                err(
+                    "E_REFERENCE",
+                    format!("instruments.programs.{}.voice.amplitude", program.id),
+                    "voice graph requires an amplitude envelope",
+                )
+            })?;
+            let amplitude_node = program
+                .voice
+                .nodes
+                .iter()
+                .find(|candidate| candidate.id == amplitude)
+                .ok_or_else(|| {
+                    err(
+                        "E_REFERENCE",
+                        format!("instruments.programs.{}.voice.amplitude", program.id),
+                        "amplitude node does not exist",
+                    )
+                })?;
+            let mut release = amplitude_node
+                .params
+                .get("release")
+                .cloned()
+                .unwrap_or_else(zero);
+            if let Some((control_name, control)) = program.controls.iter().find(|(_, control)| {
+                control.target.graph == crate::graph::GraphStage::Voice
+                    && control.target.node == amplitude
+                    && control.target.parameter == "release"
+            }) {
+                release = node
+                    .params
+                    .get(control_name)
+                    .cloned()
+                    .unwrap_or_else(|| control.default.clone());
+                for lane in self
+                    .automation
+                    .iter()
+                    .filter(|lane| lane.target.node == node.id && lane.target.port == *control_name)
+                {
+                    for point in &lane.points {
+                        if point.value > release {
+                            release = point.value.clone();
+                        }
+                    }
+                }
+            }
+            let release_frames =
+                rational_ceil_nonnegative(&(release * BigInt::from(self.output.sample_rate_hz)))
+                    .ok_or_else(|| {
+                        err(
+                            "E_RESOURCE_LIMIT",
+                            format!("nodes.{}.params.release", node.id),
+                            "instrument release duration cannot be represented as frames",
+                        )
+                    })?;
+            let voice_cost = graph_cost(&program.voice);
+            for event in self.events.iter().filter(|event| {
+                event.target.node == node.id && matches!(event.kind, EventKind::Note { .. })
+            }) {
+                let release_start = event.off_frame.unwrap_or(self.output.total_frames);
+                let active_end = release_start
+                    .saturating_add(release_frames)
+                    .min(self.output.total_frames);
+                let active_frames = active_end.saturating_sub(event.on_frame);
+                work = work.saturating_add(active_frames.saturating_mul(voice_cost));
+            }
+        }
+        if work > limits.max_execution_work {
+            return Err(err(
+                "E_RESOURCE_LIMIT",
+                "instruments",
+                "instrument sample execution work exceeds the plan limit",
+            ));
+        }
+        Ok(())
+    }
 }
 
 fn validate_identifier(value: &str, path: impl Into<String>) -> Result<(), PlanError> {
@@ -2087,6 +2658,33 @@ fn validate_parameter(
     }
 }
 
+fn validate_parameter_spec(
+    value: &Rational,
+    spec: &ParameterSpec,
+    path: impl Into<String>,
+) -> Result<(), PlanError> {
+    let path = path.into();
+    finite_engine_rational(value, path.clone())?;
+    let below = if spec.min_open {
+        value <= &spec.min
+    } else {
+        value < &spec.min
+    };
+    let above = if spec.max_open {
+        value >= &spec.max
+    } else {
+        value > &spec.max
+    };
+    if below || above {
+        return Err(err(
+            "E_RANGE",
+            path,
+            "instrument control value is outside its declared range",
+        ));
+    }
+    Ok(())
+}
+
 fn validate_automation_parameter(
     processor: &Processor,
     name: &str,
@@ -2179,6 +2777,16 @@ fn port_descriptor(node: &Node, port: &str, input: bool) -> Option<PortDescripto
             summing: true,
         }),
         (Processor::Sum { channels }, false, "out") => Some(PortDescriptor {
+            kind: PortKind::Audio,
+            channels: *channels,
+            summing: false,
+        }),
+        (Processor::Instrument { .. }, true, "events") => Some(PortDescriptor {
+            kind: PortKind::Events,
+            channels: 0,
+            summing: true,
+        }),
+        (Processor::Instrument { channels, .. }, false, "out") => Some(PortDescriptor {
             kind: PortKind::Audio,
             channels: *channels,
             summing: false,

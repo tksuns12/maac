@@ -5,6 +5,35 @@ identify places where implementation needs an explicit interpretation or a
 future specification clarification. They are not a claim of complete language
 conformance.
 
+## Local libraries and synthesis versions
+
+The [instrument extension](instruments.md) specifies the reusable sound-library
+boundary separately from the legacy core palette. Its `synth.* /1` identities
+pin phase reset, table interpolation, harmonic-bank switching, ADSR sampling,
+and strict parameter ranges. In particular, `synth.pan/1` rejects out-of-range
+pan while `core.pan/1` retains its existing clamp policy.
+
+Source bundles contain bytes and project-relative identities; filesystem
+containment is enforced by the loader. The compiler consumes the in-memory
+bundle, and version 2 plans embed the programs and raw wavetables needed by the
+renderer. Hashes identify source dependencies rather than authorize execution.
+No executable plugin or network resolution is part of this extension.
+
+The filesystem loader uses `cap-std` directory capabilities for contained opens
+on the supported platforms. This replaces a canonicalize/check/path-reopen
+sequence that could follow a changed path component outside the selected root.
+Canonical-relative mapping preserves existing contained symlinks; type checks
+and bounded reads use the already-open handle. Unix opens add `O_NONBLOCK`
+before rejecting nonregular files so a FIFO cannot stall loading. The added
+dependency keeps platform-specific containment logic in a maintained library.
+
+Public controls inherit their target's units, range, and automation rate.
+Note-on and note-off controls support global automation through event-time
+capture. Graph modulation is sample-rate only. Voice instances share immutable
+compiled programs and table banks while retaining their own mutable DSP state.
+Shared effects continue through the declared tail. These rules preserve the
+foundation's event schedules and explicit rendering endpoint.
+
 ## Project end and physical offsets
 
 Pattern/use/placement `cut` boundaries truncate musical gates before physical

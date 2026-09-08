@@ -1,0 +1,133 @@
+maac 1;
+
+project reusable_demo {
+  score = [0q, 16q];
+  rate = 48000Hz;
+  tempo = &clock;
+  meter = &metre;
+  output = &master:out;
+  tail = 2s;
+}
+
+tempo clock { points = [(0q, 120bpm, step)]; }
+meter metre { points = [(0q, 4, 4)]; }
+
+import sounds {
+  path = "sounds/studio.maac";
+  hash = "sha256:f29b4ee7dae9531ecc33881086d3f317efc0cf5749730c123c7d86824ab3cc03";
+}
+
+node bell_soft {
+  instrument = &sounds.fm_bell;
+  preset = &sounds.soft_bell;
+  config = { voices = 8; };
+  params = { release = 1500ms; };
+}
+
+node bell_glass {
+  instrument = &sounds.fm_bell;
+  preset = &sounds.glass_bell;
+  config = { voices = 8; };
+  params = { fm_amount = 0.75; };
+}
+
+node pad {
+  instrument = &sounds.pad;
+  preset = &sounds.warm_pad;
+  config = { voices = 6; };
+}
+
+node bass {
+  instrument = &sounds.bass;
+  preset = &sounds.deep_bass;
+  config = { voices = 4; };
+}
+
+node bass_pan {
+  type = "core.pan/1";
+  params = { pan = 0; };
+}
+
+node master {
+  type = "core.sum/1";
+  config = { channels = 2; };
+}
+
+connect soft_master { from = &bell_soft:out; to = &master:in; }
+connect glass_master { from = &bell_glass:out; to = &master:in; }
+connect pad_master { from = &pad:out; to = &master:in; }
+connect bass_pan_input { from = &bass:out; to = &bass_pan:in; }
+connect bass_master { from = &bass_pan:out; to = &master:in; }
+
+pattern soft_phrase {
+  length = 8q;
+  note a { at = 0q; dur = 1/2q; pitch = C5; velocity = 0.55; }
+  note b { at = 2q; dur = 1/2q; pitch = G5; velocity = 0.48; }
+  note c { at = 4q; dur = 1/2q; pitch = Eb5; velocity = 0.52; }
+  note d { at = 6q; dur = 1/2q; pitch = Bb5; velocity = 0.46; }
+}
+
+pattern glass_phrase {
+  length = 8q;
+  note a { at = 1q; dur = 1/2q; pitch = G5; velocity = 0.42; }
+  note b { at = 3q; dur = 1/2q; pitch = D6; velocity = 0.38; }
+  note c { at = 5q; dur = 1/2q; pitch = Bb5; velocity = 0.4; }
+  note d { at = 7q; dur = 1/2q; pitch = F6; velocity = 0.36; }
+}
+
+pattern pad_chord {
+  length = 16q;
+  note root { at = 0q; dur = 14q; pitch = C4; velocity = 0.45; }
+  note third { at = 0q; dur = 14q; pitch = Eb4; velocity = 0.4; }
+  note fifth { at = 0q; dur = 14q; pitch = G4; velocity = 0.38; }
+}
+
+pattern bass_riff {
+  length = 4q;
+  note root { at = 0q; dur = 3/4q; pitch = C2; velocity = 0.65; }
+  note fifth { at = 3/2q; dur = 1/2q; pitch = G2; velocity = 0.55; }
+  note octave { at = 3q; dur = 3/4q; pitch = C3; velocity = 0.58; }
+}
+
+track soft_notes { target = &bell_soft:events; }
+track glass_notes { target = &bell_glass:events; }
+track pad_notes { target = &pad:events; }
+track bass_notes { target = &bass:events; }
+
+place soft_twice {
+  pattern = &soft_phrase;
+  track = &soft_notes;
+  at = 0q;
+  count = 2;
+}
+
+place glass_twice {
+  pattern = &glass_phrase;
+  track = &glass_notes;
+  at = 0q;
+  count = 2;
+}
+
+place pad_once {
+  pattern = &pad_chord;
+  track = &pad_notes;
+  at = 0q;
+}
+
+place bass_four {
+  pattern = &bass_riff;
+  track = &bass_notes;
+  at = 0q;
+  count = 4;
+}
+
+curve table_morph {
+  clock = score;
+  points = [(0q, 0.05, linear), (8q, 0.95, linear), (16q, 0.2, step)];
+}
+
+automation morph_pad {
+  target = &pad.params.position;
+  curve = &table_morph;
+  at = 0q;
+}

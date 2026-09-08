@@ -6,6 +6,7 @@
 
 # Rendered and compiled outputs
 *.wav
+!examples/sounds/*.wav
 *.performance.json
 
 # macOS metadata

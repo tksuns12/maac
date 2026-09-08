@@ -1,15 +1,24 @@
+pub mod bundle;
+pub mod bundle_fs;
 pub mod cli;
 pub mod compiler;
 pub mod diagnostic;
 pub mod dsp;
 pub mod exact;
 pub mod export;
+pub mod graph;
+pub mod instrument_plan;
+pub mod library;
 pub mod music;
 pub mod plan;
 pub mod semantic;
 pub mod syntax;
+pub mod synth;
+pub mod voice;
+pub mod wavetable;
 
-pub use compiler::{check, compile};
+pub use bundle::SourceBundle;
+pub use compiler::{check, check_bundle, compile, compile_bundle};
 pub use diagnostic::{Diagnostic, DiagnosticCode, Diagnostics, Span};
 pub use dsp::render;
 pub use exact::{parse_rational, Rational, RationalError, MAX_RATIONAL_BITS};

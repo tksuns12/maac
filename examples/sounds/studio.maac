@@ -1,0 +1,141 @@
+maac 1;
+
+library studio {
+  version = "1.0.0";
+  creator = "MaaC project";
+  license = "Apache-2.0";
+}
+
+wavetable colors {
+  path = "colors.wav";
+  hash = "sha256:6fdfe892027d196e619ea9611b5f668994b49452e64feb347cf6b9908d3e89fd";
+  cycle_length = 512;
+}
+
+instrument fm_bell {
+  channels = 2;
+  voice voice {
+    channels = 1;
+    amplitude = &amp;
+    output = &carrier:out;
+    node amp {
+      type = "synth.adsr/1";
+      params = { attack = 3ms; decay = 900ms; sustain = 0.08; release = 900ms; };
+    }
+    node modulator {
+      type = "synth.sine/1";
+      params = { ratio = 2; level = 0.65; };
+    }
+    node carrier {
+      type = "synth.sine/1";
+      params = { ratio = 1; level = 0.09; };
+    }
+    modulate fm {
+      from = &modulator:out;
+      to = &carrier.params.frequency;
+      depth = 420Hz;
+    }
+  }
+  shared room {
+    channels = 2;
+    output = &pan:out;
+    node soften {
+      type = "synth.onepole/1";
+      config = { channels = 1; };
+      params = { cutoff = 9kHz; };
+    }
+    node pan {
+      type = "synth.pan/1";
+      params = { pan = -0.2; };
+    }
+    connect input_soften { from = &input:out; to = &soften:in; }
+    connect soften_pan { from = &soften:out; to = &pan:in; }
+  }
+  control release { target = &voice.amp.params.release; default = 900ms; }
+  control fm_amount { target = &voice.modulator.params.level; default = 0.65; }
+  control brightness { target = &room.soften.params.cutoff; default = 9kHz; }
+  control pan { target = &room.pan.params.pan; default = -0.2; }
+}
+
+preset soft_bell {
+  instrument = &fm_bell;
+  params = { release = 1200ms; fm_amount = 0.35; brightness = 5kHz; pan = -0.35; };
+}
+
+preset glass_bell {
+  instrument = &fm_bell;
+  params = { release = 700ms; fm_amount = 0.9; brightness = 14kHz; pan = 0.35; };
+}
+
+instrument pad {
+  channels = 2;
+  voice voice {
+    channels = 2;
+    amplitude = &amp;
+    output = &pan_node:out;
+    node amp {
+      type = "synth.adsr/1";
+      params = { attack = 800ms; decay = 1200ms; sustain = 0.7; release = 1600ms; };
+    }
+    node wave {
+      type = "synth.wavetable/1";
+      config = { table = &colors; };
+      params = { position = 0; level = 0.045; };
+    }
+    node pan_node {
+      type = "synth.pan/1";
+      params = { pan = 0; };
+    }
+    connect wave_pan { from = &wave:out; to = &pan_node:in; }
+  }
+  control position { target = &voice.wave.params.position; default = 0; }
+  control level { target = &voice.wave.params.level; default = 0.045; }
+  control release { target = &voice.amp.params.release; default = 1600ms; }
+  control pan { target = &voice.pan_node.params.pan; default = 0; }
+}
+
+preset warm_pad {
+  instrument = &pad;
+  params = { position = 0.1; level = 0.04; release = 1800ms; pan = -0.08; };
+}
+
+preset bright_pad {
+  instrument = &pad;
+  params = { position = 0.85; level = 0.035; release = 1400ms; pan = 0.08; };
+}
+
+instrument bass {
+  channels = 1;
+  voice voice {
+    channels = 1;
+    amplitude = &amp;
+    output = &filter:out;
+    node amp {
+      type = "synth.adsr/1";
+      params = { attack = 8ms; decay = 180ms; sustain = 0.7; release = 180ms; };
+    }
+    node saw {
+      type = "synth.saw/1";
+      params = { level = 0.055; };
+    }
+    node filter {
+      type = "synth.onepole/1";
+      config = { channels = 1; };
+      params = { cutoff = 650Hz; };
+    }
+    connect saw_filter { from = &saw:out; to = &filter:in; }
+  }
+  control cutoff { target = &voice.filter.params.cutoff; default = 650Hz; }
+  control level { target = &voice.saw.params.level; default = 0.055; }
+  control release { target = &voice.amp.params.release; default = 180ms; }
+}
+
+preset deep_bass {
+  instrument = &bass;
+  params = { cutoff = 420Hz; level = 0.06; release = 240ms; };
+}
+
+preset pluck_bass {
+  instrument = &bass;
+  params = { cutoff = 1200Hz; level = 0.045; release = 90ms; };
+}

@@ -14,6 +14,7 @@ use num_rational::BigRational;
 use num_traits::{One, ToPrimitive, Zero};
 
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Diagnostics, Span};
+use crate::graph::{GraphUnit, ParameterRate, ParameterSpec};
 use crate::syntax::{Document, Field, Object, Reference, Unit, Value, ValueKind};
 
 /// Hard source-graph limits for the foundation compiler.
@@ -23,13 +24,14 @@ pub const MAX_SOURCE_CURVE_POINTS: usize = 65_536;
 pub const MAX_SOURCE_TEMPO_POINTS: usize = 4_096;
 pub const MAX_SOURCE_CONNECTIONS: usize = 4_096;
 
-/// The four reference processors supported by the foundation profile.
+/// Foundation processors plus a pre-resolved reusable instrument instance.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum ProcessorKind {
     Sine,
     OnePole,
     Pan,
     Sum,
+    Instrument,
 }
 
 impl ProcessorKind {
@@ -39,6 +41,7 @@ impl ProcessorKind {
             Self::OnePole => "core.onepole/1",
             Self::Pan => "core.pan/1",
             Self::Sum => "core.sum/1",
+            Self::Instrument => "instrument",
         }
     }
 
@@ -102,6 +105,15 @@ pub struct ParameterDescriptor {
     pub name: &'static str,
     pub unit: ParameterUnit,
     pub range: RangePolicy,
+    pub rate: ParameterRate,
+}
+
+/// Owned metadata for one pre-resolved instrument instance. Control names are
+/// source-owned strings, so they never need to be leaked as static data.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct InstrumentNodeDescriptor {
+    pub channels: u8,
+    pub controls: BTreeMap<String, ParameterSpec>,
 }
 
 /// Normalized processor metadata retained for compiler consumers.
@@ -147,6 +159,7 @@ pub enum ReferenceTarget {
         parameter: String,
         unit: ParameterUnit,
         range: RangePolicy,
+        rate: ParameterRate,
     },
 }
 
@@ -219,7 +232,14 @@ impl SourceGraph {
 
 /// Validate a parsed source document against the foundation source profile.
 pub fn validate_source(document: &Document) -> Result<SourceGraph, Diagnostics> {
-    let mut validator = Validator::new(document);
+    validate_source_with_instruments(document, &BTreeMap::new())
+}
+
+pub(crate) fn validate_source_with_instruments(
+    document: &Document,
+    instruments: &BTreeMap<String, InstrumentNodeDescriptor>,
+) -> Result<SourceGraph, Diagnostics> {
+    let mut validator = Validator::new(document, instruments);
     validator.validate();
     if validator.diagnostics.has_errors() {
         return Err(validator.diagnostics);
@@ -249,10 +269,14 @@ struct Validator<'a> {
     references: BTreeMap<String, ReferenceTarget>,
     automation_writers: BTreeSet<String>,
     total_objects: usize,
+    instrument_nodes: &'a BTreeMap<String, InstrumentNodeDescriptor>,
 }
 
 impl<'a> Validator<'a> {
-    fn new(document: &'a Document) -> Self {
+    fn new(
+        document: &'a Document,
+        instrument_nodes: &'a BTreeMap<String, InstrumentNodeDescriptor>,
+    ) -> Self {
         Self {
             document,
             diagnostics: Diagnostics::new(),
@@ -263,6 +287,7 @@ impl<'a> Validator<'a> {
             references: BTreeMap::new(),
             automation_writers: BTreeSet::new(),
             total_objects: 0,
+            instrument_nodes,
         }
     }
 
@@ -1684,6 +1709,43 @@ impl<'a> Validator<'a> {
     }
 
     fn validate_node(&mut self, object: &Object, path: &[String]) {
+        if let Some(instrument) = self.instrument_nodes.get(&object.id).cloned() {
+            self.check_schema(
+                object,
+                path,
+                &["instrument"],
+                &["instrument", "preset", "config", "params", "label"],
+                &[],
+            );
+            self.reject_children(object, path);
+            let mut config = BTreeMap::new();
+            config.insert(
+                "channels".into(),
+                BigRational::from_integer(BigInt::from(instrument.channels)),
+            );
+            let params = object
+                .field("params")
+                .and_then(|field| match &field.value.kind {
+                    ValueKind::Record(fields) => Some(
+                        fields
+                            .iter()
+                            .map(|(name, field)| (name.clone(), value_type(&field.value)))
+                            .collect(),
+                    ),
+                    _ => None,
+                })
+                .unwrap_or_default();
+            self.nodes.insert(
+                object.id.clone(),
+                NodeDescriptor {
+                    id: object.id.clone(),
+                    processor: ProcessorKind::Instrument,
+                    config,
+                    params,
+                },
+            );
+            return;
+        }
         self.check_schema(
             object,
             path,
@@ -1769,6 +1831,7 @@ impl<'a> Validator<'a> {
             ProcessorKind::OnePole => &["channels"],
             ProcessorKind::Pan => &[],
             ProcessorKind::Sum => &["channels"],
+            ProcessorKind::Instrument => &[],
         };
         let mut result = BTreeMap::new();
         for (name, field) in fields {
@@ -1823,6 +1886,7 @@ impl<'a> Validator<'a> {
             ProcessorKind::OnePole => &["cutoff"],
             ProcessorKind::Pan => &["pan"],
             ProcessorKind::Sum => &[],
+            ProcessorKind::Instrument => &[],
         };
         let mut result = BTreeMap::new();
         for (name, field) in fields {
@@ -1886,6 +1950,7 @@ impl<'a> Validator<'a> {
                 (ProcessorKind::Pan, "pan") => {
                     self.number_value(&field.value, path, name).is_some()
                 }
+                (ProcessorKind::Instrument, _) => false,
                 _ => false,
             };
             if valid {
@@ -2422,8 +2487,23 @@ impl<'a> Validator<'a> {
                                 parameter: parameter.name.to_owned(),
                                 unit: parameter.unit,
                                 range: parameter.range,
+                                rate: parameter.rate,
                             },
                         );
+                    }
+                    if let Some(instrument) = self.instrument_nodes.get(&id) {
+                        for (name, spec) in &instrument.controls {
+                            self.references.insert(
+                                format!("&{id}.params.{name}"),
+                                ReferenceTarget::Parameter {
+                                    node: id.to_owned(),
+                                    parameter: name.clone(),
+                                    unit: graph_unit(spec.unit),
+                                    range: RangePolicy::Error,
+                                    rate: spec.rate,
+                                },
+                            );
+                        }
                     }
                 }
             }
@@ -2650,10 +2730,18 @@ impl<'a> Validator<'a> {
             );
             return None;
         };
-        let Some(parameter) = parameters_for(descriptor.processor)
-            .into_iter()
-            .find(|parameter| parameter.name == parameter_name)
-        else {
+        let parameter = if descriptor.processor == ProcessorKind::Instrument {
+            self.instrument_nodes
+                .get(node_id)
+                .and_then(|instrument| instrument.controls.get(parameter_name))
+                .map(|spec| (graph_unit(spec.unit), RangePolicy::Error, spec.rate))
+        } else {
+            parameters_for(descriptor.processor)
+                .into_iter()
+                .find(|parameter| parameter.name == parameter_name)
+                .map(|parameter| (parameter.unit, parameter.range, parameter.rate))
+        };
+        let Some((unit, range, rate)) = parameter else {
             self.push(
                 DiagnosticCode::Reference,
                 format!("node `{node_id}` has no parameter `{parameter_name}`"),
@@ -2663,6 +2751,18 @@ impl<'a> Validator<'a> {
             );
             return None;
         };
+        if descriptor.processor == ProcessorKind::Instrument && rate == ParameterRate::Reset {
+            self.push(
+                DiagnosticCode::Capability,
+                format!(
+                    "instrument control `{parameter_name}` is reset-rate and cannot be automated"
+                ),
+                Some(field.value.span),
+                path.to_vec(),
+                vec!["target".into()],
+            );
+            return None;
+        }
         let key = format!("{node_id}.{parameter_name}");
         if !self.automation_writers.insert(key) {
             self.push(
@@ -2676,8 +2776,9 @@ impl<'a> Validator<'a> {
         Some(ReferenceTarget::Parameter {
             node: node_id.clone(),
             parameter: parameter_name.clone(),
-            unit: parameter.unit,
-            range: parameter.range,
+            unit,
+            range,
+            rate,
         })
     }
 
@@ -3383,6 +3484,30 @@ fn ports_for(
                 },
             ]
         }
+        ProcessorKind::Instrument => {
+            let channels = config
+                .get("channels")
+                .and_then(|value| value.to_u32())
+                .unwrap_or(1);
+            vec![
+                PortDescriptor {
+                    name: "events",
+                    direction: PortDirection::Input,
+                    kind: PortKind::Events,
+                    channels: 0,
+                    accepts_multiple: true,
+                    zero_default: true,
+                },
+                PortDescriptor {
+                    name: "out",
+                    direction: PortDirection::Output,
+                    kind: PortKind::Audio,
+                    channels,
+                    accepts_multiple: false,
+                    zero_default: true,
+                },
+            ]
+        }
     }
 }
 
@@ -3393,29 +3518,43 @@ fn parameters_for(processor: ProcessorKind) -> Vec<ParameterDescriptor> {
                 name: "attack",
                 unit: ParameterUnit::Seconds,
                 range: RangePolicy::Error,
+                rate: ParameterRate::NoteOn,
             },
             ParameterDescriptor {
                 name: "release",
                 unit: ParameterUnit::Seconds,
                 range: RangePolicy::Error,
+                rate: ParameterRate::NoteOff,
             },
             ParameterDescriptor {
                 name: "level",
                 unit: ParameterUnit::Dimensionless,
                 range: RangePolicy::Error,
+                rate: ParameterRate::Sample,
             },
         ],
         ProcessorKind::OnePole => vec![ParameterDescriptor {
             name: "cutoff",
             unit: ParameterUnit::Hertz,
             range: RangePolicy::Error,
+            rate: ParameterRate::Sample,
         }],
         ProcessorKind::Pan => vec![ParameterDescriptor {
             name: "pan",
             unit: ParameterUnit::Dimensionless,
             range: RangePolicy::Clamp,
+            rate: ParameterRate::Sample,
         }],
         ProcessorKind::Sum => Vec::new(),
+        ProcessorKind::Instrument => Vec::new(),
+    }
+}
+
+fn graph_unit(unit: GraphUnit) -> ParameterUnit {
+    match unit {
+        GraphUnit::Dimensionless => ParameterUnit::Dimensionless,
+        GraphUnit::Seconds => ParameterUnit::Seconds,
+        GraphUnit::Hertz => ParameterUnit::Hertz,
     }
 }
 

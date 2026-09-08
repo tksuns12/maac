@@ -69,6 +69,7 @@ fn base_plan() -> Plan {
             label: None,
         }],
         source_mappings: Vec::new(),
+        instruments: None,
     }
 }
 

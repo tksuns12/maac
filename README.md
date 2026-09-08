@@ -7,11 +7,17 @@ MaaC/1 for checking source, compiling an inspectable performance plan, and
 rendering that plan to WAV. The playable foundation targets offline 48 kHz mono
 or stereo rendering with the bounded [capability set](docs/capabilities.md).
 
+Reusable [sound libraries](docs/instruments.md) add code-authored instruments,
+presets, sample-wise FM, and morphing wavetables. Import local source files with
+SHA-256 pins, instantiate their instruments, and automate the exposed controls.
+Compiled version 2 plans embed everything needed for offline rendering.
+
 The MaaC/1 language uses the `.maac` extension, and source files begin with the
 canonical `maac 1;` header. The current tree is an
 experimental v0.1.0 MaaC source-only release prepared for
 GitHub. Build the executable locally; this repository does not promise binary,
-WAV, or other generated release artifacts. The MaaC language specification is a
+rendered audio, or other generated release artifacts. The starter library's
+small wavetable WAV is authored source data. The MaaC language specification is a
 design draft, and the Rust implementation deliberately covers a smaller,
 documented subset.
 
@@ -45,6 +51,17 @@ maac build evening-window.maac -o evening-window.wav
 maac build example.maac -o example.pcm16.wav --format pcm16
 ```
 
+Try the shared FM bell, wavetable pad, and bass library:
+
+```sh
+maac check examples/sounds/studio.maac
+maac build examples/reusable.maac -o reusable.wav
+```
+
+The [starter sound guide](examples/README.md) explains the presets, multiple
+instances, and wavetable source asset. Use `maac hash FILE` to obtain a source
+or wavetable pin after editing a dependency.
+
 ## Documentation
 
 Read the [quick start](docs/quickstart.md), [authoring tutorial](docs/tutorial.md),
@@ -53,8 +70,9 @@ The [diagnostics guide](docs/diagnostics.md) explains failures, while the
 [performance-plan format](docs/performance-plan.md) describes the standalone
 JSON interchange artifact. [Implementation decisions](docs/implementation-decisions.md)
 and the [implementation plan](docs/implementation-plan.md) record the current
-technical boundary. The [verification report](docs/verification.md) separates
-automated evidence from the pending listening review. The [changelog](CHANGELOG.md)
+technical boundary. The [instrument delivery evidence](docs/instrument-delivery.md)
+and historical [verification report](docs/verification.md) separate automated
+evidence from the pending listening review. The [changelog](CHANGELOG.md)
 records the experimental release scope.
 
 The full [MaaC-1 specification](MaaC-1-Specification.md),
@@ -98,6 +116,17 @@ python3 "$smoke_dir/check_spec.py"
 
 The acceptance runner uses only the Python standard library after installation
 and keeps generated files under `target/acceptance`.
+
+The instrument delivery checks also run the installed CLI, retained-plan audio,
+qualified legacy WAV comparisons, and a disposable syntax-checker copy:
+
+```sh
+python3 scripts/instrument_acceptance.py --python .venv/bin/python
+```
+
+These checks use the pinned checker packages and retain evidence under
+`target/instrument-acceptance`. Fixed legacy WAV hashes are qualified to the
+macOS environment recorded in the [delivery report](docs/instrument-delivery.md).
 
 ## License
 

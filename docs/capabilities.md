@@ -1,4 +1,4 @@
-# Foundation capability set
+# Implemented capability set
 
 The foundation implements a bounded subset of MaaC/1. It does **not** claim
 full Document, Performance, Core Audio, or Locked Render conformance. The language
@@ -14,14 +14,19 @@ specification remains authoritative; this page describes the implementation scop
 | Automation | Global score/seconds clocks; step, linear and exponential interpolation; sample/event parameter rates |
 | Routing | Explicit mono/stereo audio graph and note targets; no implicit channel conversions or mixers |
 | Processors | `core.sine/1`, `core.onepole/1`, `core.pan/1`, `core.sum/1` |
+| Reusable instruments | Named libraries, typed public controls, presets, independent polyphonic instances, voice and shared graphs |
+| Sound graphs | Versioned sine/saw/square/triangle/wavetable oscillators, linear ADSR, sine LFO, gain, one-pole, mixing and panning |
+| Modulation | Feed-forward graph modulation and sample-wise through-zero linear FM; no oversampling |
+| Local dependencies | Explicit namespace aliases, transitive declaring-file resolution, SHA-256 source/WAV pins, project containment |
+| Wavetables | Explicit mono WAV cycles, cyclic interpolation, adjacent-frame morphing and harmonic-limited banks |
 | Regions | Named score intervals retained as non-rendering metadata |
 | Render | Reset-state offline rendering at 48 kHz, score-end releases, explicit tail |
 | Export | Float32 WAV or overload-rejecting PCM16; no normalization, limiting or dithering |
-| Interchange | Standalone versioned derived performance plan, independently validated on import |
+| Interchange | Independently validated standalone plans: version 1 legacy and version 2 embedded graph/data/provenance |
 
 Recognized deferred features fail with `E_CAPABILITY`: tempo ramps, per-note
-expression, hits/messages, modulation, other processors, sample assets, arranged
-audio, external plug-ins and extensions. Transactional editing, dependency locks,
+expression, hits/messages, top-level core modulation, other processors, recorded
+sample instruments, arranged audio, external plug-ins and extensions. Transactional editing, full render locks,
 MIDI transport, GUI and real-time playback are outside this release's interfaces.
 No deferred feature is approximated silently.
 
@@ -55,6 +60,30 @@ not guarantee that its serialized plan fits the file-size limit. Oversized
 unreduced numeric operands are rejected before expensive integer parsing, even
 when they would later cancel. The rational limit also applies during exact
 arithmetic. `PlanLimits` permits callers to tighten the foundation limits.
+
+The [instrument extension](instruments.md) additionally limits each source or
+WAV file to 4 MiB, aggregate source bytes to 16 MiB, aggregate asset bytes to
+16 MiB, source files and assets to 64 each, and import depth to 32. The source
+object limit applies across the bundle.
+Path keys and references are limited to 4,096 UTF-8 bytes; library version,
+creator, and license metadata each have the same byte limit.
+
+| Instrument resource | Limit |
+| --- | --- |
+| Reusable programs | 128 |
+| Nodes / audio-plus-modulation edges per graph | 64 / 256 |
+| Public controls per instrument | 64 |
+| Aggregate graph nodes / edges | 1,024 / 4,096 |
+| Embedded wavetables / raw samples | 64 / 262,144 |
+| Cycle length / frames per table | Power of two, 8–2,048 / 1–32 |
+| Voice capacity per instrument instance | 4,096 (default 64) |
+| Aggregate declared voice graph node states | 262,144 |
+| Conservative sample execution work | 500,000,000 node/edge visits |
+
+Execution work includes every note's gate and maximum possible release, bounded
+by the render endpoint, plus shared effects throughout the full output. Caller
+`PlanLimits` can tighten graph, table, state, and work limits. The 4 MiB plan
+artifact limit applies alongside embedded-sample limits.
 
 ## Fidelity
 

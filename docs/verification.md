@@ -1,5 +1,9 @@
 # MaaC release verification evidence
 
+The [instrument delivery evidence](instrument-delivery.md) records verification
+for the reusable sound-library milestone. The naming and release-preparation
+results below are historical snapshots and do not assert checks on later code.
+
 This report records automated evidence for the MaaC (`maac`) source-only release
 preparation. MaaC/1 is the source language; MaaC source files use `.maac` and
 require the canonical `maac 1;` document header. The parser rejects
@@ -8,7 +12,7 @@ The separate
 [release-readiness review](release-readiness.md) records publication decisions,
 audit limits, and remaining release work.
 
-## Current naming cleanup
+## Historical naming cleanup
 
 The current tree uses MaaC consistently in the specification, grammar, schema,
 and documentation. The normative [MaaC-1 specification](../MaaC-1-Specification.md)

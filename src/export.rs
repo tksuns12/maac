@@ -420,6 +420,7 @@ mod tests {
             automation: Vec::new(),
             regions: Vec::new(),
             source_mappings: Vec::new(),
+            instruments: None,
         }
     }
 

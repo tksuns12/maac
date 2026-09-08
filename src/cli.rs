@@ -2,13 +2,16 @@
 //! here; compiler and DSP modules receive parsed source/plans only.
 
 use std::fmt;
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use clap::{error::ErrorKind, Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 
+use crate::bundle::sha256_digest;
+use crate::bundle::SourceBundle;
+use crate::bundle_fs;
 use crate::compiler;
 use crate::diagnostic::{Diagnostic, Diagnostics, Span};
 use crate::dsp::RenderError;
@@ -32,15 +35,23 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
-    /// Parse, validate, and resolve a source document without writing output.
-    Check { input: PathBuf },
-    /// Compile source into a standalone versioned performance plan.
+    /// Resolve and validate a composition bundle or reusable library.
+    Check {
+        input: PathBuf,
+        /// Root used to resolve project-relative imports and assets.
+        #[arg(long)]
+        project_root: Option<PathBuf>,
+    },
+    /// Resolve a composition bundle into a standalone versioned performance plan.
     Compile {
         input: PathBuf,
         #[arg(short = 'o', long)]
         output: PathBuf,
         #[arg(long)]
         force: bool,
+        /// Root used to resolve project-relative imports and assets.
+        #[arg(long)]
+        project_root: Option<PathBuf>,
     },
     /// Validate an imported performance plan and stream it to WAV.
     Render {
@@ -52,7 +63,7 @@ pub enum Command {
         #[arg(long)]
         force: bool,
     },
-    /// Compile source and stream the resulting performance directly to WAV.
+    /// Resolve and compile a composition bundle directly to WAV.
     Build {
         input: PathBuf,
         #[arg(short = 'o', long)]
@@ -61,7 +72,12 @@ pub enum Command {
         format: FormatArg,
         #[arg(long)]
         force: bool,
+        /// Root used to resolve project-relative imports and assets.
+        #[arg(long)]
+        project_root: Option<PathBuf>,
     },
+    /// Compute the canonical SHA-256 pin for a bounded local file.
+    Hash { input: PathBuf },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -92,6 +108,10 @@ pub struct CommandResult {
     pub notes: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub frames: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub digest: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exports: Option<usize>,
 }
 
 impl CommandResult {
@@ -104,6 +124,8 @@ impl CommandResult {
             format: None,
             notes: Some(notes),
             frames: Some(frames),
+            digest: None,
+            exports: None,
         }
     }
 
@@ -116,6 +138,8 @@ impl CommandResult {
             format: None,
             notes: Some(notes),
             frames: Some(frames),
+            digest: None,
+            exports: None,
         }
     }
 
@@ -134,6 +158,36 @@ impl CommandResult {
             format: Some(format.as_str().into()),
             notes: None,
             frames: Some(stats.frames),
+            digest: None,
+            exports: None,
+        }
+    }
+
+    fn hash(input: &Path, digest: String) -> Self {
+        Self {
+            ok: true,
+            command: "hash".into(),
+            input: input.display().to_string(),
+            output: None,
+            format: None,
+            notes: None,
+            frames: None,
+            digest: Some(digest),
+            exports: None,
+        }
+    }
+
+    fn library_check(input: &Path, exports: usize) -> Self {
+        Self {
+            ok: true,
+            command: "check".into(),
+            input: input.display().to_string(),
+            output: None,
+            format: None,
+            notes: None,
+            frames: None,
+            digest: None,
+            exports: Some(exports),
         }
     }
 }
@@ -238,24 +292,46 @@ impl std::error::Error for CliError {}
 /// embedding and gives the binary a single output policy for human/JSON modes.
 pub fn execute(command: &Command) -> Result<CommandResult, CliError> {
     match command {
-        Command::Check { input } => {
-            let document = read_source(input)?;
-            let plan =
-                compiler::compile(&document).map_err(|error| CliError::from_diagnostics(&error))?;
-            Ok(CommandResult::check(
-                input,
-                plan.events.len(),
-                plan.output.total_frames,
-            ))
+        Command::Check {
+            input,
+            project_root,
+        } => {
+            let bundle = load_source_bundle(input, project_root.as_deref())?;
+            let document = bundle_entry_document(&bundle)?;
+            if document
+                .objects
+                .values()
+                .any(|object| object.kind == "library")
+            {
+                compiler::check_bundle(&bundle)
+                    .map_err(|error| CliError::from_diagnostics(&error))?;
+                let exports = document
+                    .objects
+                    .values()
+                    .filter(|object| {
+                        matches!(object.kind.as_str(), "instrument" | "preset" | "wavetable")
+                    })
+                    .count();
+                Ok(CommandResult::library_check(input, exports))
+            } else {
+                let plan = compiler::compile_bundle(&bundle)
+                    .map_err(|error| CliError::from_diagnostics(&error))?;
+                Ok(CommandResult::check(
+                    input,
+                    plan.events.len(),
+                    plan.output.total_frames,
+                ))
+            }
         }
         Command::Compile {
             input,
             output,
             force,
+            project_root,
         } => {
-            let document = read_source(input)?;
-            let plan =
-                compiler::compile(&document).map_err(|error| CliError::from_diagnostics(&error))?;
+            let bundle = load_source_bundle(input, project_root.as_deref())?;
+            let plan = compiler::compile_bundle(&bundle)
+                .map_err(|error| CliError::from_diagnostics(&error))?;
             let bytes = plan.to_json().map_err(CliError::from_plan)?;
             export::atomic_write(output, &bytes, *force).map_err(CliError::from_export)?;
             Ok(CommandResult::compile(
@@ -284,10 +360,11 @@ pub fn execute(command: &Command) -> Result<CommandResult, CliError> {
             output,
             format,
             force,
+            project_root,
         } => {
-            let document = read_source(input)?;
-            let plan =
-                compiler::compile(&document).map_err(|error| CliError::from_diagnostics(&error))?;
+            let bundle = load_source_bundle(input, project_root.as_deref())?;
+            let plan = compiler::compile_bundle(&bundle)
+                .map_err(|error| CliError::from_diagnostics(&error))?;
             let wav_format = (*format).into();
             let stats = export::render_wav_to_path(&plan, output, wav_format, *force)
                 .map_err(CliError::from_export)?;
@@ -295,7 +372,35 @@ pub fn execute(command: &Command) -> Result<CommandResult, CliError> {
                 "build", input, output, wav_format, stats,
             ))
         }
+        Command::Hash { input } => {
+            let bytes = read_bounded(input)?;
+            Ok(CommandResult::hash(input, sha256_digest(&bytes)))
+        }
     }
+}
+
+fn load_source_bundle(input: &Path, project_root: Option<&Path>) -> Result<SourceBundle, CliError> {
+    let entry = fs::canonicalize(input).map_err(|error| {
+        CliError::new(
+            "E_IO",
+            format!("cannot resolve {}: {error}", input.display()),
+        )
+    })?;
+    let root = project_root
+        .map(Path::to_path_buf)
+        .or_else(|| entry.parent().map(Path::to_path_buf))
+        .ok_or_else(|| CliError::new("E_REFERENCE", "entry source has no parent directory"))?;
+    bundle_fs::load_bundle(&entry, &root).map_err(|error| CliError::from_diagnostics(&error))
+}
+
+fn bundle_entry_document(bundle: &SourceBundle) -> Result<Document, CliError> {
+    let source = bundle.sources.get(&bundle.entry).ok_or_else(|| {
+        CliError::new(
+            "E_REFERENCE",
+            format!("entry source `{}` is missing from the bundle", bundle.entry),
+        )
+    })?;
+    parse(source).map_err(|error| CliError::from_diagnostics(&error))
 }
 
 pub fn read_source(path: &Path) -> Result<Document, CliError> {
@@ -337,6 +442,9 @@ pub fn read_bounded(path: &Path) -> Result<Vec<u8>, CliError> {
 }
 
 pub fn format_human(result: &CommandResult) -> String {
+    if let Some(digest) = &result.digest {
+        return digest.clone();
+    }
     let mut message = format!("{} {}", result.command, result.input);
     if let Some(output) = &result.output {
         message.push_str(&format!(" -> {output}"));

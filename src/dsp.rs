@@ -1,4 +1,4 @@
-//! Sample based execution for the four MaaC/1 foundation processors.
+//! Sample based execution for MaaC foundation processors and reusable instruments.
 //!
 //! The plan is the execution boundary.  [`DspEngine::new`] validates it before
 //! allocating render state, and [`DspEngine::render`] resets that state before
@@ -8,11 +8,14 @@
 use crate::plan::{
     AutomationClock, EventKind, Interpolation, Plan, PlanError, Processor, Rational, ResolvedEvent,
 };
+use crate::voice::{CompiledInstrument, InstrumentRuntime};
+use crate::wavetable::TableBank;
 use num_bigint::BigInt;
 use num_integer::Integer;
 use num_traits::{Signed, ToPrimitive, Zero};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
+use std::sync::Arc;
 
 /// Result type used by the streaming renderer and its callback.
 pub type Result<T> = std::result::Result<T, RenderError>;
@@ -27,7 +30,7 @@ pub enum RenderError {
     /// A processor parameter or computed value was not finite or was outside
     /// the processor's declared range.
     Nonfinite(String),
-    /// A sine node has no free voice at a note-on.  Release tails count as
+    /// A polyphonic node has no free voice at a note-on. Release tails count as
     /// allocated voices until their envelope reaches zero.
     VoiceLimit { node: String, address: String },
     /// The caller stopped a render through its callback.
@@ -135,17 +138,55 @@ impl<'a> DspEngine<'a> {
         let channels = usize::from(plan.output.channels);
         let tempo = TempoRuntime::new(plan)?;
 
+        let mut table_banks = BTreeMap::new();
+        let mut instrument_programs = BTreeMap::new();
+        if let Some(resources) = &plan.instruments {
+            for wavetable in &resources.wavetables {
+                table_banks.insert(
+                    wavetable.id.clone(),
+                    Arc::new(TableBank::new(wavetable).map_err(RenderError::Plan)?),
+                );
+            }
+            for program in &resources.programs {
+                instrument_programs.insert(
+                    program.id.clone(),
+                    Arc::new(CompiledInstrument::compile_validated(
+                        program,
+                        &table_banks,
+                    )?),
+                );
+            }
+        }
+
         let mut node_indices = HashMap::with_capacity(plan.nodes.len());
         let mut nodes = Vec::with_capacity(plan.nodes.len());
         for (index, node) in plan.nodes.iter().enumerate() {
             node_indices.insert(node.id.clone(), index);
-            let mut state = NodeState::new(node.id.clone(), node.processor.clone(), rate)?;
-            for (parameter, value) in &node.params {
+            let compiled = match &node.processor {
+                Processor::Instrument { program, .. } => {
+                    Some(instrument_programs.get(program).cloned().ok_or_else(|| {
+                        RenderError::RenderState(format!(
+                            "instrument node {} refers to missing program {program}",
+                            node.id
+                        ))
+                    })?)
+                }
+                _ => None,
+            };
+            let mut state = NodeState::new(
+                node.id.clone(),
+                node.processor.clone(),
+                rate,
+                compiled.as_ref(),
+            )?;
+            let resolved_params = plan.resolved_node_params(node).map_err(RenderError::Plan)?;
+            for (parameter, value) in &resolved_params {
                 let value = rational_f64(value, "node parameter")?;
                 state.base_params.insert(parameter.clone(), value);
                 state.current_params.insert(parameter.clone(), value);
             }
             state.validate_current_parameters(rate)?;
+            state.initialize_instrument(compiled, rate)?;
             nodes.push(state);
         }
 
@@ -259,7 +300,7 @@ impl<'a> DspEngine<'a> {
             // so a voice whose envelope reaches zero at this frame is free for
             // the new event.
             for node in &mut self.nodes {
-                node.prune_finished_voices(frame_index, self.rate);
+                node.prune_finished_voices(frame_index, self.rate)?;
             }
             if let Some(events) = self.on_events.get(&frame_index).cloned() {
                 for event_index in events {
@@ -306,6 +347,9 @@ impl<'a> DspEngine<'a> {
                 node.current_params.insert(name.clone(), value);
             }
             node.validate_current_parameters(self.rate)?;
+            if let Some(instrument) = &mut node.instrument {
+                instrument.update_controls(&node.current_params)?;
+            }
         }
         Ok(())
     }
@@ -321,6 +365,17 @@ impl<'a> DspEngine<'a> {
             .get_mut(event.node)
             .ok_or_else(|| RenderError::RenderState("event node index is invalid".into()))?;
         let EventData::Note { pitch_hz, velocity } = event.data;
+        if let Some(instrument) = &mut node.instrument {
+            return instrument
+                .note_on(event.address.clone(), pitch_hz, velocity, frame)
+                .map_err(|error| match error {
+                    RenderError::VoiceLimit { address, .. } => RenderError::VoiceLimit {
+                        node: node.id.clone(),
+                        address,
+                    },
+                    other => other,
+                });
+        }
         let attack = node.current_param("attack");
         let capacity = match node.processor {
             Processor::Sine { voices } => voices as usize,
@@ -368,6 +423,9 @@ impl<'a> DspEngine<'a> {
             .nodes
             .get_mut(event.node)
             .ok_or_else(|| RenderError::RenderState("event node index is invalid".into()))?;
+        if let Some(instrument) = &mut node.instrument {
+            return instrument.note_off(&event.address, frame);
+        }
         let position = node
             .voices
             .binary_search_by(|voice| voice.address.as_bytes().cmp(event.address.as_bytes()))
@@ -463,12 +521,29 @@ impl<'a> DspEngine<'a> {
                     self.nodes[node_index].output[channel] = sum;
                 }
             }
+            Processor::Instrument { .. } => {
+                let node = &mut self.nodes[node_index];
+                let node_id = node.id.clone();
+                let channels = node.output.len();
+                let rendered = node
+                    .instrument
+                    .as_mut()
+                    .ok_or_else(|| {
+                        RenderError::RenderState(format!(
+                            "instrument node {} has no runtime state",
+                            node_id
+                        ))
+                    })?
+                    .render(frame)?;
+                let output = [rendered[0], rendered.get(1).copied().unwrap_or(0.0)];
+                node.output.copy_from_slice(&output[..channels]);
+            }
         }
         Ok(())
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 struct NodeState {
     id: String,
     processor: Processor,
@@ -478,14 +553,21 @@ struct NodeState {
     output: Vec<f64>,
     onepole_previous: Vec<f64>,
     voices: Vec<Voice>,
+    instrument: Option<InstrumentRuntime>,
 }
 
 impl NodeState {
-    fn new(id: String, processor: Processor, rate: f64) -> Result<Self> {
+    fn new(
+        id: String,
+        processor: Processor,
+        rate: f64,
+        compiled: Option<&Arc<CompiledInstrument>>,
+    ) -> Result<Self> {
         let channels = match processor {
             Processor::Sine { .. } => 1,
             Processor::OnePole { channels } | Processor::Sum { channels } => usize::from(channels),
             Processor::Pan => 2,
+            Processor::Instrument { channels, .. } => usize::from(channels),
         };
         let mut base_params = BTreeMap::new();
         match processor {
@@ -501,6 +583,13 @@ impl NodeState {
                 base_params.insert("pan".into(), 0.0);
             }
             Processor::Sum { .. } => {}
+            Processor::Instrument { .. } => {
+                base_params = compiled
+                    .ok_or_else(|| {
+                        RenderError::RenderState("instrument program was not compiled".into())
+                    })?
+                    .default_controls();
+            }
         }
         let state = Self {
             id,
@@ -511,9 +600,34 @@ impl NodeState {
             output: vec![0.0; channels],
             onepole_previous: vec![0.0; channels],
             voices: Vec::new(),
+            instrument: None,
         };
         state.validate_current_parameters(rate)?;
         Ok(state)
+    }
+
+    fn initialize_instrument(
+        &mut self,
+        compiled: Option<Arc<CompiledInstrument>>,
+        rate: f64,
+    ) -> Result<()> {
+        if let Some(compiled) = compiled {
+            let capacity = match self.processor {
+                Processor::Instrument { voices, .. } => voices,
+                _ => {
+                    return Err(RenderError::RenderState(
+                        "compiled instrument attached to a legacy processor".into(),
+                    ))
+                }
+            };
+            self.instrument = Some(InstrumentRuntime::new(
+                compiled,
+                capacity,
+                rate,
+                &self.current_params,
+            )?);
+        }
+        Ok(())
     }
 
     fn reset(&mut self) {
@@ -521,6 +635,9 @@ impl NodeState {
         self.onepole_previous.fill(0.0);
         self.voices.clear();
         self.current_params.clone_from(&self.base_params);
+        if let Some(instrument) = &mut self.instrument {
+            instrument.reset_state();
+        }
     }
 
     fn current_param(&self, name: &str) -> f64 {
@@ -554,9 +671,13 @@ impl NodeState {
         Ok(())
     }
 
-    fn prune_finished_voices(&mut self, frame: u64, rate: f64) {
+    fn prune_finished_voices(&mut self, frame: u64, rate: f64) -> Result<()> {
         self.voices
             .retain(|voice| !voice.released || voice.envelope(frame, rate) > 0.0);
+        if let Some(instrument) = &mut self.instrument {
+            instrument.prune_finished(frame)?;
+        }
+        Ok(())
     }
 
     fn sine_sample(&mut self, frame: u64, rate: f64, level: f64) -> Result<f64> {
@@ -1006,7 +1127,10 @@ fn build_automations(
         // An authored node parameter replaces the processor default before an
         // automation lane begins. The default applies only when the node did
         // not author that parameter at all.
-        let base = match plan.nodes[node].params.get(&automation.target.port) {
+        let resolved_params = plan
+            .resolved_node_params(&plan.nodes[node])
+            .map_err(RenderError::Plan)?;
+        let base = match resolved_params.get(&automation.target.port) {
             Some(value) => rational_f64(value, "automation base parameter")?,
             None => default_parameter(&plan.nodes[node].processor, &automation.target.port),
         };

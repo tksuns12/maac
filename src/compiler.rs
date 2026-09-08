@@ -13,8 +13,11 @@ use num_bigint::BigInt;
 use num_integer::Integer;
 use num_traits::{One, Signed, ToPrimitive, Zero};
 
+use crate::bundle::{sha256_digest, ResolvedBundle, SourceBundle, SourceIdentity};
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Diagnostics, Span};
 use crate::exact::{Rational, MAX_RATIONAL_BITS};
+use crate::instrument_plan::InstrumentResources;
+use crate::library::{LibrarySet, ResolvedInstance};
 use crate::music::{
     MeterMap, MeterPoint, MusicError, MusicErrorCode, Pitch, TempoMap as ExactTempoMap,
     TempoPoint as ExactTempoPoint, TempoShape, Tuning,
@@ -24,6 +27,7 @@ use crate::plan::{
     Interpolation, Node, OutputSettings, Plan, PlanLimits, PortRef, Processor, Region,
     ResolvedEvent, SourceMapping, SourceSpan, TempoMap, TempoPoint,
 };
+use crate::semantic::InstrumentNodeDescriptor;
 use crate::syntax::{Document, Field, Object, Reference, Unit, Value, ValueKind};
 
 /// Maximum number of emitted note events in a resolved plan.
@@ -374,6 +378,9 @@ struct Compiler<'a> {
     regions: Vec<Region>,
     events: Vec<ExpandedNote>,
     expansion_work: u64,
+    instrument_instances: BTreeMap<String, ResolvedInstance>,
+    instrument_descriptors: BTreeMap<String, InstrumentNodeDescriptor>,
+    instrument_resources: Option<InstrumentResources>,
 }
 
 impl<'a> Compiler<'a> {
@@ -414,6 +421,23 @@ impl<'a> Compiler<'a> {
             regions: Vec::new(),
             events: Vec::new(),
             expansion_work: 0,
+            instrument_instances: BTreeMap::new(),
+            instrument_descriptors: BTreeMap::new(),
+            instrument_resources: None,
+        }
+    }
+
+    fn with_instruments(
+        document: &'a Document,
+        instances: BTreeMap<String, ResolvedInstance>,
+        descriptors: BTreeMap<String, InstrumentNodeDescriptor>,
+        resources: InstrumentResources,
+    ) -> Self {
+        Self {
+            instrument_instances: instances,
+            instrument_descriptors: descriptors,
+            instrument_resources: Some(resources),
+            ..Self::new(document)
         }
     }
 
@@ -421,7 +445,10 @@ impl<'a> Compiler<'a> {
         // SourceGraph owns the source schema and declaration/reference checks.
         // Keep this call ahead of lowering so malformed unused declarations
         // cannot disappear during expansion.
-        crate::semantic::validate_source(self.document)?;
+        crate::semantic::validate_source_with_instruments(
+            self.document,
+            &self.instrument_descriptors,
+        )?;
         self.validate_document_shape()?;
         self.read_tunings()?;
         self.read_project_and_maps()?;
@@ -509,6 +536,9 @@ impl<'a> Compiler<'a> {
                 ][..],
                 "curve" => &["clock", "points"][..],
                 "automation" => &["target", "curve", "at"][..],
+                "node" if self.instrument_instances.contains_key(&object.id) => {
+                    &["instrument", "preset", "config", "params"][..]
+                }
                 "node" => &["type", "config", "params"][..],
                 "connect" => &["from", "to"][..],
                 "region" => &["span", "label"][..],
@@ -1049,6 +1079,20 @@ impl<'a> Compiler<'a> {
             .values()
             .filter(|object| object.kind == "node")
         {
+            if let Some(instance) = self.instrument_instances.get(&object.id).cloned() {
+                let mut node = Node::new(
+                    object.id.clone(),
+                    Processor::Instrument {
+                        program: instance.program_id,
+                        voices: instance.voices,
+                        channels: instance.channels,
+                    },
+                )
+                .map_err(plan_error)?;
+                node.params = instance.params;
+                self.nodes.push(node);
+                continue;
+            }
             let type_field = self.field(object, "type")?;
             let node_type =
                 self.string_value(&type_field.value, object, Some(type_field), "type")?;
@@ -1171,7 +1215,7 @@ impl<'a> Compiler<'a> {
                 Processor::Pan => {
                     node.params.insert("pan".into(), Rational::zero());
                 }
-                Processor::Sum { .. } => {}
+                Processor::Sum { .. } | Processor::Instrument { .. } => {}
             }
             if let Some(params_value) = self.optional(object, "params") {
                 let params = self.record(params_value, object, object.field("params"))?;
@@ -1204,6 +1248,9 @@ impl<'a> Compiler<'a> {
                                 object,
                                 Some(field),
                             ))
+                        }
+                        Processor::Instrument { .. } => {
+                            self.rational_value(&field.value, object, Some(field))?
                         }
                         _ => {
                             return Err(path_diagnostic(
@@ -2644,7 +2691,11 @@ impl<'a> Compiler<'a> {
                 .then(a.address.cmp(&b.address))
         });
         let plan = Plan {
-            version: 1,
+            version: if self.instrument_resources.is_some() {
+                2
+            } else {
+                1
+            },
             output: OutputSettings {
                 score_start_q: self.score_start.clone(),
                 score_end_q: self.score_end.clone(),
@@ -2661,6 +2712,7 @@ impl<'a> Compiler<'a> {
             automation: self.automations.clone(),
             regions: self.regions.clone(),
             source_mappings: Vec::new(),
+            instruments: self.instrument_resources.clone(),
         };
         Ok(plan)
     }
@@ -2682,6 +2734,7 @@ impl<'a> Compiler<'a> {
             Processor::Pan => Ok(2),
             Processor::OnePole { channels } => Ok(channels),
             Processor::Sine { .. } => Ok(1),
+            Processor::Instrument { channels, .. } => Ok(channels),
         }
     }
 }
@@ -2693,14 +2746,181 @@ fn value_span(value: &Rational, field: Option<&Field>) -> Span {
     })
 }
 
+fn prepare_instrument_compiler<'a>(
+    resolved: &ResolvedBundle,
+    libraries: LibrarySet,
+    document: &'a Document,
+) -> CResult<Compiler<'a>> {
+    let mut instances = BTreeMap::new();
+    let mut descriptors = BTreeMap::new();
+    for node in document
+        .objects
+        .values()
+        .filter(|object| object.kind == "node" && object.field("instrument").is_some())
+    {
+        let instance = libraries.resolve_instance(&resolved.entry, node)?;
+        let program = libraries
+            .programs
+            .iter()
+            .find(|program| program.id == instance.program_id)
+            .ok_or_else(|| {
+                path_diagnostic(
+                    DiagnosticCode::Reference,
+                    "resolved instrument program is missing",
+                    node,
+                    node.field("instrument"),
+                )
+            })?;
+        let mut controls = BTreeMap::new();
+        for name in program.controls.keys() {
+            let spec = program.control_spec(name).ok_or_else(|| {
+                path_diagnostic(
+                    DiagnosticCode::Reference,
+                    format!("instrument control `{name}` has no parameter metadata"),
+                    node,
+                    node.field("instrument"),
+                )
+            })?;
+            controls.insert(name.clone(), spec);
+        }
+        descriptors.insert(
+            node.id.clone(),
+            InstrumentNodeDescriptor {
+                channels: instance.channels,
+                controls,
+            },
+        );
+        instances.insert(node.id.clone(), instance);
+    }
+    let resources = InstrumentResources {
+        entry_source: resolved.entry.clone(),
+        programs: libraries.programs,
+        wavetables: libraries.wavetables,
+        wavetable_sources: libraries.wavetable_sources,
+        source_files: resolved.source_files.clone(),
+        dependencies: resolved.dependencies.clone(),
+        libraries: libraries.metadata,
+    };
+    Ok(Compiler::with_instruments(
+        document,
+        instances,
+        descriptors,
+        resources,
+    ))
+}
+
+fn compile_resolved(resolved: &ResolvedBundle, libraries: LibrarySet) -> CResult<Plan> {
+    let document = libraries.entry_document();
+    if !document
+        .objects
+        .values()
+        .any(|object| object.kind == "project")
+    {
+        return Err(diagnostics(
+            DiagnosticCode::Conflict,
+            "library sources can be checked but cannot be compiled as compositions",
+            None,
+        ));
+    }
+    prepare_instrument_compiler(resolved, libraries, &document)?.run()
+}
+
+/// Resolve and compile a source bundle into a self-contained version 2 plan.
+pub fn compile_bundle(bundle: &SourceBundle) -> Result<Plan, Diagnostics> {
+    let resolved = bundle.resolve()?;
+    let libraries = LibrarySet::resolve(&resolved)?;
+    compile_resolved(&resolved, libraries)
+}
+
+/// Resolve and validate either a composition bundle or all exports of a
+/// library bundle.
+pub fn check_bundle(bundle: &SourceBundle) -> Result<(), Diagnostics> {
+    let resolved = bundle.resolve()?;
+    let libraries = LibrarySet::resolve(&resolved)?;
+    if libraries
+        .entry_document()
+        .objects
+        .values()
+        .any(|object| object.kind == "project")
+    {
+        compile_resolved(&resolved, libraries).map(|_| ())
+    } else {
+        Ok(())
+    }
+}
+
+fn local_resolved(document: &Document) -> ResolvedBundle {
+    let entry = "document.maac".to_owned();
+    ResolvedBundle {
+        entry: entry.clone(),
+        documents: BTreeMap::from([(entry.clone(), document.clone())]),
+        imports: BTreeMap::from([(entry.clone(), BTreeMap::new())]),
+        assets: BTreeMap::new(),
+        dependencies: Vec::new(),
+        source_files: vec![SourceIdentity {
+            path: entry,
+            hash: sha256_digest(document.source().as_bytes()),
+        }],
+    }
+}
+
+fn has_library_syntax(document: &Document) -> bool {
+    document.objects.values().any(|object| {
+        matches!(
+            object.kind.as_str(),
+            "library" | "instrument" | "preset" | "wavetable"
+        ) || (object.kind == "node" && object.field("instrument").is_some())
+    })
+}
+
+fn reject_unresolved_imports(document: &Document) -> CResult<()> {
+    if let Some(import) = document
+        .objects
+        .values()
+        .find(|object| object.kind == "import")
+    {
+        Err(path_diagnostic(
+            DiagnosticCode::Reference,
+            "imports require SourceBundle resolution",
+            import,
+            import.field("path"),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 /// Compile a parsed MaaC document into a validated standalone performance plan.
 pub fn compile(document: &Document) -> Result<Plan, Diagnostics> {
-    Compiler::new(document).run()
+    reject_unresolved_imports(document)?;
+    if has_library_syntax(document) {
+        let resolved = local_resolved(document);
+        let libraries = LibrarySet::resolve(&resolved)?;
+        compile_resolved(&resolved, libraries)
+    } else {
+        Compiler::new(document).run()
+    }
 }
 
 /// Validate a document through the same resolution path used by [`compile`].
 pub fn check(document: &Document) -> Result<(), Diagnostics> {
-    compile(document).map(|_| ())
+    reject_unresolved_imports(document)?;
+    if has_library_syntax(document) {
+        let resolved = local_resolved(document);
+        let libraries = LibrarySet::resolve(&resolved)?;
+        if libraries
+            .entry_document()
+            .objects
+            .values()
+            .any(|object| object.kind == "project")
+        {
+            compile_resolved(&resolved, libraries).map(|_| ())
+        } else {
+            Ok(())
+        }
+    } else {
+        Compiler::new(document).run().map(|_| ())
+    }
 }
 
 trait FieldValueRef {
