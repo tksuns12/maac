@@ -1,0 +1,164 @@
+{
+  "status": "Selected draft conformance arithmetic and reference values; not a full conformance suite",
+  "checks": [
+    {
+      "id": "quarter_at_120_seconds",
+      "actual": "1/2",
+      "expected": "1/2",
+      "pass": true
+    },
+    {
+      "id": "triplet_sum_q",
+      "actual": "1",
+      "expected": "1",
+      "pass": true
+    },
+    {
+      "id": "triplet_at_120_frames",
+      "actual": "8000",
+      "expected": "8000",
+      "pass": true
+    },
+    {
+      "id": "six_eight_bar_length",
+      "actual": "3",
+      "expected": "3",
+      "pass": true
+    },
+    {
+      "id": "six_eight_bar_2_beat_4",
+      "actual": "9/2",
+      "expected": "9/2",
+      "pass": true
+    },
+    {
+      "id": "twenty_ms_seconds",
+      "actual": "1/50",
+      "expected": "1/50",
+      "pass": true
+    },
+    {
+      "id": "one_point_five_khz",
+      "actual": "1500",
+      "expected": "1500",
+      "pass": true
+    },
+    {
+      "id": "onset_with_offset",
+      "actual": "96960",
+      "expected": "96960",
+      "pass": true
+    },
+    {
+      "id": "release_with_offset",
+      "actual": "120960",
+      "expected": "120960",
+      "pass": true
+    },
+    {
+      "id": "onset_only_shorter_gate",
+      "actual": "12/25",
+      "expected": "12/25",
+      "pass": true
+    },
+    {
+      "id": "step_tempo_six_q",
+      "actual": "4",
+      "expected": "4",
+      "pass": true
+    },
+    {
+      "id": "spill_gate_end",
+      "actual": "5",
+      "expected": "5",
+      "pass": true
+    },
+    {
+      "id": "cut_gate_end",
+      "actual": "4",
+      "expected": "4",
+      "pass": true
+    },
+    {
+      "id": "stretched_repetition_origin",
+      "actual": "6",
+      "expected": "6",
+      "pass": true
+    },
+    {
+      "id": "fractional_event_ceil",
+      "actual": "34",
+      "expected": "34",
+      "pass": true
+    },
+    {
+      "id": "subsample_gate_collapses",
+      "actual": "0",
+      "expected": "0",
+      "pass": true
+    },
+    {
+      "id": "linear_tempo_ramp_seconds",
+      "actual": 1.6218604324326575,
+      "expected": 1.6218604324326575,
+      "absolute_tolerance": 1e-12,
+      "pass": true
+    },
+    {
+      "id": "exponential_hz_midpoint",
+      "actual": 1000.0,
+      "expected": 1000,
+      "absolute_tolerance": 1e-12,
+      "pass": true
+    },
+    {
+      "id": "linear_db_midpoint",
+      "actual": -6.0,
+      "expected": -6,
+      "absolute_tolerance": 1e-12,
+      "pass": true
+    },
+    {
+      "id": "key_69_hz",
+      "actual": 440.0,
+      "expected": 440,
+      "absolute_tolerance": 1e-12,
+      "pass": true
+    },
+    {
+      "id": "key_60_hz",
+      "actual": 261.6255653005986,
+      "expected": 261.6255653005986,
+      "absolute_tolerance": 1e-12,
+      "pass": true
+    },
+    {
+      "id": "ratio_pitch",
+      "actual": 660.0,
+      "expected": 660,
+      "absolute_tolerance": 1e-12,
+      "pass": true
+    },
+    {
+      "id": "noise_seed1_noise_a_frame0_channel0",
+      "value": 0.8669290154720881,
+      "note": "Reference value generated from the published hash formula, not an independent DSP test."
+    },
+    {
+      "id": "noise_seed1_noise_a_frame1_channel0",
+      "value": -0.0443298910000367,
+      "note": "Reference value generated from the published hash formula, not an independent DSP test."
+    },
+    {
+      "id": "noise_seed1_noise_a_frame2_channel0",
+      "value": 0.5693783729759345,
+      "note": "Reference value generated from the published hash formula, not an independent DSP test."
+    }
+  ],
+  "example": {
+    "objects": 31,
+    "notes": 48,
+    "delayed_event": "bass_main/7/n2",
+    "delayed_onset_frame": 708960
+  }
+}

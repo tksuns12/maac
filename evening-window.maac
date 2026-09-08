@@ -1,0 +1,388 @@
+maac 1;
+
+// Title: Evening Window
+// Tempo: 96 bpm, 4/4 throughout. Form: A (bars 1-4), B (5-8), A' (9-12), coda (13-16).
+// The B phrase uses shorter, off-beat melody fragments; the coda settles on D major.
+
+project evening_window {
+  label = "Evening Window";
+  score = [0q, 64q];
+  rate = 48000Hz;
+  tempo = &clock;
+  meter = &metre;
+  output = &master:out;
+  tail = 1s;
+  seed = 1;
+  requires = [];
+}
+
+tempo clock { points = [(0q, 96bpm, step)]; }
+meter metre { points = [(0q, 4, 4)]; }
+
+pattern melody_a {
+  length = 16q;
+  note a1 { at = 0q; dur = 1q; pitch = D5; velocity = 0.62; }
+  note a2 { at = 1q; dur = 1/2q; pitch = F5; velocity = 0.56; }
+  note a3 { at = 3/2q; dur = 1/2q; pitch = A5; velocity = 0.60; }
+  note a4 { at = 2q; dur = 1q; pitch = C6; velocity = 0.60; }
+  note a5 { at = 3q; dur = 1q; pitch = A5; velocity = 0.52; }
+  note a6 { at = 4q; dur = 1/2q; pitch = Bb5; velocity = 0.58; }
+  note a7 { at = 9/2q; dur = 1/2q; pitch = A5; velocity = 0.50; }
+  note a8 { at = 5q; dur = 1q; pitch = F5; velocity = 0.56; }
+  note a9 { at = 6q; dur = 1q; pitch = D5; velocity = 0.50; }
+  note a10 { at = 7q; dur = 1q; pitch = F5; velocity = 0.55; }
+  note a11 { at = 8q; dur = 1q; pitch = A5; velocity = 0.60; }
+  note a12 { at = 9q; dur = 1/2q; pitch = G5; velocity = 0.48; }
+  note a13 { at = 19/2q; dur = 1/2q; pitch = F5; velocity = 0.50; }
+  note a14 { at = 10q; dur = 1q; pitch = E5; velocity = 0.55; }
+  note a15 { at = 11q; dur = 1q; pitch = C5; velocity = 0.50; }
+  note a16 { at = 12q; dur = 1/2q; pitch = D5; velocity = 0.52; }
+  note a17 { at = 25/2q; dur = 1/2q; pitch = E5; velocity = 0.56; }
+  note a18 { at = 13q; dur = 1q; pitch = G5; velocity = 0.60; }
+  note a19 { at = 14q; dur = 1q; pitch = E5; velocity = 0.50; }
+  note a20 { at = 15q; dur = 1q; pitch = D5; velocity = 0.55; }
+}
+
+pattern melody_b {
+  length = 16q;
+  note b1 { at = 0q; dur = 1/2q; pitch = A5; velocity = 0.54; }
+  note b2 { at = 3/4q; dur = 1/4q; pitch = C6; velocity = 0.48; }
+  note b3 { at = 1q; dur = 1q; pitch = D6; velocity = 0.62; }
+  note b4 { at = 5/2q; dur = 1/2q; pitch = C6; velocity = 0.50; }
+  note b5 { at = 3q; dur = 1q; pitch = A5; velocity = 0.52; }
+  note b6 { at = 4q; dur = 1/2q; pitch = F5; velocity = 0.50; }
+  note b7 { at = 19/4q; dur = 1/4q; pitch = A5; velocity = 0.46; }
+  note b8 { at = 5q; dur = 3/2q; pitch = Bb5; velocity = 0.60; }
+  note b9 { at = 13/2q; dur = 1/2q; pitch = G5; velocity = 0.48; }
+  note b10 { at = 7q; dur = 1q; pitch = F5; velocity = 0.54; }
+  note b11 { at = 8q; dur = 1/2q; pitch = C6; velocity = 0.56; }
+  note b12 { at = 17/2q; dur = 1/2q; pitch = A5; velocity = 0.48; }
+  note b13 { at = 9q; dur = 1q; pitch = F5; velocity = 0.54; }
+  note b14 { at = 21/2q; dur = 1/2q; pitch = A5; velocity = 0.48; }
+  note b15 { at = 11q; dur = 1q; pitch = C6; velocity = 0.58; }
+  note b16 { at = 12q; dur = 1/2q; pitch = E6; velocity = 0.57; }
+  note b17 { at = 25/2q; dur = 1/2q; pitch = C#6; velocity = 0.54; }
+  note b18 { at = 13q; dur = 1q; pitch = A5; velocity = 0.54; }
+  note b19 { at = 14q; dur = 1/2q; pitch = G5; velocity = 0.48; }
+  note b20 { at = 29/2q; dur = 1/2q; pitch = A5; velocity = 0.50; }
+  note b21 { at = 15q; dur = 1q; pitch = C#6; velocity = 0.58; }
+}
+
+pattern melody_a_prime {
+  length = 16q;
+  note ap1 { at = 0q; dur = 1q; pitch = D5; velocity = 0.60; }
+  note ap2 { at = 1q; dur = 1/2q; pitch = F5; velocity = 0.54; }
+  note ap3 { at = 3/2q; dur = 1/2q; pitch = A5; velocity = 0.58; }
+  note ap4 { at = 2q; dur = 1q; pitch = C6; velocity = 0.58; }
+  note ap5 { at = 3q; dur = 1q; pitch = A5; velocity = 0.52; }
+  note ap6 { at = 4q; dur = 1/2q; pitch = Bb5; velocity = 0.56; }
+  note ap7 { at = 9/2q; dur = 1/2q; pitch = A5; velocity = 0.50; }
+  note ap8 { at = 5q; dur = 1q; pitch = F5; velocity = 0.54; }
+  note ap9 { at = 6q; dur = 1/2q; pitch = D5; velocity = 0.49; }
+  note ap10 { at = 13/2q; dur = 1/2q; pitch = F5; velocity = 0.51; }
+  note ap11 { at = 7q; dur = 1q; pitch = G5; velocity = 0.56; }
+  note ap12 { at = 8q; dur = 1/2q; pitch = A5; velocity = 0.57; }
+  note ap13 { at = 17/2q; dur = 1/2q; pitch = C6; velocity = 0.55; }
+  note ap14 { at = 9q; dur = 1q; pitch = A5; velocity = 0.53; }
+  note ap15 { at = 10q; dur = 1/2q; pitch = G5; velocity = 0.48; }
+  note ap16 { at = 21/2q; dur = 1/2q; pitch = F5; velocity = 0.50; }
+  note ap17 { at = 11q; dur = 1q; pitch = E5; velocity = 0.54; }
+  note ap18 { at = 12q; dur = 1/2q; pitch = D5; velocity = 0.50; }
+  note ap19 { at = 25/2q; dur = 1/2q; pitch = E5; velocity = 0.54; }
+  note ap20 { at = 13q; dur = 1q; pitch = G5; velocity = 0.58; }
+  note ap21 { at = 14q; dur = 1/2q; pitch = E5; velocity = 0.50; }
+  note ap22 { at = 29/2q; dur = 1/2q; pitch = D5; velocity = 0.52; }
+  note ap23 { at = 15q; dur = 1q; pitch = C5; velocity = 0.54; }
+}
+
+pattern melody_coda {
+  length = 16q;
+  note c1 { at = 0q; dur = 1q; pitch = F5; velocity = 0.54; }
+  note c2 { at = 1q; dur = 1q; pitch = G5; velocity = 0.55; }
+  note c3 { at = 2q; dur = 2q; pitch = Bb5; velocity = 0.60; }
+  note c4 { at = 4q; dur = 1q; pitch = A5; velocity = 0.58; }
+  note c5 { at = 5q; dur = 1q; pitch = G5; velocity = 0.52; }
+  note c6 { at = 6q; dur = 1q; pitch = E5; velocity = 0.50; }
+  note c7 { at = 7q; dur = 1q; pitch = C#6; velocity = 0.60; }
+  note c8 { at = 8q; dur = 2q; pitch = D6; velocity = 0.62; }
+  note c9 { at = 10q; dur = 1q; pitch = C6; velocity = 0.53; }
+  note c10 { at = 11q; dur = 1q; pitch = A5; velocity = 0.50; }
+  note c11 { at = 12q; dur = 1q; pitch = F#5; velocity = 0.58; }
+  note c12 { at = 13q; dur = 1q; pitch = A5; velocity = 0.56; }
+  note c13 { at = 14q; dur = 2q; pitch = D6; velocity = 0.66; }
+}
+
+pattern chords_a {
+  length = 16q;
+  note d1 { at = 0q; dur = 4q; pitch = D3; velocity = 0.72; }
+  note d2 { at = 0q; dur = 4q; pitch = F3; velocity = 0.62; }
+  note d3 { at = 0q; dur = 4q; pitch = A3; velocity = 0.62; }
+  note d4 { at = 0q; dur = 4q; pitch = C4; velocity = 0.56; }
+  note bb1 { at = 4q; dur = 4q; pitch = Bb3; velocity = 0.70; }
+  note bb2 { at = 4q; dur = 4q; pitch = D4; velocity = 0.60; }
+  note bb3 { at = 4q; dur = 4q; pitch = F4; velocity = 0.60; }
+  note bb4 { at = 4q; dur = 4q; pitch = A4; velocity = 0.55; }
+  note f1 { at = 8q; dur = 4q; pitch = F3; velocity = 0.70; }
+  note f2 { at = 8q; dur = 4q; pitch = A3; velocity = 0.60; }
+  note f3 { at = 8q; dur = 4q; pitch = C4; velocity = 0.60; }
+  note f4 { at = 8q; dur = 4q; pitch = E4; velocity = 0.54; }
+  note c1 { at = 12q; dur = 4q; pitch = C3; velocity = 0.70; }
+  note c2 { at = 12q; dur = 4q; pitch = E3; velocity = 0.60; }
+  note c3 { at = 12q; dur = 4q; pitch = G3; velocity = 0.60; }
+  note c4 { at = 12q; dur = 4q; pitch = D4; velocity = 0.54; }
+}
+
+pattern chords_b {
+  length = 16q;
+  note d1 { at = 0q; dur = 4q; pitch = D3; velocity = 0.70; }
+  note d2 { at = 0q; dur = 4q; pitch = F3; velocity = 0.60; }
+  note d3 { at = 0q; dur = 4q; pitch = A3; velocity = 0.60; }
+  note d4 { at = 0q; dur = 4q; pitch = C4; velocity = 0.54; }
+  note c1 { at = 4q; dur = 4q; pitch = C3; velocity = 0.70; }
+  note c2 { at = 4q; dur = 4q; pitch = E3; velocity = 0.60; }
+  note c3 { at = 4q; dur = 4q; pitch = G3; velocity = 0.60; }
+  note c4 { at = 4q; dur = 4q; pitch = D4; velocity = 0.54; }
+  note bb1 { at = 8q; dur = 4q; pitch = Bb3; velocity = 0.70; }
+  note bb2 { at = 8q; dur = 4q; pitch = D4; velocity = 0.60; }
+  note bb3 { at = 8q; dur = 4q; pitch = F4; velocity = 0.60; }
+  note bb4 { at = 8q; dur = 4q; pitch = A4; velocity = 0.54; }
+  note a1 { at = 12q; dur = 4q; pitch = A3; velocity = 0.70; }
+  note a2 { at = 12q; dur = 4q; pitch = C#4; velocity = 0.62; }
+  note a3 { at = 12q; dur = 4q; pitch = E4; velocity = 0.60; }
+  note a4 { at = 12q; dur = 4q; pitch = G4; velocity = 0.54; }
+}
+
+pattern chords_coda {
+  length = 16q;
+  note g1 { at = 0q; dur = 4q; pitch = G3; velocity = 0.70; }
+  note g2 { at = 0q; dur = 4q; pitch = Bb3; velocity = 0.60; }
+  note g3 { at = 0q; dur = 4q; pitch = D4; velocity = 0.60; }
+  note g4 { at = 0q; dur = 4q; pitch = F4; velocity = 0.54; }
+  note a1 { at = 4q; dur = 4q; pitch = A3; velocity = 0.72; }
+  note a2 { at = 4q; dur = 4q; pitch = C#4; velocity = 0.64; }
+  note a3 { at = 4q; dur = 4q; pitch = E4; velocity = 0.62; }
+  note a4 { at = 4q; dur = 4q; pitch = G4; velocity = 0.55; }
+  note dm1 { at = 8q; dur = 4q; pitch = D3; velocity = 0.72; }
+  note dm2 { at = 8q; dur = 4q; pitch = F3; velocity = 0.62; }
+  note dm3 { at = 8q; dur = 4q; pitch = A3; velocity = 0.62; }
+  note dm4 { at = 8q; dur = 4q; pitch = C4; velocity = 0.56; }
+  note dm5 { at = 8q; dur = 4q; pitch = E4; velocity = 0.50; }
+  note dmaj1 { at = 12q; dur = 4q; pitch = D3; velocity = 0.76; }
+  note dmaj2 { at = 12q; dur = 4q; pitch = F#3; velocity = 0.66; }
+  note dmaj3 { at = 12q; dur = 4q; pitch = A3; velocity = 0.66; }
+  note dmaj4 { at = 12q; dur = 4q; pitch = D4; velocity = 0.58; }
+}
+
+pattern bass_a {
+  length = 16q;
+  note a1 { at = 0q; dur = 2q; pitch = D2; velocity = 0.72; }
+  note a2 { at = 2q; dur = 1q; pitch = A2; velocity = 0.56; }
+  note a3 { at = 3q; dur = 1q; pitch = A2; velocity = 0.52; }
+  note a4 { at = 4q; dur = 2q; pitch = Bb1; velocity = 0.68; }
+  note a5 { at = 6q; dur = 1q; pitch = F2; velocity = 0.52; }
+  note a6 { at = 7q; dur = 1q; pitch = Bb1; velocity = 0.54; }
+  note a7 { at = 8q; dur = 2q; pitch = F2; velocity = 0.68; }
+  note a8 { at = 10q; dur = 1q; pitch = C3; velocity = 0.54; }
+  note a9 { at = 11q; dur = 1q; pitch = F2; velocity = 0.52; }
+  note a10 { at = 12q; dur = 2q; pitch = C2; velocity = 0.68; }
+  note a11 { at = 14q; dur = 1q; pitch = G2; velocity = 0.54; }
+  note a12 { at = 15q; dur = 1q; pitch = C2; velocity = 0.56; }
+}
+
+pattern bass_b {
+  length = 16q;
+  note b1 { at = 0q; dur = 2q; pitch = D2; velocity = 0.70; }
+  note b2 { at = 2q; dur = 2q; pitch = A2; velocity = 0.56; }
+  note b3 { at = 4q; dur = 2q; pitch = C2; velocity = 0.68; }
+  note b4 { at = 6q; dur = 2q; pitch = G2; velocity = 0.54; }
+  note b5 { at = 8q; dur = 2q; pitch = Bb1; velocity = 0.68; }
+  note b6 { at = 10q; dur = 2q; pitch = F2; velocity = 0.54; }
+  note b7 { at = 12q; dur = 2q; pitch = A1; velocity = 0.70; }
+  note b8 { at = 14q; dur = 1q; pitch = E2; velocity = 0.56; }
+  note b9 { at = 15q; dur = 1q; pitch = A1; velocity = 0.58; }
+}
+
+pattern bass_coda {
+  length = 16q;
+  note c1 { at = 0q; dur = 2q; pitch = G1; velocity = 0.68; }
+  note c2 { at = 2q; dur = 2q; pitch = D2; velocity = 0.54; }
+  note c3 { at = 4q; dur = 2q; pitch = A1; velocity = 0.70; }
+  note c4 { at = 6q; dur = 2q; pitch = E2; velocity = 0.54; }
+  note c5 { at = 8q; dur = 2q; pitch = D2; velocity = 0.70; }
+  note c6 { at = 10q; dur = 2q; pitch = A2; velocity = 0.56; }
+  note c7 { at = 12q; dur = 4q; pitch = D2; velocity = 0.74; }
+}
+
+track melody { target = &melody_synth:events; }
+track chords { target = &chord_synth:events; }
+track bass { target = &bass_synth:events; }
+
+place melody_a_main {
+  pattern = &melody_a;
+  track = &melody;
+  at = 0q;
+  count = 1;
+  stretch = 1;
+  transpose = 0ct;
+  boundary = spill;
+}
+
+place melody_b_main {
+  pattern = &melody_b;
+  track = &melody;
+  at = 16q;
+  count = 1;
+  stretch = 1;
+  transpose = 0ct;
+  boundary = spill;
+}
+
+place melody_a_prime_main {
+  pattern = &melody_a_prime;
+  track = &melody;
+  at = 32q;
+  count = 1;
+  stretch = 1;
+  transpose = 0ct;
+  boundary = spill;
+}
+
+place melody_coda_main {
+  pattern = &melody_coda;
+  track = &melody;
+  at = 48q;
+  count = 1;
+  stretch = 1;
+  transpose = 0ct;
+  boundary = spill;
+}
+
+place chords_a_first {
+  pattern = &chords_a;
+  track = &chords;
+  at = 0q;
+  count = 1;
+  stretch = 1;
+  transpose = 0ct;
+  boundary = spill;
+}
+
+place chords_b_middle {
+  pattern = &chords_b;
+  track = &chords;
+  at = 16q;
+  count = 1;
+  stretch = 1;
+  transpose = 0ct;
+  boundary = spill;
+}
+
+place chords_a_reprise {
+  pattern = &chords_a;
+  track = &chords;
+  at = 32q;
+  count = 1;
+  stretch = 1;
+  transpose = 0ct;
+  boundary = spill;
+}
+
+place chords_coda_main {
+  pattern = &chords_coda;
+  track = &chords;
+  at = 48q;
+  count = 1;
+  stretch = 1;
+  transpose = 0ct;
+  boundary = spill;
+}
+
+place bass_a_first {
+  pattern = &bass_a;
+  track = &bass;
+  at = 0q;
+  count = 1;
+  stretch = 1;
+  transpose = 0ct;
+  boundary = spill;
+}
+
+place bass_b_middle {
+  pattern = &bass_b;
+  track = &bass;
+  at = 16q;
+  count = 1;
+  stretch = 1;
+  transpose = 0ct;
+  boundary = spill;
+}
+
+place bass_a_reprise {
+  pattern = &bass_a;
+  track = &bass;
+  at = 32q;
+  count = 1;
+  stretch = 1;
+  transpose = 0ct;
+  boundary = spill;
+}
+
+place bass_coda_main {
+  pattern = &bass_coda;
+  track = &bass;
+  at = 48q;
+  count = 1;
+  stretch = 1;
+  transpose = 0ct;
+  boundary = spill;
+}
+
+node melody_synth {
+  type = "core.sine/1";
+  config = { voices = 8; };
+  params = { attack = 12ms; release = 180ms; level = 0.14; };
+}
+
+node melody_pan {
+  type = "core.pan/1";
+  params = { pan = -0.18; };
+}
+
+node chord_synth {
+  type = "core.sine/1";
+  config = { voices = 16; };
+  params = { attack = 35ms; release = 260ms; level = 0.09; };
+}
+
+node chord_pan {
+  type = "core.pan/1";
+  params = { pan = 0; };
+}
+
+node bass_synth {
+  type = "core.sine/1";
+  config = { voices = 8; };
+  params = { attack = 6ms; release = 140ms; level = 0.17; };
+}
+
+node bass_pan {
+  type = "core.pan/1";
+  params = { pan = 0.12; };
+}
+
+node master {
+  type = "core.sum/1";
+  config = { channels = 2; };
+}
+
+connect melody_to_pan { from = &melody_synth:out; to = &melody_pan:in; }
+connect melody_to_master { from = &melody_pan:out; to = &master:in; }
+connect chords_to_pan { from = &chord_synth:out; to = &chord_pan:in; }
+connect chords_to_master { from = &chord_pan:out; to = &master:in; }
+connect bass_to_pan { from = &bass_synth:out; to = &bass_pan:in; }
+connect bass_to_master { from = &bass_pan:out; to = &master:in; }
+
+region section_a { span = [0q, 16q]; label = "A"; }
+region section_b { span = [16q, 32q]; label = "B"; }
+region section_a_prime { span = [32q, 48q]; label = "A prime"; }
+region section_coda { span = [48q, 64q]; label = "Coda - D major resolution"; }

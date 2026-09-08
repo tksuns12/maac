@@ -1,0 +1,10 @@
+# Pinned checker dependencies for the Python 3.12 CI smoke check.
+lark==1.2.2
+jsonschema==4.25.1
+
+# Transitive runtime dependencies of jsonschema/referencing, pinned for repeatability.
+attrs==25.4.0
+jsonschema-specifications==2025.9.1
+referencing==0.36.2
+rpds-py==0.27.1
+typing-extensions==4.15.0

@@ -1,0 +1,144 @@
+maac 1;
+
+// An eight-bar finite project. All processors are defined in the specification.
+project demo {
+  score = [0q, 32q];
+  rate = 48000Hz;
+  tempo = &clock;
+  meter = &metre;
+  output = &master:out;
+  tail = 1s;
+  seed = 1;
+  requires = [];
+}
+
+tempo clock { points = [(0q, 120bpm, step)]; }
+meter metre { points = [(0q, 4, 4)]; }
+
+pattern bass_riff {
+  length = 4q;
+  note n1 { at = 0q; dur = 1/2q; pitch = C2; velocity = 0.8; }
+  note n2 { at = 3/2q; dur = 1/2q; pitch = G2; velocity = 0.7; }
+  note n3 { at = 3q; dur = 1q; pitch = Bb2; velocity = 0.75; }
+}
+
+pattern upper_riff {
+  length = 4q;
+  note n1 { at = 0q; dur = 3/2q; pitch = Eb4; velocity = 0.6; }
+  note n2 { at = 2q; dur = 3/2q; pitch = G4; velocity = 0.55; }
+}
+
+pattern upper_pair {
+  length = 8q;
+  use repeated {
+    pattern = &upper_riff;
+    at = 0q;
+    count = 2;
+    stretch = 1;
+    transpose = 0ct;
+    boundary = spill;
+  }
+}
+
+pattern pulse_riff {
+  length = 4q;
+  note n1 { at = 0q; dur = 1/8q; pitch = C3; velocity = 0.4; }
+}
+
+track bass { target = &bass_synth:events; }
+track upper { target = &upper_synth:events; }
+track pulse { target = &pulse_synth:events; }
+
+place bass_main {
+  pattern = &bass_riff;
+  track = &bass;
+  at = 0q;
+  count = 8;
+  stretch = 1;
+  transpose = 0ct;
+  boundary = spill;
+  override last_g_late {
+    event = "7/n2";
+    set = { onset_offset = 20ms; release_offset = 20ms; };
+  }
+}
+
+place upper_main {
+  pattern = &upper_pair;
+  track = &upper;
+  at = 0q;
+  count = 4;
+  stretch = 1;
+  transpose = 0ct;
+  boundary = spill;
+}
+
+place pulse_main {
+  pattern = &pulse_riff;
+  track = &pulse;
+  at = 0q;
+  count = 8;
+  stretch = 1;
+  transpose = 0ct;
+  boundary = spill;
+}
+
+node bass_synth {
+  type = "core.sine/1";
+  config = { voices = 16; };
+  params = { attack = 5ms; release = 80ms; level = 0.2; };
+}
+node bass_filter {
+  type = "core.onepole/1";
+  config = { channels = 1; };
+  params = { cutoff = 500Hz; };
+}
+node bass_pan {
+  type = "core.pan/1";
+  params = { pan = 0; };
+}
+
+node upper_synth {
+  type = "core.sine/1";
+  config = { voices = 16; };
+  params = { attack = 20ms; release = 180ms; level = 0.15; };
+}
+node upper_pan {
+  type = "core.pan/1";
+  params = { pan = -0.3; };
+}
+
+node pulse_synth {
+  type = "core.sine/1";
+  config = { voices = 16; };
+  params = { attack = 1ms; release = 40ms; level = 0.15; };
+}
+node pulse_pan {
+  type = "core.pan/1";
+  params = { pan = 0.3; };
+}
+
+node master {
+  type = "core.sum/1";
+  config = { channels = 2; };
+}
+
+curve opening {
+  clock = score;
+  points = [(0q, 500Hz, exponential), (32q, 2000Hz, step)];
+}
+automation bass_open {
+  target = &bass_filter.params.cutoff;
+  curve = &opening;
+  at = 0q;
+}
+
+connect bass_to_filter { from = &bass_synth:out; to = &bass_filter:in; }
+connect filter_to_pan { from = &bass_filter:out; to = &bass_pan:in; }
+connect bass_to_master { from = &bass_pan:out; to = &master:in; }
+connect upper_to_pan { from = &upper_synth:out; to = &upper_pan:in; }
+connect upper_to_master { from = &upper_pan:out; to = &master:in; }
+connect pulse_to_pan { from = &pulse_synth:out; to = &pulse_pan:in; }
+connect pulse_to_master { from = &pulse_pan:out; to = &master:in; }
+
+region second_half { span = [16q, 32q]; label = "Second half"; }

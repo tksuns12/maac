@@ -1,0 +1,33 @@
+(* ScoreIR/1 surface grammar; semantic restrictions are normative in the spec. *)
+document   = "maac", integer, ";", { object } ;
+object     = identifier, identifier, "{", { field | object }, "}" ;
+field      = identifier, "=", value, ";" ;
+value      = quantity | number | string | boolean | reference | constructor
+           | list | tuple | record | symbol ;
+quantity   = number, unit ;
+unit       = "q" | "s" | "ms" | "frame" | "Hz" | "kHz" | "bpm" | "ct" | "dB" ;
+reference  = "&", identifier, { ".", identifier }, [ ":", identifier ] ;
+constructor= identifier, "(", [ value, { ",", value }, [ "," ] ], ")" ;
+list       = "[", [ value, { ",", value }, [ "," ] ], "]" ;
+tuple      = "(", value, ",", value, { ",", value }, [ "," ], ")" ;
+record     = "{", { field }, "}" ;
+boolean    = "true" | "false" ;
+symbol     = identifier | pitch_token ;
+identifier = ( letter | "_" ), { letter | digit | "_" } ;
+number     = [ "+" | "-" ], ( unsigned, "/", positive_unsigned
+           | unsigned, ".", unsigned | unsigned ) ;
+integer    = unsigned ;
+unsigned   = digit, { digit } ;
+positive_unsigned = nonzero_digit, { digit } ;
+pitch_token= ( "A" | "B" | "C" | "D" | "E" | "F" | "G" ),
+             [ "#" | "##" | "b" | "bb" ], [ "+" | "-" ], unsigned ;
+letter     = ? ASCII A-Z or a-z ? ;
+digit      = "0" | nonzero_digit ;
+nonzero_digit = "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" ;
+string     = ? JSON-compatible quoted string; no unpaired surrogate values ? ;
+(* Whitespace and // line comments and non-nested /* block comments */ ignored.
+   The only valid document version is 1. Identifier length <= 128 ASCII bytes.
+   Symbols true/false are reserved as booleans in value positions.
+   Unit suffixes and pitch tokens take lexical precedence in value positions.
+   Field validity, constructor arity, dimensions, IDs, and references are typed
+   by the specification rather than by this context-free grammar. *)

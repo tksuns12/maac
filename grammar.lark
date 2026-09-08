@@ -1,0 +1,34 @@
+// Executable surface grammar. Object field/type semantics are in the spec.
+start: "maac" INT ";" object*
+object: IDENT IDENT "{" member* "}"
+?member: field | object
+field: IDENT "=" value ";"
+?value: quantity
+      | NUMBER -> number
+      | STRING -> string
+      | "true" -> true_value
+      | "false" -> false_value
+      | reference
+      | call
+      | list_value
+      | tuple_value
+      | record
+      | PITCH -> symbol
+      | IDENT -> symbol
+quantity: NUMBER UNIT
+reference: "&" ref_path [":" IDENT]
+ref_path: IDENT ("." IDENT)*
+call: IDENT "(" [value ("," value)* [","]] ")"
+list_value: "[" [value ("," value)* [","]] "]"
+tuple_value: "(" value "," value ("," value)* [","] ")"
+record: "{" field* "}"
+UNIT.3: "frame" | "bpm" | "kHz" | "Hz" | "ms" | "ct" | "dB" | "q" | "s"
+PITCH.2: /[A-G](?:\#{1,2}|b{1,2})?[+-]?[0-9]+/
+NUMBER: /[+-]?(?:[0-9]+\/[1-9][0-9]*|[0-9]+\.[0-9]+|[0-9]+)/
+INT: /[0-9]+/
+IDENT: /[A-Za-z_][A-Za-z0-9_]*/
+STRING: /"(?:[^"\\\x00-\x1f]|\\(?:["\\\/bfnrt]|u[0-9a-fA-F]{4}))*"/
+%import common.WS
+%ignore WS
+%ignore /\/\/[^\n]*/
+%ignore /\/\*(?s:.*?)\*\//

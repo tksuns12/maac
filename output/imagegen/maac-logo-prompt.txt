@@ -1,0 +1,10 @@
+Generation mode: built-in image_gen
+
+Use case: logo-brand.
+Asset type: primary logo for MaaC, an open-source music programming language, Rust library and CLI that compiles musical source code into an inspectable performance plan and renders audio.
+Primary request: create one polished, distinctive logo combining the precision of source code with musical rhythm.
+Subject: a compact custom geometric emblem suggesting an M formed from rhythmic strokes, subtly framed by code angle brackets. Make it one coherent bold symbol with a memorable silhouette, not a collage of stock icons. Pair it with the exact wordmark "MaaC", preserving uppercase M and C and lowercase aa.
+Style/medium: minimal flat vector-like brand artwork, crisp edges, thoughtful optical spacing, restrained modern typography with subtle programming character and musical warmth. Monochrome near-black ink for versatility.
+Composition/framing: one centered horizontal logo lockup, symbol to the left and wordmark to the right, generous clear space, large and legible. Transparent background with real alpha.
+Text (verbatim): "MaaC".
+Constraints: one finished logo only; no tagline, no extra text, no presentation board, no mockup, no watermark. No gradients, shadows, 3D, textures, thin ornamental details, generic headphones or treble clef. Strong readability at small sizes.

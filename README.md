@@ -1,0 +1,117 @@
+# MaaC (Music as a Code)
+
+<img src="output/imagegen/maac-logo.png" alt="MaaC logo: a musical note between angle brackets followed by the MaaC wordmark" width="480">
+
+MaaC (Music as a Code) is a Rust library and command-line tool that implements
+ScoreIR/1 for checking source, compiling an inspectable performance plan, and
+rendering that plan to WAV. The playable foundation targets offline 48 kHz mono
+or stereo rendering with the bounded [capability set](docs/capabilities.md).
+
+ScoreIR remains the source-language name; MaaC source files use the `.maac`
+extension and begin with the canonical `maac 1;` header. The current tree is an
+experimental v0.1.0 MaaC source-only release prepared for
+GitHub. Build the executable locally; this repository does not promise binary,
+WAV, or other generated release artifacts. The ScoreIR language specification
+is a design draft, and the Rust implementation deliberately covers a smaller,
+documented subset.
+
+## Quick start
+
+Install a current stable Rust toolchain. From the repository root:
+
+```sh
+cargo build --release --locked
+cargo install --path . --locked
+```
+
+Then check, compile, and render a composition:
+
+```sh
+maac check example.maac
+maac compile example.maac -o example.performance.json
+maac render example.performance.json -o example.wav
+```
+
+The compiler and renderer do not contact the network. Once dependencies are
+cached, `--offline` can be added to Cargo commands. The default output is a
+48 kHz float32 WAV; `--format pcm16` selects overload-rejecting PCM16 export.
+Existing destinations require `--force`, and failed operations leave the
+destination intact.
+
+For a one-step build, or a PCM16 render, use:
+
+```sh
+maac build evening-window.maac -o evening-window.wav
+maac build example.maac -o example.pcm16.wav --format pcm16
+```
+
+## Documentation
+
+Read the [quick start](docs/quickstart.md), [authoring tutorial](docs/tutorial.md),
+[CLI and library reference](docs/reference.md), and [capability matrix](docs/capabilities.md).
+The [diagnostics guide](docs/diagnostics.md) explains failures, while the
+[performance-plan format](docs/performance-plan.md) describes the standalone
+JSON interchange artifact. [Implementation decisions](docs/implementation-decisions.md)
+and the [implementation plan](docs/implementation-plan.md) record the current
+technical boundary. The [verification report](docs/verification.md) separates
+automated evidence from the pending listening review. The [changelog](CHANGELOG.md)
+records the experimental release scope.
+
+The full [ScoreIR-1 specification](ScoreIR-1-Specification.md),
+[surface grammar](grammar.ebnf), executable [Lark grammar](grammar.lark),
+[syntax-tree schema](syntax-tree.schema.json), and the asset-free
+[example](example.maac) are included in the source tree. The companion
+`check_spec.py` script is a syntax and selected-semantics smoke checker; it is
+not a complete semantic validator, renderer, or proof of specification
+conformance.
+
+## Development
+
+The [contribution guide](CONTRIBUTING.md) lists the local checks and the
+maintainer-led contribution process. CI targets stable Rust on macOS. Python
+3.10 or newer is needed for the development checks, including the source smoke
+checker and acceptance runner; CI exercises Python 3.12. The checker
+dependencies are pinned in `requirements-dev.txt`:
+
+```sh
+python3 -m venv .venv
+source .venv/bin/activate
+python3 -m pip install -r requirements-dev.txt
+python3 scripts/acceptance.py
+```
+
+The initial release validation was performed on macOS; other platforms are
+unverified. No minimum supported Rust version (MSRV) is promised.
+
+`check_spec.py` regenerates the tracked `check-results.json`, `conformance.json`,
+and `example.syntax.json` beside itself. Run it from a disposable copy if you
+do not intend to update those fixtures; CI uses a disposable copy and compares
+the generated results without changing the checkout.
+
+For a local disposable run:
+
+```sh
+smoke_dir="$(mktemp -d)"
+cp check_spec.py grammar.lark syntax-tree.schema.json example.maac "$smoke_dir/"
+python3 "$smoke_dir/check_spec.py"
+```
+
+The acceptance runner uses only the Python standard library after installation
+and keeps generated files under `target/acceptance`.
+
+## License
+
+Unless a file states otherwise, the original material in this repository—Rust
+source, the ScoreIR specification, grammars, schemas, examples, tests, and
+documentation—is copyright 2026 tksuns12 and licensed under the
+[Apache License, Version 2.0](LICENSE). The [NOTICE](NOTICE) file records that
+scope and the treatment of dependencies.
+
+MaaC's Rust dependencies are separate works. Their copyright, attribution,
+and license terms remain with the respective crates and are not replaced by
+this project's Apache license. Redistributors must preserve the notices and
+terms required by each dependency; consult the dependency package contents and
+metadata for the applicable license information.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution terms and
+[SECURITY.md](SECURITY.md) for the current vulnerability-reporting status.

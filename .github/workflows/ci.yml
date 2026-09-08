@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  release-gate:
+    name: macOS release gate
+    runs-on: macos-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install stable Rust with rustfmt and Clippy
+        run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+
+      - name: Select stable Rust
+        run: rustup default stable
+
+      - name: Fetch locked Rust dependencies
+        run: cargo fetch --locked
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run Clippy
+        run: cargo clippy --all-targets --locked --offline -- -D warnings
+
+      # The default cargo test plan includes doctests.
+      - name: Run tests and doctests
+        run: cargo test --locked --offline
+
+      - name: Build release artifact
+        run: cargo build --release --locked --offline
+
+      - name: Install checker dependencies
+        run: python -m pip install --disable-pip-version-check --requirement requirements-dev.txt
+
+      - name: Run Python smoke checker without changing the checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          smoke_dir="$(mktemp -d)"
+          trap 'rm -rf "$smoke_dir"' EXIT
+
+          cp check_spec.py grammar.lark syntax-tree.schema.json example.maac "$smoke_dir/"
+          python "$smoke_dir/check_spec.py" > "$smoke_dir/check-report.json"
+
+          for output in check-results.json conformance.json example.syntax.json; do
+            if ! cmp -s "$smoke_dir/$output" "$output"; then
+              echo "Smoke checker drift detected in $output" >&2
+              diff -u "$output" "$smoke_dir/$output" || true
+              exit 1
+            fi
+          done
+
+      - name: Run macOS offline installed-CLI acceptance
+        run: python scripts/acceptance.py

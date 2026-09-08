@@ -1,0 +1,13 @@
+MaaC (Music as a Code)
+Copyright 2026 tksuns12
+
+This notice covers the original material in this repository, including the
+Rust source, the ScoreIR specification, grammar, schemas, examples, tests, and
+documentation, unless a file states otherwise. The original material is
+licensed under the Apache License, Version 2.0; see LICENSE.
+
+The Rust crates used by MaaC are separate works. Their copyright and
+license notices remain with those crates and are not replaced by this notice.
+When redistributing a build or source bundle, preserve the notices required
+by each dependency's license and consult the dependency metadata and package
+contents for the applicable terms.

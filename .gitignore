@@ -1,0 +1,25 @@
+# Rust build artifacts
+/target/
+
+# Local repository analysis output
+/graphify-out/
+
+# Rendered and compiled outputs
+*.wav
+*.performance.json
+
+# macOS metadata
+.DS_Store
+
+# Python caches and local virtual environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Local environment files; checked-in templates remain visible
+.env
+.env.*
+!.env.example
+!.env.template
+!.env.sample

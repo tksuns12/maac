@@ -1,0 +1,1081 @@
+{
+  "version": 1,
+  "objects": {
+    "demo": {
+      "kind": "project",
+      "fields": {
+        "score": {
+          "t": "list",
+          "items": [
+            {
+              "t": "quantity",
+              "n": "0",
+              "d": "1",
+              "u": "q"
+            },
+            {
+              "t": "quantity",
+              "n": "32",
+              "d": "1",
+              "u": "q"
+            }
+          ]
+        },
+        "rate": {
+          "t": "quantity",
+          "n": "48000",
+          "d": "1",
+          "u": "Hz"
+        },
+        "tempo": {
+          "t": "ref",
+          "path": [
+            "clock"
+          ],
+          "port": null
+        },
+        "meter": {
+          "t": "ref",
+          "path": [
+            "metre"
+          ],
+          "port": null
+        },
+        "output": {
+          "t": "ref",
+          "path": [
+            "master"
+          ],
+          "port": "out"
+        },
+        "tail": {
+          "t": "quantity",
+          "n": "1",
+          "d": "1",
+          "u": "s"
+        },
+        "seed": {
+          "t": "number",
+          "n": "1",
+          "d": "1"
+        },
+        "requires": {
+          "t": "list",
+          "items": []
+        }
+      },
+      "children": {}
+    },
+    "clock": {
+      "kind": "tempo",
+      "fields": {
+        "points": {
+          "t": "list",
+          "items": [
+            {
+              "t": "tuple",
+              "items": [
+                {
+                  "t": "quantity",
+                  "n": "0",
+                  "d": "1",
+                  "u": "q"
+                },
+                {
+                  "t": "quantity",
+                  "n": "120",
+                  "d": "1",
+                  "u": "bpm"
+                },
+                {
+                  "t": "symbol",
+                  "v": "step"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "children": {}
+    },
+    "metre": {
+      "kind": "meter",
+      "fields": {
+        "points": {
+          "t": "list",
+          "items": [
+            {
+              "t": "tuple",
+              "items": [
+                {
+                  "t": "quantity",
+                  "n": "0",
+                  "d": "1",
+                  "u": "q"
+                },
+                {
+                  "t": "number",
+                  "n": "4",
+                  "d": "1"
+                },
+                {
+                  "t": "number",
+                  "n": "4",
+                  "d": "1"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "children": {}
+    },
+    "bass_riff": {
+      "kind": "pattern",
+      "fields": {
+        "length": {
+          "t": "quantity",
+          "n": "4",
+          "d": "1",
+          "u": "q"
+        }
+      },
+      "children": {
+        "n1": {
+          "kind": "note",
+          "fields": {
+            "at": {
+              "t": "quantity",
+              "n": "0",
+              "d": "1",
+              "u": "q"
+            },
+            "dur": {
+              "t": "quantity",
+              "n": "1",
+              "d": "2",
+              "u": "q"
+            },
+            "pitch": {
+              "t": "symbol",
+              "v": "C2"
+            },
+            "velocity": {
+              "t": "number",
+              "n": "4",
+              "d": "5"
+            }
+          },
+          "children": {}
+        },
+        "n2": {
+          "kind": "note",
+          "fields": {
+            "at": {
+              "t": "quantity",
+              "n": "3",
+              "d": "2",
+              "u": "q"
+            },
+            "dur": {
+              "t": "quantity",
+              "n": "1",
+              "d": "2",
+              "u": "q"
+            },
+            "pitch": {
+              "t": "symbol",
+              "v": "G2"
+            },
+            "velocity": {
+              "t": "number",
+              "n": "7",
+              "d": "10"
+            }
+          },
+          "children": {}
+        },
+        "n3": {
+          "kind": "note",
+          "fields": {
+            "at": {
+              "t": "quantity",
+              "n": "3",
+              "d": "1",
+              "u": "q"
+            },
+            "dur": {
+              "t": "quantity",
+              "n": "1",
+              "d": "1",
+              "u": "q"
+            },
+            "pitch": {
+              "t": "symbol",
+              "v": "Bb2"
+            },
+            "velocity": {
+              "t": "number",
+              "n": "3",
+              "d": "4"
+            }
+          },
+          "children": {}
+        }
+      }
+    },
+    "upper_riff": {
+      "kind": "pattern",
+      "fields": {
+        "length": {
+          "t": "quantity",
+          "n": "4",
+          "d": "1",
+          "u": "q"
+        }
+      },
+      "children": {
+        "n1": {
+          "kind": "note",
+          "fields": {
+            "at": {
+              "t": "quantity",
+              "n": "0",
+              "d": "1",
+              "u": "q"
+            },
+            "dur": {
+              "t": "quantity",
+              "n": "3",
+              "d": "2",
+              "u": "q"
+            },
+            "pitch": {
+              "t": "symbol",
+              "v": "Eb4"
+            },
+            "velocity": {
+              "t": "number",
+              "n": "3",
+              "d": "5"
+            }
+          },
+          "children": {}
+        },
+        "n2": {
+          "kind": "note",
+          "fields": {
+            "at": {
+              "t": "quantity",
+              "n": "2",
+              "d": "1",
+              "u": "q"
+            },
+            "dur": {
+              "t": "quantity",
+              "n": "3",
+              "d": "2",
+              "u": "q"
+            },
+            "pitch": {
+              "t": "symbol",
+              "v": "G4"
+            },
+            "velocity": {
+              "t": "number",
+              "n": "11",
+              "d": "20"
+            }
+          },
+          "children": {}
+        }
+      }
+    },
+    "upper_pair": {
+      "kind": "pattern",
+      "fields": {
+        "length": {
+          "t": "quantity",
+          "n": "8",
+          "d": "1",
+          "u": "q"
+        }
+      },
+      "children": {
+        "repeated": {
+          "kind": "use",
+          "fields": {
+            "pattern": {
+              "t": "ref",
+              "path": [
+                "upper_riff"
+              ],
+              "port": null
+            },
+            "at": {
+              "t": "quantity",
+              "n": "0",
+              "d": "1",
+              "u": "q"
+            },
+            "count": {
+              "t": "number",
+              "n": "2",
+              "d": "1"
+            },
+            "stretch": {
+              "t": "number",
+              "n": "1",
+              "d": "1"
+            },
+            "transpose": {
+              "t": "quantity",
+              "n": "0",
+              "d": "1",
+              "u": "ct"
+            },
+            "boundary": {
+              "t": "symbol",
+              "v": "spill"
+            }
+          },
+          "children": {}
+        }
+      }
+    },
+    "pulse_riff": {
+      "kind": "pattern",
+      "fields": {
+        "length": {
+          "t": "quantity",
+          "n": "4",
+          "d": "1",
+          "u": "q"
+        }
+      },
+      "children": {
+        "n1": {
+          "kind": "note",
+          "fields": {
+            "at": {
+              "t": "quantity",
+              "n": "0",
+              "d": "1",
+              "u": "q"
+            },
+            "dur": {
+              "t": "quantity",
+              "n": "1",
+              "d": "8",
+              "u": "q"
+            },
+            "pitch": {
+              "t": "symbol",
+              "v": "C3"
+            },
+            "velocity": {
+              "t": "number",
+              "n": "2",
+              "d": "5"
+            }
+          },
+          "children": {}
+        }
+      }
+    },
+    "bass": {
+      "kind": "track",
+      "fields": {
+        "target": {
+          "t": "ref",
+          "path": [
+            "bass_synth"
+          ],
+          "port": "events"
+        }
+      },
+      "children": {}
+    },
+    "upper": {
+      "kind": "track",
+      "fields": {
+        "target": {
+          "t": "ref",
+          "path": [
+            "upper_synth"
+          ],
+          "port": "events"
+        }
+      },
+      "children": {}
+    },
+    "pulse": {
+      "kind": "track",
+      "fields": {
+        "target": {
+          "t": "ref",
+          "path": [
+            "pulse_synth"
+          ],
+          "port": "events"
+        }
+      },
+      "children": {}
+    },
+    "bass_main": {
+      "kind": "place",
+      "fields": {
+        "pattern": {
+          "t": "ref",
+          "path": [
+            "bass_riff"
+          ],
+          "port": null
+        },
+        "track": {
+          "t": "ref",
+          "path": [
+            "bass"
+          ],
+          "port": null
+        },
+        "at": {
+          "t": "quantity",
+          "n": "0",
+          "d": "1",
+          "u": "q"
+        },
+        "count": {
+          "t": "number",
+          "n": "8",
+          "d": "1"
+        },
+        "stretch": {
+          "t": "number",
+          "n": "1",
+          "d": "1"
+        },
+        "transpose": {
+          "t": "quantity",
+          "n": "0",
+          "d": "1",
+          "u": "ct"
+        },
+        "boundary": {
+          "t": "symbol",
+          "v": "spill"
+        }
+      },
+      "children": {
+        "last_g_late": {
+          "kind": "override",
+          "fields": {
+            "event": {
+              "t": "string",
+              "v": "7/n2"
+            },
+            "set": {
+              "t": "record",
+              "fields": {
+                "onset_offset": {
+                  "t": "quantity",
+                  "n": "20",
+                  "d": "1",
+                  "u": "ms"
+                },
+                "release_offset": {
+                  "t": "quantity",
+                  "n": "20",
+                  "d": "1",
+                  "u": "ms"
+                }
+              }
+            }
+          },
+          "children": {}
+        }
+      }
+    },
+    "upper_main": {
+      "kind": "place",
+      "fields": {
+        "pattern": {
+          "t": "ref",
+          "path": [
+            "upper_pair"
+          ],
+          "port": null
+        },
+        "track": {
+          "t": "ref",
+          "path": [
+            "upper"
+          ],
+          "port": null
+        },
+        "at": {
+          "t": "quantity",
+          "n": "0",
+          "d": "1",
+          "u": "q"
+        },
+        "count": {
+          "t": "number",
+          "n": "4",
+          "d": "1"
+        },
+        "stretch": {
+          "t": "number",
+          "n": "1",
+          "d": "1"
+        },
+        "transpose": {
+          "t": "quantity",
+          "n": "0",
+          "d": "1",
+          "u": "ct"
+        },
+        "boundary": {
+          "t": "symbol",
+          "v": "spill"
+        }
+      },
+      "children": {}
+    },
+    "pulse_main": {
+      "kind": "place",
+      "fields": {
+        "pattern": {
+          "t": "ref",
+          "path": [
+            "pulse_riff"
+          ],
+          "port": null
+        },
+        "track": {
+          "t": "ref",
+          "path": [
+            "pulse"
+          ],
+          "port": null
+        },
+        "at": {
+          "t": "quantity",
+          "n": "0",
+          "d": "1",
+          "u": "q"
+        },
+        "count": {
+          "t": "number",
+          "n": "8",
+          "d": "1"
+        },
+        "stretch": {
+          "t": "number",
+          "n": "1",
+          "d": "1"
+        },
+        "transpose": {
+          "t": "quantity",
+          "n": "0",
+          "d": "1",
+          "u": "ct"
+        },
+        "boundary": {
+          "t": "symbol",
+          "v": "spill"
+        }
+      },
+      "children": {}
+    },
+    "bass_synth": {
+      "kind": "node",
+      "fields": {
+        "type": {
+          "t": "string",
+          "v": "core.sine/1"
+        },
+        "config": {
+          "t": "record",
+          "fields": {
+            "voices": {
+              "t": "number",
+              "n": "16",
+              "d": "1"
+            }
+          }
+        },
+        "params": {
+          "t": "record",
+          "fields": {
+            "attack": {
+              "t": "quantity",
+              "n": "5",
+              "d": "1",
+              "u": "ms"
+            },
+            "release": {
+              "t": "quantity",
+              "n": "80",
+              "d": "1",
+              "u": "ms"
+            },
+            "level": {
+              "t": "number",
+              "n": "1",
+              "d": "5"
+            }
+          }
+        }
+      },
+      "children": {}
+    },
+    "bass_filter": {
+      "kind": "node",
+      "fields": {
+        "type": {
+          "t": "string",
+          "v": "core.onepole/1"
+        },
+        "config": {
+          "t": "record",
+          "fields": {
+            "channels": {
+              "t": "number",
+              "n": "1",
+              "d": "1"
+            }
+          }
+        },
+        "params": {
+          "t": "record",
+          "fields": {
+            "cutoff": {
+              "t": "quantity",
+              "n": "500",
+              "d": "1",
+              "u": "Hz"
+            }
+          }
+        }
+      },
+      "children": {}
+    },
+    "bass_pan": {
+      "kind": "node",
+      "fields": {
+        "type": {
+          "t": "string",
+          "v": "core.pan/1"
+        },
+        "params": {
+          "t": "record",
+          "fields": {
+            "pan": {
+              "t": "number",
+              "n": "0",
+              "d": "1"
+            }
+          }
+        }
+      },
+      "children": {}
+    },
+    "upper_synth": {
+      "kind": "node",
+      "fields": {
+        "type": {
+          "t": "string",
+          "v": "core.sine/1"
+        },
+        "config": {
+          "t": "record",
+          "fields": {
+            "voices": {
+              "t": "number",
+              "n": "16",
+              "d": "1"
+            }
+          }
+        },
+        "params": {
+          "t": "record",
+          "fields": {
+            "attack": {
+              "t": "quantity",
+              "n": "20",
+              "d": "1",
+              "u": "ms"
+            },
+            "release": {
+              "t": "quantity",
+              "n": "180",
+              "d": "1",
+              "u": "ms"
+            },
+            "level": {
+              "t": "number",
+              "n": "3",
+              "d": "20"
+            }
+          }
+        }
+      },
+      "children": {}
+    },
+    "upper_pan": {
+      "kind": "node",
+      "fields": {
+        "type": {
+          "t": "string",
+          "v": "core.pan/1"
+        },
+        "params": {
+          "t": "record",
+          "fields": {
+            "pan": {
+              "t": "number",
+              "n": "-3",
+              "d": "10"
+            }
+          }
+        }
+      },
+      "children": {}
+    },
+    "pulse_synth": {
+      "kind": "node",
+      "fields": {
+        "type": {
+          "t": "string",
+          "v": "core.sine/1"
+        },
+        "config": {
+          "t": "record",
+          "fields": {
+            "voices": {
+              "t": "number",
+              "n": "16",
+              "d": "1"
+            }
+          }
+        },
+        "params": {
+          "t": "record",
+          "fields": {
+            "attack": {
+              "t": "quantity",
+              "n": "1",
+              "d": "1",
+              "u": "ms"
+            },
+            "release": {
+              "t": "quantity",
+              "n": "40",
+              "d": "1",
+              "u": "ms"
+            },
+            "level": {
+              "t": "number",
+              "n": "3",
+              "d": "20"
+            }
+          }
+        }
+      },
+      "children": {}
+    },
+    "pulse_pan": {
+      "kind": "node",
+      "fields": {
+        "type": {
+          "t": "string",
+          "v": "core.pan/1"
+        },
+        "params": {
+          "t": "record",
+          "fields": {
+            "pan": {
+              "t": "number",
+              "n": "3",
+              "d": "10"
+            }
+          }
+        }
+      },
+      "children": {}
+    },
+    "master": {
+      "kind": "node",
+      "fields": {
+        "type": {
+          "t": "string",
+          "v": "core.sum/1"
+        },
+        "config": {
+          "t": "record",
+          "fields": {
+            "channels": {
+              "t": "number",
+              "n": "2",
+              "d": "1"
+            }
+          }
+        }
+      },
+      "children": {}
+    },
+    "opening": {
+      "kind": "curve",
+      "fields": {
+        "clock": {
+          "t": "symbol",
+          "v": "score"
+        },
+        "points": {
+          "t": "list",
+          "items": [
+            {
+              "t": "tuple",
+              "items": [
+                {
+                  "t": "quantity",
+                  "n": "0",
+                  "d": "1",
+                  "u": "q"
+                },
+                {
+                  "t": "quantity",
+                  "n": "500",
+                  "d": "1",
+                  "u": "Hz"
+                },
+                {
+                  "t": "symbol",
+                  "v": "exponential"
+                }
+              ]
+            },
+            {
+              "t": "tuple",
+              "items": [
+                {
+                  "t": "quantity",
+                  "n": "32",
+                  "d": "1",
+                  "u": "q"
+                },
+                {
+                  "t": "quantity",
+                  "n": "2000",
+                  "d": "1",
+                  "u": "Hz"
+                },
+                {
+                  "t": "symbol",
+                  "v": "step"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "children": {}
+    },
+    "bass_open": {
+      "kind": "automation",
+      "fields": {
+        "target": {
+          "t": "ref",
+          "path": [
+            "bass_filter",
+            "params",
+            "cutoff"
+          ],
+          "port": null
+        },
+        "curve": {
+          "t": "ref",
+          "path": [
+            "opening"
+          ],
+          "port": null
+        },
+        "at": {
+          "t": "quantity",
+          "n": "0",
+          "d": "1",
+          "u": "q"
+        }
+      },
+      "children": {}
+    },
+    "bass_to_filter": {
+      "kind": "connect",
+      "fields": {
+        "from": {
+          "t": "ref",
+          "path": [
+            "bass_synth"
+          ],
+          "port": "out"
+        },
+        "to": {
+          "t": "ref",
+          "path": [
+            "bass_filter"
+          ],
+          "port": "in"
+        }
+      },
+      "children": {}
+    },
+    "filter_to_pan": {
+      "kind": "connect",
+      "fields": {
+        "from": {
+          "t": "ref",
+          "path": [
+            "bass_filter"
+          ],
+          "port": "out"
+        },
+        "to": {
+          "t": "ref",
+          "path": [
+            "bass_pan"
+          ],
+          "port": "in"
+        }
+      },
+      "children": {}
+    },
+    "bass_to_master": {
+      "kind": "connect",
+      "fields": {
+        "from": {
+          "t": "ref",
+          "path": [
+            "bass_pan"
+          ],
+          "port": "out"
+        },
+        "to": {
+          "t": "ref",
+          "path": [
+            "master"
+          ],
+          "port": "in"
+        }
+      },
+      "children": {}
+    },
+    "upper_to_pan": {
+      "kind": "connect",
+      "fields": {
+        "from": {
+          "t": "ref",
+          "path": [
+            "upper_synth"
+          ],
+          "port": "out"
+        },
+        "to": {
+          "t": "ref",
+          "path": [
+            "upper_pan"
+          ],
+          "port": "in"
+        }
+      },
+      "children": {}
+    },
+    "upper_to_master": {
+      "kind": "connect",
+      "fields": {
+        "from": {
+          "t": "ref",
+          "path": [
+            "upper_pan"
+          ],
+          "port": "out"
+        },
+        "to": {
+          "t": "ref",
+          "path": [
+            "master"
+          ],
+          "port": "in"
+        }
+      },
+      "children": {}
+    },
+    "pulse_to_pan": {
+      "kind": "connect",
+      "fields": {
+        "from": {
+          "t": "ref",
+          "path": [
+            "pulse_synth"
+          ],
+          "port": "out"
+        },
+        "to": {
+          "t": "ref",
+          "path": [
+            "pulse_pan"
+          ],
+          "port": "in"
+        }
+      },
+      "children": {}
+    },
+    "pulse_to_master": {
+      "kind": "connect",
+      "fields": {
+        "from": {
+          "t": "ref",
+          "path": [
+            "pulse_pan"
+          ],
+          "port": "out"
+        },
+        "to": {
+          "t": "ref",
+          "path": [
+            "master"
+          ],
+          "port": "in"
+        }
+      },
+      "children": {}
+    },
+    "second_half": {
+      "kind": "region",
+      "fields": {
+        "span": {
+          "t": "list",
+          "items": [
+            {
+              "t": "quantity",
+              "n": "16",
+              "d": "1",
+              "u": "q"
+            },
+            {
+              "t": "quantity",
+              "n": "32",
+              "d": "1",
+              "u": "q"
+            }
+          ]
+        },
+        "label": {
+          "t": "string",
+          "v": "Second half"
+        }
+      },
+      "children": {}
+    }
+  }
+}
