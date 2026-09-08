@@ -1,6 +1,6 @@
 # MaaC CLI and library reference
 
-This reference covers the MaaC CLI and Rust library for the ScoreIR source
+This reference covers the MaaC CLI and Rust library for the MaaC source
 language.
 
 ## Commands

@@ -2,9 +2,9 @@
 
 This document separates local MaaC source-only preparation from decisions that
 remain before release publication. MaaC is the project and `maac` is the CLI;
-ScoreIR/1 remains the source-language name, `.maac` is the MaaC file extension,
-and `maac 1;` is the canonical document header; legacy `scoreir 1;` is
-rejected. The public [tksuns12/maac repository](https://github.com/tksuns12/maac)
+MaaC/1 is the source language, `.maac` is its file extension, and `maac 1;` is
+the canonical document header. Noncanonical language headers are rejected. The
+public [tksuns12/maac repository](https://github.com/tksuns12/maac)
 has been created, the local `origin` is configured to its HTTPS URL, and private
 vulnerability reporting is enabled. A parentless initial publication snapshot
 is being prepared locally with GitHub no-reply metadata; no commit has been
@@ -64,7 +64,7 @@ or additional dependency set.
 
 ## Remaining release risk
 
-The normative ScoreIR specification remains a design draft, the MaaC Rust
+The normative MaaC specification remains a design draft, the MaaC Rust
 implementation is an explicitly narrower foundation subset, and the listening
 review is pending. The automated evidence is tied to the documented macOS
 stable-Rust environment and tested executable. It does not establish

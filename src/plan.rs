@@ -99,7 +99,7 @@ impl PlanLimits {
 
     /// Apply the foundation ceiling to a caller-supplied profile.  Hosts may
     /// tighten a limit for a smaller sandbox, but cannot use a larger profile
-    /// to bypass the published safety bounds of ScoreIR/1.
+    /// to bypass the published safety bounds of MaaC/1.
     fn bounded(self) -> Self {
         Self {
             max_json_bytes: self.max_json_bytes.min(Self::MAX_JSON_BYTES),
@@ -2012,7 +2012,7 @@ fn validate_identifier_limit(
         return Err(err(
             "E_RANGE",
             path,
-            "identifier is not a bounded ASCII ScoreIR ID",
+            "identifier is not a bounded ASCII MaaC ID",
         ));
     }
     Ok(())

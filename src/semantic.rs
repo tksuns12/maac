@@ -1,4 +1,4 @@
-//! Source-graph validation for the ScoreIR/1 foundation profile.
+//! Source-graph validation for the MaaC/1 foundation profile.
 //!
 //! This module intentionally stops at the source graph boundary.  It checks
 //! every declaration, including declarations that are not reachable from the
@@ -270,7 +270,7 @@ impl<'a> Validator<'a> {
         if self.document.version != 1 {
             self.push(
                 DiagnosticCode::Version,
-                format!("unsupported ScoreIR version {}", self.document.version),
+                format!("unsupported MaaC version {}", self.document.version),
                 None,
                 Vec::new(),
                 Vec::new(),
@@ -335,7 +335,7 @@ impl<'a> Validator<'a> {
 
         // Resolve the project clock and processor descriptors before validating
         // objects that refer to them.  Declaration order is explicitly
-        // irrelevant in ScoreIR.
+        // irrelevant in MaaC.
         let objects: Vec<Object> = self
             .document
             .objects()

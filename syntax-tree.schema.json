@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "ScoreIR/1 typed syntax tree (not full semantic validation)",
+  "title": "MaaC/1 typed syntax tree (not full semantic validation)",
   "type": "object",
   "properties": {
     "version": {

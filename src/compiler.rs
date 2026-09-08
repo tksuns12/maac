@@ -1,4 +1,4 @@
-//! ScoreIR source-to-performance-plan resolution.
+//! MaaC source-to-performance-plan resolution.
 //!
 //! The compiler is deliberately a finite resolver.  It does not render audio,
 //! execute modules, or infer a transport.  Its output is the standalone
@@ -480,7 +480,7 @@ impl<'a> Compiler<'a> {
         if self.document.version != 1 {
             return Err(diagnostics(
                 DiagnosticCode::Version,
-                format!("unsupported ScoreIR version {}", self.document.version),
+                format!("unsupported MaaC version {}", self.document.version),
                 None,
             ));
         }
@@ -526,7 +526,7 @@ impl<'a> Compiler<'a> {
                 other => {
                     return Err(path_diagnostic(
                         DiagnosticCode::UnknownKind,
-                        format!("unknown ScoreIR object kind `{other}`"),
+                        format!("unknown MaaC object kind `{other}`"),
                         object,
                         None,
                     ));
@@ -2693,7 +2693,7 @@ fn value_span(value: &Rational, field: Option<&Field>) -> Span {
     })
 }
 
-/// Compile a parsed ScoreIR document into a validated standalone performance plan.
+/// Compile a parsed MaaC document into a validated standalone performance plan.
 pub fn compile(document: &Document) -> Result<Plan, Diagnostics> {
     Compiler::new(document).run()
 }

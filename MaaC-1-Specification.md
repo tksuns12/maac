@@ -1,7 +1,7 @@
-# ScoreIR/1
+# MaaC/1
 ## Declarative music and production language — proposed specification, draft 1.0
 
-**Status:** Original design proposal, 7 September 2026. This is not an existing standard, shipping product, or claim of compatibility with an existing renderer. The name is a working name. Normative language defines the proposed behavior; it does not imply that a complete implementation accompanies this document.
+**Status:** Original design proposal, 7 September 2026. This is not an existing standard, shipping product, or claim of compatibility with an existing renderer. MaaC is a working name. Normative language defines the proposed behavior; it does not imply that a complete implementation accompanies this document.
 
 **Purpose:** Describe a finite musical performance and its production state as inspectable, typed, addressable source. A human, visual editor, or language model may author the same document. No model is required to interpret or execute it.
 
@@ -11,11 +11,11 @@
 
 ## 1. Scope and terminology
 
-ScoreIR represents notes, timed triggers, expression, reusable patterns, arrangement, recorded audio, automation, modulation, instruments, processing, and routing. It does not require a piece to be electronic, tonal, repetitive, or in twelve-tone equal temperament.
+MaaC represents notes, timed triggers, expression, reusable patterns, arrangement, recorded audio, automation, modulation, instruments, processing, and routing. It does not require a piece to be electronic, tonal, repetitive, or in twelve-tone equal temperament.
 
 `MUST` is a conformance requirement; `SHOULD` allows a documented exception; `MAY` is optional. The statements in sections 2–26 are normative unless marked otherwise. Examples are illustrative unless designated as conformance vectors.
 
-The language is declarative data with finite composition operations. It has no arbitrary JavaScript, network access, unbounded loops, implicit humanization, natural-language effects, or model calls. An external program may generate a document; its generated document, not that program's intention, is what ScoreIR executes.
+The language is declarative data with finite composition operations. It has no arbitrary JavaScript, network access, unbounded loops, implicit humanization, natural-language effects, or model calls. An external program may generate a document; its generated document, not that program's intention, is what MaaC executes.
 
 There are three distinct representations:
 
@@ -27,7 +27,7 @@ A source-preserving editor also maintains a concrete syntax tree for comments an
 
 ### 1.1 Deliberate exclusions
 
-The core does not standardize engraving, lyric typography, interactive clip-launching decisions, arbitrary synthesis algorithms, or every manufacturer's plug-in parameters. Recorded performances and any decisions made during live use must be captured into finite events or audio to become a closed ScoreIR performance.
+The core does not standardize engraving, lyric typography, interactive clip-launching decisions, arbitrary synthesis algorithms, or every manufacturer's plug-in parameters. Recorded performances and any decisions made during live use must be captured into finite events or audio to become a closed MaaC performance.
 
 These exclusions do not mean that a project cannot use complex synthesis, time stretching, or a plug-in. Those are represented through the typed processor interface in section 17, with explicitly identified dependencies. The core defines several fully specified reference processors in section 18.
 
@@ -509,7 +509,7 @@ Track gain, inserts, sends, sidechains, parallel compression, and buses are all 
 
 ### 15.1 Latency is explicit
 
-Every processor descriptor reports its fixed technical latency in frames. A latency change invalidates a locked manifest. ScoreIR/1 does not add hidden delay compensation. An authoring operation may calculate alignment delays and insert named delay nodes; those become source state. Algorithmic delays intended as sound and alignment delays both remain inspectable, even if UI labels distinguish them.
+Every processor descriptor reports its fixed technical latency in frames. A latency change invalidates a locked manifest. MaaC/1 does not add hidden delay compensation. An authoring operation may calculate alignment delays and insert named delay nodes; those become source state. Algorithmic delays intended as sound and alignment delays both remain inspectable, even if UI labels distinguish them.
 
 A graph validator should warn when parallel paths with different declared technical latencies recombine, but must not infer that every delay is a mistake. Exact transport alignment is a graph property, not an undocumented DAW preference.
 
@@ -617,7 +617,7 @@ No config or inputs. Parameter `value`, any finite dimensionless value, default 
 
 Config: required positive integer `channels`; optional unsigned 64-bit `seed`, default project seed. No inputs or parameters. Audio out emits independent counter-derived reference noise. For zero-based engine frame n and channel c, hash the concatenation of:
 
-- ASCII bytes `scoreir-noise-1` followed by one NUL byte;
+- ASCII bytes `maac-noise-1` followed by one NUL byte;
 - seed as unsigned 64-bit little-endian;
 - the node's full ASCII ID path followed by one NUL byte;
 - n as unsigned 64-bit little-endian;
@@ -731,7 +731,7 @@ A package may contain:
 
 ```text
 song.maac
-scoreir.lock.json
+maac.lock.json
 assets/<content-addressed files>
 modules/<content-addressed permitted modules>
 ui.json
@@ -857,11 +857,11 @@ Required cases for a full implementation include:
 
 This proposal should not be read as a claim that Strudel cannot arrange a whole piece. Its official pattern constructors include concatenation, layering, arrangement, and polymeter. The distinction here is the priority given to a persistent typed project graph, stable occurrence addresses, closed execution dependencies, and transactional editing. [R1]
 
-Tidal's rational-time representation is a useful precedent for exact musical subdivisions. ScoreIR adopts exact rational score time, but separates it explicitly from physical time and output frames and limits its core pattern structures to finite declared composition. [R2]
+Tidal's rational-time representation is a useful precedent for exact musical subdivisions. MaaC adopts exact rational score time, but separates it explicitly from physical time and output frames and limits its core pattern structures to finite declared composition. [R2]
 
-DAWproject is an important existing reference for the breadth of session information: notes, expressions, audio, automation, plug-in state, and surrounding project structure. ScoreIR is not claiming to invent the need for a production-state interchange model. Its proposed differences are a source-oriented language, strict execution contracts, and an editing/identity protocol. [R3]
+DAWproject is an important existing reference for the breadth of session information: notes, expressions, audio, automation, plug-in state, and surrounding project structure. MaaC is not claiming to invent the need for a production-state interchange model. Its proposed differences are a source-oriented language, strict execution contracts, and an editing/identity protocol. [R3]
 
-CLAP provides relevant precedents for sample-addressed events, note expression, stable parameter identities, and distinct parameter and non-parameter state. Those precedents inform the separation between native performance events, parameter automation, processor descriptors, and opaque state. A ScoreIR CLAP adapter would still need a complete implementation and fidelity tests. [R4–R6]
+CLAP provides relevant precedents for sample-addressed events, note expression, stable parameter identities, and distinct parameter and non-parameter state. Those precedents inform the separation between native performance events, parameter automation, processor descriptors, and opaque state. A MaaC CLAP adapter would still need a complete implementation and fidelity tests. [R4–R6]
 
 MusicXML is a notation interchange reference. A notation representation and a fully resolved performance are related but different layers; the proposal does not assume one can be reconstructed uniquely from the other. [R7]
 
@@ -869,7 +869,7 @@ The central trade-off is intentional: a small closed declarative core sacrifices
 
 ## 30. Reference sources — informative
 
-All references were inspected on 7 September 2026. They describe existing systems, not endorsements of or conformance with ScoreIR.
+All references were inspected on 7 September 2026. They describe existing systems, not endorsements of or conformance with MaaC.
 
 - **R1.** Strudel, “Creating Patterns,” including arrange, stack, and polymeter. `https://strudel.cc/learn/factories/`
 - **R2.** Tidal Cycles, “What is a pattern?”, rational time and time-to-events queries. `https://tidalcycles.org/docs/innards/what_is_a_pattern/`

@@ -264,7 +264,7 @@ where
 }
 
 /// Quantize a validated PCM16 sample without clipping or dithering.  The
-/// representable ScoreIR range maps `-1` to `-32767` and `+1` to `+32767`;
+/// representable MaaC range maps `-1` to `-32767` and `+1` to `+32767`;
 /// this symmetric policy leaves the extra two's-complement code unused.
 fn quantize_pcm16(sample: f64) -> i16 {
     (sample * 32_767.0).round() as i16

@@ -1,4 +1,4 @@
-(* ScoreIR/1 surface grammar; semantic restrictions are normative in the spec. *)
+(* MaaC/1 surface grammar; semantic restrictions are normative in the spec. *)
 document   = "maac", integer, ";", { object } ;
 object     = identifier, identifier, "{", { field | object }, "}" ;
 field      = identifier, "=", value, ";" ;

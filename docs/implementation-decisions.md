@@ -1,6 +1,6 @@
 # Implementation decisions and specification questions
 
-The ScoreIR specification remains the normative language document. These notes
+The MaaC specification remains the normative language document. These notes
 identify places where implementation needs an explicit interpretation or a
 future specification clarification. They are not a claim of complete language
 conformance.

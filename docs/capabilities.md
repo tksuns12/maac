@@ -1,6 +1,6 @@
 # Foundation capability set
 
-The foundation implements a bounded subset of ScoreIR/1. It does **not** claim
+The foundation implements a bounded subset of MaaC/1. It does **not** claim
 full Document, Performance, Core Audio, or Locked Render conformance. The language
 specification remains authoritative; this page describes the implementation scope.
 

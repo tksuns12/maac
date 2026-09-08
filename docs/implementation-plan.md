@@ -1,14 +1,14 @@
 # MaaC playable foundation implementation plan
 
 This plan records the technical decisions and acceptance boundary for the MaaC
-playable foundation. The [ScoreIR-1 specification](../ScoreIR-1-Specification.md)
+playable foundation. The [MaaC-1 specification](../MaaC-1-Specification.md)
 remains the normative language document. The foundation is an intentionally
 bounded implementation subset, not a full conformance profile.
 
 ## Product boundary
 
 The foundation provides a Rust library and MaaC's `maac` CLI that parse and
-check ScoreIR source, compile it to an independently loadable performance plan,
+check MaaC source, compile it to an independently loadable performance plan,
 and render that plan to WAV. Compilation and rendering are offline operations.
 The CLI owns filesystem access and atomic destination publication; parser,
 semantic, compiler, plan, DSP, and export library boundaries stay explicit.
@@ -32,7 +32,7 @@ semantic, compiler, plan, DSP, and export library boundaries stay explicit.
 ### Plan interchange
 
 - The derived performance plan has its own version and is independent of the
-  ScoreIR source-language version.
+  MaaC source-language version.
 - Plan import validates the complete artifact again, including versions,
   references, identities, numeric ranges, resource bounds, graph structure,
   and timing/frame consistency. An imported plan is treated as untrusted input.

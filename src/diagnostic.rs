@@ -50,7 +50,7 @@ impl Serialize for Span {
     }
 }
 
-/// Stable diagnostic identifiers from section 23 of the ScoreIR/1
+/// Stable diagnostic identifiers from section 23 of the MaaC/1
 /// specification, plus parser-specific resource/syntax details.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum DiagnosticCode {

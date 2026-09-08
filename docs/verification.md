@@ -1,14 +1,49 @@
 # MaaC release verification evidence
 
-This report records fresh automated evidence for the MaaC (`maac`) source-only
-release preparation. ScoreIR/1 remains the source-language name; MaaC source
-files use `.maac` and require the canonical `maac 1;` document header. The
-legacy `scoreir 1;` header is rejected.
+This report records automated evidence for the MaaC (`maac`) source-only release
+preparation. MaaC/1 is the source language; MaaC source files use `.maac` and
+require the canonical `maac 1;` document header. The parser rejects
+noncanonical language headers.
 The separate
 [release-readiness review](release-readiness.md) records publication decisions,
 audit limits, and remaining release work.
 
-## Validation identity and scope
+## Current naming cleanup
+
+The current tree uses MaaC consistently in the specification, grammar, schema,
+and documentation. The normative [MaaC-1 specification](../MaaC-1-Specification.md)
+defines the language; its deterministic noise namespace is `maac-noise-1`, and
+its package lock example is `maac.lock.json`.
+
+The documentation and metadata scan passed: no case-insensitive deprecated
+product-name text or filename remains in those paths.
+
+A pinned Python 3.12.14 environment ran `check_spec.py` from a disposable copy.
+The current run reported `surface_parse: pass`, `syntax_tree_schema: pass`, 48
+expanded example notes, and 22 arithmetic assertions. All three generated files
+matched the current tracked files byte-for-byte:
+
+| File | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `check-results.json` | 228 | `f58aa82db335ac4a16023b7ef2b2610751cf54452158c67e862627f969da3e54` |
+| `conformance.json` | 3,621 | `94dc043060464dd6e4dbb1796009252bd343a06a4c9f5b5d096ea6c1cbeeddd4` |
+| `example.syntax.json` | 21,600 | `358e59e4a9352e4d25b1e1e99b6a3fc799a861e322d5510e8833104fad455ca8` |
+
+The current implementation checks also passed:
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Formatting | `cargo fmt --all -- --check` | Passed |
+| Clippy | `cargo clippy --all-targets --locked --offline -- -D warnings` | Passed |
+| Tests and doctests | `cargo test --locked --offline` | 102 unit/integration tests passed; 0 failed; 0 doctests |
+| Release build | `cargo build --release --locked --offline` | Passed |
+| Installed CLI acceptance | `python3 scripts/acceptance.py` | 38 of 38 checks passed |
+
+The sections below are historical evidence from an earlier validation snapshot.
+Their commit, manifest, test, artifact, and generated-fixture hashes remain
+exactly as observed and do not assert results for the current tree.
+
+## Historical validation identity and scope
 
 The final disposable snapshot used the working tree based on commit
 `870e311f37e69ca80525b5ba97fe707036063aef`.
@@ -39,7 +74,7 @@ The macOS runner observed macOS 26.6.2 (build 25G83), stable
 runner used Python 3.14.4 and only the Python standard library. The pinned
 smoke checker used Python 3.12.14 with the versions in `requirements-dev.txt`.
 
-## Renamed Rust gate
+## Historical Rust gate
 
 The release-validation agent ran these commands after the package, library,
 binary, and test references were renamed to MaaC:
@@ -54,11 +89,11 @@ binary, and test references were renamed to MaaC:
 The 101 tests comprise 16 library, 13 adversarial-plan, 3 CLI, 11 compiler,
 14 DSP, 6 export, 10 foundation, 10 music, 11 plan-validation, and 7
 semantic tests. The library tests include canonical `maac 1;` acceptance and
-intentional `scoreir 1;` rejection. The final snapshot's README build supplied release-build
+intentional rejection of a noncanonical language header. The final snapshot's README build supplied release-build
 evidence after the extension rename; no second standalone release build was
 run.
 
-## Installed MaaC CLI acceptance
+## Historical installed MaaC CLI acceptance
 
 The renamed `python3 scripts/acceptance.py` performed an offline installation
 and ran `target/install/bin/maac`. All 38 of 38 checks passed, covering both
@@ -96,7 +131,7 @@ example.pcm16.wav         f8e3d0017bd54c68af7c09af62fcaf8cb79869d31269b5364b9986
 evening-window.pcm16.wav  58d0d6cb70100aa1bfb06cd1738ef4fd7550028426a028efe1978b83f71637c8
 ```
 
-## Pinned Python smoke checker
+## Historical pinned Python smoke checker
 
 The pinned Python 3.12.14 environment passed `pip check` and contained
 `lark 1.2.2`, `jsonschema 4.25.1`, `attrs 25.4.0`,
@@ -115,7 +150,7 @@ generated fixture matched its snapshot copy byte-for-byte:
 The checker covers syntax plus selected semantics only. It is not a complete
 semantic validator, renderer, or proof of specification conformance.
 
-## README quick-start snapshot
+## Historical README quick-start snapshot
 
 From a clean final source snapshot, the README build and install commands were
 run with a snapshot-local Cargo install root. The install directory was

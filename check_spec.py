@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ScoreIR draft smoke checks, NOT a complete validator or audio renderer.
+"""MaaC draft smoke checks, NOT a complete validator or audio renderer.
 
 Requires Python 3.10+, lark, and jsonschema. Run: python check_spec.py
 Checks surface syntax, typed syntax-tree shape, example pattern expansion,
@@ -248,7 +248,7 @@ def expand_places(doc: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def noise(seed: int, node: str, frame: int, channel: int) -> float:
-    b = (b"scoreir-noise-1\x00" + struct.pack("<Q", seed) + node.encode("ascii") + b"\x00"
+    b = (b"maac-noise-1\x00" + struct.pack("<Q", seed) + node.encode("ascii") + b"\x00"
          + struct.pack("<QI", frame, channel))
     r = int.from_bytes(hashlib.sha256(b).digest()[:8], "little") >> 11
     return 2 * (r / 2**53) - 1

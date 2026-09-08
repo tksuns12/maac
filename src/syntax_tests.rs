@@ -9,9 +9,18 @@ fn accepts_canonical_maac_header() {
 }
 
 #[test]
-fn rejects_legacy_scoreir_header() {
-    let diagnostics = parse("scoreir 1; project p {}").expect_err("scoreir 1 is not an alias");
+fn rejects_invalid_header() {
+    let diagnostics = parse("bogus 1; project p {}").expect_err("unknown header must be rejected");
     assert!(diagnostics.iter().any(|d| d.code == DiagnosticCode::Syntax));
+}
+
+#[test]
+fn reports_unsupported_version_as_a_maac_diagnostic() {
+    let diagnostics = parse("maac 2; project p {}").expect_err("version 2 must be rejected");
+    assert!(diagnostics.iter().any(|d| {
+        d.code == DiagnosticCode::Version
+            && d.message == "only MaaC language version 1 is supported"
+    }));
 }
 
 #[test]

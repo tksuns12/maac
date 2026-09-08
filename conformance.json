@@ -141,17 +141,17 @@
     },
     {
       "id": "noise_seed1_noise_a_frame0_channel0",
-      "value": 0.8669290154720881,
+      "value": -0.8011399582656771,
       "note": "Reference value generated from the published hash formula, not an independent DSP test."
     },
     {
       "id": "noise_seed1_noise_a_frame1_channel0",
-      "value": -0.0443298910000367,
+      "value": -0.4734004880112048,
       "note": "Reference value generated from the published hash formula, not an independent DSP test."
     },
     {
       "id": "noise_seed1_noise_a_frame2_channel0",
-      "value": 0.5693783729759345,
+      "value": 0.16138730442456173,
       "note": "Reference value generated from the published hash formula, not an independent DSP test."
     }
   ],

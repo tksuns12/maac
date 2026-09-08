@@ -28,8 +28,10 @@ actually published; no release tag or publication date is asserted here.
 ### Changed
 
 - Project branding, the Rust crate, the installed command, source-file extension,
-  and document header use MaaC naming (`maac` / `.maac` / `maac 1;`). The
-  ScoreIR language name remains unchanged.
+  and document header use MaaC naming (`maac` / `.maac` / `maac 1;`).
+- The draft `core.noise/1` hash prefix is now `maac-noise-1`, changing its
+  deterministic reference values. The renderer foundation does not implement
+  this processor.
 
 ### Limitations
 
@@ -37,7 +39,7 @@ actually published; no release tag or publication date is asserted here.
   Document, Performance, Core Audio, or Locked Render conformance.
 - Tempo ramps, per-note expression, hits/messages, modulation, additional
   processors, sample assets, arranged audio, external plug-ins, extensions,
-  transactional editing, ScoreIR Locked Render dependency-lock manifests
+  transactional editing, MaaC Locked Render dependency-lock manifests
   (distinct from `Cargo.lock`), MIDI transport, GUI, and real-time playback
   remain deferred or outside the current interfaces. Recognized deferred
   features fail explicitly with `E_CAPABILITY`.

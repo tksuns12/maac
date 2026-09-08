@@ -1,4 +1,4 @@
-//! Sample based execution for the four ScoreIR/1 foundation processors.
+//! Sample based execution for the four MaaC/1 foundation processors.
 //!
 //! The plan is the execution boundary.  [`DspEngine::new`] validates it before
 //! allocating render state, and [`DspEngine::render`] resets that state before
@@ -173,7 +173,7 @@ impl<'a> DspEngine<'a> {
             })
             .collect::<Result<Vec<_>>>()?;
 
-        // The graph's reduction order is part of the ScoreIR contract.  A
+        // The graph's reduction order is part of the MaaC contract.  A
         // destination's list is sorted independently from declaration order.
         connections.sort_by(|left, right| left.id.as_bytes().cmp(right.id.as_bytes()));
         let mut incoming = vec![Vec::new(); nodes.len()];

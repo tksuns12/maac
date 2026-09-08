@@ -1,4 +1,4 @@
-//! ScoreIR/1 surface syntax: a span-preserving lexer and recursive-descent
+//! MaaC/1 surface syntax: a span-preserving lexer and recursive-descent
 //! parser. Semantic object/field typing deliberately lives in the validator
 //! layer; this module accepts the complete context-free grammar and produces a
 //! typed, tagged syntax tree.
@@ -707,7 +707,7 @@ impl<'a> Parser<'a> {
         if version != 1 {
             self.push_error(
                 DiagnosticCode::Version,
-                "only ScoreIR language version 1 is supported",
+                "only MaaC language version 1 is supported",
                 Some(version_token.span),
             );
         }
@@ -1228,9 +1228,9 @@ pub enum ParseFileError {
 impl fmt::Display for ParseFileError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Io(error) => write!(f, "cannot read ScoreIR source: {error}"),
+            Self::Io(error) => write!(f, "cannot read MaaC source: {error}"),
             Self::InvalidUtf8 { offset } => {
-                write!(f, "ScoreIR source is not UTF-8 at byte {offset}")
+                write!(f, "MaaC source is not UTF-8 at byte {offset}")
             }
             Self::Diagnostics(diagnostics) => diagnostics.fmt(f),
         }

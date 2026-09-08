@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the offline installed MaaC CLI acceptance checks for ScoreIR.
+"""Run the offline installed MaaC CLI acceptance checks.
 
 This runner intentionally uses only the Python standard library.  It keeps
 all generated files under ``target/acceptance`` and writes command output to

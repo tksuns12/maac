@@ -43,5 +43,5 @@ maac check example.maac --json
 
 Read the [authoring tutorial](tutorial.md), [capability matrix](capabilities.md),
 and [diagnostics guide](diagnostics.md) before using features beyond these examples.
-The [full specification](../ScoreIR-1-Specification.md) defines the language;
+The [full specification](../MaaC-1-Specification.md) defines the language;
 foundation support is explicitly narrower than its conformance profiles.

@@ -3,16 +3,16 @@
 <img src="output/imagegen/maac-logo.png" alt="MaaC logo: a musical note between angle brackets followed by the MaaC wordmark" width="480">
 
 MaaC (Music as a Code) is a Rust library and command-line tool that implements
-ScoreIR/1 for checking source, compiling an inspectable performance plan, and
+MaaC/1 for checking source, compiling an inspectable performance plan, and
 rendering that plan to WAV. The playable foundation targets offline 48 kHz mono
 or stereo rendering with the bounded [capability set](docs/capabilities.md).
 
-ScoreIR remains the source-language name; MaaC source files use the `.maac`
-extension and begin with the canonical `maac 1;` header. The current tree is an
+The MaaC/1 language uses the `.maac` extension, and source files begin with the
+canonical `maac 1;` header. The current tree is an
 experimental v0.1.0 MaaC source-only release prepared for
 GitHub. Build the executable locally; this repository does not promise binary,
-WAV, or other generated release artifacts. The ScoreIR language specification
-is a design draft, and the Rust implementation deliberately covers a smaller,
+WAV, or other generated release artifacts. The MaaC language specification is a
+design draft, and the Rust implementation deliberately covers a smaller,
 documented subset.
 
 ## Quick start
@@ -57,7 +57,7 @@ technical boundary. The [verification report](docs/verification.md) separates
 automated evidence from the pending listening review. The [changelog](CHANGELOG.md)
 records the experimental release scope.
 
-The full [ScoreIR-1 specification](ScoreIR-1-Specification.md),
+The full [MaaC-1 specification](MaaC-1-Specification.md),
 [surface grammar](grammar.ebnf), executable [Lark grammar](grammar.lark),
 [syntax-tree schema](syntax-tree.schema.json), and the asset-free
 [example](example.maac) are included in the source tree. The companion
@@ -102,7 +102,7 @@ and keeps generated files under `target/acceptance`.
 ## License
 
 Unless a file states otherwise, the original material in this repository—Rust
-source, the ScoreIR specification, grammars, schemas, examples, tests, and
+source, the MaaC specification, grammars, schemas, examples, tests, and
 documentation—is copyright 2026 tksuns12 and licensed under the
 [Apache License, Version 2.0](LICENSE). The [NOTICE](NOTICE) file records that
 scope and the treatment of dependencies.

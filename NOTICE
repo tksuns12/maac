@@ -2,7 +2,7 @@ MaaC (Music as a Code)
 Copyright 2026 tksuns12
 
 This notice covers the original material in this repository, including the
-Rust source, the ScoreIR specification, grammar, schemas, examples, tests, and
+Rust source, the MaaC specification, grammar, schemas, examples, tests, and
 documentation, unless a file states otherwise. The original material is
 licensed under the Apache License, Version 2.0; see LICENSE.
 

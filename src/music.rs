@@ -1,6 +1,6 @@
 //! Exact musical coordinate helpers.
 //!
-//! This module contains the small, deterministic part of ScoreIR's musical
+//! This module contains the small, deterministic part of MaaC's musical
 //! model that is useful to both the semantic compiler and the renderer:
 //! tempo/meter coordinates and pitch/tuning resolution.  Source parsing and
 //! diagnostics are deliberately kept outside of this module.  In particular,
@@ -17,7 +17,7 @@ use num_traits::{One, Signed, ToPrimitive, Zero};
 
 /// Maximum numerator/denominator bit length accepted by the musical helpers.
 ///
-/// ScoreIR implementations must publish a hard rational resource limit.  A
+/// MaaC implementations must publish a hard rational resource limit.  A
 /// caller that needs a different limit can apply the same checks before
 /// constructing these values; the foundation implementation uses 4096 bits.
 pub const MAX_RATIONAL_BITS: u64 = 4096;
@@ -49,14 +49,14 @@ pub enum MusicErrorCode {
 }
 
 impl MusicErrorCode {
-    /// Return the wire-level ScoreIR code.
+    /// Return the wire-level MaaC code.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Range => "E_RANGE",
             Self::Tempo => "E_TEMPO",
             Self::MeterBoundary => "E_METER_BOUNDARY",
             Self::Capability => "E_CAPABILITY",
-            // ScoreIR/1 has no separate pitch diagnostic; malformed or out of
+            // MaaC/1 has no separate pitch diagnostic; malformed or out of
             // range pitch values use the general declared-range code.
             Self::Pitch => "E_RANGE",
             Self::Nonfinite => "E_NONFINITE",
