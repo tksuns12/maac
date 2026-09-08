@@ -1,4 +1,4 @@
-//! Deterministic, offline resolution for hash-pinned MaaC source bundles.
+//! Deterministic offline resolution for pinned local and embedded MaaC libraries.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Diagnostics};
+use crate::stdlib::{self, BuiltinSource};
 use crate::syntax::{self, Document, Object};
 
 pub const MAX_BUNDLE_FILE_BYTES: usize = 4 * 1024 * 1024;
@@ -60,6 +61,70 @@ impl SourceBundle {
             )));
         }
 
+        // Embedded sources share the ordinary graph and resource accounting,
+        // but can only enter through a registry-backed import declaration.
+        let mut sources: BTreeMap<String, &str> = self
+            .sources
+            .iter()
+            .map(|(path, source)| (path.clone(), source.as_str()))
+            .collect();
+        let mut source_bytes: usize = sources.values().map(|source| source.len()).sum();
+        let mut pending = vec![entry.clone()];
+        let mut discovered = BTreeSet::new();
+        while let Some(path) = pending.pop() {
+            if !discovered.insert(path.clone()) {
+                continue;
+            }
+            let Some(document) = parsed.get(&path) else {
+                continue; // Graph validation supplies the missing-reference context.
+            };
+            for import in discover_document_references(&path, document)?.imports {
+                let target = import.target_path(&path)?;
+                if let ImportReference::Builtin { source, .. } = import {
+                    if !sources.contains_key(source.path) {
+                        if sources.len() >= MAX_BUNDLE_SOURCES {
+                            return Err(resource_error(format!(
+                                "bundle contains more than {MAX_BUNDLE_SOURCES} source files"
+                            )));
+                        }
+                        if source.source.len() > MAX_BUNDLE_FILE_BYTES {
+                            return Err(resource_error(format!(
+                                "source `{}` exceeds {MAX_BUNDLE_FILE_BYTES} bytes",
+                                source.path
+                            )));
+                        }
+                        source_bytes =
+                            source_bytes
+                                .checked_add(source.source.len())
+                                .ok_or_else(|| {
+                                    resource_error("aggregate source byte count overflowed")
+                                })?;
+                        if source_bytes > MAX_BUNDLE_SOURCE_BYTES {
+                            return Err(resource_error(format!(
+                                "bundle source bytes exceed {MAX_BUNDLE_SOURCE_BYTES}"
+                            )));
+                        }
+                        let document = syntax::parse(source.source).map_err(|diagnostics| {
+                            contextualize(diagnostics, &format!("source `{}`", source.path))
+                        })?;
+                        object_count = object_count
+                            .checked_add(count_document_objects(&document))
+                            .ok_or_else(|| {
+                                resource_error("aggregate syntax object count overflowed")
+                            })?;
+                        if object_count > MAX_SYNTAX_OBJECTS {
+                            return Err(resource_error(format!(
+                                "bundle contains more than {MAX_SYNTAX_OBJECTS} syntax objects"
+                            )));
+                        }
+                        sources.insert(source.path.to_owned(), source.source);
+                        parsed.insert(source.path.to_owned(), document);
+                    }
+                }
+                pending.push(target);
+            }
+        }
+
         // Validate graph shape before checking content pins. A hash-pinned
         // cycle cannot be constructed without finding a digest fixed point,
         // but it is still invalid input and must receive a cycle diagnostic
@@ -68,6 +133,7 @@ impl SourceBundle {
 
         let mut resolver = Resolver {
             bundle: self,
+            sources: &sources,
             parsed: &parsed,
             states: BTreeMap::new(),
             stack: Vec::new(),
@@ -102,9 +168,11 @@ impl SourceBundle {
         }
 
         normalize_bundle_key(&self.entry, "entry source path")?;
+        reject_reserved_path(&self.entry)?;
         let mut source_bytes = 0usize;
         for (path, source) in &self.sources {
             normalize_bundle_key(path, "source path")?;
+            reject_reserved_path(path)?;
             if source.len() > MAX_BUNDLE_FILE_BYTES {
                 return Err(resource_error(format!(
                     "source `{path}` exceeds {MAX_BUNDLE_FILE_BYTES} bytes"
@@ -123,6 +191,7 @@ impl SourceBundle {
         let mut asset_bytes = 0usize;
         for (path, bytes) in &self.assets {
             normalize_bundle_key(path, "asset path")?;
+            reject_reserved_path(path)?;
             if bytes.len() > MAX_BUNDLE_FILE_BYTES {
                 return Err(resource_error(format!(
                     "asset `{path}` exceeds {MAX_BUNDLE_FILE_BYTES} bytes"
@@ -175,12 +244,45 @@ pub(crate) struct PinnedReference {
 }
 
 pub(crate) struct DocumentReferences {
-    pub imports: Vec<PinnedReference>,
+    pub imports: Vec<ImportReference>,
     pub assets: Vec<PinnedReference>,
+}
+
+pub(crate) enum ImportReference {
+    Local(PinnedReference),
+    Builtin {
+        alias: String,
+        source: BuiltinSource,
+    },
+}
+
+impl ImportReference {
+    fn target_path(&self, declaring_source: &str) -> Result<String, Diagnostics> {
+        match self {
+            Self::Local(reference) => normalize_file_reference(declaring_source, &reference.path),
+            Self::Builtin { source, .. } => Ok(source.path.to_owned()),
+        }
+    }
+
+    fn pin(self, declaring_source: &str) -> Result<PinnedReference, Diagnostics> {
+        let path = self.target_path(declaring_source)?;
+        match self {
+            Self::Local(reference) => {
+                validate_hash_pin(&reference.hash, "import hash")?;
+                Ok(PinnedReference { path, ..reference })
+            }
+            Self::Builtin { alias, source } => Ok(PinnedReference {
+                alias,
+                path,
+                hash: sha256_digest(source.source.as_bytes()),
+            }),
+        }
+    }
 }
 
 struct Resolver<'a> {
     bundle: &'a SourceBundle,
+    sources: &'a BTreeMap<String, &'a str>,
     parsed: &'a BTreeMap<String, Document>,
     states: BTreeMap<String, VisitState>,
     stack: Vec<String>,
@@ -240,8 +342,8 @@ fn validate_import_graph(
         states.insert(path.to_owned(), VisitState::Visiting);
         stack.push(path.to_owned());
         for import in discover_document_references(path, document)?.imports {
-            validate_hash_pin(&import.hash, "import hash")?;
-            let target = normalize_file_reference(path, &import.path)?;
+            let import = import.pin(path)?;
+            let target = import.path;
             if !parsed.contains_key(&target) {
                 return Err(reference_error(format!(
                     "import `{}` in `{path}` refers to missing source `{target}`",
@@ -298,14 +400,14 @@ impl Resolver<'_> {
         self.documents.insert(path.to_owned(), document.clone());
         self.source_files.push(SourceIdentity {
             path: path.to_owned(),
-            hash: sha256_digest(self.bundle.sources[path].as_bytes()),
+            hash: sha256_digest(self.sources[path].as_bytes()),
         });
 
         let mut aliases = BTreeMap::new();
         for import in references.imports {
-            let target = normalize_file_reference(path, &import.path)?;
-            validate_hash_pin(&import.hash, "import hash")?;
-            let source = self.bundle.sources.get(&target).ok_or_else(|| {
+            let import = import.pin(path)?;
+            let target = import.path;
+            let source = self.sources.get(&target).ok_or_else(|| {
                 reference_error(format!(
                     "import `{}` in `{path}` refers to missing source `{target}`",
                     import.alias
@@ -376,16 +478,40 @@ pub(crate) fn discover_document_references(
 fn exact_import_reference(
     source_path: &str,
     object: &Object,
-) -> Result<PinnedReference, Diagnostics> {
+) -> Result<ImportReference, Diagnostics> {
     let fields: BTreeSet<&str> = object.fields.keys().map(String::as_str).collect();
     let expected = BTreeSet::from(["hash", "path"]);
-    if fields != expected || !object.children.is_empty() {
+    let builtin = BTreeSet::from(["builtin"]);
+    if (fields != expected && fields != builtin) || !object.children.is_empty() {
         return Err(reference_error(format!(
-            "import `{}` in `{source_path}` must contain exactly string fields `path` and `hash` and no children",
+            "import `{}` in `{source_path}` must contain exactly string fields `path` and `hash`, or only string field `builtin`, and no children",
             object.id
         )));
     }
-    pinned_fields(source_path, object, DiagnosticCode::Reference)
+    if fields == builtin {
+        let id = object
+            .field("builtin")
+            .and_then(|field| field.value.as_string())
+            .ok_or_else(|| {
+                reference_error(format!(
+                    "import `{}` in `{source_path}` requires a string `builtin` field",
+                    object.id
+                ))
+            })?;
+        validate_path_length(id, "built-in identifier")?;
+        let source = stdlib::lookup(id).ok_or_else(|| {
+            reference_error(format!(
+                "import `{}` in `{source_path}` refers to unknown built-in library `{id}`",
+                object.id
+            ))
+        })?;
+        Ok(ImportReference::Builtin {
+            alias: object.id.clone(),
+            source,
+        })
+    } else {
+        pinned_fields(source_path, object, DiagnosticCode::Reference).map(ImportReference::Local)
+    }
 }
 
 fn asset_reference(source_path: &str, object: &Object) -> Result<PinnedReference, Diagnostics> {
@@ -481,7 +607,19 @@ pub fn normalize_file_reference(
             "normalized file reference exceeds {MAX_BUNDLE_PATH_BYTES} bytes"
         )));
     }
-    Ok(components.join("/"))
+    let normalized = components.join("/");
+    reject_reserved_path(&normalized)?;
+    Ok(normalized)
+}
+
+fn reject_reserved_path(path: &str) -> Result<(), Diagnostics> {
+    if path == "@builtin" || path.starts_with("@builtin/") {
+        Err(reference_error(format!(
+            "path `{path}` uses the reserved `@builtin/` namespace"
+        )))
+    } else {
+        Ok(())
+    }
 }
 
 fn normalize_bundle_key(path: &str, label: &str) -> Result<String, Diagnostics> {

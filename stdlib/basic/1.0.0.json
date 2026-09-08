@@ -1,0 +1,538 @@
+[
+  {
+    "name": "kick",
+    "family": "drums",
+    "description": "Deep sine pitch drop with a brief filtered noise beater.",
+    "guidance": {
+      "pitch_low": "C2",
+      "pitch_high": "C2",
+      "midi_min": 36,
+      "midi_max": 36,
+      "pitch_behavior": "Fixed oscillator tuning independent of note pitch; noise has no pitch.",
+      "tested_pitches": [
+        "C-1",
+        "C2",
+        "C4",
+        "G9"
+      ],
+      "duration_min_seconds": "1/50",
+      "duration_max_seconds": "1/4",
+      "example_pitch": "C2",
+      "example_duration_seconds": "1/10",
+      "notes": "Use short note gates for tighter hits; extend the gate and release for a longer decay. Each hit is independently polyphonic; open and closed hats do not choke one another."
+    }
+  },
+  {
+    "name": "snare",
+    "family": "drums",
+    "description": "Falling sine shell under a bright high-passed noise wire burst.",
+    "guidance": {
+      "pitch_low": "C2",
+      "pitch_high": "C2",
+      "midi_min": 36,
+      "midi_max": 36,
+      "pitch_behavior": "Fixed oscillator tuning independent of note pitch; noise has no pitch.",
+      "tested_pitches": [
+        "C-1",
+        "C2",
+        "C4",
+        "G9"
+      ],
+      "duration_min_seconds": "1/40",
+      "duration_max_seconds": "6/25",
+      "example_pitch": "C2",
+      "example_duration_seconds": "1/10",
+      "notes": "Use short note gates for tighter hits; extend the gate and release for a longer decay. Each hit is independently polyphonic; open and closed hats do not choke one another."
+    }
+  },
+  {
+    "name": "clap",
+    "family": "drums",
+    "description": "Broad filtered noise with rapid amplitude flutter for a synthetic handclap.",
+    "guidance": {
+      "pitch_low": "C2",
+      "pitch_high": "C2",
+      "midi_min": 36,
+      "midi_max": 36,
+      "pitch_behavior": "Fixed oscillator tuning independent of note pitch; noise has no pitch.",
+      "tested_pitches": [
+        "C-1",
+        "C2",
+        "C4",
+        "G9"
+      ],
+      "duration_min_seconds": "1/25",
+      "duration_max_seconds": "7/25",
+      "example_pitch": "C2",
+      "example_duration_seconds": "3/25",
+      "notes": "Use short note gates for tighter hits; extend the gate and release for a longer decay. Each hit is independently polyphonic; open and closed hats do not choke one another."
+    }
+  },
+  {
+    "name": "closed_hat",
+    "family": "drums",
+    "description": "Tightly damped high-passed noise and inharmonic square-wave metal.",
+    "guidance": {
+      "pitch_low": "C2",
+      "pitch_high": "C2",
+      "midi_min": 36,
+      "midi_max": 36,
+      "pitch_behavior": "Fixed oscillator tuning independent of note pitch; noise has no pitch.",
+      "tested_pitches": [
+        "C-1",
+        "C2",
+        "C4",
+        "G9"
+      ],
+      "duration_min_seconds": "1/100",
+      "duration_max_seconds": "1/10",
+      "example_pitch": "C2",
+      "example_duration_seconds": "7/200",
+      "notes": "Use short note gates for tighter hits; extend the gate and release for a longer decay. Each hit is independently polyphonic; open and closed hats do not choke one another."
+    }
+  },
+  {
+    "name": "open_hat",
+    "family": "drums",
+    "description": "Longer ringing high-passed noise and inharmonic square-wave metal.",
+    "guidance": {
+      "pitch_low": "C2",
+      "pitch_high": "C2",
+      "midi_min": 36,
+      "midi_max": 36,
+      "pitch_behavior": "Fixed oscillator tuning independent of note pitch; noise has no pitch.",
+      "tested_pitches": [
+        "C-1",
+        "C2",
+        "C4",
+        "G9"
+      ],
+      "duration_min_seconds": "2/25",
+      "duration_max_seconds": "9/10",
+      "example_pitch": "C2",
+      "example_duration_seconds": "11/50",
+      "notes": "Use short note gates for tighter hits; extend the gate and release for a longer decay. Each hit is independently polyphonic; open and closed hats do not choke one another."
+    }
+  },
+  {
+    "name": "low_tom",
+    "family": "drums",
+    "description": "Falling tuned sine drum with an inharmonic skin overtone.",
+    "guidance": {
+      "pitch_low": "C2",
+      "pitch_high": "C2",
+      "midi_min": 36,
+      "midi_max": 36,
+      "pitch_behavior": "Fixed oscillator tuning independent of note pitch; noise has no pitch.",
+      "tested_pitches": [
+        "C-1",
+        "C2",
+        "C4",
+        "G9"
+      ],
+      "duration_min_seconds": "7/200",
+      "duration_max_seconds": "9/20",
+      "example_pitch": "C2",
+      "example_duration_seconds": "4/25",
+      "notes": "Use short note gates for tighter hits; extend the gate and release for a longer decay. Each hit is independently polyphonic; open and closed hats do not choke one another."
+    }
+  },
+  {
+    "name": "high_tom",
+    "family": "drums",
+    "description": "Falling tuned sine drum with an inharmonic skin overtone.",
+    "guidance": {
+      "pitch_low": "C2",
+      "pitch_high": "C2",
+      "midi_min": 36,
+      "midi_max": 36,
+      "pitch_behavior": "Fixed oscillator tuning independent of note pitch; noise has no pitch.",
+      "tested_pitches": [
+        "C-1",
+        "C2",
+        "C4",
+        "G9"
+      ],
+      "duration_min_seconds": "1/40",
+      "duration_max_seconds": "17/50",
+      "example_pitch": "C2",
+      "example_duration_seconds": "3/25",
+      "notes": "Use short note gates for tighter hits; extend the gate and release for a longer decay. Each hit is independently polyphonic; open and closed hats do not choke one another."
+    }
+  },
+  {
+    "name": "crash",
+    "family": "drums",
+    "description": "Long noise wash with bounded inharmonic FM and a square-wave edge.",
+    "guidance": {
+      "pitch_low": "C2",
+      "pitch_high": "C2",
+      "midi_min": 36,
+      "midi_max": 36,
+      "pitch_behavior": "Fixed oscillator tuning independent of note pitch; noise has no pitch.",
+      "tested_pitches": [
+        "C-1",
+        "C2",
+        "C4",
+        "G9"
+      ],
+      "duration_min_seconds": "2/25",
+      "duration_max_seconds": "9/5",
+      "example_pitch": "C2",
+      "example_duration_seconds": "7/20",
+      "notes": "Use short note gates for tighter hits; extend the gate and release for a longer decay. Each hit is independently polyphonic; open and closed hats do not choke one another."
+    }
+  },
+  {
+    "name": "mellow_piano",
+    "family": "keys",
+    "description": "Soft triangle body with gently decaying harmonic FM; a synthesized piano interpretation.",
+    "guidance": {
+      "pitch_low": "C2",
+      "pitch_high": "C7",
+      "midi_min": 36,
+      "midi_max": 96,
+      "pitch_behavior": "Tracks note pitch.",
+      "tested_pitches": [
+        "C2",
+        "C4",
+        "C7"
+      ],
+      "duration_min_seconds": "3/20",
+      "duration_max_seconds": "5/2",
+      "example_pitch": "C4",
+      "example_duration_seconds": "1/2",
+      "notes": "The body decays while held; release controls the ending after note-off."
+    }
+  },
+  {
+    "name": "bright_piano",
+    "family": "keys",
+    "description": "Brisk triangle body and stronger third-harmonic FM attack; a synthesized bright piano interpretation.",
+    "guidance": {
+      "pitch_low": "C2",
+      "pitch_high": "C7",
+      "midi_min": 36,
+      "midi_max": 96,
+      "pitch_behavior": "Tracks note pitch.",
+      "tested_pitches": [
+        "C2",
+        "C4",
+        "C7"
+      ],
+      "duration_min_seconds": "1/10",
+      "duration_max_seconds": "5/2",
+      "example_pitch": "C4",
+      "example_duration_seconds": "1/2",
+      "notes": "The body decays while held; release controls the ending after note-off."
+    }
+  },
+  {
+    "name": "electric_piano",
+    "family": "keys",
+    "description": "Rounded sine fundamental with an envelope-shaped FM octave tine; a synthesized electric piano interpretation.",
+    "guidance": {
+      "pitch_low": "C2",
+      "pitch_high": "C7",
+      "midi_min": 36,
+      "midi_max": 96,
+      "pitch_behavior": "Tracks note pitch.",
+      "tested_pitches": [
+        "C2",
+        "C4",
+        "C7"
+      ],
+      "duration_min_seconds": "3/20",
+      "duration_max_seconds": "3/1",
+      "example_pitch": "C4",
+      "example_duration_seconds": "1/2",
+      "notes": "The body decays while held; release controls the ending after note-off."
+    }
+  },
+  {
+    "name": "organ",
+    "family": "keys",
+    "description": "Sustained additive drawbar-like harmonic blend; a synthesized organ interpretation without rotary effects.",
+    "guidance": {
+      "pitch_low": "C2",
+      "pitch_high": "C6",
+      "midi_min": 36,
+      "midi_max": 84,
+      "pitch_behavior": "Tracks note pitch.",
+      "tested_pitches": [
+        "C2",
+        "C4",
+        "C6"
+      ],
+      "duration_min_seconds": "3/20",
+      "duration_max_seconds": "6/1",
+      "example_pitch": "C4",
+      "example_duration_seconds": "1/2",
+      "notes": "Hold notes for sustain and use release to shape the ending."
+    }
+  },
+  {
+    "name": "nylon_guitar",
+    "family": "guitars",
+    "description": "Synthesized nylon-string interpretation: rounded sine/triangle body with a brief harmonic FM pluck.",
+    "guidance": {
+      "pitch_low": "E2",
+      "pitch_high": "E6",
+      "midi_min": 40,
+      "midi_max": 88,
+      "pitch_behavior": "Tracks note pitch.",
+      "tested_pitches": [
+        "E2",
+        "C4",
+        "E6"
+      ],
+      "duration_min_seconds": "2/25",
+      "duration_max_seconds": "3/2",
+      "example_pitch": "C4",
+      "example_duration_seconds": "1/2",
+      "notes": "Use 0.08–1.5 s note gates; zero sustain produces a natural decay even for held notes. Muted guitar chiefly sounds within the first 0.16 s."
+    }
+  },
+  {
+    "name": "steel_guitar",
+    "family": "guitars",
+    "description": "Synthesized steel-string interpretation: brighter saw body and a longer, stronger harmonic FM transient.",
+    "guidance": {
+      "pitch_low": "E2",
+      "pitch_high": "E6",
+      "midi_min": 40,
+      "midi_max": 88,
+      "pitch_behavior": "Tracks note pitch.",
+      "tested_pitches": [
+        "E2",
+        "C4",
+        "E6"
+      ],
+      "duration_min_seconds": "2/25",
+      "duration_max_seconds": "3/2",
+      "example_pitch": "C4",
+      "example_duration_seconds": "1/2",
+      "notes": "Use 0.08–1.5 s note gates; zero sustain produces a natural decay even for held notes. Muted guitar chiefly sounds within the first 0.16 s."
+    }
+  },
+  {
+    "name": "muted_guitar",
+    "family": "guitars",
+    "description": "Synthesized muted-string interpretation: short damped sine/triangle pluck with a rapidly fading FM transient.",
+    "guidance": {
+      "pitch_low": "E2",
+      "pitch_high": "E6",
+      "midi_min": 40,
+      "midi_max": 88,
+      "pitch_behavior": "Tracks note pitch.",
+      "tested_pitches": [
+        "E2",
+        "C4",
+        "E6"
+      ],
+      "duration_min_seconds": "2/25",
+      "duration_max_seconds": "3/2",
+      "example_pitch": "C4",
+      "example_duration_seconds": "1/2",
+      "notes": "Use 0.08–1.5 s note gates; zero sustain produces a natural decay even for held notes. Muted guitar chiefly sounds within the first 0.16 s."
+    }
+  },
+  {
+    "name": "finger_bass",
+    "family": "basses",
+    "description": "Rounded finger-style bass interpretation with triangle and sine body, a soft attack, and a short plucked decay.",
+    "guidance": {
+      "pitch_low": "E1",
+      "pitch_high": "G4",
+      "midi_min": 28,
+      "midi_max": 67,
+      "pitch_behavior": "Tracks note pitch.",
+      "tested_pitches": [
+        "E1",
+        "C3",
+        "G4"
+      ],
+      "duration_min_seconds": "3/20",
+      "duration_max_seconds": "3/2",
+      "example_pitch": "C2",
+      "example_duration_seconds": "1/2",
+      "notes": "Use the low register for bass lines; leave room between note-offs and the next note when a clean release is wanted."
+    }
+  },
+  {
+    "name": "pick_bass",
+    "family": "basses",
+    "description": "Picked electric-bass interpretation with a bright square-wave edge, sine body, fast attack, and a firmer plucked decay.",
+    "guidance": {
+      "pitch_low": "E1",
+      "pitch_high": "G4",
+      "midi_min": 28,
+      "midi_max": 67,
+      "pitch_behavior": "Tracks note pitch.",
+      "tested_pitches": [
+        "E1",
+        "C3",
+        "G4"
+      ],
+      "duration_min_seconds": "1/10",
+      "duration_max_seconds": "6/5",
+      "example_pitch": "C2",
+      "example_duration_seconds": "1/2",
+      "notes": "Use the low register for bass lines; leave room between note-offs and the next note when a clean release is wanted."
+    }
+  },
+  {
+    "name": "sub_bass",
+    "family": "basses",
+    "description": "Deep sustained sine bass with a trace of triangle harmonics and a rounded attack; intended for low registers.",
+    "guidance": {
+      "pitch_low": "C1",
+      "pitch_high": "C4",
+      "midi_min": 24,
+      "midi_max": 60,
+      "pitch_behavior": "Tracks note pitch.",
+      "tested_pitches": [
+        "C1",
+        "C2",
+        "C4"
+      ],
+      "duration_min_seconds": "1/4",
+      "duration_max_seconds": "3/1",
+      "example_pitch": "C2",
+      "example_duration_seconds": "1/2",
+      "notes": "Use the low register for bass lines; leave room between note-offs and the next note when a clean release is wanted."
+    }
+  },
+  {
+    "name": "synth_bass",
+    "family": "basses",
+    "description": "Sustained synth bass with two slightly detuned saw oscillators and a sine sub-octave, filtered for a dense low end.",
+    "guidance": {
+      "pitch_low": "E1",
+      "pitch_high": "G4",
+      "midi_min": 28,
+      "midi_max": 67,
+      "pitch_behavior": "Tracks note pitch.",
+      "tested_pitches": [
+        "E1",
+        "C3",
+        "G4"
+      ],
+      "duration_min_seconds": "3/20",
+      "duration_max_seconds": "2/1",
+      "example_pitch": "C2",
+      "example_duration_seconds": "1/2",
+      "notes": "Use the low register for bass lines; leave room between note-offs and the next note when a clean release is wanted."
+    }
+  },
+  {
+    "name": "strings",
+    "family": "other",
+    "description": "Gently detuned saw pair and octave triangle with a bowed-style onset; a synthesized string ensemble interpretation.",
+    "guidance": {
+      "pitch_low": "C2",
+      "pitch_high": "C6",
+      "midi_min": 36,
+      "midi_max": 84,
+      "pitch_behavior": "Tracks note pitch.",
+      "tested_pitches": [
+        "C2",
+        "C4",
+        "C6"
+      ],
+      "duration_min_seconds": "3/10",
+      "duration_max_seconds": "6/1",
+      "example_pitch": "C4",
+      "example_duration_seconds": "1/2",
+      "notes": "Hold notes for sustain and use release to shape the ending."
+    }
+  },
+  {
+    "name": "flute",
+    "family": "other",
+    "description": "Sine-led sustained tone with a faint triangle edge and modest fixed-depth vibrato; a synthesized flute interpretation.",
+    "guidance": {
+      "pitch_low": "C4",
+      "pitch_high": "C7",
+      "midi_min": 60,
+      "midi_max": 96,
+      "pitch_behavior": "Tracks note pitch.",
+      "tested_pitches": [
+        "C4",
+        "C5",
+        "C7"
+      ],
+      "duration_min_seconds": "3/20",
+      "duration_max_seconds": "4/1",
+      "example_pitch": "C5",
+      "example_duration_seconds": "1/2",
+      "notes": "Hold notes for sustain and use release to shape the ending."
+    }
+  },
+  {
+    "name": "bell",
+    "family": "other",
+    "description": "Decaying inharmonic FM strike with a faint octave component; a synthesized bell interpretation.",
+    "guidance": {
+      "pitch_low": "C3",
+      "pitch_high": "C7",
+      "midi_min": 48,
+      "midi_max": 96,
+      "pitch_behavior": "Tracks note pitch.",
+      "tested_pitches": [
+        "C3",
+        "C5",
+        "C7"
+      ],
+      "duration_min_seconds": "1/5",
+      "duration_max_seconds": "3/1",
+      "example_pitch": "C5",
+      "example_duration_seconds": "1/2",
+      "notes": "The body decays while held; release controls the ending after note-off."
+    }
+  },
+  {
+    "name": "warm_pad",
+    "family": "other",
+    "description": "Slowly swelling detuned triangle pair with a sine sub-octave and dark low-pass tone.",
+    "guidance": {
+      "pitch_low": "C2",
+      "pitch_high": "C6",
+      "midi_min": 36,
+      "midi_max": 84,
+      "pitch_behavior": "Tracks note pitch.",
+      "tested_pitches": [
+        "C2",
+        "C4",
+        "C6"
+      ],
+      "duration_min_seconds": "3/2",
+      "duration_max_seconds": "8/1",
+      "example_pitch": "C4",
+      "example_duration_seconds": "3/2",
+      "notes": "Allow at least 1.5 seconds for the slow attack to develop; longer held notes create a sustained pad."
+    }
+  },
+  {
+    "name": "synth_lead",
+    "family": "other",
+    "description": "Responsive saw, square and sine blend with subtle vibrato and a bright sustained tone.",
+    "guidance": {
+      "pitch_low": "C2",
+      "pitch_high": "C6",
+      "midi_min": 36,
+      "midi_max": 84,
+      "pitch_behavior": "Tracks note pitch.",
+      "tested_pitches": [
+        "C2",
+        "C4",
+        "C6"
+      ],
+      "duration_min_seconds": "2/25",
+      "duration_max_seconds": "3/1",
+      "example_pitch": "C4",
+      "example_duration_seconds": "1/2",
+      "notes": "Hold notes for sustain and use release to shape the ending."
+    }
+  }
+]

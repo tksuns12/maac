@@ -34,6 +34,22 @@ compiled programs and table banks while retaining their own mutable DSP state.
 Shared effects continue through the declared tail. These rules preserve the
 foundation's event schedules and explicit rendering endpoint.
 
+## Plucked-string processor contract
+
+The [approved plucked-string contract](plucked-string.md) specifies private recirculating
+delay state in one mono voice-only `synth.pluck/1` processor while retaining DAG
+validation for public audio and modulation edges. It uses deterministic seeded
+excitation, live phase-compensated convex delay interpolation, and bounded
+frequency-dependent loss. Separate heap rings, declared-capacity memory checks,
+and initialization/weighted-sample work prevent hidden resource expansion.
+Combined-loop damping need not be monotonic, and DSP failures promise only
+node-local validation before state updates, not whole-frame rollback.
+
+The separate `std/acoustic/1.0.0` library preserves frozen basic sounds and
+existing default catalog behavior. The contract excludes a new body-resonator
+primitive and a realism claim without user listening. Contract acceptance and
+implementation evidence remain separate from perceptual acceptance.
+
 ## Project end and physical offsets
 
 Pattern/use/placement `cut` boundaries truncate musical gates before physical

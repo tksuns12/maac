@@ -67,7 +67,7 @@ fn validates_unused_declarations_and_does_not_discard_bad_objects() {
 #[test]
 fn reports_recognized_deferred_features_as_capability_errors() {
     let source = base(
-        r#"node unsupported { type = "core.gain/1"; config = { channels = 1; }; }
+        r#"node unsupported { type = "core.fader/1"; config = { channels = 1; }; }
 pattern ptn { length = 1q; hit kick { at = 0q; key = "kick"; } }
 "#,
     );

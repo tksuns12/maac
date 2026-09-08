@@ -1,3 +1,44 @@
+# Built-in instrument examples
+
+[`basic/`](basic/) contains one standalone audition for each of the 24 exports
+in `std/basic/1.0.0`, plus [`full_band.maac`](basic/full_band.maac). Individual
+auditions last 3.8 seconds; the full band lasts 9.8 seconds. Every file needs
+only the installed executable, including when copied outside this checkout.
+
+```sh
+maac instruments
+maac instruments kick --json
+maac build examples/basic/nylon_guitar.maac -o guitar.wav --format pcm16
+maac build examples/basic/full_band.maac -o full-band.wav --format pcm16
+```
+
+All sounds are synthesized interpretations. Pitched auditions demonstrate
+overlap and dynamics. Drums use separate instrument exports with C2 triggers;
+their note gates and release control damping. The full band explicitly routes
+keys, guitar, bass, flute, pad, kick, snare and hi-hat into a stereo sum.
+
+See the [basic instrument guide](../docs/basic-instruments.md) for names, pitch
+ranges, gate recommendations, controls and the frozen-version contract.
+Numerical rendering checks do not constitute human listening approval.
+
+# Acoustic guitar authoring
+
+The separate `std/acoustic/1.0.0` collection uses MaaC's recirculating string
+processor and existing body EQ. Its examples passed fresh installed-executable
+checks outside the checkout. [`acoustic/`](acoustic/) contains
+7.5-second auditions for nylon, steel and muted guitar, plus the 5.7-second
+[`fingerpicked_phrase.maac`](acoustic/fingerpicked_phrase.maac). The
+[acoustic guitar guide](../docs/acoustic-guitars.md)
+contains a complete composition and six-control explanation; the existing
+basic auditions above retain their frozen sounds.
+
+```sh
+maac instruments --libraries
+maac instruments nylon_guitar --library std/acoustic/1.0.0 --json
+maac build examples/acoustic/nylon_guitar.maac -o nylon.wav --format pcm16
+maac build examples/acoustic/fingerpicked_phrase.maac -o fingerpicked.wav --format pcm16
+```
+
 # Reusable starter sounds
 
 `sounds/studio.maac` is a small local MaaC library used by

@@ -22,6 +22,15 @@ pub const MAX_TOTAL_GRAPH_EDGES: usize = 4_096;
 pub const MAX_EMBEDDED_SAMPLES: usize = 262_144;
 pub const MAX_ALLOCATED_VOICE_GRAPH_STATES: usize = 262_144;
 pub const MAX_EXECUTION_WORK: u64 = 500_000_000;
+pub const DEFAULT_NOISE_SEED: u32 = 1_831_565_813;
+pub const DEFAULT_PLUCK_SEED: u32 = DEFAULT_NOISE_SEED;
+pub const PLUCK_DELAY_CELLS: usize = crate::pluck::DELAY_CELLS;
+pub const MAX_PLUCK_DELAY_CELLS: usize = 8_388_608;
+pub const PLUCK_SAMPLE_WORK: u64 = 16;
+
+pub(crate) fn pluck_delay_cells(capacity: usize, nodes: usize) -> Option<usize> {
+    capacity.checked_mul(nodes)?.checked_mul(PLUCK_DELAY_CELLS)
+}
 
 const MAX_ID_BYTES: usize = 128;
 const MAX_PATH_BYTES: usize = 4_096;
@@ -39,6 +48,10 @@ pub enum GraphProcessor {
     Square,
     #[serde(rename = "synth.triangle/1")]
     Triangle,
+    #[serde(rename = "synth.noise/1")]
+    Noise { seed: u32 },
+    #[serde(rename = "synth.pluck/1")]
+    Pluck { seed: u32 },
     #[serde(rename = "synth.wavetable/1")]
     Wavetable { table: String },
     #[serde(rename = "synth.adsr/1")]
@@ -49,6 +62,8 @@ pub enum GraphProcessor {
     Gain { channels: u8 },
     #[serde(rename = "synth.onepole/1")]
     OnePole { channels: u8 },
+    #[serde(rename = "synth.highpass/1")]
+    HighPass { channels: u8 },
     #[serde(rename = "synth.mix/1")]
     Mix { channels: u8 },
     #[serde(rename = "synth.pan/1")]
@@ -66,6 +81,10 @@ enum GraphProcessorWire {
     Square {},
     #[serde(rename = "synth.triangle/1")]
     Triangle {},
+    #[serde(rename = "synth.noise/1")]
+    Noise { seed: u32 },
+    #[serde(rename = "synth.pluck/1")]
+    Pluck { seed: u32 },
     #[serde(rename = "synth.wavetable/1")]
     Wavetable { table: String },
     #[serde(rename = "synth.adsr/1")]
@@ -76,6 +95,8 @@ enum GraphProcessorWire {
     Gain { channels: u8 },
     #[serde(rename = "synth.onepole/1")]
     OnePole { channels: u8 },
+    #[serde(rename = "synth.highpass/1")]
+    HighPass { channels: u8 },
     #[serde(rename = "synth.mix/1")]
     Mix { channels: u8 },
     #[serde(rename = "synth.pan/1")]
@@ -92,11 +113,20 @@ impl<'de> Deserialize<'de> for GraphProcessor {
             GraphProcessorWire::Saw {} => Self::Saw,
             GraphProcessorWire::Square {} => Self::Square,
             GraphProcessorWire::Triangle {} => Self::Triangle,
+            GraphProcessorWire::Noise { seed: 0 } => {
+                return Err(serde::de::Error::custom("noise seed must be nonzero"));
+            }
+            GraphProcessorWire::Noise { seed } => Self::Noise { seed },
+            GraphProcessorWire::Pluck { seed: 0 } => {
+                return Err(serde::de::Error::custom("pluck seed must be nonzero"));
+            }
+            GraphProcessorWire::Pluck { seed } => Self::Pluck { seed },
             GraphProcessorWire::Wavetable { table } => Self::Wavetable { table },
             GraphProcessorWire::Adsr {} => Self::Adsr,
             GraphProcessorWire::Lfo {} => Self::Lfo,
             GraphProcessorWire::Gain { channels } => Self::Gain { channels },
             GraphProcessorWire::OnePole { channels } => Self::OnePole { channels },
+            GraphProcessorWire::HighPass { channels } => Self::HighPass { channels },
             GraphProcessorWire::Mix { channels } => Self::Mix { channels },
             GraphProcessorWire::Pan {} => Self::Pan,
         })
@@ -110,11 +140,14 @@ impl GraphProcessor {
             Self::Saw => "synth.saw/1",
             Self::Square => "synth.square/1",
             Self::Triangle => "synth.triangle/1",
+            Self::Noise { .. } => "synth.noise/1",
+            Self::Pluck { .. } => "synth.pluck/1",
             Self::Wavetable { .. } => "synth.wavetable/1",
             Self::Adsr => "synth.adsr/1",
             Self::Lfo => "synth.lfo/1",
             Self::Gain { .. } => "synth.gain/1",
             Self::OnePole { .. } => "synth.onepole/1",
+            Self::HighPass { .. } => "synth.highpass/1",
             Self::Mix { .. } => "synth.mix/1",
             Self::Pan => "synth.pan/1",
         }
@@ -122,9 +155,10 @@ impl GraphProcessor {
 
     fn output_channels(&self) -> u8 {
         match self {
-            Self::Gain { channels } | Self::OnePole { channels } | Self::Mix { channels } => {
-                *channels
-            }
+            Self::Gain { channels }
+            | Self::OnePole { channels }
+            | Self::HighPass { channels }
+            | Self::Mix { channels } => *channels,
             Self::Pan => 2,
             _ => 1,
         }
@@ -132,9 +166,10 @@ impl GraphProcessor {
 
     fn required_input_channels(&self) -> Option<u8> {
         match self {
-            Self::Gain { channels } | Self::OnePole { channels } | Self::Mix { channels } => {
-                Some(*channels)
-            }
+            Self::Gain { channels }
+            | Self::OnePole { channels }
+            | Self::HighPass { channels }
+            | Self::Mix { channels } => Some(*channels),
             Self::Pan => Some(1),
             _ => None,
         }
@@ -151,6 +186,8 @@ impl GraphProcessor {
                 | Self::Saw
                 | Self::Square
                 | Self::Triangle
+                | Self::Noise { .. }
+                | Self::Pluck { .. }
                 | Self::Wavetable { .. }
                 | Self::Adsr
         )
@@ -242,6 +279,14 @@ pub struct InstrumentProgram {
 }
 
 impl InstrumentProgram {
+    pub(crate) fn pluck_node_count(&self) -> usize {
+        self.voice
+            .nodes
+            .iter()
+            .filter(|node| matches!(node.processor, GraphProcessor::Pluck { .. }))
+            .count()
+    }
+
     pub fn channels(&self) -> u8 {
         self.shared
             .as_ref()
@@ -437,6 +482,33 @@ pub fn parameter_descriptor(processor: &GraphProcessor, name: &str) -> Option<Pa
         GraphProcessor::Wavetable { .. } => oscillator().or_else(|| {
             (name == "position").then(|| dimensionless(ParameterRate::Sample, 0, 0, 1))
         }),
+        GraphProcessor::Pluck { .. } => match name {
+            "ratio" => {
+                let mut result = dimensionless(ParameterRate::Sample, 1, 0, 8);
+                result.min = Rational::new(1.into(), 8.into());
+                Some(result)
+            }
+            "decay" => {
+                let mut result = spec(
+                    GraphUnit::Seconds,
+                    ParameterRate::Sample,
+                    3,
+                    0,
+                    30,
+                    false,
+                    false,
+                );
+                result.min = Rational::new(1.into(), 20.into());
+                Some(result)
+            }
+            "damping" => {
+                let mut result = dimensionless(ParameterRate::Sample, 0, 0, 1);
+                result.default = Rational::new(1.into(), 2.into());
+                Some(result)
+            }
+            "level" => Some(dimensionless(ParameterRate::Sample, 1, 0, 16)),
+            _ => None,
+        },
         GraphProcessor::Adsr => match name {
             "attack" => Some(spec(
                 GraphUnit::Seconds,
@@ -482,20 +554,21 @@ pub fn parameter_descriptor(processor: &GraphProcessor, name: &str) -> Option<Pa
             "level" => Some(dimensionless(ParameterRate::Sample, 1, 0, 16)),
             _ => None,
         },
-        GraphProcessor::Gain { .. } => {
+        GraphProcessor::Gain { .. } | GraphProcessor::Noise { .. } => {
             (name == "level").then(|| dimensionless(ParameterRate::Sample, 1, 0, 16))
         }
-        GraphProcessor::OnePole { .. } => (name == "cutoff").then(|| {
-            spec(
-                GraphUnit::Hertz,
-                ParameterRate::Sample,
-                1_000,
-                0,
-                24_000,
-                true,
-                true,
-            )
-        }),
+        GraphProcessor::OnePole { .. } | GraphProcessor::HighPass { .. } => (name == "cutoff")
+            .then(|| {
+                spec(
+                    GraphUnit::Hertz,
+                    ParameterRate::Sample,
+                    1_000,
+                    0,
+                    24_000,
+                    true,
+                    true,
+                )
+            }),
         GraphProcessor::Pan => {
             (name == "pan").then(|| dimensionless(ParameterRate::Sample, 0, -1, 1))
         }
@@ -946,8 +1019,23 @@ fn validate_processor(
         return Err(error("E_CAPABILITY", path, "processor is voice-only"));
     }
     match processor {
+        GraphProcessor::Pluck { seed: 0 } => {
+            return Err(error(
+                "E_RANGE",
+                format!("{path}.seed"),
+                "pluck seed must be nonzero",
+            ));
+        }
+        GraphProcessor::Noise { seed: 0 } => {
+            return Err(error(
+                "E_RANGE",
+                format!("{path}.seed"),
+                "noise seed must be nonzero",
+            ));
+        }
         GraphProcessor::Gain { channels }
         | GraphProcessor::OnePole { channels }
+        | GraphProcessor::HighPass { channels }
         | GraphProcessor::Mix { channels } => validate_channels(*channels, path)?,
         GraphProcessor::Wavetable { table } => validate_identifier(table, format!("{path}.table"))?,
         _ => {}
@@ -1146,5 +1234,22 @@ mod control_map_serde {
         }
 
         deserializer.deserialize_map(ControlMapVisitor)
+    }
+}
+
+#[cfg(test)]
+mod pluck_resource_tests {
+    use super::*;
+
+    #[test]
+    fn pluck_storage_arithmetic_never_wraps_before_resource_validation() {
+        assert_eq!(pluck_delay_cells(3492, 1), Some(8_387_784));
+        assert_eq!(pluck_delay_cells(3493, 1), Some(8_390_186));
+        assert_eq!(pluck_delay_cells(usize::MAX, 2), None);
+        assert_eq!(
+            pluck_delay_cells(usize::MAX / PLUCK_DELAY_CELLS + 1, 1),
+            None
+        );
+        assert_eq!(pluck_delay_cells(usize::MAX, 0), Some(0));
     }
 }

@@ -11,16 +11,21 @@ pub mod instrument_plan;
 pub mod library;
 pub mod music;
 pub mod plan;
+mod pluck;
 pub mod semantic;
+pub mod stdlib;
 pub mod syntax;
 pub mod synth;
 pub mod voice;
 pub mod wavetable;
 
 pub use bundle::SourceBundle;
-pub use compiler::{check, check_bundle, compile, compile_bundle};
+pub use compiler::{
+    check, check_bundle, check_bundle_with_limits, check_with_limits, compile, compile_bundle,
+    compile_bundle_with_limits, compile_with_limits,
+};
 pub use diagnostic::{Diagnostic, DiagnosticCode, Diagnostics, Span};
-pub use dsp::render;
+pub use dsp::{render, render_with_limits};
 pub use exact::{parse_rational, Rational, RationalError, MAX_RATIONAL_BITS};
 pub use plan::Plan;
 pub use syntax::{
@@ -32,7 +37,15 @@ pub use syntax::{
 /// Filesystem ownership stays with the caller; this boundary accepts bytes so
 /// hosts can choose their own bounded input source.
 pub fn load_plan(bytes: &[u8]) -> Result<Plan, plan::PlanError> {
-    Plan::from_json(bytes)
+    load_plan_with_limits(bytes, &plan::PlanLimits::default())
+}
+
+/// Load the strict standalone plan schema under an explicit caller allowance.
+pub fn load_plan_with_limits(
+    bytes: &[u8],
+    limits: &plan::PlanLimits,
+) -> Result<Plan, plan::PlanError> {
+    Plan::from_json_with_limits(bytes, limits)
 }
 
 #[cfg(test)]

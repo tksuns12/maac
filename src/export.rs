@@ -13,7 +13,7 @@ use hound::{SampleFormat, WavSpec, WavWriter};
 use tempfile::NamedTempFile;
 
 use crate::dsp::{self, RenderError};
-use crate::plan::Plan;
+use crate::plan::{Plan, PlanLimits};
 
 pub const MAX_INPUT_BYTES: usize = 4 * 1024 * 1024;
 
@@ -179,10 +179,23 @@ pub fn write_wav<W>(sink: W, plan: &Plan, format: WavFormat) -> Result<WavStats,
 where
     W: Write + Seek,
 {
+    write_wav_with_limits(sink, plan, format, &PlanLimits::default())
+}
+
+/// Stream a WAV under explicit limits, validating before writing its header.
+pub fn write_wav_with_limits<W>(
+    sink: W,
+    plan: &Plan,
+    format: WavFormat,
+    limits: &PlanLimits,
+) -> Result<WavStats, ExportError>
+where
+    W: Write + Seek,
+{
     // Validate before Hound writes its RIFF header.  This keeps the generic
     // writer boundary transactional for callers that supply their own sink,
     // and prevents invalid channel/rate settings from reaching the encoder.
-    plan.validate()
+    plan.validate_with_limits(limits)
         .map_err(RenderError::Plan)
         .map_err(ExportError::Render)?;
     let channels = plan.output.channels;
@@ -201,7 +214,7 @@ where
     let mut writer = WavWriter::new(BufWriter::new(sink), spec).map_err(ExportError::from_hound)?;
     let mut frames = 0u64;
     let mut write_error: Option<ExportError> = None;
-    let render_result = dsp::render(plan, |frame| {
+    let render_result = dsp::render_with_limits(plan, limits, |frame| {
         if frame.len() != usize::from(channels) {
             let error = ExportError::FrameShape {
                 expected: usize::from(channels),
@@ -279,6 +292,17 @@ pub fn render_wav_to_path(
     format: WavFormat,
     force: bool,
 ) -> Result<WavStats, ExportError> {
+    render_wav_to_path_with_limits(plan, path, format, force, &PlanLimits::default())
+}
+
+/// Render and atomically publish a WAV under an explicit resource allowance.
+pub fn render_wav_to_path_with_limits(
+    plan: &Plan,
+    path: impl AsRef<Path>,
+    format: WavFormat,
+    force: bool,
+    limits: &PlanLimits,
+) -> Result<WavStats, ExportError> {
     let path = path.as_ref();
     if !force && path_exists(path)? {
         return Err(ExportError::OutputExists {
@@ -290,7 +314,7 @@ pub fn render_wav_to_path(
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
     let mut temporary = NamedTempFile::new_in(parent).map_err(ExportError::from)?;
-    let stats = write_wav(temporary.as_file_mut(), plan, format)?;
+    let stats = write_wav_with_limits(temporary.as_file_mut(), plan, format, limits)?;
     temporary
         .as_file_mut()
         .sync_all()

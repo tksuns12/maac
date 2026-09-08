@@ -1,0 +1,105 @@
+maac 1;
+
+// Four-bar synthesized ensemble. Every drum uses its own node and event track.
+project full_band {
+  score = [0q, 16q]; rate = 48000Hz;
+  tempo = &clock; meter = &metre; output = &master:out; tail = 1800ms;
+}
+tempo clock { points = [(0q, 120bpm, step)]; }
+meter metre { points = [(0q, 4, 4)]; }
+import basic { builtin = "std/basic/1.0.0"; }
+node master { type = "core.sum/1"; config = { channels = 2; }; }
+
+node keys { instrument = &basic.mellow_piano; config = { voices = 4; }; params = { level = 0.11; pan = -0.25; }; }
+connect keys_master { from = &keys:out; to = &master:in; }
+pattern keys_phrase {
+  length = 4q;
+  note n0 { at = 0q; dur = 3/2q; pitch = C4; velocity = 0.45; }
+  note n1 { at = 1q; dur = 1q; pitch = E4; velocity = 0.4; }
+  note n2 { at = 2q; dur = 3/2q; pitch = G4; velocity = 0.45; }
+  note n3 { at = 3q; dur = 1q; pitch = E4; velocity = 0.35; }
+}
+track keys_notes { target = &keys:events; }
+place keys_four { pattern = &keys_phrase; track = &keys_notes; at = 0q; count = 4; }
+
+node guitar { instrument = &basic.nylon_guitar; config = { voices = 4; }; params = { level = 0.10; pan = 0.35; }; }
+connect guitar_master { from = &guitar:out; to = &master:in; }
+pattern guitar_phrase {
+  length = 4q;
+  note n0 { at = 1/2q; dur = 3/5q; pitch = C4; velocity = 0.45; }
+  note n1 { at = 3/2q; dur = 3/5q; pitch = G4; velocity = 0.4; }
+  note n2 { at = 5/2q; dur = 3/5q; pitch = E4; velocity = 0.45; }
+  note n3 { at = 7/2q; dur = 2/5q; pitch = G4; velocity = 0.4; }
+}
+track guitar_notes { target = &guitar:events; }
+place guitar_four { pattern = &guitar_phrase; track = &guitar_notes; at = 0q; count = 4; }
+
+node bass { instrument = &basic.finger_bass; config = { voices = 4; }; params = { level = 0.20; pan = 0; }; }
+connect bass_master { from = &bass:out; to = &master:in; }
+pattern bass_phrase {
+  length = 4q;
+  note n0 { at = 0q; dur = 4/5q; pitch = C2; velocity = 0.65; }
+  note n1 { at = 3/2q; dur = 2/5q; pitch = G2; velocity = 0.5; }
+  note n2 { at = 2q; dur = 4/5q; pitch = C3; velocity = 0.55; }
+  note n3 { at = 3q; dur = 7/10q; pitch = G2; velocity = 0.55; }
+}
+track bass_notes { target = &bass:events; }
+place bass_four { pattern = &bass_phrase; track = &bass_notes; at = 0q; count = 4; }
+
+node melody { instrument = &basic.flute; config = { voices = 4; }; params = { level = 0.10; pan = 0.12; }; }
+connect melody_master { from = &melody:out; to = &master:in; }
+pattern melody_phrase {
+  length = 4q;
+  note n0 { at = 0q; dur = 4/5q; pitch = G5; velocity = 0.45; }
+  note n1 { at = 1q; dur = 6/5q; pitch = E5; velocity = 0.4; }
+  note n2 { at = 5/2q; dur = 6/5q; pitch = D5; velocity = 0.4; }
+}
+track melody_notes { target = &melody:events; }
+place melody_four { pattern = &melody_phrase; track = &melody_notes; at = 0q; count = 4; }
+
+node kick { instrument = &basic.kick; config = { voices = 4; }; params = { level = 0.20; }; }
+connect kick_master { from = &kick:out; to = &master:in; }
+pattern kick_phrase {
+  length = 4q;
+  note n0 { at = 0q; dur = 1/5q; pitch = C2; velocity = 0.75; }
+  note n1 { at = 2q; dur = 1/5q; pitch = C2; velocity = 0.7; }
+}
+track kick_notes { target = &kick:events; }
+place kick_four { pattern = &kick_phrase; track = &kick_notes; at = 0q; count = 4; }
+
+node snare { instrument = &basic.snare; config = { voices = 4; }; params = { level = 0.25; pan = -0.05; }; }
+connect snare_master { from = &snare:out; to = &master:in; }
+pattern snare_phrase {
+  length = 4q;
+  note n0 { at = 1q; dur = 1/5q; pitch = C2; velocity = 0.65; }
+  note n1 { at = 3q; dur = 1/5q; pitch = C2; velocity = 0.65; }
+}
+track snare_notes { target = &snare:events; }
+place snare_four { pattern = &snare_phrase; track = &snare_notes; at = 0q; count = 4; }
+
+node hat { instrument = &basic.closed_hat; config = { voices = 4; }; params = { level = 0.45; pan = 0.3; }; }
+connect hat_master { from = &hat:out; to = &master:in; }
+pattern hat_phrase {
+  length = 4q;
+  note n0 { at = 0q; dur = 7/100q; pitch = C2; velocity = 0.45; }
+  note n1 { at = 1/2q; dur = 7/100q; pitch = C2; velocity = 0.35; }
+  note n2 { at = 1q; dur = 7/100q; pitch = C2; velocity = 0.45; }
+  note n3 { at = 3/2q; dur = 7/100q; pitch = C2; velocity = 0.35; }
+  note n4 { at = 2q; dur = 7/100q; pitch = C2; velocity = 0.45; }
+  note n5 { at = 5/2q; dur = 7/100q; pitch = C2; velocity = 0.35; }
+  note n6 { at = 3q; dur = 7/100q; pitch = C2; velocity = 0.45; }
+  note n7 { at = 7/2q; dur = 7/100q; pitch = C2; velocity = 0.35; }
+}
+track hat_notes { target = &hat:events; }
+place hat_four { pattern = &hat_phrase; track = &hat_notes; at = 0q; count = 4; }
+
+node pad { instrument = &basic.warm_pad; config = { voices = 4; }; params = { level = 0.06; pan = -0.1; release = 1200ms; }; }
+connect pad_master { from = &pad:out; to = &master:in; }
+pattern pad_chord {
+  length = 16q;
+  note root { at = 0q; dur = 15q; pitch = C4; velocity = 0.35; }
+  note third { at = 0q; dur = 15q; pitch = E4; velocity = 0.3; }
+  note fifth { at = 0q; dur = 15q; pitch = G4; velocity = 0.3; }
+}
+track pad_notes { target = &pad:events; }
+place pad_once { pattern = &pad_chord; track = &pad_notes; at = 0q; }

@@ -61,6 +61,8 @@ pub struct PlanLimits {
     pub max_instrument_voices: u32,
     pub max_voice_graph_states: usize,
     pub max_execution_work: u64,
+    /// Maximum f64 delay cells reserved by declared pluck voice capacities.
+    pub max_pluck_delay_cells: usize,
 }
 
 impl Default for PlanLimits {
@@ -94,6 +96,7 @@ impl Default for PlanLimits {
             max_instrument_voices: 4_096,
             max_voice_graph_states: crate::graph::MAX_ALLOCATED_VOICE_GRAPH_STATES,
             max_execution_work: crate::graph::MAX_EXECUTION_WORK,
+            max_pluck_delay_cells: crate::graph::MAX_PLUCK_DELAY_CELLS,
         }
     }
 }
@@ -126,10 +129,21 @@ impl PlanLimits {
     pub const MAX_INSTRUMENT_VOICES: u32 = 4_096;
     pub const MAX_VOICE_GRAPH_STATES: usize = crate::graph::MAX_ALLOCATED_VOICE_GRAPH_STATES;
     pub const MAX_EXECUTION_WORK: u64 = crate::graph::MAX_EXECUTION_WORK;
+    /// Hard execution ceiling available through an explicit caller profile.
+    pub const MAX_SONG_EXECUTION_WORK: u64 = 10_000_000_000;
+    pub const MAX_PLUCK_DELAY_CELLS: usize = crate::graph::MAX_PLUCK_DELAY_CELLS;
 
-    /// Apply the foundation ceiling to a caller-supplied profile.  Hosts may
-    /// tighten a limit for a smaller sandbox, but cannot use a larger profile
-    /// to bypass the published safety bounds of MaaC/1.
+    /// Authorize song-sized execution work without changing any other limit.
+    pub fn song() -> Self {
+        Self {
+            max_execution_work: Self::MAX_SONG_EXECUTION_WORK,
+            ..Self::default()
+        }
+    }
+
+    /// Apply the published ceilings to a caller-supplied profile. Hosts may
+    /// tighten any limit; only explicit execution work can exceed the default
+    /// allowance, up to the finite song ceiling.
     fn bounded(self) -> Self {
         Self {
             max_json_bytes: self.max_json_bytes.min(Self::MAX_JSON_BYTES),
@@ -167,7 +181,8 @@ impl PlanLimits {
             max_voice_graph_states: self
                 .max_voice_graph_states
                 .min(Self::MAX_VOICE_GRAPH_STATES),
-            max_execution_work: self.max_execution_work.min(Self::MAX_EXECUTION_WORK),
+            max_execution_work: self.max_execution_work.min(Self::MAX_SONG_EXECUTION_WORK),
+            max_pluck_delay_cells: self.max_pluck_delay_cells.min(Self::MAX_PLUCK_DELAY_CELLS),
         }
     }
 }
@@ -590,6 +605,9 @@ pub enum Processor {
     OnePole {
         channels: u8,
     },
+    Gain {
+        channels: u8,
+    },
     Pan,
     Sum {
         channels: u8,
@@ -610,6 +628,10 @@ impl Processor {
         Self::OnePole { channels }
     }
 
+    pub fn gain(channels: u8) -> Self {
+        Self::Gain { channels }
+    }
+
     pub fn pan() -> Self {
         Self::Pan
     }
@@ -622,6 +644,7 @@ impl Processor {
         match self {
             Self::Sine { .. } => "sine",
             Self::OnePole { .. } => "onepole",
+            Self::Gain { .. } => "gain",
             Self::Pan => "pan",
             Self::Sum { .. } => "sum",
             Self::Instrument { .. } => "instrument",
@@ -636,6 +659,7 @@ impl Processor {
         match self {
             Self::Sine { .. } => matches!(parameter, "attack" | "release" | "level"),
             Self::OnePole { .. } => parameter == "cutoff",
+            Self::Gain { .. } => parameter == "gain",
             Self::Pan => parameter == "pan",
             Self::Sum { .. } => false,
             Self::Instrument { .. } => false,
@@ -959,7 +983,12 @@ impl Plan {
     /// Decode an untrusted JSON plan.  The byte limit is checked before JSON
     /// allocation and rational strings are bounded before BigInt conversion.
     pub fn from_json(bytes: &[u8]) -> Result<Self, PlanError> {
-        let limits = PlanLimits::default();
+        Self::from_json_with_limits(bytes, &PlanLimits::default())
+    }
+
+    /// Decode the same strict wire schema under an explicit caller allowance.
+    pub fn from_json_with_limits(bytes: &[u8], limits: &PlanLimits) -> Result<Self, PlanError> {
+        let limits = limits.bounded();
         if bytes.len() > limits.max_json_bytes {
             return Err(err(
                 "E_RESOURCE_LIMIT",
@@ -972,7 +1001,7 @@ impl Plan {
             PlanError::new(serde_error_code(&message), "json", message)
         })?;
         let plan: Plan = wire.into();
-        plan.validate()?;
+        plan.validate_with_limits(&limits)?;
         Ok(plan)
     }
 
@@ -980,19 +1009,26 @@ impl Plan {
         Self::from_json(input.as_bytes())
     }
 
+    pub fn from_json_str_with_limits(input: &str, limits: &PlanLimits) -> Result<Self, PlanError> {
+        Self::from_json_with_limits(input.as_bytes(), limits)
+    }
+
     /// Serialize a validated plan in compact canonical JSON and enforce the
     /// same 4 MiB artifact bound used by import.
     pub fn to_json(&self) -> Result<Vec<u8>, PlanError> {
-        self.validate()?;
+        self.to_json_with_limits(&PlanLimits::default())
+    }
+
+    /// Encode a plan validated under explicit limits, retaining the artifact cap.
+    pub fn to_json_with_limits(&self, limits: &PlanLimits) -> Result<Vec<u8>, PlanError> {
+        let limits = limits.bounded();
+        self.validate_with_limits(&limits)?;
         let bytes = serde_json::to_vec(self).map_err(|e| schema_error(e.to_string()))?;
-        if bytes.len() > PlanLimits::default().max_json_bytes {
+        if bytes.len() > limits.max_json_bytes {
             return Err(err(
                 "E_RESOURCE_LIMIT",
                 "json",
-                format!(
-                    "serialized plan exceeds {} bytes",
-                    PlanLimits::default().max_json_bytes
-                ),
+                format!("serialized plan exceeds {} bytes", limits.max_json_bytes),
             ));
         }
         Ok(bytes)
@@ -1000,6 +1036,11 @@ impl Plan {
 
     pub fn to_json_string(&self) -> Result<String, PlanError> {
         String::from_utf8(self.to_json()?).map_err(|error| schema_error(error.to_string()))
+    }
+
+    pub fn to_json_string_with_limits(&self, limits: &PlanLimits) -> Result<String, PlanError> {
+        String::from_utf8(self.to_json_with_limits(limits)?)
+            .map_err(|error| schema_error(error.to_string()))
     }
 
     pub fn validate(&self) -> Result<(), PlanError> {
@@ -1191,6 +1232,38 @@ impl Plan {
                     "instruments",
                     "instrument resource limit exceeded",
                 ));
+            }
+
+            let mut pluck_cells = 0usize;
+            for node in &self.nodes {
+                let Processor::Instrument {
+                    program, voices, ..
+                } = &node.processor
+                else {
+                    continue;
+                };
+                let count = resources
+                    .programs
+                    .iter()
+                    .find(|candidate| candidate.id == *program)
+                    .map_or(0, |program| program.pluck_node_count());
+                let cells = crate::graph::pluck_delay_cells(*voices as usize, count)
+                    .and_then(|cells| pluck_cells.checked_add(cells))
+                    .ok_or_else(|| {
+                        err(
+                            "E_RESOURCE_LIMIT",
+                            "instruments",
+                            "pluck storage arithmetic overflow",
+                        )
+                    })?;
+                if cells > limits.max_pluck_delay_cells {
+                    return Err(err(
+                        "E_RESOURCE_LIMIT",
+                        "instruments",
+                        "declared pluck delay storage exceeds the plan limit",
+                    ));
+                }
+                pluck_cells = cells;
             }
 
             let voice_graph_states = self.nodes.iter().fold(0usize, |total, node| {
@@ -1769,7 +1842,9 @@ impl Plan {
                         ));
                     }
                 }
-                Processor::OnePole { channels } | Processor::Sum { channels } => {
+                Processor::OnePole { channels }
+                | Processor::Gain { channels }
+                | Processor::Sum { channels } => {
                     if *channels == 0 || *channels > limits.max_channels {
                         return Err(err(
                             "E_RANGE",
@@ -1943,8 +2018,10 @@ impl Plan {
             }
         }
         for node in &self.nodes {
-            let requires_audio_input =
-                matches!(node.processor, Processor::OnePole { .. } | Processor::Pan);
+            let requires_audio_input = matches!(
+                node.processor,
+                Processor::OnePole { .. } | Processor::Gain { .. } | Processor::Pan
+            );
             if requires_audio_input
                 && !destinations.contains_key(&(node.id.clone(), "in".to_owned()))
             {
@@ -2473,9 +2550,19 @@ impl Plan {
             let graph_cost = |graph: &crate::graph::GraphProgram| {
                 graph
                     .nodes
-                    .len()
-                    .saturating_add(graph.connections.len())
-                    .saturating_add(graph.modulations.len()) as u64
+                    .iter()
+                    .fold(0u64, |cost, node| {
+                        cost.saturating_add(
+                            if matches!(node.processor, crate::graph::GraphProcessor::Pluck { .. })
+                            {
+                                crate::graph::PLUCK_SAMPLE_WORK
+                            } else {
+                                1
+                            },
+                        )
+                    })
+                    .saturating_add(graph.connections.len() as u64)
+                    .saturating_add(graph.modulations.len() as u64)
             };
             if let Some(shared) = &program.shared {
                 work = work
@@ -2538,6 +2625,8 @@ impl Plan {
                         )
                     })?;
             let voice_cost = graph_cost(&program.voice);
+            let initialization_cost = (program.pluck_node_count() as u64)
+                .saturating_mul(crate::graph::PLUCK_DELAY_CELLS as u64);
             for event in self.events.iter().filter(|event| {
                 event.target.node == node.id && matches!(event.kind, EventKind::Note { .. })
             }) {
@@ -2547,13 +2636,17 @@ impl Plan {
                     .min(self.output.total_frames);
                 let active_frames = active_end.saturating_sub(event.on_frame);
                 work = work.saturating_add(active_frames.saturating_mul(voice_cost));
+                work = work.saturating_add(initialization_cost);
             }
         }
         if work > limits.max_execution_work {
             return Err(err(
                 "E_RESOURCE_LIMIT",
                 "instruments",
-                "instrument sample execution work exceeds the plan limit",
+                format!(
+                    "instrument sample execution work {work} exceeds the selected limit {}",
+                    limits.max_execution_work
+                ),
             ));
         }
         Ok(())
@@ -2634,7 +2727,10 @@ fn validate_parameter(
 ) -> Result<(), PlanError> {
     finite_engine_rational(value, format!("nodes.{node}.params.{name}"))?;
     match (processor, name) {
-        (Processor::Sine { .. }, "attack" | "release" | "level") if value.is_negative() => {
+        (Processor::Sine { .. }, "attack" | "release" | "level")
+        | (Processor::Gain { .. }, "gain")
+            if value.is_negative() =>
+        {
             Err(err(
                 "E_RANGE",
                 format!("nodes.{node}.params.{name}"),
@@ -2702,12 +2798,13 @@ fn validate_automation_parameter(
         finite_engine_rational(&point.value, format!("{path}.points[{index}].value"))?;
         match (processor, name) {
             (Processor::Sine { .. }, "attack" | "release" | "level")
+            | (Processor::Gain { .. }, "gain")
                 if point.value.is_negative() =>
             {
                 return Err(err(
                     "E_RANGE",
                     format!("{path}.points[{index}].value"),
-                    "sine automation parameter must be nonnegative",
+                    "automation parameter must be nonnegative",
                 ));
             }
             (Processor::OnePole { .. }, "cutoff")
@@ -2756,7 +2853,9 @@ fn port_descriptor(node: &Node, port: &str, input: bool) -> Option<PortDescripto
             summing: false,
         }),
         (Processor::OnePole { channels }, true, "in")
-        | (Processor::OnePole { channels }, false, "out") => Some(PortDescriptor {
+        | (Processor::OnePole { channels }, false, "out")
+        | (Processor::Gain { channels }, true, "in")
+        | (Processor::Gain { channels }, false, "out") => Some(PortDescriptor {
             kind: PortKind::Audio,
             channels: *channels,
             summing: false,

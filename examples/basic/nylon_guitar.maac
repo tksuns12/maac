@@ -1,0 +1,29 @@
+maac 1;
+
+// A short synthesized phrase with overlapping notes and a closing dyad.
+// Discover defaults and controls with: maac instruments nylon_guitar
+project nylon_guitar_audition {
+  score = [0q, 4q];
+  rate = 48000Hz;
+  tempo = &clock;
+  meter = &metre;
+  output = &sound:out;
+  tail = 1800ms;
+}
+tempo clock { points = [(0q, 120bpm, step)]; }
+meter metre { points = [(0q, 4, 4)]; }
+
+import basic { builtin = "std/basic/1.0.0"; }
+node sound { instrument = &basic.nylon_guitar; config = { voices = 4; }; }
+
+pattern phrase {
+  length = 4q;
+  note n0 { at = 0q; dur = 1q; pitch = C4; velocity = 0.65; }
+  note n1 { at = 3/4q; dur = 1q; pitch = E4; velocity = 0.45; }
+  note n2 { at = 3/2q; dur = 1q; pitch = G4; velocity = 0.6; }
+  note n3 { at = 9/4q; dur = 3/4q; pitch = C5; velocity = 0.5; }
+  note n4 { at = 3q; dur = 3/4q; pitch = E4; velocity = 0.55; }
+  note n5 { at = 3q; dur = 3/4q; pitch = G4; velocity = 0.4; }
+}
+track notes { target = &sound:events; }
+place once { pattern = &phrase; track = &notes; at = 0q; }

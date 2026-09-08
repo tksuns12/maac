@@ -1,0 +1,29 @@
+maac 1;
+
+// Fixed-tuning drum: C2 is a trigger; note duration and release control damping.
+// Discover defaults and controls with: maac instruments crash
+project crash_audition {
+  score = [0q, 4q];
+  rate = 48000Hz;
+  tempo = &clock;
+  meter = &metre;
+  output = &sound:out;
+  tail = 1800ms;
+}
+tempo clock { points = [(0q, 120bpm, step)]; }
+meter metre { points = [(0q, 4, 4)]; }
+
+import basic { builtin = "std/basic/1.0.0"; }
+node sound { instrument = &basic.crash; config = { voices = 4; }; }
+
+pattern phrase {
+  length = 4q;
+  note n0 { at = 0q; dur = 7/10q; pitch = C2; velocity = 0.65; }
+  note n1 { at = 3/4q; dur = 7/10q; pitch = C2; velocity = 0.4; }
+  note n2 { at = 3/2q; dur = 7/10q; pitch = C2; velocity = 0.6; }
+  note n3 { at = 2q; dur = 7/10q; pitch = C2; velocity = 0.45; }
+  note n4 { at = 11/4q; dur = 7/10q; pitch = C2; velocity = 0.7; }
+  note n5 { at = 7/2q; dur = 7/10q; pitch = C2; velocity = 0.5; }
+}
+track notes { target = &sound:events; }
+place once { pattern = &phrase; track = &notes; at = 0q; }

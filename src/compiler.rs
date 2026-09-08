@@ -441,7 +441,7 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn run(mut self) -> CResult<Plan> {
+    fn run(mut self, limits: &PlanLimits) -> CResult<Plan> {
         // SourceGraph owns the source schema and declaration/reference checks.
         // Keep this call ahead of lowering so malformed unused declarations
         // cannot disappear during expansion.
@@ -460,7 +460,7 @@ impl<'a> Compiler<'a> {
         self.read_regions()?;
         self.expand_places()?;
         let plan = self.finish_plan()?;
-        plan.validate().map_err(plan_error)?;
+        plan.validate_with_limits(limits).map_err(plan_error)?;
         Ok(plan)
     }
 
@@ -1134,13 +1134,13 @@ impl<'a> Compiler<'a> {
                         )
                     })?)
                 }
-                "core.onepole/1" => {
+                "core.onepole/1" | "core.gain/1" => {
                     let channels_field = config
                         .and_then(|fields| fields.get("channels"))
                         .ok_or_else(|| {
                             path_diagnostic(
                                 DiagnosticCode::Range,
-                                "core.onepole/1 requires config.channels",
+                                format!("{node_type} requires config.channels"),
                                 object,
                                 object.field("config"),
                             )
@@ -1153,13 +1153,18 @@ impl<'a> Compiler<'a> {
                         )?,
                         Some(channels_field.value.span),
                     )?;
-                    Processor::one_pole(u8::try_from(channels).map_err(|_| {
+                    let channels = u8::try_from(channels).map_err(|_| {
                         diagnostics(
                             DiagnosticCode::Range,
                             "channels is out of range",
                             Some(type_field.value.span),
                         )
-                    })?)
+                    })?;
+                    if node_type == "core.gain/1" {
+                        Processor::gain(channels)
+                    } else {
+                        Processor::one_pole(channels)
+                    }
                 }
                 "core.pan/1" => Processor::pan(),
                 "core.sum/1" => {
@@ -1212,6 +1217,9 @@ impl<'a> Compiler<'a> {
                     node.params
                         .insert("cutoff".into(), Rational::from_integer(1000.into()));
                 }
+                Processor::Gain { .. } => {
+                    node.params.insert("gain".into(), Rational::one());
+                }
                 Processor::Pan => {
                     node.params.insert("pan".into(), Rational::zero());
                 }
@@ -1237,6 +1245,9 @@ impl<'a> Compiler<'a> {
                         },
                         Processor::OnePole { .. } if name == "cutoff" => {
                             self.quantity(&field.value, Unit::Hz, object, Some(field))?
+                        }
+                        Processor::Gain { .. } if name == "gain" => {
+                            self.rational_value(&field.value, object, Some(field))?
                         }
                         Processor::Pan if name == "pan" => {
                             self.rational_value(&field.value, object, Some(field))?
@@ -2732,7 +2743,7 @@ impl<'a> Compiler<'a> {
         match node.processor {
             Processor::Sum { channels } => Ok(channels),
             Processor::Pan => Ok(2),
-            Processor::OnePole { channels } => Ok(channels),
+            Processor::OnePole { channels } | Processor::Gain { channels } => Ok(channels),
             Processor::Sine { .. } => Ok(1),
             Processor::Instrument { channels, .. } => Ok(channels),
         }
@@ -2809,7 +2820,11 @@ fn prepare_instrument_compiler<'a>(
     ))
 }
 
-fn compile_resolved(resolved: &ResolvedBundle, libraries: LibrarySet) -> CResult<Plan> {
+fn compile_resolved(
+    resolved: &ResolvedBundle,
+    libraries: LibrarySet,
+    limits: &PlanLimits,
+) -> CResult<Plan> {
     let document = libraries.entry_document();
     if !document
         .objects
@@ -2822,19 +2837,35 @@ fn compile_resolved(resolved: &ResolvedBundle, libraries: LibrarySet) -> CResult
             None,
         ));
     }
-    prepare_instrument_compiler(resolved, libraries, &document)?.run()
+    prepare_instrument_compiler(resolved, libraries, &document)?.run(limits)
 }
 
 /// Resolve and compile a source bundle into a self-contained version 2 plan.
 pub fn compile_bundle(bundle: &SourceBundle) -> Result<Plan, Diagnostics> {
+    compile_bundle_with_limits(bundle, &PlanLimits::default())
+}
+
+/// Resolve and compile a bundle under an explicit caller resource allowance.
+pub fn compile_bundle_with_limits(
+    bundle: &SourceBundle,
+    limits: &PlanLimits,
+) -> Result<Plan, Diagnostics> {
     let resolved = bundle.resolve()?;
     let libraries = LibrarySet::resolve(&resolved)?;
-    compile_resolved(&resolved, libraries)
+    compile_resolved(&resolved, libraries, limits)
 }
 
 /// Resolve and validate either a composition bundle or all exports of a
 /// library bundle.
 pub fn check_bundle(bundle: &SourceBundle) -> Result<(), Diagnostics> {
+    check_bundle_with_limits(bundle, &PlanLimits::default())
+}
+
+/// Validate a bundle, applying caller limits when the entry is a composition.
+pub fn check_bundle_with_limits(
+    bundle: &SourceBundle,
+    limits: &PlanLimits,
+) -> Result<(), Diagnostics> {
     let resolved = bundle.resolve()?;
     let libraries = LibrarySet::resolve(&resolved)?;
     if libraries
@@ -2843,7 +2874,7 @@ pub fn check_bundle(bundle: &SourceBundle) -> Result<(), Diagnostics> {
         .values()
         .any(|object| object.kind == "project")
     {
-        compile_resolved(&resolved, libraries).map(|_| ())
+        compile_resolved(&resolved, libraries, limits).map(|_| ())
     } else {
         Ok(())
     }
@@ -2892,18 +2923,28 @@ fn reject_unresolved_imports(document: &Document) -> CResult<()> {
 
 /// Compile a parsed MaaC document into a validated standalone performance plan.
 pub fn compile(document: &Document) -> Result<Plan, Diagnostics> {
+    compile_with_limits(document, &PlanLimits::default())
+}
+
+/// Compile a parsed document under an explicit caller resource allowance.
+pub fn compile_with_limits(document: &Document, limits: &PlanLimits) -> Result<Plan, Diagnostics> {
     reject_unresolved_imports(document)?;
     if has_library_syntax(document) {
         let resolved = local_resolved(document);
         let libraries = LibrarySet::resolve(&resolved)?;
-        compile_resolved(&resolved, libraries)
+        compile_resolved(&resolved, libraries, limits)
     } else {
-        Compiler::new(document).run()
+        Compiler::new(document).run(limits)
     }
 }
 
 /// Validate a document through the same resolution path used by [`compile`].
 pub fn check(document: &Document) -> Result<(), Diagnostics> {
+    check_with_limits(document, &PlanLimits::default())
+}
+
+/// Validate a parsed document through compilation under caller limits.
+pub fn check_with_limits(document: &Document, limits: &PlanLimits) -> Result<(), Diagnostics> {
     reject_unresolved_imports(document)?;
     if has_library_syntax(document) {
         let resolved = local_resolved(document);
@@ -2914,12 +2955,12 @@ pub fn check(document: &Document) -> Result<(), Diagnostics> {
             .values()
             .any(|object| object.kind == "project")
         {
-            compile_resolved(&resolved, libraries).map(|_| ())
+            compile_resolved(&resolved, libraries, limits).map(|_| ())
         } else {
             Ok(())
         }
     } else {
-        Compiler::new(document).run().map(|_| ())
+        Compiler::new(document).run(limits).map(|_| ())
     }
 }
 

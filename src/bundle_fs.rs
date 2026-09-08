@@ -10,7 +10,7 @@ use cap_std::{ambient_authority, AmbientAuthority};
 
 use crate::bundle::{
     count_document_objects, discover_document_references, normalize_file_reference, sha256_digest,
-    validate_hash_pin, SourceBundle, MAX_BUNDLE_ASSETS, MAX_BUNDLE_ASSET_BYTES,
+    validate_hash_pin, ImportReference, SourceBundle, MAX_BUNDLE_ASSETS, MAX_BUNDLE_ASSET_BYTES,
     MAX_BUNDLE_FILE_BYTES, MAX_BUNDLE_SOURCES, MAX_BUNDLE_SOURCE_BYTES, MAX_IMPORT_DEPTH,
     MAX_SYNTAX_OBJECTS,
 };
@@ -89,6 +89,9 @@ pub fn load_bundle(entry_path: &Path, project_root: &Path) -> Result<SourceBundl
         sources.insert(logical_path.clone(), source);
 
         for import in references.imports {
+            let ImportReference::Local(import) = import else {
+                continue;
+            };
             validate_hash_pin(&import.hash, "import hash")?;
             let target = normalize_file_reference(&logical_path, &import.path)?;
             if let Some(loaded) = sources.get(&target) {

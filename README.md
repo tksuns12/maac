@@ -7,10 +7,30 @@ MaaC/1 for checking source, compiling an inspectable performance plan, and
 rendering that plan to WAV. The playable foundation targets offline 48 kHz mono
 or stereo rendering with the bounded [capability set](docs/capabilities.md).
 
+The installed executable includes [24 basic instruments](docs/basic-instruments.md):
+keys, guitars, basses, drums, strings, flute, bell, pad and lead. Import
+`std/basic/1.0.0` without downloading sounds or supplying a library directory.
+These are synthesized interpretations, with stereo output and common controls.
+
+The separate [acoustic guitar collection](docs/acoustic-guitars.md) supplies
+three MaaC-native string instruments under `std/acoustic/1.0.0`, with bends
+and vibrato. The [delivery report](docs/acoustic-delivery.md) records numerical
+and installed-example checks; user listening approval remains pending. Basic
+sounds and default discovery remain unchanged.
+
 Reusable [sound libraries](docs/instruments.md) add code-authored instruments,
 presets, sample-wise FM, and morphing wavetables. Import local source files with
 SHA-256 pins, instantiate their instruments, and automate the exposed controls.
 Compiled version 2 plans embed everything needed for offline rendering.
+
+The complete [Soldier of Fortune master source](compositions/soldier-of-fortune/main.maac)
+puts the arrangement and final gain in one MaaC entry. The
+[project-entrypoint guide](docs/project-entrypoint.md) specifies conventional
+`main.maac` discovery and an explicit finite `--profile song` allowance for
+larger native compositions. Integrated gates, installed entrypoint checks, and
+byte-identical full-song retained rendering passed; the
+[delivery report](docs/project-entrypoint-delivery.md) records the evidence.
+Existing explicit-file commands remain compatible.
 
 The MaaC/1 language uses the `.maac` extension, and source files begin with the
 canonical `maac 1;` header. The current tree is an
@@ -29,6 +49,19 @@ Install a current stable Rust toolchain. From the repository root:
 cargo build --release --locked
 cargo install --path . --locked
 ```
+
+Discover a built-in sound and render a complete example:
+
+```sh
+maac instruments
+maac instruments mellow_piano --json
+maac build examples/basic/mellow_piano.maac -o piano.wav --format pcm16
+maac build examples/basic/full_band.maac -o full-band.wav --format pcm16
+```
+
+Each basic example is standalone: copy its `.maac` file anywhere and use the
+installed executable. The [basic instrument guide](docs/basic-instruments.md)
+includes a complete first composition, pitch guidance and drum conventions.
 
 Then check, compile, and render a composition:
 

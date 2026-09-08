@@ -1,0 +1,226 @@
+maac 1;
+
+library acoustic {
+  version = "1.0.0";
+  creator = "MaaC project";
+  license = "Apache-2.0";
+}
+
+// Plucked-string nylon interpretation with a rounded attack, evolving string loss and gentle low-mid body weighting.
+instrument nylon_guitar {
+  channels = 2;
+  voice voice {
+    channels = 1;
+    amplitude = &amp;
+    output = &string:out;
+    node amp {
+      type = "synth.adsr/1";
+      params = { attack = 5ms; sustain = 1; release = 180ms; };
+    }
+    node string {
+      type = "synth.pluck/1";
+      config = { seed = 1831565813; };
+      params = { ratio = 1; decay = 6s; damping = 0.25; level = 1; };
+    }
+    node vibrato {
+      type = "synth.lfo/1";
+      params = { frequency = 5Hz; level = 0; };
+    }
+    modulate string_vibrato {
+      from = &vibrato:out;
+      to = &string.params.ratio;
+      depth = 0.0145;
+    }
+  }
+  shared tone {
+    channels = 2;
+    output = &output_gain:out;
+    node low_cut {
+      type = "synth.highpass/1";
+      config = { channels = 1; };
+      params = { cutoff = 60Hz; };
+    }
+    node body_filter {
+      type = "synth.onepole/1";
+      config = { channels = 1; };
+      params = { cutoff = 600Hz; };
+    }
+    node body_gain {
+      type = "synth.gain/1";
+      config = { channels = 1; };
+      params = { level = 0.65; };
+    }
+    node body_mix { type = "synth.mix/1"; config = { channels = 1; }; }
+    node brightness_filter {
+      type = "synth.onepole/1";
+      config = { channels = 1; };
+      params = { cutoff = 3500Hz; };
+    }
+    node stereo { type = "synth.pan/1"; params = { pan = 0; }; }
+    node output_gain {
+      type = "synth.gain/1";
+      config = { channels = 2; };
+      params = { level = 0.34; };
+    }
+    connect input_cut { from = &input:out; to = &low_cut:in; }
+    connect cut_body { from = &low_cut:out; to = &body_filter:in; }
+    connect body_weight { from = &body_filter:out; to = &body_gain:in; }
+    connect body_mix_in { from = &body_gain:out; to = &body_mix:in; }
+    connect dry_mix_in { from = &low_cut:out; to = &body_mix:in; }
+    connect mix_brightness { from = &body_mix:out; to = &brightness_filter:in; }
+    connect brightness_stereo { from = &brightness_filter:out; to = &stereo:in; }
+    connect stereo_output { from = &stereo:out; to = &output_gain:in; }
+  }
+  control level { target = &tone.output_gain.params.level; default = 0.34; }
+  control brightness { target = &tone.brightness_filter.params.cutoff; default = 3500Hz; }
+  control release { target = &voice.amp.params.release; default = 180ms; }
+  control pan { target = &tone.stereo.params.pan; default = 0; }
+  control bend_ratio { target = &voice.string.params.ratio; default = 1; }
+  control vibrato_amount { target = &voice.vibrato.params.level; default = 0; }
+}
+
+// Plucked-string steel interpretation with a brighter attack, longer nominal string decay and restrained low-mid body weighting.
+instrument steel_guitar {
+  channels = 2;
+  voice voice {
+    channels = 1;
+    amplitude = &amp;
+    output = &string:out;
+    node amp {
+      type = "synth.adsr/1";
+      params = { attack = 3ms; sustain = 1; release = 240ms; };
+    }
+    node string {
+      type = "synth.pluck/1";
+      config = { seed = 1103515245; };
+      params = { ratio = 1; decay = 7s; damping = 0.15; level = 1; };
+    }
+    node vibrato {
+      type = "synth.lfo/1";
+      params = { frequency = 5Hz; level = 0; };
+    }
+    modulate string_vibrato {
+      from = &vibrato:out;
+      to = &string.params.ratio;
+      depth = 0.0145;
+    }
+  }
+  shared tone {
+    channels = 2;
+    output = &output_gain:out;
+    node low_cut {
+      type = "synth.highpass/1";
+      config = { channels = 1; };
+      params = { cutoff = 70Hz; };
+    }
+    node body_filter {
+      type = "synth.onepole/1";
+      config = { channels = 1; };
+      params = { cutoff = 450Hz; };
+    }
+    node body_gain {
+      type = "synth.gain/1";
+      config = { channels = 1; };
+      params = { level = 0.45; };
+    }
+    node body_mix { type = "synth.mix/1"; config = { channels = 1; }; }
+    node brightness_filter {
+      type = "synth.onepole/1";
+      config = { channels = 1; };
+      params = { cutoff = 6500Hz; };
+    }
+    node stereo { type = "synth.pan/1"; params = { pan = 0; }; }
+    node output_gain {
+      type = "synth.gain/1";
+      config = { channels = 2; };
+      params = { level = 0.28; };
+    }
+    connect input_cut { from = &input:out; to = &low_cut:in; }
+    connect cut_body { from = &low_cut:out; to = &body_filter:in; }
+    connect body_weight { from = &body_filter:out; to = &body_gain:in; }
+    connect body_mix_in { from = &body_gain:out; to = &body_mix:in; }
+    connect dry_mix_in { from = &low_cut:out; to = &body_mix:in; }
+    connect mix_brightness { from = &body_mix:out; to = &brightness_filter:in; }
+    connect brightness_stereo { from = &brightness_filter:out; to = &stereo:in; }
+    connect stereo_output { from = &stereo:out; to = &output_gain:in; }
+  }
+  control level { target = &tone.output_gain.params.level; default = 0.28; }
+  control brightness { target = &tone.brightness_filter.params.cutoff; default = 6500Hz; }
+  control release { target = &voice.amp.params.release; default = 240ms; }
+  control pan { target = &tone.stereo.params.pan; default = 0; }
+  control bend_ratio { target = &voice.string.params.ratio; default = 1; }
+  control vibrato_amount { target = &voice.vibrato.params.level; default = 0; }
+}
+
+// Damped plucked-string interpretation with a short nominal decay, softened upper partials and a compact body.
+instrument muted_guitar {
+  channels = 2;
+  voice voice {
+    channels = 1;
+    amplitude = &amp;
+    output = &string:out;
+    node amp {
+      type = "synth.adsr/1";
+      params = { attack = 2ms; sustain = 1; release = 60ms; };
+    }
+    node string {
+      type = "synth.pluck/1";
+      config = { seed = 2654435761; };
+      params = { ratio = 1; decay = 550ms; damping = 0.75; level = 1; };
+    }
+    node vibrato {
+      type = "synth.lfo/1";
+      params = { frequency = 5Hz; level = 0; };
+    }
+    modulate string_vibrato {
+      from = &vibrato:out;
+      to = &string.params.ratio;
+      depth = 0.0145;
+    }
+  }
+  shared tone {
+    channels = 2;
+    output = &output_gain:out;
+    node low_cut {
+      type = "synth.highpass/1";
+      config = { channels = 1; };
+      params = { cutoff = 75Hz; };
+    }
+    node body_filter {
+      type = "synth.onepole/1";
+      config = { channels = 1; };
+      params = { cutoff = 400Hz; };
+    }
+    node body_gain {
+      type = "synth.gain/1";
+      config = { channels = 1; };
+      params = { level = 0.35; };
+    }
+    node body_mix { type = "synth.mix/1"; config = { channels = 1; }; }
+    node brightness_filter {
+      type = "synth.onepole/1";
+      config = { channels = 1; };
+      params = { cutoff = 2200Hz; };
+    }
+    node stereo { type = "synth.pan/1"; params = { pan = 0; }; }
+    node output_gain {
+      type = "synth.gain/1";
+      config = { channels = 2; };
+      params = { level = 0.32; };
+    }
+    connect input_cut { from = &input:out; to = &low_cut:in; }
+    connect cut_body { from = &low_cut:out; to = &body_filter:in; }
+    connect body_weight { from = &body_filter:out; to = &body_gain:in; }
+    connect body_mix_in { from = &body_gain:out; to = &body_mix:in; }
+    connect dry_mix_in { from = &low_cut:out; to = &body_mix:in; }
+    connect mix_brightness { from = &body_mix:out; to = &brightness_filter:in; }
+    connect brightness_stereo { from = &brightness_filter:out; to = &stereo:in; }
+    connect stereo_output { from = &stereo:out; to = &output_gain:in; }
+  }
+  control level { target = &tone.output_gain.params.level; default = 0.32; }
+  control brightness { target = &tone.brightness_filter.params.cutoff; default = 2200Hz; }
+  control release { target = &voice.amp.params.release; default = 60ms; }
+  control pan { target = &tone.stereo.params.pan; default = 0; }
+  control bend_ratio { target = &voice.string.params.ratio; default = 1; }
+  control vibrato_amount { target = &voice.vibrato.params.level; default = 0; }
+}

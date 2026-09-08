@@ -1,0 +1,882 @@
+maac 1;
+library basic { version = "1.0.0"; creator = "MaaC project"; license = "Apache-2.0"; }
+
+
+// Deep sine pitch drop with a brief filtered noise beater.
+instrument kick {
+  channels = 2;
+  voice voice {
+    channels = 1;
+    amplitude = &amp;
+    output = &mix:out;
+    node amp { type = "synth.adsr/1"; params = { attack = 1ms; decay = 240ms; sustain = 0; release = 90ms; }; }
+    node body { type = "synth.sine/1"; params = { ratio = 0; frequency = 52Hz; level = 1; }; }
+    node drop { type = "synth.adsr/1"; params = { attack = 1ms; decay = 38ms; sustain = 0; release = 25ms; }; }
+    modulate pitch_drop { from = &drop:out; to = &body.params.frequency; depth = 105Hz; }
+    node noise { type = "synth.noise/1"; config = { seed = 1831565813; }; params = { level = 0.16; }; }
+    node click_highpass { type = "synth.highpass/1"; config = { channels = 1; }; params = { cutoff = 2200Hz; }; }
+    node click_env { type = "synth.adsr/1"; params = { attack = 0.5ms; decay = 12ms; sustain = 0; release = 8ms; }; }
+    node click_gain { type = "synth.gain/1"; config = { channels = 1; }; params = { level = 0; }; }
+    modulate click_shape { from = &click_env:out; to = &click_gain.params.level; depth = 1; }
+    node mix { type = "synth.mix/1"; config = { channels = 1; }; }
+    connect noise_highpass { from = &noise:out; to = &click_highpass:in; }
+    connect highpass_gain { from = &click_highpass:out; to = &click_gain:in; }
+    connect click_mix { from = &click_gain:out; to = &mix:in; }
+    connect body_mix { from = &body:out; to = &mix:in; }
+  }
+  shared output {
+    channels = 2;
+    output = &pan:out;
+    node tone { type = "synth.onepole/1"; config = { channels = 1; }; params = { cutoff = 3500Hz; }; }
+    node gain { type = "synth.gain/1"; config = { channels = 1; }; params = { level = 0.25; }; }
+    node pan { type = "synth.pan/1"; params = { pan = 0; }; }
+    connect input_tone { from = &input:out; to = &tone:in; }
+    connect tone_gain { from = &tone:out; to = &gain:in; }
+    connect gain_pan { from = &gain:out; to = &pan:in; }
+  }
+  control level { target = &output.gain.params.level; default = 0.25; }
+  control brightness { target = &output.tone.params.cutoff; default = 3500Hz; }
+  control release { target = &voice.amp.params.release; default = 90ms; }
+  control pan { target = &output.pan.params.pan; default = 0; }
+}
+
+// Falling sine shell under a bright high-passed noise wire burst.
+instrument snare {
+  channels = 2;
+  voice voice {
+    channels = 1;
+    amplitude = &amp;
+    output = &mix:out;
+    node amp { type = "synth.adsr/1"; params = { attack = 1ms; decay = 210ms; sustain = 0; release = 80ms; }; }
+    node body { type = "synth.sine/1"; params = { ratio = 0; frequency = 175Hz; level = 0.45; }; }
+    node drop { type = "synth.adsr/1"; params = { attack = 1ms; decay = 32ms; sustain = 0; release = 20ms; }; }
+    modulate pitch_drop { from = &drop:out; to = &body.params.frequency; depth = 65Hz; }
+    node noise { type = "synth.noise/1"; config = { seed = 2718281828; }; params = { level = 0.9; }; }
+    node wires { type = "synth.highpass/1"; config = { channels = 1; }; params = { cutoff = 1400Hz; }; }
+    node mix { type = "synth.mix/1"; config = { channels = 1; }; }
+    connect noise_wires { from = &noise:out; to = &wires:in; }
+    connect wires_mix { from = &wires:out; to = &mix:in; }
+    connect body_mix { from = &body:out; to = &mix:in; }
+  }
+  shared output {
+    channels = 2;
+    output = &pan:out;
+    node tone { type = "synth.onepole/1"; config = { channels = 1; }; params = { cutoff = 8500Hz; }; }
+    node gain { type = "synth.gain/1"; config = { channels = 1; }; params = { level = 0.24; }; }
+    node pan { type = "synth.pan/1"; params = { pan = 0; }; }
+    connect input_tone { from = &input:out; to = &tone:in; }
+    connect tone_gain { from = &tone:out; to = &gain:in; }
+    connect gain_pan { from = &gain:out; to = &pan:in; }
+  }
+  control level { target = &output.gain.params.level; default = 0.24; }
+  control brightness { target = &output.tone.params.cutoff; default = 8500Hz; }
+  control release { target = &voice.amp.params.release; default = 80ms; }
+  control pan { target = &output.pan.params.pan; default = 0; }
+}
+
+// Broad filtered noise with rapid amplitude flutter for a synthetic handclap.
+instrument clap {
+  channels = 2;
+  voice voice {
+    channels = 1;
+    amplitude = &amp;
+    output = &flutter_gain:out;
+    node amp { type = "synth.adsr/1"; params = { attack = 0.7ms; decay = 260ms; sustain = 0; release = 100ms; }; }
+    node noise { type = "synth.noise/1"; config = { seed = 3141592653; }; params = { level = 1; }; }
+    node hands { type = "synth.highpass/1"; config = { channels = 1; }; params = { cutoff = 800Hz; }; }
+    node flutter { type = "synth.lfo/1"; params = { frequency = 45Hz; phase = 0.25; level = 1; }; }
+    node flutter_gain { type = "synth.gain/1"; config = { channels = 1; }; params = { level = 0.75; }; }
+    modulate flutter_shape { from = &flutter:out; to = &flutter_gain.params.level; depth = 0.25; }
+    connect noise_hands { from = &noise:out; to = &hands:in; }
+    connect hands_flutter { from = &hands:out; to = &flutter_gain:in; }
+  }
+  shared output {
+    channels = 2;
+    output = &pan:out;
+    node tone { type = "synth.onepole/1"; config = { channels = 1; }; params = { cutoff = 6000Hz; }; }
+    node gain { type = "synth.gain/1"; config = { channels = 1; }; params = { level = 0.34; }; }
+    node pan { type = "synth.pan/1"; params = { pan = 0; }; }
+    connect input_tone { from = &input:out; to = &tone:in; }
+    connect tone_gain { from = &tone:out; to = &gain:in; }
+    connect gain_pan { from = &gain:out; to = &pan:in; }
+  }
+  control level { target = &output.gain.params.level; default = 0.34; }
+  control brightness { target = &output.tone.params.cutoff; default = 6000Hz; }
+  control release { target = &voice.amp.params.release; default = 100ms; }
+  control pan { target = &output.pan.params.pan; default = 0; }
+}
+
+// Tightly damped high-passed noise and inharmonic square-wave metal.
+instrument closed_hat {
+  channels = 2;
+  voice voice {
+    channels = 1;
+    amplitude = &amp;
+    output = &edge:out;
+    node amp { type = "synth.adsr/1"; params = { attack = 0.6ms; decay = 85ms; sustain = 0; release = 25ms; }; }
+    node noise { type = "synth.noise/1"; config = { seed = 1618033988; }; params = { level = 0.8; }; }
+    node metal_a { type = "synth.square/1"; params = { ratio = 0; frequency = 407Hz; level = 0.12; }; }
+    node metal_b { type = "synth.square/1"; params = { ratio = 0; frequency = 587Hz; level = 0.12; }; }
+    node mix { type = "synth.mix/1"; config = { channels = 1; }; }
+    node edge { type = "synth.highpass/1"; config = { channels = 1; }; params = { cutoff = 5500Hz; }; }
+    connect noise_mix { from = &noise:out; to = &mix:in; }
+    connect metal_a_mix { from = &metal_a:out; to = &mix:in; }
+    connect metal_b_mix { from = &metal_b:out; to = &mix:in; }
+    connect mix_edge { from = &mix:out; to = &edge:in; }
+  }
+  shared output {
+    channels = 2;
+    output = &pan:out;
+    node tone { type = "synth.onepole/1"; config = { channels = 1; }; params = { cutoff = 10500Hz; }; }
+    node gain { type = "synth.gain/1"; config = { channels = 1; }; params = { level = 0.6; }; }
+    node pan { type = "synth.pan/1"; params = { pan = 0; }; }
+    connect input_tone { from = &input:out; to = &tone:in; }
+    connect tone_gain { from = &tone:out; to = &gain:in; }
+    connect gain_pan { from = &gain:out; to = &pan:in; }
+  }
+  control level { target = &output.gain.params.level; default = 0.6; }
+  control brightness { target = &output.tone.params.cutoff; default = 10500Hz; }
+  control release { target = &voice.amp.params.release; default = 25ms; }
+  control pan { target = &output.pan.params.pan; default = 0; }
+}
+
+// Longer ringing high-passed noise and inharmonic square-wave metal.
+instrument open_hat {
+  channels = 2;
+  voice voice {
+    channels = 1;
+    amplitude = &amp;
+    output = &edge:out;
+    node amp { type = "synth.adsr/1"; params = { attack = 0.6ms; decay = 900ms; sustain = 0; release = 180ms; }; }
+    node noise { type = "synth.noise/1"; config = { seed = 1618033988; }; params = { level = 0.8; }; }
+    node metal_a { type = "synth.square/1"; params = { ratio = 0; frequency = 407Hz; level = 0.12; }; }
+    node metal_b { type = "synth.square/1"; params = { ratio = 0; frequency = 587Hz; level = 0.12; }; }
+    node mix { type = "synth.mix/1"; config = { channels = 1; }; }
+    node edge { type = "synth.highpass/1"; config = { channels = 1; }; params = { cutoff = 4500Hz; }; }
+    connect noise_mix { from = &noise:out; to = &mix:in; }
+    connect metal_a_mix { from = &metal_a:out; to = &mix:in; }
+    connect metal_b_mix { from = &metal_b:out; to = &mix:in; }
+    connect mix_edge { from = &mix:out; to = &edge:in; }
+  }
+  shared output {
+    channels = 2;
+    output = &pan:out;
+    node tone { type = "synth.onepole/1"; config = { channels = 1; }; params = { cutoff = 12000Hz; }; }
+    node gain { type = "synth.gain/1"; config = { channels = 1; }; params = { level = 0.44; }; }
+    node pan { type = "synth.pan/1"; params = { pan = 0; }; }
+    connect input_tone { from = &input:out; to = &tone:in; }
+    connect tone_gain { from = &tone:out; to = &gain:in; }
+    connect gain_pan { from = &gain:out; to = &pan:in; }
+  }
+  control level { target = &output.gain.params.level; default = 0.44; }
+  control brightness { target = &output.tone.params.cutoff; default = 12000Hz; }
+  control release { target = &voice.amp.params.release; default = 180ms; }
+  control pan { target = &output.pan.params.pan; default = 0; }
+}
+
+// Falling tuned sine drum with an inharmonic skin overtone.
+instrument low_tom {
+  channels = 2;
+  voice voice {
+    channels = 1;
+    amplitude = &amp;
+    output = &mix:out;
+    node amp { type = "synth.adsr/1"; params = { attack = 2ms; decay = 480ms; sustain = 0; release = 150ms; }; }
+    node body { type = "synth.sine/1"; params = { ratio = 0; frequency = 105Hz; level = 0.85; }; }
+    node skin { type = "synth.sine/1"; params = { ratio = 0; frequency = 173Hz; level = 0.18; }; }
+    node drop { type = "synth.adsr/1"; params = { attack = 1ms; decay = 55ms; sustain = 0; release = 30ms; }; }
+    modulate pitch_drop { from = &drop:out; to = &body.params.frequency; depth = 65Hz; }
+    node mix { type = "synth.mix/1"; config = { channels = 1; }; }
+    connect body_mix { from = &body:out; to = &mix:in; }
+    connect skin_mix { from = &skin:out; to = &mix:in; }
+  }
+  shared output {
+    channels = 2;
+    output = &pan:out;
+    node tone { type = "synth.onepole/1"; config = { channels = 1; }; params = { cutoff = 5000Hz; }; }
+    node gain { type = "synth.gain/1"; config = { channels = 1; }; params = { level = 0.25; }; }
+    node pan { type = "synth.pan/1"; params = { pan = 0; }; }
+    connect input_tone { from = &input:out; to = &tone:in; }
+    connect tone_gain { from = &tone:out; to = &gain:in; }
+    connect gain_pan { from = &gain:out; to = &pan:in; }
+  }
+  control level { target = &output.gain.params.level; default = 0.25; }
+  control brightness { target = &output.tone.params.cutoff; default = 5000Hz; }
+  control release { target = &voice.amp.params.release; default = 150ms; }
+  control pan { target = &output.pan.params.pan; default = 0; }
+}
+
+// Falling tuned sine drum with an inharmonic skin overtone.
+instrument high_tom {
+  channels = 2;
+  voice voice {
+    channels = 1;
+    amplitude = &amp;
+    output = &mix:out;
+    node amp { type = "synth.adsr/1"; params = { attack = 2ms; decay = 340ms; sustain = 0; release = 100ms; }; }
+    node body { type = "synth.sine/1"; params = { ratio = 0; frequency = 180Hz; level = 0.85; }; }
+    node skin { type = "synth.sine/1"; params = { ratio = 0; frequency = 291Hz; level = 0.18; }; }
+    node drop { type = "synth.adsr/1"; params = { attack = 1ms; decay = 55ms; sustain = 0; release = 30ms; }; }
+    modulate pitch_drop { from = &drop:out; to = &body.params.frequency; depth = 90Hz; }
+    node mix { type = "synth.mix/1"; config = { channels = 1; }; }
+    connect body_mix { from = &body:out; to = &mix:in; }
+    connect skin_mix { from = &skin:out; to = &mix:in; }
+  }
+  shared output {
+    channels = 2;
+    output = &pan:out;
+    node tone { type = "synth.onepole/1"; config = { channels = 1; }; params = { cutoff = 5000Hz; }; }
+    node gain { type = "synth.gain/1"; config = { channels = 1; }; params = { level = 0.25; }; }
+    node pan { type = "synth.pan/1"; params = { pan = 0; }; }
+    connect input_tone { from = &input:out; to = &tone:in; }
+    connect tone_gain { from = &tone:out; to = &gain:in; }
+    connect gain_pan { from = &gain:out; to = &pan:in; }
+  }
+  control level { target = &output.gain.params.level; default = 0.25; }
+  control brightness { target = &output.tone.params.cutoff; default = 5000Hz; }
+  control release { target = &voice.amp.params.release; default = 100ms; }
+  control pan { target = &output.pan.params.pan; default = 0; }
+}
+
+// Long noise wash with bounded inharmonic FM and a square-wave edge.
+instrument crash {
+  channels = 2;
+  voice voice {
+    channels = 1;
+    amplitude = &amp;
+    output = &highpass:out;
+    node amp { type = "synth.adsr/1"; params = { attack = 2ms; decay = 1800ms; sustain = 0; release = 650ms; }; }
+    node noise { type = "synth.noise/1"; config = { seed = 1414213562; }; params = { level = 0.8; }; }
+    node modulator { type = "synth.sine/1"; params = { ratio = 0; frequency = 2311Hz; level = 1; }; }
+    node metal { type = "synth.sine/1"; params = { ratio = 0; frequency = 1600Hz; level = 0.25; }; }
+    modulate metal_fm { from = &modulator:out; to = &metal.params.frequency; depth = 700Hz; }
+    node edge_partial { type = "synth.square/1"; params = { ratio = 0; frequency = 913Hz; level = 0.16; }; }
+    node mix { type = "synth.mix/1"; config = { channels = 1; }; }
+    node highpass { type = "synth.highpass/1"; config = { channels = 1; }; params = { cutoff = 2000Hz; }; }
+    connect noise_mix { from = &noise:out; to = &mix:in; }
+    connect metal_mix { from = &metal:out; to = &mix:in; }
+    connect edge_mix { from = &edge_partial:out; to = &mix:in; }
+    connect mix_highpass { from = &mix:out; to = &highpass:in; }
+  }
+  shared output {
+    channels = 2;
+    output = &pan:out;
+    node tone { type = "synth.onepole/1"; config = { channels = 1; }; params = { cutoff = 12000Hz; }; }
+    node gain { type = "synth.gain/1"; config = { channels = 1; }; params = { level = 0.28; }; }
+    node pan { type = "synth.pan/1"; params = { pan = 0; }; }
+    connect input_tone { from = &input:out; to = &tone:in; }
+    connect tone_gain { from = &tone:out; to = &gain:in; }
+    connect gain_pan { from = &gain:out; to = &pan:in; }
+  }
+  control level { target = &output.gain.params.level; default = 0.28; }
+  control brightness { target = &output.tone.params.cutoff; default = 12000Hz; }
+  control release { target = &voice.amp.params.release; default = 650ms; }
+  control pan { target = &output.pan.params.pan; default = 0; }
+}
+
+
+// Soft triangle body with gently decaying harmonic FM; a synthesized piano interpretation.
+instrument mellow_piano {
+  channels = 2;
+  voice voice {
+    channels = 1;
+    amplitude = &amp;
+    output = &blend:out;
+    node amp { type = "synth.adsr/1"; params = { attack = 4ms; decay = 1500ms; sustain = 0.12; release = 360ms; }; }
+    node blend { type = "synth.mix/1"; config = { channels = 1; }; }
+    node timbre { type = "synth.adsr/1"; params = { attack = 2ms; decay = 220ms; sustain = 0; release = 120ms; }; }
+    node modulator { type = "synth.sine/1"; params = { ratio = 2; }; }
+    node transient { type = "synth.gain/1"; config = { channels = 1; }; params = { level = 0; }; }
+    node carrier { type = "synth.sine/1"; params = { ratio = 1; level = 0.42; }; }
+    node body { type = "synth.triangle/1"; params = { level = 0.58; }; }
+    connect modulator_transient { from = &modulator:out; to = &transient:in; }
+    modulate timbre_transient { from = &timbre:out; to = &transient.params.level; depth = 1; }
+    modulate transient_carrier { from = &transient:out; to = &carrier.params.frequency; depth = 100Hz; }
+    connect carrier_blend { from = &carrier:out; to = &blend:in; }
+    connect body_blend { from = &body:out; to = &blend:in; }
+  }
+  shared output {
+    channels = 2;
+    output = &pan:out;
+    node soften { type = "synth.onepole/1"; config = { channels = 1; }; params = { cutoff = 4200Hz; }; }
+    node gain { type = "synth.gain/1"; config = { channels = 1; }; params = { level = 0.16; }; }
+    node pan { type = "synth.pan/1"; params = { pan = 0; }; }
+    connect input_soften { from = &input:out; to = &soften:in; }
+    connect soften_gain { from = &soften:out; to = &gain:in; }
+    connect gain_pan { from = &gain:out; to = &pan:in; }
+  }
+  control level { target = &output.gain.params.level; default = 0.16; }
+  control brightness { target = &output.soften.params.cutoff; default = 4200Hz; }
+  control release { target = &voice.amp.params.release; default = 360ms; }
+  control pan { target = &output.pan.params.pan; default = 0; }
+}
+
+// Brisk triangle body and stronger third-harmonic FM attack; a synthesized bright piano interpretation.
+instrument bright_piano {
+  channels = 2;
+  voice voice {
+    channels = 1;
+    amplitude = &amp;
+    output = &blend:out;
+    node amp { type = "synth.adsr/1"; params = { attack = 3ms; decay = 1100ms; sustain = 0.1; release = 280ms; }; }
+    node blend { type = "synth.mix/1"; config = { channels = 1; }; }
+    node timbre { type = "synth.adsr/1"; params = { attack = 2ms; decay = 160ms; sustain = 0; release = 120ms; }; }
+    node modulator { type = "synth.sine/1"; params = { ratio = 3; }; }
+    node transient { type = "synth.gain/1"; config = { channels = 1; }; params = { level = 0; }; }
+    node carrier { type = "synth.sine/1"; params = { ratio = 1; level = 0.62; }; }
+    node body { type = "synth.triangle/1"; params = { level = 0.38; }; }
+    connect modulator_transient { from = &modulator:out; to = &transient:in; }
+    modulate timbre_transient { from = &timbre:out; to = &transient.params.level; depth = 1; }
+    modulate transient_carrier { from = &transient:out; to = &carrier.params.frequency; depth = 420Hz; }
+    connect carrier_blend { from = &carrier:out; to = &blend:in; }
+    connect body_blend { from = &body:out; to = &blend:in; }
+  }
+  shared output {
+    channels = 2;
+    output = &pan:out;
+    node soften { type = "synth.onepole/1"; config = { channels = 1; }; params = { cutoff = 11000Hz; }; }
+    node gain { type = "synth.gain/1"; config = { channels = 1; }; params = { level = 0.16; }; }
+    node pan { type = "synth.pan/1"; params = { pan = 0; }; }
+    connect input_soften { from = &input:out; to = &soften:in; }
+    connect soften_gain { from = &soften:out; to = &gain:in; }
+    connect gain_pan { from = &gain:out; to = &pan:in; }
+  }
+  control level { target = &output.gain.params.level; default = 0.16; }
+  control brightness { target = &output.soften.params.cutoff; default = 11000Hz; }
+  control release { target = &voice.amp.params.release; default = 280ms; }
+  control pan { target = &output.pan.params.pan; default = 0; }
+}
+
+// Rounded sine fundamental with an envelope-shaped FM octave tine; a synthesized electric piano interpretation.
+instrument electric_piano {
+  channels = 2;
+  voice voice {
+    channels = 1;
+    amplitude = &amp;
+    output = &blend:out;
+    node amp { type = "synth.adsr/1"; params = { attack = 5ms; decay = 1800ms; sustain = 0.18; release = 600ms; }; }
+    node blend { type = "synth.mix/1"; config = { channels = 1; }; }
+    node timbre { type = "synth.adsr/1"; params = { attack = 2ms; decay = 500ms; sustain = 0; release = 120ms; }; }
+    node modulator { type = "synth.sine/1"; params = { ratio = 1; }; }
+    node transient { type = "synth.gain/1"; config = { channels = 1; }; params = { level = 0; }; }
+    node carrier { type = "synth.sine/1"; params = { ratio = 2; level = 0.32; }; }
+    node body { type = "synth.sine/1"; params = { level = 0.68; }; }
+    connect modulator_transient { from = &modulator:out; to = &transient:in; }
+    modulate timbre_transient { from = &timbre:out; to = &transient.params.level; depth = 1; }
+    modulate transient_carrier { from = &transient:out; to = &carrier.params.frequency; depth = 300Hz; }
+    connect carrier_blend { from = &carrier:out; to = &blend:in; }
+    connect body_blend { from = &body:out; to = &blend:in; }
+  }
+  shared output {
+    channels = 2;
+    output = &pan:out;
+    node soften { type = "synth.onepole/1"; config = { channels = 1; }; params = { cutoff = 6500Hz; }; }
+    node gain { type = "synth.gain/1"; config = { channels = 1; }; params = { level = 0.16; }; }
+    node pan { type = "synth.pan/1"; params = { pan = 0; }; }
+    connect input_soften { from = &input:out; to = &soften:in; }
+    connect soften_gain { from = &soften:out; to = &gain:in; }
+    connect gain_pan { from = &gain:out; to = &pan:in; }
+  }
+  control level { target = &output.gain.params.level; default = 0.16; }
+  control brightness { target = &output.soften.params.cutoff; default = 6500Hz; }
+  control release { target = &voice.amp.params.release; default = 600ms; }
+  control pan { target = &output.pan.params.pan; default = 0; }
+}
+
+// Sustained additive drawbar-like harmonic blend; a synthesized organ interpretation without rotary effects.
+instrument organ {
+  channels = 2;
+  voice voice {
+    channels = 1;
+    amplitude = &amp;
+    output = &blend:out;
+    node amp { type = "synth.adsr/1"; params = { attack = 12ms; decay = 80ms; sustain = 0.92; release = 110ms; }; }
+    node blend { type = "synth.mix/1"; config = { channels = 1; }; }
+    node partial_1 { type = "synth.sine/1"; params = { ratio = 1; level = 0.65; }; }
+    connect partial_1_blend { from = &partial_1:out; to = &blend:in; }
+    node partial_2 { type = "synth.sine/1"; params = { ratio = 2; level = 0.24; }; }
+    connect partial_2_blend { from = &partial_2:out; to = &blend:in; }
+    node partial_3 { type = "synth.sine/1"; params = { ratio = 3; level = 0.13; }; }
+    connect partial_3_blend { from = &partial_3:out; to = &blend:in; }
+    node partial_4 { type = "synth.sine/1"; params = { ratio = 4; level = 0.08; }; }
+    connect partial_4_blend { from = &partial_4:out; to = &blend:in; }
+  }
+  shared output {
+    channels = 2;
+    output = &pan:out;
+    node soften { type = "synth.onepole/1"; config = { channels = 1; }; params = { cutoff = 9000Hz; }; }
+    node gain { type = "synth.gain/1"; config = { channels = 1; }; params = { level = 0.14; }; }
+    node pan { type = "synth.pan/1"; params = { pan = 0; }; }
+    connect input_soften { from = &input:out; to = &soften:in; }
+    connect soften_gain { from = &soften:out; to = &gain:in; }
+    connect gain_pan { from = &gain:out; to = &pan:in; }
+  }
+  control level { target = &output.gain.params.level; default = 0.14; }
+  control brightness { target = &output.soften.params.cutoff; default = 9000Hz; }
+  control release { target = &voice.amp.params.release; default = 110ms; }
+  control pan { target = &output.pan.params.pan; default = 0; }
+}
+
+
+// Synthesized nylon-string interpretation: rounded sine/triangle body with a brief harmonic FM pluck.
+instrument nylon_guitar {
+  channels = 2;
+  voice voice {
+    channels = 1;
+    amplitude = &amp;
+    output = &body_mix:out;
+    node amp {
+      type = "synth.adsr/1";
+      params = { attack = 3ms; decay = 1250ms; sustain = 0; release = 160ms; };
+    }
+    node pluck {
+      type = "synth.adsr/1";
+      params = { attack = 1ms; decay = 85ms; sustain = 0; release = 45ms; };
+    }
+    node modulator { type = "synth.sine/1"; params = { ratio = 2; }; }
+    node transient {
+      type = "synth.gain/1";
+      config = { channels = 1; };
+      params = { level = 0; };
+    }
+    node string { type = "synth.sine/1"; params = { level = 0.8; }; }
+    node body { type = "synth.triangle/1"; params = { level = 0.25; }; }
+    node body_mix { type = "synth.mix/1"; config = { channels = 1; }; }
+    connect modulator_transient { from = &modulator:out; to = &transient:in; }
+    connect string_mix { from = &string:out; to = &body_mix:in; }
+    connect body_mix_input { from = &body:out; to = &body_mix:in; }
+    modulate pluck_amount { from = &pluck:out; to = &transient.params.level; depth = 1; }
+    modulate pluck_fm { from = &transient:out; to = &string.params.frequency; depth = 150Hz; }
+  }
+  shared tone {
+    channels = 2;
+    output = &output_gain:out;
+    node filter {
+      type = "synth.onepole/1";
+      config = { channels = 1; };
+      params = { cutoff = 3500Hz; };
+    }
+    node stereo { type = "synth.pan/1"; params = { pan = 0; }; }
+    node output_gain {
+      type = "synth.gain/1";
+      config = { channels = 2; };
+      params = { level = 0.14; };
+    }
+    connect input_filter { from = &input:out; to = &filter:in; }
+    connect filter_stereo { from = &filter:out; to = &stereo:in; }
+    connect stereo_output { from = &stereo:out; to = &output_gain:in; }
+  }
+  control level { target = &tone.output_gain.params.level; default = 0.14; }
+  control brightness { target = &tone.filter.params.cutoff; default = 3500Hz; }
+  control release { target = &voice.amp.params.release; default = 160ms; }
+  control pan { target = &tone.stereo.params.pan; default = 0; }
+}
+
+// Synthesized steel-string interpretation: brighter saw body and a longer, stronger harmonic FM transient.
+instrument steel_guitar {
+  channels = 2;
+  voice voice {
+    channels = 1;
+    amplitude = &amp;
+    output = &body_mix:out;
+    node amp {
+      type = "synth.adsr/1";
+      params = { attack = 2ms; decay = 1800ms; sustain = 0; release = 220ms; };
+    }
+    node pluck {
+      type = "synth.adsr/1";
+      params = { attack = 1ms; decay = 180ms; sustain = 0; release = 60ms; };
+    }
+    node modulator { type = "synth.sine/1"; params = { ratio = 3; }; }
+    node transient {
+      type = "synth.gain/1";
+      config = { channels = 1; };
+      params = { level = 0; };
+    }
+    node string { type = "synth.sine/1"; params = { level = 0.8; }; }
+    node body { type = "synth.saw/1"; params = { level = 0.3; }; }
+    node body_mix { type = "synth.mix/1"; config = { channels = 1; }; }
+    connect modulator_transient { from = &modulator:out; to = &transient:in; }
+    connect string_mix { from = &string:out; to = &body_mix:in; }
+    connect body_mix_input { from = &body:out; to = &body_mix:in; }
+    modulate pluck_amount { from = &pluck:out; to = &transient.params.level; depth = 1; }
+    modulate pluck_fm { from = &transient:out; to = &string.params.frequency; depth = 420Hz; }
+  }
+  shared tone {
+    channels = 2;
+    output = &output_gain:out;
+    node filter {
+      type = "synth.onepole/1";
+      config = { channels = 1; };
+      params = { cutoff = 6500Hz; };
+    }
+    node stereo { type = "synth.pan/1"; params = { pan = 0; }; }
+    node output_gain {
+      type = "synth.gain/1";
+      config = { channels = 2; };
+      params = { level = 0.14; };
+    }
+    connect input_filter { from = &input:out; to = &filter:in; }
+    connect filter_stereo { from = &filter:out; to = &stereo:in; }
+    connect stereo_output { from = &stereo:out; to = &output_gain:in; }
+  }
+  control level { target = &tone.output_gain.params.level; default = 0.14; }
+  control brightness { target = &tone.filter.params.cutoff; default = 6500Hz; }
+  control release { target = &voice.amp.params.release; default = 220ms; }
+  control pan { target = &tone.stereo.params.pan; default = 0; }
+}
+
+// Synthesized muted-string interpretation: short damped sine/triangle pluck with a rapidly fading FM transient.
+instrument muted_guitar {
+  channels = 2;
+  voice voice {
+    channels = 1;
+    amplitude = &amp;
+    output = &body_mix:out;
+    node amp {
+      type = "synth.adsr/1";
+      params = { attack = 2ms; decay = 160ms; sustain = 0; release = 45ms; };
+    }
+    node pluck {
+      type = "synth.adsr/1";
+      params = { attack = 1ms; decay = 25ms; sustain = 0; release = 20ms; };
+    }
+    node modulator { type = "synth.sine/1"; params = { ratio = 2; }; }
+    node transient {
+      type = "synth.gain/1";
+      config = { channels = 1; };
+      params = { level = 0; };
+    }
+    node string { type = "synth.sine/1"; params = { level = 0.8; }; }
+    node body { type = "synth.triangle/1"; params = { level = 0.2; }; }
+    node body_mix { type = "synth.mix/1"; config = { channels = 1; }; }
+    connect modulator_transient { from = &modulator:out; to = &transient:in; }
+    connect string_mix { from = &string:out; to = &body_mix:in; }
+    connect body_mix_input { from = &body:out; to = &body_mix:in; }
+    modulate pluck_amount { from = &pluck:out; to = &transient.params.level; depth = 1; }
+    modulate pluck_fm { from = &transient:out; to = &string.params.frequency; depth = 240Hz; }
+  }
+  shared tone {
+    channels = 2;
+    output = &output_gain:out;
+    node filter {
+      type = "synth.onepole/1";
+      config = { channels = 1; };
+      params = { cutoff = 1800Hz; };
+    }
+    node stereo { type = "synth.pan/1"; params = { pan = 0; }; }
+    node output_gain {
+      type = "synth.gain/1";
+      config = { channels = 2; };
+      params = { level = 0.15; };
+    }
+    connect input_filter { from = &input:out; to = &filter:in; }
+    connect filter_stereo { from = &filter:out; to = &stereo:in; }
+    connect stereo_output { from = &stereo:out; to = &output_gain:in; }
+  }
+  control level { target = &tone.output_gain.params.level; default = 0.15; }
+  control brightness { target = &tone.filter.params.cutoff; default = 1800Hz; }
+  control release { target = &voice.amp.params.release; default = 45ms; }
+  control pan { target = &tone.stereo.params.pan; default = 0; }
+}
+
+
+instrument finger_bass {
+  channels = 2;
+  voice voice {
+    channels = 1;
+    amplitude = &amp;
+    output = &tone:out;
+    node amp {
+      type = "synth.adsr/1";
+      params = { attack = 8ms; decay = 180ms; sustain = 0.58; release = 160ms; };
+    }
+    node wave_0 { type = "synth.triangle/1"; params = { ratio = 1; phase = 0; level = 0.7; }; }
+    node wave_1 { type = "synth.sine/1"; params = { ratio = 1; phase = 0; level = 0.3; }; }
+    node body { type = "synth.mix/1"; config = { channels = 1; }; }
+    node tone { type = "synth.onepole/1"; config = { channels = 1; }; params = { cutoff = 700Hz; }; }
+    connect wave_0_body { from = &wave_0:out; to = &body:in; }
+    connect wave_1_body { from = &wave_1:out; to = &body:in; }
+    connect body_tone { from = &body:out; to = &tone:in; }
+  }
+  shared output {
+    channels = 2;
+    output = &pan_node:out;
+    node gain { type = "synth.gain/1"; config = { channels = 1; }; params = { level = 0.25; }; }
+    node pan_node { type = "synth.pan/1"; params = { pan = 0; }; }
+    connect input_gain { from = &input:out; to = &gain:in; }
+    connect gain_pan { from = &gain:out; to = &pan_node:in; }
+  }
+  control level { target = &output.gain.params.level; default = 0.25; }
+  control brightness { target = &voice.tone.params.cutoff; default = 700Hz; }
+  control release { target = &voice.amp.params.release; default = 160ms; }
+  control pan { target = &output.pan_node.params.pan; default = 0; }
+}
+
+instrument pick_bass {
+  channels = 2;
+  voice voice {
+    channels = 1;
+    amplitude = &amp;
+    output = &tone:out;
+    node amp {
+      type = "synth.adsr/1";
+      params = { attack = 3ms; decay = 110ms; sustain = 0.42; release = 100ms; };
+    }
+    node wave_0 { type = "synth.square/1"; params = { ratio = 1; phase = 0; level = 0.7; }; }
+    node wave_1 { type = "synth.sine/1"; params = { ratio = 1; phase = 0; level = 0.3; }; }
+    node body { type = "synth.mix/1"; config = { channels = 1; }; }
+    node tone { type = "synth.onepole/1"; config = { channels = 1; }; params = { cutoff = 1800Hz; }; }
+    connect wave_0_body { from = &wave_0:out; to = &body:in; }
+    connect wave_1_body { from = &wave_1:out; to = &body:in; }
+    connect body_tone { from = &body:out; to = &tone:in; }
+  }
+  shared output {
+    channels = 2;
+    output = &pan_node:out;
+    node gain { type = "synth.gain/1"; config = { channels = 1; }; params = { level = 0.22; }; }
+    node pan_node { type = "synth.pan/1"; params = { pan = 0; }; }
+    connect input_gain { from = &input:out; to = &gain:in; }
+    connect gain_pan { from = &gain:out; to = &pan_node:in; }
+  }
+  control level { target = &output.gain.params.level; default = 0.22; }
+  control brightness { target = &voice.tone.params.cutoff; default = 1800Hz; }
+  control release { target = &voice.amp.params.release; default = 100ms; }
+  control pan { target = &output.pan_node.params.pan; default = 0; }
+}
+
+instrument sub_bass {
+  channels = 2;
+  voice voice {
+    channels = 1;
+    amplitude = &amp;
+    output = &tone:out;
+    node amp {
+      type = "synth.adsr/1";
+      params = { attack = 12ms; decay = 100ms; sustain = 0.88; release = 220ms; };
+    }
+    node wave_0 { type = "synth.sine/1"; params = { ratio = 1; phase = 0; level = 0.9; }; }
+    node wave_1 { type = "synth.triangle/1"; params = { ratio = 1; phase = 0; level = 0.1; }; }
+    node body { type = "synth.mix/1"; config = { channels = 1; }; }
+    node tone { type = "synth.onepole/1"; config = { channels = 1; }; params = { cutoff = 220Hz; }; }
+    connect wave_0_body { from = &wave_0:out; to = &body:in; }
+    connect wave_1_body { from = &wave_1:out; to = &body:in; }
+    connect body_tone { from = &body:out; to = &tone:in; }
+  }
+  shared output {
+    channels = 2;
+    output = &pan_node:out;
+    node gain { type = "synth.gain/1"; config = { channels = 1; }; params = { level = 0.25; }; }
+    node pan_node { type = "synth.pan/1"; params = { pan = 0; }; }
+    connect input_gain { from = &input:out; to = &gain:in; }
+    connect gain_pan { from = &gain:out; to = &pan_node:in; }
+  }
+  control level { target = &output.gain.params.level; default = 0.25; }
+  control brightness { target = &voice.tone.params.cutoff; default = 220Hz; }
+  control release { target = &voice.amp.params.release; default = 220ms; }
+  control pan { target = &output.pan_node.params.pan; default = 0; }
+}
+
+instrument synth_bass {
+  channels = 2;
+  voice voice {
+    channels = 1;
+    amplitude = &amp;
+    output = &tone:out;
+    node amp {
+      type = "synth.adsr/1";
+      params = { attack = 6ms; decay = 160ms; sustain = 0.72; release = 180ms; };
+    }
+    node wave_0 { type = "synth.saw/1"; params = { ratio = 1; phase = 0.5; level = 0.7; }; }
+    node wave_1 { type = "synth.saw/1"; params = { ratio = 1.005; phase = 0.5; level = 0.3; }; }
+    node wave_2 { type = "synth.sine/1"; params = { ratio = 0.5; phase = 0; level = 0.25; }; }
+    node body { type = "synth.mix/1"; config = { channels = 1; }; }
+    node tone { type = "synth.onepole/1"; config = { channels = 1; }; params = { cutoff = 1000Hz; }; }
+    connect wave_0_body { from = &wave_0:out; to = &body:in; }
+    connect wave_1_body { from = &wave_1:out; to = &body:in; }
+    connect wave_2_body { from = &wave_2:out; to = &body:in; }
+    connect body_tone { from = &body:out; to = &tone:in; }
+  }
+  shared output {
+    channels = 2;
+    output = &pan_node:out;
+    node gain { type = "synth.gain/1"; config = { channels = 1; }; params = { level = 0.2; }; }
+    node pan_node { type = "synth.pan/1"; params = { pan = 0; }; }
+    connect input_gain { from = &input:out; to = &gain:in; }
+    connect gain_pan { from = &gain:out; to = &pan_node:in; }
+  }
+  control level { target = &output.gain.params.level; default = 0.2; }
+  control brightness { target = &voice.tone.params.cutoff; default = 1000Hz; }
+  control release { target = &voice.amp.params.release; default = 180ms; }
+  control pan { target = &output.pan_node.params.pan; default = 0; }
+}
+
+
+// Gently detuned saw pair and octave triangle with a bowed-style onset; a synthesized string ensemble interpretation.
+instrument strings {
+  channels = 2;
+  voice voice {
+    channels = 1;
+    amplitude = &amp;
+    output = &blend:out;
+    node amp { type = "synth.adsr/1"; params = { attack = 100ms; decay = 250ms; sustain = 0.85; release = 450ms; }; }
+    node blend { type = "synth.mix/1"; config = { channels = 1; }; }
+    node tone_0 { type = "synth.saw/1"; params = { ratio = 1; frequency = -0.5Hz; level = 0.45; }; }
+    connect tone_0_blend { from = &tone_0:out; to = &blend:in; }
+    node tone_1 { type = "synth.saw/1"; params = { ratio = 1; frequency = 0.5Hz; level = 0.45; }; }
+    connect tone_1_blend { from = &tone_1:out; to = &blend:in; }
+    node tone_2 { type = "synth.triangle/1"; params = { ratio = 2; frequency = 0Hz; level = 0.1; }; }
+    connect tone_2_blend { from = &tone_2:out; to = &blend:in; }
+  }
+  shared output {
+    channels = 2;
+    output = &pan:out;
+    node soften { type = "synth.onepole/1"; config = { channels = 1; }; params = { cutoff = 4200Hz; }; }
+    node gain { type = "synth.gain/1"; config = { channels = 1; }; params = { level = 0.16; }; }
+    node pan { type = "synth.pan/1"; params = { pan = 0; }; }
+    connect input_soften { from = &input:out; to = &soften:in; }
+    connect soften_gain { from = &soften:out; to = &gain:in; }
+    connect gain_pan { from = &gain:out; to = &pan:in; }
+  }
+  control level { target = &output.gain.params.level; default = 0.16; }
+  control brightness { target = &output.soften.params.cutoff; default = 4200Hz; }
+  control release { target = &voice.amp.params.release; default = 450ms; }
+  control pan { target = &output.pan.params.pan; default = 0; }
+}
+
+// Sine-led sustained tone with a faint triangle edge and modest fixed-depth vibrato; a synthesized flute interpretation.
+instrument flute {
+  channels = 2;
+  voice voice {
+    channels = 1;
+    amplitude = &amp;
+    output = &blend:out;
+    node amp { type = "synth.adsr/1"; params = { attack = 35ms; decay = 80ms; sustain = 0.85; release = 160ms; }; }
+    node blend { type = "synth.mix/1"; config = { channels = 1; }; }
+    node vibrato { type = "synth.lfo/1"; params = { frequency = 5Hz; }; }
+    node tone_0 { type = "synth.sine/1"; params = { ratio = 1; frequency = 0Hz; level = 0.92; }; }
+    connect tone_0_blend { from = &tone_0:out; to = &blend:in; }
+    modulate vibrato_0 { from = &vibrato:out; to = &tone_0.params.frequency; depth = 2.2Hz; }
+    node tone_1 { type = "synth.triangle/1"; params = { ratio = 1; frequency = 0Hz; level = 0.08; }; }
+    connect tone_1_blend { from = &tone_1:out; to = &blend:in; }
+    modulate vibrato_1 { from = &vibrato:out; to = &tone_1.params.frequency; depth = 2.2Hz; }
+  }
+  shared output {
+    channels = 2;
+    output = &pan:out;
+    node soften { type = "synth.onepole/1"; config = { channels = 1; }; params = { cutoff = 6500Hz; }; }
+    node gain { type = "synth.gain/1"; config = { channels = 1; }; params = { level = 0.16; }; }
+    node pan { type = "synth.pan/1"; params = { pan = 0; }; }
+    connect input_soften { from = &input:out; to = &soften:in; }
+    connect soften_gain { from = &soften:out; to = &gain:in; }
+    connect gain_pan { from = &gain:out; to = &pan:in; }
+  }
+  control level { target = &output.gain.params.level; default = 0.16; }
+  control brightness { target = &output.soften.params.cutoff; default = 6500Hz; }
+  control release { target = &voice.amp.params.release; default = 160ms; }
+  control pan { target = &output.pan.params.pan; default = 0; }
+}
+
+// Decaying inharmonic FM strike with a faint octave component; a synthesized bell interpretation.
+instrument bell {
+  channels = 2;
+  voice voice {
+    channels = 1;
+    amplitude = &amp;
+    output = &blend:out;
+    node amp { type = "synth.adsr/1"; params = { attack = 3ms; decay = 2400ms; sustain = 0; release = 900ms; }; }
+    node blend { type = "synth.mix/1"; config = { channels = 1; }; }
+    node timbre { type = "synth.adsr/1"; params = { attack = 2ms; decay = 400ms; sustain = 0; release = 150ms; }; }
+    node modulator { type = "synth.sine/1"; params = { ratio = 2.73; }; }
+    node transient { type = "synth.gain/1"; config = { channels = 1; }; params = { level = 0; }; }
+    node carrier { type = "synth.sine/1"; params = { level = 0.85; }; }
+    node overtone { type = "synth.sine/1"; params = { ratio = 2; level = 0.15; }; }
+    connect modulator_transient { from = &modulator:out; to = &transient:in; }
+    modulate timbre_transient { from = &timbre:out; to = &transient.params.level; depth = 1; }
+    modulate transient_carrier { from = &transient:out; to = &carrier.params.frequency; depth = 650Hz; }
+    connect carrier_blend { from = &carrier:out; to = &blend:in; }
+    connect overtone_blend { from = &overtone:out; to = &blend:in; }
+  }
+  shared output {
+    channels = 2;
+    output = &pan:out;
+    node soften { type = "synth.onepole/1"; config = { channels = 1; }; params = { cutoff = 11000Hz; }; }
+    node gain { type = "synth.gain/1"; config = { channels = 1; }; params = { level = 0.16; }; }
+    node pan { type = "synth.pan/1"; params = { pan = 0; }; }
+    connect input_soften { from = &input:out; to = &soften:in; }
+    connect soften_gain { from = &soften:out; to = &gain:in; }
+    connect gain_pan { from = &gain:out; to = &pan:in; }
+  }
+  control level { target = &output.gain.params.level; default = 0.16; }
+  control brightness { target = &output.soften.params.cutoff; default = 11000Hz; }
+  control release { target = &voice.amp.params.release; default = 900ms; }
+  control pan { target = &output.pan.params.pan; default = 0; }
+}
+
+// Slowly swelling detuned triangle pair with a sine sub-octave and dark low-pass tone.
+instrument warm_pad {
+  channels = 2;
+  voice voice {
+    channels = 1;
+    amplitude = &amp;
+    output = &blend:out;
+    node amp { type = "synth.adsr/1"; params = { attack = 650ms; decay = 500ms; sustain = 0.8; release = 1200ms; }; }
+    node blend { type = "synth.mix/1"; config = { channels = 1; }; }
+    node tone_0 { type = "synth.triangle/1"; params = { ratio = 1; frequency = -0.6Hz; level = 0.35; }; }
+    connect tone_0_blend { from = &tone_0:out; to = &blend:in; }
+    node tone_1 { type = "synth.triangle/1"; params = { ratio = 1; frequency = 0.6Hz; level = 0.35; }; }
+    connect tone_1_blend { from = &tone_1:out; to = &blend:in; }
+    node tone_2 { type = "synth.sine/1"; params = { ratio = 0.5; frequency = 0Hz; level = 0.3; }; }
+    connect tone_2_blend { from = &tone_2:out; to = &blend:in; }
+  }
+  shared output {
+    channels = 2;
+    output = &pan:out;
+    node soften { type = "synth.onepole/1"; config = { channels = 1; }; params = { cutoff = 1800Hz; }; }
+    node gain { type = "synth.gain/1"; config = { channels = 1; }; params = { level = 0.16; }; }
+    node pan { type = "synth.pan/1"; params = { pan = 0; }; }
+    connect input_soften { from = &input:out; to = &soften:in; }
+    connect soften_gain { from = &soften:out; to = &gain:in; }
+    connect gain_pan { from = &gain:out; to = &pan:in; }
+  }
+  control level { target = &output.gain.params.level; default = 0.16; }
+  control brightness { target = &output.soften.params.cutoff; default = 1800Hz; }
+  control release { target = &voice.amp.params.release; default = 1200ms; }
+  control pan { target = &output.pan.params.pan; default = 0; }
+}
+
+// Responsive saw, square and sine blend with subtle vibrato and a bright sustained tone.
+instrument synth_lead {
+  channels = 2;
+  voice voice {
+    channels = 1;
+    amplitude = &amp;
+    output = &blend:out;
+    node amp { type = "synth.adsr/1"; params = { attack = 8ms; decay = 160ms; sustain = 0.72; release = 180ms; }; }
+    node blend { type = "synth.mix/1"; config = { channels = 1; }; }
+    node vibrato { type = "synth.lfo/1"; params = { frequency = 5Hz; }; }
+    node tone_0 { type = "synth.saw/1"; params = { ratio = 1; frequency = 0Hz; level = 0.58; }; }
+    connect tone_0_blend { from = &tone_0:out; to = &blend:in; }
+    modulate vibrato_0 { from = &vibrato:out; to = &tone_0.params.frequency; depth = 1.5Hz; }
+    node tone_1 { type = "synth.square/1"; params = { ratio = 1; frequency = 0Hz; level = 0.22; }; }
+    connect tone_1_blend { from = &tone_1:out; to = &blend:in; }
+    modulate vibrato_1 { from = &vibrato:out; to = &tone_1.params.frequency; depth = 1.5Hz; }
+    node tone_2 { type = "synth.sine/1"; params = { ratio = 1; frequency = 0Hz; level = 0.2; }; }
+    connect tone_2_blend { from = &tone_2:out; to = &blend:in; }
+    modulate vibrato_2 { from = &vibrato:out; to = &tone_2.params.frequency; depth = 1.5Hz; }
+  }
+  shared output {
+    channels = 2;
+    output = &pan:out;
+    node soften { type = "synth.onepole/1"; config = { channels = 1; }; params = { cutoff = 7000Hz; }; }
+    node gain { type = "synth.gain/1"; config = { channels = 1; }; params = { level = 0.30; }; }
+    node pan { type = "synth.pan/1"; params = { pan = 0; }; }
+    connect input_soften { from = &input:out; to = &soften:in; }
+    connect soften_gain { from = &soften:out; to = &gain:in; }
+    connect gain_pan { from = &gain:out; to = &pan:in; }
+  }
+  control level { target = &output.gain.params.level; default = 0.30; }
+  control brightness { target = &output.soften.params.cutoff; default = 7000Hz; }
+  control release { target = &voice.amp.params.release; default = 180ms; }
+  control pan { target = &output.pan.params.pan; default = 0; }
+}

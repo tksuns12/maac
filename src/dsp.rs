@@ -6,7 +6,8 @@
 //! the slice is valid until the callback returns.
 
 use crate::plan::{
-    AutomationClock, EventKind, Interpolation, Plan, PlanError, Processor, Rational, ResolvedEvent,
+    AutomationClock, EventKind, Interpolation, Plan, PlanError, PlanLimits, Processor, Rational,
+    ResolvedEvent,
 };
 use crate::voice::{CompiledInstrument, InstrumentRuntime};
 use crate::wavetable::TableBank;
@@ -99,7 +100,15 @@ pub fn render<F>(plan: &Plan, callback: F) -> Result<()>
 where
     F: FnMut(&[f64]) -> Result<()>,
 {
-    DspEngine::new(plan)?.render(callback)
+    render_with_limits(plan, &PlanLimits::default(), callback)
+}
+
+/// Validate and stream a plan under an explicit caller resource allowance.
+pub fn render_with_limits<F>(plan: &Plan, limits: &PlanLimits, callback: F) -> Result<()>
+where
+    F: FnMut(&[f64]) -> Result<()>,
+{
+    DspEngine::new_with_limits(plan, limits)?.render(callback)
 }
 
 /// Alias with an explicit name for callers that prefer not to shadow a local
@@ -109,6 +118,14 @@ where
     F: FnMut(&[f64]) -> Result<()>,
 {
     render(plan, callback)
+}
+
+/// Explicit-name alias for streaming with caller-selected limits.
+pub fn render_plan_with_limits<F>(plan: &Plan, limits: &PlanLimits, callback: F) -> Result<()>
+where
+    F: FnMut(&[f64]) -> Result<()>,
+{
+    render_with_limits(plan, limits, callback)
 }
 
 /// Resettable sample based renderer for one immutable performance plan.
@@ -132,7 +149,13 @@ impl<'a> DspEngine<'a> {
     /// Validate and prepare a plan.  No render state is accepted from a
     /// previous invocation.
     pub fn new(plan: &'a Plan) -> Result<Self> {
-        plan.validate().map_err(RenderError::Plan)?;
+        Self::new_with_limits(plan, &PlanLimits::default())
+    }
+
+    /// Validate under caller limits before preparing any render state.
+    pub fn new_with_limits(plan: &'a Plan, limits: &PlanLimits) -> Result<Self> {
+        plan.validate_with_limits(limits)
+            .map_err(RenderError::Plan)?;
 
         let rate = f64::from(plan.output.sample_rate_hz);
         let channels = usize::from(plan.output.channels);
@@ -494,6 +517,24 @@ impl<'a> DspEngine<'a> {
                     node.output[channel] = output;
                 }
             }
+            Processor::Gain { channels } => {
+                let gain = self.nodes[node_index].current_param("gain");
+                let mut output = [0.0; 2];
+                for (channel, sample) in output.iter_mut().enumerate().take(usize::from(channels)) {
+                    // Plan validation guarantees exactly one audio input.
+                    let connection = &self.connections[incoming[0]];
+                    *sample = gain * self.nodes[connection.from].output[channel];
+                    if !sample.is_finite() {
+                        return Err(RenderError::Nonfinite(format!(
+                            "gain node {} produced a nonfinite value",
+                            self.nodes[node_index].id
+                        )));
+                    }
+                }
+                self.nodes[node_index]
+                    .output
+                    .copy_from_slice(&output[..usize::from(channels)]);
+            }
             Processor::Pan => {
                 let mut input = 0.0;
                 for &connection_index in &incoming {
@@ -565,7 +606,9 @@ impl NodeState {
     ) -> Result<Self> {
         let channels = match processor {
             Processor::Sine { .. } => 1,
-            Processor::OnePole { channels } | Processor::Sum { channels } => usize::from(channels),
+            Processor::OnePole { channels }
+            | Processor::Gain { channels }
+            | Processor::Sum { channels } => usize::from(channels),
             Processor::Pan => 2,
             Processor::Instrument { channels, .. } => usize::from(channels),
         };
@@ -578,6 +621,9 @@ impl NodeState {
             }
             Processor::OnePole { .. } => {
                 base_params.insert("cutoff".into(), 1000.0);
+            }
+            Processor::Gain { .. } => {
+                base_params.insert("gain".into(), 1.0);
             }
             Processor::Pan => {
                 base_params.insert("pan".into(), 0.0);
@@ -653,6 +699,12 @@ impl NodeState {
                 )));
             }
             match (&self.processor, name.as_str()) {
+                (Processor::Gain { .. }, "gain") if *value < 0.0 => {
+                    return Err(RenderError::Nonfinite(format!(
+                        "gain on {} must be nonnegative",
+                        self.id
+                    )))
+                }
                 (Processor::Sine { .. }, "attack" | "release" | "level") if *value < 0.0 => {
                     return Err(RenderError::RenderState(format!(
                         "parameter {name} on {} is negative",
@@ -1199,6 +1251,7 @@ fn default_parameter(processor: &Processor, parameter: &str) -> f64 {
         (Processor::Sine { .. }, "release") => 0.080,
         (Processor::Sine { .. }, "level") => 0.2,
         (Processor::OnePole { .. }, "cutoff") => 1000.0,
+        (Processor::Gain { .. }, "gain") => 1.0,
         (Processor::Pan, "pan") => 0.0,
         _ => 0.0,
     }

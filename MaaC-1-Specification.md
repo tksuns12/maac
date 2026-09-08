@@ -46,6 +46,14 @@ An implementation states its profiles and its supported extension identifiers. A
 
 The normative [reusable instrument contract](docs/instruments.md) defines this repository's local-library extension: library documents, hash-pinned imports, instruments, presets, explicit WAV wavetables, and versioned `synth.* /1` voice/shared processors. It specifies the additional declaration and namespace rules, public control interfaces, synthesis behavior, and resource limits. These declarations opt into the extension; they do not change existing core processor behavior. The [capability matrix](docs/capabilities.md) identifies the implemented subset, and [performance-plan versions 1 and 2](docs/performance-plan.md) define the separate rendering interchange format.
 
+The normative [plucked-string implementation contract](docs/plucked-string.md)
+adds the approved `synth.pluck/1` internally stateful string processor and the
+separate `std/acoustic/1.0.0` guitar library. It fixes excitation, fractional
+delay, live tuning, decay, strict plan fields, and memory/work accounting before
+implementation. It preserves source grammar, core processor and plan versions,
+public graph DAG rules, and frozen basic-library bytes. Numerical verification
+and user listening acceptance remain separate from this design approval.
+
 ## 2. File format and lexical rules
 
 The recommended source extension is `.maac`. Files are UTF-8. A file begins with:
@@ -77,6 +85,23 @@ target = &synth:events;
 ```
 
 Top-level identifiers are unique across all kinds. Child identifiers are unique within their parent. A field and child of the same name within a parent are forbidden. Declaration order does not determine meaning. Duplicate fields, duplicate IDs, unknown core fields, and unknown core kinds are errors.
+
+### 2.1 Conventional project entrypoint
+
+A project SHOULD use `main.maac` as its master composition source, with one
+`project`, visible final routing/gain, and its full arrangement. Existing
+declaration order remains unrestricted and forward references remain valid;
+existing explicit source filenames need not be renamed. Imports remain
+library-only and do not merge compositions.
+
+The normative [project-entrypoint contract](docs/project-entrypoint.md) defines
+`check`, `compile`, and `build` entry selection: omitted input selects
+`cwd/main.maac`; directory input selects that directory's `main.maac`; explicit
+file input remains compatible. It also defines caller-selected default/song
+execution allowances, separate from §1.2 conformance profiles, while preserving
+all other bounds and the source/plan versions. The
+[entrypoint delivery report](docs/project-entrypoint-delivery.md) records the
+implemented contract's integrated checks and native source-free render evidence.
 
 ## 3. Values and types
 

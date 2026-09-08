@@ -20,6 +20,7 @@ pub struct CompiledInstrument {
     controls: Vec<CompiledControl>,
     control_indices: BTreeMap<String, usize>,
     channels: usize,
+    pluck_nodes: usize,
 }
 
 /// Mutable polyphonic state for one instrument node.
@@ -58,11 +59,14 @@ struct CompiledNode {
 #[derive(Debug)]
 enum ProcessorCode {
     Oscillator(Waveform),
+    Noise(u32),
+    Pluck(u32),
     Wavetable(Arc<TableBank>),
     Adsr,
     Lfo,
     Gain(usize),
     OnePole(usize),
+    HighPass(usize),
     Mix(usize),
     Pan,
 }
@@ -128,6 +132,8 @@ struct RuntimeNode {
 #[derive(Clone, Debug)]
 enum ProcessorState {
     Oscillator(Oscillator),
+    Noise(u32),
+    Pluck(crate::pluck::Pluck),
     Wavetable { phase: f64 },
     Adsr(Adsr),
     Lfo(Oscillator),
@@ -219,6 +225,7 @@ impl CompiledInstrument {
         Ok(Self {
             id: program.id.clone(),
             channels: program.channels() as usize,
+            pluck_nodes: program.pluck_node_count(),
             voice,
             shared,
             controls,
@@ -255,6 +262,21 @@ impl InstrumentRuntime {
                 "instrument voice capacity must be positive".into(),
             ));
         }
+        let mut voices = Vec::new();
+        if program.pluck_nodes != 0 {
+            let cells = crate::graph::pluck_delay_cells(capacity as usize, program.pluck_nodes)
+                .ok_or_else(|| {
+                    pluck_resource_error("declared pluck storage arithmetic overflow")
+                })?;
+            if cells > crate::graph::MAX_PLUCK_DELAY_CELLS {
+                return Err(pluck_resource_error(
+                    "declared pluck delay storage exceeds the runtime limit",
+                ));
+            }
+            voices
+                .try_reserve_exact(capacity as usize)
+                .map_err(|_| pluck_resource_error("cannot reserve pluck voice capacity"))?;
+        }
         let resolved = resolve_controls(&program, controls)?;
         let shared = program
             .shared
@@ -266,7 +288,7 @@ impl InstrumentRuntime {
             capacity: capacity as usize,
             rate,
             controls: resolved,
-            voices: Vec::new(),
+            voices,
             shared_reset: shared.clone(),
             shared,
             output: [0.0; 2],
@@ -446,6 +468,10 @@ impl GraphState {
                 ProcessorCode::Oscillator(waveform) => {
                     ProcessorState::Oscillator(Oscillator::new(*waveform, params[2])?)
                 }
+                ProcessorCode::Noise(seed) => ProcessorState::Noise(*seed),
+                ProcessorCode::Pluck(seed) => {
+                    ProcessorState::Pluck(crate::pluck::Pluck::new(*seed)?)
+                }
                 ProcessorCode::Wavetable(_) => ProcessorState::Wavetable { phase: params[2] },
                 ProcessorCode::Adsr => ProcessorState::Adsr(Adsr::new(
                     on_frame.unwrap_or(0),
@@ -456,7 +482,9 @@ impl GraphState {
                 ProcessorCode::Lfo => {
                     ProcessorState::Lfo(Oscillator::new(Waveform::Sine, params[1])?)
                 }
-                ProcessorCode::OnePole(_) => ProcessorState::OnePole([0.0; 2]),
+                ProcessorCode::OnePole(_) | ProcessorCode::HighPass(_) => {
+                    ProcessorState::OnePole([0.0; 2])
+                }
                 ProcessorCode::Gain(_) | ProcessorCode::Mix(_) | ProcessorCode::Pan => {
                     ProcessorState::Stateless
                 }
@@ -546,6 +574,21 @@ impl GraphState {
             let runtime = &mut self.nodes[node_index];
             runtime.output = [0.0; 2];
             match (&compiled.processor, &mut runtime.state) {
+                (ProcessorCode::Noise(_), ProcessorState::Noise(state)) => {
+                    // Version 1 fixes xorshift32's width, shifts and advance-before-output order.
+                    *state ^= *state << 13;
+                    *state ^= *state >> 17;
+                    *state ^= *state << 5;
+                    runtime.output[0] = (*state as f64 / 2147483648.0 - 1.0) * runtime.params[0];
+                }
+                (ProcessorCode::Pluck(_), ProcessorState::Pluck(pluck)) => {
+                    runtime.output[0] = pluck.sample(
+                        pitch_hz * runtime.params[0],
+                        runtime.params[1],
+                        runtime.params[2],
+                        runtime.params[3],
+                    )?;
+                }
                 (ProcessorCode::Oscillator(_), ProcessorState::Oscillator(oscillator)) => {
                     let frequency = pitch_hz * runtime.params[0] + runtime.params[1];
                     validate_frequency(frequency)?;
@@ -572,7 +615,10 @@ impl GraphState {
                         *output = input * runtime.params[0];
                     }
                 }
-                (ProcessorCode::OnePole(channels), ProcessorState::OnePole(previous)) => {
+                (
+                    ProcessorCode::OnePole(channels) | ProcessorCode::HighPass(channels),
+                    ProcessorState::OnePole(previous),
+                ) => {
                     for ((output, previous), input) in runtime
                         .output
                         .iter_mut()
@@ -580,7 +626,12 @@ impl GraphState {
                         .zip(audio_input)
                         .take(*channels)
                     {
-                        *output = one_pole_step(input, previous, runtime.params[0], rate)?;
+                        let lowpass = one_pole_step(input, previous, runtime.params[0], rate)?;
+                        *output = if matches!(compiled.processor, ProcessorCode::HighPass(_)) {
+                            input - lowpass
+                        } else {
+                            lowpass
+                        };
                     }
                 }
                 (ProcessorCode::Mix(channels), ProcessorState::Stateless) => {
@@ -698,6 +749,11 @@ fn compile_processor(
         GraphProcessor::Saw => (OSCILLATOR, ProcessorCode::Oscillator(Waveform::Saw)),
         GraphProcessor::Square => (OSCILLATOR, ProcessorCode::Oscillator(Waveform::Square)),
         GraphProcessor::Triangle => (OSCILLATOR, ProcessorCode::Oscillator(Waveform::Triangle)),
+        GraphProcessor::Noise { seed } => (&["level"], ProcessorCode::Noise(*seed)),
+        GraphProcessor::Pluck { seed } => (
+            &["ratio", "decay", "damping", "level"],
+            ProcessorCode::Pluck(*seed),
+        ),
         GraphProcessor::Wavetable { table } => (
             &["ratio", "frequency", "phase", "level", "position"],
             ProcessorCode::Wavetable(tables.get(table).cloned().ok_or_else(|| {
@@ -713,6 +769,9 @@ fn compile_processor(
         GraphProcessor::OnePole { channels } => {
             (&["cutoff"], ProcessorCode::OnePole(*channels as usize))
         }
+        GraphProcessor::HighPass { channels } => {
+            (&["cutoff"], ProcessorCode::HighPass(*channels as usize))
+        }
         GraphProcessor::Mix { channels } => (&[], ProcessorCode::Mix(*channels as usize)),
         GraphProcessor::Pan => (&["pan"], ProcessorCode::Pan),
     })
@@ -721,11 +780,12 @@ fn compile_processor(
 fn parameter_slot(processor: &ProcessorCode, name: &str) -> Option<usize> {
     let names: &[&str] = match processor {
         ProcessorCode::Oscillator(_) => &["ratio", "frequency", "phase", "level"],
+        ProcessorCode::Pluck(_) => &["ratio", "decay", "damping", "level"],
         ProcessorCode::Wavetable(_) => &["ratio", "frequency", "phase", "level", "position"],
         ProcessorCode::Adsr => &["attack", "decay", "sustain", "release"],
         ProcessorCode::Lfo => &["frequency", "phase", "level"],
-        ProcessorCode::Gain(_) => &["level"],
-        ProcessorCode::OnePole(_) => &["cutoff"],
+        ProcessorCode::Gain(_) | ProcessorCode::Noise(_) => &["level"],
+        ProcessorCode::OnePole(_) | ProcessorCode::HighPass(_) => &["cutoff"],
         ProcessorCode::Mix(_) => &[],
         ProcessorCode::Pan => &["pan"],
     };
@@ -898,4 +958,120 @@ fn sum_inputs(nodes: &[RuntimeNode], incoming: &[Source], input: [f64; 2]) -> Re
         }
     }
     Ok(sum)
+}
+
+fn pluck_resource_error(message: &str) -> RenderError {
+    RenderError::Plan(crate::plan::PlanError {
+        code: "E_RESOURCE_LIMIT".into(),
+        path: "instrument.pluck".into(),
+        message: message.into(),
+        span: None,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn zero_velocity_voice_still_advances_noise_state() {
+        use crate::graph::{GraphNode, ProgramSource};
+        let program = InstrumentProgram {
+            id: "noise".into(),
+            voice: GraphProgram {
+                channels: 1,
+                nodes: vec![
+                    GraphNode {
+                        id: "amp".into(),
+                        processor: GraphProcessor::Adsr,
+                        params: BTreeMap::new(),
+                    },
+                    GraphNode {
+                        id: "noise".into(),
+                        processor: GraphProcessor::Noise { seed: 1 },
+                        params: BTreeMap::new(),
+                    },
+                ],
+                connections: Vec::new(),
+                modulations: Vec::new(),
+                output: crate::plan::PortRef::new("noise", "out").unwrap(),
+                amplitude: Some("amp".into()),
+            },
+            shared: None,
+            controls: BTreeMap::new(),
+            source: ProgramSource {
+                file: "test.maac".into(),
+                object: "noise".into(),
+                span: None,
+            },
+        };
+        let compiled = Arc::new(CompiledInstrument::compile(&program, &BTreeMap::new()).unwrap());
+        let mut runtime = InstrumentRuntime::new(compiled, 1, 48_000.0, &BTreeMap::new()).unwrap();
+        runtime.note_on("silent", 440.0, 0.0, 0).unwrap();
+        assert_eq!(runtime.render(0).unwrap(), &[0.0]);
+        assert_eq!(runtime.render(1).unwrap(), &[0.0]);
+        let state = runtime.voices[0]
+            .graph
+            .nodes
+            .iter()
+            .find_map(|n| match n.state {
+                ProcessorState::Noise(state) => Some(state),
+                _ => None,
+            });
+        assert_eq!(state, Some(67634689));
+    }
+}
+
+#[cfg(test)]
+mod pluck_state_tests {
+    use super::*;
+
+    #[test]
+    fn zero_velocity_and_zero_amplitude_still_advance_pluck_state() {
+        for (velocity, sustain) in [(0.0, 1), (1.0, 0)] {
+            let source = format!(
+                r#"maac 1;
+project p {{ score = [0q, 1q]; rate = 48000Hz; tempo = &clock; meter = &metre; output = &sound:out; }}
+tempo clock {{ points = [(0q, 120bpm, step)]; }}
+meter metre {{ points = [(0q, 4, 4)]; }}
+instrument string {{ channels = 1; voice v {{ channels = 1; amplitude = &amp; output = &string:out;
+node amp {{ type = "synth.adsr/1"; params = {{ sustain = {sustain}; }}; }}
+node string {{ type = "synth.pluck/1"; config = {{ seed = 1; }}; }}
+}} }}
+node sound {{ instrument = &string; }}
+"#
+            );
+            let mut plan =
+                crate::compile_bundle(&crate::SourceBundle::new("silent.maac", source)).unwrap();
+            let program = plan.instruments.as_mut().unwrap().programs.remove(0);
+            let compiled =
+                Arc::new(CompiledInstrument::compile(&program, &BTreeMap::new()).unwrap());
+            let mut runtime =
+                InstrumentRuntime::new(compiled, 1, 48000.0, &BTreeMap::new()).unwrap();
+            runtime.note_on("silent", 480.0, velocity, 0).unwrap();
+            let mut expected = crate::pluck::Pluck::new(1).unwrap();
+            for frame in 0..128 {
+                assert_eq!(runtime.render(frame).unwrap(), &[0.0]);
+                expected.sample(480.0, 3.0, 0.5, 1.0).unwrap();
+            }
+            // Private state inspection distinguishes silent-but-running from a
+            // shortcut that skipped the generator under velocity/envelope mute.
+            let actual = runtime.voices[0]
+                .graph
+                .nodes
+                .iter_mut()
+                .find_map(|node| {
+                    if let ProcessorState::Pluck(pluck) = &mut node.state {
+                        Some(pluck)
+                    } else {
+                        None
+                    }
+                })
+                .unwrap();
+            assert_eq!(
+                actual.sample(480.0, 3.0, 0.5, 1.0).unwrap(),
+                expected.sample(480.0, 3.0, 0.5, 1.0).unwrap()
+            );
+        }
+    }
 }

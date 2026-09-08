@@ -1,0 +1,22 @@
+maac 1;
+
+// Low, high, overlapping and four-second held notes from one embedded instrument.
+project nylon_guitar_audition {
+  score = [0q, 14q]; rate = 48000Hz;
+  tempo = &clock; meter = &metre; output = &sound:out; tail = 500ms;
+}
+tempo clock { points = [(0q, 120bpm, step)]; }
+meter metre { points = [(0q, 4, 4)]; }
+import acoustic { builtin = "std/acoustic/1.0.0"; }
+node sound { instrument = &acoustic.nylon_guitar; config = { voices = 8; }; }
+pattern phrase {
+  length = 14q;
+  note low { at = 0q; dur = 2q; pitch = E2; velocity = 0.7; }
+  note middle { at = 2q; dur = 2q; pitch = C4; velocity = 0.5; }
+  note high { at = 3q; dur = 1q; pitch = E6; velocity = 0.6; }
+  note held { at = 5q; dur = 8q; pitch = A3; velocity = 0.7; }
+  note third { at = 6q; dur = 3q; pitch = C4; velocity = 0.4; }
+  note fifth { at = 7q; dur = 2q; pitch = E4; velocity = 0.45; }
+}
+track notes { target = &sound:events; }
+place once { pattern = &phrase; track = &notes; at = 0q; }

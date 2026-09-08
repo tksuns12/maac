@@ -70,10 +70,21 @@ note-ons; equal-class events sort by `order`, then unsigned UTF-8 event address.
 ## Processors and automation
 
 A node has `id`, a tagged `processor`, and a `params` map. Processor tags are
-`sine` with `voices`, `one_pole` with `channels`, `pan`, and `sum` with `channels`.
-These correspond to the four version-1 reference algorithms named in the
+`sine` with `voices`, `one_pole` with `channels`, `gain` with `channels`, `pan`,
+and `sum` with `channels`. These correspond to the reference algorithms named in the
 capability matrix. Parameter values use canonical units: seconds, Hz, or
 dimensionless numbers.
+
+`core.gain/1` uses the strict processor object `{"kind":"gain","channels":2}`
+(or channels 1) and the ordinary node parameter map. Its only parameter is
+`gain`: finite, dimensionless, nonnegative, default `"1/1"`, sampled every
+frame. For example, `"params":{"gain":"7/10"}` multiplies each input channel
+by 0.7. There is no `level` alias, upper gain limit of 16, or implicit smoothing.
+It requires exactly one matching audio input. Missing or unsupported channels,
+unknown fields, invalid gain values, and nonfinite output fail explicitly.
+This implements the existing MaaC/1 §18.2 algorithm in both supported plan
+versions without a schema version bump; older renderers may reject the newly
+supported `gain` kind.
 
 Version 2 also supports `{"kind":"instrument","program":"program_0",
 "voices":64,"channels":2}`. `program` identifies an embedded reusable program;
@@ -132,6 +143,12 @@ The renderer constructs harmonic banks from the embedded raw table data.
 It never opens the recorded paths. Version 1 rejects instrument processors and
 non-null instrument resources; version 2 requires the resource payload.
 
+The [plucked-string implementation contract](plucked-string.md) defines an additive
+version 2 graph processor, `{"kind":"synth.pluck/1","seed":1831565813}`, with
+strict resolved-seed validation and separate delay-memory and weighted-work
+bounds. It does not change plan versions or serialize mutable string state.
+Its approved design is not a claim of current renderer support.
+
 ## Import boundary
 
 `Plan::from_json` enforces the input byte limit before deserializing and validates
@@ -140,3 +157,14 @@ fields, unsupported versions/features, duplicate identities, malformed rational
 strings, invalid references, ranges, intervals, schedules, graphs and resource
 overruns are errors. Rendering validates again before allocating execution state.
 Source mappings are metadata; they do not authorize file access or execution.
+
+The approved [entrypoint and execution-profile extension](project-entrypoint.md)
+adds explicit-limit loading, validation, serialization, DSP preparation and
+export APIs without changing this wire format or plan version. Default wrappers,
+including generic Serde `Plan` decoding, retain the 500-million work budget.
+Caller-selected `song` allows up to 10 billion execution-work units while all
+other ceilings remain unchanged. A large retained plan needs that explicit
+allowance on load and render; it carries no profile or authority to elevate
+limits. Implementations must propagate selected limits through every nested
+boundary. The implementation passed the integrated and installed checks
+recorded in the [entrypoint delivery report](project-entrypoint-delivery.md).

@@ -1,0 +1,27 @@
+maac 1;
+
+// Two fingerpicked figures with natural string overlap; no strum quantization.
+project fingerpicked_phrase {
+  score = [0q, 8q]; rate = 48000Hz;
+  tempo = &clock; meter = &metre; output = &guitar:out; tail = 700ms;
+}
+tempo clock { points = [(0q, 96bpm, step)]; }
+meter metre { points = [(0q, 4, 4)]; }
+import acoustic { builtin = "std/acoustic/1.0.0"; }
+node guitar {
+  instrument = &acoustic.nylon_guitar;
+  config = { voices = 8; };
+  params = { pan = -0.12; brightness = 3500Hz; };
+}
+pattern figure {
+  length = 4q;
+  note root { at = 0q; dur = 3q; pitch = E2; velocity = 0.65; }
+  note fifth { at = 1/2q; dur = 5/2q; pitch = B2; velocity = 0.5; }
+  note upper { at = 1q; dur = 2q; pitch = E3; velocity = 0.55; }
+  note third { at = 3/2q; dur = 2q; pitch = G3; velocity = 0.6; }
+  note high { at = 2q; dur = 7/4q; pitch = B3; velocity = 0.65; }
+  note return { at = 5/2q; dur = 1q; pitch = G3; velocity = 0.45; }
+  note close { at = 3q; dur = 3/4q; pitch = E3; velocity = 0.5; }
+}
+track notes { target = &guitar:events; }
+place twice { pattern = &figure; track = &notes; at = 0q; count = 2; }

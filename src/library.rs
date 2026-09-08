@@ -672,6 +672,28 @@ fn lower_graph_node(
         "synth.saw/1" => no_config(config, file, object, &identity, GraphProcessor::Saw)?,
         "synth.square/1" => no_config(config, file, object, &identity, GraphProcessor::Square)?,
         "synth.triangle/1" => no_config(config, file, object, &identity, GraphProcessor::Triangle)?,
+        "synth.noise/1" | "synth.pluck/1" => {
+            let seed = match config {
+                None => crate::graph::DEFAULT_NOISE_SEED,
+                Some(config) if config.is_empty() => crate::graph::DEFAULT_NOISE_SEED,
+                Some(config) => {
+                    let config = exact_record(Some(config), &["seed"], file, object, &identity)?;
+                    integer_value(
+                        &config["seed"].value,
+                        file,
+                        object,
+                        &config["seed"],
+                        1,
+                        u32::MAX,
+                    )?
+                }
+            };
+            if identity == "synth.pluck/1" {
+                GraphProcessor::Pluck { seed }
+            } else {
+                GraphProcessor::Noise { seed }
+            }
+        }
         "synth.adsr/1" => no_config(config, file, object, &identity, GraphProcessor::Adsr)?,
         "synth.lfo/1" => no_config(config, file, object, &identity, GraphProcessor::Lfo)?,
         "synth.pan/1" => no_config(config, file, object, &identity, GraphProcessor::Pan)?,
@@ -679,6 +701,9 @@ fn lower_graph_node(
             channels: config_channels(config, file, object, &identity)?,
         },
         "synth.onepole/1" => GraphProcessor::OnePole {
+            channels: config_channels(config, file, object, &identity)?,
+        },
+        "synth.highpass/1" => GraphProcessor::HighPass {
             channels: config_channels(config, file, object, &identity)?,
         },
         "synth.mix/1" => GraphProcessor::Mix {

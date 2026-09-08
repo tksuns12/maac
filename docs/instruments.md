@@ -5,6 +5,11 @@ the implemented foundation without changing existing `core.* /1` processors,
 exact event scheduling, or version 1 performance-plan rendering. The user-facing
 delivery is reusable source files and offline 48 kHz mono/stereo audio.
 
+The [plucked-string implementation contract](plucked-string.md) separately
+specifies `synth.pluck/1` and `std/acoustic/1.0.0`. Its design is approved;
+implementation and acceptance evidence are separate. It preserves existing
+processors, graph DAG rules, and frozen basic-library bytes.
+
 ## Documents and dependencies
 
 A library has one `library` declaration and no `project`. A composition has one
@@ -28,6 +33,27 @@ to an export is `&name` in its declaring document or `&alias.name` through a
 direct import. Transitive imports remain relative to their declaring files;
 aliases do not leak across documents. Re-exporting and wildcard imports are
 outside this extension.
+
+An import selects exactly one of two forms: a local `path` plus `hash`, or an
+exact `builtin` identity. Mixing those fields, adding unknown fields, or using
+an unavailable built-in version fails explicitly.
+
+```maac
+import basic { builtin = "std/basic/1.0.0"; }
+```
+
+The [basic collection](basic-instruments.md) contains 24 stereo synthesized
+instruments embedded into the executable. It needs no filesystem sound library
+or assets. Its exact released source bytes are frozen per version; changed
+sound graphs, defaults or seeds require a new version. The resolved source
+identity is `@builtin/std/basic/1.0.0.maac`, with a SHA-256 calculated from its
+UTF-8 bytes and retained in source/dependency provenance. `@builtin/` is a
+reserved namespace; callers cannot replace it through source/asset maps or
+local import paths. Multiple aliases reuse the same source document. Embedded
+sources count toward the same file, byte, syntax-object and import-depth limits
+as local sources. Local and built-in imports can coexist, including built-in
+imports declared inside a pinned local library. No version alias, fallback,
+network lookup or filesystem shadowing occurs.
 
 Paths are normalized project-relative POSIX paths. Absolute paths, backslashes,
 root escapes, import cycles, missing files, duplicate identities, malformed
@@ -73,7 +99,7 @@ Each graph declares its output channel count and `output = &node:out`. The voice
 graph requires `amplitude = &adsr_node`; shared graphs have no amplitude ADSR.
 Shared graphs receive the stable sum of completed voice outputs at the reserved
 `&input:out` source, whose channels equal the voice graph's output. They may use
-gain, one-pole filtering, mixing, panning, and LFO modulation. They run once per
+gain, low-pass or high-pass filtering, mixing, panning, and LFO modulation. They run once per
 sample through the project tail, including when no voices remain. Without a
 shared graph, voice and instrument channel counts must agree; otherwise shared
 and instrument channel counts agree. Graph nodes cannot use the reserved ID
@@ -110,17 +136,20 @@ is rejected, including mixed audio/modulation cycles.
 | --- | --- | --- |
 | `synth.sine/1`, `synth.saw/1`, `synth.square/1`, `synth.triangle/1` | `ratio` (1; −64…64), `frequency` (0 Hz; −24000…24000 Hz), `phase` (0; 0…1), `level` (1; 0…16) | Mono |
 | `synth.wavetable/1` | Oscillator parameters plus `position` (0; 0…1); required `config.table = &wavetable` | Mono |
+| `synth.noise/1` | `level` (1; 0…16); optional nonzero unsigned 32-bit `config.seed` (1831565813) | Mono |
 | `synth.adsr/1` | `attack` (0 s), `decay` (0 s), `sustain` (1; 0…1), `release` (0 s); times 0…1800 s | Mono control signal |
 | `synth.lfo/1` | `frequency` (1 Hz; −200…200 Hz), `phase` (0; 0…1), `level` (1; 0…16) | Mono control signal |
 | `synth.gain/1` | `level` (1; 0…16); required `config.channels` | Same channels as input |
 | `synth.onepole/1` | `cutoff` (1000 Hz; strictly between 0 and 24000 Hz); required `config.channels` | Same channels as input |
+| `synth.highpass/1` | `cutoff` (1000 Hz; strictly between 0 and 24000 Hz); required `config.channels` | Same channels as input |
 | `synth.mix/1` | Required `config.channels`; no parameters | Mono/stereo sum |
 | `synth.pan/1` | `pan` (0; −1…1) | Equal-power stereo from mono |
 
 Numbers are dimensionless; seconds accept `s` and `ms`, hertz accept `Hz` and
 `kHz`. Parameters and controls use exact rationals until the DSP boundary.
 Unknown fields, wrong units, invalid ranges, and nonfinite values fail.
-Oscillators are voice-only. ADSR attack/decay/sustain and oscillator/LFO phase
+Oscillators and noise are voice-only; high-pass is allowed in both voice and
+shared graphs. ADSR attack/decay/sustain and oscillator/LFO phase
 are captured at note-on (shared LFO phase at render reset). Release is captured
 at note-off. Other parameters are sampled each frame. Shared LFO phase controls
 accept defaults, presets, and instance values at render reset; they cannot be
@@ -177,6 +206,37 @@ with `a = exp(-2*pi*cutoff/48000)`, each channel evaluates
 and `sin(theta)` on the right. Mixing adds connected inputs in connection-ID
 order without normalization.
 
+`synth.noise/1` has no input and ignores note pitch. Its `level` is sampled
+each frame; `seed` is immutable configuration, never a control or automation
+target. Every new voice starts an independent unsigned 32-bit state from its
+seed; resetting a render restarts the same sequence. With `state` interpreted
+as `u32`, each output first advances it in this exact order:
+
+```text
+state ^= state << 13
+state ^= state >> 17
+state ^= state << 5
+sample = (state / 2147483648.0 - 1.0) * level
+```
+
+Left shifts discard bits beyond 32 bits and right shifts are logical. Output
+uses the new state, not the seed itself. Omitted source seeds resolve to
+1831565813; explicit seeds must be integers in 1…4294967295. The resolved seed
+is stored in the performance plan, so a retained plan does not depend on future
+default changes. A missing, zero, out-of-range or noninteger seed in the plan
+is invalid. No system entropy or note-address hashing is involved. Same-seed
+voices are independent state machines but begin with identical sequences.
+
+`synth.highpass/1` maintains one independent low-pass state per channel,
+initially zero. At every sample, with `a = exp(-2*pi*cutoff/48000)`, it computes
+`low_new = (1-a)*input + a*low_previous`, outputs `input - low_new`, and stores
+`low_new`. It therefore subtracts the newly computed one-pole output, not the
+previous state. Mono/stereo channels must match the required `config.channels`.
+Cutoff is sampled each frame and must remain strictly between 0 and 24000 Hz,
+including after modulation. Its connection rules match the low-pass filter.
+Shared filter state continues through the project tail; voice state resets
+independently at note-on.
+
 Band limiting the underlying wave does not eliminate modulation sidebands or
 bank-switching artifacts. Strong/high-frequency FM can still alias; automated
 spectral fixtures must characterize this residual behavior. See Nielsen's
@@ -208,12 +268,14 @@ samples are embedded in plans; original WAV files are unnecessary to render.
 validates either a composition or all library exports; `compile_bundle`
 requires a composition. Filesystem access belongs to a separate loader and the
 CLI, never the compiler or renderer. Existing parsed-document `check` and
-`compile` APIs remain; documents with imports fail explicitly as unresolved.
+`compile` APIs remain; documents with any imports, including built-ins, fail explicitly
+as unresolved. Built-in-only compositions use `SourceBundle::new` with just
+the entry text and compile through `compile_bundle`.
 
 Version 2 performance plans carry reusable graph programs, embedded wavetable
 data, source/dependency identities, entry-file identity, and graph source
-provenance. Node instances reference programs and carry resolved public control
-values. Loading and rendering an untrusted plan independently validates graph
+provenance, including built-in source hashes and resolved noise seeds. Node
+instances reference programs and carry resolved public control values. Loading and rendering an untrusted plan independently validates graph
 structure, types, references, controls, timing, and resource limits. Version 1
 plans remain accepted; legacy-only single-document compilation may retain
 version 1. Version 1 must reject version 2 payloads instead of ignoring them.

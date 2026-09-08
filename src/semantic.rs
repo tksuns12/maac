@@ -29,6 +29,7 @@ pub const MAX_SOURCE_CONNECTIONS: usize = 4_096;
 pub enum ProcessorKind {
     Sine,
     OnePole,
+    Gain,
     Pan,
     Sum,
     Instrument,
@@ -39,6 +40,7 @@ impl ProcessorKind {
         match self {
             Self::Sine => "core.sine/1",
             Self::OnePole => "core.onepole/1",
+            Self::Gain => "core.gain/1",
             Self::Pan => "core.pan/1",
             Self::Sum => "core.sum/1",
             Self::Instrument => "instrument",
@@ -49,6 +51,7 @@ impl ProcessorKind {
         Some(match value {
             "core.sine/1" => Self::Sine,
             "core.onepole/1" => Self::OnePole,
+            "core.gain/1" => Self::Gain,
             "core.pan/1" => Self::Pan,
             "core.sum/1" => Self::Sum,
             _ => return None,
@@ -1791,6 +1794,15 @@ impl<'a> Validator<'a> {
         }
         let config = self.record_field(object, "config", path).cloned();
         let params = self.record_field(object, "params", path).cloned();
+        if processor == ProcessorKind::Gain && object.field("config").is_none() {
+            self.push(
+                DiagnosticCode::Range,
+                "core.gain/1 requires config.channels",
+                Some(object.span),
+                path.to_vec(),
+                vec!["config".into(), "channels".into()],
+            );
+        }
         let config_map = config
             .as_ref()
             .map(|record| self.validate_processor_config(processor, record, path))
@@ -1828,7 +1840,7 @@ impl<'a> Validator<'a> {
     ) -> BTreeMap<String, BigRational> {
         let allowed: &[&str] = match processor {
             ProcessorKind::Sine => &["voices"],
-            ProcessorKind::OnePole => &["channels"],
+            ProcessorKind::OnePole | ProcessorKind::Gain => &["channels"],
             ProcessorKind::Pan => &[],
             ProcessorKind::Sum => &["channels"],
             ProcessorKind::Instrument => &[],
@@ -1848,10 +1860,17 @@ impl<'a> Validator<'a> {
             let Some(value) = self.number_value(&field.value, path, name) else {
                 continue;
             };
-            if value <= BigRational::zero() || !is_integer(&value) {
+            if value <= BigRational::zero()
+                || !is_integer(&value)
+                || (processor == ProcessorKind::Gain && value > BigRational::from_integer(2.into()))
+            {
                 self.push(
                     DiagnosticCode::Range,
-                    format!("config.{name} must be a positive integer"),
+                    if processor == ProcessorKind::Gain {
+                        "config.channels must be 1 or 2".into()
+                    } else {
+                        format!("config.{name} must be a positive integer")
+                    },
                     Some(field.value.span),
                     path.to_vec(),
                     vec!["config".into(), name.clone()],
@@ -1862,14 +1881,17 @@ impl<'a> Validator<'a> {
         }
         match processor {
             ProcessorKind::Sine if !fields.contains_key("voices") => {}
-            ProcessorKind::OnePole | ProcessorKind::Sum if !fields.contains_key("channels") => self
-                .push(
+            ProcessorKind::OnePole | ProcessorKind::Gain | ProcessorKind::Sum
+                if !fields.contains_key("channels") =>
+            {
+                self.push(
                     DiagnosticCode::Range,
                     "processor config requires channels",
                     None,
                     path.to_vec(),
                     vec!["config".into(), "channels".into()],
-                ),
+                )
+            }
             _ => {}
         }
         result
@@ -1884,6 +1906,7 @@ impl<'a> Validator<'a> {
         let allowed: &[&str] = match processor {
             ProcessorKind::Sine => &["attack", "release", "level"],
             ProcessorKind::OnePole => &["cutoff"],
+            ProcessorKind::Gain => &["gain"],
             ProcessorKind::Pan => &["pan"],
             ProcessorKind::Sum => &[],
             ProcessorKind::Instrument => &[],
@@ -1917,7 +1940,9 @@ impl<'a> Validator<'a> {
                             true
                         }
                     }),
-                (ProcessorKind::Sine, "level") => self.number_nonnegative(field, path, name),
+                (ProcessorKind::Sine, "level") | (ProcessorKind::Gain, "gain") => {
+                    self.number_nonnegative(field, path, name)
+                }
                 (ProcessorKind::OnePole, "cutoff") => self
                     .quantity(field, &[Unit::Hz, Unit::KHz], path, name)
                     .is_some_and(|v| {
@@ -3418,7 +3443,7 @@ fn ports_for(
                 zero_default: true,
             },
         ],
-        ProcessorKind::OnePole => {
+        ProcessorKind::OnePole | ProcessorKind::Gain => {
             let channels = config
                 .get("channels")
                 .and_then(|value| value.to_u32())
@@ -3536,6 +3561,12 @@ fn parameters_for(processor: ProcessorKind) -> Vec<ParameterDescriptor> {
         ProcessorKind::OnePole => vec![ParameterDescriptor {
             name: "cutoff",
             unit: ParameterUnit::Hertz,
+            range: RangePolicy::Error,
+            rate: ParameterRate::Sample,
+        }],
+        ProcessorKind::Gain => vec![ParameterDescriptor {
+            name: "gain",
+            unit: ParameterUnit::Dimensionless,
             range: RangePolicy::Error,
             rate: ParameterRate::Sample,
         }],

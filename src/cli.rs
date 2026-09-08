@@ -16,7 +16,7 @@ use crate::compiler;
 use crate::diagnostic::{Diagnostic, Diagnostics, Span};
 use crate::dsp::RenderError;
 use crate::export::{self, ExportError, WavFormat, WavStats, MAX_INPUT_BYTES};
-use crate::plan::{Plan, PlanError};
+use crate::plan::{Plan, PlanError, PlanLimits};
 use crate::syntax::{parse, Document};
 
 #[derive(Parser, Debug)]
@@ -37,14 +37,19 @@ pub struct Cli {
 pub enum Command {
     /// Resolve and validate a composition bundle or reusable library.
     Check {
-        input: PathBuf,
+        /// Source file or project directory (defaults to main.maac in cwd).
+        input: Option<PathBuf>,
         /// Root used to resolve project-relative imports and assets.
         #[arg(long)]
         project_root: Option<PathBuf>,
+        /// Finite execution-work allowance; other resource limits stay unchanged.
+        #[arg(long, value_enum, default_value_t = ProfileArg::Default)]
+        profile: ProfileArg,
     },
     /// Resolve a composition bundle into a standalone versioned performance plan.
     Compile {
-        input: PathBuf,
+        /// Source file or project directory (defaults to main.maac in cwd).
+        input: Option<PathBuf>,
         #[arg(short = 'o', long)]
         output: PathBuf,
         #[arg(long)]
@@ -52,6 +57,9 @@ pub enum Command {
         /// Root used to resolve project-relative imports and assets.
         #[arg(long)]
         project_root: Option<PathBuf>,
+        /// Finite execution-work allowance; other resource limits stay unchanged.
+        #[arg(long, value_enum, default_value_t = ProfileArg::Default)]
+        profile: ProfileArg,
     },
     /// Validate an imported performance plan and stream it to WAV.
     Render {
@@ -62,10 +70,14 @@ pub enum Command {
         format: FormatArg,
         #[arg(long)]
         force: bool,
+        /// Finite execution-work allowance; other resource limits stay unchanged.
+        #[arg(long, value_enum, default_value_t = ProfileArg::Default)]
+        profile: ProfileArg,
     },
     /// Resolve and compile a composition bundle directly to WAV.
     Build {
-        input: PathBuf,
+        /// Source file or project directory (defaults to main.maac in cwd).
+        input: Option<PathBuf>,
         #[arg(short = 'o', long)]
         output: PathBuf,
         #[arg(long, value_enum, default_value_t = FormatArg::Float32)]
@@ -75,9 +87,37 @@ pub enum Command {
         /// Root used to resolve project-relative imports and assets.
         #[arg(long)]
         project_root: Option<PathBuf>,
+        /// Finite execution-work allowance; other resource limits stay unchanged.
+        #[arg(long, value_enum, default_value_t = ProfileArg::Default)]
+        profile: ProfileArg,
     },
     /// Compute the canonical SHA-256 pin for a bounded local file.
     Hash { input: PathBuf },
+    /// List embedded instruments, or describe one export with a runnable example.
+    Instruments {
+        name: Option<String>,
+        /// Select an exact embedded library identity.
+        #[arg(long)]
+        library: Option<String>,
+        /// List all embedded library identities.
+        #[arg(long, conflicts_with_all = ["name", "library"])]
+        libraries: bool,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum ProfileArg {
+    Default,
+    Song,
+}
+
+impl ProfileArg {
+    fn limits(self) -> PlanLimits {
+        match self {
+            Self::Default => PlanLimits::default(),
+            Self::Song => PlanLimits::song(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -112,6 +152,14 @@ pub struct CommandResult {
     pub digest: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exports: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub catalog: Option<crate::stdlib::Catalog>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instrument: Option<crate::stdlib::InstrumentInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub library: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub libraries: Option<Vec<crate::stdlib::LibraryInfo>>,
 }
 
 impl CommandResult {
@@ -126,6 +174,10 @@ impl CommandResult {
             frames: Some(frames),
             digest: None,
             exports: None,
+            catalog: None,
+            instrument: None,
+            library: None,
+            libraries: None,
         }
     }
 
@@ -140,6 +192,10 @@ impl CommandResult {
             frames: Some(frames),
             digest: None,
             exports: None,
+            catalog: None,
+            instrument: None,
+            library: None,
+            libraries: None,
         }
     }
 
@@ -160,6 +216,10 @@ impl CommandResult {
             frames: Some(stats.frames),
             digest: None,
             exports: None,
+            catalog: None,
+            instrument: None,
+            library: None,
+            libraries: None,
         }
     }
 
@@ -174,6 +234,10 @@ impl CommandResult {
             frames: None,
             digest: Some(digest),
             exports: None,
+            catalog: None,
+            instrument: None,
+            library: None,
+            libraries: None,
         }
     }
 
@@ -188,6 +252,10 @@ impl CommandResult {
             frames: None,
             digest: None,
             exports: Some(exports),
+            catalog: None,
+            instrument: None,
+            library: None,
+            libraries: None,
         }
     }
 }
@@ -295,15 +363,18 @@ pub fn execute(command: &Command) -> Result<CommandResult, CliError> {
         Command::Check {
             input,
             project_root,
+            profile,
         } => {
-            let bundle = load_source_bundle(input, project_root.as_deref())?;
+            let (input, root) = resolve_source_input(input.as_deref(), project_root.as_deref());
+            let limits = profile.limits();
+            let bundle = load_source_bundle(&input, root.as_deref())?;
             let document = bundle_entry_document(&bundle)?;
             if document
                 .objects
                 .values()
                 .any(|object| object.kind == "library")
             {
-                compiler::check_bundle(&bundle)
+                compiler::check_bundle_with_limits(&bundle, &limits)
                     .map_err(|error| CliError::from_diagnostics(&error))?;
                 let exports = document
                     .objects
@@ -312,12 +383,12 @@ pub fn execute(command: &Command) -> Result<CommandResult, CliError> {
                         matches!(object.kind.as_str(), "instrument" | "preset" | "wavetable")
                     })
                     .count();
-                Ok(CommandResult::library_check(input, exports))
+                Ok(CommandResult::library_check(&input, exports))
             } else {
-                let plan = compiler::compile_bundle(&bundle)
+                let plan = compiler::compile_bundle_with_limits(&bundle, &limits)
                     .map_err(|error| CliError::from_diagnostics(&error))?;
                 Ok(CommandResult::check(
-                    input,
+                    &input,
                     plan.events.len(),
                     plan.output.total_frames,
                 ))
@@ -328,14 +399,19 @@ pub fn execute(command: &Command) -> Result<CommandResult, CliError> {
             output,
             force,
             project_root,
+            profile,
         } => {
-            let bundle = load_source_bundle(input, project_root.as_deref())?;
-            let plan = compiler::compile_bundle(&bundle)
+            let (input, root) = resolve_source_input(input.as_deref(), project_root.as_deref());
+            let limits = profile.limits();
+            let bundle = load_source_bundle(&input, root.as_deref())?;
+            let plan = compiler::compile_bundle_with_limits(&bundle, &limits)
                 .map_err(|error| CliError::from_diagnostics(&error))?;
-            let bytes = plan.to_json().map_err(CliError::from_plan)?;
+            let bytes = plan
+                .to_json_with_limits(&limits)
+                .map_err(CliError::from_plan)?;
             export::atomic_write(output, &bytes, *force).map_err(CliError::from_export)?;
             Ok(CommandResult::compile(
-                input,
+                &input,
                 output,
                 plan.events.len(),
                 plan.output.total_frames,
@@ -346,11 +422,14 @@ pub fn execute(command: &Command) -> Result<CommandResult, CliError> {
             output,
             format,
             force,
+            profile,
         } => {
-            let plan = read_plan(input)?;
+            let limits = profile.limits();
+            let plan = read_plan_with_limits(input, &limits)?;
             let wav_format = (*format).into();
-            let stats = export::render_wav_to_path(&plan, output, wav_format, *force)
-                .map_err(CliError::from_export)?;
+            let stats =
+                export::render_wav_to_path_with_limits(&plan, output, wav_format, *force, &limits)
+                    .map_err(CliError::from_export)?;
             Ok(CommandResult::render(
                 "render", input, output, wav_format, stats,
             ))
@@ -361,22 +440,104 @@ pub fn execute(command: &Command) -> Result<CommandResult, CliError> {
             format,
             force,
             project_root,
+            profile,
         } => {
-            let bundle = load_source_bundle(input, project_root.as_deref())?;
-            let plan = compiler::compile_bundle(&bundle)
+            let (input, root) = resolve_source_input(input.as_deref(), project_root.as_deref());
+            let limits = profile.limits();
+            let bundle = load_source_bundle(&input, root.as_deref())?;
+            let plan = compiler::compile_bundle_with_limits(&bundle, &limits)
                 .map_err(|error| CliError::from_diagnostics(&error))?;
             let wav_format = (*format).into();
-            let stats = export::render_wav_to_path(&plan, output, wav_format, *force)
-                .map_err(CliError::from_export)?;
+            let stats =
+                export::render_wav_to_path_with_limits(&plan, output, wav_format, *force, &limits)
+                    .map_err(CliError::from_export)?;
             Ok(CommandResult::render(
-                "build", input, output, wav_format, stats,
+                "build", &input, output, wav_format, stats,
             ))
+        }
+        Command::Instruments {
+            name,
+            library,
+            libraries,
+        } => {
+            if *libraries && (name.is_some() || library.is_some()) {
+                return Err(CliError::new(
+                    "E_USAGE",
+                    "--libraries conflicts with a name or --library",
+                ));
+            }
+            if *libraries {
+                return Ok(CommandResult {
+                    ok: true,
+                    command: "instruments".into(),
+                    input: "@builtin".into(),
+                    output: None,
+                    format: None,
+                    notes: None,
+                    frames: None,
+                    digest: None,
+                    exports: None,
+                    catalog: None,
+                    instrument: None,
+                    library: None,
+                    libraries: Some(crate::stdlib::libraries()),
+                });
+            }
+            let selected = library.as_deref().unwrap_or(crate::stdlib::BASIC_ID);
+            let (catalog, instrument) = match name {
+                Some(name) => (
+                    None,
+                    Some(
+                        crate::stdlib::instrument_in(selected, name)
+                            .map_err(|error| CliError::from_diagnostics(&error))?,
+                    ),
+                ),
+                None => (
+                    Some(
+                        crate::stdlib::catalog_for(selected)
+                            .map_err(|error| CliError::from_diagnostics(&error))?,
+                    ),
+                    None,
+                ),
+            };
+            Ok(CommandResult {
+                ok: true,
+                command: "instruments".into(),
+                input: name.as_deref().unwrap_or(selected).into(),
+                output: None,
+                format: None,
+                notes: None,
+                frames: None,
+                digest: None,
+                exports: catalog.as_ref().map(|catalog| catalog.instruments.len()),
+                catalog,
+                instrument,
+                library: library.clone(),
+                libraries: None,
+            })
         }
         Command::Hash { input } => {
             let bytes = read_bounded(input)?;
             Ok(CommandResult::hash(input, sha256_digest(&bytes)))
         }
     }
+}
+
+/// Select the entry spelling and containment root without following a main
+/// file symlink to choose its root. Explicit files retain their previous root
+/// inference in load_source_bundle; explicit project roots always override.
+fn resolve_source_input(
+    input: Option<&Path>,
+    project_root: Option<&Path>,
+) -> (PathBuf, Option<PathBuf>) {
+    let (entry, implicit_root) = match input {
+        None => (PathBuf::from("main.maac"), Some(PathBuf::from("."))),
+        Some(directory) if directory.is_dir() => {
+            (directory.join("main.maac"), Some(directory.to_owned()))
+        }
+        Some(file) => (file.to_owned(), None),
+    };
+    (entry, project_root.map(Path::to_path_buf).or(implicit_root))
 }
 
 fn load_source_bundle(input: &Path, project_root: Option<&Path>) -> Result<SourceBundle, CliError> {
@@ -417,8 +578,13 @@ pub fn read_source(path: &Path) -> Result<Document, CliError> {
 }
 
 pub fn read_plan(path: &Path) -> Result<Plan, CliError> {
+    read_plan_with_limits(path, &PlanLimits::default())
+}
+
+/// Read the same bounded strict plan wire under a caller-selected allowance.
+pub fn read_plan_with_limits(path: &Path, limits: &PlanLimits) -> Result<Plan, CliError> {
     let bytes = read_bounded(path)?;
-    Plan::from_json(&bytes).map_err(CliError::from_plan)
+    Plan::from_json_with_limits(&bytes, limits).map_err(CliError::from_plan)
 }
 
 pub fn read_bounded(path: &Path) -> Result<Vec<u8>, CliError> {
@@ -442,6 +608,49 @@ pub fn read_bounded(path: &Path) -> Result<Vec<u8>, CliError> {
 }
 
 pub fn format_human(result: &CommandResult) -> String {
+    if let Some(libraries) = &result.libraries {
+        return libraries
+            .iter()
+            .map(|library| format!("{}  {}", library.library, library.source_hash))
+            .collect::<Vec<_>>()
+            .join("\n");
+    }
+    if let Some(instrument) = &result.instrument {
+        let detail = format_instrument(instrument);
+        return match &result.library {
+            Some(library) => format!("{library}\n{detail}"),
+            None => detail,
+        };
+    }
+    if let Some(catalog) = &result.catalog {
+        let mut groups =
+            std::collections::BTreeMap::<&str, Vec<&crate::stdlib::InstrumentInfo>>::new();
+        for instrument in &catalog.instruments {
+            groups
+                .entry(&instrument.family)
+                .or_default()
+                .push(instrument);
+        }
+        let mut message = format!(
+            "{} ({} instruments)",
+            catalog.library,
+            catalog.instruments.len()
+        );
+        for (family, instruments) in groups {
+            message.push_str(&format!("\n\n{family}:"));
+            for instrument in instruments {
+                message.push_str(&format!(
+                    "\n  {} — {}",
+                    instrument.name, instrument.description
+                ));
+            }
+        }
+        match &result.library {
+            Some(library) => message.push_str(&format!("\n\nUse maac instruments --library {library} NAME for controls and a runnable composition.")),
+            None => message.push_str("\n\nUse maac instruments NAME for controls and a runnable composition."),
+        }
+        return message;
+    }
     if let Some(digest) = &result.digest {
         return digest.clone();
     }
@@ -455,6 +664,47 @@ pub fn format_human(result: &CommandResult) -> String {
     if let Some(frames) = result.frames {
         message.push_str(&format!(" ({frames} frames)"));
     }
+    message
+}
+
+fn format_instrument(instrument: &crate::stdlib::InstrumentInfo) -> String {
+    let guidance = &instrument.guidance;
+    let mut message = format!(
+        "{} ({}, {} channels)\n{}\n\nPitch: {}–{} (MIDI {}–{}). {}\nNote duration: {}–{} seconds. {}",
+        instrument.name, instrument.family, instrument.channels, instrument.description,
+        guidance.pitch_low, guidance.pitch_high, guidance.midi_min, guidance.midi_max,
+        guidance.pitch_behavior, guidance.duration_min_seconds, guidance.duration_max_seconds,
+        guidance.notes,
+    );
+    message.push_str(&format!(
+        "\nTested pitches: {}\n\nControls:",
+        guidance.tested_pitches.join(", ")
+    ));
+    for (name, control) in &instrument.controls {
+        let unit = match control.unit {
+            crate::graph::GraphUnit::Dimensionless => "dimensionless",
+            crate::graph::GraphUnit::Seconds => "seconds",
+            crate::graph::GraphUnit::Hertz => "hertz",
+        };
+        let rate = match control.rate {
+            crate::graph::ParameterRate::Sample => "sample",
+            crate::graph::ParameterRate::NoteOn => "note_on",
+            crate::graph::ParameterRate::NoteOff => "note_off",
+            crate::graph::ParameterRate::Reset => "reset",
+        };
+        message.push_str(&format!(
+            "\n  {name}: default {} {unit}; range {}{}, {}{}; rate {rate}",
+            control.default,
+            if control.min_open { "(" } else { "[" },
+            control.min,
+            control.max,
+            if control.max_open { ")" } else { "]" },
+        ));
+    }
+    message.push_str(
+        "\n\nSave the following as demo.maac, then run maac build demo.maac -o demo.wav:\n\n",
+    );
+    message.push_str(&instrument.usage);
     message
 }
 

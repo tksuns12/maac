@@ -13,10 +13,11 @@ specification remains authoritative; this page describes the implementation scop
 | Pitch | Letter pitches, `key`, `degree`, `ratio`, Hz/kHz, explicit tunings |
 | Automation | Global score/seconds clocks; step, linear and exponential interpolation; sample/event parameter rates |
 | Routing | Explicit mono/stereo audio graph and note targets; no implicit channel conversions or mixers |
-| Processors | `core.sine/1`, `core.onepole/1`, `core.pan/1`, `core.sum/1` |
+| Processors | `core.sine/1`, `core.onepole/1`, `core.pan/1`, `core.sum/1`, `core.gain/1` (mono/stereo) |
 | Reusable instruments | Named libraries, typed public controls, presets, independent polyphonic instances, voice and shared graphs |
-| Sound graphs | Versioned sine/saw/square/triangle/wavetable oscillators, linear ADSR, sine LFO, gain, one-pole, mixing and panning |
+| Sound graphs | Versioned sine/saw/square/triangle/wavetable oscillators, deterministic noise and recirculating plucked strings, linear ADSR, sine LFO, gain, low/high-pass one-pole filtering, mixing and panning |
 | Modulation | Feed-forward graph modulation and sample-wise through-zero linear FM; no oversampling |
+| Built-in instruments | 24 stereo exports in `std/basic/1.0.0` with four common controls; three separate `std/acoustic/1.0.0` guitars with six controls; exact-version CLI/Rust discovery |
 | Local dependencies | Explicit namespace aliases, transitive declaring-file resolution, SHA-256 source/WAV pins, project containment |
 | Wavetables | Explicit mono WAV cycles, cyclic interpolation, adjacent-frame morphing and harmonic-limited banks |
 | Regions | Named score intervals retained as non-rendering metadata |
@@ -29,6 +30,23 @@ expression, hits/messages, top-level core modulation, other processors, recorded
 sample instruments, arranged audio, external plug-ins and extensions. Transactional editing, full render locks,
 MIDI transport, GUI and real-time playback are outside this release's interfaces.
 No deferred feature is approximated silently.
+
+The implemented [project-entrypoint extension](project-entrypoint.md) adds
+conventional `main.maac` discovery for source commands and explicit default/song
+execution profiles. All 323 integrated tests and the installed entrypoint
+checks passed. Full native song build and source-free retained rendering
+produced identical WAV bytes; the [delivery report](project-entrypoint-delivery.md)
+records the evidence. It changes no import or source grammar
+rules. The existing normative `core.gain/1` algorithm is implemented for
+visible mono/stereo master gain. Its parameter is `gain`, not `level`; finite
+gains above 1 are valid, subject to finite output and separate export headroom checks.
+
+The [plucked-string contract](plucked-string.md) defines mono voice-only
+`synth.pluck/1` and the separate three-guitar `std/acoustic/1.0.0` collection.
+The [acoustic guide](acoustic-guitars.md) records authoring behavior and the
+[delivery report](acoustic-delivery.md) records numerical and installed checks.
+Its private delay state does
+not permit feedback edges in public audio or modulation graphs.
 
 ## Resource bounds
 
@@ -64,7 +82,9 @@ arithmetic. `PlanLimits` permits callers to tighten the foundation limits.
 The [instrument extension](instruments.md) additionally limits each source or
 WAV file to 4 MiB, aggregate source bytes to 16 MiB, aggregate asset bytes to
 16 MiB, source files and assets to 64 each, and import depth to 32. The source
-object limit applies across the bundle.
+object limit applies across the bundle. Embedded built-in source bytes, files,
+objects and import depth count toward these limits; the reserved `@builtin/`
+namespace cannot be supplied or shadowed by the caller.
 Path keys and references are limited to 4,096 UTF-8 bytes; library version,
 creator, and license metadata each have the same byte limit.
 
@@ -78,12 +98,28 @@ creator, and license metadata each have the same byte limit.
 | Cycle length / frames per table | Power of two, 8–2,048 / 1–32 |
 | Voice capacity per instrument instance | 4,096 (default 64) |
 | Aggregate declared voice graph node states | 262,144 |
-| Conservative sample execution work | 500,000,000 node/edge visits |
+| Conservative execution work | Default 500,000,000 normalized units; explicit song profile maximum 10,000,000,000 |
+| Pluck delay cells | 8,388,608 f64 cells / 64 MiB payload; 2402 cells per pluck voice-node |
+| Pluck execution charge | 16 units per sample visit plus 2402 initialization units per note per pluck node |
 
 Execution work includes every note's gate and maximum possible release, bounded
 by the render endpoint, plus shared effects throughout the full output. Caller
 `PlanLimits` can tighten graph, table, state, and work limits. The 4 MiB plan
 artifact limit applies alongside embedded-sample limits.
+
+The explicit song profile changes only execution work. Plan bytes, duration,
+events, channels, rate, graph/voice states and pluck memory retain their existing
+bounds. Composition checks validate the chosen work budget. No source/plan field
+can elevate it, and retained plans require caller selection again. Execution
+profiles are resource policies, not the language's conformance profiles.
+
+Pluck memory counts declared instance voice capacities, including unconnected
+pluck nodes, and is checked before runtime/ring allocation. Direct runtimes
+independently enforce the same per-runtime ceiling. Muting does not discount
+memory, initialization, or sample work. The new
+`PlanLimits::max_pluck_delay_cells` field can tighten the ceiling and is not
+serialized into plans; exhaustive Rust struct literals need the new field or
+`..PlanLimits::default()`. Existing processor work weights remain unchanged.
 
 ## Fidelity
 
@@ -91,4 +127,6 @@ Source timing and frame ceilings use exact rational arithmetic. DSP uses
 binary64 values; WAV conversion is a separate export step. Determinism is tested
 within one executable and environment. Cross-platform bitwise identity is not
 claimed. Finite, non-silent samples are automated checks and do not substitute
-for a listening review.
+for a listening review. The basic instrument names describe synthesized musical
+roles, not recorded acoustic instruments. Noise uses a fixed, independently
+reset per-voice xorshift32 sequence; see the [processor contract](instruments.md).
