@@ -907,6 +907,30 @@ impl<'a> Compiler<'a> {
             .values()
             .find(|object| object.kind == "project")
             .expect("validate_document_shape checked project count");
+        // Global bar coordinates use the authored meter, including project crop bounds.
+        // Meter knots themselves are explicit q positions, so this has no circular dependency.
+        let tempo_id = self.one_reference(
+            &self.field(project, "tempo")?.value,
+            project,
+            project.field("tempo"),
+        )?;
+        let meter_id = self.one_reference(
+            &self.field(project, "meter")?.value,
+            project,
+            project.field("meter"),
+        )?;
+        let tempo_object = self.object(&tempo_id)?.clone();
+        let meter_object = self.object(&meter_id)?.clone();
+        if tempo_object.kind != "tempo" || meter_object.kind != "meter" {
+            return Err(path_diagnostic(
+                DiagnosticCode::Reference,
+                "project tempo/meter references have the wrong kind",
+                project,
+                None,
+            ));
+        }
+        self.read_meter(&meter_object)?;
+        self.read_tempo(&tempo_object)?;
         let score_field = self.field(project, "score")?;
         let score = self.list(&score_field.value, project, Some(score_field))?;
         if score.len() != 2 {
@@ -962,28 +986,6 @@ impl<'a> Compiler<'a> {
                 project.field("tail"),
             ));
         }
-        let tempo_id = self.one_reference(
-            &self.field(project, "tempo")?.value,
-            project,
-            project.field("tempo"),
-        )?;
-        let meter_id = self.one_reference(
-            &self.field(project, "meter")?.value,
-            project,
-            project.field("meter"),
-        )?;
-        let tempo_object = self.object(&tempo_id)?.clone();
-        let meter_object = self.object(&meter_id)?.clone();
-        if tempo_object.kind != "tempo" || meter_object.kind != "meter" {
-            return Err(path_diagnostic(
-                DiagnosticCode::Reference,
-                "project tempo/meter references have the wrong kind",
-                project,
-                None,
-            ));
-        }
-        self.read_tempo(&tempo_object)?;
-        self.read_meter(&meter_object)?;
         let output_field = project.field("output");
         if let Some(output_field) = output_field {
             self.output = self.port_reference(&output_field.value, project, Some(output_field))?;
@@ -1096,6 +1098,18 @@ impl<'a> Compiler<'a> {
             let type_field = self.field(object, "type")?;
             let node_type =
                 self.string_value(&type_field.value, object, Some(type_field), "type")?;
+            if matches!(
+                node_type.as_str(),
+                "fx.eq/1" | "fx.compressor/1" | "fx.reverb/1"
+            ) {
+                self.nodes
+                    .push(crate::semantic::production_node(object).map_err(|error| {
+                        let mut errors = Diagnostics::new();
+                        errors.push(error);
+                        errors
+                    })?);
+                continue;
+            }
             let config = self
                 .optional(object, "config")
                 .map(|value| self.record(value, object, object.field("config")))
@@ -1223,7 +1237,11 @@ impl<'a> Compiler<'a> {
                 Processor::Pan => {
                     node.params.insert("pan".into(), Rational::zero());
                 }
-                Processor::Sum { .. } | Processor::Instrument { .. } => {}
+                Processor::Sum { .. }
+                | Processor::Instrument { .. }
+                | Processor::Eq { .. }
+                | Processor::Compressor { .. }
+                | Processor::Reverb { .. } => {}
             }
             if let Some(params_value) = self.optional(object, "params") {
                 let params = self.record(params_value, object, object.field("params"))?;
@@ -2012,6 +2030,9 @@ impl<'a> Compiler<'a> {
     ) -> CResult<Rational> {
         match value.kind {
             ValueKind::Number(_) => self.rational_value(value, object, field),
+            ValueKind::Quantity { unit: Unit::Db, .. } => {
+                self.quantity(value, Unit::Db, object, field)
+            }
             ValueKind::Quantity { unit: Unit::Hz, .. }
             | ValueKind::Quantity {
                 unit: Unit::KHz, ..
@@ -2724,6 +2745,7 @@ impl<'a> Compiler<'a> {
             regions: self.regions.clone(),
             source_mappings: Vec::new(),
             instruments: self.instrument_resources.clone(),
+            production: None,
         };
         Ok(plan)
     }
@@ -2743,7 +2765,11 @@ impl<'a> Compiler<'a> {
         match node.processor {
             Processor::Sum { channels } => Ok(channels),
             Processor::Pan => Ok(2),
-            Processor::OnePole { channels } | Processor::Gain { channels } => Ok(channels),
+            Processor::OnePole { channels }
+            | Processor::Gain { channels }
+            | Processor::Eq { channels, .. }
+            | Processor::Compressor { channels, .. }
+            | Processor::Reverb { channels, .. } => Ok(channels),
             Processor::Sine { .. } => Ok(1),
             Processor::Instrument { channels, .. } => Ok(channels),
         }
@@ -2850,9 +2876,22 @@ pub fn compile_bundle_with_limits(
     bundle: &SourceBundle,
     limits: &PlanLimits,
 ) -> Result<Plan, Diagnostics> {
-    let resolved = bundle.resolve()?;
+    let mut resolved = bundle.resolve()?;
+    let original = resolved
+        .documents
+        .get(&resolved.entry)
+        .expect("resolved entry exists")
+        .clone();
+    let (document, production) =
+        crate::production_data::prepare_document(&original, &bundle.assets)?;
+    resolved.documents.insert(resolved.entry.clone(), document);
     let libraries = LibrarySet::resolve(&resolved)?;
-    compile_resolved(&resolved, libraries, limits)
+    attach_production(
+        compile_resolved(&resolved, libraries, limits)?,
+        production,
+        &original,
+        limits,
+    )
 }
 
 /// Resolve and validate either a composition bundle or all exports of a
@@ -2866,7 +2905,15 @@ pub fn check_bundle_with_limits(
     bundle: &SourceBundle,
     limits: &PlanLimits,
 ) -> Result<(), Diagnostics> {
-    let resolved = bundle.resolve()?;
+    let mut resolved = bundle.resolve()?;
+    let original = resolved
+        .documents
+        .get(&resolved.entry)
+        .expect("resolved entry exists")
+        .clone();
+    let (document, production) =
+        crate::production_data::prepare_document(&original, &bundle.assets)?;
+    resolved.documents.insert(resolved.entry.clone(), document);
     let libraries = LibrarySet::resolve(&resolved)?;
     if libraries
         .entry_document()
@@ -2874,7 +2921,13 @@ pub fn check_bundle_with_limits(
         .values()
         .any(|object| object.kind == "project")
     {
-        compile_resolved(&resolved, libraries, limits).map(|_| ())
+        attach_production(
+            compile_resolved(&resolved, libraries, limits)?,
+            production,
+            &original,
+            limits,
+        )
+        .map(|_| ())
     } else {
         Ok(())
     }
@@ -2929,13 +2982,16 @@ pub fn compile(document: &Document) -> Result<Plan, Diagnostics> {
 /// Compile a parsed document under an explicit caller resource allowance.
 pub fn compile_with_limits(document: &Document, limits: &PlanLimits) -> Result<Plan, Diagnostics> {
     reject_unresolved_imports(document)?;
-    if has_library_syntax(document) {
-        let resolved = local_resolved(document);
+    let (prepared, production) =
+        crate::production_data::prepare_document(document, &BTreeMap::new())?;
+    let plan = if has_library_syntax(&prepared) {
+        let resolved = local_resolved(&prepared);
         let libraries = LibrarySet::resolve(&resolved)?;
-        compile_resolved(&resolved, libraries, limits)
+        compile_resolved(&resolved, libraries, limits)?
     } else {
-        Compiler::new(document).run(limits)
-    }
+        Compiler::new(&prepared).run(limits)?
+    };
+    attach_production(plan, production, document, limits)
 }
 
 /// Validate a document through the same resolution path used by [`compile`].
@@ -2972,4 +3028,28 @@ impl FieldValueRef for Field {
     fn value_ref(&self) -> &Value {
         &self.value
     }
+}
+
+fn attach_production(
+    mut plan: Plan,
+    mut production: Option<crate::production_data::ProductionSettings>,
+    original: &Document,
+    limits: &PlanLimits,
+) -> CResult<Plan> {
+    if let Some(settings) = &mut production {
+        settings.execution_identity = Some(
+            crate::production_identity::execution_identity(original, &plan).map_err(|error| {
+                diagnostics(
+                    DiagnosticCode::Range,
+                    format!("execution identity: {error}"),
+                    None,
+                )
+            })?,
+        );
+    }
+    plan.production = production;
+    if plan.production.is_some() {
+        plan.validate_with_limits(limits).map_err(plan_error)?;
+    }
+    Ok(plan)
 }

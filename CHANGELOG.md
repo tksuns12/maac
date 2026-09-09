@@ -11,12 +11,19 @@ actually published; no release tag or publication date is asserted here.
 
 ### Added
 
-- A normative [native mixing and delivery design](docs/production.md) for the
-  required `maac.production/1` capability, with a pinned delivery schema,
-  complete example, and bounded specification/conformance checks. EQ,
-  compression, reverb, named master/stem deliveries, resampling, and
-  final-artifact analysis are specified but unimplemented; this addition does
-  not ship production DSP or change implemented performance-plan versions.
+- Experimental native `fx.eq/1`, `fx.compressor/1`, and `fx.reverb/1`, with
+  strict source and retained-plan validation, sample automation, reset replay,
+  external sidechains, and bounded complete-graph master/stem capture.
+- Named `maac deliver` source/retained-plan workflows with 44.1/48/96 kHz
+  resampling, Float32/PCM24/PCM16 WAV, explicit deterministic TPDF dither,
+  final-artifact analysis, manifests, and retained audio after failed limits.
+  Native tags and optional `Plan.production` extend plan versions 1 and 2;
+  existing valid JSON remains unchanged. New Rust struct fields require
+  exhaustive literal updates. The [specification](docs/production.md), pinned
+  schema, examples, and bounded fixture checker remain distinct from renderer
+  acceptance. The [metering audit](docs/production-metering-evidence.md) records
+  current 16-times true-peak failures and a candidate awaiting a normative
+  decision; no full ITU/EBU or professional sound-quality claim is made.
 - A Rust library and `maac` CLI for checking source, compiling a standalone
   versioned performance plan, rendering an imported plan, and building source
   directly to WAV.
@@ -42,6 +49,13 @@ actually published; no release tag or publication date is asserted here.
 
 ### Changed
 
+- Project `bar(...)` crop coordinates now resolve against the declared meter
+  before compilation; a 3/4 bar interval matches its exact q spelling and
+  normalized execution identity.
+- Delivery filenames now preserve distinct uppercase/lowercase IDs on
+  case-insensitive filesystems and bound long components with stable SHA-256
+  suffixes. Duplicate destination names fail before rendering, including when
+  overwrite is authorized; ordinary lowercase names retain their spelling.
 - Project branding, the Rust crate, the installed command, source-file extension,
   and document header use MaaC naming (`maac` / `.maac` / `maac 1;`).
 - The draft `core.noise/1` hash prefix is now `maac-noise-1`, changing its

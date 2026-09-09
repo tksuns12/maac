@@ -54,7 +54,7 @@ implementation. It preserves source grammar, core processor and plan versions,
 public graph DAG rules, and frozen basic-library bytes. Numerical verification
 and user listening acceptance remain separate from this design approval.
 
-### 1.4 Specified native production extension
+### 1.4 Native production extension
 
 The normative [native mixing and delivery contract](docs/production.md) defines
 the explicitly required capability `maac.production/1`: native `fx.eq/1`,
@@ -67,10 +67,12 @@ with a hash-pinned, self-contained [schema](production.schema.json).
 This capability preserves `maac 1` semantics and all Core Audio conformance
 obligations; supporting it does not establish Core Audio conformance. The
 grammar, generic syntax-tree schema, and implemented performance-plan versions
-remain unchanged. Production support is **specified but unimplemented** in the
-Rust foundation; the [example](examples/production.maac) and bounded
-[fixtures](production-conformance.json) document the proposed contract, not
-renderer availability or listening acceptance.
+remain unchanged. An **experimental Rust implementation** and runnable
+[example](examples/production.maac) are available. The bounded
+[fixtures](production-conformance.json) remain specification evidence; they do
+not establish rendering or listening conformance. The currently specified
+16-times true-peak profile fails an external metering gate and is unqualified;
+see the [metering evidence](docs/production-metering-evidence.md).
 
 ## 2. File format and lexical rules
 

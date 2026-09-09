@@ -41,14 +41,19 @@ small wavetable WAV is authored source data. The MaaC language specification is 
 design draft, and the Rust implementation deliberately covers a smaller,
 documented subset.
 
-The [native mixing and delivery specification](docs/production.md) defines
-`maac.production/1` for EQ, compression, algorithmic reverb, and named master/stem
-deliveries with resampling and loudness analysis. It is **specified but
-unimplemented**: the current CLI rejects these production features with
-`E_CAPABILITY`. The [production example](examples/production.maac),
+The experimental [native mixing and delivery implementation](docs/production.md)
+adds EQ, compression, algorithmic reverb, and named master/stem deliveries under
+`maac.production/1`. The graph runs at 48 kHz; `maac deliver` exports 44.1, 48,
+or 96 kHz WAV with explicit encoding and dither, then analyzes the final files.
+The [production example](examples/production.maac),
 [delivery schema](production.schema.json), and
-[bounded fixtures](production-conformance.json) support specification review;
-Rust rendering support follows separately.
+[bounded fixtures](production-conformance.json) describe the contract. The
+[production delivery report](docs/production-delivery.md) records installed-CLI
+acceptance separately from the specification fixtures.
+Metering remains experimental: the specified 16-times true-peak profile fails
+two applicable official EBU cases, while a tested alternative awaits a normative
+decision. See the [metering evidence](docs/production-metering-evidence.md).
+No professional sound-quality or full ITU/EBU conformance claim is made.
 
 ## Quick start
 
@@ -80,8 +85,24 @@ maac compile example.maac -o example.performance.json
 maac render example.performance.json -o example.wav
 ```
 
+Render the named production example from the repository root:
+
+```sh
+maac deliver examples/production.maac --project-root . --profile song \
+  --delivery release_cd --output-dir production-output
+maac compile examples/production.maac --project-root . --profile song -o production.json
+maac deliver production.json --profile song --delivery archive --output-dir archive-output
+```
+
+Repeat `--target ID` to select a subset; omitted targets select all. Every
+selected output observes the complete graph, including external sidechains and
+the declared tail. The example's illustrative loudness limits may fail: completed
+WAVs and the manifest remain available, and the command returns failure. Existing
+files are protected unless `--force` is supplied. See the
+[CLI reference](docs/reference.md) for formats, limits, and publication behavior.
+
 The compiler and renderer do not contact the network. Once dependencies are
-cached, `--offline` can be added to Cargo commands. The default output is a
+cached, `--offline` can be added to Cargo commands. Build/render default to a
 48 kHz float32 WAV; `--format pcm16` selects overload-rejecting PCM16 export.
 Existing destinations require `--force`, and failed operations leave the
 destination intact.
@@ -138,7 +159,9 @@ python3 -m venv .venv
 source .venv/bin/activate
 python3 -m pip install -r requirements-dev.txt
 python3 check_production.py
+python3 scripts/production_src_coefficients.py --verify
 python3 scripts/acceptance.py
+python3 scripts/production_acceptance.py --profile song
 ```
 
 The initial release validation was performed on macOS; other platforms are
@@ -153,7 +176,8 @@ the generated results without changing the checkout.
 using the same pinned dependencies. It validates syntax, schema, selected
 semantics, and bounded numerical fixtures. Passing it does not establish
 renderer support, official ITU/EBU metering conformance, or listening quality;
-the [production contract](docs/production.md) records those future gates.
+the [production contract](docs/production.md) defines the separate renderer gates
+and the [metering audit](docs/production-metering-evidence.md) records their current limits.
 
 For a local disposable run:
 
@@ -163,8 +187,15 @@ cp check_spec.py grammar.lark syntax-tree.schema.json example.maac "$smoke_dir/"
 python3 "$smoke_dir/check_spec.py"
 ```
 
-The acceptance runner uses only the Python standard library after installation
-and keeps generated files under `target/acceptance`.
+The basic acceptance runner uses only the Python standard library after
+installation and keeps generated files under `target/acceptance`. The production
+runner also uses only the standard library, performs a fresh offline install,
+and defaults to `--profile song`. It checks source/retained deliveries, target
+selection, overwrite protection, and retained byte-identical audio after
+deliberately failing limits. Runs are preserved under
+`target/production-acceptance/run-*`, with the latest report at
+`target/production-acceptance/results.json`. This CI gate does not download
+official audio or replace the [metering audit](docs/production-metering-evidence.md).
 
 The instrument delivery checks also run the installed CLI, retained-plan audio,
 qualified legacy WAV comparisons, and a disposable syntax-checker copy:

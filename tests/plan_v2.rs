@@ -149,6 +149,7 @@ fn base_plan(version: u32) -> Plan {
         regions: Vec::new(),
         source_mappings: Vec::new(),
         instruments: (version == PLAN_VERSION).then(resources),
+        production: None,
     }
 }
 

@@ -22,27 +22,36 @@ specification remains authoritative; this page describes the implementation scop
 | Wavetables | Explicit mono WAV cycles, cyclic interpolation, adjacent-frame morphing and harmonic-limited banks |
 | Regions | Named score intervals retained as non-rendering metadata |
 | Render | Reset-state offline rendering at 48 kHz, score-end releases, explicit tail |
-| Export | Float32 WAV or overload-rejecting PCM16; no normalization, limiting or dithering |
+| Export | Legacy build/render: Float32 WAV or overload-rejecting PCM16; production delivery also adds PCM24 and explicit seeded TPDF |
+| Native production | Project-level EQ, linked peak compression with external sidechains, eight-delay reverb; required `maac.production/1` |
+| Named deliveries | Complete-graph master/stem capture; 44.1/48/96 kHz conversion; final-artifact loudness/sample-peak/experimental true-peak analysis |
 | Interchange | Independently validated standalone plans: version 1 legacy and version 2 embedded graph/data/provenance |
 
 Recognized deferred features fail with `E_CAPABILITY`: tempo ramps, per-note
 expression, hits/messages, top-level core modulation, other processors, recorded
-sample instruments, arranged audio, external plug-ins and extensions. Transactional editing, full render locks,
+sample instruments, arranged audio, external plug-ins and other extensions. Transactional editing, full render locks,
 MIDI transport, GUI and real-time playback are outside this release's interfaces.
 No deferred feature is approximated silently.
 
 The [native production contract](production.md), required capability
-`maac.production/1`, is **specified but unimplemented**. Its native `fx.eq/1`,
-`fx.compressor/1`, and `fx.reverb/1` processors, 44.1/48/96 kHz named master/stem
-deliveries from a 48 kHz graph, PCM24 and dither, resampling, and final-artifact
-loudness/peak analysis are future renderer work. The current CLI rejects these
-production features with `E_CAPABILITY`; the
-[production example](../examples/production.maac) is a specification fixture.
-The standalone `check_production.py` checks syntax, schema, selected semantics,
-and bounded arithmetic only. It does not advertise rendering, official ITU/EBU
-conformance, or listening acceptance. Existing Core Audio obligations, source
-grammars, the generic syntax-tree schema, and performance-plan versions are
-unchanged.
+`maac.production/1`, has an **experimental implementation**. Native `fx.eq/1`,
+`fx.compressor/1`, and `fx.reverb/1` support mono/stereo project-level nodes,
+sample automation, private reset state, and explicit tails. Named master/stem
+outputs retain sidechain and shared-effect context. Delivery supports 44.1/48/96
+kHz, Float32/PCM24/PCM16 WAV, explicit none/seeded TPDF dither, and measurements
+of the reconstructed final artifact. Failed requested limits retain completed
+audio and produce a failed check result; they do not trigger automatic gain.
+
+The current specified 16-times true-peak estimator fails two applicable EBU
+fixtures. A four-times candidate passed those audited cases but awaits a
+normative/profile decision; see the [metering evidence](production-metering-evidence.md).
+These results do not establish full ITU/EBU compliance or listening acceptance.
+`check_production.py` remains a separate syntax/schema/arithmetic smoke checker;
+Rust tests and external metering/SRC gates provide separate implementation
+evidence. The [production delivery report](production-delivery.md) records the
+installed source/retained-plan, selection, publication, and failed-check audio
+retention boundary. Core Audio obligations, grammar, generic syntax-tree schema,
+and performance-plan version numbers remain unchanged.
 
 The implemented [project-entrypoint extension](project-entrypoint.md) adds
 conventional `main.maac` discovery for source commands and explicit default/song
@@ -133,6 +142,31 @@ memory, initialization, or sample work. The new
 `PlanLimits::max_pluck_delay_cells` field can tighten the ceiling and is not
 serialized into plans; exhaustive Rust struct literals need the new field or
 `..PlanLimits::default()`. Existing processor work weights remain unchanged.
+
+## Production resource bounds
+
+Native DSP uses the existing execution-work allowance. Per frame, EQ charges
+`32 + 10*C` units, compression `24 + C + detector_channels`, and reverb
+`96 + 40*C`, where `C` is the main width. Internal detection uses `C` detector
+channels. Charges include every node throughout the complete interval and tail.
+Reverb history is `15562 + C*(predelay_frames + 360) + 8` binary64 cells per
+node. `PlanLimits::max_production_delay_cells` defaults to at most 4,194,304
+cells (32 MiB payload) across all reverbs and may be tightened by the caller.
+
+Explicit multi-port capture accepts at most 256 port selections, including
+duplicates, and charges `total_frames * sum(selected_channel_counts)` additional
+copy-work units against the selected plan allowance before allocating capture
+buffers. The ordinary single-master render API retains its existing budget
+behavior. Production records allow at most 64 deliveries, 256 targets per
+delivery, and 1024 targets in total. Production data participates in aggregate
+plan object/string bounds and selected rational/identifier limits; source
+identity evidence has a separate bounded payload within the plan byte budget.
+
+`DeliveryLimits` separately defaults to two billion conversion/analysis work
+units; `song` permits at most 100 billion. Both profiles retain 256 selected
+targets, 2 GiB of spool data, 4 GiB aggregate disk use, and the 30-minute,
+96-kHz maximum output-frame bound. Source/plan data cannot authorize larger
+budgets. `--profile song` selects both the plan and delivery work allowances.
 
 ## Fidelity
 

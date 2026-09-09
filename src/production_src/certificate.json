@@ -1,0 +1,28 @@
+{
+  "identity": "maac.src.kaiser/1",
+  "generator": "production_src_coefficients.py/1",
+  "generator_sha256": "8c622bbae829d5d12f672a3614d903c5a5314f0cb34c3c6fe42493cf3df7852c",
+  "fractional_interval_bits": 256,
+  "coefficient_rounding": "both outward interval endpoints round to identical binary64",
+  "storage": "little-endian binary64 h(q) for q=0..K; h(-q)=h(q)",
+  "tables": {
+    "44100": {
+      "file": "44100.f64le",
+      "up": 147,
+      "down": 160,
+      "half_length": 40960,
+      "sha256": "0e1eb42b6d2c0bdb486f812fa61378da64cfb55fdb574417c52067aa3c71adde",
+      "bytes": 327688,
+      "maximum_interval_width_in_2_to_minus_256_units": 15830
+    },
+    "96000": {
+      "file": "96000.f64le",
+      "up": 2,
+      "down": 1,
+      "half_length": 512,
+      "sha256": "423d049d3e87af8c3cb3db01d8923cb189248b6113dfe1b10e22763188d7e9af",
+      "bytes": 4104,
+      "maximum_interval_width_in_2_to_minus_256_units": 13132
+    }
+  }
+}

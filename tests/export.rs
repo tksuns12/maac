@@ -73,6 +73,7 @@ fn one_note_plan_with_pitch(level: Rational, pitch_hz: f64) -> Plan {
         regions: Vec::new(),
         source_mappings: Vec::new(),
         instruments: None,
+        production: None,
     }
 }
 

@@ -91,6 +91,24 @@ pub enum Command {
         #[arg(long, value_enum, default_value_t = ProfileArg::Default)]
         profile: ProfileArg,
     },
+    /// Render a named master/stem delivery, analyze final WAVs, and publish its manifest.
+    Deliver {
+        /// Source file/project directory, or a retained performance-plan JSON file.
+        input: PathBuf,
+        #[arg(long)]
+        delivery: String,
+        #[arg(long)]
+        output_dir: PathBuf,
+        /// Select a named target; repeat to select several (default: all).
+        #[arg(long = "target")]
+        targets: Vec<String>,
+        #[arg(long)]
+        force: bool,
+        #[arg(long)]
+        project_root: Option<PathBuf>,
+        #[arg(long, value_enum, default_value_t = ProfileArg::Default)]
+        profile: ProfileArg,
+    },
     /// Compute the canonical SHA-256 pin for a bounded local file.
     Hash { input: PathBuf },
     /// List embedded instruments, or describe one export with a runnable example.
@@ -160,6 +178,8 @@ pub struct CommandResult {
     pub library: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub libraries: Option<Vec<crate::stdlib::LibraryInfo>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delivery: Option<crate::production_delivery::DeliveryManifest>,
 }
 
 impl CommandResult {
@@ -178,6 +198,7 @@ impl CommandResult {
             instrument: None,
             library: None,
             libraries: None,
+            delivery: None,
         }
     }
 
@@ -196,6 +217,7 @@ impl CommandResult {
             instrument: None,
             library: None,
             libraries: None,
+            delivery: None,
         }
     }
 
@@ -220,6 +242,7 @@ impl CommandResult {
             instrument: None,
             library: None,
             libraries: None,
+            delivery: None,
         }
     }
 
@@ -238,6 +261,7 @@ impl CommandResult {
             instrument: None,
             library: None,
             libraries: None,
+            delivery: None,
         }
     }
 
@@ -256,6 +280,7 @@ impl CommandResult {
             instrument: None,
             library: None,
             libraries: None,
+            delivery: None,
         }
     }
 }
@@ -269,6 +294,8 @@ pub struct CliError {
     pub path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub span: Option<Span>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delivery: Option<Box<crate::production_delivery::DeliveryManifest>>,
 }
 
 impl CliError {
@@ -279,6 +306,7 @@ impl CliError {
             message: message.into(),
             path: None,
             span: None,
+            delivery: None,
         }
     }
 
@@ -455,6 +483,63 @@ pub fn execute(command: &Command) -> Result<CommandResult, CliError> {
                 "build", &input, output, wav_format, stats,
             ))
         }
+        Command::Deliver {
+            input,
+            delivery,
+            output_dir,
+            targets,
+            force,
+            project_root,
+            profile,
+        } => {
+            let limits = profile.limits();
+            let (resolved, root) = resolve_source_input(Some(input), project_root.as_deref());
+            let bytes = read_bounded(&resolved)?;
+            let plan = if bytes
+                .iter()
+                .copied()
+                .find(|byte| !byte.is_ascii_whitespace())
+                == Some(b'{')
+            {
+                Plan::from_json_with_limits(&bytes, &limits).map_err(CliError::from_plan)?
+            } else {
+                let bundle = load_source_bundle(&resolved, root.as_deref())?;
+                compiler::compile_bundle_with_limits(&bundle, &limits)
+                    .map_err(|e| CliError::from_diagnostics(&e))?
+            };
+            let options = crate::production_delivery::DeliveryOptions {
+                delivery_id: delivery.clone(),
+                targets: targets.clone(),
+                output_dir: output_dir.clone(),
+                overwrite: *force,
+                limits: match profile {
+                    ProfileArg::Default => crate::production_delivery::DeliveryLimits::default(),
+                    ProfileArg::Song => crate::production_delivery::DeliveryLimits::song(),
+                },
+            };
+            let report =
+                crate::production_delivery::deliver(&plan, &options, &limits).map_err(|e| {
+                    let mut result = CliError::new(e.code, e.message);
+                    result.delivery = e.manifest;
+                    result
+                })?;
+            Ok(CommandResult {
+                ok: report.ok,
+                command: "deliver".into(),
+                input: resolved.display().to_string(),
+                output: Some(output_dir.join(&report.manifest_file).display().to_string()),
+                format: None,
+                notes: Some(plan.events.len()),
+                frames: Some(report.frames),
+                digest: None,
+                exports: None,
+                catalog: None,
+                instrument: None,
+                library: None,
+                libraries: None,
+                delivery: Some(report),
+            })
+        }
         Command::Instruments {
             name,
             library,
@@ -481,6 +566,7 @@ pub fn execute(command: &Command) -> Result<CommandResult, CliError> {
                     instrument: None,
                     library: None,
                     libraries: Some(crate::stdlib::libraries()),
+                    delivery: None,
                 });
             }
             let selected = library.as_deref().unwrap_or(crate::stdlib::BASIC_ID);
@@ -514,6 +600,7 @@ pub fn execute(command: &Command) -> Result<CommandResult, CliError> {
                 instrument,
                 library: library.clone(),
                 libraries: None,
+                delivery: None,
             })
         }
         Command::Hash { input } => {
@@ -608,6 +695,15 @@ pub fn read_bounded(path: &Path) -> Result<Vec<u8>, CliError> {
 }
 
 pub fn format_human(result: &CommandResult) -> String {
+    if let Some(delivery) = &result.delivery {
+        return format!(
+            "deliver {} -> {} (artifacts: {}, checks: {})",
+            result.input,
+            result.output.as_deref().unwrap_or(&delivery.manifest_file),
+            delivery.artifact_status,
+            delivery.check_status
+        );
+    }
     if let Some(libraries) = &result.libraries {
         return libraries
             .iter()
@@ -747,7 +843,11 @@ where
             } else {
                 println!("{}", format_human(&result));
             }
-            0
+            if result.ok {
+                0
+            } else {
+                1
+            }
         }
         Err(error) => {
             if json {

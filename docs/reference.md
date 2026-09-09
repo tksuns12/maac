@@ -11,6 +11,7 @@ language.
 | `maac compile [INPUT] -o PLAN [--project-root ROOT] [--profile default\|song]` | Resolve a composition bundle and write an independently loadable versioned JSON plan |
 | `maac render PLAN -o WAV [--profile default\|song]` | Validate an explicit plan file under the caller's profile, then render it |
 | `maac build [INPUT] -o WAV [--project-root ROOT] [--profile default\|song]` | Resolve, compile and render a composition bundle through the same selected limits |
+| `maac deliver INPUT --delivery ID --output-dir DIR [--target ID] [--profile default\|song]` | Render selected named targets from source or retained JSON, analyze final WAVs, and publish a manifest |
 | `maac instruments [NAME]` | List the built-in catalog, or show one instrument with controls, musical guidance and runnable usage |
 | `maac instruments [NAME] --library ID` | Select an exact built-in version for catalog listing or named detail |
 | `maac instruments --libraries` | List embedded library identities, reserved source paths and hashes |
@@ -29,7 +30,7 @@ recursive or ancestor search. `-o` remains required where shown, and relative
 outputs remain relative to the process cwd. Explicit filenames retain their
 existing behavior; `render`/`hash` do not discover `main.maac`.
 
-`--profile` is per-command on check/compile/build/render, not a language
+`--profile` is per-command on check/compile/build/render/deliver, not a language
 conformance declaration. Default work remains 500,000,000; explicit `song`
 permits at most 10,000,000,000 work units with every other bound unchanged.
 Composition `check` includes this budget validation. Large retained plans need
@@ -48,6 +49,63 @@ directory boundary. Resolution remains local and rejects absolute dependency
 paths, root escapes, symlink escapes, missing files, cycles, and hash
 mismatches. `check` accepts both compositions and libraries; `compile` and
 `build` require a composition.
+
+`deliver` requires explicit `INPUT`, a source file/project directory or retained
+performance-plan JSON. It accepts `--project-root` for source resolution,
+repeatable `--target ID`, `--force`, and the global `--json` result option.
+Target IDs must be unique and defined; omitted selection renders every target.
+Selection order does not change execution or identity. Files are written under
+`--output-dir`; filenames are derived independently of the selected subset.
+Every target captures its exact port from one complete graph execution; stems
+are not promised to reconstruct the master.
+
+Source IDs are case-sensitive ASCII, so the CLI uses the following filename
+mapping to protect distinct IDs on case-insensitive filesystems and fit their
+component-length limits:
+
+| File | Filename rule |
+| --- | --- |
+| Ordinary target | `<delivery>.<target>.wav` when neither ID contains ASCII uppercase and the complete name is at most 255 bytes |
+| Uppercase/mixed-case or long target name | `<delivery-prefix>.<target-prefix>.<digest>.wav`, where each prefix is at most the first 80 ASCII bytes of its full ID; at most 230 bytes total |
+| Lowercase delivery manifest | `<delivery>.manifest.json`; at most 142 bytes for a valid 128-byte ID |
+| Uppercase/mixed-case delivery manifest | `<delivery-prefix>.<digest>.manifest.json`, using at most the first 80 ASCII bytes; at most 159 bytes total |
+
+Each digest is the full 64-character lowercase SHA-256 hex string, with no
+`sha256:` prefix. Target names hash the byte sequence
+`"maac.production.artifact-filename/1" + NUL + full_delivery_ID + NUL + full_target_ID`.
+Manifest names hash
+`"maac.production.manifest-filename/1" + NUL + full_delivery_ID`.
+IDs use their exact original ASCII/UTF-8 spelling, including case. Thus ordinary
+lowercase examples retain their readable names, while `MASTER` and `master`
+remain distinct. Full IDs and actual filenames are recorded in the manifest.
+Any generated filename collision after ASCII case folding fails with
+`E_OUTPUT_COLLISION` before rendering, even with `--force`.
+
+Delivery definitions select 44.1/48/96 kHz and `wav_f32le`, `wav_pcm24le`, or
+`wav_pcm16le`. Dither is explicit: `none`, or seeded TPDF for integer PCM.
+There is no automatic trimming, normalization, limiting, or loudness correction.
+Each final encoded artifact is reopened for authoritative measurements.
+Unmeasurable requested loudness fails its check. Failed limits retain completed
+WAVs and the manifest, with completed artifact status, failed check status, and
+nonzero command exit. A target conversion failure permits independent targets
+to finish; the report distinguishes partial artifact completion from checks.
+An analysis failure still retains its completed WAV.
+
+Publication is atomic per file, with overwrite protection unless `--force` is
+present; the complete manifest follows processing and analysis. Publication is
+not a transaction across all files. The [resource bounds](capabilities.md#production-resource-bounds)
+include separate plan and delivery work budgets. The
+[metering audit](production-metering-evidence.md) records the current 16-times
+true-peak profile's failed external gate and its pending replacement candidate;
+these commands do not advertise full ITU/EBU conformance.
+
+For the repository example, use `--project-root .`: its descriptor asset path
+is package-relative while the source is in `examples/`. For example:
+
+```sh
+maac deliver examples/production.maac --project-root . --profile song --delivery release_cd --output-dir production-output
+maac deliver production.json --profile song --delivery archive --target master --output-dir archive-output
+```
 
 Built-in imports use `import basic { builtin = "std/basic/1.0.0"; }`. This form
 cannot include `path` or `hash`; unavailable versions fail explicitly. Discovery
@@ -108,6 +166,10 @@ It does not dither or change the gain of the rendered signal.
 | `plan::Plan::validate` | Validate an in-memory plan |
 | `plan::Plan::to_json` | Validate and serialize a bounded plan artifact |
 | `dsp::render` | Stream binary64 output frames to a fallible callback |
+| `dsp::render_ports_with_limits` | Capture selected `PortRef`s in request order from one complete execution, with reused per-frame buffers and caller budgets |
+| `plan::Plan::audio_output_channels` | Resolve a mono/stereo project-level audio output port |
+| `production_delivery::deliver` | Publish a selected named delivery using `DeliveryOptions`, `DeliveryLimits`, and caller `PlanLimits` |
+| `production_analysis::analyze_wav` | Analyze PCM reconstructed from an encoded artifact |
 | `dsp::DspEngine` | Prepare, reset and render an immutable plan repeatedly |
 | `export::write_wav` | Stream WAV samples to a caller-provided `Write + Seek` sink |
 | `export::render_wav_to_path` | Render and atomically publish a WAV destination |
@@ -213,3 +275,11 @@ and typed value variants. It is not an editing transaction engine. The plan
 retains resolved events and source mappings; it is not a substitute for the
 authored source. See the [format reference](performance-plan.md) and
 [diagnostics guide](diagnostics.md).
+
+Production settings are retained in optional `Plan.production`; legacy plans
+omit this field. Native processor tags are additive in versions 1 and 2.
+`PlanLimits` adds `max_production_delay_cells`; exhaustive Rust struct literals
+must include it or use `..PlanLimits::default()`. Exhaustive `Plan` literals
+need `production: None` when no delivery is defined. These Rust additions do
+not change existing valid serialized plans. See the
+[retained production contract](performance-plan.md#native-production-and-named-deliveries).

@@ -6,9 +6,12 @@
 //! the slice is valid until the callback returns.
 
 use crate::plan::{
-    AutomationClock, EventKind, Interpolation, Plan, PlanError, PlanLimits, Processor, Rational,
-    ResolvedEvent,
+    AutomationClock, EventKind, Interpolation, Plan, PlanError, PlanLimits, PortRef, Processor,
+    Rational, ResolvedEvent,
 };
+use crate::production_compressor::{Compressor, CompressorParams};
+use crate::production_eq::Eq;
+use crate::production_reverb::Reverb;
 use crate::voice::{CompiledInstrument, InstrumentRuntime};
 use crate::wavetable::TableBank;
 use num_bigint::BigInt;
@@ -131,6 +134,7 @@ where
 /// Resettable sample based renderer for one immutable performance plan.
 pub struct DspEngine<'a> {
     plan: &'a Plan,
+    limits: PlanLimits,
     rate: f64,
     channels: usize,
     nodes: Vec<NodeState>,
@@ -233,6 +237,7 @@ impl<'a> DspEngine<'a> {
                     id: connection.id.clone(),
                     from,
                     to,
+                    to_port: connection.to.port.clone(),
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -281,6 +286,7 @@ impl<'a> DspEngine<'a> {
 
         Ok(Self {
             plan,
+            limits: *limits,
             rate,
             channels,
             nodes,
@@ -301,6 +307,97 @@ impl<'a> DspEngine<'a> {
     where
         F: FnMut(&[f64]) -> Result<()>,
     {
+        let output = self.plan.output.output.clone();
+        self.render_ports_inner(&[output], false, |outputs| callback(&outputs[0]))
+    }
+
+    /// Capture selected ports from one complete graph execution. Buffers are reused each frame.
+    pub fn render_ports<F>(&mut self, ports: &[PortRef], callback: F) -> Result<()>
+    where
+        F: FnMut(&[Vec<f64>]) -> Result<()>,
+    {
+        self.render_ports_inner(ports, true, callback)
+    }
+
+    fn render_ports_inner<F>(
+        &mut self,
+        ports: &[PortRef],
+        charge_capture: bool,
+        mut callback: F,
+    ) -> Result<()>
+    where
+        F: FnMut(&[Vec<f64>]) -> Result<()>,
+    {
+        let resource_error = || {
+            RenderError::Plan(PlanError {
+                code: "E_RESOURCE_LIMIT".into(),
+                path: "capture".into(),
+                message: "capture count, allocation, or aggregate work exceeds its bound".into(),
+                span: None,
+            })
+        };
+        if ports.len() > crate::production_data::MAX_TARGETS {
+            return Err(resource_error());
+        }
+        let channels = ports.iter().try_fold(0u64, |sum, port| {
+            sum.checked_add(u64::from(
+                self.plan
+                    .audio_output_channels(port)
+                    .map_err(RenderError::Plan)?,
+            ))
+            .ok_or_else(resource_error)
+        })?;
+        if charge_capture {
+            let work = self
+                .plan
+                .execution_work(&self.limits)
+                .map_err(RenderError::Plan)?;
+            let copy_work = self
+                .plan
+                .output
+                .total_frames
+                .checked_mul(channels)
+                .ok_or_else(resource_error)?;
+            if work.checked_add(copy_work).ok_or_else(resource_error)?
+                > self
+                    .limits
+                    .max_execution_work
+                    .min(PlanLimits::MAX_SONG_EXECUTION_WORK)
+            {
+                return Err(resource_error());
+            }
+        }
+        if ports.is_empty() {
+            return Err(RenderError::RenderState(
+                "at least one capture port is required".into(),
+            ));
+        }
+        let mut selections = Vec::new();
+        let mut outputs = Vec::new();
+        selections
+            .try_reserve_exact(ports.len())
+            .map_err(|_| resource_error())?;
+        outputs
+            .try_reserve_exact(ports.len())
+            .map_err(|_| resource_error())?;
+        for port in ports {
+            let channels = self
+                .plan
+                .audio_output_channels(port)
+                .map_err(RenderError::Plan)?;
+            selections.push(
+                *self
+                    .node_indices
+                    .get(&port.node)
+                    .ok_or_else(|| RenderError::RenderState("capture node missing".into()))?,
+            );
+            let mut samples = Vec::new();
+            samples
+                .try_reserve_exact(usize::from(channels))
+                .map_err(|_| resource_error())?;
+            samples.resize(usize::from(channels), 0.0);
+            outputs.push(samples);
+        }
         self.reset();
         let output_node = *self
             .node_indices
@@ -343,7 +440,10 @@ impl<'a> DspEngine<'a> {
                     "nonfinite output at frame {frame_index}"
                 )));
             }
-            callback(&self.frame)?;
+            for (output, index) in outputs.iter_mut().zip(&selections) {
+                output.copy_from_slice(&self.nodes[*index].output);
+            }
+            callback(&outputs)?;
         }
         Ok(())
     }
@@ -535,6 +635,70 @@ impl<'a> DspEngine<'a> {
                     .output
                     .copy_from_slice(&output[..usize::from(channels)]);
             }
+            Processor::Eq { channels, .. }
+            | Processor::Compressor { channels, .. }
+            | Processor::Reverb { channels, .. } => {
+                let channels = usize::from(channels);
+                let main = incoming
+                    .iter()
+                    .map(|i| &self.connections[*i])
+                    .find(|c| c.to_port == "in")
+                    .ok_or_else(|| RenderError::RenderState("native main input missing".into()))?;
+                let mut input = [0.0; 2];
+                input[..channels].copy_from_slice(&self.nodes[main.from].output[..channels]);
+                let side = incoming
+                    .iter()
+                    .map(|i| &self.connections[*i])
+                    .find(|c| c.to_port == "sidechain");
+                let mut side_input = [0.0; 2];
+                let side_channels = side.map(|c| {
+                    let output = &self.nodes[c.from].output;
+                    side_input[..output.len()].copy_from_slice(output);
+                    output.len()
+                });
+                let node = &mut self.nodes[node_index];
+                let output = match &node.processor {
+                    Processor::Eq { .. } => {
+                        let frequency = node.current_param("frequency");
+                        let q = node.current_params.get("q").copied().unwrap_or(1.0);
+                        let gain = node.current_params.get("gain").copied().unwrap_or(0.0);
+                        node.eq
+                            .as_mut()
+                            .ok_or_else(|| RenderError::RenderState("EQ state missing".into()))?
+                            .process(&input[..channels], frequency, q, gain)?
+                    }
+                    Processor::Compressor { .. } => {
+                        let params = CompressorParams {
+                            threshold: node.current_param("threshold"),
+                            ratio: node.current_param("ratio"),
+                            knee: node.current_param("knee"),
+                            attack: node.current_param("attack"),
+                            release: node.current_param("release"),
+                            makeup: node.current_param("makeup"),
+                        };
+                        node.compressor
+                            .as_mut()
+                            .ok_or_else(|| {
+                                RenderError::RenderState("compressor state missing".into())
+                            })?
+                            .process(
+                                &input[..channels],
+                                side_channels.map(|n| &side_input[..n]),
+                                params,
+                            )?
+                    }
+                    Processor::Reverb { .. } => {
+                        let decay = node.current_param("decay");
+                        let mix = node.current_param("mix");
+                        node.reverb
+                            .as_mut()
+                            .ok_or_else(|| RenderError::RenderState("reverb state missing".into()))?
+                            .process(&input[..channels], decay, mix)?
+                    }
+                    _ => unreachable!(),
+                };
+                node.output.copy_from_slice(&output[..channels]);
+            }
             Processor::Pan => {
                 let mut input = 0.0;
                 for &connection_index in &incoming {
@@ -595,6 +759,10 @@ struct NodeState {
     onepole_previous: Vec<f64>,
     voices: Vec<Voice>,
     instrument: Option<InstrumentRuntime>,
+    eq: Option<Eq>,
+    compressor: Option<Compressor>,
+    reverb: Option<Reverb>,
+    native_bounds: BTreeMap<String, (f64, f64, bool)>,
 }
 
 impl NodeState {
@@ -608,6 +776,9 @@ impl NodeState {
             Processor::Sine { .. } => 1,
             Processor::OnePole { channels }
             | Processor::Gain { channels }
+            | Processor::Eq { channels, .. }
+            | Processor::Compressor { channels, .. }
+            | Processor::Reverb { channels, .. }
             | Processor::Sum { channels } => usize::from(channels),
             Processor::Pan => 2,
             Processor::Instrument { channels, .. } => usize::from(channels),
@@ -629,12 +800,60 @@ impl NodeState {
                 base_params.insert("pan".into(), 0.0);
             }
             Processor::Sum { .. } => {}
+            Processor::Eq { .. } | Processor::Compressor { .. } | Processor::Reverb { .. } => {
+                for (name, value) in crate::plan::production_defaults(&processor) {
+                    base_params.insert(name, rational_f64(&value, "native default")?);
+                }
+            }
             Processor::Instrument { .. } => {
                 base_params = compiled
                     .ok_or_else(|| {
                         RenderError::RenderState("instrument program was not compiled".into())
                     })?
                     .default_controls();
+            }
+        }
+        let eq = if let Processor::Eq { channels, mode } = processor {
+            Some(Eq::new(channels, mode)?)
+        } else {
+            None
+        };
+        let compressor = if let Processor::Compressor {
+            channels,
+            sidechain_channels,
+        } = processor
+        {
+            Some(Compressor::new(channels, sidechain_channels)?)
+        } else {
+            None
+        };
+        let reverb = if let Processor::Reverb {
+            channels,
+            predelay_frames,
+            ref damping,
+        } = processor
+        {
+            Some(Reverb::new(
+                channels,
+                predelay_frames as usize,
+                rational_f64(damping, "damping")?,
+            )?)
+        } else {
+            None
+        };
+        let mut native_bounds = BTreeMap::new();
+        for name in base_params.keys() {
+            if let Some((min, max, open)) =
+                crate::plan::production_parameter_bounds(&processor, name)
+            {
+                native_bounds.insert(
+                    name.clone(),
+                    (
+                        rational_f64(&min, "native lower bound")?,
+                        rational_f64(&max, "native upper bound")?,
+                        open,
+                    ),
+                );
             }
         }
         let state = Self {
@@ -647,6 +866,10 @@ impl NodeState {
             onepole_previous: vec![0.0; channels],
             voices: Vec::new(),
             instrument: None,
+            eq,
+            compressor,
+            reverb,
+            native_bounds,
         };
         state.validate_current_parameters(rate)?;
         Ok(state)
@@ -680,6 +903,15 @@ impl NodeState {
         self.output.fill(0.0);
         self.onepole_previous.fill(0.0);
         self.voices.clear();
+        if let Some(eq) = &mut self.eq {
+            eq.reset();
+        }
+        if let Some(compressor) = &mut self.compressor {
+            compressor.reset();
+        }
+        if let Some(reverb) = &mut self.reverb {
+            reverb.reset();
+        }
         self.current_params.clone_from(&self.base_params);
         if let Some(instrument) = &mut self.instrument {
             instrument.reset_state();
@@ -697,6 +929,17 @@ impl NodeState {
                     "parameter {name} on {} is nonfinite",
                     self.id
                 )));
+            }
+            if let Some(&(min, max, open)) = self.native_bounds.get(name) {
+                if if open {
+                    *value <= min || *value >= max
+                } else {
+                    *value < min || *value > max
+                } {
+                    return Err(RenderError::Nonfinite(format!(
+                        "native parameter {name} is outside its range"
+                    )));
+                }
             }
             match (&self.processor, name.as_str()) {
                 (Processor::Gain { .. }, "gain") if *value < 0.0 => {
@@ -856,6 +1099,7 @@ struct ConnectionRuntime {
     id: String,
     from: usize,
     to: usize,
+    to_port: String,
 }
 
 fn sort_event_indices(events: &mut BTreeMap<u64, Vec<usize>>, all: &[EventRuntime]) {
@@ -1246,6 +1490,9 @@ fn build_automations(
 }
 
 fn default_parameter(processor: &Processor, parameter: &str) -> f64 {
+    if let Some(value) = crate::plan::production_defaults(processor).get(parameter) {
+        return value.to_f64().expect("bounded native default");
+    }
     match (processor, parameter) {
         (Processor::Sine { .. }, "attack") => 0.005,
         (Processor::Sine { .. }, "release") => 0.080,
@@ -1371,4 +1618,17 @@ pub fn sum_samples(inputs: &[f64]) -> Result<f64> {
     } else {
         Err(RenderError::Nonfinite("sum output is nonfinite".into()))
     }
+}
+
+/// Render selected ports in requested order while preserving the entire graph and sidechains.
+pub fn render_ports_with_limits<F>(
+    plan: &Plan,
+    limits: &PlanLimits,
+    ports: &[PortRef],
+    callback: F,
+) -> Result<()>
+where
+    F: FnMut(&[Vec<f64>]) -> Result<()>,
+{
+    DspEngine::new_with_limits(plan, limits)?.render_ports(ports, callback)
 }

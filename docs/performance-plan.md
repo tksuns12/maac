@@ -25,6 +25,7 @@ for legacy-only documents. Both versions render without the original sources.
 | `regions` | Named non-rendering score intervals |
 | `source_mappings` | Additional source identity metadata |
 | `instruments` | Required version 2 resource payload; absent in version 1 |
+| `production` | Optional native-delivery settings and original-source execution identity; absent for legacy plans |
 
 Rationals serialize as canonical reduced strings such as `"0/1"`, `"1/3"`, or
 `"-1/50"`, always with a positive denominator. JSON floating-point numbers are
@@ -72,7 +73,7 @@ note-ons; equal-class events sort by `order`, then unsigned UTF-8 event address.
 A node has `id`, a tagged `processor`, and a `params` map. Processor tags are
 `sine` with `voices`, `one_pole` with `channels`, `gain` with `channels`, `pan`,
 and `sum` with `channels`. These correspond to the reference algorithms named in the
-capability matrix. Parameter values use canonical units: seconds, Hz, or
+capability matrix. Parameter values use canonical units: seconds, Hz, decibels, or
 dimensionless numbers.
 
 `core.gain/1` uses the strict processor object `{"kind":"gain","channels":2}`
@@ -110,6 +111,64 @@ Instrument automation targets only public controls and inherits each underlying
 parameter's unit, range, and rate. Sample-rate parameters evaluate every frame;
 note-on parameters are captured at note-on, and release is captured at note-off.
 Reset-rate parameters cannot be automated. Internal graph nodes are private.
+
+## Native production and named deliveries
+
+Both versions additionally support these strict processor objects:
+
+```json
+{"kind":"fx.eq/1","channels":2,"mode":"peak"}
+{"kind":"fx.compressor/1","channels":2,"sidechain_channels":1}
+{"kind":"fx.reverb/1","channels":2,"predelay_frames":960,"damping":"1/2"}
+```
+
+EQ mode is `peak`, `low_shelf`, `high_shelf`, `low_pass`, or `high_pass`.
+Omitted compressor `sidechain_channels` selects the internal detector; a value
+of 1 or 2 requires exactly one matching `sidechain` connection. Main `in` and
+`out` widths are independently set by `channels`, always 1 or 2. Detector audio
+orders graph execution and participates in cycle checks but does not enter the
+audible sum. Reverb predelay is the exact ceiling of source seconds times
+48000, bounded to 0–12000 frames; damping is a canonical rational in [0,1].
+No mutable filter, detector, or delay state is serialized.
+
+Native parameters live in the ordinary rational `params` map, with applicable
+defaults resolved by the source compiler and renderer. EQ has `frequency` in
+Hz, `q` dimensionless, and `gain` in dB; shelves forbid `q`, and pass filters
+forbid `gain`. Compression has dB `threshold`, `knee`, `makeup`, dimensionless
+`ratio`, and seconds `attack`/`release`. Reverb has seconds `decay` and
+unitless `mix`. All are sampled every frame, retain state during automation and
+tail, and apply the bounds in the [native contract](production.md).
+Exponential interpolation is rejected for dB parameters even when positive
+endpoints were supplied directly in JSON. Structural config cannot be automated.
+Unknown fields, invalid layouts, disconnected required inputs, ranges, and
+nonfinite values fail at the same independent plan boundary as core processors.
+
+Optional `production` contains `schema_hash`, `extension_id`, `deliveries`, and
+`execution_identity`. Delivery and target records retain stable source IDs;
+rates become integer Hz, output references use the ordinary `{node,port}`
+shape, encodings retain their `wav_*` identifiers, and dither is a tagged
+`{"type":"none"}` or `{"type":"tpdf","seed":...}` record. Limit units remain explicit
+and bounds become canonical rational strings. Each delivery must contain one
+master matching `output.output`; all other targets are stems. Original source
+extension/descriptor objects are validated before removal from compilation.
+The retained identity includes its algorithm, execution hash, additional
+source-input hash, and normalized source JSON evidence. Rendering never follows
+source paths in that evidence or retrieves the schema again.
+
+Production data is validated in memory and on JSON import, including schema
+identity, limits, references, and caller resource budgets. The complete
+extension contributes to the execution identity; selected delivery/targets,
+converter/dither/analyzer identities, and numeric environment also enter the
+render identity. The final-artifact manifest keeps artifact completion separate
+from requested-check status. Metering remains experimental; consult the
+[current external-gate evidence](production-metering-evidence.md).
+
+These are additive tags and an optional field, following the existing gain
+precedent. Plan versions remain 1 and 2; older readers may reject the new
+features. Existing plans omit `production` and keep their prior wire shape.
+Rust `Plan` struct literals add `production: None` for that case. Native history,
+execution, and selected-port copy budgets are described in the
+[resource bounds](capabilities.md#production-resource-bounds).
 
 ## Version 2 instrument resources
 

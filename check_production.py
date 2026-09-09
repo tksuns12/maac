@@ -490,7 +490,7 @@ def main():
     else:
         raise AssertionError("Accepted remote schema reference")
     counts = arithmetic(fixtures)
-    print(json.dumps({"status": "pass", "scope": "production specification smoke checks only; renderer unimplemented", "valid_documents": valid_count, "invalid_documents": len(fixtures["invalid_source_mutations"]), "schema_reference_checks": 1, "arithmetic_cases": counts, "tracked_artifact_writes": 0}, indent=2))
+    print(json.dumps({"status": "pass", "scope": "production specification smoke checks only; Rust renderer verification is separate", "valid_documents": valid_count, "invalid_documents": len(fixtures["invalid_source_mutations"]), "schema_reference_checks": 1, "arithmetic_cases": counts, "tracked_artifact_writes": 0}, indent=2))
 
 
 if __name__ == "__main__":

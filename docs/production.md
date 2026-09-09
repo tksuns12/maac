@@ -1,9 +1,13 @@
 # Native mixing and production deliveries
 
 This is the normative contract for the required capability `maac.production/1`.
-It is **specified but unimplemented** in the Rust compiler and renderer. Syntax,
-schema, and bounded arithmetic fixtures provide specification evidence only;
-they do not establish native rendering, SRC, or metering conformance.
+An **experimental Rust implementation** is available through native nodes,
+retained plans, and `maac deliver`. The currently specified 16-times true-peak
+profile fails an external metering gate and remains unqualified; the
+[metering evidence](production-metering-evidence.md) records the results and a
+candidate awaiting a normative decision. Syntax, schema, and bounded arithmetic
+fixtures provide specification evidence only; they do not establish native
+rendering, SRC, or metering conformance.
 
 The capability adds project-level native `fx.eq/1`, `fx.compressor/1`, and
 `fx.reverb/1` nodes and named master/stem deliveries. It leaves `maac 1`, Core
@@ -566,13 +570,25 @@ if publication fails after another target has been published, report the
 actual per-target completion and retain those completed files. Never silently
 replace an existing destination merely because a limit check has failed.
 
+The CLI's caller-side mapping uses bounded, stable SHA-256 filename suffixes for
+uppercase/mixed-case IDs and long components, independently of target selection.
+The [CLI reference](reference.md) specifies the mapping and collision refusal;
+full source IDs remain authoritative in delivery data and manifests.
+
 ## 11. Conformance and implementation gates
 
 The [complete example](../examples/production.maac) uses the repository as its
 package root; its descriptor asset path `production.schema.json` resolves from
 that root. The schema is self-contained and its exact bytes must match the
-example's asset hash. The example is valid specification source, not a runnable
-production-renderer demonstration.
+example's asset hash. The example runs through the experimental implementation:
+
+```sh
+maac deliver examples/production.maac --project-root . --profile song --delivery release_cd --output-dir production-output
+```
+
+Its requested limits are illustrative, and completed audio is retained if they
+fail. This runnable example does not qualify the current metering profile or
+replace the acceptance gates below.
 
 [`check_production.py`](../check_production.py) and
 [`production-conformance.json`](../production-conformance.json) validate bounded
@@ -581,8 +597,9 @@ results cover EQ impulses, compressor knees and time constants, the reverb's
 first wet impulse, symmetric integer quantization and deterministic dither,
 and exact delivery frame counts. Invalid cases cover capabilities, units,
 fields, references, sidechains, formats, rates, and limits. These checks do not
-change the Rust renderer's supported capability list or performance-plan
-versions.
+establish Rust renderer conformance or change performance-plan versions.
+The Rust implementation has separate native, delivery, and resource tests;
+external metering qualification is tracked in the evidence report.
 
 Before advertising renderer support, implementations MUST additionally prove:
 

@@ -72,5 +72,11 @@ jobs:
       - name: Check production specification and bounded fixtures
         run: python check_production.py
 
+      - name: Verify production SRC coefficient certificates
+        run: python scripts/production_src_coefficients.py --verify
+
       - name: Run macOS offline installed-CLI acceptance
         run: python scripts/acceptance.py
+
+      - name: Run macOS offline installed production delivery acceptance
+        run: python scripts/production_acceptance.py --profile song

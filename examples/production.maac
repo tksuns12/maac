@@ -1,6 +1,8 @@
 maac 1;
 
-// Specified but unimplemented: a future maac.production/1 renderer is required.
+// Experimental native production example; metering acceptance is tracked separately.
+// From the repository root:
+// maac deliver examples/production.maac --project-root . --profile song --delivery release_cd --output-dir production-output
 // The repository directory is the package root for the descriptor asset path.
 project production_demo {
   score = [0q, 8q];

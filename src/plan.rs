@@ -12,6 +12,7 @@ pub use crate::exact::Rational;
 use crate::exact::{parse_rational_with_limit, rational_parts, RationalError, MAX_RATIONAL_BITS};
 use crate::graph::{InstrumentProgram, ParameterRate, ParameterSpec};
 use crate::instrument_plan::InstrumentResources;
+pub use crate::production_eq::EqMode;
 use num_bigint::BigInt;
 use num_integer::Integer;
 use num_traits::{One, Signed, ToPrimitive, Zero};
@@ -63,6 +64,8 @@ pub struct PlanLimits {
     pub max_execution_work: u64,
     /// Maximum f64 delay cells reserved by declared pluck voice capacities.
     pub max_pluck_delay_cells: usize,
+    /// Aggregate native reverb history storage, in binary64 cells.
+    pub max_production_delay_cells: usize,
 }
 
 impl Default for PlanLimits {
@@ -97,6 +100,7 @@ impl Default for PlanLimits {
             max_voice_graph_states: crate::graph::MAX_ALLOCATED_VOICE_GRAPH_STATES,
             max_execution_work: crate::graph::MAX_EXECUTION_WORK,
             max_pluck_delay_cells: crate::graph::MAX_PLUCK_DELAY_CELLS,
+            max_production_delay_cells: Self::MAX_PRODUCTION_DELAY_CELLS,
         }
     }
 }
@@ -131,6 +135,7 @@ impl PlanLimits {
     pub const MAX_EXECUTION_WORK: u64 = crate::graph::MAX_EXECUTION_WORK;
     /// Hard execution ceiling available through an explicit caller profile.
     pub const MAX_SONG_EXECUTION_WORK: u64 = 10_000_000_000;
+    pub const MAX_PRODUCTION_DELAY_CELLS: usize = 4_194_304;
     pub const MAX_PLUCK_DELAY_CELLS: usize = crate::graph::MAX_PLUCK_DELAY_CELLS;
 
     /// Authorize song-sized execution work without changing any other limit.
@@ -144,7 +149,7 @@ impl PlanLimits {
     /// Apply the published ceilings to a caller-supplied profile. Hosts may
     /// tighten any limit; only explicit execution work can exceed the default
     /// allowance, up to the finite song ceiling.
-    fn bounded(self) -> Self {
+    pub(crate) fn bounded(self) -> Self {
         Self {
             max_json_bytes: self.max_json_bytes.min(Self::MAX_JSON_BYTES),
             max_events: self.max_events.min(Self::MAX_EVENTS),
@@ -183,6 +188,9 @@ impl PlanLimits {
                 .min(Self::MAX_VOICE_GRAPH_STATES),
             max_execution_work: self.max_execution_work.min(Self::MAX_SONG_EXECUTION_WORK),
             max_pluck_delay_cells: self.max_pluck_delay_cells.min(Self::MAX_PLUCK_DELAY_CELLS),
+            max_production_delay_cells: self
+                .max_production_delay_cells
+                .min(Self::MAX_PRODUCTION_DELAY_CELLS),
         }
     }
 }
@@ -608,6 +616,24 @@ pub enum Processor {
     Gain {
         channels: u8,
     },
+    #[serde(rename = "fx.eq/1")]
+    Eq {
+        channels: u8,
+        mode: EqMode,
+    },
+    #[serde(rename = "fx.compressor/1")]
+    Compressor {
+        channels: u8,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sidechain_channels: Option<u8>,
+    },
+    #[serde(rename = "fx.reverb/1")]
+    Reverb {
+        channels: u8,
+        predelay_frames: u32,
+        #[serde(with = "rational_serde")]
+        damping: Rational,
+    },
     Pan,
     Sum {
         channels: u8,
@@ -640,11 +666,14 @@ impl Processor {
         Self::Sum { channels }
     }
 
-    fn kind(&self) -> &'static str {
+    pub(crate) fn kind(&self) -> &'static str {
         match self {
             Self::Sine { .. } => "sine",
             Self::OnePole { .. } => "onepole",
             Self::Gain { .. } => "gain",
+            Self::Eq { .. } => "fx.eq/1",
+            Self::Compressor { .. } => "fx.compressor/1",
+            Self::Reverb { .. } => "fx.reverb/1",
             Self::Pan => "pan",
             Self::Sum { .. } => "sum",
             Self::Instrument { .. } => "instrument",
@@ -655,11 +684,23 @@ impl Processor {
         matches!(self, Self::Sine { .. } | Self::Instrument { .. })
     }
 
-    fn parameter_allowed(&self, parameter: &str) -> bool {
+    pub(crate) fn parameter_allowed(&self, parameter: &str) -> bool {
         match self {
             Self::Sine { .. } => matches!(parameter, "attack" | "release" | "level"),
             Self::OnePole { .. } => parameter == "cutoff",
             Self::Gain { .. } => parameter == "gain",
+            Self::Eq { mode, .. } => {
+                parameter == "frequency"
+                    || (parameter == "q"
+                        && matches!(mode, EqMode::Peak | EqMode::LowPass | EqMode::HighPass))
+                    || (parameter == "gain"
+                        && matches!(mode, EqMode::Peak | EqMode::LowShelf | EqMode::HighShelf))
+            }
+            Self::Compressor { .. } => matches!(
+                parameter,
+                "threshold" | "ratio" | "knee" | "attack" | "release" | "makeup"
+            ),
+            Self::Reverb { .. } => matches!(parameter, "decay" | "mix"),
             Self::Pan => parameter == "pan",
             Self::Sum { .. } => false,
             Self::Instrument { .. } => false,
@@ -926,6 +967,8 @@ pub struct Plan {
     pub source_mappings: Vec<SourceMapping>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instruments: Option<InstrumentResources>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub production: Option<crate::production_data::ProductionSettings>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -948,6 +991,8 @@ struct PlanWire {
     source_mappings: Vec<SourceMapping>,
     #[serde(default)]
     instruments: Option<InstrumentResources>,
+    #[serde(default)]
+    production: Option<crate::production_data::ProductionSettings>,
 }
 
 impl From<PlanWire> for Plan {
@@ -963,6 +1008,7 @@ impl From<PlanWire> for Plan {
             regions: value.regions,
             source_mappings: value.source_mappings,
             instruments: value.instruments,
+            production: value.production,
         }
     }
 }
@@ -1099,7 +1145,30 @@ impl Plan {
         self.validate_regions(&limits)?;
         self.validate_source_mappings(&limits)?;
         self.validate_instrument_work(&limits)?;
+        if let Some(production) = &self.production {
+            production.validate_with_limits(self, &limits)?;
+        }
         Ok(())
+    }
+
+    pub(crate) fn execution_work(&self, limits: &PlanLimits) -> Result<u64, PlanError> {
+        self.validate_instrument_work(&limits.bounded())
+    }
+
+    /// Resolve an explicit project-level audio output without pruning graph context.
+    pub fn audio_output_channels(&self, output: &PortRef) -> Result<u8, PlanError> {
+        let node = self
+            .nodes
+            .iter()
+            .find(|node| node.id == output.node)
+            .ok_or_else(|| err("E_REFERENCE", "output", "target node does not exist"))?;
+        let port = port_descriptor(node, &output.port, false)
+            .filter(|p| p.kind == PortKind::Audio)
+            .ok_or_else(|| err("E_PORT_TYPE", "output", "target is not an audio output"))?;
+        if !(1..=2).contains(&port.channels) {
+            return Err(err("E_PORT_TYPE", "output", "target layout is unsupported"));
+        }
+        Ok(port.channels)
     }
 
     /// Look up a reusable graph program embedded in this standalone plan.
@@ -1156,6 +1225,11 @@ impl Plan {
     }
 
     fn validate_counts(&self, limits: &PlanLimits) -> Result<(), PlanError> {
+        let production_usage = self
+            .production
+            .as_ref()
+            .map(|settings| settings.resource_usage(limits))
+            .transpose()?;
         let automation_points = self
             .automation
             .iter()
@@ -1399,7 +1473,8 @@ impl Plan {
             .saturating_add(parameter_count)
             .saturating_add(span_count)
             .saturating_add(path_component_count)
-            .saturating_add(resource_objects);
+            .saturating_add(resource_objects)
+            .saturating_add(production_usage.as_ref().map_or(0, |usage| usage.objects));
         if objects > limits.max_objects {
             return Err(err(
                 "E_RESOURCE_LIMIT",
@@ -1423,7 +1498,8 @@ impl Plan {
             .saturating_add(parameter_count)
             .saturating_add(span_count)
             .saturating_add(path_component_count)
-            .saturating_add(resource_objects);
+            .saturating_add(resource_objects)
+            .saturating_add(production_usage.as_ref().map_or(0, |usage| usage.objects));
         if work > limits.max_work as usize {
             return Err(err(
                 "E_RESOURCE_LIMIT",
@@ -1432,7 +1508,9 @@ impl Plan {
             ));
         }
 
-        let mut string_bytes = 0usize;
+        let mut string_bytes = production_usage
+            .as_ref()
+            .map_or(0, |usage| usage.string_bytes);
         let mut count_string = |value: &str, path: String| -> Result<(), PlanError> {
             if value.len() > limits.max_string_bytes {
                 return Err(err(
@@ -1844,6 +1922,9 @@ impl Plan {
                 }
                 Processor::OnePole { channels }
                 | Processor::Gain { channels }
+                | Processor::Eq { channels, .. }
+                | Processor::Compressor { channels, .. }
+                | Processor::Reverb { channels, .. }
                 | Processor::Sum { channels } => {
                     if *channels == 0 || *channels > limits.max_channels {
                         return Err(err(
@@ -1900,6 +1981,41 @@ impl Plan {
                         ));
                     }
                 }
+            }
+            match &node.processor {
+                Processor::Compressor {
+                    sidechain_channels: Some(channels),
+                    ..
+                } if *channels == 0 || *channels > limits.max_channels => {
+                    return Err(err(
+                        "E_RANGE",
+                        format!("nodes.{}.processor.sidechain_channels", node.id),
+                        "sidechain must be mono or stereo",
+                    ))
+                }
+                Processor::Reverb {
+                    predelay_frames,
+                    damping,
+                    ..
+                } => {
+                    rational_bit_limit(
+                        damping,
+                        limits,
+                        format!("nodes.{}.processor.damping", node.id),
+                    )?;
+                    finite_engine_rational(
+                        damping,
+                        format!("nodes.{}.processor.damping", node.id),
+                    )?;
+                    if *predelay_frames > 12000 || damping < &zero() || damping > &one() {
+                        return Err(err(
+                            "E_RANGE",
+                            format!("nodes.{}.processor", node.id),
+                            "reverb configuration is outside its range",
+                        ));
+                    }
+                }
+                _ => {}
             }
             for (parameter, value) in &node.params {
                 rational_bit_limit(
@@ -2020,7 +2136,12 @@ impl Plan {
         for node in &self.nodes {
             let requires_audio_input = matches!(
                 node.processor,
-                Processor::OnePole { .. } | Processor::Gain { .. } | Processor::Pan
+                Processor::OnePole { .. }
+                    | Processor::Gain { .. }
+                    | Processor::Eq { .. }
+                    | Processor::Compressor { .. }
+                    | Processor::Reverb { .. }
+                    | Processor::Pan
             );
             if requires_audio_input
                 && !destinations.contains_key(&(node.id.clone(), "in".to_owned()))
@@ -2029,6 +2150,22 @@ impl Plan {
                     "E_PORT_TYPE",
                     format!("nodes.{}.in", node.id),
                     "required audio input is disconnected",
+                ));
+            }
+        }
+        for node in &self.nodes {
+            if matches!(
+                node.processor,
+                Processor::Compressor {
+                    sidechain_channels: Some(_),
+                    ..
+                }
+            ) && !destinations.contains_key(&(node.id.clone(), "sidechain".into()))
+            {
+                return Err(err(
+                    "E_PORT_TYPE",
+                    format!("nodes.{}.sidechain", node.id),
+                    "external detector input is disconnected",
                 ));
             }
         }
@@ -2534,8 +2671,53 @@ impl Plan {
         Ok(())
     }
 
-    fn validate_instrument_work(&self, limits: &PlanLimits) -> Result<(), PlanError> {
+    fn validate_instrument_work(&self, limits: &PlanLimits) -> Result<u64, PlanError> {
         let mut work = 0u64;
+        let mut cells = 0usize;
+        for node in &self.nodes {
+            let cost = match &node.processor {
+                Processor::Eq { channels, .. } => 32 + 10 * u64::from(*channels),
+                Processor::Compressor {
+                    channels,
+                    sidechain_channels,
+                } => 24 + u64::from(*channels) + u64::from(sidechain_channels.unwrap_or(*channels)),
+                Processor::Reverb {
+                    channels,
+                    predelay_frames,
+                    ..
+                } => {
+                    let count = 15562usize
+                        .checked_add(
+                            usize::from(*channels)
+                                .checked_mul(*predelay_frames as usize + 360)
+                                .ok_or_else(|| {
+                                    err("E_RESOURCE_LIMIT", "production", "native storage overflow")
+                                })?,
+                        )
+                        .and_then(|n| n.checked_add(8))
+                        .ok_or_else(|| {
+                            err("E_RESOURCE_LIMIT", "production", "native storage overflow")
+                        })?;
+                    cells = cells.checked_add(count).ok_or_else(|| {
+                        err("E_RESOURCE_LIMIT", "production", "native storage overflow")
+                    })?;
+                    96 + 40 * u64::from(*channels)
+                }
+                _ => 0,
+            };
+            work =
+                work.checked_add(self.output.total_frames.checked_mul(cost).ok_or_else(|| {
+                    err("E_RESOURCE_LIMIT", "production", "native work overflow")
+                })?)
+                .ok_or_else(|| err("E_RESOURCE_LIMIT", "production", "native work overflow"))?;
+        }
+        if cells > limits.max_production_delay_cells {
+            return Err(err(
+                "E_RESOURCE_LIMIT",
+                "production",
+                "aggregate native reverb history exceeds the caller limit",
+            ));
+        }
         for node in &self.nodes {
             let Processor::Instrument { program, .. } = &node.processor else {
                 continue;
@@ -2649,7 +2831,7 @@ impl Plan {
                 ),
             ));
         }
-        Ok(())
+        Ok(work)
     }
 }
 
@@ -2718,7 +2900,7 @@ fn validate_rational_fields<const N: usize>(
     Ok(())
 }
 
-fn validate_parameter(
+pub(crate) fn validate_parameter(
     processor: &Processor,
     name: &str,
     value: &Rational,
@@ -2726,6 +2908,19 @@ fn validate_parameter(
     sample_rate_hz: u32,
 ) -> Result<(), PlanError> {
     finite_engine_rational(value, format!("nodes.{node}.params.{name}"))?;
+    if let Some((min, max, open)) = production_parameter_bounds(processor, name) {
+        if if open {
+            value <= &min || value >= &max
+        } else {
+            value < &min || value > &max
+        } {
+            return Err(err(
+                "E_RANGE",
+                format!("nodes.{node}.params.{name}"),
+                "production parameter is outside its range",
+            ));
+        }
+    }
     match (processor, name) {
         (Processor::Sine { .. }, "attack" | "release" | "level")
         | (Processor::Gain { .. }, "gain")
@@ -2796,6 +2991,19 @@ fn validate_automation_parameter(
             format!("{path}.points[{index}].value"),
         )?;
         finite_engine_rational(&point.value, format!("{path}.points[{index}].value"))?;
+        validate_parameter(processor, name, &point.value, path, sample_rate_hz)?;
+        if matches!(
+            processor,
+            Processor::Eq { .. } | Processor::Compressor { .. }
+        ) && matches!(name, "gain" | "threshold" | "knee" | "makeup")
+            && point.shape == Interpolation::Exponential
+        {
+            return Err(err(
+                "E_RANGE",
+                path,
+                "exponential interpolation is forbidden for decibels",
+            ));
+        }
         match (processor, name) {
             (Processor::Sine { .. }, "attack" | "release" | "level")
             | (Processor::Gain { .. }, "gain")
@@ -2855,7 +3063,25 @@ fn port_descriptor(node: &Node, port: &str, input: bool) -> Option<PortDescripto
         (Processor::OnePole { channels }, true, "in")
         | (Processor::OnePole { channels }, false, "out")
         | (Processor::Gain { channels }, true, "in")
-        | (Processor::Gain { channels }, false, "out") => Some(PortDescriptor {
+        | (Processor::Gain { channels }, false, "out")
+        | (Processor::Eq { channels, .. }, true, "in")
+        | (Processor::Eq { channels, .. }, false, "out")
+        | (Processor::Compressor { channels, .. }, true, "in")
+        | (Processor::Compressor { channels, .. }, false, "out")
+        | (Processor::Reverb { channels, .. }, true, "in")
+        | (Processor::Reverb { channels, .. }, false, "out") => Some(PortDescriptor {
+            kind: PortKind::Audio,
+            channels: *channels,
+            summing: false,
+        }),
+        (
+            Processor::Compressor {
+                sidechain_channels: Some(channels),
+                ..
+            },
+            true,
+            "sidechain",
+        ) => Some(PortDescriptor {
             kind: PortKind::Audio,
             channels: *channels,
             summing: false,
@@ -2934,4 +3160,51 @@ fn detect_cycle(nodes: &[Node], edges: &[(String, String)]) -> Result<(), PlanEr
         ));
     }
     Ok(())
+}
+
+/// Canonical native parameter defaults; immutable mode determines applicability.
+pub(crate) fn production_defaults(processor: &Processor) -> BTreeMap<String, Rational> {
+    let values: &[(&str, i64, i64)] = match processor {
+        Processor::Eq { .. } => &[("frequency", 1000, 1), ("q", 1, 1), ("gain", 0, 1)],
+        Processor::Compressor { .. } => &[
+            ("threshold", -18, 1),
+            ("ratio", 4, 1),
+            ("knee", 6, 1),
+            ("attack", 1, 100),
+            ("release", 1, 10),
+            ("makeup", 0, 1),
+        ],
+        Processor::Reverb { .. } => &[("decay", 3, 2), ("mix", 1, 5)],
+        _ => &[],
+    };
+    values
+        .iter()
+        .filter(|(name, _, _)| processor.parameter_allowed(name))
+        .map(|(name, n, d)| (name.to_string(), Rational::new((*n).into(), (*d).into())))
+        .collect()
+}
+
+pub(crate) fn production_parameter_bounds(
+    processor: &Processor,
+    name: &str,
+) -> Option<(Rational, Rational, bool)> {
+    let (lo, hi, den, open) = match (processor, name) {
+        (Processor::Eq { .. }, "frequency") => (0, 24000, 1, true),
+        (Processor::Eq { .. }, "q") => (1, 180, 10, false),
+        (Processor::Eq { .. }, "gain") => (-24, 24, 1, false),
+        (Processor::Compressor { .. }, "threshold") => (-120, 24, 1, false),
+        (Processor::Compressor { .. }, "ratio") => (1, 100, 1, false),
+        (Processor::Compressor { .. }, "knee") => (0, 24, 1, false),
+        (Processor::Compressor { .. }, "attack") => (0, 10, 1, false),
+        (Processor::Compressor { .. }, "release") => (0, 30, 1, false),
+        (Processor::Compressor { .. }, "makeup") => (-24, 24, 1, false),
+        (Processor::Reverb { .. }, "decay") => (1, 300, 10, false),
+        (Processor::Reverb { .. }, "mix") => (0, 1, 1, false),
+        _ => return None,
+    };
+    Some((
+        Rational::new(lo.into(), den.into()),
+        Rational::new(hi.into(), den.into()),
+        open,
+    ))
 }

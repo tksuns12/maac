@@ -22,14 +22,29 @@ cargo clippy --all-targets --locked --offline -- -D warnings
 cargo test --locked --offline
 cargo build --release --locked --offline
 python3 check_production.py
+python3 scripts/production_src_coefficients.py --verify
 python3 scripts/acceptance.py
+python3 scripts/production_acceptance.py --profile song
 ```
 
 `check_spec.py` regenerates the tracked `check-results.json`, `conformance.json`,
 and `example.syntax.json` beside itself. Run it from a disposable copy if you
 do not intend to update those fixtures; CI uses a disposable copy and compares
-the generated results without changing the checkout. The acceptance runner is
-standard-library-only and writes generated artifacts below `target/acceptance`.
+the generated results without changing the checkout. The basic acceptance
+runner is standard-library-only and writes generated artifacts below
+`target/acceptance`.
+
+The production acceptance runner also uses only the Python standard library.
+After the normal Cargo cache preparation, it performs a fresh offline install
+and exercises source and retained-plan deliveries under the `song` profile
+(the default). It checks decoded artifacts, source-free replay, target subset
+and order independence, overwrite protection, and retained byte-identical WAVs
+from a separate source copy with deliberately failing loudness limits. It does
+not download official fixtures or qualify the true-peak estimator. Each run
+retains its install, artifacts, and report under
+`target/production-acceptance/run-*`; the latest report is
+`target/production-acceptance/results.json`. See the
+[production delivery report](docs/production-delivery.md) for observed evidence.
 
 Cargo may need network access during `cargo fetch --locked` to populate the
 local cache. The later checks use `--offline` and must run only after that fetch
@@ -51,9 +66,11 @@ pinned checker dependencies above. This separate checker does not regenerate
 tracked files. It validates the [production specification](docs/production.md)
 example, hash-pinned schema, selected semantics, and bounded numerical fixtures.
 Keep those artifacts consistent when changing the contract. These checks cover
-specified but unimplemented behavior; future Rust renderer tests, applicable
-official ITU/EBU fixtures, independent SRC verification, and listening acceptance
-remain separate requirements.
+specification arithmetic; Rust renderer tests and installed-CLI acceptance
+provide separate implementation evidence. Applicable official ITU/EBU fixtures,
+independent SRC verification, and listening acceptance remain distinct gates.
+The [metering audit](docs/production-metering-evidence.md) records the current
+16-times true-peak profile's failed external gate and pending alternative.
 
 ## Contributions
 

@@ -15,6 +15,7 @@ use num_traits::{One, ToPrimitive, Zero};
 
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Diagnostics, Span};
 use crate::graph::{GraphUnit, ParameterRate, ParameterSpec};
+use crate::plan::{EqMode, Processor};
 use crate::syntax::{Document, Field, Object, Reference, Unit, Value, ValueKind};
 
 /// Hard source-graph limits for the foundation compiler.
@@ -30,6 +31,9 @@ pub enum ProcessorKind {
     Sine,
     OnePole,
     Gain,
+    Eq(EqMode),
+    Compressor(Option<u8>),
+    Reverb,
     Pan,
     Sum,
     Instrument,
@@ -41,6 +45,9 @@ impl ProcessorKind {
             Self::Sine => "core.sine/1",
             Self::OnePole => "core.onepole/1",
             Self::Gain => "core.gain/1",
+            Self::Eq(_) => "fx.eq/1",
+            Self::Compressor(_) => "fx.compressor/1",
+            Self::Reverb => "fx.reverb/1",
             Self::Pan => "core.pan/1",
             Self::Sum => "core.sum/1",
             Self::Instrument => "instrument",
@@ -727,6 +734,17 @@ impl<'a> Validator<'a> {
         if let Some(field) = object.field("requires") {
             if let ValueKind::List(items) = &field.value.kind {
                 for item in items {
+                    if let ValueKind::String(capability) = &item.kind {
+                        if capability != "maac.production/1" {
+                            self.push(
+                                DiagnosticCode::Capability,
+                                format!("unsupported required capability `{capability}`"),
+                                Some(item.span),
+                                path.clone(),
+                                vec!["requires".into()],
+                            );
+                        }
+                    }
                     if !matches!(item.kind, ValueKind::String(_)) {
                         self.push(
                             DiagnosticCode::Unit,
@@ -1770,6 +1788,63 @@ impl<'a> Validator<'a> {
             self.push_type(type_field, path, "type", "a processor identifier string");
             return;
         };
+        if matches!(
+            processor_name,
+            "fx.eq/1" | "fx.compressor/1" | "fx.reverb/1"
+        ) {
+            let required = self.project_id.as_ref().and_then(|id| self.document.object(id)).and_then(|project| project.field("requires")).is_some_and(|field| matches!(&field.value.kind, ValueKind::List(items) if items.iter().any(|item| item.as_string() == Some("maac.production/1"))));
+            if !required {
+                self.push(
+                    DiagnosticCode::Capability,
+                    "native production processors require maac.production/1",
+                    Some(type_field.value.span),
+                    path.to_vec(),
+                    vec!["type".into()],
+                );
+            }
+            match production_node(object) {
+                Ok(node) => {
+                    let (processor, channels) = match node.processor {
+                        Processor::Eq { channels, mode } => (ProcessorKind::Eq(mode), channels),
+                        Processor::Compressor {
+                            channels,
+                            sidechain_channels,
+                        } => (ProcessorKind::Compressor(sidechain_channels), channels),
+                        Processor::Reverb { channels, .. } => (ProcessorKind::Reverb, channels),
+                        _ => unreachable!(),
+                    };
+                    let params = object
+                        .field("params")
+                        .and_then(|f| {
+                            if let ValueKind::Record(fields) = &f.value.kind {
+                                Some(
+                                    fields
+                                        .iter()
+                                        .map(|(k, v)| (k.clone(), value_type(&v.value)))
+                                        .collect(),
+                                )
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or_default();
+                    self.nodes.insert(
+                        object.id.clone(),
+                        NodeDescriptor {
+                            id: object.id.clone(),
+                            processor,
+                            config: BTreeMap::from([(
+                                "channels".into(),
+                                BigRational::from_integer(channels.into()),
+                            )]),
+                            params,
+                        },
+                    );
+                }
+                Err(error) => self.diagnostics.push(error),
+            }
+            return;
+        }
         let Some(processor) = ProcessorKind::parse(processor_name) else {
             self.validate_generic_node_records(object, path);
             self.push(
@@ -1843,7 +1918,10 @@ impl<'a> Validator<'a> {
             ProcessorKind::OnePole | ProcessorKind::Gain => &["channels"],
             ProcessorKind::Pan => &[],
             ProcessorKind::Sum => &["channels"],
-            ProcessorKind::Instrument => &[],
+            ProcessorKind::Instrument
+            | ProcessorKind::Eq(_)
+            | ProcessorKind::Compressor(_)
+            | ProcessorKind::Reverb => &[],
         };
         let mut result = BTreeMap::new();
         for (name, field) in fields {
@@ -1909,7 +1987,10 @@ impl<'a> Validator<'a> {
             ProcessorKind::Gain => &["gain"],
             ProcessorKind::Pan => &["pan"],
             ProcessorKind::Sum => &[],
-            ProcessorKind::Instrument => &[],
+            ProcessorKind::Instrument
+            | ProcessorKind::Eq(_)
+            | ProcessorKind::Compressor(_)
+            | ProcessorKind::Reverb => &[],
         };
         let mut result = BTreeMap::new();
         for (name, field) in fields {
@@ -3424,7 +3505,46 @@ fn ports_for(
     processor: ProcessorKind,
     config: &BTreeMap<String, BigRational>,
 ) -> Vec<PortDescriptor> {
+    if let Some(native) = native_kind_processor(processor) {
+        let channels = config.get("channels").and_then(|v| v.to_u32()).unwrap_or(1);
+        let mut ports = vec![
+            PortDescriptor {
+                name: "in",
+                direction: PortDirection::Input,
+                kind: PortKind::Audio,
+                channels,
+                accepts_multiple: false,
+                zero_default: false,
+            },
+            PortDescriptor {
+                name: "out",
+                direction: PortDirection::Output,
+                kind: PortKind::Audio,
+                channels,
+                accepts_multiple: false,
+                zero_default: true,
+            },
+        ];
+        if let Processor::Compressor {
+            sidechain_channels: Some(sidechain),
+            ..
+        } = native
+        {
+            ports.push(PortDescriptor {
+                name: "sidechain",
+                direction: PortDirection::Input,
+                kind: PortKind::Audio,
+                channels: u32::from(sidechain),
+                accepts_multiple: false,
+                zero_default: false,
+            });
+        }
+        return ports;
+    }
     match processor {
+        ProcessorKind::Eq(_) | ProcessorKind::Compressor(_) | ProcessorKind::Reverb => {
+            unreachable!()
+        }
         ProcessorKind::Sine => vec![
             PortDescriptor {
                 name: "events",
@@ -3537,7 +3657,39 @@ fn ports_for(
 }
 
 fn parameters_for(processor: ProcessorKind) -> Vec<ParameterDescriptor> {
+    if let Some(native) = native_kind_processor(processor) {
+        return crate::plan::production_defaults(&native)
+            .keys()
+            .map(|name| ParameterDescriptor {
+                name: match name.as_str() {
+                    "frequency" => "frequency",
+                    "q" => "q",
+                    "gain" => "gain",
+                    "threshold" => "threshold",
+                    "ratio" => "ratio",
+                    "knee" => "knee",
+                    "attack" => "attack",
+                    "release" => "release",
+                    "makeup" => "makeup",
+                    "decay" => "decay",
+                    "mix" => "mix",
+                    _ => unreachable!(),
+                },
+                unit: match name.as_str() {
+                    "frequency" => ParameterUnit::Hertz,
+                    "gain" | "threshold" | "knee" | "makeup" => ParameterUnit::Decibels,
+                    "attack" | "release" | "decay" => ParameterUnit::Seconds,
+                    _ => ParameterUnit::Dimensionless,
+                },
+                range: RangePolicy::Error,
+                rate: ParameterRate::Sample,
+            })
+            .collect();
+    }
     match processor {
+        ProcessorKind::Eq(_) | ProcessorKind::Compressor(_) | ProcessorKind::Reverb => {
+            unreachable!()
+        }
         ProcessorKind::Sine => vec![
             ParameterDescriptor {
                 name: "attack",
@@ -3603,4 +3755,253 @@ impl TupleItem for Value {
             _ => Value::new(ValueKind::Number(BigRational::zero()), self.span),
         }
     }
+}
+
+fn native_kind_processor(kind: ProcessorKind) -> Option<Processor> {
+    Some(match kind {
+        ProcessorKind::Eq(mode) => Processor::Eq { channels: 1, mode },
+        ProcessorKind::Compressor(sidechain_channels) => Processor::Compressor {
+            channels: 1,
+            sidechain_channels,
+        },
+        ProcessorKind::Reverb => Processor::Reverb {
+            channels: 1,
+            predelay_frames: 0,
+            damping: BigRational::new(1.into(), 2.into()),
+        },
+        _ => return None,
+    })
+}
+
+/// Validate and lower the native processor surface once for both source checking and compilation.
+pub(crate) fn production_node(object: &Object) -> Result<crate::plan::Node, Diagnostic> {
+    let error = |code, field: &str, message: &str| {
+        let mut d = Diagnostic::error(
+            code,
+            message,
+            object
+                .field(field.split('.').next().unwrap_or(field))
+                .map(|f| f.value.span)
+                .or(Some(object.span)),
+        );
+        d.object_path = vec![object.id.clone()];
+        d.field_path = field.split('.').map(str::to_owned).collect();
+        d
+    };
+    let record = |field: &str| -> Result<BTreeMap<String, Field>, Diagnostic> {
+        match object.field(field) {
+            Some(f) => match &f.value.kind {
+                ValueKind::Record(r) => Ok(r.clone()),
+                _ => Err(error(DiagnosticCode::Unit, field, "expected a record")),
+            },
+            None if field == "params" => Ok(BTreeMap::new()),
+            None => Err(error(
+                DiagnosticCode::Range,
+                field,
+                "required config is missing",
+            )),
+        }
+    };
+    for name in ["implementation", "state"] {
+        if object.field(name).is_some() {
+            return Err(error(
+                DiagnosticCode::Capability,
+                name,
+                "native processors cannot declare implementation or state",
+            ));
+        }
+    }
+    let config = record("config")?;
+    let params = record("params")?;
+    let number =
+        |value: &Value, expected: Option<Unit>, path: &str| -> Result<BigRational, Diagnostic> {
+            match (&value.kind, expected) {
+                (ValueKind::Number(n), None) => Ok(n.clone()),
+                (ValueKind::Quantity { value: n, unit }, Some(wanted)) if *unit == wanted => {
+                    Ok(n.clone())
+                }
+                (
+                    ValueKind::Quantity {
+                        value: n,
+                        unit: Unit::Ms,
+                    },
+                    Some(Unit::S),
+                ) => Ok(n / BigRational::from_integer(1000.into())),
+                (
+                    ValueKind::Quantity {
+                        value: n,
+                        unit: Unit::KHz,
+                    },
+                    Some(Unit::Hz),
+                ) => Ok(n * BigRational::from_integer(1000.into())),
+                _ => Err(error(
+                    DiagnosticCode::Unit,
+                    path,
+                    "wrong native parameter unit",
+                )),
+            }
+        };
+    let channel = |name: &str| -> Result<u8, Diagnostic> {
+        let f = config.get(name).ok_or_else(|| {
+            error(
+                DiagnosticCode::Range,
+                &format!("config.{name}"),
+                "required channel count is missing",
+            )
+        })?;
+        let n = number(&f.value, None, &format!("config.{name}"))?;
+        if !n.is_integer() || n < BigRational::one() || n > BigRational::from_integer(2.into()) {
+            return Err(error(
+                DiagnosticCode::Range,
+                &format!("config.{name}"),
+                "channels must be 1 or 2",
+            ));
+        }
+        Ok(n.to_integer().to_u8().unwrap())
+    };
+    let symbol = |name: &str, default: Option<&str>| -> Result<String, Diagnostic> {
+        match config.get(name) {
+            Some(f) => match &f.value.kind {
+                ValueKind::Symbol(v) => Ok(v.clone()),
+                _ => Err(error(
+                    DiagnosticCode::Unit,
+                    &format!("config.{name}"),
+                    "expected symbol",
+                )),
+            },
+            None => default.map(str::to_owned).ok_or_else(|| {
+                error(
+                    DiagnosticCode::Range,
+                    &format!("config.{name}"),
+                    "required configuration is missing",
+                )
+            }),
+        }
+    };
+    let channels = channel("channels")?;
+    let kind = object
+        .field("type")
+        .and_then(|f| f.value.as_string())
+        .unwrap_or("");
+    let (processor, allowed): (Processor, &[&str]) = match kind {
+        "fx.eq/1" => {
+            let mode = match symbol("mode", None)?.as_str() {
+                "peak" => EqMode::Peak,
+                "low_shelf" => EqMode::LowShelf,
+                "high_shelf" => EqMode::HighShelf,
+                "low_pass" => EqMode::LowPass,
+                "high_pass" => EqMode::HighPass,
+                _ => {
+                    return Err(error(
+                        DiagnosticCode::Range,
+                        "config.mode",
+                        "unknown EQ mode",
+                    ))
+                }
+            };
+            (Processor::Eq { channels, mode }, &["channels", "mode"])
+        }
+        "fx.compressor/1" => {
+            let sidechain_channels = match symbol("detector", Some("internal"))?.as_str() {
+                "internal" => None,
+                "external" => Some(channel("sidechain_channels")?),
+                _ => {
+                    return Err(error(
+                        DiagnosticCode::Range,
+                        "config.detector",
+                        "unknown detector",
+                    ))
+                }
+            };
+            let allowed: &[&str] = if sidechain_channels.is_some() {
+                &["channels", "detector", "sidechain_channels"]
+            } else {
+                &["channels", "detector"]
+            };
+            (
+                Processor::Compressor {
+                    channels,
+                    sidechain_channels,
+                },
+                allowed,
+            )
+        }
+        "fx.reverb/1" => {
+            let predelay = config
+                .get("predelay")
+                .map(|f| number(&f.value, Some(Unit::S), "config.predelay"))
+                .transpose()?
+                .unwrap_or_else(BigRational::zero);
+            let damping = config
+                .get("damping")
+                .map(|f| number(&f.value, None, "config.damping"))
+                .transpose()?
+                .unwrap_or_else(|| BigRational::new(1.into(), 2.into()));
+            if predelay < BigRational::zero()
+                || predelay > BigRational::new(1.into(), 4.into())
+                || damping < BigRational::zero()
+                || damping > BigRational::one()
+            {
+                return Err(error(
+                    DiagnosticCode::Range,
+                    "config",
+                    "reverb config is outside its range",
+                ));
+            }
+            let frames = (predelay * BigRational::from_integer(48000.into()))
+                .ceil()
+                .to_integer()
+                .to_u32()
+                .unwrap();
+            (
+                Processor::Reverb {
+                    channels,
+                    predelay_frames: frames,
+                    damping,
+                },
+                &["channels", "predelay", "damping"],
+            )
+        }
+        _ => {
+            return Err(error(
+                DiagnosticCode::Capability,
+                "type",
+                "unsupported production processor",
+            ))
+        }
+    };
+    for name in config.keys() {
+        if !allowed.contains(&name.as_str()) {
+            return Err(error(
+                DiagnosticCode::UnknownField,
+                &format!("config.{name}"),
+                "unknown or inapplicable config field",
+            ));
+        }
+    }
+    let mut values = crate::plan::production_defaults(&processor);
+    for (name, field) in params {
+        if !processor.parameter_allowed(&name) {
+            return Err(error(
+                DiagnosticCode::UnknownField,
+                &format!("params.{name}"),
+                "unknown or inapplicable parameter",
+            ));
+        }
+        let unit = match name.as_str() {
+            "frequency" => Some(Unit::Hz),
+            "gain" | "threshold" | "knee" | "makeup" => Some(Unit::Db),
+            "attack" | "release" | "decay" => Some(Unit::S),
+            _ => None,
+        };
+        let value = number(&field.value, unit, &format!("params.{name}"))?;
+        crate::plan::validate_parameter(&processor, &name, &value, &object.id, 48000)
+            .map_err(|e| e.diagnostic())?;
+        values.insert(name, value);
+    }
+    Ok(crate::plan::Node {
+        id: object.id.clone(),
+        processor,
+        params: values,
+    })
 }

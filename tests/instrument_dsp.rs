@@ -377,6 +377,7 @@ fn instrument_plan(program: InstrumentProgram, frames: u64) -> Plan {
         automation: Vec::new(),
         regions: Vec::new(),
         source_mappings: Vec::new(),
+        production: None,
         instruments: Some(InstrumentResources {
             entry_source: "test.maac".into(),
             programs: vec![program],

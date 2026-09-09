@@ -445,6 +445,7 @@ mod tests {
             regions: Vec::new(),
             source_mappings: Vec::new(),
             instruments: None,
+            production: None,
         }
     }
 

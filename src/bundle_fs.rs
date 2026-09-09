@@ -125,7 +125,7 @@ pub fn load_bundle(entry_path: &Path, project_root: &Path) -> Result<SourceBundl
 
         for asset in references.assets {
             validate_hash_pin(&asset.hash, "asset hash")?;
-            let target = normalize_file_reference(&logical_path, &asset.path)?;
+            let target = asset.target_path(&logical_path)?;
             if assets.contains_key(&target) {
                 continue;
             }
@@ -142,7 +142,7 @@ pub fn load_bundle(entry_path: &Path, project_root: &Path) -> Result<SourceBundl
                 return Err(error(
                     DiagnosticCode::Hash,
                     format!(
-                        "wavetable `{}` in `{logical_path}` expected `{}`, but `{target}` has `{actual}`",
+                        "asset `{}` in `{logical_path}` expected `{}`, but `{target}` has `{actual}`",
                         asset.alias, asset.hash
                     ),
                 ));

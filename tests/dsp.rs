@@ -88,6 +88,7 @@ fn sine_plan(
         regions: Vec::new(),
         source_mappings: Vec::new(),
         instruments: None,
+        production: None,
     }
 }
 

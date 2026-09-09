@@ -238,9 +238,27 @@ pub struct DependencyIdentity {
 
 #[derive(Clone, Debug)]
 pub(crate) struct PinnedReference {
+    pub base: ReferenceBase,
     pub alias: String,
     pub path: String,
     pub hash: String,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum ReferenceBase {
+    DeclaringSource,
+    PackageRoot,
+}
+
+impl PinnedReference {
+    pub(crate) fn target_path(&self, declaring_source: &str) -> Result<String, Diagnostics> {
+        match self.base {
+            ReferenceBase::DeclaringSource => {
+                normalize_file_reference(declaring_source, &self.path)
+            }
+            ReferenceBase::PackageRoot => normalize_file_reference("package.maac", &self.path),
+        }
+    }
 }
 
 pub(crate) struct DocumentReferences {
@@ -259,7 +277,7 @@ pub(crate) enum ImportReference {
 impl ImportReference {
     fn target_path(&self, declaring_source: &str) -> Result<String, Diagnostics> {
         match self {
-            Self::Local(reference) => normalize_file_reference(declaring_source, &reference.path),
+            Self::Local(reference) => reference.target_path(declaring_source),
             Self::Builtin { source, .. } => Ok(source.path.to_owned()),
         }
     }
@@ -272,6 +290,7 @@ impl ImportReference {
                 Ok(PinnedReference { path, ..reference })
             }
             Self::Builtin { alias, source } => Ok(PinnedReference {
+                base: ReferenceBase::PackageRoot,
                 alias,
                 path,
                 hash: sha256_digest(source.source.as_bytes()),
@@ -431,7 +450,7 @@ impl Resolver<'_> {
         }
 
         for asset in references.assets {
-            let target = normalize_file_reference(path, &asset.path)?;
+            let target = asset.target_path(path)?;
             validate_hash_pin(&asset.hash, "asset hash")?;
             let bytes = self.bundle.assets.get(&target).ok_or_else(|| {
                 asset_error(format!(
@@ -471,6 +490,48 @@ pub(crate) fn discover_document_references(
             }
             _ => {}
         }
+    }
+    // Only the descriptor explicitly referenced by a recognized production
+    // extension is an executable dependency. Other core assets remain for the
+    // ordinary semantic validator to reject, without loading their bytes.
+    for extension in document
+        .objects
+        .values()
+        .filter(|object| object.kind == "extension")
+    {
+        if extension
+            .field("namespace")
+            .and_then(|field| field.value.as_string())
+            != Some(crate::production_data::CAPABILITY)
+        {
+            continue;
+        }
+        let reference = extension
+            .field("schema")
+            .and_then(|field| field.value.reference())
+            .ok_or_else(|| reference_error("production schema requires a descriptor reference"))?;
+        if reference.path.len() != 1 || reference.port.is_some() {
+            return Err(reference_error(
+                "production schema must reference a top-level descriptor",
+            ));
+        }
+        let descriptor = document
+            .objects
+            .get(&reference.path[0])
+            .ok_or_else(|| reference_error("production schema descriptor does not exist"))?;
+        if descriptor.kind != "asset"
+            || descriptor
+                .field("kind")
+                .and_then(|field| field.value.as_symbol())
+                != Some("descriptor")
+        {
+            return Err(asset_error(
+                "production schema must reference a descriptor asset",
+            ));
+        }
+        let mut reference = pinned_fields(source_path, descriptor, DiagnosticCode::Asset)?;
+        reference.base = ReferenceBase::PackageRoot;
+        assets.push(reference);
     }
     Ok(DocumentReferences { imports, assets })
 }
@@ -556,6 +617,7 @@ fn pinned_fields(
             )
         })?;
     Ok(PinnedReference {
+        base: ReferenceBase::DeclaringSource,
         alias: if object.kind == "import" {
             object.id.clone()
         } else {
