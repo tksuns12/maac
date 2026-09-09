@@ -3,10 +3,10 @@
 The conventional `main.maac` entry, explicit finite `song` execution profile,
 selected-limit Rust APIs, and existing `core.gain/1` processor are implemented.
 The [normative contract](project-entrypoint.md) defines their behavior; this
-report records the local validation observed on 2026-09-08. The complete native
-song built and rendered from a source-free retained plan with identical WAV
-bytes. Listening was not performed in this validation pass, and these results
-make no cross-platform or perceptual claim.
+report records the local validation observed on 2026-09-08. A historical local
+composition fixture built and rendered from a source-free retained plan with
+identical WAV bytes. Listening was not performed in this validation pass, and
+these results make no cross-platform or perceptual claim.
 
 ## Integrated and installed checks
 
@@ -33,11 +33,12 @@ with finite, nonzero output. Float32 peak was 0.06760285049676895; PCM16 peak wa
 2215/32768. The executable source fence hash is
 `05be85b585426b41240f7f5dac4ffb8c1b7b3b06e3f7972d2b547a6d79c07f80`.
 
-## Complete native composition
+## Historical local fixture
 
-[Soldier of Fortune](../compositions/soldier-of-fortune/main.maac) is a complete
-native composition with visible final master gain. Its plan audit verified
-2,399 notes, 17 tempo points, 24 instrument lanes, and 57 controller bindings
+A local composition fixture with explicit final master gain was used for the
+following tool-validation checks; the fixture is not distributed with the
+repository. Its plan audit verified 2,399 notes, 17 tempo points, 24 instrument
+lanes, and 57 controller bindings
 containing 3,235 points, including exact timing, pitch, velocity, routing, and
 control data. The serialized plan is 1,527,620 bytes and schedules 9,620,109
 frames. Its estimated instrument work is 4,165,619,697 units: above the unchanged

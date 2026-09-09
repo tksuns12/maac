@@ -24,3 +24,6 @@ venv/
 !.env.example
 !.env.template
 !.env.sample
+
+# Personal compositions stay local
+/compositions/

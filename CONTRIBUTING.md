@@ -5,6 +5,14 @@ documented foundation scope, explain behavior changes in the pull request, and
 update the relevant public documentation when an interface or limitation
 changes.
 
+## Repository scope
+
+Keep repository changes directly related to the MaaC language or tool, including
+implementation, tests, specifications, documentation, functional examples, and
+supporting project configuration. Keep personal compositions in the local `compositions/`
+directory, which is excluded from version control. Do not force-add that
+material or include it in repository or remote changes.
+
 ## Development setup
 
 Use a current stable Rust toolchain and Python 3.10 or newer for the development

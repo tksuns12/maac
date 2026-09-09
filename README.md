@@ -23,14 +23,9 @@ presets, sample-wise FM, and morphing wavetables. Import local source files with
 SHA-256 pins, instantiate their instruments, and automate the exposed controls.
 Compiled version 2 plans embed everything needed for offline rendering.
 
-The complete [Soldier of Fortune master source](compositions/soldier-of-fortune/main.maac)
-puts the arrangement and final gain in one MaaC entry. The
-[project-entrypoint guide](docs/project-entrypoint.md) specifies conventional
-`main.maac` discovery and an explicit finite `--profile song` allowance for
-larger native compositions. Integrated gates, installed entrypoint checks, and
-byte-identical full-song retained rendering passed; the
-[delivery report](docs/project-entrypoint-delivery.md) records the evidence.
-Existing explicit-file commands remain compatible.
+The [project-entrypoint guide](docs/project-entrypoint.md) specifies conventional
+`main.maac` discovery and the explicit finite `--profile song` allowance for
+larger projects. Existing explicit-file commands remain compatible.
 
 The MaaC/1 language uses the `.maac` extension, and source files begin with the
 canonical `maac 1;` header. The current tree is an

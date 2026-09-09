@@ -54,13 +54,14 @@ means that directory's `main.maac`. No parent or recursive search occurs.
 Explicit filenames remain valid, and output paths remain relative to the shell's
 working directory.
 
-A larger native composition can explicitly select the finite song work budget:
+From an existing project directory containing `main.maac`, explicitly select
+the finite song work budget when needed:
 
 ```sh
-maac check compositions/soldier-of-fortune --profile song
-maac build compositions/soldier-of-fortune --profile song -o soldier.wav --format pcm16
-maac compile compositions/soldier-of-fortune --profile song -o soldier.performance.json
-maac render soldier.performance.json --profile song -o retained.wav --format pcm16
+maac check . --profile song
+maac build . --profile song -o song.wav --format pcm16
+maac compile . --profile song -o song.performance.json
+maac render song.performance.json --profile song -o retained.wav --format pcm16
 ```
 
 `song` raises only execution work from the default 500 million to 10 billion
