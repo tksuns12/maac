@@ -7,12 +7,15 @@
 
 use crate::expression::ExpressionRuntime;
 use crate::plan::{
-    AutomationClock, EventKind, GainExpression, Interpolation, PitchExpression, Plan, PlanError,
-    PlanLimits, PortRef, PressureExpression, Processor, Rational, ResolvedEvent, TimbreExpression,
+    AutomationAnchorView, AutomationClock, EventKind, EventView, GainExpression, Interpolation,
+    PitchExpression, Plan, PlanError, PlanLimits, PlanView, PortRef, PressureExpression, Processor,
+    Rational, TimbreExpression,
 };
+use crate::plan_v3::{TimingContext, VersionedPlan};
 use crate::production_compressor::{Compressor, CompressorParams};
 use crate::production_eq::Eq;
 use crate::production_reverb::Reverb;
+use crate::tempo::TimeValue;
 use crate::voice::{CompiledInstrument, InstrumentRuntime};
 use crate::wavetable::TableBank;
 use num_bigint::BigInt;
@@ -134,7 +137,7 @@ where
 
 /// Resettable sample based renderer for one immutable performance plan.
 pub struct DspEngine<'a> {
-    plan: &'a Plan,
+    plan: PlanView<'a>,
     limits: PlanLimits,
     rate: f64,
     channels: usize,
@@ -159,12 +162,33 @@ impl<'a> DspEngine<'a> {
 
     /// Validate under caller limits before preparing any render state.
     pub fn new_with_limits(plan: &'a Plan, limits: &PlanLimits) -> Result<Self> {
-        plan.validate_with_limits(limits)
+        Self::new_for_view(plan.view(), limits)
+    }
+
+    /// Prepare either supported plan representation with default limits.
+    pub fn new_versioned(plan: &'a VersionedPlan) -> Result<Self> {
+        Self::new_versioned_with_limits(plan, &PlanLimits::default())
+    }
+
+    /// Prepare either supported plan representation under caller limits.
+    pub fn new_versioned_with_limits(plan: &'a VersionedPlan, limits: &PlanLimits) -> Result<Self> {
+        Self::new_for_view(
+            match plan {
+                VersionedPlan::Legacy(plan) => plan.view(),
+                VersionedPlan::V3(plan) => plan.view(),
+            },
+            limits,
+        )
+    }
+
+    pub(crate) fn new_for_view(plan: PlanView<'a>, limits: &PlanLimits) -> Result<Self> {
+        let timing = plan
+            .validate_and_timing(limits)
             .map_err(RenderError::Plan)?;
 
         let rate = f64::from(plan.output.sample_rate_hz);
         let channels = usize::from(plan.output.channels);
-        let tempo = TempoRuntime::new(plan)?;
+        let tempo = TempoRuntime::new(&plan, timing.as_ref())?;
 
         let mut table_banks = BTreeMap::new();
         let mut instrument_programs = BTreeMap::new();
@@ -252,20 +276,20 @@ impl<'a> DspEngine<'a> {
         }
 
         let topo_order = stable_topological_order(&nodes, &connections)?;
-        let automation = build_automations(plan, &node_indices, &tempo, rate)?;
+        let automation = build_automations(&plan, &node_indices, &tempo, rate, timing.as_ref())?;
         for lane in automation {
             let parameter = lane.parameter.clone();
             nodes[lane.node].automations.insert(parameter, lane);
         }
 
-        let mut events = Vec::with_capacity(plan.events.len());
+        let mut events = Vec::with_capacity(plan.events().len());
         let mut on_events: BTreeMap<u64, Vec<usize>> = BTreeMap::new();
         let mut off_events: BTreeMap<u64, Vec<usize>> = BTreeMap::new();
-        for event in &plan.events {
+        for event in plan.events() {
             let node = *node_indices.get(&event.target.node).ok_or_else(|| {
                 RenderError::RenderState(format!("event {} has no target node", event.address))
             })?;
-            let runtime = EventRuntime::from_event(event, node, plan.output.sample_rate_hz)?;
+            let runtime = EventRuntime::from_event(&event, node, plan.output.sample_rate_hz)?;
             let index = events.len();
             on_events.entry(runtime.on_frame).or_default().push(index);
             if let Some(frame) = runtime.off_frame {
@@ -1125,7 +1149,7 @@ enum EventData {
 }
 
 impl EventRuntime {
-    fn from_event(event: &ResolvedEvent, node: usize, rate: u32) -> Result<Self> {
+    fn from_event(event: &EventView<'_>, node: usize, rate: u32) -> Result<Self> {
         let EventKind::Note {
             pressure_expression,
             timbre_expression,
@@ -1159,7 +1183,7 @@ impl EventRuntime {
                 pitch_hz: *pitch_hz,
                 velocity,
                 timbre_expression: timbre_expression.as_ref().map(|curve| ExpressionRuntime {
-                    coordinate_per_frame: curve.clock.coordinate_at(
+                    coordinate_per_frame: curve.clock.coordinate_for_view(
                         event,
                         event.on_frame + 1,
                         rate,
@@ -1168,7 +1192,7 @@ impl EventRuntime {
                     curve: Arc::new(curve.clone()),
                 }),
                 pressure_expression: pressure_expression.as_ref().map(|curve| ExpressionRuntime {
-                    coordinate_per_frame: curve.clock.coordinate_at(
+                    coordinate_per_frame: curve.clock.coordinate_for_view(
                         event,
                         event.on_frame + 1,
                         rate,
@@ -1177,7 +1201,7 @@ impl EventRuntime {
                     curve: Arc::new(curve.clone()),
                 }),
                 gain_expression: gain_expression.as_ref().map(|curve| ExpressionRuntime {
-                    coordinate_per_frame: curve.clock.coordinate_at(
+                    coordinate_per_frame: curve.clock.coordinate_for_view(
                         event,
                         event.on_frame + 1,
                         rate,
@@ -1186,7 +1210,11 @@ impl EventRuntime {
                     curve: Arc::new(curve.clone()),
                 }),
                 pitch_expression: pitch_expression.as_ref().map(|curve| ExpressionRuntime {
-                    coordinate_per_frame: curve.coordinate_at(event, event.on_frame + 1, rate),
+                    coordinate_per_frame: curve.clock.coordinate_for_view(
+                        event,
+                        event.on_frame + 1,
+                        rate,
+                    ),
                     gate: event.off_frame.expect("validated note off") - event.on_frame,
                     curve: Arc::new(curve.clone()),
                 }),
@@ -1254,16 +1282,15 @@ fn stable_topological_order(
     Ok(order)
 }
 
-#[derive(Clone, Debug)]
 struct TempoRuntime {
     /// Absolute `T(score_start)` retained exactly. Seconds-clock automation
     /// anchors are authored in this global coordinate, while frame numbers
     /// are always relative to this reset origin.
-    origin_seconds: Rational,
+    origin_seconds: Option<Rational>,
     points: Vec<TempoRuntimePoint>,
     rate: f64,
     score_end_relative_q: f64,
-    score_end_seconds: Rational,
+    score_end_seconds: Option<Rational>,
     score_end_frame: u64,
     rate_hz: u64,
 }
@@ -1276,11 +1303,18 @@ struct TempoRuntimePoint {
     q: f64,
     seconds: f64,
     bpm: f64,
+    slope: f64,
     frame: i64,
 }
 
 impl TempoRuntime {
-    fn new(plan: &Plan) -> Result<Self> {
+    fn new(plan: &PlanView<'_>, timing: Option<&TimingContext>) -> Result<Self> {
+        if plan.version == 3 {
+            let timing = timing.ok_or_else(|| {
+                RenderError::RenderState("version 3 validation omitted ramp timing".into())
+            })?;
+            return Self::new_v3(plan, timing);
+        }
         let score_start_q = plan.output.score_start_q.clone();
         let score_end_q = plan.output.score_end_q.clone();
         let origin_seconds = plan
@@ -1321,6 +1355,7 @@ impl TempoRuntime {
             q: 0.0,
             seconds: 0.0,
             bpm: rational_f64(&active_bpm, "tempo BPM")?,
+            slope: 0.0,
             frame: 0,
         });
         for point in &plan.tempo.points {
@@ -1338,28 +1373,80 @@ impl TempoRuntime {
                 q: rational_f64(&relative_q, "tempo position")?,
                 seconds: rational_f64(&relative_seconds, "tempo time")?,
                 bpm: rational_f64(&point.bpm, "tempo BPM")?,
+                slope: 0.0,
                 frame: point_frame,
             });
         }
         let score_end_relative_q = score_end_q - score_start_q;
         Ok(Self {
-            origin_seconds,
+            origin_seconds: Some(origin_seconds),
             points,
             rate: f64::from(plan.output.sample_rate_hz),
             score_end_relative_q: rational_f64(&score_end_relative_q, "score end")?,
-            score_end_seconds,
+            score_end_seconds: Some(score_end_seconds),
             score_end_frame: u64::try_from(score_end_frame_i64)
                 .map_err(|_| RenderError::RenderState("score-end frame exceeds u64".into()))?,
             rate_hz,
         })
     }
 
-    fn score_at_frame(&self, frame: u64) -> f64 {
+    fn new_v3(plan: &PlanView<'_>, timing: &TimingContext) -> Result<Self> {
+        let origin = &plan.output.score_start_q;
+        let end = &plan.output.score_end_q;
+        let rate_hz = u64::from(plan.output.sample_rate_hz);
+        let mut points = Vec::new();
+        // Start at the exact reset coordinate, including a reset inside a ramp.
+        // All score differences are rational before conversion to local doubles.
+        for q in std::iter::once(origin).chain(
+            plan.tempo
+                .points
+                .iter()
+                .map(|p| &p.q)
+                .filter(|q| *q > origin && *q < end),
+        ) {
+            let index = plan
+                .tempo
+                .points
+                .partition_point(|p| &p.q <= q)
+                .saturating_sub(1);
+            let point = &plan.tempo.points[index];
+            let slope = if q >= &point.q && point.shape == Interpolation::Linear {
+                let next = &plan.tempo.points[index + 1];
+                (&next.bpm - &point.bpm) / (&next.q - &point.q)
+            } else {
+                Rational::zero()
+            };
+            let bpm = &point.bpm + &slope * (q - &point.q);
+            let relative = timing.relative_at_score(q, &Rational::zero())?;
+            points.push(TempoRuntimePoint {
+                q: rational_f64(&(q - origin), "tempo position")?,
+                seconds: timing.approximate_time(&relative)?,
+                bpm: rational_f64(&bpm, "tempo BPM")?,
+                slope: rational_f64(&slope, "tempo slope")?,
+                frame: saturating_frame(timing.ceil_time(&relative, rate_hz)?),
+            });
+        }
+        let score_end_frame = timing
+            .ceil_time(&timing.end, rate_hz)?
+            .to_u64()
+            .ok_or_else(|| RenderError::RenderState("score-end frame exceeds u64".into()))?;
+        Ok(Self {
+            origin_seconds: None,
+            score_end_seconds: None,
+            points,
+            rate: f64::from(plan.output.sample_rate_hz),
+            score_end_relative_q: rational_f64(&(end - origin), "score end")?,
+            score_end_frame,
+            rate_hz,
+        })
+    }
+
+    fn score_at_frame(&self, frame: u64) -> Result<f64> {
         if self.points.is_empty() {
-            return 0.0;
+            return Ok(0.0);
         }
         if frame >= self.score_end_frame {
-            return self.score_end_relative_q;
+            return Ok(self.score_end_relative_q);
         }
         let frame_i64 = i64::try_from(frame).unwrap_or(i64::MAX);
         let point_index = self
@@ -1368,23 +1455,37 @@ impl TempoRuntime {
         let current_index = point_index.saturating_sub(1);
         let current = &self.points[current_index];
         let seconds = frame as f64 / self.rate;
-        let score = current.q + (seconds - current.seconds) * current.bpm / 60.0;
+        let elapsed = seconds - current.seconds;
+        // Keep the legacy constant-segment operation order unchanged. For a
+        // ramp, expm1(x)/x avoids division by a tiny slope and cancellation.
+        let delta = elapsed * current.bpm / 60.0;
+        let x = current.slope * elapsed / 60.0;
+        let score = current.q
+            + if x == 0.0 {
+                delta
+            } else {
+                delta * (x.exp_m1() / x)
+            };
+        if !score.is_finite() {
+            return Err(RenderError::Nonfinite("inverse tempo is nonfinite".into()));
+        }
         // The local coordinate should already be before score end because the
         // exact frame boundary above handled the physical tail. The clamp is
         // only a finite guard for the final binary64 conversion.
-        score.min(self.score_end_relative_q)
+        Ok(score.min(self.score_end_relative_q))
     }
 
-    fn frame_for_score(&self, plan: &Plan, q: &Rational) -> Result<i64> {
-        let seconds =
-            plan.tempo.seconds_at(q).map_err(RenderError::Plan)? - self.origin_seconds.clone();
+    fn frame_for_score(&self, plan: &PlanView<'_>, q: &Rational) -> Result<i64> {
+        let seconds = plan.tempo.seconds_at(q).map_err(RenderError::Plan)?
+            - self.origin_seconds.as_ref().expect("legacy clock").clone();
         Ok(ceil_rational_saturating_to_i64(
             &(seconds * BigInt::from(self.rate_hz)),
         ))
     }
 
     fn frame_for_seconds(&self, absolute_seconds: &Rational) -> Result<i64> {
-        let relative = absolute_seconds.clone() - self.origin_seconds.clone();
+        let relative =
+            absolute_seconds.clone() - self.origin_seconds.as_ref().expect("legacy clock").clone();
         Ok(ceil_rational_saturating_to_i64(
             &(relative * BigInt::from(self.rate_hz)),
         ))
@@ -1405,7 +1506,7 @@ struct AutomationRuntime {
     /// Local floating anchor used only after exact frame selection. The
     /// authored seconds anchor itself remains absolute in the plan.
     at: f64,
-    at_exact: Rational,
+    at_exact: Option<Rational>,
     points: Vec<AutomationPointRuntime>,
     point_positions_exact: Vec<Rational>,
     knot_frames: Vec<i64>,
@@ -1439,7 +1540,7 @@ impl AutomationRuntime {
             return Ok(self.points[index].value);
         }
         let coordinate = match self.clock {
-            AutomationClock::Score => tempo.score_at_frame(frame),
+            AutomationClock::Score => tempo.score_at_frame(frame)?,
             AutomationClock::Seconds => frame as f64 / tempo.rate,
         };
         let left = &self.points[index];
@@ -1467,7 +1568,7 @@ impl AutomationRuntime {
     }
 
     fn value_at_exact(&self, coordinate: &Rational) -> Result<f64> {
-        let relative = coordinate.clone() - self.at_exact.clone();
+        let relative = coordinate.clone() - self.at_exact.as_ref().expect("legacy anchor").clone();
         if relative.is_negative() {
             return Ok(self.base);
         }
@@ -1514,13 +1615,14 @@ impl AutomationRuntime {
 }
 
 fn build_automations(
-    plan: &Plan,
+    plan: &PlanView<'_>,
     node_indices: &HashMap<String, usize>,
     tempo: &TempoRuntime,
     rate: f64,
+    timing: Option<&TimingContext>,
 ) -> Result<Vec<AutomationBinding>> {
-    let mut result = Vec::with_capacity(plan.automation.len());
-    for automation in &plan.automation {
+    let mut result = Vec::with_capacity(plan.automations().len());
+    for automation in plan.automations() {
         let node = *node_indices.get(&automation.target.node).ok_or_else(|| {
             RenderError::RenderState(format!("automation {} has no target node", automation.id))
         })?;
@@ -1534,20 +1636,36 @@ fn build_automations(
             Some(value) => rational_f64(value, "automation base parameter")?,
             None => default_parameter(&plan.nodes[node].processor, &automation.target.port),
         };
+        if let Some(timing) = timing {
+            result.push(build_automation_v3(
+                &automation,
+                node,
+                base,
+                timing,
+                tempo,
+                &plan.output.score_end_q,
+            )?);
+            continue;
+        }
+        let anchor = match automation.anchor {
+            AutomationAnchorView::Score(q) | AutomationAnchorView::Seconds(q) => q,
+        };
         let at_exact = match automation.clock {
-            AutomationClock::Score => automation.at.clone() - plan.output.score_start_q.clone(),
-            AutomationClock::Seconds => automation.at.clone() - tempo.origin_seconds.clone(),
+            AutomationClock::Score => anchor.clone() - plan.output.score_start_q.clone(),
+            AutomationClock::Seconds => {
+                anchor.clone() - tempo.origin_seconds.as_ref().expect("legacy clock").clone()
+            }
         };
         let at = rational_f64(&at_exact, "automation anchor")?;
         let mut points = Vec::with_capacity(automation.points.len());
         let mut point_positions_exact = Vec::with_capacity(automation.points.len());
         let mut knot_frames = Vec::with_capacity(automation.points.len());
-        for point in &automation.points {
+        for point in automation.points {
             let position = rational_f64(&point.position, "automation position")?;
             let value = rational_f64(&point.value, "automation value")?;
             let absolute = match automation.clock {
-                AutomationClock::Score => automation.at.clone() + point.position.clone(),
-                AutomationClock::Seconds => automation.at.clone() + point.position.clone(),
+                AutomationClock::Score => anchor.clone() + point.position.clone(),
+                AutomationClock::Seconds => anchor.clone() + point.position.clone(),
             };
             let frame = match automation.clock {
                 AutomationClock::Score => tempo.frame_for_score(plan, &absolute)?,
@@ -1568,13 +1686,18 @@ fn build_automations(
                 plan.output.score_end_q.clone() - plan.output.score_start_q.clone()
             }
             AutomationClock::Seconds => {
-                tempo.score_end_seconds.clone() - tempo.origin_seconds.clone()
+                tempo
+                    .score_end_seconds
+                    .as_ref()
+                    .expect("legacy clock")
+                    .clone()
+                    - tempo.origin_seconds.as_ref().expect("legacy clock").clone()
             }
         };
         let lane = AutomationRuntime {
             clock: automation.clock,
             at,
-            at_exact,
+            at_exact: Some(at_exact),
             points,
             point_positions_exact,
             knot_frames,
@@ -1735,4 +1858,188 @@ where
     F: FnMut(&[Vec<f64>]) -> Result<()>,
 {
     DspEngine::new_with_limits(plan, limits)?.render_ports(ports, callback)
+}
+
+/// Render a legacy or version 3 plan using the shared DSP engine.
+pub fn render_versioned<F>(plan: &VersionedPlan, callback: F) -> Result<()>
+where
+    F: FnMut(&[f64]) -> Result<()>,
+{
+    render_versioned_with_limits(plan, &PlanLimits::default(), callback)
+}
+/// Render a versioned plan under explicit caller resource limits.
+pub fn render_versioned_with_limits<F>(
+    plan: &VersionedPlan,
+    limits: &PlanLimits,
+    callback: F,
+) -> Result<()>
+where
+    F: FnMut(&[f64]) -> Result<()>,
+{
+    DspEngine::new_versioned_with_limits(plan, limits)?.render(callback)
+}
+#[allow(dead_code)] // Retained as the shared crate-internal IO boundary.
+pub(crate) fn render_view_with_limits<F>(
+    plan: PlanView<'_>,
+    limits: &PlanLimits,
+    callback: F,
+) -> Result<()>
+where
+    F: FnMut(&[f64]) -> Result<()>,
+{
+    DspEngine::new_for_view(plan, limits)?.render(callback)
+}
+
+/// Capture selected ports from a versioned plan using caller limits.
+pub fn render_ports_versioned_with_limits<F>(
+    plan: &VersionedPlan,
+    limits: &PlanLimits,
+    ports: &[PortRef],
+    callback: F,
+) -> Result<()>
+where
+    F: FnMut(&[Vec<f64>]) -> Result<()>,
+{
+    DspEngine::new_versioned_with_limits(plan, limits)?.render_ports(ports, callback)
+}
+
+fn timing_error(error: crate::music::MusicError) -> RenderError {
+    RenderError::Plan(PlanError {
+        code: error.code.as_str().into(),
+        path: "timing".into(),
+        message: error.message,
+        span: None,
+    })
+}
+fn saturating_frame(frame: BigInt) -> i64 {
+    frame.to_i64().unwrap_or_else(|| {
+        if frame.is_negative() {
+            i64::MIN
+        } else {
+            i64::MAX
+        }
+    })
+}
+
+fn build_automation_v3(
+    lane: &crate::plan::AutomationView<'_>,
+    node: usize,
+    base: f64,
+    timing: &TimingContext,
+    tempo: &TempoRuntime,
+    score_end: &Rational,
+) -> Result<AutomationBinding> {
+    let anchor = match (lane.clock, lane.anchor) {
+        (AutomationClock::Score, AutomationAnchorView::Score(q)) => {
+            TimeValue::from_rational(q - &timing.origin).map_err(timing_error)?
+        }
+        (AutomationClock::Seconds, AutomationAnchorView::Score(q)) => {
+            timing.relative_at_score(q, &Rational::zero())?
+        }
+        (AutomationClock::Seconds, AutomationAnchorView::Seconds(s)) => {
+            timing.relative_at_seconds(s)?
+        }
+        _ => {
+            return Err(RenderError::RenderState(
+                "score clock requires score anchor".into(),
+            ))
+        }
+    };
+    let mut points = Vec::with_capacity(lane.points.len());
+    let mut knot_frames = Vec::with_capacity(lane.points.len());
+    for point in lane.points {
+        // Form each local knot coordinate exactly before binary64 conversion.
+        // A distant anchor and compensating point offset must not erase the
+        // small rendered coordinate used for continuous interpolation.
+        let (frame, position) = match (lane.clock, lane.anchor) {
+            (AutomationClock::Score, AutomationAnchorView::Score(q)) => {
+                let absolute_q = q + &point.position;
+                (
+                    timing.frame_at_score(&absolute_q, &Rational::zero(), tempo.rate_hz)?,
+                    rational_f64(&(absolute_q - &timing.origin), "automation score position")?,
+                )
+            }
+            (AutomationClock::Seconds, AutomationAnchorView::Score(q)) => {
+                let coordinate = timing.relative_at_score(q, &point.position)?;
+                (
+                    timing.ceil_time(&coordinate, tempo.rate_hz)?,
+                    timing.approximate_time(&coordinate)?,
+                )
+            }
+            (AutomationClock::Seconds, AutomationAnchorView::Seconds(s)) => {
+                let coordinate = timing.relative_at_seconds(&(s + &point.position))?;
+                (
+                    timing.ceil_time(&coordinate, tempo.rate_hz)?,
+                    timing.approximate_time(&coordinate)?,
+                )
+            }
+            _ => unreachable!("validated anchor"),
+        };
+        knot_frames.push(saturating_frame(frame));
+        points.push(AutomationPointRuntime {
+            position,
+            value: rational_f64(&point.value, "automation value")?,
+            shape: point.shape,
+        });
+    }
+    let end = match lane.clock {
+        AutomationClock::Score => {
+            TimeValue::from_rational(score_end - &timing.origin).map_err(timing_error)?
+        }
+        AutomationClock::Seconds => timing.end.clone(),
+    };
+    let relative_end = end.difference(&anchor).map_err(timing_error)?;
+    // Select the held tail interval by certified comparisons, not rounded
+    // doubles or a ceil-frame proxy (which cannot distinguish subframe knots).
+    let mut active = None;
+    for (index, point) in lane.points.iter().enumerate() {
+        let position = TimeValue::from_rational(point.position.clone()).map_err(timing_error)?;
+        if timing.compare_times(&relative_end, &position)? != std::cmp::Ordering::Less {
+            active = Some(index);
+        } else {
+            break;
+        }
+    }
+    let tail_value = if let Some(index) = active {
+        let left = &points[index];
+        if index + 1 == points.len() || left.shape == Interpolation::Step {
+            left.value
+        } else {
+            let delta = relative_end
+                .add_offset(&(-lane.points[index].position.clone()))
+                .map_err(timing_error)?;
+            let width = &lane.points[index + 1].position - &lane.points[index].position;
+            let u = (timing.approximate_time(&delta)?
+                / rational_f64(&width, "automation interval")?)
+            .clamp(0.0, 1.0);
+            let right = &points[index + 1];
+            match left.shape {
+                Interpolation::Linear => left.value + (right.value - left.value) * u,
+                Interpolation::Exponential => left.value * (right.value / left.value).powf(u),
+                Interpolation::Step => unreachable!(),
+            }
+        }
+    } else {
+        base
+    };
+    if !tail_value.is_finite() {
+        return Err(RenderError::Nonfinite(
+            "automation tail is nonfinite".into(),
+        ));
+    }
+    Ok(AutomationBinding {
+        id: lane.id.clone(),
+        node,
+        parameter: lane.target.port.clone(),
+        lane: AutomationRuntime {
+            clock: lane.clock,
+            at: 0.0,
+            at_exact: None,
+            points,
+            point_positions_exact: Vec::new(),
+            knot_frames,
+            base,
+            tail_value,
+        },
+    })
 }

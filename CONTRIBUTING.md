@@ -5,6 +5,11 @@ documented foundation scope, explain behavior changes in the pull request, and
 update the relevant public documentation when an interface or limitation
 changes.
 
+Follow the [design principles](docs/design-principles.md) when proposing features.
+Identify what belongs in the musical core, a library, an engine extension, or a
+tool, and distinguish new language semantics from implementing existing ones.
+Explain why a core addition cannot be handled through the other boundaries.
+
 ## Repository scope
 
 Keep repository changes directly related to the MaaC language or tool, including

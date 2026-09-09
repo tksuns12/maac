@@ -128,6 +128,42 @@ impl Converter {
         }
         let output_frames = delivery_frames(rate, duration)?;
         let engine_frames = delivery_frames(48_000, duration)?;
+        Self::from_frame_counts(rate, engine_frames, output_frames, channels, limits)
+    }
+
+    /// Construct from independently certified ceilings at the engine and output
+    /// rates. The caller owns duration certification; this boundary checks count
+    /// consistency and retains the same conversion resource allowances.
+    pub(crate) fn from_frame_counts(
+        rate: u32,
+        engine_frames: u64,
+        output_frames: u64,
+        channels: u8,
+        limits: ConversionLimits,
+    ) -> Result<Self, ConversionError> {
+        if !matches!(channels, 1 | 2) {
+            return Err(ConversionError::Channels);
+        }
+        if !matches!(rate, 44_100 | 48_000 | 96_000) {
+            return Err(ConversionError::Rate);
+        }
+        if engine_frames == 0 || output_frames == 0 {
+            if engine_frames != output_frames {
+                return Err(ConversionError::Duration);
+            }
+        } else {
+            // A common positive duration must lie in both intervals:
+            // ((E-1)/48000, E/48000] and ((O-1)/rate, O/rate].
+            // Strict cross-products reject even a lone touching endpoint.
+            // u64 frame counts times u32 rates fit comfortably in u128.
+            if u128::from(engine_frames - 1) * u128::from(rate)
+                >= u128::from(output_frames) * 48_000
+                || u128::from(output_frames - 1) * 48_000
+                    >= u128::from(engine_frames) * u128::from(rate)
+            {
+                return Err(ConversionError::Duration);
+            }
+        }
         let (up, down, half_length, table, digest) = match rate {
             48_000 => (1, 1, 0, &[][..], None),
             44_100 => (147, 160, 40_960, TABLE_44100, Some(DIGEST_44100)),
@@ -533,6 +569,198 @@ mod tests {
                 .unwrap()
                 .reconstructed,
             1.0
+        );
+    }
+
+    #[test]
+    fn supplied_counts_preserve_rational_converter_samples() {
+        for duration in ["0", "1/100000", "1/48000", "1/13"] {
+            let duration = parse_rational(duration).unwrap();
+            for rate in [44100, 48000, 96000] {
+                let legacy =
+                    Converter::new(rate, &duration, 2, ConversionLimits::default()).unwrap();
+                let supplied = Converter::from_frame_counts(
+                    rate,
+                    legacy.engine_frames(),
+                    legacy.output_frames(),
+                    2,
+                    ConversionLimits::default(),
+                )
+                .unwrap();
+                assert_converter_samples_equal(&legacy, &supplied);
+            }
+        }
+    }
+
+    fn assert_converter_samples_equal(a: &Converter, b: &Converter) {
+        assert_eq!(
+            (
+                a.rate(),
+                a.channels(),
+                a.engine_frames(),
+                a.output_frames(),
+                a.work(),
+                a.coefficient_digest()
+            ),
+            (
+                b.rate(),
+                b.channels(),
+                b.engine_frames(),
+                b.output_frames(),
+                b.work(),
+                b.coefficient_digest()
+            )
+        );
+        if a.output_frames() == 0 {
+            return;
+        }
+        for frame in [0, a.output_frames() / 2, a.output_frames() - 1] {
+            for channel in 0..usize::from(a.channels()) {
+                let mut read = |k: u64, c: usize| {
+                    assert!(k < a.engine_frames());
+                    Ok(((k % 17) as f64 + c as f64) / 19.0)
+                };
+                assert_eq!(
+                    a.sample(frame, channel, &mut read).unwrap().to_bits(),
+                    b.sample(frame, channel, &mut read).unwrap().to_bits()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn supplied_counts_accept_independently_certified_log_duration() {
+        use crate::{
+            music::{TempoPoint, TempoShape},
+            tempo::RampTempoMap,
+        };
+        let clock = RampTempoMap::new(vec![
+            TempoPoint::new(
+                parse_rational("0").unwrap(),
+                parse_rational("60").unwrap(),
+                TempoShape::Linear,
+            ),
+            TempoPoint::new(
+                parse_rational("1").unwrap(),
+                parse_rational("120").unwrap(),
+                TempoShape::Step,
+            ),
+        ])
+        .unwrap();
+        let duration = clock.seconds_at(&parse_rational("1").unwrap()).unwrap();
+        let engine = duration.ceil_frames(48000).unwrap().to_u64().unwrap();
+        for rate in [44100, 48000, 96000] {
+            let output = duration
+                .ceil_frames(u64::from(rate))
+                .unwrap()
+                .to_u64()
+                .unwrap();
+            let supplied =
+                Converter::from_frame_counts(rate, engine, output, 2, ConversionLimits::default())
+                    .unwrap();
+            // This decimal is only a legacy comparison fixture whose ceilings
+            // match; the supplied-count path receives no approximate duration.
+            let legacy = Converter::new(
+                rate,
+                &parse_rational("0.6931471805599453").unwrap(),
+                2,
+                ConversionLimits::default(),
+            )
+            .unwrap();
+            assert_converter_samples_equal(&legacy, &supplied);
+        }
+    }
+
+    #[test]
+    fn supplied_counts_reject_inconsistent_or_unbounded_work() {
+        let limits = ConversionLimits::default();
+        for (rate, engine, output) in [
+            (48000, 1, 2),
+            (96000, 1, 3),
+            (96000, 2, 2),
+            (44100, 1, 2),
+            (44100, 2, 0),
+            (44100, 0, 1),
+        ] {
+            assert_eq!(
+                Converter::from_frame_counts(rate, engine, output, 1, limits).unwrap_err(),
+                ConversionError::Duration
+            );
+        }
+        for (rate, engine, output) in [
+            (48000, 0, 0),
+            (44100, 0, 0),
+            (96000, 0, 0),
+            (96000, 1, 1),
+            (96000, 1, 2),
+            (44100, 2, 1),
+        ] {
+            assert!(Converter::from_frame_counts(rate, engine, output, 1, limits).is_ok());
+        }
+        assert_eq!(
+            Converter::from_frame_counts(1, 0, 0, 1, limits).unwrap_err(),
+            ConversionError::Rate
+        );
+        assert_eq!(
+            Converter::from_frame_counts(48000, 0, 0, 3, limits).unwrap_err(),
+            ConversionError::Channels
+        );
+        assert_eq!(
+            Converter::from_frame_counts(
+                48000,
+                u64::MAX,
+                u64::MAX,
+                2,
+                ConversionLimits {
+                    max_output_frames: u64::MAX,
+                    max_work: u64::MAX,
+                    ..limits
+                }
+            )
+            .unwrap_err(),
+            ConversionError::ResourceLimit
+        );
+        assert_eq!(
+            Converter::from_frame_counts(
+                48000,
+                2,
+                2,
+                1,
+                ConversionLimits {
+                    max_output_frames: 1,
+                    ..limits
+                }
+            )
+            .unwrap_err(),
+            ConversionError::ResourceLimit
+        );
+        assert_eq!(
+            Converter::from_frame_counts(
+                96000,
+                1,
+                1,
+                1,
+                ConversionLimits {
+                    max_work: 0,
+                    ..limits
+                }
+            )
+            .unwrap_err(),
+            ConversionError::ResourceLimit
+        );
+        assert_eq!(
+            Converter::from_frame_counts(
+                44100,
+                1,
+                1,
+                1,
+                ConversionLimits {
+                    max_coefficient_bytes: 0,
+                    ..limits
+                }
+            )
+            .unwrap_err(),
+            ConversionError::ResourceLimit
         );
     }
 

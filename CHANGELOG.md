@@ -11,6 +11,11 @@ actually published; no release tag or publication date is asserted here.
 
 ### Added
 
+- Linear-in-score tempo ramps using existing MaaC/1 syntax, with certified
+  scheduling, inverse-clock automation, standalone version 3 plans, and named
+  deliveries. Additive versioned Rust APIs preserve the legacy plan types and
+  step-only entry points. See the [tempo contract](docs/tempo-ramps.md).
+
 - Per-note pressure for custom voice graphs declaring `synth.pressure/1`.
   Independent exact 0…1 curves use authored graph mappings and hold through
   release. Pitch, gain, timbre, and pressure can coexist on opted-in notes.
@@ -101,7 +106,7 @@ actually published; no release tag or publication date is asserted here.
 
 - The Rust implementation is a foundation subset; it does not claim full
   Document, Performance, Core Audio, or Locked Render conformance.
-- Tempo ramps, hits/messages, top-level core modulation,
+- Hits/messages, top-level core modulation,
   other processors, recorded-sample instruments, arranged audio, external plug-ins,
   transactional editing, MaaC Locked Render dependency-lock manifests
   (distinct from `Cargo.lock`), MIDI transport, GUI, and real-time playback

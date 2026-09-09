@@ -78,7 +78,7 @@ fields are rejected. The public Rust types are `PressureExpression` and
 stays unchanged.
 
 Absent pressure is omitted from JSON, preserving existing plan wire shapes.
-Graph instruments still require plan version 2; this extension does not bump
+Graph instruments require plan version 2 or 3; this extension does not bump
 the version. Older readers reject the new payload or processor identity.
 Source compilation and retained-plan validation enforce the same capabilities
 and bounds.

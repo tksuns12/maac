@@ -13,9 +13,10 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tempfile::NamedTempFile;
 
-use crate::dsp::{self, RenderError};
+use crate::dsp::{DspEngine, RenderError};
 use crate::exact::Rational;
-use crate::plan::{Plan, PlanLimits, PortRef};
+use crate::plan::{Plan, PlanLimits, PlanView, PortRef};
+use crate::plan_v3::{PlanV3, TimingContext, VersionedPlan};
 use crate::production_analysis::{self as analysis, Analysis, AnalyzerLimits};
 use crate::production_convert::{self as convert, ConversionError, ConversionLimits, Converter};
 use crate::production_data::{self as data, Target};
@@ -264,6 +265,33 @@ fn analysis_work(frames: u64, channels: u8) -> Result<u64, DeliveryError> {
         .ok_or_else(resource)
 }
 
+#[derive(Clone, Copy)]
+enum ConcretePlan<'a> {
+    Legacy(&'a Plan),
+    V3(&'a PlanV3),
+}
+
+impl<'a> ConcretePlan<'a> {
+    fn view(self) -> PlanView<'a> {
+        match self {
+            Self::Legacy(plan) => plan.view(),
+            Self::V3(plan) => plan.view(),
+        }
+    }
+
+    fn to_json_with_limits(self, limits: &PlanLimits) -> Result<Vec<u8>, DeliveryError> {
+        match self {
+            Self::Legacy(plan) => plan.to_json_with_limits(limits),
+            Self::V3(plan) => plan.to_json_with_limits(limits),
+        }
+        .map_err(|e| error(e.code, e.message))
+    }
+
+    fn is_v3(self) -> bool {
+        matches!(self, Self::V3(_))
+    }
+}
+
 /// Execute and publish a validated named delivery. Failed checks return a
 /// complete manifest with `ok=false`; fatal preflight/render errors return Err.
 /// Per-target conversion/analysis/publication failures are retained in the
@@ -273,15 +301,34 @@ pub fn deliver(
     options: &DeliveryOptions,
     plan_limits: &PlanLimits,
 ) -> Result<DeliveryManifest, DeliveryError> {
-    plan.validate_with_limits(plan_limits)
+    deliver_concrete(ConcretePlan::Legacy(plan), options, plan_limits)
+}
+
+/// Execute a named delivery from either retained plan representation.
+pub fn deliver_versioned(
+    plan: &VersionedPlan,
+    options: &DeliveryOptions,
+    plan_limits: &PlanLimits,
+) -> Result<DeliveryManifest, DeliveryError> {
+    let plan = match plan {
+        VersionedPlan::Legacy(plan) => ConcretePlan::Legacy(plan),
+        VersionedPlan::V3(plan) => ConcretePlan::V3(plan),
+    };
+    deliver_concrete(plan, options, plan_limits)
+}
+
+fn deliver_concrete(
+    plan: ConcretePlan<'_>,
+    options: &DeliveryOptions,
+    plan_limits: &PlanLimits,
+) -> Result<DeliveryManifest, DeliveryError> {
+    let view = plan.view();
+    view.validate_with_limits(plan_limits)
         .map_err(|e| error(e.code, e.message))?;
-    let settings = plan
+    let settings = view
         .production
         .as_ref()
         .ok_or_else(|| error("E_CAPABILITY", "plan has no named production deliveries"))?;
-    settings
-        .validate(plan)
-        .map_err(|e| error(e.code, e.message))?;
     let delivery = settings
         .deliveries
         .get(&options.delivery_id)
@@ -310,18 +357,50 @@ pub fn deliver(
     if selected.is_empty() || selected.len() > limits.max_targets {
         return Err(resource());
     }
-    let duration = plan
-        .tempo
-        .seconds_at(&plan.output.score_end_q)
-        .map_err(|e| error(e.code, e.message))?
-        - plan
-            .tempo
-            .seconds_at(&plan.output.score_start_q)
+    let (legacy_duration, engine_frames, output_frames, interval) = if plan.is_v3() {
+        let timing = TimingContext::new_with_limits(view.tempo, view.output, plan_limits)
+            .map_err(|e| error(e.code, e.message))?;
+        let engine_frames = timing
+            .duration_frames(view.output, plan_limits)
+            .map_err(|e| error(e.code, e.message))?;
+        let output_frames = timing
+            .ceil_time(&timing.duration, u64::from(delivery.rate))
             .map_err(|e| error(e.code, e.message))?
-        + &plan.output.tail_seconds;
-    let output_frames = convert::delivery_frames(delivery.rate, &duration).map_err(conversion)?;
-    let interval = json!({"score_start_q":plan.output.score_start_q.to_string(), "score_end_q":plan.output.score_end_q.to_string(),
-        "tail_seconds":plan.output.tail_seconds.to_string(), "duration_seconds":duration.to_string(), "engine_frames":plan.output.total_frames, "delivery_frames":output_frames});
+            .to_u64()
+            .ok_or_else(|| error("E_TIME_PRECISION", "delivery frame ceiling out of range"))?;
+        let interval = json!({
+            "score_start_q": view.output.score_start_q.to_string(),
+            "score_end_q": view.output.score_end_q.to_string(),
+            "tail_seconds": view.output.tail_seconds.to_string(),
+            "tempo": view.tempo,
+            "engine_frames": engine_frames,
+            "delivery_frames": output_frames,
+        });
+        (None, engine_frames, output_frames, interval)
+    } else {
+        let duration = view
+            .tempo
+            .seconds_at(&view.output.score_end_q)
+            .map_err(|e| error(e.code, e.message))?
+            - view
+                .tempo
+                .seconds_at(&view.output.score_start_q)
+                .map_err(|e| error(e.code, e.message))?
+            + &view.output.tail_seconds;
+        let output_frames =
+            convert::delivery_frames(delivery.rate, &duration).map_err(conversion)?;
+        let interval = json!({"score_start_q":view.output.score_start_q.to_string(), "score_end_q":view.output.score_end_q.to_string(),
+            "tail_seconds":view.output.tail_seconds.to_string(), "duration_seconds":duration.to_string(), "engine_frames":view.output.total_frames, "delivery_frames":output_frames});
+        (
+            Some(duration),
+            view.output.total_frames,
+            output_frames,
+            interval,
+        )
+    };
+    if engine_frames != view.output.total_frames {
+        return Err(error("E_RANGE", "plan engine duration is inconsistent"));
+    }
     let mut converters = Vec::new();
     let mut ports = Vec::new();
     let mut reports = BTreeMap::new();
@@ -332,23 +411,26 @@ pub fn deliver(
     let mut destinations = vec![options.output_dir.join(&manifest_file)];
     for id in &selected {
         let target = &delivery.targets[id];
-        let channels = plan
+        let channels = view
             .audio_output_channels(&target.output)
             .map_err(|e| error(e.code, e.message))?;
-        let converter = Converter::new(
-            delivery.rate,
-            &duration,
-            channels,
-            ConversionLimits {
-                max_output_frames: limits.max_output_frames,
-                max_work: limits.max_work,
-                ..ConversionLimits::default()
-            },
-        )
-        .map_err(conversion)?;
-        if converter.engine_frames() != plan.output.total_frames {
-            return Err(error("E_RANGE", "plan engine duration is inconsistent"));
+        let conversion_limits = ConversionLimits {
+            max_output_frames: limits.max_output_frames,
+            max_work: limits.max_work,
+            ..ConversionLimits::default()
+        };
+        let converter = if let Some(duration) = &legacy_duration {
+            Converter::new(delivery.rate, duration, channels, conversion_limits)
+        } else {
+            Converter::from_frame_counts(
+                delivery.rate,
+                engine_frames,
+                output_frames,
+                channels,
+                conversion_limits,
+            )
         }
+        .map_err(conversion)?;
         let format = encoding(target.encoding);
         let dither = dither(target.dither, &options.delivery_id, id);
         dither.validate(format).map_err(conversion)?;
@@ -362,10 +444,7 @@ pub fn deliver(
                 "delivery exceeds RIFF/WAVE container size",
             ));
         }
-        checked_add(
-            &mut spool_bytes,
-            byte_count(plan.output.total_frames, channels, 8)?,
-        )?;
+        checked_add(&mut spool_bytes, byte_count(engine_frames, channels, 8)?)?;
         checked_add(&mut disk_bytes, pcm_bytes + 128)?;
         checked_add(&mut work, converter.work())?;
         checked_add(&mut work, analysis_work(output_frames, channels)?)?;
@@ -419,16 +498,14 @@ pub fn deliver(
         "certificate":serde_json::from_str::<Value>(convert::COEFFICIENT_CERTIFICATE_JSON).map_err(|e| error("E_HASH", e.to_string()))?});
     let context = json!({"selection":selection,
         "dependencies":{"production_schema":settings.schema_hash,
-            "instrument_dependencies":plan.instruments.as_ref().map(|resources| &resources.dependencies),
-            "source_files":plan.instruments.as_ref().map(|resources| &resources.source_files),
-            "wavetable_sources":plan.instruments.as_ref().map(|resources| &resources.wavetable_sources)},
-        "processors":plan.nodes.iter().map(|node| (node.id.clone(), node)).collect::<BTreeMap<_,_>>(),
+            "instrument_dependencies":view.instruments.as_ref().map(|resources| &resources.dependencies),
+            "source_files":view.instruments.as_ref().map(|resources| &resources.source_files),
+            "wavetable_sources":view.instruments.as_ref().map(|resources| &resources.wavetable_sources)},
+        "processors":view.nodes.iter().map(|node| (node.id.clone(), node)).collect::<BTreeMap<_,_>>(),
         "engine":{"implementation":"maac-rust","version":env!("CARGO_PKG_VERSION"),"rate":48000,"arithmetic_mode":convert::ARITHMETIC_ID},
         "converter":converter_context, "dither":reports.iter().map(|(id,r)| (id.clone(),r.dither.clone())).collect::<BTreeMap<_,_>>(),
         "analyzer":{"identity":analysis::ANALYZER_ID,"true_peak_profile":analysis::TRUE_PEAK_PROFILE,"numerical_environment":environment}, "interval":interval});
-    let plan_bytes = plan
-        .to_json_with_limits(plan_limits)
-        .map_err(|e| error(e.code, e.message))?;
+    let plan_bytes = plan.to_json_with_limits(plan_limits)?;
     let render_key = crate::production_identity::render_key(identity, &plan_bytes, &context)
         .map_err(|e| error("E_HASH", e.to_string()))?;
     // Detect existing files, symlinks (including dangling links), and directories
@@ -459,32 +536,34 @@ pub fn deliver(
         spools.push(temporary);
     }
     let mut captured = 0_u64;
-    dsp::render_ports_with_limits(plan, plan_limits, &ports, |frames| {
-        if captured >= plan.output.total_frames || frames.len() != writers.len() {
-            return Err(RenderError::RenderState(
-                "delivery capture shape changed".into(),
-            ));
-        }
-        for ((frame, writer), converter) in frames.iter().zip(&mut writers).zip(&converters) {
-            if frame.len() != usize::from(converter.channels()) {
+    DspEngine::new_for_view(view, plan_limits)
+        .map_err(|e| error(e.code(), e.to_string()))?
+        .render_ports(&ports, |frames| {
+            if captured >= engine_frames || frames.len() != writers.len() {
                 return Err(RenderError::RenderState(
-                    "delivery capture channel count changed".into(),
+                    "delivery capture shape changed".into(),
                 ));
             }
-            for sample in frame {
-                if !sample.is_finite() {
-                    return Err(RenderError::Nonfinite("nonfinite delivery capture".into()));
+            for ((frame, writer), converter) in frames.iter().zip(&mut writers).zip(&converters) {
+                if frame.len() != usize::from(converter.channels()) {
+                    return Err(RenderError::RenderState(
+                        "delivery capture channel count changed".into(),
+                    ));
                 }
-                writer
-                    .write_all(&sample.to_le_bytes())
-                    .map_err(|e| RenderError::Callback(e.to_string()))?;
+                for sample in frame {
+                    if !sample.is_finite() {
+                        return Err(RenderError::Nonfinite("nonfinite delivery capture".into()));
+                    }
+                    writer
+                        .write_all(&sample.to_le_bytes())
+                        .map_err(|e| RenderError::Callback(e.to_string()))?;
+                }
             }
-        }
-        captured += 1;
-        Ok(())
-    })
-    .map_err(|e| error(e.code(), e.to_string()))?;
-    if captured != plan.output.total_frames {
+            captured += 1;
+            Ok(())
+        })
+        .map_err(|e| error(e.code(), e.to_string()))?;
+    if captured != engine_frames {
         return Err(error("E_RENDER_STATE", "delivery capture ended early"));
     }
     for writer in &mut writers {
@@ -492,14 +571,19 @@ pub fn deliver(
     }
     drop(writers);
     let mut manifest = DeliveryManifest {
-        schema: "maac.production.delivery-manifest/1".into(),
+        schema: if plan.is_v3() {
+            "maac.production.delivery-manifest/2"
+        } else {
+            "maac.production.delivery-manifest/1"
+        }
+        .into(),
         ok: true,
         delivery_id: options.delivery_id.clone(),
         manifest_file,
         manifest_status: "complete".into(),
         artifact_status: "complete".into(),
         check_status: "not_requested".into(),
-        engine_rate: plan.output.sample_rate_hz,
+        engine_rate: view.output.sample_rate_hz,
         engine_frames: captured,
         rate: delivery.rate,
         frames: output_frames,

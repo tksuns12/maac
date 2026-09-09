@@ -5,6 +5,9 @@
 //! [`crate::plan::Plan`] consumed by the renderer.  All source arithmetic stays
 //! exact until the pitch boundary and all expansion paths are bounded.
 
+use crate::plan_v3::{
+    AutomationAnchor, AutomationV3, PlanV3, ResolvedEventV3, TimingContext, VersionedPlan,
+};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::convert::TryFrom;
 use std::sync::Arc;
@@ -385,7 +388,8 @@ struct Compiler<'a> {
     nodes: Vec<Node>,
     connections: Vec<Connection>,
     curves: BTreeMap<String, CurveDef>,
-    automations: Vec<Automation>,
+    automations: Vec<AutomationV3>,
+    allow_ramps: bool,
     regions: Vec<Region>,
     events: Vec<ExpandedNote>,
     expansion_work: u64,
@@ -429,6 +433,7 @@ impl<'a> Compiler<'a> {
             connections: Vec::new(),
             curves: BTreeMap::new(),
             automations: Vec::new(),
+            allow_ramps: false,
             regions: Vec::new(),
             events: Vec::new(),
             expansion_work: 0,
@@ -452,13 +457,27 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn run(mut self, limits: &PlanLimits) -> CResult<Plan> {
+    fn run(self, limits: &PlanLimits) -> CResult<Plan> {
+        let document = self.document;
+        match self.run_versioned(limits, None, document)? {
+            VersionedPlan::Legacy(plan) => Ok(plan),
+            VersionedPlan::V3(_) => unreachable!("legacy compiler disables ramps"),
+        }
+    }
+
+    fn run_versioned(
+        mut self,
+        limits: &PlanLimits,
+        production: Option<crate::production_data::ProductionSettings>,
+        original: &Document,
+    ) -> CResult<VersionedPlan> {
         // SourceGraph owns the source schema and declaration/reference checks.
         // Keep this call ahead of lowering so malformed unused declarations
         // cannot disappear during expansion.
-        crate::semantic::validate_source_with_instruments(
+        crate::semantic::validate_source_with_tempo_profile(
             self.document,
             &self.instrument_descriptors,
+            self.allow_ramps,
         )?;
         self.validate_document_shape()?;
         self.read_tunings()?;
@@ -470,9 +489,18 @@ impl<'a> Compiler<'a> {
         self.read_curves_and_automation(limits)?;
         self.read_regions()?;
         self.expand_places()?;
+        if self
+            .plan_tempo
+            .points
+            .iter()
+            .any(|p| p.shape == Interpolation::Linear)
+        {
+            let plan = self.finish_v3(limits, production, original)?;
+            return Ok(VersionedPlan::V3(plan));
+        }
         let plan = self.finish_plan(limits)?;
         plan.validate_with_limits(limits).map_err(plan_error)?;
-        Ok(plan)
+        attach_production(plan, production, original, limits).map(VersionedPlan::Legacy)
     }
 
     fn object(&self, id: &str) -> CResult<&Object> {
@@ -1026,6 +1054,7 @@ impl<'a> Compiler<'a> {
                         ));
                         Interpolation::Step
                     }
+                    "linear" if self.allow_ramps => Interpolation::Linear,
                     "linear" => return Err(path_diagnostic(
                         DiagnosticCode::Capability,
                         "linear tempo is recognized but unsupported by the exact standalone plan",
@@ -1043,8 +1072,10 @@ impl<'a> Compiler<'a> {
                 };
             plan.push(TempoPoint { q, bpm, shape });
         }
-        self.exact_tempo =
-            ExactTempoMap::new(exact).map_err(|error| map_music_error(error, Some(object.span)))?;
+        if !plan.iter().any(|p| p.shape == Interpolation::Linear) {
+            self.exact_tempo = ExactTempoMap::new(exact)
+                .map_err(|error| map_music_error(error, Some(object.span)))?;
+        }
         self.plan_tempo = TempoMap { points: plan };
         Ok(())
     }
@@ -2035,20 +2066,19 @@ impl<'a> Compiler<'a> {
                 ));
             }
             let at_value = self.field(object, "at")?;
-            let at = if curve.clock == "score" {
-                self.q_value(&at_value.value, object, Some(at_value), true)?
-            } else {
-                let score_anchor = match &at_value.value.kind {
+            let score_anchor = curve.clock == "score"
+                || match &at_value.value.kind {
                     ValueKind::Quantity { unit: Unit::Q, .. } => true,
                     ValueKind::Call { function, .. } => function == "bar",
                     _ => false,
                 };
-                if score_anchor {
-                    self.exact_tempo
-                        .seconds_at(&self.q_value(&at_value.value, object, Some(at_value), true)?)
-                        .map_err(|error| map_music_error(error, Some(at_value.value.span)))?
-                } else {
-                    self.seconds_value(&at_value.value, object, Some(at_value))?
+            let at = if score_anchor {
+                AutomationAnchor::Score {
+                    q: self.q_value(&at_value.value, object, Some(at_value), true)?,
+                }
+            } else {
+                AutomationAnchor::Seconds {
+                    seconds: self.seconds_value(&at_value.value, object, Some(at_value))?,
                 }
             };
             let target = PortRef::new(target_ref.path[0].clone(), target_ref.path[2].clone())
@@ -2062,7 +2092,7 @@ impl<'a> Compiler<'a> {
                     shape: *shape,
                 })
                 .collect();
-            self.automations.push(Automation {
+            self.automations.push(AutomationV3 {
                 id: object.id.clone(),
                 target,
                 clock: if curve.clock == "score" {
@@ -2623,7 +2653,168 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn finish_plan(&self, limits: &PlanLimits) -> CResult<Plan> {
+    fn lower_event_kind(&self, expanded: &ExpandedNote) -> CResult<EventKind> {
+        // A source pitch can be above Nyquist when an occurrence
+        // transposition brings it back into range.  Apply all final
+        // transforms before the receiver-specific Nyquist check.
+        let mut frequency = expanded
+            .pitch
+            .resolve_hz(None)
+            .map_err(|error| event_music_error(error, expanded, &["pitch"]))?;
+        let transpose = expanded.transpose_cents.to_f64().ok_or_else(|| {
+            diagnostics(
+                DiagnosticCode::Nonfinite,
+                "pitch transposition is not finite",
+                Some(expanded.source_span),
+            )
+        })?;
+        frequency *= 2.0_f64.powf(transpose / 1200.0);
+        if !frequency.is_finite()
+            || frequency <= 0.0
+            || frequency >= f64::from(self.sample_rate) / 2.0
+        {
+            return Err(event_diagnostic(
+                DiagnosticCode::Range,
+                "resolved pitch is outside the finite Nyquist range",
+                expanded,
+                &["pitch"],
+            ));
+        }
+        Ok(EventKind::Note {
+            pressure_expression: expanded
+                .pressure_expression
+                .as_ref()
+                .map(|id| {
+                    let curve = &self.curves[id];
+                    let clock = match curve.clock.as_str() {
+                        "score" => ExpressionClock::Score,
+                        "seconds" => ExpressionClock::Seconds,
+                        _ => ExpressionClock::Normalized,
+                    };
+                    let points = curve
+                        .points
+                        .iter()
+                        .map(|(position, value, shape)| {
+                            Ok(PressureExpressionPoint {
+                                position: if clock == ExpressionClock::Score {
+                                    checked_mul(
+                                        position,
+                                        &expanded.expression_scale,
+                                        Some(expanded.source_span),
+                                    )?
+                                } else {
+                                    position.clone()
+                                },
+                                value: value.clone(),
+                                shape: *shape,
+                            })
+                        })
+                        .collect::<CResult<Vec<_>>>()?;
+                    Ok(PressureExpression { clock, points })
+                })
+                .transpose()?,
+            timbre_expression: expanded
+                .timbre_expression
+                .as_ref()
+                .map(|id| {
+                    let curve = &self.curves[id];
+                    let clock = match curve.clock.as_str() {
+                        "score" => ExpressionClock::Score,
+                        "seconds" => ExpressionClock::Seconds,
+                        _ => ExpressionClock::Normalized,
+                    };
+                    let points = curve
+                        .points
+                        .iter()
+                        .map(|(position, value, shape)| {
+                            Ok(TimbreExpressionPoint {
+                                position: if clock == ExpressionClock::Score {
+                                    checked_mul(
+                                        position,
+                                        &expanded.expression_scale,
+                                        Some(expanded.source_span),
+                                    )?
+                                } else {
+                                    position.clone()
+                                },
+                                value: value.clone(),
+                                shape: *shape,
+                            })
+                        })
+                        .collect::<CResult<Vec<_>>>()?;
+                    Ok(TimbreExpression { clock, points })
+                })
+                .transpose()?,
+            gain_expression: expanded
+                .gain_expression
+                .as_ref()
+                .map(|id| {
+                    let curve = &self.curves[id];
+                    let clock = match curve.clock.as_str() {
+                        "score" => ExpressionClock::Score,
+                        "seconds" => ExpressionClock::Seconds,
+                        _ => ExpressionClock::Normalized,
+                    };
+                    let points = curve
+                        .points
+                        .iter()
+                        .map(|(position, gain, shape)| {
+                            Ok(GainExpressionPoint {
+                                position: if clock == ExpressionClock::Score {
+                                    checked_mul(
+                                        position,
+                                        &expanded.expression_scale,
+                                        Some(expanded.source_span),
+                                    )?
+                                } else {
+                                    position.clone()
+                                },
+                                gain: gain.clone(),
+                                shape: *shape,
+                            })
+                        })
+                        .collect::<CResult<Vec<_>>>()?;
+                    Ok(GainExpression { clock, points })
+                })
+                .transpose()?,
+            pitch_expression: expanded
+                .pitch_expression
+                .as_ref()
+                .map(|id| {
+                    let curve = &self.curves[id];
+                    let clock = match curve.clock.as_str() {
+                        "score" => ExpressionClock::Score,
+                        "seconds" => ExpressionClock::Seconds,
+                        _ => ExpressionClock::Normalized,
+                    };
+                    let points = curve
+                        .points
+                        .iter()
+                        .map(|(position, cents, shape)| {
+                            Ok(PitchExpressionPoint {
+                                position: if clock == ExpressionClock::Score {
+                                    checked_mul(
+                                        position,
+                                        &expanded.expression_scale,
+                                        Some(expanded.source_span),
+                                    )?
+                                } else {
+                                    position.clone()
+                                },
+                                cents: cents.clone(),
+                                shape: *shape,
+                            })
+                        })
+                        .collect::<CResult<Vec<_>>>()?;
+                    Ok(PitchExpression { clock, points })
+                })
+                .transpose()?,
+            pitch_hz: frequency,
+            velocity: expanded.velocity.clone(),
+        })
+    }
+
+    fn check_point_budget(&self, limits: &PlanLimits) -> CResult<()> {
         // Expansion keeps only curve identities; bound the aggregate before cloning points.
         let mut point_count = 0usize;
         for count in self.automations.iter().map(|a| a.points.len()).chain(
@@ -2657,6 +2848,99 @@ impl<'a> Compiler<'a> {
             }
         }
 
+        Ok(())
+    }
+
+    fn finish_v3(
+        &self,
+        limits: &PlanLimits,
+        mut production: Option<crate::production_data::ProductionSettings>,
+        original: &Document,
+    ) -> CResult<PlanV3> {
+        self.check_point_budget(limits)?;
+        let events = self
+            .events
+            .iter()
+            .map(|expanded| {
+                Ok(ResolvedEventV3 {
+                    address: expanded.address.clone(),
+                    source: expanded.source.clone(),
+                    target: expanded.target.clone(),
+                    kind: self.lower_event_kind(expanded)?,
+                    score_on_q: expanded.score_on_q.clone(),
+                    score_off_q: Some(checked_add(
+                        &expanded.score_on_q,
+                        &expanded.dur_q,
+                        Some(expanded.source_span),
+                    )?),
+                    onset_offset_seconds: expanded.onset_offset_seconds.clone(),
+                    release_offset_seconds: expanded.release_offset_seconds.clone(),
+                    release_velocity: expanded.release_velocity,
+                    on_frame: 0,
+                    off_frame: None,
+                    order: expanded.order,
+                })
+            })
+            .collect::<CResult<Vec<_>>>()?;
+        let mut plan = PlanV3 {
+            version: 3,
+            output: OutputSettings {
+                score_start_q: self.score_start.clone(),
+                score_end_q: self.score_end.clone(),
+                tail_seconds: self.tail_seconds.clone(),
+                sample_rate_hz: self.sample_rate,
+                channels: self.output_channels()?,
+                total_frames: 0,
+                output: self.output.clone(),
+            },
+            tempo: self.plan_tempo.clone(),
+            events,
+            nodes: self.nodes.clone(),
+            connections: self.connections.clone(),
+            automation: self.automations.clone(),
+            regions: self.regions.clone(),
+            source_mappings: Vec::new(),
+            instruments: self.instrument_resources.clone(),
+            production: None,
+        };
+        if let Some(settings) = &mut production {
+            settings.execution_identity = Some(
+                crate::production_identity::execution_identity_for_view(original, &plan.view())
+                    .map_err(|error| {
+                        diagnostics(
+                            DiagnosticCode::Range,
+                            format!("execution identity: {error}"),
+                            None,
+                        )
+                    })?,
+            );
+        }
+        plan.production = production;
+        plan.preflight_with_limits(limits).map_err(plan_error)?;
+        let timing = TimingContext::new_with_limits(&plan.tempo, &plan.output, limits)
+            .map_err(plan_error)?;
+        plan.output.total_frames = timing
+            .duration_frames(&plan.output, &limits.bounded())
+            .map_err(plan_error)?;
+        for event in &mut plan.events {
+            (event.on_frame, event.off_frame) = timing
+                .schedule(event, u64::from(self.sample_rate))
+                .map_err(plan_error)?;
+        }
+        plan.events.sort_by(|a, b| {
+            a.on_frame
+                .cmp(&b.on_frame)
+                .then(a.order.cmp(&b.order))
+                .then(a.address.cmp(&b.address))
+        });
+        plan.view()
+            .validate_with_timing(limits, &timing)
+            .map_err(plan_error)?;
+        Ok(plan)
+    }
+
+    fn finish_plan(&self, limits: &PlanLimits) -> CResult<Plan> {
+        self.check_point_budget(limits)?;
         let score_start_seconds = self
             .exact_tempo
             .seconds_at(&self.score_start)
@@ -2768,168 +3052,12 @@ impl<'a> Compiler<'a> {
                     &["dur"],
                 ));
             }
-            // A source pitch can be above Nyquist when an occurrence
-            // transposition brings it back into range.  Apply all final
-            // transforms before the receiver-specific Nyquist check.
-            let mut frequency = expanded
-                .pitch
-                .resolve_hz(None)
-                .map_err(|error| event_music_error(error, expanded, &["pitch"]))?;
-            let transpose = expanded.transpose_cents.to_f64().ok_or_else(|| {
-                diagnostics(
-                    DiagnosticCode::Nonfinite,
-                    "pitch transposition is not finite",
-                    Some(expanded.source_span),
-                )
-            })?;
-            frequency *= 2.0_f64.powf(transpose / 1200.0);
-            if !frequency.is_finite()
-                || frequency <= 0.0
-                || frequency >= f64::from(self.sample_rate) / 2.0
-            {
-                return Err(event_diagnostic(
-                    DiagnosticCode::Range,
-                    "resolved pitch is outside the finite Nyquist range",
-                    expanded,
-                    &["pitch"],
-                ));
-            }
+            let kind = self.lower_event_kind(expanded)?;
             events.push(ResolvedEvent {
                 address: expanded.address.clone(),
                 source: expanded.source.clone(),
                 target: expanded.target.clone(),
-                kind: EventKind::Note {
-                    pressure_expression: expanded
-                        .pressure_expression
-                        .as_ref()
-                        .map(|id| {
-                            let curve = &self.curves[id];
-                            let clock = match curve.clock.as_str() {
-                                "score" => ExpressionClock::Score,
-                                "seconds" => ExpressionClock::Seconds,
-                                _ => ExpressionClock::Normalized,
-                            };
-                            let points = curve
-                                .points
-                                .iter()
-                                .map(|(position, value, shape)| {
-                                    Ok(PressureExpressionPoint {
-                                        position: if clock == ExpressionClock::Score {
-                                            checked_mul(
-                                                position,
-                                                &expanded.expression_scale,
-                                                Some(expanded.source_span),
-                                            )?
-                                        } else {
-                                            position.clone()
-                                        },
-                                        value: value.clone(),
-                                        shape: *shape,
-                                    })
-                                })
-                                .collect::<CResult<Vec<_>>>()?;
-                            Ok(PressureExpression { clock, points })
-                        })
-                        .transpose()?,
-                    timbre_expression: expanded
-                        .timbre_expression
-                        .as_ref()
-                        .map(|id| {
-                            let curve = &self.curves[id];
-                            let clock = match curve.clock.as_str() {
-                                "score" => ExpressionClock::Score,
-                                "seconds" => ExpressionClock::Seconds,
-                                _ => ExpressionClock::Normalized,
-                            };
-                            let points = curve
-                                .points
-                                .iter()
-                                .map(|(position, value, shape)| {
-                                    Ok(TimbreExpressionPoint {
-                                        position: if clock == ExpressionClock::Score {
-                                            checked_mul(
-                                                position,
-                                                &expanded.expression_scale,
-                                                Some(expanded.source_span),
-                                            )?
-                                        } else {
-                                            position.clone()
-                                        },
-                                        value: value.clone(),
-                                        shape: *shape,
-                                    })
-                                })
-                                .collect::<CResult<Vec<_>>>()?;
-                            Ok(TimbreExpression { clock, points })
-                        })
-                        .transpose()?,
-                    gain_expression: expanded
-                        .gain_expression
-                        .as_ref()
-                        .map(|id| {
-                            let curve = &self.curves[id];
-                            let clock = match curve.clock.as_str() {
-                                "score" => ExpressionClock::Score,
-                                "seconds" => ExpressionClock::Seconds,
-                                _ => ExpressionClock::Normalized,
-                            };
-                            let points = curve
-                                .points
-                                .iter()
-                                .map(|(position, gain, shape)| {
-                                    Ok(GainExpressionPoint {
-                                        position: if clock == ExpressionClock::Score {
-                                            checked_mul(
-                                                position,
-                                                &expanded.expression_scale,
-                                                Some(expanded.source_span),
-                                            )?
-                                        } else {
-                                            position.clone()
-                                        },
-                                        gain: gain.clone(),
-                                        shape: *shape,
-                                    })
-                                })
-                                .collect::<CResult<Vec<_>>>()?;
-                            Ok(GainExpression { clock, points })
-                        })
-                        .transpose()?,
-                    pitch_expression: expanded
-                        .pitch_expression
-                        .as_ref()
-                        .map(|id| {
-                            let curve = &self.curves[id];
-                            let clock = match curve.clock.as_str() {
-                                "score" => ExpressionClock::Score,
-                                "seconds" => ExpressionClock::Seconds,
-                                _ => ExpressionClock::Normalized,
-                            };
-                            let points = curve
-                                .points
-                                .iter()
-                                .map(|(position, cents, shape)| {
-                                    Ok(PitchExpressionPoint {
-                                        position: if clock == ExpressionClock::Score {
-                                            checked_mul(
-                                                position,
-                                                &expanded.expression_scale,
-                                                Some(expanded.source_span),
-                                            )?
-                                        } else {
-                                            position.clone()
-                                        },
-                                        cents: cents.clone(),
-                                        shape: *shape,
-                                    })
-                                })
-                                .collect::<CResult<Vec<_>>>()?;
-                            Ok(PitchExpression { clock, points })
-                        })
-                        .transpose()?,
-                    pitch_hz: frequency,
-                    velocity: expanded.velocity.clone(),
-                },
+                kind,
                 score_on_q: expanded.score_on_q.clone(),
                 score_off_q: Some(score_off),
                 onset_offset_seconds: expanded.onset_offset_seconds.clone(),
@@ -2967,7 +3095,28 @@ impl<'a> Compiler<'a> {
             events,
             nodes: self.nodes.clone(),
             connections: self.connections.clone(),
-            automation: self.automations.clone(),
+            automation: self
+                .automations
+                .iter()
+                .map(|lane| {
+                    let at = match &lane.at {
+                        AutomationAnchor::Score { q } if lane.clock == AutomationClock::Seconds => {
+                            self.exact_tempo
+                                .seconds_at(q)
+                                .map_err(|e| map_music_error(e, None))?
+                        }
+                        AutomationAnchor::Score { q } => q.clone(),
+                        AutomationAnchor::Seconds { seconds } => seconds.clone(),
+                    };
+                    Ok(Automation {
+                        id: lane.id.clone(),
+                        target: lane.target.clone(),
+                        clock: lane.clock,
+                        at,
+                        points: lane.points.clone(),
+                    })
+                })
+                .collect::<CResult<Vec<_>>>()?,
             regions: self.regions.clone(),
             source_mappings: Vec::new(),
             instruments: self.instrument_resources.clone(),
@@ -3278,4 +3427,134 @@ fn attach_production(
         plan.validate_with_limits(limits).map_err(plan_error)?;
     }
     Ok(plan)
+}
+
+fn compile_resolved_versioned(
+    resolved: &ResolvedBundle,
+    libraries: LibrarySet,
+    limits: &PlanLimits,
+    production: Option<crate::production_data::ProductionSettings>,
+    original: &Document,
+) -> CResult<VersionedPlan> {
+    let document = libraries.entry_document();
+    if !document
+        .objects
+        .values()
+        .any(|object| object.kind == "project")
+    {
+        return Err(diagnostics(
+            DiagnosticCode::Conflict,
+            "library sources can be checked but cannot be compiled as compositions",
+            None,
+        ));
+    }
+    {
+        let mut compiler = prepare_instrument_compiler(resolved, libraries, &document)?;
+        compiler.allow_ramps = true;
+        compiler.run_versioned(limits, production, original)
+    }
+}
+
+/// Compile a bundle into its legacy step plan or a certified version 3 ramp plan.
+pub fn compile_bundle_versioned(bundle: &SourceBundle) -> Result<VersionedPlan, Diagnostics> {
+    compile_bundle_versioned_with_limits(bundle, &PlanLimits::default())
+}
+
+/// Resolve and compile a bundle under an explicit caller resource allowance.
+pub fn compile_bundle_versioned_with_limits(
+    bundle: &SourceBundle,
+    limits: &PlanLimits,
+) -> Result<VersionedPlan, Diagnostics> {
+    let mut resolved = bundle.resolve()?;
+    let original = resolved
+        .documents
+        .get(&resolved.entry)
+        .expect("resolved entry exists")
+        .clone();
+    let (document, production) =
+        crate::production_data::prepare_document(&original, &bundle.assets)?;
+    resolved.documents.insert(resolved.entry.clone(), document);
+    let libraries = LibrarySet::resolve(&resolved)?;
+    compile_resolved_versioned(&resolved, libraries, limits, production, &original)
+}
+
+/// Resolve and validate either a composition bundle or all exports of a
+/// library bundle.
+pub fn check_bundle_versioned(bundle: &SourceBundle) -> Result<(), Diagnostics> {
+    check_bundle_versioned_with_limits(bundle, &PlanLimits::default())
+}
+
+/// Validate a bundle, applying caller limits when the entry is a composition.
+pub fn check_bundle_versioned_with_limits(
+    bundle: &SourceBundle,
+    limits: &PlanLimits,
+) -> Result<(), Diagnostics> {
+    let mut resolved = bundle.resolve()?;
+    let original = resolved
+        .documents
+        .get(&resolved.entry)
+        .expect("resolved entry exists")
+        .clone();
+    let (document, production) =
+        crate::production_data::prepare_document(&original, &bundle.assets)?;
+    resolved.documents.insert(resolved.entry.clone(), document);
+    let libraries = LibrarySet::resolve(&resolved)?;
+    if libraries
+        .entry_document()
+        .objects
+        .values()
+        .any(|object| object.kind == "project")
+    {
+        compile_resolved_versioned(&resolved, libraries, limits, production, &original).map(|_| ())
+    } else {
+        Ok(())
+    }
+}
+
+/// Compile step tempos to the legacy plan and ramps to version 3.
+pub fn compile_versioned(document: &Document) -> Result<VersionedPlan, Diagnostics> {
+    compile_versioned_with_limits(document, &PlanLimits::default())
+}
+
+/// Compile a parsed document under an explicit caller resource allowance.
+pub fn compile_versioned_with_limits(
+    document: &Document,
+    limits: &PlanLimits,
+) -> Result<VersionedPlan, Diagnostics> {
+    reject_unresolved_imports(document)?;
+    let (prepared, production) =
+        crate::production_data::prepare_document(document, &BTreeMap::new())?;
+    if has_library_syntax(&prepared) {
+        let resolved = local_resolved(&prepared);
+        let libraries = LibrarySet::resolve(&resolved)?;
+        compile_resolved_versioned(&resolved, libraries, limits, production, document)
+    } else {
+        let mut compiler = Compiler::new(&prepared);
+        compiler.allow_ramps = true;
+        compiler.run_versioned(limits, production, document)
+    }
+}
+
+/// Validate a document through the same resolution path used by [`compile`].
+pub fn check_versioned(document: &Document) -> Result<(), Diagnostics> {
+    check_versioned_with_limits(document, &PlanLimits::default())
+}
+
+/// Validate a parsed document through compilation under caller limits.
+pub fn check_versioned_with_limits(
+    document: &Document,
+    limits: &PlanLimits,
+) -> Result<(), Diagnostics> {
+    reject_unresolved_imports(document)?;
+    if document
+        .objects
+        .values()
+        .any(|object| object.kind == "project")
+    {
+        compile_versioned_with_limits(document, limits).map(|_| ())
+    } else if has_library_syntax(document) {
+        LibrarySet::resolve(&local_resolved(document)).map(|_| ())
+    } else {
+        compile_versioned_with_limits(document, limits).map(|_| ())
+    }
 }

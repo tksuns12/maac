@@ -176,6 +176,23 @@ It does not dither or change the gain of the rendered signal.
 | `export::render_wav_to_path` | Render and atomically publish a WAV destination |
 | `export::WavFormat` | Select `Float32` or `Pcm16` conversion |
 
+These `Plan` APIs retain their version 1/2, step-tempo contracts. For both step
+maps and [tempo ramps](tempo-ramps.md), use the additive versioned boundaries:
+
+| API | Responsibility |
+| --- | --- |
+| `maac::compile_versioned` / `maac::compile_bundle_versioned` | Emit legacy plans for step-only scores or `PlanV3` for ramps |
+| `maac::check_versioned` / `maac::check_bundle_versioned` | Validate ramp-capable source or bundles |
+| `maac::load_plan_versioned` / `VersionedPlan::from_json` | Load and independently validate versions 1, 2 and 3 |
+| `maac::render_versioned` / `DspEngine::new_versioned` | Render or prepare either representation |
+| `export::write_wav_versioned` / `export::render_wav_to_path_versioned` | Export either representation with existing encoding/publication rules |
+| `production_delivery::deliver_versioned` | Deliver either representation; ramp manifests use schema version 2 |
+
+The compiler, loader, renderer and WAV functions also provide `_with_limits`
+variants. Delivery already takes explicit `PlanLimits`. The CLI selects these
+boundaries automatically. `VersionedPlan` contains `Legacy(Plan)` or `V3(PlanV3)`;
+no existing public plan struct gains a required field.
+
 The compiler and DSP do not perform filesystem or network operations.
 `stdlib::catalog()` and `stdlib::instrument(name)` derive public control
 metadata from the embedded source definition. `catalog()` and `instrument(name)` retain their basic-library
@@ -277,8 +294,9 @@ retains resolved events and source mappings; it is not a substitute for the
 authored source. See the [format reference](performance-plan.md) and
 [diagnostics guide](diagnostics.md).
 
-Production settings are retained in optional `Plan.production`; legacy plans
-omit this field. Native processor tags are additive in versions 1 and 2.
+Production settings are retained in optional `Plan.production` or
+`PlanV3.production`; plans without those settings omit the field. Native
+processor tags were introduced in versions 1 and 2 and are also supported in 3.
 `PlanLimits` adds `max_production_delay_cells`; exhaustive Rust struct literals
 must include it or use `..PlanLimits::default()`. Exhaustive `Plan` literals
 need `production: None` when no delivery is defined. These Rust additions do

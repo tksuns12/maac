@@ -248,6 +248,14 @@ impl ProductionSettings {
     }
 
     pub fn validate_with_limits(&self, plan: &Plan, limits: &PlanLimits) -> Result<(), PlanError> {
+        self.validate_for_view(&plan.view(), limits)
+    }
+
+    pub(crate) fn validate_for_view(
+        &self,
+        plan: &crate::plan::PlanView<'_>,
+        limits: &PlanLimits,
+    ) -> Result<(), PlanError> {
         self.resource_usage(limits)?;
         self.validate_structure()?;
         let identity = self.execution_identity.as_ref().ok_or_else(|| {

@@ -17,6 +17,7 @@ use crate::diagnostic::{Diagnostic, Diagnostics, Span};
 use crate::dsp::RenderError;
 use crate::export::{self, ExportError, WavFormat, WavStats, MAX_INPUT_BYTES};
 use crate::plan::{Plan, PlanError, PlanLimits};
+use crate::plan_v3::VersionedPlan;
 use crate::syntax::{parse, Document};
 
 #[derive(Parser, Debug)]
@@ -402,7 +403,7 @@ pub fn execute(command: &Command) -> Result<CommandResult, CliError> {
                 .values()
                 .any(|object| object.kind == "library")
             {
-                compiler::check_bundle_with_limits(&bundle, &limits)
+                compiler::check_bundle_versioned_with_limits(&bundle, &limits)
                     .map_err(|error| CliError::from_diagnostics(&error))?;
                 let exports = document
                     .objects
@@ -413,12 +414,12 @@ pub fn execute(command: &Command) -> Result<CommandResult, CliError> {
                     .count();
                 Ok(CommandResult::library_check(&input, exports))
             } else {
-                let plan = compiler::compile_bundle_with_limits(&bundle, &limits)
+                let plan = compiler::compile_bundle_versioned_with_limits(&bundle, &limits)
                     .map_err(|error| CliError::from_diagnostics(&error))?;
                 Ok(CommandResult::check(
                     &input,
-                    plan.events.len(),
-                    plan.output.total_frames,
+                    versioned_plan_stats(&plan).0,
+                    versioned_plan_stats(&plan).1,
                 ))
             }
         }
@@ -432,7 +433,7 @@ pub fn execute(command: &Command) -> Result<CommandResult, CliError> {
             let (input, root) = resolve_source_input(input.as_deref(), project_root.as_deref());
             let limits = profile.limits();
             let bundle = load_source_bundle(&input, root.as_deref())?;
-            let plan = compiler::compile_bundle_with_limits(&bundle, &limits)
+            let plan = compiler::compile_bundle_versioned_with_limits(&bundle, &limits)
                 .map_err(|error| CliError::from_diagnostics(&error))?;
             let bytes = plan
                 .to_json_with_limits(&limits)
@@ -441,8 +442,8 @@ pub fn execute(command: &Command) -> Result<CommandResult, CliError> {
             Ok(CommandResult::compile(
                 &input,
                 output,
-                plan.events.len(),
-                plan.output.total_frames,
+                versioned_plan_stats(&plan).0,
+                versioned_plan_stats(&plan).1,
             ))
         }
         Command::Render {
@@ -453,11 +454,12 @@ pub fn execute(command: &Command) -> Result<CommandResult, CliError> {
             profile,
         } => {
             let limits = profile.limits();
-            let plan = read_plan_with_limits(input, &limits)?;
+            let plan = read_plan_versioned_with_limits(input, &limits)?;
             let wav_format = (*format).into();
-            let stats =
-                export::render_wav_to_path_with_limits(&plan, output, wav_format, *force, &limits)
-                    .map_err(CliError::from_export)?;
+            let stats = export::render_wav_to_path_versioned_with_limits(
+                &plan, output, wav_format, *force, &limits,
+            )
+            .map_err(CliError::from_export)?;
             Ok(CommandResult::render(
                 "render", input, output, wav_format, stats,
             ))
@@ -473,12 +475,13 @@ pub fn execute(command: &Command) -> Result<CommandResult, CliError> {
             let (input, root) = resolve_source_input(input.as_deref(), project_root.as_deref());
             let limits = profile.limits();
             let bundle = load_source_bundle(&input, root.as_deref())?;
-            let plan = compiler::compile_bundle_with_limits(&bundle, &limits)
+            let plan = compiler::compile_bundle_versioned_with_limits(&bundle, &limits)
                 .map_err(|error| CliError::from_diagnostics(&error))?;
             let wav_format = (*format).into();
-            let stats =
-                export::render_wav_to_path_with_limits(&plan, output, wav_format, *force, &limits)
-                    .map_err(CliError::from_export)?;
+            let stats = export::render_wav_to_path_versioned_with_limits(
+                &plan, output, wav_format, *force, &limits,
+            )
+            .map_err(CliError::from_export)?;
             Ok(CommandResult::render(
                 "build", &input, output, wav_format, stats,
             ))
@@ -501,10 +504,11 @@ pub fn execute(command: &Command) -> Result<CommandResult, CliError> {
                 .find(|byte| !byte.is_ascii_whitespace())
                 == Some(b'{')
             {
-                Plan::from_json_with_limits(&bytes, &limits).map_err(CliError::from_plan)?
+                VersionedPlan::from_json_with_limits(&bytes, &limits)
+                    .map_err(CliError::from_plan)?
             } else {
                 let bundle = load_source_bundle(&resolved, root.as_deref())?;
-                compiler::compile_bundle_with_limits(&bundle, &limits)
+                compiler::compile_bundle_versioned_with_limits(&bundle, &limits)
                     .map_err(|e| CliError::from_diagnostics(&e))?
             };
             let options = crate::production_delivery::DeliveryOptions {
@@ -517,8 +521,8 @@ pub fn execute(command: &Command) -> Result<CommandResult, CliError> {
                     ProfileArg::Song => crate::production_delivery::DeliveryLimits::song(),
                 },
             };
-            let report =
-                crate::production_delivery::deliver(&plan, &options, &limits).map_err(|e| {
+            let report = crate::production_delivery::deliver_versioned(&plan, &options, &limits)
+                .map_err(|e| {
                     let mut result = CliError::new(e.code, e.message);
                     result.delivery = e.manifest;
                     result
@@ -529,7 +533,7 @@ pub fn execute(command: &Command) -> Result<CommandResult, CliError> {
                 input: resolved.display().to_string(),
                 output: Some(output_dir.join(&report.manifest_file).display().to_string()),
                 format: None,
-                notes: Some(plan.events.len()),
+                notes: Some(versioned_plan_stats(&plan).0),
                 frames: Some(report.frames),
                 digest: None,
                 exports: None,
@@ -672,6 +676,26 @@ pub fn read_plan(path: &Path) -> Result<Plan, CliError> {
 pub fn read_plan_with_limits(path: &Path, limits: &PlanLimits) -> Result<Plan, CliError> {
     let bytes = read_bounded(path)?;
     Plan::from_json_with_limits(&bytes, limits).map_err(CliError::from_plan)
+}
+
+/// Read and independently validate a legacy or version 3 plan artifact.
+pub fn read_plan_versioned(path: &Path) -> Result<VersionedPlan, CliError> {
+    read_plan_versioned_with_limits(path, &PlanLimits::default())
+}
+
+/// Read either supported plan version under an explicit caller allowance.
+pub fn read_plan_versioned_with_limits(
+    path: &Path,
+    limits: &PlanLimits,
+) -> Result<VersionedPlan, CliError> {
+    VersionedPlan::from_json_with_limits(&read_bounded(path)?, limits).map_err(CliError::from_plan)
+}
+
+fn versioned_plan_stats(plan: &VersionedPlan) -> (usize, u64) {
+    match plan {
+        VersionedPlan::Legacy(plan) => (plan.events.len(), plan.output.total_frames),
+        VersionedPlan::V3(plan) => (plan.events.len(), plan.output.total_frames),
+    }
 }
 
 pub fn read_bounded(path: &Path) -> Result<Vec<u8>, CliError> {

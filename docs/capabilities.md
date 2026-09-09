@@ -9,7 +9,7 @@ specification remains authoritative; this page describes the implementation scop
 | Source | UTF-8, span-aware parsing, exact rational quantities, comments and source text retained in the parsed document |
 | Patterns | Finite notes, nested uses, repetition, stretching, cents transposition, cut and spill |
 | Arrangement | Explicit tracks and placements, stable occurrence addresses, final-state overrides, deletion and inserts |
-| Time | Step tempo maps, meter maps, global `bar` positions, independent physical offsets, exact ceiling scheduling |
+| Time | Step and linear-in-score tempo maps, meter maps, global `bar` positions, independent physical offsets, certified ceiling scheduling |
 | Pitch | Letter pitches, `key`, `degree`, `ratio`, Hz/kHz, explicit tunings |
 | Per-note pitch | `core.sine/1` and reusable mono/stereo instruments (basic, acoustic, custom); cents curves; normalized, seconds and score clocks; step/linear interpolation and gate-end release holding |
 | Per-note gain | `core.sine/1` and reusable mono/stereo instruments (basic, acoustic, custom); nonnegative amplitude curves on all three clocks; step/linear/exponential interpolation; simultaneous independent pitch |
@@ -29,13 +29,20 @@ specification remains authoritative; this page describes the implementation scop
 | Export | Legacy build/render: Float32 WAV or overload-rejecting PCM16; production delivery also adds PCM24 and explicit seeded TPDF |
 | Native production | Project-level EQ, linked peak compression with external sidechains, eight-delay reverb; required `maac.production/1` |
 | Named deliveries | Complete-graph master/stem capture; 44.1/48/96 kHz conversion; final-artifact loudness/sample-peak/experimental true-peak analysis |
-| Interchange | Independently validated standalone plans: version 1 legacy and version 2 embedded graph/data/provenance |
+| Interchange | Independently validated standalone plans: version 1 legacy, version 2 embedded graph/data/provenance, version 3 exact ramp timing recipes |
 
-Recognized deferred features fail with `E_CAPABILITY`: tempo ramps,
-hits/messages, top-level core modulation, other processors, recorded
+Recognized deferred features fail with `E_CAPABILITY`: hits/messages,
+top-level core modulation, other processors, recorded
 sample instruments, arranged audio, external plug-ins and other extensions. Transactional editing, full render locks,
 MIDI transport, GUI and real-time playback are outside this release's interfaces.
 No deferred feature is approximated silently.
+
+The [tempo ramp contract](tempo-ramps.md) defines linear BPM in score position,
+inverse-clock automation, and version 3 interchange. The CLI automatically
+selects the plan version. Existing Rust entry points retain their step-only
+contracts; additive `*_versioned` entry points support ramps. Exponential tempo
+shapes remain invalid. Timing certification can fail with `E_TIME_PRECISION`
+or `E_RESOURCE_LIMIT` instead of guessing a frame boundary.
 
 The [per-note pitch guide](pitch-expression.md) defines the supported receivers,
 curve clocks, instance transformations, and standalone-plan compatibility.
@@ -67,8 +74,9 @@ These results do not establish full ITU/EBU compliance or listening acceptance.
 Rust tests and external metering/SRC gates provide separate implementation
 evidence. The [production delivery report](production-delivery.md) records the
 installed source/retained-plan, selection, publication, and failed-check audio
-retention boundary. Core Audio obligations, grammar, generic syntax-tree schema,
-and performance-plan version numbers remain unchanged.
+retention boundary. Native production leaves Core Audio obligations, grammar,
+and the generic syntax-tree schema unchanged. Tempo ramps separately introduce
+performance-plan version 3.
 
 The implemented [project-entrypoint extension](project-entrypoint.md) adds
 conventional `main.maac` discovery for source commands and explicit default/song

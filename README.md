@@ -21,7 +21,12 @@ sounds and default discovery remain unchanged.
 Reusable [sound libraries](docs/instruments.md) add code-authored instruments,
 presets, sample-wise FM, and morphing wavetables. Import local source files with
 SHA-256 pins, instantiate their instruments, and automate the exposed controls.
-Compiled version 2 plans embed everything needed for offline rendering.
+Compiled plans embed everything needed for offline rendering.
+
+[Tempo ramps](docs/tempo-ramps.md) use the existing `linear` tempo shape to
+accelerate or slow down across score positions. Try
+`maac build examples/tempo-ramps.maac -o tempo-ramps.wav`.
+Ramp scores produce version 3 plans; step-only scores retain versions 1 and 2.
 
 The [project-entrypoint guide](docs/project-entrypoint.md) specifies conventional
 `main.maac` discovery and the explicit finite `--profile song` allowance for
@@ -121,6 +126,9 @@ instances, and wavetable source asset. Use `maac hash FILE` to obtain a source
 or wavetable pin after editing a dependency.
 
 ## Documentation
+
+The [design principles](docs/design-principles.md) define the boundary between
+the declarative musical core, reusable libraries, engine extensions, and tools.
 
 Read the [quick start](docs/quickstart.md), [authoring tutorial](docs/tutorial.md),
 [CLI and library reference](docs/reference.md), and [capability matrix](docs/capabilities.md).

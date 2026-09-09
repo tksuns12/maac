@@ -249,7 +249,16 @@ pub(crate) fn validate_source_with_instruments(
     document: &Document,
     instruments: &BTreeMap<String, InstrumentNodeDescriptor>,
 ) -> Result<SourceGraph, Diagnostics> {
+    validate_source_with_tempo_profile(document, instruments, false)
+}
+
+pub(crate) fn validate_source_with_tempo_profile(
+    document: &Document,
+    instruments: &BTreeMap<String, InstrumentNodeDescriptor>,
+    allow_ramps: bool,
+) -> Result<SourceGraph, Diagnostics> {
     let mut validator = Validator::new(document, instruments);
+    validator.allow_ramps = allow_ramps;
     validator.validate();
     if validator.diagnostics.has_errors() {
         return Err(validator.diagnostics);
@@ -270,6 +279,7 @@ pub fn validate(document: &Document) -> Result<SourceGraph, Diagnostics> {
 }
 
 struct Validator<'a> {
+    allow_ramps: bool,
     document: &'a Document,
     diagnostics: Diagnostics,
     project_id: Option<String>,
@@ -292,6 +302,7 @@ impl<'a> Validator<'a> {
     ) -> Self {
         Self {
             document,
+            allow_ramps: false,
             diagnostics: Diagnostics::new(),
             project_id: None,
             project_score: None,
@@ -869,7 +880,7 @@ impl<'a> Validator<'a> {
                     point_path.clone(),
                     vec![index.to_string()],
                 );
-            } else if shape == Some("linear") {
+            } else if shape == Some("linear") && !self.allow_ramps {
                 self.push(
                     DiagnosticCode::Capability,
                     "linear tempo ramps are outside the foundation capability profile",

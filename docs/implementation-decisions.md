@@ -80,6 +80,14 @@ exact rationals; resolved pitch is binary64 because tuning and cents operations
 generally produce irrational frequencies. This separates exact scheduling from
 the DSP numeric representation without claiming exact acoustic arithmetic.
 
+Nonconstant tempo ramps generally produce irrational physical times. Version 3
+therefore retains exact score positions, physical offsets, and the tempo map,
+without the legacy rational `on_seconds`/`off_seconds` fields. Bounded outward
+logarithm enclosures certify discrete frame ceilings; the DSP inverse clock uses
+floating point only after those transitions are prepared. Legacy step-only
+plans and public Rust types retain their contracts through additive versioned
+APIs. [Tempo ramps](tempo-ramps.md) records the numerical and compatibility rules.
+
 ## Single-input ports
 
 Only `core.sum/1` explicitly permits empty audio input. The foundation requires a

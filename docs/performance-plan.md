@@ -1,4 +1,4 @@
-# Performance-plan format, versions 1 and 2
+# Performance-plan format, versions 1, 2 and 3
 
 This JSON artifact is produced by the MaaC `maac compile` command and consumed
 by `maac render`. It is distinct from `syntax-tree.schema.json` and contains
@@ -8,23 +8,57 @@ dependencies.
 
 Version 1 retains the legacy processor contract. Version 2 adds the embedded
 instrument resources described below. Bundle compilation, including CLI source
-commands, emits version 2. The parsed-document Rust API still emits version 1
-for legacy-only documents. Both versions render without the original sources.
+commands, emits version 2 for step-only scores. The parsed-document Rust API
+still emits version 1 for legacy-only documents. Versioned compilation emits
+version 3 when a tempo point has a `linear` shape, including flat ramps.
+All three versions render without the original sources.
+
+## Version 3 timing
+
+Version 3 shares the graph, resource, expression, and output fields below.
+It supports both `step` and `linear` tempo segments. BPM is linear in score
+position, so physical duration uses a logarithmic integral. Positive BPM,
+strictly increasing point positions, and a final `step` shape are required.
+
+Events omit `on_seconds` and `off_seconds`; those fields are rejected. Exact
+`score_on_q`, `score_off_q`, onset/release offsets, and the tempo map determine
+physical timing. Import validation independently certifies every stored frame
+count, including the output duration and release clamp.
+
+Automation `at` is a tagged object: `{"kind":"score","q":"1/1"}` or
+`{"kind":"seconds","seconds":"1/2"}`. Score-clock lanes require a score
+anchor. Seconds-clock lanes accept either; a score anchor means `T(q)` followed
+by the curve's physical offsets. Instrument resources may be omitted for
+core-only graphs, but instrument nodes require embedded resources.
+
+The Rust types `PlanV3`, `ResolvedEventV3`, `AutomationV3`, and `VersionedPlan`
+are additive. `VersionedPlan` serializes directly with the top-level `version`
+field, without an enum wrapper. Use `compile_versioned`,
+`compile_bundle_versioned`, `load_plan_versioned`, `render_versioned`, and the
+versioned WAV export functions; caller-limited variants are available. Existing
+`Plan` types and compile/load/render functions keep their version 1/2 contracts
+and reject ramps. Older readers reject version 3 explicitly.
+
+Certification uses bounded interval arithmetic and returns `E_TIME_PRECISION`
+when it cannot prove a frame boundary, or `E_RESOURCE_LIMIT` when work is
+exhausted. See the [tempo contract](tempo-ramps.md) for timing, budgets, and
+delivery manifest version 2. The field descriptions below retain the version
+1/2 representation where version 3 differs as described above.
 
 ## Top-level fields
 
 | Field | Content |
 | --- | --- |
-| `version` | Performance-plan version, `1` or `2` |
+| `version` | Performance-plan version, `1`, `2` or `3` |
 | `output` | Score origin/end, explicit tail, sample rate, channel count, total frames and output port |
-| `tempo` | Ordered step-tempo points needed for exact score/physical conversion |
+| `tempo` | Ordered tempo points needed for score/physical conversion |
 | `events` | Resolved note occurrences, identities, source mappings, pitches, physical offsets and schedules |
 | `nodes` | Processor instances, structural configuration and numeric parameters |
 | `connections` | Named explicit audio edges |
 | `automation` | Global replacement lanes with resolved targets, clocks, anchors and points |
 | `regions` | Named non-rendering score intervals |
 | `source_mappings` | Additional source identity metadata |
-| `instruments` | Required version 2 resource payload; absent in version 1 |
+| `instruments` | Required version 2 resource payload; absent in version 1; version 3 requires it for instrument nodes |
 | `production` | Optional native-delivery settings and original-source execution identity; absent for legacy plans |
 
 Rationals serialize as canonical reduced strings such as `"0/1"`, `"1/3"`, or
@@ -39,8 +73,8 @@ the parsed document; equal-tempered frequency is a binary64 DSP input.
 the shape `{"node":"master","port":"out"}`. Foundation output supports
 48,000 Hz and one or two channels.
 
-`tempo.points` contains objects with `q`, `bpm`, and `shape`. Only `"step"` is
-executable in this format. `T(0)=0`; the first/last tempo extends beyond the map's
+`tempo.points` contains objects with `q`, `bpm`, and `shape`. Versions 1 and 2
+execute only `"step"`. `T(0)=0`; the first/last tempo extends beyond the map's
 endpoints. The reset origin is `T(score_start_q)`, including negative pickups.
 
 `total_frames` must equal the exact ceiling of
@@ -119,7 +153,7 @@ active voice frame, including release and silent voices. Automation and all four
 expression kinds share the 65,536 expanded-point limit and 4,096-bit rational bound.
 The public runtime `note_on` signature is unchanged.
 
-These optional note fields are additive in both plan versions. Absent fields
+These optional note fields are supported in all three plan versions. Absent fields
 are omitted, preserving previous JSON shapes; older readers reject fields they
 do not support. Rust `EventKind::Note` literals add `pitch_expression: None`,
 `gain_expression: None`, `timbre_expression: None`, and
@@ -141,11 +175,11 @@ frame. For example, `"params":{"gain":"7/10"}` multiplies each input channel
 by 0.7. There is no `level` alias, upper gain limit of 16, or implicit smoothing.
 It requires exactly one matching audio input. Missing or unsupported channels,
 unknown fields, invalid gain values, and nonfinite output fail explicitly.
-This implements the existing MaaC/1 §18.2 algorithm in both supported plan
-versions without a schema version bump; older renderers may reject the newly
+This implements the existing MaaC/1 §18.2 algorithm in all three plan
+versions. Its introduction required no schema version bump; older renderers may reject the newly
 supported `gain` kind.
 
-Version 2 also supports `{"kind":"instrument","program":"program_0",
+Versions 2 and 3 also support `{"kind":"instrument","program":"program_0",
 "voices":64,"channels":2}`. `program` identifies an embedded reusable program;
 `channels` must match its output. The node's parameter map contains public
 control values. Missing values use the program's control defaults. Compiled
@@ -172,7 +206,7 @@ Reset-rate parameters cannot be automated. Internal graph nodes are private.
 
 ## Native production and named deliveries
 
-Both versions additionally support these strict processor objects:
+All three versions additionally support these strict processor objects:
 
 ```json
 {"kind":"fx.eq/1","channels":2,"mode":"peak"}
@@ -221,15 +255,16 @@ render identity. The final-artifact manifest keeps artifact completion separate
 from requested-check status. Metering remains experimental; consult the
 [current external-gate evidence](production-metering-evidence.md).
 
-These are additive tags and an optional field, following the existing gain
-precedent. Plan versions remain 1 and 2; older readers may reject the new
-features. Existing plans omit `production` and keep their prior wire shape.
+These tags and the optional field were introduced without changing versions 1
+and 2, and are also supported in version 3. Older readers may reject the new
+features. Plans without production settings omit `production` and keep their prior wire shape.
 Rust `Plan` struct literals add `production: None` for that case. Native history,
 execution, and selected-port copy budgets are described in the
 [resource bounds](capabilities.md#production-resource-bounds).
 
 ## Version 2 instrument resources
 
+Version 3 reuses the instrument resource representation introduced in version 2.
 `instruments` has these fields, all validated even when unused by an instance:
 
 | Field | Content |
@@ -261,7 +296,7 @@ It never opens the recorded paths. Version 1 rejects instrument processors and
 non-null instrument resources; version 2 requires the resource payload.
 
 The [plucked-string implementation contract](plucked-string.md) defines an additive
-version 2 graph processor, `{"kind":"synth.pluck/1","seed":1831565813}`, with
+version 2/3 graph processor, `{"kind":"synth.pluck/1","seed":1831565813}`, with
 strict resolved-seed validation and separate delay-memory and weighted-work
 bounds. It does not change plan versions or serialize mutable string state.
 Its approved design is not a claim of current renderer support.
@@ -288,13 +323,13 @@ recorded in the [entrypoint delivery report](project-entrypoint-delivery.md).
 
 ## Timbre and pressure graph sources
 
-Version 2 instrument graphs additionally accept the exact processor object
+Version 2 and 3 instrument graphs additionally accept the exact processor object
 `{"kind":"synth.timbre/1"}` or `{"kind":"synth.pressure/1"}` with no
 additional fields. Each is voice-only,
 parameterless, inputless, and mono; its node `params` map is empty. All sources
 of each kind in one voice share that voice's evaluated value, zero when absent.
 Source `config` is rejected even when empty; empty `params` is allowed.
 Ordinary graph connections and sample-rate modulation retain their existing
-rules and costs. Instrument graphs still require version 2; this extension
-introduces no plan-version bump. Older readers reject the new processor or
+rules and costs. Instrument graphs require version 2 or 3; the timbre/pressure
+extension itself introduced no plan-version bump. Older readers reject the new processor or
 note field, and absent timbre/pressure fields remain omitted from existing plans.

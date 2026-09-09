@@ -7,6 +7,10 @@
 
 **Central rule:** Every render-affecting value must be an explicit value, a formally defined transformation, or a reference to an identified implementation or immutable asset. Subjective instructions are not executable language constructs.
 
+**Design guidance:** The [project design principles](docs/design-principles.md)
+guide future evolution of the musical core, libraries, engine extensions, and
+tools without changing this specification's existing conformance requirements.
+
 ---
 
 ## 1. Scope and terminology
@@ -44,7 +48,7 @@ An implementation states its profiles and its supported extension identifiers. A
 
 ### 1.3 Implemented local sound-library extension
 
-The normative [reusable instrument contract](docs/instruments.md) defines this repository's local-library extension: library documents, hash-pinned imports, instruments, presets, explicit WAV wavetables, and versioned `synth.* /1` voice/shared processors. It specifies the additional declaration and namespace rules, public control interfaces, synthesis behavior, and resource limits. These declarations opt into the extension; they do not change existing core processor behavior. The [capability matrix](docs/capabilities.md) identifies the implemented subset, and [performance-plan versions 1 and 2](docs/performance-plan.md) define the separate rendering interchange format.
+The normative [reusable instrument contract](docs/instruments.md) defines this repository's local-library extension: library documents, hash-pinned imports, instruments, presets, explicit WAV wavetables, and versioned `synth.* /1` voice/shared processors. It specifies the additional declaration and namespace rules, public control interfaces, synthesis behavior, and resource limits. These declarations opt into the extension; they do not change existing core processor behavior. The [capability matrix](docs/capabilities.md) identifies the implemented subset, and [performance-plan versions 1, 2 and 3](docs/performance-plan.md) define the separate rendering interchange format.
 
 The normative [plucked-string implementation contract](docs/plucked-string.md)
 adds the approved `synth.pluck/1` internally stateful string processor and the

@@ -1,0 +1,34 @@
+maac 1;
+
+// BPM rises and falls linearly with score position.
+project demo {
+  score = [0q, 8q];
+  tail = 1/4s;
+  rate = 48000Hz;
+  tempo = &clock;
+  meter = &metre;
+  output = &voice:out;
+}
+tempo clock {
+  points = [(0q, 90bpm, linear), (4q, 150bpm, linear), (8q, 90bpm, step)];
+}
+meter metre { points = [(0q, 4, 4)]; }
+node voice {
+  type = "core.sine/1";
+  params = { attack = 1/100s; release = 1/10s; level = 1/4; };
+}
+track melody { target = &voice:events; }
+pattern phrase {
+  length = 4q;
+  note a { at = 0q; dur = 3/4q; pitch = C4; }
+  note b { at = 1q; dur = 3/4q; pitch = E4; }
+  note c { at = 2q; dur = 3/4q; pitch = G4; }
+  note d { at = 3q; dur = 3/4q; pitch = C5; }
+}
+place first { pattern = &phrase; track = &melody; at = 0q; }
+place second { pattern = &phrase; track = &melody; at = 4q; }
+curve dynamics {
+  clock = score;
+  points = [(0q, 1/5, linear), (4q, 1/3, linear), (8q, 1/5, step)];
+}
+automation swell { target = &voice.params.level; curve = &dynamics; at = 0q; }

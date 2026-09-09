@@ -269,7 +269,11 @@ impl fmt::Display for PlanError {
 
 impl std::error::Error for PlanError {}
 
-fn err(code: &'static str, path: impl Into<String>, message: impl Into<String>) -> PlanError {
+pub(crate) fn err(
+    code: &'static str,
+    path: impl Into<String>,
+    message: impl Into<String>,
+) -> PlanError {
     PlanError::new(code, path, message)
 }
 
@@ -277,7 +281,7 @@ fn schema_error(message: impl Into<String>) -> PlanError {
     PlanError::new("E_SYNTAX", "", message)
 }
 
-fn serde_error_code(message: &str) -> &'static str {
+pub(crate) fn serde_error_code(message: &str) -> &'static str {
     if message.contains("E_DUPLICATE_FIELD") || message.contains("duplicate field") {
         "E_DUPLICATE_FIELD"
     } else if message.contains("unknown field") {
@@ -881,7 +885,17 @@ pub struct PitchExpression {
 impl ExpressionClock {
     /// Exact clock coordinate; release frames hold the effective gate endpoint.
     /// Requires a validated note and expression.
+    #[cfg(test)]
     pub(crate) fn coordinate_at(&self, event: &ResolvedEvent, frame: u64, rate: u32) -> Rational {
+        self.coordinate_for_view(&EventView::from(event), frame, rate)
+    }
+
+    pub(crate) fn coordinate_for_view(
+        &self,
+        event: &EventView<'_>,
+        frame: u64,
+        rate: u32,
+    ) -> Rational {
         let gate = event.off_frame.expect("validated note off") - event.on_frame;
         let elapsed = frame.saturating_sub(event.on_frame).min(gate);
         match self {
@@ -889,17 +903,13 @@ impl ExpressionClock {
             ExpressionClock::Normalized => Rational::new(elapsed.into(), gate.into()),
             ExpressionClock::Score => {
                 Rational::new(elapsed.into(), gate.into())
-                    * (event.score_off_q.as_ref().expect("validated score off") - &event.score_on_q)
+                    * (event.score_off_q.as_ref().expect("validated score off") - event.score_on_q)
             }
         }
     }
 }
 
 impl PitchExpression {
-    pub(crate) fn coordinate_at(&self, event: &ResolvedEvent, frame: u64, rate: u32) -> Rational {
-        self.clock.coordinate_at(event, frame, rate)
-    }
-
     /// Right-continuous step/linear evaluation with exact knot selection.
     /// Requires validated points; arithmetic stays exact until cents conversion.
     pub(crate) fn cents_at(&self, coordinate: &Rational) -> Rational {
@@ -916,7 +926,7 @@ impl PitchExpression {
 
     fn validate_for_note(
         &self,
-        event: &ResolvedEvent,
+        event: &EventView<'_>,
         base_hz: f64,
         rate: u32,
         limits: &PlanLimits,
@@ -962,7 +972,11 @@ impl PitchExpression {
                 "final pitch point must be step and normalized curves must end at one",
             ));
         }
-        let end = self.coordinate_at(event, event.off_frame.expect("validated note off"), rate);
+        let end = self.clock.coordinate_for_view(
+            event,
+            event.off_frame.expect("validated note off"),
+            rate,
+        );
         // Linear cents and their exponential frequency transform are monotone on
         // each segment. Knots in the domain plus its endpoint bound every value;
         // future knots only contribute through interpolation at the endpoint.
@@ -1547,7 +1561,248 @@ impl Plan {
         self.validate_with_limits(&PlanLimits::default())
     }
 
+    pub(crate) fn view(&self) -> PlanView<'_> {
+        PlanView {
+            version: self.version,
+            output: &self.output,
+            tempo: &self.tempo,
+            events: EventSlice::Legacy(&self.events),
+            nodes: &self.nodes,
+            connections: &self.connections,
+            automation: AutomationSlice::Legacy(&self.automation),
+            regions: &self.regions,
+            source_mappings: &self.source_mappings,
+            instruments: self.instruments.as_ref(),
+            production: self.production.as_ref(),
+        }
+    }
     pub fn validate_with_limits(&self, limits: &PlanLimits) -> Result<(), PlanError> {
+        if self.version == 3 {
+            return Err(err("E_VERSION", "version", "version 3 requires PlanV3"));
+        }
+        self.view().validate_with_limits(limits)
+    }
+    /// Resolve an explicit project-level audio output without pruning graph context.
+    pub fn audio_output_channels(&self, output: &PortRef) -> Result<u8, PlanError> {
+        self.view().audio_output_channels(output)
+    }
+    /// Look up a reusable graph program embedded in this standalone plan.
+    pub fn instrument_program(&self, id: &str) -> Option<&InstrumentProgram> {
+        self.view().instrument_program(id)
+    }
+    /// Return the processor metadata for an instrument instance's public
+    /// control. Core processors and unknown controls return `None`.
+    pub fn instrument_control_spec(&self, node: &Node, control: &str) -> Option<ParameterSpec> {
+        self.view().instrument_control_spec(node, control)
+    }
+    /// Resolve all public instrument controls, filling omitted instance values
+    /// from their program defaults. The node is validated as part of lookup.
+    pub fn resolved_node_params(
+        &self,
+        node: &Node,
+    ) -> Result<BTreeMap<String, Rational>, PlanError> {
+        self.view().resolved_node_params(node)
+    }
+}
+
+/// Borrowed common validation boundary for standalone plan versions.
+#[derive(Clone, Copy)]
+pub(crate) struct PlanView<'a> {
+    pub(crate) version: u32,
+    pub(crate) output: &'a OutputSettings,
+    pub(crate) tempo: &'a TempoMap,
+    pub(crate) events: EventSlice<'a>,
+    pub(crate) nodes: &'a [Node],
+    pub(crate) connections: &'a [Connection],
+    pub(crate) automation: AutomationSlice<'a>,
+    pub(crate) regions: &'a [Region],
+    pub(crate) source_mappings: &'a [SourceMapping],
+    pub(crate) instruments: Option<&'a InstrumentResources>,
+    pub(crate) production: Option<&'a crate::production_data::ProductionSettings>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum EventSlice<'a> {
+    Legacy(&'a [ResolvedEvent]),
+    V3(&'a [crate::plan_v3::ResolvedEventV3]),
+}
+#[derive(Clone, Copy)]
+pub(crate) enum AutomationSlice<'a> {
+    Legacy(&'a [Automation]),
+    V3(&'a [crate::plan_v3::AutomationV3]),
+}
+#[derive(Clone, Copy)]
+pub(crate) enum EventTimingView<'a> {
+    ExactScore,
+    Legacy {
+        on_seconds: &'a Rational,
+        off_seconds: &'a Option<Rational>,
+    },
+}
+#[derive(Clone, Copy)]
+pub(crate) struct EventView<'a> {
+    pub(crate) address: &'a String,
+    pub(crate) source: &'a SourceMapping,
+    pub(crate) target: &'a EventTarget,
+    pub(crate) kind: &'a EventKind,
+    pub(crate) score_on_q: &'a Rational,
+    pub(crate) score_off_q: &'a Option<Rational>,
+    pub(crate) onset_offset_seconds: &'a Rational,
+    pub(crate) release_offset_seconds: &'a Rational,
+    pub(crate) timing: EventTimingView<'a>,
+    pub(crate) release_velocity: f64,
+    pub(crate) on_frame: u64,
+    pub(crate) off_frame: Option<u64>,
+    #[allow(dead_code)] // Retained for versioned scheduling consumers of the view.
+    pub(crate) order: i32,
+}
+impl<'a> From<&'a ResolvedEvent> for EventView<'a> {
+    fn from(event: &'a ResolvedEvent) -> Self {
+        Self {
+            address: &event.address,
+            source: &event.source,
+            target: &event.target,
+            kind: &event.kind,
+            score_on_q: &event.score_on_q,
+            score_off_q: &event.score_off_q,
+            onset_offset_seconds: &event.onset_offset_seconds,
+            release_offset_seconds: &event.release_offset_seconds,
+            timing: EventTimingView::Legacy {
+                on_seconds: &event.on_seconds,
+                off_seconds: &event.off_seconds,
+            },
+            release_velocity: event.release_velocity,
+            on_frame: event.on_frame,
+            off_frame: event.off_frame,
+            order: event.order,
+        }
+    }
+}
+#[derive(Clone, Copy)]
+pub(crate) enum AutomationAnchorView<'a> {
+    Score(&'a Rational),
+    Seconds(&'a Rational),
+}
+#[derive(Clone, Copy)]
+pub(crate) struct AutomationView<'a> {
+    pub(crate) id: &'a String,
+    pub(crate) target: &'a PortRef,
+    pub(crate) clock: AutomationClock,
+    pub(crate) anchor: AutomationAnchorView<'a>,
+    pub(crate) points: &'a [AutomationPoint],
+}
+impl<'a> From<&'a Automation> for AutomationView<'a> {
+    fn from(lane: &'a Automation) -> Self {
+        Self {
+            id: &lane.id,
+            target: &lane.target,
+            clock: lane.clock,
+            anchor: match lane.clock {
+                AutomationClock::Score => AutomationAnchorView::Score(&lane.at),
+                AutomationClock::Seconds => AutomationAnchorView::Seconds(&lane.at),
+            },
+            points: &lane.points,
+        }
+    }
+}
+impl<'a> From<&'a crate::plan_v3::ResolvedEventV3> for EventView<'a> {
+    fn from(event: &'a crate::plan_v3::ResolvedEventV3) -> Self {
+        Self {
+            address: &event.address,
+            source: &event.source,
+            target: &event.target,
+            kind: &event.kind,
+            score_on_q: &event.score_on_q,
+            score_off_q: &event.score_off_q,
+            onset_offset_seconds: &event.onset_offset_seconds,
+            release_offset_seconds: &event.release_offset_seconds,
+            timing: EventTimingView::ExactScore,
+            release_velocity: event.release_velocity,
+            on_frame: event.on_frame,
+            off_frame: event.off_frame,
+            order: event.order,
+        }
+    }
+}
+impl<'a> From<&'a crate::plan_v3::AutomationV3> for AutomationView<'a> {
+    fn from(lane: &'a crate::plan_v3::AutomationV3) -> Self {
+        use crate::plan_v3::AutomationAnchor;
+        Self {
+            id: &lane.id,
+            target: &lane.target,
+            clock: lane.clock,
+            points: &lane.points,
+            anchor: match &lane.at {
+                AutomationAnchor::Score { q } => AutomationAnchorView::Score(q),
+                AutomationAnchor::Seconds { seconds } => AutomationAnchorView::Seconds(seconds),
+            },
+        }
+    }
+}
+impl<'a> PlanView<'a> {
+    pub(crate) fn events(&self) -> Box<dyn ExactSizeIterator<Item = EventView<'a>> + 'a> {
+        match self.events {
+            EventSlice::Legacy(e) => Box::new(e.iter().map(EventView::from)),
+            EventSlice::V3(e) => Box::new(e.iter().map(EventView::from)),
+        }
+    }
+    pub(crate) fn automations(&self) -> Box<dyn ExactSizeIterator<Item = AutomationView<'a>> + 'a> {
+        match self.automation {
+            AutomationSlice::Legacy(a) => Box::new(a.iter().map(AutomationView::from)),
+            AutomationSlice::V3(a) => Box::new(a.iter().map(AutomationView::from)),
+        }
+    }
+    pub fn validate_with_limits(&self, limits: &PlanLimits) -> Result<(), PlanError> {
+        self.validate_and_timing(limits).map(|_| ())
+    }
+
+    pub(crate) fn validate_and_timing(
+        &self,
+        limits: &PlanLimits,
+    ) -> Result<Option<crate::plan_v3::TimingContext>, PlanError> {
+        if self.version != 3 {
+            self.validate_with_optional_timing(limits, None)?;
+            return Ok(None);
+        }
+        let limits = limits.bounded();
+        self.preflight_timing(&limits)?;
+        let timing =
+            crate::plan_v3::TimingContext::new_with_limits(self.tempo, self.output, &limits)?;
+        self.validate_with_timing(&limits, &timing)?;
+        Ok(Some(timing))
+    }
+
+    pub(crate) fn validate_with_timing(
+        &self,
+        limits: &PlanLimits,
+        timing: &crate::plan_v3::TimingContext,
+    ) -> Result<(), PlanError> {
+        if self.version != 3 {
+            return Err(err(
+                "E_VERSION",
+                "version",
+                "a ramp timing context requires plan version 3",
+            ));
+        }
+        self.validate_with_optional_timing(limits, Some(timing))
+    }
+
+    fn validate_with_optional_timing(
+        &self,
+        limits: &PlanLimits,
+        timing: Option<&crate::plan_v3::TimingContext>,
+    ) -> Result<(), PlanError> {
+        if !matches!(
+            (&self.events, &self.automation, self.version),
+            (EventSlice::Legacy(_), AutomationSlice::Legacy(_), 1 | 2)
+                | (EventSlice::V3(_), AutomationSlice::V3(_), 3)
+        ) {
+            return Err(err(
+                "E_VERSION",
+                "version",
+                "plan version and record schema disagree",
+            ));
+        }
         let limits = limits.bounded();
         match self.version {
             LEGACY_PLAN_VERSION => {
@@ -1561,6 +1816,20 @@ impl Plan {
                         "E_VERSION",
                         "version",
                         "version 1 plans cannot contain version 2 instrument resources",
+                    ));
+                }
+            }
+            3 => {
+                if self.instruments.is_none()
+                    && self
+                        .nodes
+                        .iter()
+                        .any(|n| matches!(n.processor, Processor::Instrument { .. }))
+                {
+                    return Err(err(
+                        "E_REFERENCE",
+                        "instruments",
+                        "instrument nodes require embedded resources",
                     ));
                 }
             }
@@ -1581,7 +1850,11 @@ impl Plan {
                 ));
             }
         }
-        self.validate_counts(&limits)?;
+        if self.version == 3 {
+            self.preflight_timing(&limits)?;
+        } else {
+            self.validate_counts(&limits)?;
+        }
         if let Some(resources) = &self.instruments {
             resources.validate()?;
         }
@@ -1592,15 +1865,15 @@ impl Plan {
         self.validate_tempo(&limits)?;
         self.validate_global_ids()?;
         self.validate_nodes(&limits)?;
-        self.validate_output(&limits)?;
-        self.validate_automation(&limits)?;
+        self.validate_output(&limits, timing)?;
+        self.validate_automation(&limits, timing)?;
         self.validate_connections(&limits)?;
-        self.validate_events(&limits)?;
+        self.validate_events(&limits, timing)?;
         self.validate_regions(&limits)?;
         self.validate_source_mappings(&limits)?;
         self.validate_instrument_work(&limits)?;
         if let Some(production) = &self.production {
-            production.validate_with_limits(self, &limits)?;
+            production.validate_for_view(self, &limits)?;
         }
         Ok(())
     }
@@ -1626,9 +1899,8 @@ impl Plan {
     }
 
     /// Look up a reusable graph program embedded in this standalone plan.
-    pub fn instrument_program(&self, id: &str) -> Option<&InstrumentProgram> {
-        self.instruments
-            .as_ref()?
+    pub fn instrument_program(&self, id: &str) -> Option<&'a InstrumentProgram> {
+        self.instruments?
             .programs
             .iter()
             .find(|program| program.id == id)
@@ -1678,6 +1950,64 @@ impl Plan {
         Ok(params)
     }
 
+    fn timing_work(&self) -> u64 {
+        let knots = self
+            .automations()
+            .fold(0u64, |n, a| n.saturating_add(a.points.len() as u64));
+        // Conservative segment traversal units; each certified operation additionally
+        // has the tempo evaluator's fixed refinement and logarithm-series caps.
+
+        (self.tempo.points.len() as u64)
+            .saturating_add(1)
+            .saturating_mul(
+                8u64.saturating_add(8u64.saturating_mul(self.events().len() as u64))
+                    .saturating_add(
+                        3u64.saturating_mul(
+                            (self.tempo.points.len() as u64)
+                                .saturating_add(self.automations().len() as u64)
+                                .saturating_add(knots),
+                        ),
+                    ),
+            )
+    }
+
+    pub(crate) fn preflight_timing(&self, limits: &PlanLimits) -> Result<(), PlanError> {
+        self.validate_counts(limits)?;
+        for (value, path) in [
+            (&self.output.score_start_q, "output.score_start_q"),
+            (&self.output.score_end_q, "output.score_end_q"),
+            (&self.output.tail_seconds, "output.tail_seconds"),
+        ] {
+            rational_bit_limit(value, limits, path)?;
+        }
+        if self.output.score_start_q >= self.output.score_end_q || self.output.tail_seconds < zero()
+        {
+            return Err(err("E_INTERVAL", "output", "invalid score span or tail"));
+        }
+        for event in self.events() {
+            for value in [
+                event.score_on_q,
+                event.onset_offset_seconds,
+                event.release_offset_seconds,
+            ] {
+                rational_bit_limit(value, limits, "events")?;
+            }
+            if let Some(off) = event.score_off_q {
+                rational_bit_limit(off, limits, "events.score_off_q")?;
+            }
+        }
+        for lane in self.automations() {
+            let at = match lane.anchor {
+                AutomationAnchorView::Score(q) | AutomationAnchorView::Seconds(q) => q,
+            };
+            rational_bit_limit(at, limits, "automation.at")?;
+            for point in lane.points {
+                rational_bit_limit(&point.position, limits, "automation.points.position")?;
+                rational_bit_limit(&point.value, limits, "automation.points.value")?;
+            }
+        }
+        self.validate_tempo(limits)
+    }
     fn validate_counts(&self, limits: &PlanLimits) -> Result<(), PlanError> {
         let production_usage = self
             .production
@@ -1685,8 +2015,7 @@ impl Plan {
             .map(|settings| settings.resource_usage(limits))
             .transpose()?;
         let (expression_count, expression_points) =
-            self.events
-                .iter()
+            self.events()
                 .fold((0usize, 0usize), |(count, points), event| {
                     match &event.kind {
                         EventKind::Note {
@@ -1719,8 +2048,7 @@ impl Plan {
                     }
                 });
         let automation_points = self
-            .automation
-            .iter()
+            .automations()
             .map(|lane| lane.points.len())
             .fold(expression_points, usize::saturating_add);
         let parameter_count = self
@@ -1729,8 +2057,7 @@ impl Plan {
             .map(|node| node.params.len())
             .fold(0usize, usize::saturating_add);
         let span_count = self
-            .events
-            .iter()
+            .events()
             .filter(|event| event.source.span.is_some())
             .count()
             .saturating_add(
@@ -1740,8 +2067,7 @@ impl Plan {
                     .count(),
             );
         let path_component_count = self
-            .events
-            .iter()
+            .events()
             .map(|event| event.source.path.len())
             .fold(0usize, usize::saturating_add)
             .saturating_add(
@@ -1751,8 +2077,7 @@ impl Plan {
                     .fold(0usize, usize::saturating_add),
             );
         let binary_payload_bytes = self
-            .events
-            .iter()
+            .events()
             .filter_map(|event| match &event.kind {
                 EventKind::Message { bytes } => Some(bytes.len()),
                 _ => None,
@@ -1797,7 +2122,7 @@ impl Plan {
             }
 
             let mut pluck_cells = 0usize;
-            for node in &self.nodes {
+            for node in self.nodes {
                 let Processor::Instrument {
                     program, voices, ..
                 } = &node.processor
@@ -1934,7 +2259,7 @@ impl Plan {
                 "event payload bytes exceed the plan limit",
             ));
         }
-        if self.events.len() > limits.max_events
+        if self.events().len() > limits.max_events
             || self.nodes.len() > limits.max_nodes
             || self.connections.len() > limits.max_connections
             || automation_points > limits.max_automation_points
@@ -1952,8 +2277,8 @@ impl Plan {
             .nodes
             .len()
             .saturating_add(self.connections.len())
-            .saturating_add(self.events.len())
-            .saturating_add(self.automation.len())
+            .saturating_add(self.events().len())
+            .saturating_add(self.automations().len())
             .saturating_add(self.regions.len())
             .saturating_add(self.source_mappings.len())
             .saturating_add(self.tempo.points.len())
@@ -1978,8 +2303,8 @@ impl Plan {
             .nodes
             .len()
             .saturating_add(self.connections.len())
-            .saturating_add(self.events.len())
-            .saturating_add(self.automation.len())
+            .saturating_add(self.events().len())
+            .saturating_add(self.automations().len())
             .saturating_add(automation_points)
             .saturating_add(expression_count)
             .saturating_add(self.regions.len())
@@ -1990,7 +2315,12 @@ impl Plan {
             .saturating_add(path_component_count)
             .saturating_add(resource_objects)
             .saturating_add(production_usage.as_ref().map_or(0, |usage| usage.objects));
-        if work > limits.max_work as usize {
+        let timing_work = if self.version == 3 {
+            self.timing_work()
+        } else {
+            0
+        };
+        if (work as u64).saturating_add(timing_work) > limits.max_work {
             return Err(err(
                 "E_RESOURCE_LIMIT",
                 "plan",
@@ -2012,7 +2342,7 @@ impl Plan {
             string_bytes = string_bytes.saturating_add(value.len());
             Ok(())
         };
-        for node in &self.nodes {
+        for node in self.nodes {
             count_string(&node.id, format!("nodes.{}", node.id))?;
             if let Processor::Instrument { program, .. } = &node.processor {
                 count_string(program, format!("nodes.{}.processor.program", node.id))?;
@@ -2021,15 +2351,15 @@ impl Plan {
                 count_string(key, format!("nodes.{}.params", node.id))?;
             }
         }
-        for connection in &self.connections {
+        for connection in self.connections {
             count_string(&connection.id, format!("connections.{}", connection.id))?;
             count_string(&connection.from.node, "connections.from.node".into())?;
             count_string(&connection.from.port, "connections.from.port".into())?;
             count_string(&connection.to.node, "connections.to.node".into())?;
             count_string(&connection.to.port, "connections.to.port".into())?;
         }
-        for event in &self.events {
-            count_string(&event.address, "events.address".into())?;
+        for event in self.events() {
+            count_string(event.address, "events.address".into())?;
             count_string(&event.source.object, "events.source.object".into())?;
             for component in &event.source.path {
                 count_string(component, "events.source.path".into())?;
@@ -2049,12 +2379,12 @@ impl Plan {
             count_string(&event.target.node, "events.target.node".into())?;
             count_string(&event.target.port, "events.target.port".into())?;
         }
-        for lane in &self.automation {
-            count_string(&lane.id, format!("automation.{}", lane.id))?;
+        for lane in self.automations() {
+            count_string(lane.id, format!("automation.{}", lane.id))?;
             count_string(&lane.target.node, "automation.target.node".into())?;
             count_string(&lane.target.port, "automation.target.port".into())?;
         }
-        for mapping in &self.source_mappings {
+        for mapping in self.source_mappings {
             count_string(&mapping.object, "source_mappings.object".into())?;
             for component in &mapping.path {
                 count_string(component, "source_mappings.path".into())?;
@@ -2069,7 +2399,7 @@ impl Plan {
                 }
             }
         }
-        for region in &self.regions {
+        for region in self.regions {
             count_string(&region.id, format!("regions.{}", region.id))?;
             if let Some(label) = &region.label {
                 count_string(label, format!("regions.{}.label", region.id))?;
@@ -2183,7 +2513,11 @@ impl Plan {
         Ok(())
     }
 
-    fn validate_output(&self, limits: &PlanLimits) -> Result<(), PlanError> {
+    fn validate_output(
+        &self,
+        limits: &PlanLimits,
+        timing: Option<&crate::plan_v3::TimingContext>,
+    ) -> Result<(), PlanError> {
         let output = &self.output;
         validate_rational_fields(
             [
@@ -2264,6 +2598,9 @@ impl Plan {
                 "output port channels do not match output settings",
             ));
         }
+        if let Some(timing) = timing {
+            return timing.validate_output(output, limits);
+        }
         let end_seconds = self.tempo.seconds_at(&output.score_end_q)?;
         let start_seconds = self.tempo.seconds_at(&output.score_start_q)?;
         let duration = end_seconds - start_seconds + output.tail_seconds.clone();
@@ -2302,7 +2639,7 @@ impl Plan {
 
     fn validate_global_ids(&self) -> Result<(), PlanError> {
         let mut ids = BTreeSet::new();
-        for node in &self.nodes {
+        for node in self.nodes {
             if !ids.insert(node.id.clone()) {
                 return Err(err(
                     "E_DUPLICATE_ID",
@@ -2311,7 +2648,7 @@ impl Plan {
                 ));
             }
         }
-        for connection in &self.connections {
+        for connection in self.connections {
             if !ids.insert(connection.id.clone()) {
                 return Err(err(
                     "E_DUPLICATE_ID",
@@ -2320,7 +2657,7 @@ impl Plan {
                 ));
             }
         }
-        for lane in &self.automation {
+        for lane in self.automations() {
             if !ids.insert(lane.id.clone()) {
                 return Err(err(
                     "E_DUPLICATE_ID",
@@ -2329,7 +2666,7 @@ impl Plan {
                 ));
             }
         }
-        for region in &self.regions {
+        for region in self.regions {
             if !ids.insert(region.id.clone()) {
                 return Err(err(
                     "E_DUPLICATE_ID",
@@ -2369,7 +2706,9 @@ impl Plan {
                     ));
                 }
             }
-            if point.shape != Interpolation::Step {
+            if point.shape != Interpolation::Step
+                && (self.version != 3 || point.shape != Interpolation::Linear)
+            {
                 return Err(err(
                     "E_CAPABILITY",
                     format!("tempo.points[{index}].shape"),
@@ -2378,13 +2717,26 @@ impl Plan {
             }
             previous = Some(&point.q);
         }
-        self.tempo.checked()?;
+        if self.version != 3 {
+            self.tempo.checked()?;
+        } else if self
+            .tempo
+            .points
+            .last()
+            .is_some_and(|p| p.shape != Interpolation::Step)
+        {
+            return Err(err(
+                "E_TEMPO",
+                "tempo.points",
+                "last tempo point must be step",
+            ));
+        }
         Ok(())
     }
 
     fn validate_nodes(&self, limits: &PlanLimits) -> Result<(), PlanError> {
         let mut ids = BTreeSet::new();
-        for node in &self.nodes {
+        for node in self.nodes {
             validate_identifier_limit(&node.id, "nodes.id", limits.max_id_bytes)?;
             if !ids.insert(node.id.clone()) {
                 return Err(err(
@@ -2562,7 +2914,7 @@ impl Plan {
         let mut connection_ids = BTreeSet::new();
         let mut destinations: HashMap<(String, String), usize> = HashMap::new();
         let mut edges: Vec<(String, String)> = Vec::new();
-        for connection in &self.connections {
+        for connection in self.connections {
             validate_identifier_limit(&connection.id, "connections.id", limits.max_id_bytes)?;
             if !connection_ids.insert(connection.id.clone()) {
                 return Err(err(
@@ -2623,7 +2975,7 @@ impl Plan {
                 edges.push((connection.from.node.clone(), connection.to.node.clone()));
             }
         }
-        for node in &self.nodes {
+        for node in self.nodes {
             let requires_audio_input = matches!(
                 node.processor,
                 Processor::OnePole { .. }
@@ -2643,7 +2995,7 @@ impl Plan {
                 ));
             }
         }
-        for node in &self.nodes {
+        for node in self.nodes {
             if matches!(
                 node.processor,
                 Processor::Compressor {
@@ -2659,21 +3011,31 @@ impl Plan {
                 ));
             }
         }
-        detect_cycle(&self.nodes, &edges)
+        detect_cycle(self.nodes, &edges)
     }
 
-    fn validate_events(&self, limits: &PlanLimits) -> Result<(), PlanError> {
+    fn validate_events(
+        &self,
+        limits: &PlanLimits,
+        timing: Option<&crate::plan_v3::TimingContext>,
+    ) -> Result<(), PlanError> {
         let node_by_id: HashMap<&str, &Node> = self
             .nodes
             .iter()
             .map(|node| (node.id.as_str(), node))
             .collect();
-        let origin_seconds = self.tempo.seconds_at(&self.output.score_start_q)?;
-        let end_seconds = self.tempo.seconds_at(&self.output.score_end_q)?;
+        let legacy_times = if timing.is_none() {
+            Some((
+                self.tempo.seconds_at(&self.output.score_start_q)?,
+                self.tempo.seconds_at(&self.output.score_end_q)?,
+            ))
+        } else {
+            None
+        };
         let mut addresses = BTreeSet::new();
         let mut voice_work = 0u64;
-        for (index, event) in self.events.iter().enumerate() {
-            validate_event_address(&event.address, format!("events[{index}].address"), limits)?;
+        for (index, event) in self.events().enumerate() {
+            validate_event_address(event.address, format!("events[{index}].address"), limits)?;
             if !addresses.insert(event.address.clone()) {
                 return Err(err(
                     "E_DUPLICATE_ID",
@@ -2696,12 +3058,12 @@ impl Plan {
                 ));
             }
             rational_bit_limit(
-                &event.score_on_q,
+                event.score_on_q,
                 limits,
                 format!("events[{index}].score_on_q"),
             )?;
-            if event.score_on_q < self.output.score_start_q
-                || event.score_on_q >= self.output.score_end_q
+            if *event.score_on_q < self.output.score_start_q
+                || *event.score_on_q >= self.output.score_end_q
             {
                 return Err(err(
                     "E_INTERVAL",
@@ -2711,7 +3073,7 @@ impl Plan {
             }
             if let Some(score_off) = &event.score_off_q {
                 rational_bit_limit(score_off, limits, format!("events[{index}].score_off_q"))?;
-                if *score_off <= event.score_on_q {
+                if score_off <= event.score_on_q {
                     return Err(err(
                         "E_INTERVAL",
                         format!("events[{index}].score_off_q"),
@@ -2720,123 +3082,155 @@ impl Plan {
                 }
             }
             rational_bit_limit(
-                &event.onset_offset_seconds,
+                event.onset_offset_seconds,
                 limits,
                 format!("events[{index}].onset_offset_seconds"),
             )?;
             rational_bit_limit(
-                &event.release_offset_seconds,
+                event.release_offset_seconds,
                 limits,
                 format!("events[{index}].release_offset_seconds"),
             )?;
-            rational_bit_limit(
-                &event.on_seconds,
-                limits,
-                format!("events[{index}].on_seconds"),
-            )?;
-            let expected_on_seconds =
-                self.tempo.seconds_at(&event.score_on_q)? + event.onset_offset_seconds.clone();
-            if event.on_seconds != expected_on_seconds {
-                return Err(err(
-                    "E_INTERVAL",
-                    format!("events[{index}].on_seconds"),
-                    "resolved onset does not match score time plus physical offset",
-                ));
-            }
-            if event.on_seconds >= end_seconds {
-                return Err(err(
-                    "E_INTERVAL",
-                    format!("events[{index}].on_seconds"),
-                    "resolved event onset must occur before score end",
-                ));
-            }
-            let on_delta = event.on_seconds.clone() - origin_seconds.clone();
-            let expected_on = rational_ceil_nonnegative(
-                &(on_delta.clone() * BigInt::from(self.output.sample_rate_hz)),
-            )
-            .ok_or_else(|| {
-                err(
-                    "E_INTERVAL",
-                    format!("events[{index}].on_seconds"),
-                    "event starts before reset origin",
-                )
-            })?;
-            if expected_on != event.on_frame {
-                return Err(err(
-                    "E_INTERVAL",
-                    format!("events[{index}].on_frame"),
-                    "event frame is not the exact ceiling of physical time",
-                ));
-            }
-            if event.on_frame >= self.output.total_frames {
-                return Err(err(
-                    "E_INTERVAL",
-                    format!("events[{index}].on_frame"),
-                    "event onset quantizes outside the rendered frame range",
-                ));
-            }
-            if let Some(off_seconds) = &event.off_seconds {
-                rational_bit_limit(off_seconds, limits, format!("events[{index}].off_seconds"))?;
-                // Check the field's representation before deriving a frame
-                // delta.  In-memory callers can construct an arbitrarily
-                // wide BigRational even though imported values are bounded
-                // by the wire deserializer.
-                let off_delta = off_seconds.clone() - origin_seconds.clone();
-                let score_off = event.score_off_q.as_ref().ok_or_else(|| {
-                    err(
-                        "E_INTERVAL",
-                        format!("events[{index}].score_off_q"),
-                        "note off time is required",
+            let has_off_time = match event.timing {
+                EventTimingView::Legacy {
+                    on_seconds,
+                    off_seconds,
+                } => {
+                    let (origin_seconds, end_seconds) =
+                        legacy_times.as_ref().expect("legacy timing");
+                    rational_bit_limit(on_seconds, limits, format!("events[{index}].on_seconds"))?;
+                    let expected_on_seconds = self.tempo.seconds_at(event.score_on_q)?
+                        + event.onset_offset_seconds.clone();
+                    if *on_seconds != expected_on_seconds {
+                        return Err(err(
+                            "E_INTERVAL",
+                            format!("events[{index}].on_seconds"),
+                            "resolved onset does not match score time plus physical offset",
+                        ));
+                    }
+                    if on_seconds >= end_seconds {
+                        return Err(err(
+                            "E_INTERVAL",
+                            format!("events[{index}].on_seconds"),
+                            "resolved event onset must occur before score end",
+                        ));
+                    }
+                    let on_delta = on_seconds.clone() - origin_seconds.clone();
+                    let expected_on = rational_ceil_nonnegative(
+                        &(on_delta.clone() * BigInt::from(self.output.sample_rate_hz)),
                     )
-                })?;
-                let expected_off_seconds = (self.tempo.seconds_at(score_off)?
-                    + event.release_offset_seconds.clone())
-                .min(end_seconds.clone());
-                if *off_seconds != expected_off_seconds {
-                    return Err(err(
-                        "E_INTERVAL",
-                        format!("events[{index}].off_seconds"),
-                        "resolved off time does not match score time plus physical offset",
-                    ));
+                    .ok_or_else(|| {
+                        err(
+                            "E_INTERVAL",
+                            format!("events[{index}].on_seconds"),
+                            "event starts before reset origin",
+                        )
+                    })?;
+                    if expected_on != event.on_frame {
+                        return Err(err(
+                            "E_INTERVAL",
+                            format!("events[{index}].on_frame"),
+                            "event frame is not the exact ceiling of physical time",
+                        ));
+                    }
+                    if event.on_frame >= self.output.total_frames {
+                        return Err(err(
+                            "E_INTERVAL",
+                            format!("events[{index}].on_frame"),
+                            "event onset quantizes outside the rendered frame range",
+                        ));
+                    }
+                    if let Some(off_seconds) = &off_seconds {
+                        rational_bit_limit(
+                            off_seconds,
+                            limits,
+                            format!("events[{index}].off_seconds"),
+                        )?;
+                        // Check the field's representation before deriving a frame
+                        // delta.  In-memory callers can construct an arbitrarily
+                        // wide BigRational even though imported values are bounded
+                        // by the wire deserializer.
+                        let off_delta = off_seconds.clone() - origin_seconds.clone();
+                        let score_off = event.score_off_q.as_ref().ok_or_else(|| {
+                            err(
+                                "E_INTERVAL",
+                                format!("events[{index}].score_off_q"),
+                                "note off time is required",
+                            )
+                        })?;
+                        let expected_off_seconds = (self.tempo.seconds_at(score_off)?
+                            + event.release_offset_seconds.clone())
+                        .min(end_seconds.clone());
+                        if *off_seconds != expected_off_seconds {
+                            return Err(err(
+                                "E_INTERVAL",
+                                format!("events[{index}].off_seconds"),
+                                "resolved off time does not match score time plus physical offset",
+                            ));
+                        }
+                        if *off_seconds <= *on_seconds || off_seconds > end_seconds {
+                            return Err(err(
+                                "E_INTERVAL",
+                                format!("events[{index}].off_seconds"),
+                                "event off time is outside the effective score interval",
+                            ));
+                        }
+                        let expected_off = rational_ceil_nonnegative(
+                            &(off_delta * BigInt::from(self.output.sample_rate_hz)),
+                        )
+                        .ok_or_else(|| {
+                            err(
+                                "E_TIME_PRECISION",
+                                format!("events[{index}].off_frame"),
+                                "event frame ceiling overflow",
+                            )
+                        })?;
+                        if event.off_frame != Some(expected_off) {
+                            return Err(err(
+                                "E_INTERVAL",
+                                format!("events[{index}].off_frame"),
+                                "event off frame is not the exact ceiling of physical time",
+                            ));
+                        }
+                        if matches!(event.kind, EventKind::Note { .. })
+                            && event.on_frame == expected_off
+                        {
+                            return Err(err(
+                                "E_SUBSAMPLE_NOTE",
+                                format!("events[{index}]"),
+                                "positive note gate collapsed to one frame",
+                            ));
+                        }
+                    } else if event.off_frame.is_some() {
+                        return Err(err(
+                            "E_INTERVAL",
+                            format!("events[{index}].off_frame"),
+                            "event without an off time cannot carry an off frame",
+                        ));
+                    }
+                    off_seconds.is_some()
                 }
-                if *off_seconds <= event.on_seconds || *off_seconds > end_seconds {
-                    return Err(err(
-                        "E_INTERVAL",
-                        format!("events[{index}].off_seconds"),
-                        "event off time is outside the effective score interval",
-                    ));
+                EventTimingView::ExactScore => {
+                    let (on, off) = timing
+                        .expect("v3 timing")
+                        .schedule_view(&event, u64::from(self.output.sample_rate_hz))?;
+                    if on != event.on_frame || off != event.off_frame {
+                        return Err(err(
+                            "E_INTERVAL",
+                            format!("events[{index}]"),
+                            "retained frames differ from certified timing",
+                        ));
+                    }
+                    if on >= self.output.total_frames {
+                        return Err(err(
+                            "E_INTERVAL",
+                            format!("events[{index}].on_frame"),
+                            "event onset outside render range",
+                        ));
+                    }
+                    off.is_some()
                 }
-                let expected_off = rational_ceil_nonnegative(
-                    &(off_delta * BigInt::from(self.output.sample_rate_hz)),
-                )
-                .ok_or_else(|| {
-                    err(
-                        "E_TIME_PRECISION",
-                        format!("events[{index}].off_frame"),
-                        "event frame ceiling overflow",
-                    )
-                })?;
-                if event.off_frame != Some(expected_off) {
-                    return Err(err(
-                        "E_INTERVAL",
-                        format!("events[{index}].off_frame"),
-                        "event off frame is not the exact ceiling of physical time",
-                    ));
-                }
-                if matches!(event.kind, EventKind::Note { .. }) && event.on_frame == expected_off {
-                    return Err(err(
-                        "E_SUBSAMPLE_NOTE",
-                        format!("events[{index}]"),
-                        "positive note gate collapsed to one frame",
-                    ));
-                }
-            } else if event.off_frame.is_some() {
-                return Err(err(
-                    "E_INTERVAL",
-                    format!("events[{index}].off_frame"),
-                    "event without an off time cannot carry an off frame",
-                ));
-            }
+            };
             match &event.kind {
                 EventKind::Note {
                     pitch_hz,
@@ -2846,7 +3240,7 @@ impl Plan {
                     timbre_expression,
                     pressure_expression,
                 } => {
-                    if event.score_off_q.is_none() || event.off_seconds.is_none() {
+                    if event.score_off_q.is_none() || !has_off_time {
                         return Err(err(
                             "E_INTERVAL",
                             format!("events[{index}]"),
@@ -2894,7 +3288,7 @@ impl Plan {
                             ));
                         }
                         expression.validate_for_note(
-                            event,
+                            &event,
                             *pitch_hz,
                             self.output.sample_rate_hz,
                             limits,
@@ -2971,7 +3365,7 @@ impl Plan {
                     ));
                 }
                 EventKind::Message { .. } => {
-                    if event.score_off_q.is_some() || event.off_seconds.is_some() {
+                    if event.score_off_q.is_some() || has_off_time {
                         return Err(err(
                             "E_INTERVAL",
                             format!("events[{index}]"),
@@ -2996,7 +3390,11 @@ impl Plan {
         Ok(())
     }
 
-    fn validate_automation(&self, limits: &PlanLimits) -> Result<(), PlanError> {
+    fn validate_automation(
+        &self,
+        limits: &PlanLimits,
+        timing: Option<&crate::plan_v3::TimingContext>,
+    ) -> Result<(), PlanError> {
         let node_by_id: HashMap<&str, &Node> = self
             .nodes
             .iter()
@@ -3005,9 +3403,9 @@ impl Plan {
         let mut targets = BTreeSet::new();
         let mut lane_ids = BTreeSet::new();
         let mut work = 0u64;
-        for (index, lane) in self.automation.iter().enumerate() {
+        for (index, lane) in self.automations().enumerate() {
             validate_identifier_limit(
-                &lane.id,
+                lane.id,
                 format!("automation[{index}].id"),
                 limits.max_id_bytes,
             )?;
@@ -3068,13 +3466,29 @@ impl Plan {
                 validate_automation_parameter(
                     &node.processor,
                     &lane.target.port,
-                    &lane.points,
+                    lane.points,
                     limits,
                     &format!("automation[{index}]"),
                     self.output.sample_rate_hz,
                 )?;
             }
-            rational_bit_limit(&lane.at, limits, format!("automation[{index}].at"))?;
+            if self.version == 3
+                && lane.clock == AutomationClock::Score
+                && matches!(lane.anchor, AutomationAnchorView::Seconds(_))
+            {
+                return Err(err(
+                    "E_INTERVAL",
+                    format!("automation[{index}].at"),
+                    "score clock requires score anchor",
+                ));
+            }
+            rational_bit_limit(
+                match lane.anchor {
+                    AutomationAnchorView::Score(at) | AutomationAnchorView::Seconds(at) => at,
+                },
+                limits,
+                format!("automation[{index}].at"),
+            )?;
             if lane.points.is_empty() {
                 return Err(err(
                     "E_RANGE",
@@ -3136,6 +3550,9 @@ impl Plan {
                     "last curve shape must be step",
                 ));
             }
+            if let Some(timing) = timing {
+                timing.validate_automation(&lane, u64::from(self.output.sample_rate_hz))?;
+            }
             work = work.saturating_add(lane.points.len() as u64);
         }
         if work > limits.max_work {
@@ -3180,11 +3597,7 @@ impl Plan {
     }
 
     fn validate_source_mappings(&self, limits: &PlanLimits) -> Result<(), PlanError> {
-        let addresses: HashSet<&str> = self
-            .events
-            .iter()
-            .map(|event| event.address.as_str())
-            .collect();
+        let addresses: HashSet<&str> = self.events().map(|event| event.address.as_str()).collect();
         let mut seen = BTreeSet::new();
         for (index, mapping) in self.source_mappings.iter().enumerate() {
             validate_identifier_limit(
@@ -3214,7 +3627,7 @@ impl Plan {
                 ));
             }
         }
-        for event in &self.events {
+        for event in self.events() {
             if event.source.path.is_empty() || !addresses.contains(event.address.as_str()) {
                 return Err(err(
                     "E_REFERENCE",
@@ -3237,7 +3650,7 @@ impl Plan {
     fn validate_instrument_work(&self, limits: &PlanLimits) -> Result<u64, PlanError> {
         let mut work = 0u64;
         let mut cells = 0usize;
-        for node in &self.nodes {
+        for node in self.nodes {
             let cost = match &node.processor {
                 Processor::Eq { channels, .. } => 32 + 10 * u64::from(*channels),
                 Processor::Compressor {
@@ -3281,7 +3694,7 @@ impl Plan {
                 "aggregate native reverb history exceeds the caller limit",
             ));
         }
-        for node in &self.nodes {
+        for node in self.nodes {
             let Processor::Instrument { program, .. } = &node.processor else {
                 continue;
             };
@@ -3349,11 +3762,10 @@ impl Plan {
                     .cloned()
                     .unwrap_or_else(|| control.default.clone());
                 for lane in self
-                    .automation
-                    .iter()
+                    .automations()
                     .filter(|lane| lane.target.node == node.id && lane.target.port == *control_name)
                 {
-                    for point in &lane.points {
+                    for point in lane.points {
                         if point.value > release {
                             release = point.value.clone();
                         }
@@ -3372,7 +3784,7 @@ impl Plan {
             let voice_cost = graph_cost(&program.voice);
             let initialization_cost = (program.pluck_node_count() as u64)
                 .saturating_mul(crate::graph::PLUCK_DELAY_CELLS as u64);
-            for event in self.events.iter().filter(|event| {
+            for event in self.events().filter(|event| {
                 event.target.node == node.id && matches!(event.kind, EventKind::Note { .. })
             }) {
                 let release_start = event.off_frame.unwrap_or(self.output.total_frames);

@@ -147,6 +147,13 @@ pub fn execution_identity(
     document: &Document,
     plan: &Plan,
 ) -> Result<ExecutionIdentity, IdentityError> {
+    execution_identity_for_view(document, &plan.view())
+}
+
+pub(crate) fn execution_identity_for_view(
+    document: &Document,
+    plan: &crate::plan::PlanView<'_>,
+) -> Result<ExecutionIdentity, IdentityError> {
     if document.version != 1 {
         return Err(error("execution identity supports MaaC/1 only"));
     }
@@ -267,7 +274,7 @@ enum Scope<'a> {
 }
 
 struct Normalizer<'a> {
-    plan: &'a Plan,
+    plan: &'a crate::plan::PlanView<'a>,
     meter: MeterMap,
 }
 

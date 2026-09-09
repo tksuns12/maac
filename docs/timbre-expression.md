@@ -92,7 +92,7 @@ Note events gain an optional `timbre_expression` object containing `clock` and
 `points`; each point has canonical rational `position` and `value`, plus
 `shape`. Unknown fields are rejected. Absent timbre is omitted from JSON, and
 plans without the extension preserve their existing wire shape. No plan-version
-bump is introduced; graph instruments still require version 2. Older readers
+bump is introduced; graph instruments require version 2 or 3. Older readers
 reject the new payload or processor identity. Rust `EventKind::Note` literals
 must supply `pitch_expression: None`, `gain_expression: None`,
 `timbre_expression: None`, and `pressure_expression: None` for absent expressions. The public
