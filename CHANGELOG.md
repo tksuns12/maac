@@ -11,6 +11,12 @@ actually published; no release tag or publication date is asserted here.
 
 ### Added
 
+- Native hits and `core.kit/1` one-shot mono/stereo sample playback using existing
+  syntax. Pinned raw float32 assets retain their original rate and exact bytes;
+  version 4 plans embed them for standalone rendering and named deliveries.
+  Additive opaque artifact APIs preserve existing public plan and processor
+  types. See the [kit contract](docs/core-kit.md).
+
 - Linear-in-score tempo ramps using existing MaaC/1 syntax, with certified
   scheduling, inverse-clock automation, standalone version 3 plans, and named
   deliveries. Additive versioned Rust APIs preserve the legacy plan types and
@@ -106,8 +112,8 @@ actually published; no release tag or publication date is asserted here.
 
 - The Rust implementation is a foundation subset; it does not claim full
   Document, Performance, Core Audio, or Locked Render conformance.
-- Hits/messages, top-level core modulation,
-  other processors, recorded-sample instruments, arranged audio, external plug-ins,
+- Messages, top-level core modulation,
+  other processors, arranged audio, external plug-ins,
   transactional editing, MaaC Locked Render dependency-lock manifests
   (distinct from `Cargo.lock`), MIDI transport, GUI, and real-time playback
   remain deferred or outside the current interfaces. Recognized deferred

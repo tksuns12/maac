@@ -1,3 +1,25 @@
+# Native sample kit
+
+[`core-kit.maac`](core-kit.maac) arranges 24 native hits using three small,
+original drum samples. The groove accelerates and slows down with a shared
+tempo map; kit level automation controls its dynamics. Kick and snare assets
+run at 24 kHz, and the hi-hat runs at 48 kHz. The mono output is 208,158 frames
+at 48 kHz, including a quarter-second tail.
+
+Run from the repository root:
+
+```sh
+maac check examples/core-kit.maac --project-root .
+maac build examples/core-kit.maac --project-root . -o core-kit.wav --format pcm16
+maac compile examples/core-kit.maac --project-root . -o core-kit.plan.json
+maac render core-kit.plan.json -o core-kit-from-plan.wav --format pcm16
+```
+
+The plan embeds its samples for source-free replay. The external
+[`generate_samples.py`](sounds/core-kit/generate_samples.py) documents how the
+assets were made; rendering needs only the committed PCM files or retained plan.
+See the [kit contract](../docs/core-kit.md) for raw format, playback and limits.
+
 # Per-note pressure mappings
 
 [`pressure-expression.maac`](pressure-expression.maac) defines an inline stereo

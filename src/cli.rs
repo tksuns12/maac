@@ -19,6 +19,7 @@ use crate::export::{self, ExportError, WavFormat, WavStats, MAX_INPUT_BYTES};
 use crate::plan::{Plan, PlanError, PlanLimits};
 use crate::plan_v3::VersionedPlan;
 use crate::syntax::{parse, Document};
+use crate::PlanArtifact;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -181,6 +182,26 @@ pub struct CommandResult {
     pub libraries: Option<Vec<crate::stdlib::LibraryInfo>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub delivery: Option<crate::production_delivery::DeliveryManifest>,
+}
+
+/// CLI result for artifact-aware callers. Legacy fields retain their existing wire shape.
+#[derive(Clone, Debug, Serialize)]
+pub struct ArtifactCommandResult {
+    #[serde(flatten)]
+    base: CommandResult,
+    #[serde(skip_serializing_if = "is_zero")]
+    hits: usize,
+}
+impl ArtifactCommandResult {
+    pub fn base(&self) -> &CommandResult {
+        &self.base
+    }
+    pub fn hits(&self) -> usize {
+        self.hits
+    }
+}
+fn is_zero(value: &usize) -> bool {
+    *value == 0
 }
 
 impl CommandResult {
@@ -388,6 +409,74 @@ impl std::error::Error for CliError {}
 /// Execute one parsed CLI request without printing. This is convenient for
 /// embedding and gives the binary a single output policy for human/JSON modes.
 pub fn execute(command: &Command) -> Result<CommandResult, CliError> {
+    execute_impl(command, PlanCapability::Legacy, &mut EventCounts::default())
+}
+/// Execute the same commands with standalone artifact support, including native hits.
+pub fn execute_artifact(command: &Command) -> Result<ArtifactCommandResult, CliError> {
+    let mut counts = EventCounts::default();
+    let mut base = execute_impl(command, PlanCapability::Artifact, &mut counts)?;
+    if counts.hits > 0 {
+        base.notes = Some(counts.notes);
+    }
+    Ok(ArtifactCommandResult {
+        base,
+        hits: counts.hits,
+    })
+}
+#[derive(Default)]
+struct EventCounts {
+    notes: usize,
+    hits: usize,
+}
+impl EventCounts {
+    fn record(&mut self, plan: &PlanArtifact) {
+        self.notes = 0;
+        self.hits = 0;
+        for event in plan.view().events() {
+            match event.kind {
+                crate::plan::EventKind::Note { .. } => self.notes += 1,
+                crate::plan::EventKind::Hit { .. } => self.hits += 1,
+                _ => {}
+            }
+        }
+    }
+}
+#[derive(Clone, Copy)]
+enum PlanCapability {
+    Legacy,
+    Artifact,
+}
+impl PlanCapability {
+    fn compile(self, bundle: &SourceBundle, limits: &PlanLimits) -> Result<PlanArtifact, CliError> {
+        match self {
+            Self::Legacy => compiler::compile_bundle_versioned_with_limits(bundle, limits)
+                .map(PlanArtifact::from),
+            Self::Artifact => compiler::compile_bundle_artifact_with_limits(bundle, limits),
+        }
+        .map_err(|error| CliError::from_diagnostics(&error))
+    }
+    fn decode(self, bytes: &[u8], limits: &PlanLimits) -> Result<PlanArtifact, CliError> {
+        match self {
+            Self::Legacy => {
+                VersionedPlan::from_json_with_limits(bytes, limits).map(PlanArtifact::from)
+            }
+            Self::Artifact => PlanArtifact::from_json_with_limits(bytes, limits),
+        }
+        .map_err(CliError::from_plan)
+    }
+    fn check_library(self, bundle: &SourceBundle, limits: &PlanLimits) -> Result<(), CliError> {
+        match self {
+            Self::Legacy => compiler::check_bundle_versioned_with_limits(bundle, limits),
+            Self::Artifact => compiler::check_bundle_artifact_with_limits(bundle, limits),
+        }
+        .map_err(|error| CliError::from_diagnostics(&error))
+    }
+}
+fn execute_impl(
+    command: &Command,
+    capability: PlanCapability,
+    counts: &mut EventCounts,
+) -> Result<CommandResult, CliError> {
     match command {
         Command::Check {
             input,
@@ -403,8 +492,7 @@ pub fn execute(command: &Command) -> Result<CommandResult, CliError> {
                 .values()
                 .any(|object| object.kind == "library")
             {
-                compiler::check_bundle_versioned_with_limits(&bundle, &limits)
-                    .map_err(|error| CliError::from_diagnostics(&error))?;
+                capability.check_library(&bundle, &limits)?;
                 let exports = document
                     .objects
                     .values()
@@ -414,12 +502,12 @@ pub fn execute(command: &Command) -> Result<CommandResult, CliError> {
                     .count();
                 Ok(CommandResult::library_check(&input, exports))
             } else {
-                let plan = compiler::compile_bundle_versioned_with_limits(&bundle, &limits)
-                    .map_err(|error| CliError::from_diagnostics(&error))?;
+                let plan = capability.compile(&bundle, &limits)?;
+                counts.record(&plan);
                 Ok(CommandResult::check(
                     &input,
-                    versioned_plan_stats(&plan).0,
-                    versioned_plan_stats(&plan).1,
+                    artifact_plan_stats(&plan).0,
+                    artifact_plan_stats(&plan).1,
                 ))
             }
         }
@@ -433,8 +521,8 @@ pub fn execute(command: &Command) -> Result<CommandResult, CliError> {
             let (input, root) = resolve_source_input(input.as_deref(), project_root.as_deref());
             let limits = profile.limits();
             let bundle = load_source_bundle(&input, root.as_deref())?;
-            let plan = compiler::compile_bundle_versioned_with_limits(&bundle, &limits)
-                .map_err(|error| CliError::from_diagnostics(&error))?;
+            let plan = capability.compile(&bundle, &limits)?;
+            counts.record(&plan);
             let bytes = plan
                 .to_json_with_limits(&limits)
                 .map_err(CliError::from_plan)?;
@@ -442,8 +530,8 @@ pub fn execute(command: &Command) -> Result<CommandResult, CliError> {
             Ok(CommandResult::compile(
                 &input,
                 output,
-                versioned_plan_stats(&plan).0,
-                versioned_plan_stats(&plan).1,
+                artifact_plan_stats(&plan).0,
+                artifact_plan_stats(&plan).1,
             ))
         }
         Command::Render {
@@ -454,9 +542,10 @@ pub fn execute(command: &Command) -> Result<CommandResult, CliError> {
             profile,
         } => {
             let limits = profile.limits();
-            let plan = read_plan_versioned_with_limits(input, &limits)?;
+            let plan = capability.decode(&read_bounded(input)?, &limits)?;
+            counts.record(&plan);
             let wav_format = (*format).into();
-            let stats = export::render_wav_to_path_versioned_with_limits(
+            let stats = export::render_wav_to_path_artifact_with_limits(
                 &plan, output, wav_format, *force, &limits,
             )
             .map_err(CliError::from_export)?;
@@ -475,10 +564,10 @@ pub fn execute(command: &Command) -> Result<CommandResult, CliError> {
             let (input, root) = resolve_source_input(input.as_deref(), project_root.as_deref());
             let limits = profile.limits();
             let bundle = load_source_bundle(&input, root.as_deref())?;
-            let plan = compiler::compile_bundle_versioned_with_limits(&bundle, &limits)
-                .map_err(|error| CliError::from_diagnostics(&error))?;
+            let plan = capability.compile(&bundle, &limits)?;
+            counts.record(&plan);
             let wav_format = (*format).into();
-            let stats = export::render_wav_to_path_versioned_with_limits(
+            let stats = export::render_wav_to_path_artifact_with_limits(
                 &plan, output, wav_format, *force, &limits,
             )
             .map_err(CliError::from_export)?;
@@ -504,13 +593,12 @@ pub fn execute(command: &Command) -> Result<CommandResult, CliError> {
                 .find(|byte| !byte.is_ascii_whitespace())
                 == Some(b'{')
             {
-                VersionedPlan::from_json_with_limits(&bytes, &limits)
-                    .map_err(CliError::from_plan)?
+                capability.decode(&bytes, &limits)?
             } else {
                 let bundle = load_source_bundle(&resolved, root.as_deref())?;
-                compiler::compile_bundle_versioned_with_limits(&bundle, &limits)
-                    .map_err(|e| CliError::from_diagnostics(&e))?
+                capability.compile(&bundle, &limits)?
             };
+            counts.record(&plan);
             let options = crate::production_delivery::DeliveryOptions {
                 delivery_id: delivery.clone(),
                 targets: targets.clone(),
@@ -521,7 +609,7 @@ pub fn execute(command: &Command) -> Result<CommandResult, CliError> {
                     ProfileArg::Song => crate::production_delivery::DeliveryLimits::song(),
                 },
             };
-            let report = crate::production_delivery::deliver_versioned(&plan, &options, &limits)
+            let report = crate::production_delivery::deliver_artifact(&plan, &options, &limits)
                 .map_err(|e| {
                     let mut result = CliError::new(e.code, e.message);
                     result.delivery = e.manifest;
@@ -533,7 +621,7 @@ pub fn execute(command: &Command) -> Result<CommandResult, CliError> {
                 input: resolved.display().to_string(),
                 output: Some(output_dir.join(&report.manifest_file).display().to_string()),
                 format: None,
-                notes: Some(versioned_plan_stats(&plan).0),
+                notes: Some(artifact_plan_stats(&plan).0),
                 frames: Some(report.frames),
                 digest: None,
                 exports: None,
@@ -691,11 +779,25 @@ pub fn read_plan_versioned_with_limits(
     VersionedPlan::from_json_with_limits(&read_bounded(path)?, limits).map_err(CliError::from_plan)
 }
 
-fn versioned_plan_stats(plan: &VersionedPlan) -> (usize, u64) {
-    match plan {
-        VersionedPlan::Legacy(plan) => (plan.events.len(), plan.output.total_frames),
-        VersionedPlan::V3(plan) => (plan.events.len(), plan.output.total_frames),
-    }
+/// Read and independently validate a standalone artifact, including native kits.
+pub fn read_plan_artifact(path: &Path) -> Result<PlanArtifact, CliError> {
+    read_plan_artifact_with_limits(path, &PlanLimits::default())
+}
+/// Read a bounded artifact under explicit caller limits.
+pub fn read_plan_artifact_with_limits(
+    path: &Path,
+    limits: &PlanLimits,
+) -> Result<PlanArtifact, CliError> {
+    PlanArtifact::from_json_with_limits(&read_bounded(path)?, limits).map_err(CliError::from_plan)
+}
+fn artifact_plan_stats(plan: &PlanArtifact) -> (usize, u64) {
+    (
+        plan.view()
+            .events()
+            .filter(|event| matches!(event.kind, crate::plan::EventKind::Note { .. }))
+            .count(),
+        plan.output().total_frames,
+    )
 }
 
 pub fn read_bounded(path: &Path) -> Result<Vec<u8>, CliError> {
@@ -719,6 +821,13 @@ pub fn read_bounded(path: &Path) -> Result<Vec<u8>, CliError> {
 }
 
 pub fn format_human(result: &CommandResult) -> String {
+    format_human_with_hits(result, 0)
+}
+/// Format an artifact-aware result with actual note and hit counts.
+pub fn format_human_artifact(result: &ArtifactCommandResult) -> String {
+    format_human_with_hits(result.base(), result.hits())
+}
+fn format_human_with_hits(result: &CommandResult, hits: usize) -> String {
     if let Some(delivery) = &result.delivery {
         return format!(
             "deliver {} -> {} (artifacts: {}, checks: {})",
@@ -779,7 +888,11 @@ pub fn format_human(result: &CommandResult) -> String {
         message.push_str(&format!(" -> {output}"));
     }
     if let Some(notes) = result.notes {
-        message.push_str(&format!(" ({notes} notes)"));
+        if hits > 0 {
+            message.push_str(&format!(" ({notes} notes, {hits} hits)"));
+        } else {
+            message.push_str(&format!(" ({notes} notes)"));
+        }
     }
     if let Some(frames) = result.frames {
         message.push_str(&format!(" ({frames} frames)"));
@@ -857,7 +970,7 @@ where
         }
     };
     let json = cli.json;
-    match execute(&cli.command) {
+    match execute_artifact(&cli.command) {
         Ok(result) => {
             if json {
                 println!(
@@ -865,9 +978,9 @@ where
                     serde_json::to_string(&result).expect("CLI result is serializable")
                 );
             } else {
-                println!("{}", format_human(&result));
+                println!("{}", format_human_artifact(&result));
             }
-            if result.ok {
+            if result.base().ok {
                 0
             } else {
                 1

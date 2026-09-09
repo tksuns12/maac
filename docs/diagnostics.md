@@ -11,6 +11,7 @@ UTF-8 byte ranges; they refer to the original authored source.
 | `E_DUPLICATE_ID`, `E_DUPLICATE_FIELD` | Give identities unique names and specify each field once |
 | `E_UNKNOWN_KIND`, `E_UNKNOWN_FIELD` | Check spelling and the normative object/field inventory |
 | `E_REFERENCE` | Point to an existing object of the required type |
+| `E_ASSET`, `E_HASH` | Supply supported asset metadata and exact bytes matching the declared SHA-256 pin |
 | `E_UNIT` | Supply the declared dimension, such as `q`, `ms`, `Hz` or `ct` |
 | `E_RANGE`, `E_INTERVAL` | Correct a value, onset, duration or score span |
 | `E_TEMPO`, `E_METER_BOUNDARY` | Use a positive ordered tempo map and meter changes at bar boundaries |
@@ -20,7 +21,7 @@ UTF-8 byte ranges; they refer to the original authored source.
 | `E_AUTOMATION_WRITER` | Combine replacement lanes into one curve per parameter |
 | `E_CAPABILITY` | The declared feature is outside the foundation capability set |
 | `E_PORT_TYPE`, `E_ALGEBRAIC_LOOP` | Correct channel/port/cardinality mismatches or cyclic routing |
-| `E_VOICE_LIMIT` | Increase declared capacity within bounds or reduce overlapping gates and release tails |
+| `E_VOICE_LIMIT` | Increase declared capacity within bounds or reduce overlapping notes or one-shot sample lifetimes |
 | `E_NONFINITE` | Reduce values that make a DSP or export calculation nonfinite |
 | `E_PCM16_RANGE` | Keep raw samples within `[-1,1]` before PCM16 export; samples are never clipped or normalized |
 | `E_OUTPUT_EXISTS` | Choose a new destination or pass `--force` to replace an existing file |
@@ -35,8 +36,15 @@ a derived artifact: after editing source, compile it again. Hand-edited imported
 plans receive the same structural, scheduling and resource checks as generated
 plans.
 
-Labels and comments are not executable instructions. Compilation and rendering
-do not load external assets, plug-ins, hardware adapters, or network resources.
+Labels and comments are not executable instructions. Source commands load pinned
+dependencies through the bounded local bundle loader. Compilation uses that
+bundle; retained-plan rendering uses embedded assets. Neither executes plug-ins,
+hardware adapters, or network requests.
+
+A hit onset must schedule before the score-end frame. If a physically pre-end
+onset rounds to that frame, compilation returns `E_INTERVAL`; move the onset
+earlier or extend the score. The declared tail allows samples that already
+started to finish, and does not admit new hits.
 
 WAV export performs no gain adjustment. Float32 output accepts every finite
 binary64 sample representable as binary32 and rejects nonfinite or overflowing

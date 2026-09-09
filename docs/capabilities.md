@@ -7,7 +7,7 @@ specification remains authoritative; this page describes the implementation scop
 | Feature | Foundation scope |
 | --- | --- |
 | Source | UTF-8, span-aware parsing, exact rational quantities, comments and source text retained in the parsed document |
-| Patterns | Finite notes, nested uses, repetition, stretching, cents transposition, cut and spill |
+| Patterns | Finite notes and hits, nested uses, repetition, stretching, cents transposition for notes, cut and spill |
 | Arrangement | Explicit tracks and placements, stable occurrence addresses, final-state overrides, deletion and inserts |
 | Time | Step and linear-in-score tempo maps, meter maps, global `bar` positions, independent physical offsets, certified ceiling scheduling |
 | Pitch | Letter pitches, `key`, `degree`, `ratio`, Hz/kHz, explicit tunings |
@@ -16,8 +16,9 @@ specification remains authoritative; this page describes the implementation scop
 | Per-note timbre | Voice graphs explicitly declaring `synth.timbre/1`; exact 0…1 curves on all three clocks; step/linear/exponential interpolation; independent pitch/gain coexistence and release holding |
 | Per-note pressure | Voice graphs explicitly declaring `synth.pressure/1`; exact 0…1 curves on all three clocks; step/linear/exponential interpolation; independent pitch/gain/timbre coexistence and release holding |
 | Automation | Global score/seconds clocks; step, linear and exponential interpolation; sample/event parameter rates |
-| Routing | Explicit mono/stereo audio graph and note targets; no implicit channel conversions or mixers |
-| Processors | `core.sine/1`, `core.onepole/1`, `core.pan/1`, `core.sum/1`, `core.gain/1` (mono/stereo) |
+| Routing | Explicit mono/stereo audio graph and note/hit targets; no implicit channel conversions or mixers |
+| Processors | `core.sine/1`, `core.kit/1`, `core.onepole/1`, `core.pan/1`, `core.sum/1`, `core.gain/1` (mono/stereo) |
+| Sample kits | Pinned raw float32 mono/stereo assets, native-rate one-shot playback, linear interpolation, natural tails and sample-rate level automation |
 | Reusable instruments | Named libraries, typed public controls, presets, independent polyphonic instances, voice and shared graphs |
 | Sound graphs | Versioned sine/saw/square/triangle/wavetable oscillators, deterministic noise and recirculating plucked strings, linear ADSR, sine LFO, gain, low/high-pass one-pole filtering, mixing and panning |
 | Modulation | Feed-forward graph modulation and sample-wise through-zero linear FM; no oversampling |
@@ -29,13 +30,19 @@ specification remains authoritative; this page describes the implementation scop
 | Export | Legacy build/render: Float32 WAV or overload-rejecting PCM16; production delivery also adds PCM24 and explicit seeded TPDF |
 | Native production | Project-level EQ, linked peak compression with external sidechains, eight-delay reverb; required `maac.production/1` |
 | Named deliveries | Complete-graph master/stem capture; 44.1/48/96 kHz conversion; final-artifact loudness/sample-peak/experimental true-peak analysis |
-| Interchange | Independently validated standalone plans: version 1 legacy, version 2 embedded graph/data/provenance, version 3 exact ramp timing recipes |
+| Interchange | Independently validated standalone plans: version 1 legacy, version 2 embedded graph/data/provenance, version 3 exact ramp timing recipes, version 4 embedded audio assets and kit nodes |
 
-Recognized deferred features fail with `E_CAPABILITY`: hits/messages,
-top-level core modulation, other processors, recorded
-sample instruments, arranged audio, external plug-ins and other extensions. Transactional editing, full render locks,
+Recognized deferred features fail with `E_CAPABILITY`: messages,
+top-level core modulation, other processors, pitched sample instruments,
+arranged audio, external plug-ins and other extensions. Transactional editing, full render locks,
 MIDI transport, GUI and real-time playback are outside this release's interfaces.
 No deferred feature is approximated silently.
+
+The [kit contract](core-kit.md) defines native hit scheduling, raw sample assets,
+voice capacity, interpolation and standalone replay. The additive `*_artifact`
+Rust APIs support versions 1–4 through opaque `PlanArtifact`; existing APIs keep
+their supported versions. WAV importing and reusable sample-kit library exports
+remain outside this slice.
 
 The [tempo ramp contract](tempo-ramps.md) defines linear BPM in score position,
 inverse-clock automation, and version 3 interchange. The CLI automatically
@@ -98,7 +105,7 @@ not permit feedback edges in public audio or modulation graphs.
 ## Resource bounds
 
 The baseline hard limits are 4 MiB per source or plan input, 64 nesting levels,
-100,000 expanded notes, 256 nodes, 4,096 bits per rational component, and 30 minutes
+100,000 expanded note/hit events, 256 nodes, 4,096 bits per rational component, and 30 minutes
 of rendered duration including tail. The engine supports 48 kHz and one or two
 audio channels. Exceeding a bound is an explicit `E_RESOURCE_LIMIT` (unsupported
 rates/channel capabilities use `E_CAPABILITY`). Additional bounds are:
@@ -115,7 +122,7 @@ rates/channel capabilities use `E_CAPABILITY`). Additional bounds are:
 | Individual plan metadata string | 4,096 bytes |
 | Aggregate plan strings | 4 MiB |
 | Declared voices per sine node | 1,000,000 |
-| Sum of target voice capacities over note events | 5,000,000 |
+| Sum of target voice capacities over note/hit events | 5,000,000 |
 | Pattern expansion work | 20,000,000 visits/repetitions |
 | Bar, pitch and tuning indices | Signed 64-bit integers |
 | Event `order` | Signed 32-bit integer |
@@ -154,6 +161,12 @@ Execution work includes every note's gate and maximum possible release, bounded
 by the render endpoint, plus shared effects throughout the full output. Caller
 `PlanLimits` can tighten graph, table, state, and work limits. The 4 MiB plan
 artifact limit applies alongside embedded-sample limits.
+
+Core audio assets share the 4 MiB per-file, 16 MiB aggregate asset and 64-asset
+bounds. Raw bytes count toward structural work; mapped assets and keys count
+toward object/string limits. Kit execution charges each node for the complete
+render interval and each hit for its natural lifetime clipped at render end,
+including silent hits. See the [exact accounting](core-kit.md#kit-playback).
 
 The explicit song profile changes only execution work. Plan bytes, duration,
 events, channels, rate, graph/voice states and pluck memory retain their existing

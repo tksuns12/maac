@@ -131,7 +131,8 @@ impl PlanV3 {
             tempo: &self.tempo,
             events: EventSlice::V3(&self.events),
             automation: AutomationSlice::V3(&self.automation),
-            nodes: &self.nodes,
+            nodes: NodeSlice::Legacy(&self.nodes),
+            audio_assets: None,
             connections: &self.connections,
             regions: &self.regions,
             source_mappings: &self.source_mappings,
@@ -195,13 +196,13 @@ impl PlanV3 {
         node: &Node,
         control: &str,
     ) -> Option<crate::graph::ParameterSpec> {
-        self.view().instrument_control_spec(node, control)
+        self.view().instrument_control_spec(node.into(), control)
     }
     pub fn resolved_node_params(
         &self,
         node: &Node,
     ) -> Result<std::collections::BTreeMap<String, Rational>, PlanError> {
-        self.view().resolved_node_params(node)
+        self.view().resolved_node_params(node.into())
     }
 }
 #[derive(Clone, Debug, PartialEq)]

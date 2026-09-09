@@ -16,6 +16,7 @@ use num_bigint::BigInt;
 use num_integer::Integer;
 use num_traits::{One, Signed, ToPrimitive, Zero};
 
+use crate::audio_asset::AudioAsset;
 use crate::bundle::{sha256_digest, ResolvedBundle, SourceBundle, SourceIdentity};
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Diagnostics, Span};
 use crate::exact::{Rational, MAX_RATIONAL_BITS};
@@ -32,6 +33,8 @@ use crate::plan::{
     PressureExpressionPoint, Processor, Region, ResolvedEvent, SourceMapping, SourceSpan, TempoMap,
     TempoPoint, TimbreExpression, TimbreExpressionPoint,
 };
+use crate::plan_artifact::PlanArtifact;
+use crate::plan_v4::{NodeV4, PlanV4, ProcessorV4};
 use crate::semantic::InstrumentNodeDescriptor;
 use crate::syntax::{Document, Field, Object, Reference, Unit, Value, ValueKind};
 
@@ -77,7 +80,7 @@ fn plan_error(error: crate::plan::PlanError) -> Diagnostics {
 fn event_diagnostic(
     code: DiagnosticCode,
     message: impl Into<String>,
-    event: &ExpandedNote,
+    event: &ExpandedEvent,
     fields: &[&str],
 ) -> Diagnostics {
     let mut diagnostic = Diagnostic::error(code, message, Some(event.source_span))
@@ -90,7 +93,7 @@ fn event_diagnostic(
     diagnostics
 }
 
-fn event_music_error(error: MusicError, event: &ExpandedNote, fields: &[&str]) -> Diagnostics {
+fn event_music_error(error: MusicError, event: &ExpandedEvent, fields: &[&str]) -> Diagnostics {
     let diagnostics = map_music_error(error, Some(event.source_span));
     let Some(diagnostic) = diagnostics.into_vec().into_iter().next() else {
         return Diagnostics::new();
@@ -260,21 +263,30 @@ fn bigint_u64(value: &Rational, span: Option<Span>) -> CResult<u64> {
 }
 
 #[derive(Clone, Debug)]
+struct LeafDef {
+    id: String,
+    span: Span,
+    at: Rational,
+    velocity: Rational,
+    onset_offset: Rational,
+    order: i32,
+    kind: LeafKind,
+}
+#[derive(Clone, Debug)]
+enum LeafKind {
+    Note(Box<NoteDef>),
+    Hit { key: String },
+}
+#[derive(Clone, Debug)]
 struct NoteDef {
     pitch_expression: Option<String>,
     gain_expression: Option<String>,
     timbre_expression: Option<String>,
     pressure_expression: Option<String>,
-    id: String,
-    span: Span,
-    at: Rational,
     dur: Rational,
     pitch: Pitch,
-    velocity: Rational,
     release_velocity: f64,
-    onset_offset: Rational,
     release_offset: Rational,
-    order: i32,
 }
 
 #[derive(Clone, Debug)]
@@ -291,7 +303,7 @@ struct UseDef {
 
 #[derive(Clone, Debug)]
 enum PatternChild {
-    Note(Box<NoteDef>),
+    Leaf(Box<LeafDef>),
     Use(Box<UseDef>),
 }
 
@@ -315,7 +327,7 @@ struct OverrideDef {
 struct InsertDef {
     id: String,
     span: Span,
-    note: NoteDef,
+    leaf: LeafDef,
 }
 
 #[derive(Clone, Debug)]
@@ -334,25 +346,47 @@ struct PlaceDef {
 }
 
 #[derive(Clone, Debug)]
+struct ExpandedEvent {
+    address: String,
+    source: SourceMapping,
+    source_span: Span,
+    target: EventTarget,
+    score_on_q: Rational,
+    velocity: Rational,
+    onset_offset_seconds: Rational,
+    order: i32,
+    kind: ExpandedKind,
+}
+#[derive(Clone, Debug)]
+enum ExpandedKind {
+    Note(Box<ExpandedNote>),
+    Hit { key: String },
+}
+#[derive(Clone, Debug)]
 struct ExpandedNote {
     pitch_expression: Option<String>,
     gain_expression: Option<String>,
     timbre_expression: Option<String>,
     pressure_expression: Option<String>,
     expression_scale: Rational,
-    address: String,
-    source: SourceMapping,
-    source_span: Span,
-    target: EventTarget,
     pitch: Pitch,
     transpose_cents: Rational,
-    score_on_q: Rational,
     dur_q: Rational,
-    velocity: Rational,
     release_velocity: f64,
-    onset_offset_seconds: Rational,
     release_offset_seconds: Rational,
-    order: i32,
+}
+impl ExpandedEvent {
+    fn note(&self) -> CResult<&ExpandedNote> {
+        match &self.kind {
+            ExpandedKind::Note(note) => Ok(note),
+            ExpandedKind::Hit { .. } => Err(event_diagnostic(
+                DiagnosticCode::Capability,
+                "native hits require the sample-kit execution profile",
+                self,
+                &[],
+            )),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -386,12 +420,15 @@ struct Compiler<'a> {
     tracks: BTreeMap<String, EventTarget>,
     places: Vec<PlaceDef>,
     nodes: Vec<Node>,
+    kit_nodes: BTreeMap<String, NodeV4>,
+    audio_assets: Vec<AudioAsset>,
     connections: Vec<Connection>,
     curves: BTreeMap<String, CurveDef>,
     automations: Vec<AutomationV3>,
     allow_ramps: bool,
+    allow_hits: bool,
     regions: Vec<Region>,
-    events: Vec<ExpandedNote>,
+    events: Vec<ExpandedEvent>,
     expansion_work: u64,
     instrument_instances: BTreeMap<String, ResolvedInstance>,
     instrument_descriptors: BTreeMap<String, InstrumentNodeDescriptor>,
@@ -430,10 +467,13 @@ impl<'a> Compiler<'a> {
             tracks: BTreeMap::new(),
             places: Vec::new(),
             nodes: Vec::new(),
+            kit_nodes: BTreeMap::new(),
+            audio_assets: Vec::new(),
             connections: Vec::new(),
             curves: BTreeMap::new(),
             automations: Vec::new(),
             allow_ramps: false,
+            allow_hits: false,
             regions: Vec::new(),
             events: Vec::new(),
             expansion_work: 0,
@@ -479,16 +519,7 @@ impl<'a> Compiler<'a> {
             &self.instrument_descriptors,
             self.allow_ramps,
         )?;
-        self.validate_document_shape()?;
-        self.read_tunings()?;
-        self.read_project_and_maps()?;
-        self.read_nodes_and_connections()?;
-        self.read_patterns()?;
-        self.validate_pattern_graph()?;
-        self.read_tracks_and_places()?;
-        self.read_curves_and_automation(limits)?;
-        self.read_regions()?;
-        self.expand_places()?;
+        self.read_composition(limits)?;
         if self
             .plan_tempo
             .points
@@ -522,6 +553,59 @@ impl<'a> Compiler<'a> {
                 None,
             )
         })
+    }
+
+    fn read_composition(&mut self, limits: &PlanLimits) -> CResult<()> {
+        self.validate_document_shape()?;
+        self.read_tunings()?;
+        self.read_project_and_maps()?;
+        self.read_nodes_and_connections()?;
+        self.read_patterns()?;
+        self.validate_pattern_graph()?;
+        self.read_tracks_and_places()?;
+        self.read_curves_and_automation(limits)?;
+        self.read_regions()?;
+        self.expand_places()?;
+        Ok(())
+    }
+
+    fn run_artifact(
+        mut self,
+        resolved: &ResolvedBundle,
+        limits: &PlanLimits,
+        production: Option<crate::production_data::ProductionSettings>,
+        original: &Document,
+    ) -> CResult<PlanArtifact> {
+        self.allow_ramps = true;
+        self.allow_hits = true;
+        let graph = crate::semantic::validate_source_with_kit_profile(
+            self.document,
+            &self.instrument_descriptors,
+            true,
+        )?;
+        self.kit_nodes = graph.kit_nodes().clone();
+        for (id, source) in graph.audio_sources() {
+            let path = crate::bundle::normalize_file_reference("package.maac", &source.path)?;
+            let bytes = resolved.assets.get(&path).ok_or_else(|| {
+                diagnostics(
+                    DiagnosticCode::Asset,
+                    format!("resolved audio asset `{id}` is missing `{path}`"),
+                    None,
+                )
+            })?;
+            self.audio_assets.push(AudioAsset {
+                id: id.clone(),
+                format: source.format.clone(),
+                rate_hz: source.rate_hz,
+                channels: source.channels,
+                frames: source.frames,
+                hash: source.hash.clone(),
+                bytes: bytes.clone(),
+            });
+        }
+        self.read_composition(limits)?;
+        self.finish_v4(limits, production, original)
+            .map(PlanArtifact::from_v4)
     }
 
     fn optional<'b>(&self, object: &'b Object, name: &str) -> Option<&'b Value> {
@@ -581,6 +665,9 @@ impl<'a> Compiler<'a> {
                 "node" => &["type", "config", "params"][..],
                 "connect" => &["from", "to"][..],
                 "region" => &["span", "label"][..],
+                "asset" if self.allow_hits => &[
+                    "kind", "path", "hash", "format", "rate", "channels", "frames",
+                ][..],
                 "modulate" | "asset" | "audio" | "extension" => {
                     return Err(path_diagnostic(
                         DiagnosticCode::Capability,
@@ -1123,6 +1210,9 @@ impl<'a> Compiler<'a> {
             .values()
             .filter(|object| object.kind == "node")
         {
+            if self.kit_nodes.contains_key(&object.id) {
+                continue;
+            }
             if let Some(instance) = self.instrument_instances.get(&object.id).cloned() {
                 let mut node = Node::new(
                     object.id.clone(),
@@ -1403,7 +1493,7 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn parse_note(&self, object: &Object) -> CResult<NoteDef> {
+    fn parse_note(&self, object: &Object) -> CResult<LeafDef> {
         self.check_fields(
             object,
             &[
@@ -1508,21 +1598,91 @@ impl<'a> Compiler<'a> {
         let gain_expression = expression_curve("gain")?;
         let timbre_expression = expression_curve("timbre")?;
         let pressure_expression = expression_curve("pressure")?;
-        Ok(NoteDef {
-            pitch_expression,
-            gain_expression,
-            timbre_expression,
-            pressure_expression,
+        Ok(LeafDef {
             id: object.id.clone(),
             span: object.span,
             at,
-            dur,
-            pitch,
             velocity,
-            release_velocity,
             onset_offset,
-            release_offset,
             order,
+            kind: LeafKind::Note(Box::new(NoteDef {
+                pitch_expression,
+                gain_expression,
+                timbre_expression,
+                pressure_expression,
+                dur,
+                pitch,
+                release_velocity,
+                release_offset,
+            })),
+        })
+    }
+
+    fn parse_hit(&self, object: &Object) -> CResult<LeafDef> {
+        self.check_fields(object, &["at", "key", "velocity", "onset_offset", "order"])?;
+        if !object.children.is_empty() {
+            return Err(path_diagnostic(
+                DiagnosticCode::UnknownKind,
+                "hit cannot have children",
+                object,
+                None,
+            ));
+        }
+        let at_field = self.field(object, "at")?;
+        let at = self.q_value(&at_field.value, object, Some(at_field), false)?;
+        if at.is_negative() {
+            return Err(path_diagnostic(
+                DiagnosticCode::Range,
+                "hit onset must be nonnegative",
+                object,
+                Some(at_field),
+            ));
+        }
+        let key_field = self.field(object, "key")?;
+        let key = self.string_value(&key_field.value, object, Some(key_field), "key")?;
+        let velocity = self
+            .optional(object, "velocity")
+            .map(|value| self.rational_value(value, object, object.field("velocity")))
+            .transpose()?
+            .unwrap_or_else(Rational::one);
+        if velocity.is_negative() || velocity > Rational::one() {
+            return Err(path_diagnostic(
+                DiagnosticCode::Range,
+                "hit velocity must be in [0,1]",
+                object,
+                object.field("velocity"),
+            ));
+        }
+        let onset_offset = self
+            .optional(object, "onset_offset")
+            .map(|value| self.seconds_value(value, object, object.field("onset_offset")))
+            .transpose()?
+            .unwrap_or_else(Rational::zero);
+        let order = self
+            .optional(object, "order")
+            .map(|value| {
+                bigint_i64(
+                    &self.rational_value(value, object, object.field("order"))?,
+                    Some(value.span),
+                )
+            })
+            .transpose()?
+            .unwrap_or(0);
+        let order = i32::try_from(order).map_err(|_| {
+            diagnostics(
+                DiagnosticCode::ResourceLimit,
+                "event order exceeds signed 32-bit range",
+                Some(object.span),
+            )
+        })?;
+        Ok(LeafDef {
+            id: object.id.clone(),
+            span: object.span,
+            at,
+            velocity,
+            onset_offset,
+            order,
+            kind: LeafKind::Hit { key },
         })
     }
 
@@ -1619,8 +1779,11 @@ impl<'a> Compiler<'a> {
             let mut children = Vec::new();
             for child in object.children.values() {
                 let parsed = match child.kind.as_str() {
-                    "note" => PatternChild::Note(Box::new(self.parse_note(child)?)),
+                    "note" => PatternChild::Leaf(Box::new(self.parse_note(child)?)),
                     "use" => PatternChild::Use(Box::new(self.parse_use(child)?)),
+                    "hit" if self.allow_hits => {
+                        PatternChild::Leaf(Box::new(self.parse_hit(child)?))
+                    }
                     "hit" | "message" => {
                         return Err(path_diagnostic(
                             DiagnosticCode::Capability,
@@ -1650,7 +1813,7 @@ impl<'a> Compiler<'a> {
                     }
                 };
                 match &parsed {
-                    PatternChild::Note(note) if note.at >= length => {
+                    PatternChild::Leaf(note) if note.at >= length => {
                         return Err(path_diagnostic(
                             DiagnosticCode::Interval,
                             "pattern child onset must be before pattern length",
@@ -1902,7 +2065,7 @@ impl<'a> Compiler<'a> {
                             ));
                         }
                         let leaf = child.children.values().next().unwrap();
-                        if leaf.kind != "note" {
+                        if leaf.kind != "note" && !(self.allow_hits && leaf.kind == "hit") {
                             return Err(path_diagnostic(
                                 DiagnosticCode::Capability,
                                 "only note inserts are supported by the standalone sine plan",
@@ -1913,7 +2076,11 @@ impl<'a> Compiler<'a> {
                         inserts.push(InsertDef {
                             id: child.id.clone(),
                             span: child.span,
-                            note: self.parse_note(leaf)?,
+                            leaf: if leaf.kind == "hit" {
+                                self.parse_hit(leaf)?
+                            } else {
+                                self.parse_note(leaf)?
+                            },
                         });
                     }
                     _ => {
@@ -2305,7 +2472,7 @@ impl<'a> Compiler<'a> {
             let mut events = pattern
                 .children
                 .iter()
-                .filter(|child| matches!(child, PatternChild::Note(_)))
+                .filter(|child| matches!(child, PatternChild::Leaf(_)))
                 .count() as u64;
             for child in &pattern.children {
                 if let PatternChild::Use(use_def) = child {
@@ -2328,6 +2495,71 @@ impl<'a> Compiler<'a> {
         }
 
         visit(self, id, &mut HashMap::new(), 0)
+    }
+
+    fn expand_leaf(
+        leaf: &LeafDef,
+        state: &ExpansionState<'_>,
+        source_path: Vec<String>,
+    ) -> CResult<ExpandedEvent> {
+        let score_on_q = checked_add(
+            &state.origin,
+            &checked_mul(&state.scale, &leaf.at, Some(leaf.span))?,
+            Some(leaf.span),
+        )?;
+        let kind = match &leaf.kind {
+            LeafKind::Hit { key } => ExpandedKind::Hit { key: key.clone() },
+            LeafKind::Note(note) => {
+                let dur = checked_mul(&state.scale, &note.dur, Some(leaf.span))?;
+                let end = checked_add(&score_on_q, &dur, Some(leaf.span))?;
+                let dur_q = if let Some(cut_end) = &state.inherited_cut_end {
+                    if end > *cut_end {
+                        checked_sub(cut_end, &score_on_q, Some(leaf.span))?
+                    } else {
+                        dur
+                    }
+                } else {
+                    dur
+                };
+                if dur_q <= Rational::zero() {
+                    return Err(diagnostics(
+                        DiagnosticCode::Interval,
+                        "cut boundary removes a note's entire positive gate",
+                        Some(leaf.span),
+                    ));
+                }
+                ExpandedKind::Note(Box::new(ExpandedNote {
+                    pitch_expression: note.pitch_expression.clone(),
+                    gain_expression: note.gain_expression.clone(),
+                    timbre_expression: note.timbre_expression.clone(),
+                    pressure_expression: note.pressure_expression.clone(),
+                    expression_scale: state.scale.clone(),
+                    pitch: note.pitch.clone(),
+                    transpose_cents: state.transpose.clone(),
+                    dur_q,
+                    release_velocity: note.release_velocity,
+                    release_offset_seconds: note.release_offset.clone(),
+                }))
+            }
+        };
+        Ok(ExpandedEvent {
+            address: state.address.join("/"),
+            source: SourceMapping {
+                object: leaf.id.clone(),
+                path: source_path,
+                span: Some(SourceSpan {
+                    start: leaf.span.start,
+                    end: leaf.span.end,
+                }),
+            },
+            source_span: leaf.span,
+            target: state.target.clone(),
+            score_on_q,
+            velocity: leaf.velocity.clone(),
+            onset_offset_seconds: leaf.onset_offset.clone(),
+            order: leaf.order,
+            kind,
+        })
     }
 
     fn expand_pattern(&mut self, pattern_id: &str, state: &mut ExpansionState<'_>) -> CResult<()> {
@@ -2355,63 +2587,18 @@ impl<'a> Compiler<'a> {
                 ));
             }
             match child {
-                PatternChild::Note(note) => {
-                    let offset = checked_mul(&state.scale, &note.at, Some(note.span))?;
-                    let score_on = checked_add(&state.origin, &offset, Some(note.span))?;
-                    let dur = checked_mul(&state.scale, &note.dur, Some(note.span))?;
-                    let end = checked_add(&score_on, &dur, Some(note.span))?;
-                    let dur = if let Some(cut_end) = &state.inherited_cut_end {
-                        if end > *cut_end {
-                            checked_sub(cut_end, &score_on, Some(note.span))?
-                        } else {
-                            dur
-                        }
-                    } else {
-                        dur
-                    };
-                    if dur <= Rational::zero() {
-                        return Err(diagnostics(
-                            DiagnosticCode::Interval,
-                            "cut boundary removes a note's entire positive gate",
-                            Some(note.span),
-                        ));
-                    }
-                    let source_path = vec![pattern.id.clone(), note.id.clone()];
-                    state.address.push(note.id.clone());
+                PatternChild::Leaf(leaf) => {
+                    state.address.push(leaf.id.clone());
+                    let source_path = vec![pattern.id.clone(), leaf.id.clone()];
+                    let event = Self::expand_leaf(&leaf, state, source_path)?;
                     if self.events.len() >= MAX_EXPANDED_NOTES {
                         return Err(diagnostics(
                             DiagnosticCode::ResourceLimit,
                             "expanded note count exceeds 100000",
-                            Some(note.span),
+                            Some(leaf.span),
                         ));
                     }
-                    self.events.push(ExpandedNote {
-                        pitch_expression: note.pitch_expression.clone(),
-                        gain_expression: note.gain_expression.clone(),
-                        timbre_expression: note.timbre_expression.clone(),
-                        pressure_expression: note.pressure_expression.clone(),
-                        expression_scale: state.scale.clone(),
-                        address: state.address.join("/"),
-                        source: SourceMapping {
-                            object: note.id.clone(),
-                            path: source_path,
-                            span: Some(SourceSpan {
-                                start: note.span.start,
-                                end: note.span.end,
-                            }),
-                        },
-                        source_span: note.span,
-                        target: state.target.clone(),
-                        pitch: note.pitch.clone(),
-                        transpose_cents: state.transpose.clone(),
-                        score_on_q: score_on,
-                        dur_q: dur,
-                        velocity: note.velocity.clone(),
-                        release_velocity: note.release_velocity,
-                        onset_offset_seconds: note.onset_offset.clone(),
-                        release_offset_seconds: note.release_offset.clone(),
-                        order: note.order,
-                    });
+                    self.events.push(event);
                     state.address.pop();
                 }
                 PatternChild::Use(use_def) => {
@@ -2528,36 +2715,22 @@ impl<'a> Compiler<'a> {
                 .retain(|event| !deleted.contains(&event.address));
         }
         for insert in &place.inserts {
-            let at = insert.note.at.clone();
-            let score_on = checked_add(&place.at, &at, Some(insert.note.span))?;
-            let source = SourceMapping {
-                object: insert.note.id.clone(),
-                path: vec![place.id.clone(), insert.id.clone(), insert.note.id.clone()],
-                span: Some(SourceSpan {
-                    start: insert.note.span.start,
-                    end: insert.note.span.end,
-                }),
+            let leaf = &insert.leaf;
+            let mut address = vec![place.id.clone(), insert.id.clone(), leaf.id.clone()];
+            let state = ExpansionState {
+                origin: place.at.clone(),
+                scale: Rational::one(),
+                transpose: Rational::zero(),
+                address: &mut address,
+                inherited_cut_end: None,
+                target,
+                depth: 0,
             };
-            let event = ExpandedNote {
-                pitch_expression: insert.note.pitch_expression.clone(),
-                gain_expression: insert.note.gain_expression.clone(),
-                timbre_expression: insert.note.timbre_expression.clone(),
-                pressure_expression: insert.note.pressure_expression.clone(),
-                expression_scale: Rational::one(),
-                address: format!("{}/{}/{}", place.id, insert.id, insert.note.id),
-                source,
-                source_span: insert.note.span,
-                target: target.clone(),
-                pitch: insert.note.pitch.clone(),
-                transpose_cents: Rational::zero(),
-                score_on_q: score_on,
-                dur_q: insert.note.dur.clone(),
-                velocity: insert.note.velocity.clone(),
-                release_velocity: insert.note.release_velocity,
-                onset_offset_seconds: insert.note.onset_offset.clone(),
-                release_offset_seconds: insert.note.release_offset.clone(),
-                order: insert.note.order,
-            };
+            let event = Self::expand_leaf(
+                leaf,
+                &state,
+                vec![place.id.clone(), insert.id.clone(), leaf.id.clone()],
+            )?;
             if self
                 .events
                 .iter()
@@ -2585,36 +2758,73 @@ impl<'a> Compiler<'a> {
             .object(&place.id)
             .unwrap_or_else(|| self.document.objects.values().next().unwrap());
         for (name, value) in set {
+            if matches!(self.events[index].kind, ExpandedKind::Hit { .. })
+                && !matches!(
+                    name.as_str(),
+                    "at" | "key" | "velocity" | "onset_offset" | "order" | "label"
+                )
+            {
+                return Err(diagnostics(
+                    DiagnosticCode::UnknownField,
+                    format!("field `{name}` is not valid for a hit override"),
+                    Some(value.span),
+                ));
+            }
             match name.as_str() {
                 "at" => {
                     let at = self.q_value(value, object, None, false)?;
                     self.events[index].score_on_q = checked_add(&place.at, &at, Some(value.span))?;
                 }
-                "dur" => self.events[index].dur_q = self.q_value(value, object, None, false)?,
+                "dur" => {
+                    let dur = self.q_value(value, object, None, false)?;
+                    if let ExpandedKind::Note(note) = &mut self.events[index].kind {
+                        note.dur_q = dur;
+                    }
+                }
+                "key" => {
+                    let key = self.string_value(value, object, None, "key")?;
+                    if let ExpandedKind::Hit { key: existing } = &mut self.events[index].kind {
+                        *existing = key;
+                    } else {
+                        return Err(diagnostics(
+                            DiagnosticCode::UnknownField,
+                            "key is not valid for a note override",
+                            Some(value.span),
+                        ));
+                    }
+                }
                 "pitch" => {
-                    self.events[index].pitch = self.parse_pitch(value, object, None)?;
-                    self.events[index].transpose_cents = Rational::zero();
+                    let pitch = self.parse_pitch(value, object, None)?;
+                    if let ExpandedKind::Note(note) = &mut self.events[index].kind {
+                        note.pitch = pitch;
+                        note.transpose_cents = Rational::zero();
+                    }
                 }
                 "velocity" => {
                     self.events[index].velocity = self.rational_value(value, object, None)?
                 }
                 "release_velocity" => {
                     let velocity = self.rational_value(value, object, None)?;
-                    self.events[index].release_velocity = velocity.to_f64().ok_or_else(|| {
+                    let release_velocity = velocity.to_f64().ok_or_else(|| {
                         diagnostics(
                             DiagnosticCode::Nonfinite,
                             "release velocity is not finite",
                             Some(value.span),
                         )
                     })?;
+                    if let ExpandedKind::Note(note) = &mut self.events[index].kind {
+                        note.release_velocity = release_velocity;
+                    }
                 }
                 "onset_offset" => {
                     self.events[index].onset_offset_seconds =
                         self.seconds_value(value, object, None)?
                 }
                 "release_offset" => {
-                    self.events[index].release_offset_seconds =
-                        self.seconds_value(value, object, None)?
+                    let offset = self.seconds_value(value, object, None)?;
+                    if let ExpandedKind::Note(note) = &mut self.events[index].kind {
+                        note.release_offset_seconds = offset;
+                    }
                 }
                 "order" => {
                     let order =
@@ -2639,29 +2849,47 @@ impl<'a> Compiler<'a> {
                 }
             }
         }
-        if self.events[index].dur_q <= Rational::zero()
+        let invalid_note = match &self.events[index].kind {
+            ExpandedKind::Note(note) => {
+                note.dur_q <= Rational::zero() || !(0.0..=1.0).contains(&note.release_velocity)
+            }
+            ExpandedKind::Hit { .. } => false,
+        };
+        if invalid_note
             || self.events[index].velocity.is_negative()
             || self.events[index].velocity > Rational::one()
-            || !(0.0..=1.0).contains(&self.events[index].release_velocity)
         {
             return Err(diagnostics(
                 DiagnosticCode::Range,
-                "occurrence override produces an invalid note",
+                if matches!(self.events[index].kind, ExpandedKind::Hit { .. }) {
+                    "occurrence override produces an invalid hit"
+                } else {
+                    "occurrence override produces an invalid note"
+                },
                 Some(self.events[index].source_span),
             ));
         }
         Ok(())
     }
 
-    fn lower_event_kind(&self, expanded: &ExpandedNote) -> CResult<EventKind> {
+    fn lower_event_kind(&self, expanded: &ExpandedEvent) -> CResult<EventKind> {
+        let note = match &expanded.kind {
+            ExpandedKind::Note(note) => note,
+            ExpandedKind::Hit { key } => {
+                return Ok(EventKind::Hit {
+                    key: key.clone(),
+                    velocity: expanded.velocity.clone(),
+                })
+            }
+        };
         // A source pitch can be above Nyquist when an occurrence
         // transposition brings it back into range.  Apply all final
         // transforms before the receiver-specific Nyquist check.
-        let mut frequency = expanded
+        let mut frequency = note
             .pitch
             .resolve_hz(None)
             .map_err(|error| event_music_error(error, expanded, &["pitch"]))?;
-        let transpose = expanded.transpose_cents.to_f64().ok_or_else(|| {
+        let transpose = note.transpose_cents.to_f64().ok_or_else(|| {
             diagnostics(
                 DiagnosticCode::Nonfinite,
                 "pitch transposition is not finite",
@@ -2681,7 +2909,7 @@ impl<'a> Compiler<'a> {
             ));
         }
         Ok(EventKind::Note {
-            pressure_expression: expanded
+            pressure_expression: note
                 .pressure_expression
                 .as_ref()
                 .map(|id| {
@@ -2699,7 +2927,7 @@ impl<'a> Compiler<'a> {
                                 position: if clock == ExpressionClock::Score {
                                     checked_mul(
                                         position,
-                                        &expanded.expression_scale,
+                                        &note.expression_scale,
                                         Some(expanded.source_span),
                                     )?
                                 } else {
@@ -2713,7 +2941,7 @@ impl<'a> Compiler<'a> {
                     Ok(PressureExpression { clock, points })
                 })
                 .transpose()?,
-            timbre_expression: expanded
+            timbre_expression: note
                 .timbre_expression
                 .as_ref()
                 .map(|id| {
@@ -2731,7 +2959,7 @@ impl<'a> Compiler<'a> {
                                 position: if clock == ExpressionClock::Score {
                                     checked_mul(
                                         position,
-                                        &expanded.expression_scale,
+                                        &note.expression_scale,
                                         Some(expanded.source_span),
                                     )?
                                 } else {
@@ -2745,7 +2973,7 @@ impl<'a> Compiler<'a> {
                     Ok(TimbreExpression { clock, points })
                 })
                 .transpose()?,
-            gain_expression: expanded
+            gain_expression: note
                 .gain_expression
                 .as_ref()
                 .map(|id| {
@@ -2763,7 +2991,7 @@ impl<'a> Compiler<'a> {
                                 position: if clock == ExpressionClock::Score {
                                     checked_mul(
                                         position,
-                                        &expanded.expression_scale,
+                                        &note.expression_scale,
                                         Some(expanded.source_span),
                                     )?
                                 } else {
@@ -2777,7 +3005,7 @@ impl<'a> Compiler<'a> {
                     Ok(GainExpression { clock, points })
                 })
                 .transpose()?,
-            pitch_expression: expanded
+            pitch_expression: note
                 .pitch_expression
                 .as_ref()
                 .map(|id| {
@@ -2795,7 +3023,7 @@ impl<'a> Compiler<'a> {
                                 position: if clock == ExpressionClock::Score {
                                     checked_mul(
                                         position,
-                                        &expanded.expression_scale,
+                                        &note.expression_scale,
                                         Some(expanded.source_span),
                                     )?
                                 } else {
@@ -2820,6 +3048,10 @@ impl<'a> Compiler<'a> {
         for count in self.automations.iter().map(|a| a.points.len()).chain(
             self.events
                 .iter()
+                .filter_map(|e| match &e.kind {
+                    ExpandedKind::Note(note) => Some(note),
+                    ExpandedKind::Hit { .. } => None,
+                })
                 .flat_map(|e| {
                     [
                         e.pitch_expression.as_ref(),
@@ -2851,6 +3083,66 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
+    fn lower_score_events(&self) -> CResult<Vec<ResolvedEventV3>> {
+        self.events
+            .iter()
+            .map(|expanded| {
+                if !self.allow_hits {
+                    expanded.note()?;
+                }
+                let (score_off_q, release_offset_seconds, release_velocity) = match &expanded.kind {
+                    ExpandedKind::Note(note) => (
+                        Some(checked_add(
+                            &expanded.score_on_q,
+                            &note.dur_q,
+                            Some(expanded.source_span),
+                        )?),
+                        note.release_offset_seconds.clone(),
+                        note.release_velocity,
+                    ),
+                    ExpandedKind::Hit { .. } => (None, Rational::zero(), 0.0),
+                };
+                Ok(ResolvedEventV3 {
+                    address: expanded.address.clone(),
+                    source: expanded.source.clone(),
+                    target: expanded.target.clone(),
+                    kind: self.lower_event_kind(expanded)?,
+                    score_on_q: expanded.score_on_q.clone(),
+                    score_off_q,
+                    onset_offset_seconds: expanded.onset_offset_seconds.clone(),
+                    release_offset_seconds,
+                    release_velocity,
+                    on_frame: 0,
+                    off_frame: None,
+                    order: expanded.order,
+                })
+            })
+            .collect::<CResult<Vec<_>>>()
+    }
+
+    fn schedule_score_events(
+        output: &mut OutputSettings,
+        events: &mut [ResolvedEventV3],
+        timing: &TimingContext,
+        limits: &PlanLimits,
+    ) -> CResult<()> {
+        output.total_frames = timing
+            .duration_frames(output, &limits.bounded())
+            .map_err(plan_error)?;
+        for event in events.iter_mut() {
+            (event.on_frame, event.off_frame) = timing
+                .schedule(event, u64::from(output.sample_rate_hz))
+                .map_err(plan_error)?;
+        }
+        events.sort_by(|a, b| {
+            a.on_frame
+                .cmp(&b.on_frame)
+                .then(a.order.cmp(&b.order))
+                .then(a.address.cmp(&b.address))
+        });
+        Ok(())
+    }
+
     fn finish_v3(
         &self,
         limits: &PlanLimits,
@@ -2858,30 +3150,7 @@ impl<'a> Compiler<'a> {
         original: &Document,
     ) -> CResult<PlanV3> {
         self.check_point_budget(limits)?;
-        let events = self
-            .events
-            .iter()
-            .map(|expanded| {
-                Ok(ResolvedEventV3 {
-                    address: expanded.address.clone(),
-                    source: expanded.source.clone(),
-                    target: expanded.target.clone(),
-                    kind: self.lower_event_kind(expanded)?,
-                    score_on_q: expanded.score_on_q.clone(),
-                    score_off_q: Some(checked_add(
-                        &expanded.score_on_q,
-                        &expanded.dur_q,
-                        Some(expanded.source_span),
-                    )?),
-                    onset_offset_seconds: expanded.onset_offset_seconds.clone(),
-                    release_offset_seconds: expanded.release_offset_seconds.clone(),
-                    release_velocity: expanded.release_velocity,
-                    on_frame: 0,
-                    off_frame: None,
-                    order: expanded.order,
-                })
-            })
-            .collect::<CResult<Vec<_>>>()?;
+        let events = self.lower_score_events()?;
         let mut plan = PlanV3 {
             version: 3,
             output: OutputSettings {
@@ -2919,23 +3188,92 @@ impl<'a> Compiler<'a> {
         plan.preflight_with_limits(limits).map_err(plan_error)?;
         let timing = TimingContext::new_with_limits(&plan.tempo, &plan.output, limits)
             .map_err(plan_error)?;
-        plan.output.total_frames = timing
-            .duration_frames(&plan.output, &limits.bounded())
-            .map_err(plan_error)?;
-        for event in &mut plan.events {
-            (event.on_frame, event.off_frame) = timing
-                .schedule(event, u64::from(self.sample_rate))
-                .map_err(plan_error)?;
-        }
-        plan.events.sort_by(|a, b| {
-            a.on_frame
-                .cmp(&b.on_frame)
-                .then(a.order.cmp(&b.order))
-                .then(a.address.cmp(&b.address))
-        });
+        Self::schedule_score_events(&mut plan.output, &mut plan.events, &timing, limits)?;
         plan.view()
             .validate_with_timing(limits, &timing)
             .map_err(plan_error)?;
+        Ok(plan)
+    }
+
+    fn finish_v4(
+        &self,
+        limits: &PlanLimits,
+        mut production: Option<crate::production_data::ProductionSettings>,
+        original: &Document,
+    ) -> CResult<PlanV4> {
+        self.check_point_budget(limits)?;
+        let mut nodes: Vec<NodeV4> = self
+            .nodes
+            .iter()
+            .map(|node| NodeV4 {
+                id: node.id.clone(),
+                processor: ProcessorV4::Core {
+                    processor: node.processor.clone(),
+                },
+                params: node.params.clone(),
+            })
+            .collect();
+        nodes.extend(self.kit_nodes.values().cloned());
+        nodes.sort_by(|a, b| a.id.cmp(&b.id));
+        let mut plan = PlanV4 {
+            version: 4,
+            output: OutputSettings {
+                score_start_q: self.score_start.clone(),
+                score_end_q: self.score_end.clone(),
+                tail_seconds: self.tail_seconds.clone(),
+                sample_rate_hz: self.sample_rate,
+                channels: self.output_channels()?,
+                total_frames: 0,
+                output: self.output.clone(),
+            },
+            tempo: self.plan_tempo.clone(),
+            events: self.lower_score_events()?,
+            nodes,
+            audio_assets: self.audio_assets.clone(),
+            connections: self.connections.clone(),
+            automation: self.automations.clone(),
+            regions: self.regions.clone(),
+            source_mappings: Vec::new(),
+            instruments: self.instrument_resources.clone(),
+            production: None,
+        };
+        if let Some(settings) = &mut production {
+            settings.execution_identity = Some(
+                crate::production_identity::execution_identity_for_view(original, &plan.view())
+                    .map_err(|error| {
+                        diagnostics(
+                            DiagnosticCode::Range,
+                            format!("execution identity: {error}"),
+                            None,
+                        )
+                    })?,
+            );
+        }
+        plan.production = production;
+        let limits = limits.bounded();
+        plan.view().preflight_timing(&limits).map_err(plan_error)?;
+        let timing = TimingContext::new_with_limits(&plan.tempo, &plan.output, &limits)
+            .map_err(plan_error)?;
+        Self::schedule_score_events(&mut plan.output, &mut plan.events, &timing, &limits)?;
+        plan.view()
+            .validate_with_timing(&limits, &timing)
+            .map_err(plan_error)?;
+        // Bound the encoded artifact without constructing another timing context or retaining JSON.
+        struct ByteBudget(usize);
+        impl std::io::Write for ByteBudget {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0 = self
+                    .0
+                    .checked_sub(bytes.len())
+                    .ok_or_else(|| std::io::Error::other("artifact JSON exceeds byte limit"))?;
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        serde_json::to_writer(ByteBudget(limits.max_json_bytes), &plan)
+            .map_err(|error| diagnostics(DiagnosticCode::ResourceLimit, error.to_string(), None))?;
         Ok(plan)
     }
 
@@ -2972,6 +3310,7 @@ impl<'a> Compiler<'a> {
         )?;
         let mut events = Vec::new();
         for expanded in &self.events {
+            let note = expanded.note()?;
             if expanded.score_on_q < self.score_start || expanded.score_on_q >= self.score_end {
                 return Err(event_diagnostic(
                     DiagnosticCode::Interval,
@@ -2982,7 +3321,7 @@ impl<'a> Compiler<'a> {
             }
             let score_off = checked_add(
                 &expanded.score_on_q,
-                &expanded.dur_q,
+                &note.dur_q,
                 Some(expanded.source_span),
             )?;
             let on_seconds = checked_add(
@@ -3006,7 +3345,7 @@ impl<'a> Compiler<'a> {
                     .exact_tempo
                     .seconds_at(&score_off)
                     .map_err(|error| map_music_error(error, Some(expanded.source_span)))?,
-                &expanded.release_offset_seconds,
+                &note.release_offset_seconds,
                 Some(expanded.source_span),
             )?;
             let off_seconds = unclamped_off.min(score_end_seconds.clone());
@@ -3061,10 +3400,10 @@ impl<'a> Compiler<'a> {
                 score_on_q: expanded.score_on_q.clone(),
                 score_off_q: Some(score_off),
                 onset_offset_seconds: expanded.onset_offset_seconds.clone(),
-                release_offset_seconds: expanded.release_offset_seconds.clone(),
+                release_offset_seconds: note.release_offset_seconds.clone(),
                 on_seconds,
                 off_seconds: Some(off_seconds),
-                release_velocity: expanded.release_velocity,
+                release_velocity: note.release_velocity,
                 on_frame,
                 off_frame: Some(off_frame),
                 order: expanded.order,
@@ -3126,6 +3465,11 @@ impl<'a> Compiler<'a> {
     }
 
     fn output_channels(&self) -> CResult<u8> {
+        if let Some(node) = self.kit_nodes.get(&self.output.node) {
+            if let ProcessorV4::Kit { channels, .. } = node.processor {
+                return Ok(channels);
+            }
+        }
         let node = self
             .nodes
             .iter()
@@ -3455,6 +3799,100 @@ fn compile_resolved_versioned(
     }
 }
 
+fn uses_kit_profile(document: &Document) -> bool {
+    fn visit(object: &Object) -> bool {
+        object.kind == "hit"
+            || (object.kind == "asset"
+                && object.field("kind").and_then(|f| f.value.as_symbol()) == Some("audio"))
+            || (object.kind == "node"
+                && object.field("type").and_then(|f| f.value.as_string()) == Some("core.kit/1"))
+            || object.children.values().any(visit)
+    }
+    document.objects.values().any(visit)
+}
+
+fn prepare_artifact_bundle(
+    bundle: &SourceBundle,
+) -> CResult<(
+    ResolvedBundle,
+    LibrarySet,
+    Option<crate::production_data::ProductionSettings>,
+    Document,
+)> {
+    let mut resolved = bundle.resolve()?;
+    let original = resolved
+        .documents
+        .get(&resolved.entry)
+        .expect("resolved entry exists")
+        .clone();
+    let (document, production) =
+        crate::production_data::prepare_document(&original, &bundle.assets)?;
+    resolved.documents.insert(resolved.entry.clone(), document);
+    let libraries = LibrarySet::resolve(&resolved)?;
+    Ok((resolved, libraries, production, original))
+}
+
+fn compile_resolved_artifact(
+    resolved: &ResolvedBundle,
+    libraries: LibrarySet,
+    limits: &PlanLimits,
+    production: Option<crate::production_data::ProductionSettings>,
+    original: &Document,
+) -> CResult<PlanArtifact> {
+    let document = libraries.entry_document();
+    if !uses_kit_profile(&document) {
+        return compile_resolved_versioned(resolved, libraries, limits, production, original)
+            .map(PlanArtifact::from);
+    }
+    if !document
+        .objects
+        .values()
+        .any(|object| object.kind == "project")
+    {
+        return Err(diagnostics(
+            DiagnosticCode::Conflict,
+            "library sources can be checked but cannot be compiled as compositions",
+            None,
+        ));
+    }
+    prepare_instrument_compiler(resolved, libraries, &document)?
+        .run_artifact(resolved, limits, production, original)
+}
+
+/// Compile a bundle to a self-contained artifact, including native sample kits.
+pub fn compile_bundle_artifact(bundle: &SourceBundle) -> Result<PlanArtifact, Diagnostics> {
+    compile_bundle_artifact_with_limits(bundle, &PlanLimits::default())
+}
+/// Compile an artifact under an explicit caller resource allowance.
+pub fn compile_bundle_artifact_with_limits(
+    bundle: &SourceBundle,
+    limits: &PlanLimits,
+) -> Result<PlanArtifact, Diagnostics> {
+    let (resolved, libraries, production, original) = prepare_artifact_bundle(bundle)?;
+    compile_resolved_artifact(&resolved, libraries, limits, production, &original)
+}
+/// Check a composition through artifact compilation or validate all library exports.
+pub fn check_bundle_artifact(bundle: &SourceBundle) -> Result<(), Diagnostics> {
+    check_bundle_artifact_with_limits(bundle, &PlanLimits::default())
+}
+/// Check a bundle under an explicit caller resource allowance.
+pub fn check_bundle_artifact_with_limits(
+    bundle: &SourceBundle,
+    limits: &PlanLimits,
+) -> Result<(), Diagnostics> {
+    let (resolved, libraries, production, original) = prepare_artifact_bundle(bundle)?;
+    if libraries
+        .entry_document()
+        .objects
+        .values()
+        .any(|object| object.kind == "project")
+    {
+        compile_resolved_artifact(&resolved, libraries, limits, production, &original).map(|_| ())
+    } else {
+        Ok(())
+    }
+}
+
 /// Compile a bundle into its legacy step plan or a certified version 3 ramp plan.
 pub fn compile_bundle_versioned(bundle: &SourceBundle) -> Result<VersionedPlan, Diagnostics> {
     compile_bundle_versioned_with_limits(bundle, &PlanLimits::default())
@@ -3556,5 +3994,170 @@ pub fn check_versioned_with_limits(
         LibrarySet::resolve(&local_resolved(document)).map(|_| ())
     } else {
         compile_versioned_with_limits(document, limits).map(|_| ())
+    }
+}
+
+#[cfg(test)]
+mod hit_expansion_tests {
+    use super::*;
+
+    fn expand(body: &str) -> CResult<Vec<ExpandedEvent>> {
+        let document = crate::parse(&format!(
+            "maac 1; track t {{ target = &kit:events; }} {body}"
+        ))
+        .unwrap();
+        let mut compiler = Compiler::new(&document);
+        compiler.allow_hits = true;
+        compiler.score_end = Rational::from_integer(100.into());
+        compiler.read_patterns()?;
+        compiler.validate_pattern_graph()?;
+        compiler.read_tracks_and_places()?;
+        compiler.expand_places()?;
+        Ok(compiler.events)
+    }
+
+    #[test]
+    fn nested_hits_share_addresses_and_stretch_but_ignore_transpose_and_cut() {
+        let events = expand(r#"
+            pattern inner { length = 2q; hit h { at = 1q; key = ""; onset_offset = 3ms; } }
+            pattern outer { length = 8q; use u { pattern = &inner; at = 0q; stretch = 2; count = 2; transpose = 1200ct; boundary = cut; } }
+            place p { pattern = &outer; track = &t; at = 1q; stretch = 2; count = 2; transpose = -300ct; boundary = cut; }
+        "#).unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .map(|e| e.address.as_str())
+                .collect::<Vec<_>>(),
+            ["p/0/u/0/h", "p/0/u/1/h", "p/1/u/0/h", "p/1/u/1/h"]
+        );
+        assert_eq!(
+            events
+                .iter()
+                .map(|e| e.score_on_q.clone())
+                .collect::<Vec<_>>(),
+            [5, 13, 21, 29].map(|n| Rational::from_integer(n.into()))
+        );
+        for event in events {
+            assert!(matches!(event.kind, ExpandedKind::Hit { ref key } if key.is_empty()));
+            assert_eq!(
+                event.onset_offset_seconds,
+                Rational::new(3.into(), 1000.into())
+            );
+            assert_eq!(event.velocity, Rational::one());
+        }
+    }
+
+    #[test]
+    fn final_overrides_delete_and_nonrepeated_inserts() {
+        let events = expand(r#"
+            pattern pat { length = 2q; hit h { at = 0q; key = "old"; } }
+            place p { pattern = &pat; track = &t; at = 4q; stretch = 2; count = 2;
+                override edit { event = "0/h"; set = { at = 3q; key = "new"; velocity = 0.25; onset_offset = -1ms; order = -4; label = "x"; }; }
+                override gone { event = "1/h"; delete = true; }
+                insert once { hit added { at = 1q; key = "insert"; } }
+            }
+        "#).unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].address, "p/0/h");
+        assert_eq!(events[0].score_on_q, Rational::from_integer(7.into()));
+        assert_eq!(events[0].velocity, Rational::new(1.into(), 4.into()));
+        assert_eq!(events[0].order, -4);
+        assert_eq!(
+            events[0].onset_offset_seconds,
+            Rational::new((-1).into(), 1000.into())
+        );
+        assert!(matches!(events[0].kind, ExpandedKind::Hit { ref key } if key == "new"));
+        assert_eq!(events[1].address, "p/once/added");
+        assert_eq!(events[1].score_on_q, Rational::from_integer(5.into()));
+    }
+
+    #[test]
+    fn mixed_leaves_cut_only_notes_and_lower_hits_without_note_fields() {
+        let events = expand(
+            r#"
+            pattern pat { length = 2q;
+                hit h { at = 1q; key = "kick"; }
+                note n { at = 1q; dur = 3q; pitch = A4; }
+            }
+            place p { pattern = &pat; track = &t; at = 0q; stretch = 2; boundary = cut; }
+        "#,
+        )
+        .unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].score_on_q, Rational::from_integer(2.into()));
+        let ExpandedKind::Note(note) = &events[1].kind else {
+            panic!("expected note");
+        };
+        assert_eq!(note.dur_q, Rational::from_integer(2.into()));
+        assert!(events[0].note().is_err());
+        let document = crate::parse("maac 1;").unwrap();
+        let compiler = Compiler::new(&document);
+        assert!(matches!(compiler.lower_event_kind(&events[0]).unwrap(),
+            EventKind::Hit { key, velocity } if key == "kick" && velocity == Rational::one()));
+    }
+
+    #[test]
+    fn rejects_invalid_hit_source_fields_and_retains_default_capability_gate() {
+        for field in [
+            "dur = 1q;",
+            "pitch = A4;",
+            "release_offset = 1ms;",
+            "velocity = -1;",
+            "order = 1.5;",
+        ] {
+            assert!(
+                expand(&format!(
+                    r#"pattern pat {{ length = 2q; hit h {{ at = 0q; key = "x"; {field} }} }}"#
+                ))
+                .is_err(),
+                "{field}"
+            );
+        }
+        let document =
+            crate::parse(r#"maac 1; pattern pat { length = 2q; hit h { at = 0q; key = "x"; } }"#)
+                .unwrap();
+        let mut compiler = Compiler::new(&document);
+        assert!(compiler.read_patterns().is_err());
+        let document = crate::parse(r#"maac 1;
+            project p { score = [0q, 2q]; rate = 48000Hz; tempo = &clock; meter = &metre; output = &sine:out; }
+            tempo clock { points = [(0q, 120bpm, step)]; }
+            meter metre { points = [(0q, 4, 4)]; }
+            node sine { type = "core.sine/1"; }
+            track t { target = &sine:events; }
+            pattern pat { length = 2q; hit h { at = 0q; key = "x"; } }
+            place place { pattern = &pat; track = &t; at = 0q; }
+        "#).unwrap();
+        for result in [
+            compile(&document).map(|_| ()),
+            compile_versioned(&document).map(|_| ()),
+            check(&document),
+            check_versioned(&document),
+        ] {
+            assert!(result
+                .unwrap_err()
+                .iter()
+                .any(|d| d.code == DiagnosticCode::Capability));
+        }
+    }
+
+    #[test]
+    fn hit_overrides_reject_note_fields_and_invalid_velocity() {
+        for replacement in [
+            "dur = 1q",
+            "pitch = A4",
+            "release_velocity = 0.5",
+            "release_offset = 1ms",
+            "velocity = 2",
+        ] {
+            assert!(
+                expand(&format!(
+                    r#"pattern pat {{ length = 2q; hit h {{ at = 0q; key = "x"; }} }}
+                place p {{ pattern = &pat; track = &t; at = 0q;
+                override edit {{ event = "0/h"; set = {{ {replacement}; }}; }} }}"#
+                ))
+                .is_err(),
+                "{replacement}"
+            );
+        }
     }
 }

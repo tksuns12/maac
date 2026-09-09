@@ -448,3 +448,31 @@ fn filesystem_loader_rejects_source_and_asset_symlink_escapes() {
     let diagnostics = load_bundle(std::path::Path::new("main.maac"), &project).unwrap_err();
     assert_eq!(diagnostics.first().unwrap().code, DiagnosticCode::Asset);
 }
+
+#[test]
+fn core_audio_asset_discovery_is_package_relative_and_hash_pinned() {
+    let directory = tempdir().unwrap();
+    fs::create_dir(directory.path().join("nested")).unwrap();
+    let bytes = 0.5f32.to_le_bytes();
+    let declaration = |path: &str, hash: &str| {
+        source_with(&format!(
+        "asset sample {{ kind = audio; path = \"{path}\"; hash = \"{hash}\"; format = \"pcm_f32le_interleaved/1\"; rate = 48000Hz; channels = 1; frames = 1; }}"
+    ))
+    };
+    fs::write(directory.path().join("sample.f32"), bytes).unwrap();
+    let entry = directory.path().join("nested/main.maac");
+    fs::write(&entry, declaration("sample.f32", &sha256_digest(&bytes))).unwrap();
+    let bundle = load_bundle(&entry, directory.path()).unwrap();
+    assert_eq!(bundle.assets["sample.f32"], bytes);
+    fs::write(&entry, declaration("sample.f32", &sha256_digest(b"bad"))).unwrap();
+    assert_eq!(
+        load_bundle(&entry, directory.path())
+            .unwrap_err()
+            .first()
+            .unwrap()
+            .code,
+        DiagnosticCode::Hash
+    );
+    fs::write(&entry, declaration("../sample.f32", &sha256_digest(&bytes))).unwrap();
+    assert!(load_bundle(&entry, directory.path()).is_err());
+}

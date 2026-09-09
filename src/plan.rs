@@ -1567,7 +1567,8 @@ impl Plan {
             output: &self.output,
             tempo: &self.tempo,
             events: EventSlice::Legacy(&self.events),
-            nodes: &self.nodes,
+            nodes: NodeSlice::Legacy(&self.nodes),
+            audio_assets: None,
             connections: &self.connections,
             automation: AutomationSlice::Legacy(&self.automation),
             regions: &self.regions,
@@ -1577,8 +1578,8 @@ impl Plan {
         }
     }
     pub fn validate_with_limits(&self, limits: &PlanLimits) -> Result<(), PlanError> {
-        if self.version == 3 {
-            return Err(err("E_VERSION", "version", "version 3 requires PlanV3"));
+        if !matches!(self.version, 1 | 2) {
+            return Err(err("E_VERSION", "version", "Plan requires version 1 or 2"));
         }
         self.view().validate_with_limits(limits)
     }
@@ -1593,7 +1594,7 @@ impl Plan {
     /// Return the processor metadata for an instrument instance's public
     /// control. Core processors and unknown controls return `None`.
     pub fn instrument_control_spec(&self, node: &Node, control: &str) -> Option<ParameterSpec> {
-        self.view().instrument_control_spec(node, control)
+        self.view().instrument_control_spec(node.into(), control)
     }
     /// Resolve all public instrument controls, filling omitted instance values
     /// from their program defaults. The node is validated as part of lookup.
@@ -1601,7 +1602,7 @@ impl Plan {
         &self,
         node: &Node,
     ) -> Result<BTreeMap<String, Rational>, PlanError> {
-        self.view().resolved_node_params(node)
+        self.view().resolved_node_params(node.into())
     }
 }
 
@@ -1612,13 +1613,121 @@ pub(crate) struct PlanView<'a> {
     pub(crate) output: &'a OutputSettings,
     pub(crate) tempo: &'a TempoMap,
     pub(crate) events: EventSlice<'a>,
-    pub(crate) nodes: &'a [Node],
+    pub(crate) nodes: NodeSlice<'a>,
+    pub(crate) audio_assets: Option<&'a [crate::audio_asset::AudioAsset]>,
     pub(crate) connections: &'a [Connection],
     pub(crate) automation: AutomationSlice<'a>,
     pub(crate) regions: &'a [Region],
     pub(crate) source_mappings: &'a [SourceMapping],
     pub(crate) instruments: Option<&'a InstrumentResources>,
     pub(crate) production: Option<&'a crate::production_data::ProductionSettings>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum NodeSlice<'a> {
+    Legacy(&'a [Node]),
+    V4(&'a [crate::plan_v4::NodeV4]),
+}
+impl<'a> NodeSlice<'a> {
+    pub(crate) fn len(self) -> usize {
+        match self {
+            Self::Legacy(nodes) => nodes.len(),
+            Self::V4(nodes) => nodes.len(),
+        }
+    }
+    pub(crate) fn iter(self) -> Box<dyn ExactSizeIterator<Item = NodeView<'a>> + 'a> {
+        match self {
+            Self::Legacy(nodes) => Box::new(nodes.iter().map(NodeView::from)),
+            Self::V4(nodes) => Box::new(nodes.iter().map(NodeView::from)),
+        }
+    }
+    pub(crate) fn get(self, index: usize) -> Option<NodeView<'a>> {
+        match self {
+            Self::Legacy(nodes) => nodes.get(index).map(NodeView::from),
+            Self::V4(nodes) => nodes.get(index).map(NodeView::from),
+        }
+    }
+}
+impl<'a> IntoIterator for NodeSlice<'a> {
+    type Item = NodeView<'a>;
+    type IntoIter = Box<dyn ExactSizeIterator<Item = NodeView<'a>> + 'a>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum ProcessorView<'a> {
+    Core(&'a Processor),
+    Kit {
+        channels: u8,
+        voices: u32,
+        samples: &'a [crate::plan_v4::KitSampleRef],
+    },
+}
+impl<'a> ProcessorView<'a> {
+    pub(crate) fn core(self) -> Result<&'a Processor, PlanError> {
+        match self {
+            Self::Core(processor) => Ok(processor),
+            Self::Kit { .. } => Err(err(
+                "E_CAPABILITY",
+                "nodes.processor",
+                "kit processor is not supported at this boundary yet",
+            )),
+        }
+    }
+}
+#[derive(Clone, Copy)]
+enum NodeWire<'a> {
+    Legacy(&'a Node),
+    V4(&'a crate::plan_v4::NodeV4),
+}
+#[derive(Clone, Copy)]
+pub(crate) struct NodeView<'a> {
+    pub(crate) id: &'a String,
+    pub(crate) processor: ProcessorView<'a>,
+    pub(crate) params: &'a BTreeMap<String, Rational>,
+    wire: NodeWire<'a>,
+}
+impl<'a> From<&'a Node> for NodeView<'a> {
+    fn from(node: &'a Node) -> Self {
+        Self {
+            id: &node.id,
+            processor: ProcessorView::Core(&node.processor),
+            params: &node.params,
+            wire: NodeWire::Legacy(node),
+        }
+    }
+}
+impl<'a> From<&'a crate::plan_v4::NodeV4> for NodeView<'a> {
+    fn from(node: &'a crate::plan_v4::NodeV4) -> Self {
+        let processor = match &node.processor {
+            crate::plan_v4::ProcessorV4::Core { processor } => ProcessorView::Core(processor),
+            crate::plan_v4::ProcessorV4::Kit {
+                channels,
+                voices,
+                samples,
+            } => ProcessorView::Kit {
+                channels: *channels,
+                voices: *voices,
+                samples,
+            },
+        };
+        Self {
+            id: &node.id,
+            processor,
+            params: &node.params,
+            wire: NodeWire::V4(node),
+        }
+    }
+}
+impl Serialize for NodeView<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self.wire {
+            NodeWire::Legacy(node) => node.serialize(serializer),
+            NodeWire::V4(node) => node.serialize(serializer),
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1760,7 +1869,7 @@ impl<'a> PlanView<'a> {
         &self,
         limits: &PlanLimits,
     ) -> Result<Option<crate::plan_v3::TimingContext>, PlanError> {
-        if self.version != 3 {
+        if !matches!(self.version, 3 | 4) {
             self.validate_with_optional_timing(limits, None)?;
             return Ok(None);
         }
@@ -1777,11 +1886,11 @@ impl<'a> PlanView<'a> {
         limits: &PlanLimits,
         timing: &crate::plan_v3::TimingContext,
     ) -> Result<(), PlanError> {
-        if self.version != 3 {
+        if !matches!(self.version, 3 | 4) {
             return Err(err(
                 "E_VERSION",
                 "version",
-                "a ramp timing context requires plan version 3",
+                "a certified timing context requires plan version 3 or 4",
             ));
         }
         self.validate_with_optional_timing(limits, Some(timing))
@@ -1795,7 +1904,7 @@ impl<'a> PlanView<'a> {
         if !matches!(
             (&self.events, &self.automation, self.version),
             (EventSlice::Legacy(_), AutomationSlice::Legacy(_), 1 | 2)
-                | (EventSlice::V3(_), AutomationSlice::V3(_), 3)
+                | (EventSlice::V3(_), AutomationSlice::V3(_), 3 | 4)
         ) {
             return Err(err(
                 "E_VERSION",
@@ -1803,14 +1912,26 @@ impl<'a> PlanView<'a> {
                 "plan version and record schema disagree",
             ));
         }
+        if !matches!(
+            (self.nodes, self.audio_assets, self.version),
+            (NodeSlice::Legacy(_), None, 1..=3) | (NodeSlice::V4(_), Some(_), 4)
+        ) {
+            return Err(err(
+                "E_VERSION",
+                "version",
+                "plan version and node/asset schema disagree",
+            ));
+        }
         let limits = limits.bounded();
         match self.version {
             LEGACY_PLAN_VERSION => {
                 if self.instruments.is_some()
-                    || self
-                        .nodes
-                        .iter()
-                        .any(|node| matches!(node.processor, Processor::Instrument { .. }))
+                    || self.nodes.iter().any(|node| {
+                        matches!(
+                            node.processor,
+                            ProcessorView::Core(Processor::Instrument { .. })
+                        )
+                    })
                 {
                     return Err(err(
                         "E_VERSION",
@@ -1819,12 +1940,14 @@ impl<'a> PlanView<'a> {
                     ));
                 }
             }
-            3 => {
+            3 | 4 => {
                 if self.instruments.is_none()
-                    && self
-                        .nodes
-                        .iter()
-                        .any(|n| matches!(n.processor, Processor::Instrument { .. }))
+                    && self.nodes.iter().any(|n| {
+                        matches!(
+                            n.processor,
+                            ProcessorView::Core(Processor::Instrument { .. })
+                        )
+                    })
                 {
                     return Err(err(
                         "E_REFERENCE",
@@ -1850,7 +1973,7 @@ impl<'a> PlanView<'a> {
                 ));
             }
         }
-        if self.version == 3 {
+        if matches!(self.version, 3 | 4) {
             self.preflight_timing(&limits)?;
         } else {
             self.validate_counts(&limits)?;
@@ -1887,7 +2010,7 @@ impl<'a> PlanView<'a> {
         let node = self
             .nodes
             .iter()
-            .find(|node| node.id == output.node)
+            .find(|node| *node.id == output.node)
             .ok_or_else(|| err("E_REFERENCE", "output", "target node does not exist"))?;
         let port = port_descriptor(node, &output.port, false)
             .filter(|p| p.kind == PortKind::Audio)
@@ -1908,8 +2031,12 @@ impl<'a> PlanView<'a> {
 
     /// Return the processor metadata for an instrument instance's public
     /// control. Core processors and unknown controls return `None`.
-    pub fn instrument_control_spec(&self, node: &Node, control: &str) -> Option<ParameterSpec> {
-        let Processor::Instrument { program, .. } = &node.processor else {
+    pub fn instrument_control_spec(
+        &self,
+        node: NodeView<'_>,
+        control: &str,
+    ) -> Option<ParameterSpec> {
+        let Processor::Instrument { program, .. } = node.processor.core().ok()? else {
             return None;
         };
         self.instrument_program(program)?.control_spec(control)
@@ -1919,9 +2046,14 @@ impl<'a> PlanView<'a> {
     /// from their program defaults. The node is validated as part of lookup.
     pub fn resolved_node_params(
         &self,
-        node: &Node,
+        node: NodeView<'_>,
     ) -> Result<BTreeMap<String, Rational>, PlanError> {
-        let Processor::Instrument { program, .. } = &node.processor else {
+        if let ProcessorView::Kit { .. } = node.processor {
+            let mut params = node.params.clone();
+            params.entry("level".into()).or_insert_with(one);
+            return Ok(params);
+        }
+        let Processor::Instrument { program, .. } = node.processor.core()? else {
             return Ok(node.params.clone());
         };
         let program = self.instrument_program(program).ok_or_else(|| {
@@ -1936,7 +2068,7 @@ impl<'a> PlanView<'a> {
             .iter()
             .map(|(name, control)| (name.clone(), control.default.clone()))
             .collect::<BTreeMap<_, _>>();
-        for (name, value) in &node.params {
+        for (name, value) in node.params {
             let spec = program.control_spec(name).ok_or_else(|| {
                 err(
                     "E_UNKNOWN_FIELD",
@@ -1973,6 +2105,13 @@ impl<'a> PlanView<'a> {
 
     pub(crate) fn preflight_timing(&self, limits: &PlanLimits) -> Result<(), PlanError> {
         self.validate_counts(limits)?;
+        if let Some(assets) = self.audio_assets {
+            for asset in assets {
+                validate_identifier_limit(&asset.id, "audio_assets.id", limits.max_id_bytes)?;
+            }
+            self.validate_global_ids()?;
+            crate::audio_asset::validate_assets(assets)?;
+        }
         for (value, path) in [
             (&self.output.score_start_q, "output.score_start_q"),
             (&self.output.score_end_q, "output.score_end_q"),
@@ -2083,6 +2222,35 @@ impl<'a> PlanView<'a> {
                 _ => None,
             })
             .fold(0usize, usize::saturating_add);
+        let assets = self.audio_assets.unwrap_or(&[]);
+        let asset_bytes = assets
+            .iter()
+            .try_fold(0usize, |total, asset| total.checked_add(asset.bytes.len()))
+            .ok_or_else(|| {
+                err(
+                    "E_RESOURCE_LIMIT",
+                    "audio_assets",
+                    "asset byte count overflow",
+                )
+            })?;
+        if assets.len() > crate::bundle::MAX_BUNDLE_ASSETS
+            || asset_bytes > crate::bundle::MAX_BUNDLE_ASSET_BYTES
+            || assets
+                .iter()
+                .any(|asset| asset.bytes.len() > crate::bundle::MAX_BUNDLE_FILE_BYTES)
+        {
+            return Err(err(
+                "E_RESOURCE_LIMIT",
+                "audio_assets",
+                "audio asset storage limit exceeded",
+            ));
+        }
+        let kit_objects = self.nodes.iter().fold(assets.len(), |total, node| {
+            total.saturating_add(match node.processor {
+                ProcessorView::Kit { samples, .. } => samples.len(),
+                _ => 0,
+            })
+        });
         let mut resource_objects = 0usize;
         if let Some(resources) = &self.instruments {
             let graph_nodes = resources.programs.iter().fold(0usize, |total, program| {
@@ -2123,9 +2291,9 @@ impl<'a> PlanView<'a> {
 
             let mut pluck_cells = 0usize;
             for node in self.nodes {
-                let Processor::Instrument {
+                let ProcessorView::Core(Processor::Instrument {
                     program, voices, ..
-                } = &node.processor
+                }) = node.processor
                 else {
                     continue;
                 };
@@ -2154,9 +2322,9 @@ impl<'a> PlanView<'a> {
             }
 
             let voice_graph_states = self.nodes.iter().fold(0usize, |total, node| {
-                let Processor::Instrument {
+                let ProcessorView::Core(Processor::Instrument {
                     program, voices, ..
-                } = &node.processor
+                }) = node.processor
                 else {
                     return total;
                 };
@@ -2252,6 +2420,7 @@ impl<'a> PlanView<'a> {
                 }
             }
         }
+        resource_objects = resource_objects.saturating_add(kit_objects);
         if binary_payload_bytes > limits.max_json_bytes {
             return Err(err(
                 "E_RESOURCE_LIMIT",
@@ -2315,12 +2484,16 @@ impl<'a> PlanView<'a> {
             .saturating_add(path_component_count)
             .saturating_add(resource_objects)
             .saturating_add(production_usage.as_ref().map_or(0, |usage| usage.objects));
-        let timing_work = if self.version == 3 {
+        let timing_work = if matches!(self.version, 3 | 4) {
             self.timing_work()
         } else {
             0
         };
-        if (work as u64).saturating_add(timing_work) > limits.max_work {
+        if (work as u64)
+            .saturating_add(timing_work)
+            .saturating_add(asset_bytes as u64)
+            > limits.max_work
+        {
             return Err(err(
                 "E_RESOURCE_LIMIT",
                 "plan",
@@ -2342,9 +2515,27 @@ impl<'a> PlanView<'a> {
             string_bytes = string_bytes.saturating_add(value.len());
             Ok(())
         };
+        for asset in assets {
+            count_string(&asset.id, "audio_assets.id".into())?;
+            count_string(&asset.format, "audio_assets.format".into())?;
+            count_string(&asset.hash, "audio_assets.hash".into())?;
+            if asset.id.len() > limits.max_id_bytes {
+                return Err(err(
+                    "E_RESOURCE_LIMIT",
+                    "audio_assets.id",
+                    "asset ID exceeds caller limit",
+                ));
+            }
+        }
         for node in self.nodes {
-            count_string(&node.id, format!("nodes.{}", node.id))?;
-            if let Processor::Instrument { program, .. } = &node.processor {
+            if let ProcessorView::Kit { samples, .. } = node.processor {
+                for sample in samples {
+                    count_string(&sample.key, "nodes.processor.samples.key".into())?;
+                    count_string(&sample.asset, "nodes.processor.samples.asset".into())?;
+                }
+            }
+            count_string(node.id, format!("nodes.{}", node.id))?;
+            if let ProcessorView::Core(Processor::Instrument { program, .. }) = node.processor {
                 count_string(program, format!("nodes.{}.processor.program", node.id))?;
             }
             for key in node.params.keys() {
@@ -2575,7 +2766,7 @@ impl<'a> PlanView<'a> {
         let output_node = self
             .nodes
             .iter()
-            .find(|node| node.id == output.output.node)
+            .find(|node| *node.id == output.output.node)
             .ok_or_else(|| {
                 err(
                     "E_REFERENCE",
@@ -2675,6 +2866,15 @@ impl<'a> PlanView<'a> {
                 ));
             }
         }
+        for asset in self.audio_assets.unwrap_or(&[]) {
+            if !ids.insert(asset.id.clone()) {
+                return Err(err(
+                    "E_DUPLICATE_ID",
+                    format!("audio_assets.{}", asset.id),
+                    "duplicate plan object ID",
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -2707,7 +2907,7 @@ impl<'a> PlanView<'a> {
                 }
             }
             if point.shape != Interpolation::Step
-                && (self.version != 3 || point.shape != Interpolation::Linear)
+                && (!matches!(self.version, 3 | 4) || point.shape != Interpolation::Linear)
             {
                 return Err(err(
                     "E_CAPABILITY",
@@ -2717,7 +2917,7 @@ impl<'a> PlanView<'a> {
             }
             previous = Some(&point.q);
         }
-        if self.version != 3 {
+        if !matches!(self.version, 3 | 4) {
             self.tempo.checked()?;
         } else if self
             .tempo
@@ -2737,7 +2937,7 @@ impl<'a> PlanView<'a> {
     fn validate_nodes(&self, limits: &PlanLimits) -> Result<(), PlanError> {
         let mut ids = BTreeSet::new();
         for node in self.nodes {
-            validate_identifier_limit(&node.id, "nodes.id", limits.max_id_bytes)?;
+            validate_identifier_limit(node.id, "nodes.id", limits.max_id_bytes)?;
             if !ids.insert(node.id.clone()) {
                 return Err(err(
                     "E_DUPLICATE_ID",
@@ -2745,7 +2945,82 @@ impl<'a> PlanView<'a> {
                     "duplicate node ID",
                 ));
             }
-            match &node.processor {
+            if let ProcessorView::Kit {
+                channels,
+                voices,
+                samples,
+            } = node.processor
+            {
+                if channels == 0 || channels > limits.max_channels {
+                    return Err(err(
+                        "E_RANGE",
+                        format!("nodes.{}.processor.channels", node.id),
+                        "kit channels must be mono or stereo",
+                    ));
+                }
+                if voices == 0 {
+                    return Err(err(
+                        "E_RANGE",
+                        format!("nodes.{}.processor.voices", node.id),
+                        "kit voice capacity must be positive",
+                    ));
+                }
+                if voices > limits.max_voices {
+                    return Err(err(
+                        "E_RESOURCE_LIMIT",
+                        format!("nodes.{}.processor.voices", node.id),
+                        "kit voice capacity exceeds caller limit",
+                    ));
+                }
+                if samples.is_empty() {
+                    return Err(err(
+                        "E_RANGE",
+                        format!("nodes.{}.processor.samples", node.id),
+                        "kit requires at least one sample mapping",
+                    ));
+                }
+                let mut keys = BTreeSet::new();
+                for sample in samples {
+                    if !keys.insert(&sample.key) {
+                        return Err(err(
+                            "E_DUPLICATE_ID",
+                            format!("nodes.{}.processor.samples", node.id),
+                            "duplicate kit sample key",
+                        ));
+                    }
+                    let asset = self
+                        .audio_assets
+                        .unwrap_or(&[])
+                        .iter()
+                        .find(|asset| asset.id == sample.asset)
+                        .ok_or_else(|| {
+                            err(
+                                "E_REFERENCE",
+                                format!("nodes.{}.processor.samples", node.id),
+                                "kit sample asset does not exist",
+                            )
+                        })?;
+                    if asset.channels != channels {
+                        return Err(err(
+                            "E_PORT_TYPE",
+                            format!("nodes.{}.processor.samples", node.id),
+                            "kit and asset channel counts differ",
+                        ));
+                    }
+                }
+                for (parameter, value) in node.params {
+                    if parameter != "level" {
+                        return Err(err(
+                            "E_UNKNOWN_FIELD",
+                            format!("nodes.{}.params.{parameter}", node.id),
+                            "kit supports only level",
+                        ));
+                    }
+                    validate_kit_level(value, limits, format!("nodes.{}.params.level", node.id))?;
+                }
+                continue;
+            }
+            match node.processor.core()? {
                 Processor::Sine { voices } => {
                     if *voices == 0 {
                         return Err(err(
@@ -2824,7 +3099,7 @@ impl<'a> PlanView<'a> {
                     }
                 }
             }
-            match &node.processor {
+            match node.processor.core()? {
                 Processor::Compressor {
                     sidechain_channels: Some(channels),
                     ..
@@ -2859,13 +3134,13 @@ impl<'a> PlanView<'a> {
                 }
                 _ => {}
             }
-            for (parameter, value) in &node.params {
+            for (parameter, value) in node.params {
                 rational_bit_limit(
                     value,
                     limits,
                     format!("nodes.{}.params.{}", node.id, parameter),
                 )?;
-                if let Processor::Instrument { program, .. } = &node.processor {
+                if let Processor::Instrument { program, .. } = node.processor.core()? {
                     let spec = self
                         .instrument_program(program)
                         .and_then(|program| program.control_spec(parameter))
@@ -2882,21 +3157,21 @@ impl<'a> PlanView<'a> {
                         format!("nodes.{}.params.{}", node.id, parameter),
                     )?;
                 } else {
-                    if !node.processor.parameter_allowed(parameter) {
+                    if !node.processor.core()?.parameter_allowed(parameter) {
                         return Err(err(
                             "E_UNKNOWN_FIELD",
                             format!("nodes.{}.params.{}", node.id, parameter),
                             format!(
                                 "parameter is not supported by core.{}",
-                                node.processor.kind()
+                                node.processor.core()?.kind()
                             ),
                         ));
                     }
                     validate_parameter(
-                        &node.processor,
+                        node.processor.core()?,
                         parameter,
                         value,
-                        &node.id,
+                        node.id,
                         self.output.sample_rate_hz,
                     )?;
                 }
@@ -2906,7 +3181,7 @@ impl<'a> PlanView<'a> {
     }
 
     fn validate_connections(&self, limits: &PlanLimits) -> Result<(), PlanError> {
-        let node_by_id: HashMap<&str, &Node> = self
+        let node_by_id: HashMap<&str, NodeView<'_>> = self
             .nodes
             .iter()
             .map(|node| (node.id.as_str(), node))
@@ -2940,14 +3215,14 @@ impl<'a> PlanView<'a> {
                 )
             })?;
             let from =
-                port_descriptor(from_node, &connection.from.port, false).ok_or_else(|| {
+                port_descriptor(*from_node, &connection.from.port, false).ok_or_else(|| {
                     err(
                         "E_PORT_TYPE",
                         format!("connections.{}.from", connection.id),
                         "source port is not an output",
                     )
                 })?;
-            let to = port_descriptor(to_node, &connection.to.port, true).ok_or_else(|| {
+            let to = port_descriptor(*to_node, &connection.to.port, true).ok_or_else(|| {
                 err(
                     "E_PORT_TYPE",
                     format!("connections.{}.to", connection.id),
@@ -2978,12 +3253,14 @@ impl<'a> PlanView<'a> {
         for node in self.nodes {
             let requires_audio_input = matches!(
                 node.processor,
-                Processor::OnePole { .. }
-                    | Processor::Gain { .. }
-                    | Processor::Eq { .. }
-                    | Processor::Compressor { .. }
-                    | Processor::Reverb { .. }
-                    | Processor::Pan
+                ProcessorView::Core(
+                    Processor::OnePole { .. }
+                        | Processor::Gain { .. }
+                        | Processor::Eq { .. }
+                        | Processor::Compressor { .. }
+                        | Processor::Reverb { .. }
+                        | Processor::Pan
+                )
             );
             if requires_audio_input
                 && !destinations.contains_key(&(node.id.clone(), "in".to_owned()))
@@ -2998,10 +3275,10 @@ impl<'a> PlanView<'a> {
         for node in self.nodes {
             if matches!(
                 node.processor,
-                Processor::Compressor {
+                ProcessorView::Core(Processor::Compressor {
                     sidechain_channels: Some(_),
                     ..
-                }
+                })
             ) && !destinations.contains_key(&(node.id.clone(), "sidechain".into()))
             {
                 return Err(err(
@@ -3019,7 +3296,7 @@ impl<'a> PlanView<'a> {
         limits: &PlanLimits,
         timing: Option<&crate::plan_v3::TimingContext>,
     ) -> Result<(), PlanError> {
-        let node_by_id: HashMap<&str, &Node> = self
+        let node_by_id: HashMap<&str, NodeView<'_>> = self
             .nodes
             .iter()
             .map(|node| (node.id.as_str(), node))
@@ -3050,7 +3327,11 @@ impl<'a> PlanView<'a> {
                     "event target node does not exist",
                 )
             })?;
-            if !target.processor.accepts_events() || event.target.port != "events" {
+            if !match target.processor {
+                ProcessorView::Core(processor) => processor.accepts_events(),
+                ProcessorView::Kit { .. } => matches!(event.kind, EventKind::Hit { .. }),
+            } || event.target.port != "events"
+            {
                 return Err(err(
                     "E_CAPABILITY",
                     format!("events[{index}].target"),
@@ -3278,7 +3559,7 @@ impl<'a> PlanView<'a> {
                     }
                     if let Some(expression) = pitch_expression {
                         if !matches!(
-                            target.processor,
+                            target.processor.core()?,
                             Processor::Sine { .. } | Processor::Instrument { .. }
                         ) {
                             return Err(err(
@@ -3297,7 +3578,7 @@ impl<'a> PlanView<'a> {
                     }
                     if let Some(expression) = gain_expression {
                         if !matches!(
-                            target.processor,
+                            target.processor.core()?,
                             Processor::Sine { .. } | Processor::Instrument { .. }
                         ) {
                             return Err(err(
@@ -3309,7 +3590,7 @@ impl<'a> PlanView<'a> {
                         expression.validate(limits, &format!("events[{index}].gain_expression"))?;
                     }
                     if let Some(expression) = timbre_expression {
-                        let supported = match &target.processor {
+                        let supported = match target.processor.core()? {
                             Processor::Instrument { program, .. } => self
                                 .instrument_program(program)
                                 .is_some_and(|program| program.supports_timbre()),
@@ -3326,7 +3607,7 @@ impl<'a> PlanView<'a> {
                             .validate(limits, &format!("events[{index}].timbre_expression"))?;
                     }
                     if let Some(expression) = pressure_expression {
-                        let supported = match &target.processor {
+                        let supported = match target.processor.core()? {
                             Processor::Instrument { program, .. } => self
                                 .instrument_program(program)
                                 .is_some_and(|program| program.supports_pressure()),
@@ -3342,9 +3623,10 @@ impl<'a> PlanView<'a> {
                         expression
                             .validate(limits, &format!("events[{index}].pressure_expression"))?;
                     }
-                    voice_work = voice_work.saturating_add(target.processor.voice_capacity());
+                    voice_work =
+                        voice_work.saturating_add(target.processor.core()?.voice_capacity());
                 }
-                EventKind::Hit { velocity, .. } => {
+                EventKind::Hit { key, velocity } => {
                     // Validate the payload's exact value before reporting the
                     // foundation capability error.  In-memory callers must
                     // receive the same rational resource boundary as imported
@@ -3358,11 +3640,49 @@ impl<'a> PlanView<'a> {
                             "velocity must be finite in [0,1]",
                         ));
                     }
-                    return Err(err(
-                        "E_CAPABILITY",
-                        format!("events[{index}].kind"),
-                        "standalone core sine plans accept notes only",
-                    ));
+                    let ProcessorView::Kit {
+                        samples, voices, ..
+                    } = target.processor
+                    else {
+                        return Err(err(
+                            "E_CAPABILITY",
+                            format!("events[{index}].kind"),
+                            "hit requires a kit receiver",
+                        ));
+                    };
+                    if event.score_off_q.is_some()
+                        || has_off_time
+                        || event.off_frame.is_some()
+                        || !event.release_offset_seconds.is_zero()
+                        || event.release_velocity.to_bits() != 0.0_f64.to_bits()
+                    {
+                        return Err(err(
+                            "E_INTERVAL",
+                            format!("events[{index}]"),
+                            "hit must carry onset-only timing and zero unused release fields",
+                        ));
+                    }
+                    if !samples.iter().any(|sample| sample.key == *key) {
+                        return Err(err(
+                            "E_REFERENCE",
+                            format!("events[{index}].kind.key"),
+                            "kit has no such sample key",
+                        ));
+                    }
+                    let clock = timing.expect("kit requires certified timing");
+                    let end_frame = clock.frame_at_score(
+                        &self.output.score_end_q,
+                        &zero(),
+                        u64::from(self.output.sample_rate_hz),
+                    )?;
+                    if BigInt::from(event.on_frame) >= end_frame {
+                        return Err(err(
+                            "E_INTERVAL",
+                            format!("events[{index}].on_frame"),
+                            "hit onset quantizes into the tail",
+                        ));
+                    }
+                    voice_work = voice_work.saturating_add(u64::from(voices));
                 }
                 EventKind::Message { .. } => {
                     if event.score_off_q.is_some() || has_off_time {
@@ -3395,7 +3715,7 @@ impl<'a> PlanView<'a> {
         limits: &PlanLimits,
         timing: Option<&crate::plan_v3::TimingContext>,
     ) -> Result<(), PlanError> {
-        let node_by_id: HashMap<&str, &Node> = self
+        let node_by_id: HashMap<&str, NodeView<'_>> = self
             .nodes
             .iter()
             .map(|node| (node.id.as_str(), node))
@@ -3430,7 +3750,22 @@ impl<'a> PlanView<'a> {
                     "automation node does not exist",
                 )
             })?;
-            if let Processor::Instrument { program, .. } = &node.processor {
+            if let ProcessorView::Kit { .. } = node.processor {
+                if lane.target.port != "level" {
+                    return Err(err(
+                        "E_REFERENCE",
+                        format!("automation[{index}].target"),
+                        "kit supports only level",
+                    ));
+                }
+                for point in lane.points {
+                    validate_kit_level(
+                        &point.value,
+                        limits,
+                        format!("automation[{index}].points.value"),
+                    )?;
+                }
+            } else if let Processor::Instrument { program, .. } = node.processor.core()? {
                 let spec = self
                     .instrument_program(program)
                     .and_then(|program| program.control_spec(&lane.target.port))
@@ -3456,7 +3791,7 @@ impl<'a> PlanView<'a> {
                     )?;
                 }
             } else {
-                if !node.processor.parameter_allowed(&lane.target.port) {
+                if !node.processor.core()?.parameter_allowed(&lane.target.port) {
                     return Err(err(
                         "E_REFERENCE",
                         format!("automation[{index}].target"),
@@ -3464,7 +3799,7 @@ impl<'a> PlanView<'a> {
                     ));
                 }
                 validate_automation_parameter(
-                    &node.processor,
+                    node.processor.core()?,
                     &lane.target.port,
                     lane.points,
                     limits,
@@ -3472,7 +3807,7 @@ impl<'a> PlanView<'a> {
                     self.output.sample_rate_hz,
                 )?;
             }
-            if self.version == 3
+            if matches!(self.version, 3 | 4)
                 && lane.clock == AutomationClock::Score
                 && matches!(lane.anchor, AutomationAnchorView::Seconds(_))
             {
@@ -3647,11 +3982,92 @@ impl<'a> PlanView<'a> {
         Ok(())
     }
 
-    fn validate_instrument_work(&self, limits: &PlanLimits) -> Result<u64, PlanError> {
+    fn kit_execution_work(&self) -> Result<u64, PlanError> {
+        let overflow = || {
+            err(
+                "E_RESOURCE_LIMIT",
+                "nodes.kit",
+                "kit execution work overflow",
+            )
+        };
         let mut work = 0u64;
+        for node in self.nodes {
+            let ProcessorView::Kit {
+                channels, samples, ..
+            } = node.processor
+            else {
+                continue;
+            };
+            let base = self
+                .output
+                .total_frames
+                .checked_mul(4 + u64::from(channels))
+                .ok_or_else(overflow)?;
+            work = work.checked_add(base).ok_or_else(overflow)?;
+            for event in self.events().filter(|event| event.target.node == *node.id) {
+                let EventKind::Hit { key, .. } = event.kind else {
+                    continue;
+                };
+                let mapping = samples
+                    .iter()
+                    .find(|sample| sample.key == *key)
+                    .ok_or_else(|| {
+                        err(
+                            "E_REFERENCE",
+                            "events.kind.key",
+                            "kit has no such sample key",
+                        )
+                    })?;
+                let asset = self
+                    .audio_assets
+                    .unwrap_or(&[])
+                    .iter()
+                    .find(|asset| asset.id == mapping.asset)
+                    .ok_or_else(|| {
+                        err(
+                            "E_REFERENCE",
+                            "audio_assets",
+                            "kit sample asset does not exist",
+                        )
+                    })?;
+                if asset.rate_hz == 0 {
+                    return Err(err(
+                        "E_ASSET",
+                        "audio_assets.rate_hz",
+                        "asset rate must be positive",
+                    ));
+                }
+                let scaled = asset
+                    .frames
+                    .checked_mul(u64::from(self.output.sample_rate_hz))
+                    .ok_or_else(overflow)?;
+                let rate = u64::from(asset.rate_hz);
+                let lifetime = (scaled / rate)
+                    .checked_add(u64::from(scaled % rate != 0))
+                    .ok_or_else(overflow)?;
+                let remaining = self
+                    .output
+                    .total_frames
+                    .checked_sub(event.on_frame)
+                    .ok_or_else(overflow)?;
+                let cost = lifetime
+                    .min(remaining)
+                    .checked_mul(4 + 8 * u64::from(channels))
+                    .ok_or_else(overflow)?;
+                work = work.checked_add(cost).ok_or_else(overflow)?;
+            }
+        }
+        Ok(work)
+    }
+
+    fn validate_instrument_work(&self, limits: &PlanLimits) -> Result<u64, PlanError> {
+        let mut work = self.kit_execution_work()?;
         let mut cells = 0usize;
         for node in self.nodes {
-            let cost = match &node.processor {
+            if matches!(node.processor, ProcessorView::Kit { .. }) {
+                continue;
+            }
+            let cost = match node.processor.core()? {
                 Processor::Eq { channels, .. } => 32 + 10 * u64::from(*channels),
                 Processor::Compressor {
                     channels,
@@ -3695,7 +4111,7 @@ impl<'a> PlanView<'a> {
             ));
         }
         for node in self.nodes {
-            let Processor::Instrument { program, .. } = &node.processor else {
+            let ProcessorView::Core(Processor::Instrument { program, .. }) = node.processor else {
                 continue;
             };
             let program = self.instrument_program(program).ok_or_else(|| {
@@ -3761,10 +4177,9 @@ impl<'a> PlanView<'a> {
                     .get(control_name)
                     .cloned()
                     .unwrap_or_else(|| control.default.clone());
-                for lane in self
-                    .automations()
-                    .filter(|lane| lane.target.node == node.id && lane.target.port == *control_name)
-                {
+                for lane in self.automations().filter(|lane| {
+                    lane.target.node == *node.id && lane.target.port == *control_name
+                }) {
                     for point in lane.points {
                         if point.value > release {
                             release = point.value.clone();
@@ -3785,7 +4200,7 @@ impl<'a> PlanView<'a> {
             let initialization_cost = (program.pluck_node_count() as u64)
                 .saturating_mul(crate::graph::PLUCK_DELAY_CELLS as u64);
             for event in self.events().filter(|event| {
-                event.target.node == node.id && matches!(event.kind, EventKind::Note { .. })
+                event.target.node == *node.id && matches!(event.kind, EventKind::Note { .. })
             }) {
                 let release_start = event.off_frame.unwrap_or(self.output.total_frames);
                 let active_end = release_start
@@ -3845,7 +4260,20 @@ impl<'a> PlanView<'a> {
     }
 }
 
-fn validate_identifier(value: &str, path: impl Into<String>) -> Result<(), PlanError> {
+fn validate_kit_level(
+    value: &Rational,
+    limits: &PlanLimits,
+    path: String,
+) -> Result<(), PlanError> {
+    rational_bit_limit(value, limits, &path)?;
+    finite_engine_rational(value, &path)?;
+    if value.is_negative() {
+        return Err(err("E_RANGE", path, "kit level must be nonnegative"));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_identifier(value: &str, path: impl Into<String>) -> Result<(), PlanError> {
     validate_identifier_limit(value, path, PlanLimits::default().max_id_bytes)
 }
 
@@ -4058,8 +4486,23 @@ struct PortDescriptor {
     summing: bool,
 }
 
-fn port_descriptor(node: &Node, port: &str, input: bool) -> Option<PortDescriptor> {
-    match (&node.processor, input, port) {
+fn port_descriptor(node: NodeView<'_>, port: &str, input: bool) -> Option<PortDescriptor> {
+    if let ProcessorView::Kit { channels, .. } = node.processor {
+        return match (input, port) {
+            (true, "events") => Some(PortDescriptor {
+                kind: PortKind::Events,
+                channels: 0,
+                summing: true,
+            }),
+            (false, "out") => Some(PortDescriptor {
+                kind: PortKind::Audio,
+                channels,
+                summing: false,
+            }),
+            _ => None,
+        };
+    }
+    match (node.processor.core().ok()?, input, port) {
         (Processor::Sine { .. }, true, "events") => Some(PortDescriptor {
             kind: PortKind::Events,
             channels: 0,
@@ -4130,7 +4573,7 @@ fn port_descriptor(node: &Node, port: &str, input: bool) -> Option<PortDescripto
     }
 }
 
-fn detect_cycle(nodes: &[Node], edges: &[(String, String)]) -> Result<(), PlanError> {
+fn detect_cycle(nodes: NodeSlice<'_>, edges: &[(String, String)]) -> Result<(), PlanError> {
     let mut indegree: HashMap<&str, usize> =
         nodes.iter().map(|node| (node.id.as_str(), 0)).collect();
     let mut outgoing: HashMap<&str, Vec<&str>> = HashMap::new();

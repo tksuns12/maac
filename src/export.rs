@@ -15,6 +15,7 @@ use tempfile::NamedTempFile;
 use crate::dsp::{self, RenderError};
 use crate::plan::{Plan, PlanLimits, PlanView};
 use crate::plan_v3::VersionedPlan;
+use crate::PlanArtifact;
 
 pub const MAX_INPUT_BYTES: usize = 4 * 1024 * 1024;
 
@@ -215,6 +216,24 @@ pub fn write_wav_versioned_with_limits<W: Write + Seek>(
     write_wav_for_view(sink, versioned_view(plan), format, limits)
 }
 
+/// Stream a standalone artifact after preparing the engine before the WAV header.
+pub fn write_wav_artifact<W: Write + Seek>(
+    sink: W,
+    plan: &PlanArtifact,
+    format: WavFormat,
+) -> Result<WavStats, ExportError> {
+    write_wav_artifact_with_limits(sink, plan, format, &PlanLimits::default())
+}
+/// Stream an artifact with the same caller allowance across validation and preparation.
+pub fn write_wav_artifact_with_limits<W: Write + Seek>(
+    sink: W,
+    plan: &PlanArtifact,
+    format: WavFormat,
+    limits: &PlanLimits,
+) -> Result<WavStats, ExportError> {
+    write_wav_for_view(sink, plan.view(), format, limits)
+}
+
 fn versioned_view(plan: &VersionedPlan) -> PlanView<'_> {
     match plan {
         VersionedPlan::Legacy(plan) => plan.view(),
@@ -359,6 +378,26 @@ pub fn render_wav_to_path_versioned_with_limits(
     limits: &PlanLimits,
 ) -> Result<WavStats, ExportError> {
     render_wav_for_view(versioned_view(plan), path.as_ref(), format, force, limits)
+}
+
+/// Atomically publish a completed artifact render.
+pub fn render_wav_to_path_artifact(
+    plan: &PlanArtifact,
+    path: impl AsRef<Path>,
+    format: WavFormat,
+    force: bool,
+) -> Result<WavStats, ExportError> {
+    render_wav_to_path_artifact_with_limits(plan, path, format, force, &PlanLimits::default())
+}
+/// Publish an artifact render under caller limits, preserving an existing destination on failure.
+pub fn render_wav_to_path_artifact_with_limits(
+    plan: &PlanArtifact,
+    path: impl AsRef<Path>,
+    format: WavFormat,
+    force: bool,
+    limits: &PlanLimits,
+) -> Result<WavStats, ExportError> {
+    render_wav_for_view(plan.view(), path.as_ref(), format, force, limits)
 }
 
 fn render_wav_for_view(

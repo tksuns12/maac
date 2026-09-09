@@ -20,6 +20,7 @@ use crate::plan_v3::{PlanV3, TimingContext, VersionedPlan};
 use crate::production_analysis::{self as analysis, Analysis, AnalyzerLimits};
 use crate::production_convert::{self as convert, ConversionError, ConversionLimits, Converter};
 use crate::production_data::{self as data, Target};
+use crate::PlanArtifact;
 
 #[derive(Clone, Copy, Debug, Serialize)]
 pub struct DeliveryLimits {
@@ -269,6 +270,7 @@ fn analysis_work(frames: u64, channels: u8) -> Result<u64, DeliveryError> {
 enum ConcretePlan<'a> {
     Legacy(&'a Plan),
     V3(&'a PlanV3),
+    Artifact(&'a PlanArtifact),
 }
 
 impl<'a> ConcretePlan<'a> {
@@ -276,6 +278,7 @@ impl<'a> ConcretePlan<'a> {
         match self {
             Self::Legacy(plan) => plan.view(),
             Self::V3(plan) => plan.view(),
+            Self::Artifact(plan) => plan.view(),
         }
     }
 
@@ -283,12 +286,13 @@ impl<'a> ConcretePlan<'a> {
         match self {
             Self::Legacy(plan) => plan.to_json_with_limits(limits),
             Self::V3(plan) => plan.to_json_with_limits(limits),
+            Self::Artifact(plan) => plan.to_json_with_limits(limits),
         }
         .map_err(|e| error(e.code, e.message))
     }
 
-    fn is_v3(self) -> bool {
-        matches!(self, Self::V3(_))
+    fn uses_exact_duration(self) -> bool {
+        self.view().version >= 3
     }
 }
 
@@ -315,6 +319,15 @@ pub fn deliver_versioned(
         VersionedPlan::V3(plan) => ConcretePlan::V3(plan),
     };
     deliver_concrete(plan, options, plan_limits)
+}
+
+/// Execute a named delivery from a validated standalone artifact, including sample kits.
+pub fn deliver_artifact(
+    plan: &PlanArtifact,
+    options: &DeliveryOptions,
+    plan_limits: &PlanLimits,
+) -> Result<DeliveryManifest, DeliveryError> {
+    deliver_concrete(ConcretePlan::Artifact(plan), options, plan_limits)
 }
 
 fn deliver_concrete(
@@ -357,7 +370,7 @@ fn deliver_concrete(
     if selected.is_empty() || selected.len() > limits.max_targets {
         return Err(resource());
     }
-    let (legacy_duration, engine_frames, output_frames, interval) = if plan.is_v3() {
+    let (legacy_duration, engine_frames, output_frames, interval) = if plan.uses_exact_duration() {
         let timing = TimingContext::new_with_limits(view.tempo, view.output, plan_limits)
             .map_err(|e| error(e.code, e.message))?;
         let engine_frames = timing
@@ -496,11 +509,17 @@ fn deliver_concrete(
     let converter_context = json!({"identity":convert::CONVERTER_ID, "rate":delivery.rate, "arithmetic_mode":convert::ARITHMETIC_ID,
         "coefficient_generator":convert::COEFFICIENT_GENERATOR_ID, "coefficient_digest":converters[0].coefficient_digest(),
         "certificate":serde_json::from_str::<Value>(convert::COEFFICIENT_CERTIFICATE_JSON).map_err(|e| error("E_HASH", e.to_string()))?});
+    let mut dependencies = json!({"production_schema":settings.schema_hash,
+        "instrument_dependencies":view.instruments.as_ref().map(|resources| &resources.dependencies),
+        "source_files":view.instruments.as_ref().map(|resources| &resources.source_files),
+        "wavetable_sources":view.instruments.as_ref().map(|resources| &resources.wavetable_sources)});
+    if let Some(assets) = view.audio_assets {
+        dependencies["audio_assets"] = json!(assets.iter().map(|asset| (asset.id.clone(),
+            json!({"hash":asset.hash,"format":asset.format,"rate_hz":asset.rate_hz,"channels":asset.channels,"frames":asset.frames})))
+            .collect::<BTreeMap<_,_>>());
+    }
     let context = json!({"selection":selection,
-        "dependencies":{"production_schema":settings.schema_hash,
-            "instrument_dependencies":view.instruments.as_ref().map(|resources| &resources.dependencies),
-            "source_files":view.instruments.as_ref().map(|resources| &resources.source_files),
-            "wavetable_sources":view.instruments.as_ref().map(|resources| &resources.wavetable_sources)},
+        "dependencies":dependencies,
         "processors":view.nodes.iter().map(|node| (node.id.clone(), node)).collect::<BTreeMap<_,_>>(),
         "engine":{"implementation":"maac-rust","version":env!("CARGO_PKG_VERSION"),"rate":48000,"arithmetic_mode":convert::ARITHMETIC_ID},
         "converter":converter_context, "dither":reports.iter().map(|(id,r)| (id.clone(),r.dither.clone())).collect::<BTreeMap<_,_>>(),
@@ -571,7 +590,7 @@ fn deliver_concrete(
     }
     drop(writers);
     let mut manifest = DeliveryManifest {
-        schema: if plan.is_v3() {
+        schema: if plan.uses_exact_duration() {
             "maac.production.delivery-manifest/2"
         } else {
             "maac.production.delivery-manifest/1"

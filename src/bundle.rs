@@ -488,11 +488,21 @@ pub(crate) fn discover_document_references(
             "wavetable" => {
                 assets.push(asset_reference(source_path, object)?);
             }
+            "asset"
+                if object
+                    .field("kind")
+                    .and_then(|field| field.value.as_symbol())
+                    == Some("audio") =>
+            {
+                let mut reference = asset_reference(source_path, object)?;
+                reference.base = ReferenceBase::PackageRoot;
+                assets.push(reference);
+            }
             _ => {}
         }
     }
     // Only the descriptor explicitly referenced by a recognized production
-    // extension is an executable dependency. Other core assets remain for the
+    // extension is an executable dependency. Other non-audio core assets remain for the
     // ordinary semantic validator to reject, without loading their bytes.
     for extension in document
         .objects

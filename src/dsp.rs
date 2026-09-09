@@ -6,11 +6,13 @@
 //! the slice is valid until the callback returns.
 
 use crate::expression::ExpressionRuntime;
+use crate::kit::{KitRuntime, KitSample};
 use crate::plan::{
     AutomationAnchorView, AutomationClock, EventKind, EventView, GainExpression, Interpolation,
     PitchExpression, Plan, PlanError, PlanLimits, PlanView, PortRef, PressureExpression, Processor,
-    Rational, TimbreExpression,
+    ProcessorView, Rational, TimbreExpression,
 };
+use crate::plan_artifact::PlanArtifact;
 use crate::plan_v3::{TimingContext, VersionedPlan};
 use crate::production_compressor::{Compressor, CompressorParams};
 use crate::production_eq::Eq;
@@ -51,6 +53,8 @@ impl RenderError {
         match self {
             Self::Plan(error) => match error.code.as_str() {
                 "E_VERSION" => "E_VERSION",
+                "E_ASSET" => "E_ASSET",
+                "E_HASH" => "E_HASH",
                 "E_UNKNOWN_FIELD" => "E_UNKNOWN_FIELD",
                 "E_UNKNOWN_KIND" => "E_UNKNOWN_KIND",
                 "E_REFERENCE" => "E_REFERENCE",
@@ -181,6 +185,15 @@ impl<'a> DspEngine<'a> {
         )
     }
 
+    /// Prepare an opaque artifact, independently validating before allocation.
+    pub fn new_artifact(plan: &'a PlanArtifact) -> Result<Self> {
+        Self::new_artifact_with_limits(plan, &PlanLimits::default())
+    }
+    /// Prepare an opaque artifact under caller resource limits.
+    pub fn new_artifact_with_limits(plan: &'a PlanArtifact, limits: &PlanLimits) -> Result<Self> {
+        Self::new_for_view(plan.view(), limits)
+    }
+
     pub(crate) fn new_for_view(plan: PlanView<'a>, limits: &PlanLimits) -> Result<Self> {
         let timing = plan
             .validate_and_timing(limits)
@@ -210,27 +223,65 @@ impl<'a> DspEngine<'a> {
             }
         }
 
+        let mut kit_samples = BTreeMap::new();
+        for asset in plan.audio_assets.unwrap_or(&[]) {
+            kit_samples.insert(asset.id.clone(), Arc::new(KitSample::from_asset(asset)?));
+        }
         let mut node_indices = HashMap::with_capacity(plan.nodes.len());
         let mut nodes = Vec::with_capacity(plan.nodes.len());
         for (index, node) in plan.nodes.iter().enumerate() {
             node_indices.insert(node.id.clone(), index);
-            let compiled = match &node.processor {
-                Processor::Instrument { program, .. } => {
-                    Some(instrument_programs.get(program).cloned().ok_or_else(|| {
-                        RenderError::RenderState(format!(
-                            "instrument node {} refers to missing program {program}",
-                            node.id
-                        ))
-                    })?)
+            let (mut state, compiled) = match node.processor {
+                ProcessorView::Core(processor) => {
+                    let compiled = match processor {
+                        Processor::Instrument { program, .. } => {
+                            Some(instrument_programs.get(program).cloned().ok_or_else(|| {
+                                RenderError::RenderState(format!(
+                                    "instrument node {} refers to missing program {program}",
+                                    node.id
+                                ))
+                            })?)
+                        }
+                        _ => None,
+                    };
+                    (
+                        NodeState::new(
+                            node.id.clone(),
+                            processor.clone(),
+                            rate,
+                            compiled.as_ref(),
+                        )?,
+                        compiled,
+                    )
                 }
-                _ => None,
+                ProcessorView::Kit {
+                    channels,
+                    voices,
+                    samples,
+                } => {
+                    let mapping = samples
+                        .iter()
+                        .map(|sample| {
+                            let asset =
+                                kit_samples.get(&sample.asset).cloned().ok_or_else(|| {
+                                    RenderError::RenderState(format!(
+                                        "kit asset {} missing",
+                                        sample.asset
+                                    ))
+                                })?;
+                            Ok((sample.key.clone(), asset))
+                        })
+                        .collect::<Result<BTreeMap<_, _>>>()?;
+                    (
+                        NodeState::new_kit(
+                            node.id.clone(),
+                            channels,
+                            KitRuntime::new(channels, voices, mapping)?,
+                        )?,
+                        None,
+                    )
+                }
             };
-            let mut state = NodeState::new(
-                node.id.clone(),
-                node.processor.clone(),
-                rate,
-                compiled.as_ref(),
-            )?;
             let resolved_params = plan.resolved_node_params(node).map_err(RenderError::Plan)?;
             for (parameter, value) in &resolved_params {
                 let value = rational_f64(value, "node parameter")?;
@@ -512,14 +563,39 @@ impl<'a> DspEngine<'a> {
             .nodes
             .get_mut(event.node)
             .ok_or_else(|| RenderError::RenderState("event node index is invalid".into()))?;
-        let EventData::Note {
+        let (
             pitch_hz,
             velocity,
             pitch_expression,
             gain_expression,
             timbre_expression,
             pressure_expression,
-        } = event.data;
+        ) = match event.data {
+            EventData::Hit { key, velocity } => {
+                let kit = node
+                    .kit
+                    .as_mut()
+                    .ok_or_else(|| RenderError::RenderState("hit target lacks kit state".into()))?;
+                return kit
+                    .onset(frame, &key, velocity, &event.address)
+                    .map_err(RenderError::Plan);
+            }
+            EventData::Note {
+                pitch_hz,
+                velocity,
+                pitch_expression,
+                gain_expression,
+                timbre_expression,
+                pressure_expression,
+            } => (
+                pitch_hz,
+                velocity,
+                pitch_expression,
+                gain_expression,
+                timbre_expression,
+                pressure_expression,
+            ),
+        };
         if let Some(instrument) = &mut node.instrument {
             return instrument
                 .note_on_with_expressions(
@@ -542,7 +618,7 @@ impl<'a> DspEngine<'a> {
         }
         let attack = node.current_param("attack");
         let capacity = match node.processor {
-            Processor::Sine { voices } => voices as usize,
+            RuntimeProcessor::Core(Processor::Sine { voices }) => voices as usize,
             _ => {
                 return Err(RenderError::RenderState(
                     "native note event targets a non-sine processor".into(),
@@ -589,6 +665,11 @@ impl<'a> DspEngine<'a> {
             .nodes
             .get_mut(event.node)
             .ok_or_else(|| RenderError::RenderState("event node index is invalid".into()))?;
+        if !matches!(event.data, EventData::Note { .. }) {
+            return Err(RenderError::RenderState(
+                "hit cannot receive note-off".into(),
+            ));
+        }
         if let Some(instrument) = &mut node.instrument {
             return instrument.note_off(&event.address, frame);
         }
@@ -625,7 +706,21 @@ impl<'a> DspEngine<'a> {
     }
 
     fn process_node(&mut self, node_index: usize, frame: u64) -> Result<()> {
-        let processor = self.nodes[node_index].processor.clone();
+        let processor = match self.nodes[node_index].processor.clone() {
+            RuntimeProcessor::Core(processor) => processor,
+            RuntimeProcessor::Kit => {
+                let node = &mut self.nodes[node_index];
+                let level = node.current_param("level");
+                let output = node
+                    .kit
+                    .as_mut()
+                    .ok_or_else(|| RenderError::RenderState("kit state missing".into()))?
+                    .render_frame(frame, level)?;
+                let channels = node.output.len();
+                node.output.copy_from_slice(&output[..channels]);
+                return Ok(());
+            }
+        };
         let incoming = self.incoming[node_index].clone();
         match processor {
             Processor::Sine { .. } => {
@@ -700,7 +795,7 @@ impl<'a> DspEngine<'a> {
                     output.len()
                 });
                 let node = &mut self.nodes[node_index];
-                let output = match &node.processor {
+                let output = match &processor {
                     Processor::Eq { .. } => {
                         let frequency = node.current_param("frequency");
                         let q = node.current_params.get("q").copied().unwrap_or(1.0);
@@ -791,10 +886,17 @@ impl<'a> DspEngine<'a> {
     }
 }
 
+#[derive(Clone, Debug)]
+enum RuntimeProcessor {
+    Core(Processor),
+    Kit,
+}
+
 #[derive(Debug)]
 struct NodeState {
     id: String,
-    processor: Processor,
+    processor: RuntimeProcessor,
+    kit: Option<KitRuntime>,
     base_params: BTreeMap<String, f64>,
     current_params: BTreeMap<String, f64>,
     automations: BTreeMap<String, AutomationBinding>,
@@ -901,7 +1003,8 @@ impl NodeState {
         }
         let state = Self {
             id,
-            processor,
+            processor: RuntimeProcessor::Core(processor),
+            kit: None,
             current_params: base_params.clone(),
             base_params,
             automations: BTreeMap::new(),
@@ -918,6 +1021,26 @@ impl NodeState {
         Ok(state)
     }
 
+    fn new_kit(id: String, channels: u8, kit: KitRuntime) -> Result<Self> {
+        let base_params = BTreeMap::from([("level".into(), 1.0)]);
+        Ok(Self {
+            id,
+            processor: RuntimeProcessor::Kit,
+            kit: Some(kit),
+            current_params: base_params.clone(),
+            base_params,
+            automations: BTreeMap::new(),
+            output: vec![0.0; usize::from(channels)],
+            onepole_previous: Vec::new(),
+            voices: Vec::new(),
+            instrument: None,
+            eq: None,
+            compressor: None,
+            reverb: None,
+            native_bounds: BTreeMap::new(),
+        })
+    }
+
     fn initialize_instrument(
         &mut self,
         compiled: Option<Arc<CompiledInstrument>>,
@@ -925,7 +1048,7 @@ impl NodeState {
     ) -> Result<()> {
         if let Some(compiled) = compiled {
             let capacity = match self.processor {
-                Processor::Instrument { voices, .. } => voices,
+                RuntimeProcessor::Core(Processor::Instrument { voices, .. }) => voices,
                 _ => {
                     return Err(RenderError::RenderState(
                         "compiled instrument attached to a legacy processor".into(),
@@ -946,6 +1069,9 @@ impl NodeState {
         self.output.fill(0.0);
         self.onepole_previous.fill(0.0);
         self.voices.clear();
+        if let Some(kit) = &mut self.kit {
+            kit.reset();
+        }
         if let Some(eq) = &mut self.eq {
             eq.reset();
         }
@@ -985,19 +1111,30 @@ impl NodeState {
                 }
             }
             match (&self.processor, name.as_str()) {
-                (Processor::Gain { .. }, "gain") if *value < 0.0 => {
+                (RuntimeProcessor::Kit, "level") if *value < 0.0 => {
+                    return Err(RenderError::Nonfinite(format!(
+                        "kit level on {} is negative",
+                        self.id
+                    )));
+                }
+                (RuntimeProcessor::Core(Processor::Gain { .. }), "gain") if *value < 0.0 => {
                     return Err(RenderError::Nonfinite(format!(
                         "gain on {} must be nonnegative",
                         self.id
                     )))
                 }
-                (Processor::Sine { .. }, "attack" | "release" | "level") if *value < 0.0 => {
+                (
+                    RuntimeProcessor::Core(Processor::Sine { .. }),
+                    "attack" | "release" | "level",
+                ) if *value < 0.0 => {
                     return Err(RenderError::RenderState(format!(
                         "parameter {name} on {} is negative",
                         self.id
                     )))
                 }
-                (Processor::OnePole { .. }, "cutoff") if *value <= 0.0 || *value >= rate / 2.0 => {
+                (RuntimeProcessor::Core(Processor::OnePole { .. }), "cutoff")
+                    if *value <= 0.0 || *value >= rate / 2.0 =>
+                {
                     return Err(RenderError::RenderState(format!(
                         "cutoff on {} is outside (0, Nyquist)",
                         self.id
@@ -1137,7 +1274,14 @@ struct EventRuntime {
 }
 
 #[derive(Clone, Debug)]
+// Retain inline preallocated expression state without a new per-note heap allocation.
+// Event count remains bounded by plan limits.
+#[allow(clippy::large_enum_variant)]
 enum EventData {
+    Hit {
+        key: String,
+        velocity: f64,
+    },
     Note {
         pitch_hz: f64,
         velocity: f64,
@@ -1150,6 +1294,19 @@ enum EventData {
 
 impl EventRuntime {
     fn from_event(event: &EventView<'_>, node: usize, rate: u32) -> Result<Self> {
+        if let EventKind::Hit { key, velocity } = event.kind {
+            return Ok(Self {
+                address: event.address.clone(),
+                node,
+                data: EventData::Hit {
+                    key: key.clone(),
+                    velocity: rational_f64(velocity, "hit velocity")?,
+                },
+                on_frame: event.on_frame,
+                off_frame: None,
+                order: event.order,
+            });
+        }
         let EventKind::Note {
             pressure_expression,
             timbre_expression,
@@ -1309,9 +1466,9 @@ struct TempoRuntimePoint {
 
 impl TempoRuntime {
     fn new(plan: &PlanView<'_>, timing: Option<&TimingContext>) -> Result<Self> {
-        if plan.version == 3 {
+        if matches!(plan.version, 3 | 4) {
             let timing = timing.ok_or_else(|| {
-                RenderError::RenderState("version 3 validation omitted ramp timing".into())
+                RenderError::RenderState("certified plan validation omitted timing".into())
             })?;
             return Self::new_v3(plan, timing);
         }
@@ -1630,11 +1787,16 @@ fn build_automations(
         // automation lane begins. The default applies only when the node did
         // not author that parameter at all.
         let resolved_params = plan
-            .resolved_node_params(&plan.nodes[node])
+            .resolved_node_params(plan.nodes.get(node).expect("indexed node exists"))
             .map_err(RenderError::Plan)?;
         let base = match resolved_params.get(&automation.target.port) {
             Some(value) => rational_f64(value, "automation base parameter")?,
-            None => default_parameter(&plan.nodes[node].processor, &automation.target.port),
+            None => match plan.nodes.get(node).expect("indexed node exists").processor {
+                ProcessorView::Core(processor) => {
+                    default_parameter(processor, &automation.target.port)
+                }
+                ProcessorView::Kit { .. } => 1.0,
+            },
         };
         if let Some(timing) = timing {
             result.push(build_automation_v3(
@@ -1878,6 +2040,37 @@ where
 {
     DspEngine::new_versioned_with_limits(plan, limits)?.render(callback)
 }
+/// Render an opaque plan artifact using the shared engine.
+pub fn render_artifact<F>(plan: &PlanArtifact, callback: F) -> Result<()>
+where
+    F: FnMut(&[f64]) -> Result<()>,
+{
+    render_artifact_with_limits(plan, &PlanLimits::default(), callback)
+}
+/// Render an artifact under explicit caller limits.
+pub fn render_artifact_with_limits<F>(
+    plan: &PlanArtifact,
+    limits: &PlanLimits,
+    callback: F,
+) -> Result<()>
+where
+    F: FnMut(&[f64]) -> Result<()>,
+{
+    DspEngine::new_artifact_with_limits(plan, limits)?.render(callback)
+}
+/// Capture selected artifact ports while retaining complete graph context.
+pub fn render_ports_artifact_with_limits<F>(
+    plan: &PlanArtifact,
+    limits: &PlanLimits,
+    ports: &[PortRef],
+    callback: F,
+) -> Result<()>
+where
+    F: FnMut(&[Vec<f64>]) -> Result<()>,
+{
+    DspEngine::new_artifact_with_limits(plan, limits)?.render_ports(ports, callback)
+}
+
 #[allow(dead_code)] // Retained as the shared crate-internal IO boundary.
 pub(crate) fn render_view_with_limits<F>(
     plan: PlanView<'_>,

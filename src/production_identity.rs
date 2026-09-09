@@ -13,7 +13,7 @@ use crate::graph::{
     InstrumentProgram,
 };
 use crate::music::{MeterMap, MeterPoint, Pitch};
-use crate::plan::{Plan, Processor};
+use crate::plan::{Plan, Processor, ProcessorView};
 use crate::syntax::{Document, Object, Unit, Value, ValueKind};
 
 use serde_json::{json, Map, Value as JsonValue};
@@ -369,6 +369,7 @@ impl Normalizer<'_> {
                 | "connect"
                 | "region"
                 | "note"
+                | "hit"
                 | "use"
                 | "override"
                 | "insert"
@@ -425,6 +426,15 @@ impl Normalizer<'_> {
                     ),
                     ("onset_offset", quantity(0, 1, Unit::S)),
                     ("release_offset", quantity(0, 1, Unit::S)),
+                    ("order", number(0)),
+                ] {
+                    fields.entry(name).or_insert(value);
+                }
+            }
+            "hit" => {
+                for (name, value) in [
+                    ("velocity", number(1)),
+                    ("onset_offset", quantity(0, 1, Unit::S)),
                     ("order", number(0)),
                 ] {
                     fields.entry(name).or_insert(value);
@@ -496,64 +506,82 @@ impl Normalizer<'_> {
                     .plan
                     .nodes
                     .iter()
-                    .find(|n| n.id == object.id)
+                    .find(|n| *n.id == object.id)
                     .ok_or_else(|| error(format!("compiled node `{}` missing", object.id)))?;
-                match &node.processor {
-                    Processor::Sine { voices } => {
-                        config
-                            .entry("voices")
-                            .or_insert_with(|| number(i64::from(*voices)));
-                    }
-                    Processor::Instrument { voices, .. } => {
-                        config
-                            .entry("voices")
-                            .or_insert_with(|| number(i64::from(*voices)));
-                    }
-                    Processor::Compressor {
-                        sidechain_channels, ..
-                    } => {
-                        config.entry("detector").or_insert_with(|| {
-                            symbol(if sidechain_channels.is_some() {
-                                "external"
-                            } else {
-                                "internal"
-                            })
-                        });
-                    }
-                    Processor::Reverb { .. } => {
-                        config
-                            .entry("predelay")
-                            .or_insert_with(|| quantity(0, 1, Unit::S));
-                        config.entry("damping").or_insert_with(|| {
-                            rational(&BigRational::new(1.into(), 2.into()), None)
-                        });
-                    }
-                    _ => {}
+                if let ProcessorView::Kit {
+                    voices, channels, ..
+                } = node.processor
+                {
+                    config
+                        .entry("voices")
+                        .or_insert_with(|| number(i64::from(voices)));
+                    config
+                        .entry("channels")
+                        .or_insert_with(|| number(i64::from(channels)));
                 }
-                for (name, value) in &node.params {
-                    let unit = match &node.processor {
-                        Processor::Instrument { .. } => graph_unit(
-                            self.plan
-                                .instrument_control_spec(node, name)
-                                .ok_or_else(|| error("instrument control descriptor missing"))?
-                                .unit,
-                        ),
-                        Processor::Sine { .. } if matches!(name.as_str(), "attack" | "release") => {
-                            Some(Unit::S)
+                if let ProcessorView::Core(processor) = node.processor {
+                    match processor {
+                        Processor::Sine { voices } => {
+                            config
+                                .entry("voices")
+                                .or_insert_with(|| number(i64::from(*voices)));
                         }
-                        Processor::OnePole { .. } => Some(Unit::Hz),
-                        Processor::Eq { .. } => match name.as_str() {
-                            "frequency" => Some(Unit::Hz),
-                            "gain" => Some(Unit::Db),
+                        Processor::Instrument { voices, .. } => {
+                            config
+                                .entry("voices")
+                                .or_insert_with(|| number(i64::from(*voices)));
+                        }
+                        Processor::Compressor {
+                            sidechain_channels, ..
+                        } => {
+                            config.entry("detector").or_insert_with(|| {
+                                symbol(if sidechain_channels.is_some() {
+                                    "external"
+                                } else {
+                                    "internal"
+                                })
+                            });
+                        }
+                        Processor::Reverb { .. } => {
+                            config
+                                .entry("predelay")
+                                .or_insert_with(|| quantity(0, 1, Unit::S));
+                            config.entry("damping").or_insert_with(|| {
+                                rational(&BigRational::new(1.into(), 2.into()), None)
+                            });
+                        }
+                        _ => {}
+                    }
+                }
+                for (name, value) in node.params {
+                    let unit = match node.processor {
+                        ProcessorView::Kit { .. } => None,
+                        ProcessorView::Core(processor) => match processor {
+                            Processor::Instrument { .. } => graph_unit(
+                                self.plan
+                                    .instrument_control_spec(node, name)
+                                    .ok_or_else(|| error("instrument control descriptor missing"))?
+                                    .unit,
+                            ),
+                            Processor::Sine { .. }
+                                if matches!(name.as_str(), "attack" | "release") =>
+                            {
+                                Some(Unit::S)
+                            }
+                            Processor::OnePole { .. } => Some(Unit::Hz),
+                            Processor::Eq { .. } => match name.as_str() {
+                                "frequency" => Some(Unit::Hz),
+                                "gain" => Some(Unit::Db),
+                                _ => None,
+                            },
+                            Processor::Compressor { .. } => match name.as_str() {
+                                "attack" | "release" => Some(Unit::S),
+                                "threshold" | "knee" | "makeup" => Some(Unit::Db),
+                                _ => None,
+                            },
+                            Processor::Reverb { .. } if name == "decay" => Some(Unit::S),
                             _ => None,
                         },
-                        Processor::Compressor { .. } => match name.as_str() {
-                            "attack" | "release" => Some(Unit::S),
-                            "threshold" | "knee" | "makeup" => Some(Unit::Db),
-                            _ => None,
-                        },
-                        Processor::Reverb { .. } if name == "decay" => Some(Unit::S),
-                        _ => None,
                     };
                     params.entry(name).or_insert_with(|| rational(value, unit));
                 }

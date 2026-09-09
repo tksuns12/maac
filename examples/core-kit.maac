@@ -1,0 +1,73 @@
+maac 1;
+
+// Original synthesized PCM assets: regenerate with sounds/core-kit/generate_samples.py.
+// Asset paths are relative to the repository project root.
+project demo {
+  score = [0q, 8q];
+  tail = 1/4s;
+  rate = 48000Hz;
+  tempo = &clock;
+  meter = &metre;
+  output = &kit:out;
+}
+tempo clock {
+  points = [(0q, 90bpm, linear), (4q, 150bpm, linear), (8q, 90bpm, step)];
+}
+meter metre { points = [(0q, 4, 4)]; }
+
+asset kick_sample {
+  kind = audio;
+  path = "examples/sounds/core-kit/kick.pcm";
+  hash = "sha256:b29ea5c52a79d974b5d897530609d0d06a7d6cd315ae2d774340a8322c887b04";
+  format = "pcm_f32le_interleaved/1";
+  rate = 24000Hz; channels = 1; frames = 4800;
+}
+asset snare_sample {
+  kind = audio;
+  path = "examples/sounds/core-kit/snare.pcm";
+  hash = "sha256:dfedbee9ec071476e09e6ea8e54eb7338cac15629b4c26405eb67cff6ce507ca";
+  format = "pcm_f32le_interleaved/1";
+  rate = 24000Hz; channels = 1; frames = 2400;
+}
+asset hat_sample {
+  kind = audio;
+  path = "examples/sounds/core-kit/hat.pcm";
+  hash = "sha256:2327a8e3cdfd4c72d8f1e89ea273355ce024f3ea1004985d5f393838e35aadb4";
+  format = "pcm_f32le_interleaved/1";
+  rate = 48000Hz; channels = 1; frames = 1680;
+}
+node kit {
+  type = "core.kit/1";
+  config = {
+    channels = 1;
+    voices = 8;
+    samples = [
+      { key = "kick"; asset = &kick_sample; },
+      { key = "snare"; asset = &snare_sample; },
+      { key = "hat"; asset = &hat_sample; }
+    ];
+  };
+  params = { level = 3/4; };
+}
+track drums { target = &kit:events; }
+pattern groove {
+  length = 4q;
+  hit kick_one { at = 0q; key = "kick"; velocity = 1; }
+  hit kick_two { at = 2q; key = "kick"; velocity = 9/10; }
+  hit snare_one { at = 1q; key = "snare"; velocity = 4/5; }
+  hit snare_two { at = 3q; key = "snare"; velocity = 1; }
+  hit hat_one { at = 0q; key = "hat"; velocity = 4/5; }
+  hit hat_two { at = 1/2q; key = "hat"; velocity = 1/2; }
+  hit hat_three { at = 1q; key = "hat"; velocity = 4/5; }
+  hit hat_four { at = 3/2q; key = "hat"; velocity = 1/2; }
+  hit hat_five { at = 2q; key = "hat"; velocity = 4/5; }
+  hit hat_six { at = 5/2q; key = "hat"; velocity = 1/2; }
+  hit hat_seven { at = 3q; key = "hat"; velocity = 4/5; }
+  hit hat_eight { at = 7/2q; key = "hat"; velocity = 3/5; }
+}
+place twice { pattern = &groove; track = &drums; at = 0q; count = 2; }
+curve dynamics {
+  clock = score;
+  points = [(0q, 3/4, linear), (4q, 9/10, linear), (8q, 3/4, step)];
+}
+automation swell { target = &kit.params.level; curve = &dynamics; at = 0q; }

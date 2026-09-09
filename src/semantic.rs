@@ -16,6 +16,7 @@ use num_traits::{One, ToPrimitive, Zero};
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Diagnostics, Span};
 use crate::graph::{GraphUnit, ParameterRate, ParameterSpec};
 use crate::plan::{EqMode, Processor};
+use crate::plan_v4::{KitSampleRef, NodeV4, ProcessorV4};
 use crate::syntax::{Document, Field, Object, Reference, Unit, Value, ValueKind};
 
 /// Hard source-graph limits for the foundation compiler.
@@ -173,16 +174,36 @@ pub enum ReferenceTarget {
     },
 }
 
+/// Validated metadata only; asset bytes are resolved and verified by the bundle loader.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CoreAudioSource {
+    pub path: String,
+    pub hash: String,
+    pub format: String,
+    pub rate_hz: u32,
+    pub channels: u8,
+    pub frames: u64,
+}
+
 /// A validated, source-preserving graph.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SourceGraph {
     document: Document,
     project_id: String,
     nodes: BTreeMap<String, NodeDescriptor>,
+    kit_nodes: BTreeMap<String, NodeV4>,
+    audio_sources: BTreeMap<String, CoreAudioSource>,
     references: BTreeMap<String, ReferenceTarget>,
 }
 
 impl SourceGraph {
+    pub(crate) fn kit_nodes(&self) -> &BTreeMap<String, NodeV4> {
+        &self.kit_nodes
+    }
+    pub(crate) fn audio_sources(&self) -> &BTreeMap<String, CoreAudioSource> {
+        &self.audio_sources
+    }
+
     pub fn document(&self) -> &Document {
         &self.document
     }
@@ -257,8 +278,26 @@ pub(crate) fn validate_source_with_tempo_profile(
     instruments: &BTreeMap<String, InstrumentNodeDescriptor>,
     allow_ramps: bool,
 ) -> Result<SourceGraph, Diagnostics> {
+    validate_source_profile(document, instruments, allow_ramps, false)
+}
+
+pub(crate) fn validate_source_with_kit_profile(
+    document: &Document,
+    instruments: &BTreeMap<String, InstrumentNodeDescriptor>,
+    allow_ramps: bool,
+) -> Result<SourceGraph, Diagnostics> {
+    validate_source_profile(document, instruments, allow_ramps, true)
+}
+
+fn validate_source_profile(
+    document: &Document,
+    instruments: &BTreeMap<String, InstrumentNodeDescriptor>,
+    allow_ramps: bool,
+    allow_kits: bool,
+) -> Result<SourceGraph, Diagnostics> {
     let mut validator = Validator::new(document, instruments);
     validator.allow_ramps = allow_ramps;
+    validator.allow_kits = allow_kits;
     validator.validate();
     if validator.diagnostics.has_errors() {
         return Err(validator.diagnostics);
@@ -269,6 +308,8 @@ pub(crate) fn validate_source_with_tempo_profile(
         document: document.clone(),
         project_id,
         nodes: validator.nodes,
+        kit_nodes: validator.kit_nodes,
+        audio_sources: validator.audio_sources,
         references: validator.references,
     })
 }
@@ -280,12 +321,15 @@ pub fn validate(document: &Document) -> Result<SourceGraph, Diagnostics> {
 
 struct Validator<'a> {
     allow_ramps: bool,
+    allow_kits: bool,
     document: &'a Document,
     diagnostics: Diagnostics,
     project_id: Option<String>,
     project_score: Option<(BigRational, BigRational)>,
     project_rate_hz: Option<BigRational>,
     nodes: BTreeMap<String, NodeDescriptor>,
+    kit_nodes: BTreeMap<String, NodeV4>,
+    audio_sources: BTreeMap<String, CoreAudioSource>,
     references: BTreeMap<String, ReferenceTarget>,
     automation_writers: BTreeSet<String>,
     total_objects: usize,
@@ -303,11 +347,14 @@ impl<'a> Validator<'a> {
         Self {
             document,
             allow_ramps: false,
+            allow_kits: false,
             diagnostics: Diagnostics::new(),
             project_id: None,
             project_score: None,
             project_rate_hz: None,
             nodes: BTreeMap::new(),
+            kit_nodes: BTreeMap::new(),
+            audio_sources: BTreeMap::new(),
             references: BTreeMap::new(),
             automation_writers: BTreeSet::new(),
             total_objects: 0,
@@ -401,6 +448,11 @@ impl<'a> Validator<'a> {
         {
             self.validate_project(&project);
         }
+        if self.allow_kits {
+            for object in objects.iter().filter(|object| object.kind == "asset") {
+                self.validate_deferred_object(object, std::slice::from_ref(&object.id));
+            }
+        }
         for object in objects.iter().filter(|object| object.kind == "node") {
             self.validate_node(object, std::slice::from_ref(&object.id));
         }
@@ -417,7 +469,10 @@ impl<'a> Validator<'a> {
         // unused node/curve must never disappear merely because it is not
         // connected to project.output.
         for object in &objects {
-            if object.kind == "project" || object.kind == "node" {
+            if object.kind == "project"
+                || object.kind == "node"
+                || (self.allow_kits && object.kind == "asset")
+            {
                 continue;
             }
             self.validate_top_level_object(object);
@@ -631,6 +686,20 @@ impl<'a> Validator<'a> {
             _ => {}
         }
         self.reject_children(object, path);
+        if self.allow_kits {
+            if object.kind == "hit" && path.len() > 1 {
+                return;
+            }
+            if object.kind == "asset"
+                && object
+                    .field("kind")
+                    .and_then(|field| field.value.as_symbol())
+                    == Some("audio")
+            {
+                self.validate_core_audio(object, path);
+                return;
+            }
+        }
         self.push(
             DiagnosticCode::Capability,
             format!(
@@ -1446,7 +1515,7 @@ impl<'a> Validator<'a> {
             return;
         };
         for (name, replacement) in fields {
-            if !matches!(
+            if !(matches!(
                 name.as_str(),
                 "at" | "dur"
                     | "pitch"
@@ -1456,7 +1525,8 @@ impl<'a> Validator<'a> {
                     | "release_offset"
                     | "order"
                     | "label"
-            ) {
+            ) || (self.allow_kits && name == "key"))
+            {
                 self.push(
                     DiagnosticCode::UnknownField,
                     format!("override.set cannot replace `{name}`"),
@@ -1467,6 +1537,9 @@ impl<'a> Validator<'a> {
                 continue;
             }
             match name.as_str() {
+                "key" => {
+                    self.expect_string(replacement, path, "key");
+                }
                 "at" | "dur" => {
                     if let Some(value) =
                         self.quantity_value(&replacement.value, &[Unit::Q], path, name)
@@ -1832,6 +1905,10 @@ impl<'a> Validator<'a> {
             self.push_type(type_field, path, "type", "a processor identifier string");
             return;
         };
+        if self.allow_kits && processor_name == "core.kit/1" {
+            self.validate_kit_node(object, path);
+            return;
+        }
         if matches!(
             processor_name,
             "fx.eq/1" | "fx.compressor/1" | "fx.reverb/1"
@@ -1939,6 +2016,332 @@ impl<'a> Validator<'a> {
                 params: param_types,
             },
         );
+    }
+
+    fn node_ports(&self, id: &str) -> Option<Vec<PortDescriptor>> {
+        if let Some(node) = self.nodes.get(id) {
+            return Some(ports_for(node.processor, &node.config));
+        }
+        let node = self.kit_nodes.get(id)?;
+        let ProcessorV4::Kit { channels, .. } = &node.processor else {
+            return None;
+        };
+        Some(vec![
+            PortDescriptor {
+                name: "events",
+                direction: PortDirection::Input,
+                kind: PortKind::Events,
+                channels: 0,
+                accepts_multiple: true,
+                zero_default: true,
+            },
+            PortDescriptor {
+                name: "out",
+                direction: PortDirection::Output,
+                kind: PortKind::Audio,
+                channels: u32::from(*channels),
+                accepts_multiple: false,
+                zero_default: true,
+            },
+        ])
+    }
+
+    fn kit_level(&mut self, value: &Value, path: &[String]) -> Option<BigRational> {
+        let level = self.number_value(value, path, "level")?;
+        if level < BigRational::zero() || level.to_f64().is_none_or(|v| !v.is_finite()) {
+            self.push(
+                DiagnosticCode::Range,
+                "kit level must be nonnegative and engine-finite",
+                Some(value.span),
+                path.to_vec(),
+                vec!["level".into()],
+            );
+            return None;
+        }
+        Some(level)
+    }
+
+    fn bounded_integer(
+        &mut self,
+        field: &Field,
+        path: &[String],
+        name: &str,
+        min: u64,
+        max: u64,
+    ) -> Option<u64> {
+        let value = self.integer(field, path, name)?;
+        let integer = value
+            .to_integer()
+            .to_u64()
+            .filter(|v| is_integer(&value) && *v >= min && *v <= max);
+        if integer.is_none() {
+            self.push(
+                DiagnosticCode::Range,
+                format!("{name} must be an integer in [{min},{max}]"),
+                Some(field.value.span),
+                path.to_vec(),
+                vec![name.into()],
+            );
+        }
+        integer
+    }
+
+    fn validate_core_audio(&mut self, object: &Object, path: &[String]) {
+        // Generic asset shape validation has already checked all required fields and the hash syntax.
+        let (Some(format), Some(rate), Some(channels), Some(frames), Some(source_path), Some(hash)) = (
+            object.field("format"),
+            object.field("rate"),
+            object.field("channels"),
+            object.field("frames"),
+            object.field("path"),
+            object.field("hash"),
+        ) else {
+            return;
+        };
+        let Some(format_value) = format.value.as_string() else {
+            return;
+        };
+        if format_value != crate::audio_asset::CORE_AUDIO_FORMAT {
+            self.push(
+                DiagnosticCode::Capability,
+                "unsupported core audio format",
+                Some(format.value.span),
+                path.to_vec(),
+                vec!["format".into()],
+            );
+            return;
+        }
+        let rate_value = self.quantity(rate, &[Unit::Hz], path, "rate");
+        let rate_hz = rate_value.as_ref().and_then(|value| {
+            value
+                .to_integer()
+                .to_u32()
+                .filter(|rate| *rate > 0 && is_integer(value))
+        });
+        if rate_hz.is_none() {
+            self.push(
+                DiagnosticCode::Range,
+                "core audio rate must be a positive u32 integer Hz value",
+                Some(rate.value.span),
+                path.to_vec(),
+                vec!["rate".into()],
+            );
+        }
+        let channels = self.bounded_integer(channels, path, "channels", 1, 2);
+        let frames = self.bounded_integer(frames, path, "frames", 0, u64::MAX);
+        let (Some(rate_hz), Some(channels), Some(frames), Some(source_path), Some(hash)) = (
+            rate_hz,
+            channels,
+            frames,
+            source_path.value.as_string(),
+            hash.value.as_string(),
+        ) else {
+            return;
+        };
+        self.audio_sources.insert(
+            object.id.clone(),
+            CoreAudioSource {
+                path: source_path.into(),
+                hash: hash.into(),
+                format: format_value.into(),
+                rate_hz,
+                channels: channels as u8,
+                frames,
+            },
+        );
+        if self.audio_sources.len() > crate::bundle::MAX_BUNDLE_ASSETS {
+            self.push(
+                DiagnosticCode::ResourceLimit,
+                "audio asset count exceeds bundle limit",
+                Some(object.span),
+                path.to_vec(),
+                vec![],
+            );
+        }
+    }
+
+    fn validate_kit_node(&mut self, object: &Object, path: &[String]) {
+        self.reject_children(object, path);
+        for name in ["implementation", "state"] {
+            if let Some(field) = object.field(name) {
+                self.push(
+                    DiagnosticCode::Capability,
+                    "core kit cannot declare implementation or state",
+                    Some(field.span),
+                    path.to_vec(),
+                    vec![name.into()],
+                );
+            }
+        }
+        let Some(config_field) = object.field("config") else {
+            self.push(
+                DiagnosticCode::Range,
+                "core.kit/1 requires config",
+                Some(object.span),
+                path.to_vec(),
+                vec!["config".into()],
+            );
+            return;
+        };
+        let ValueKind::Record(config) = &config_field.value.kind else {
+            self.push_type(config_field, path, "config", "a record");
+            return;
+        };
+        for (name, field) in config {
+            if !matches!(name.as_str(), "channels" | "voices" | "samples") {
+                self.push(
+                    DiagnosticCode::UnknownField,
+                    format!("unknown kit config field `{name}`"),
+                    Some(field.span),
+                    path.to_vec(),
+                    vec!["config".into(), name.clone()],
+                );
+            }
+        }
+        for name in ["channels", "samples"] {
+            if !config.contains_key(name) {
+                self.push(
+                    DiagnosticCode::Range,
+                    format!("kit config requires {name}"),
+                    Some(config_field.span),
+                    path.to_vec(),
+                    vec!["config".into(), name.into()],
+                );
+            }
+        }
+        let channels = config
+            .get("channels")
+            .and_then(|f| self.bounded_integer(f, path, "channels", 1, 2));
+        let voices = match config.get("voices") {
+            Some(field) => self.bounded_integer(
+                field,
+                path,
+                "voices",
+                1,
+                u64::from(crate::plan::PlanLimits::MAX_VOICES),
+            ),
+            None => Some(64),
+        };
+        let Some(samples_field) = config.get("samples") else {
+            return;
+        };
+        let ValueKind::List(items) = &samples_field.value.kind else {
+            self.push_type(samples_field, path, "samples", "a nonempty list");
+            return;
+        };
+        if items.is_empty() {
+            self.push(
+                DiagnosticCode::Range,
+                "kit samples must be nonempty",
+                Some(samples_field.span),
+                path.to_vec(),
+                vec!["samples".into()],
+            );
+        }
+        let mut keys = BTreeSet::new();
+        let mut samples = Vec::new();
+        for item in items {
+            let ValueKind::Record(record) = &item.kind else {
+                self.push_type_value(item, path, "a sample record");
+                continue;
+            };
+            for (name, field) in record {
+                if !matches!(name.as_str(), "key" | "asset") {
+                    self.push(
+                        DiagnosticCode::UnknownField,
+                        format!("unknown kit sample field `{name}`"),
+                        Some(field.span),
+                        path.to_vec(),
+                        vec!["samples".into(), name.clone()],
+                    );
+                }
+            }
+            for name in ["key", "asset"] {
+                if !record.contains_key(name) {
+                    self.push(
+                        DiagnosticCode::Range,
+                        format!("kit sample requires {name}"),
+                        Some(item.span),
+                        path.to_vec(),
+                        vec!["samples".into(), name.into()],
+                    );
+                }
+            }
+            let key = record
+                .get("key")
+                .and_then(|field| self.expect_string(field, path, "key"));
+            let asset = record
+                .get("asset")
+                .and_then(|field| self.expect_object_ref(field, "asset", &["asset"], path));
+            if let Some(key) = &key {
+                if !keys.insert(key.clone()) {
+                    self.push(
+                        DiagnosticCode::DuplicateId,
+                        "kit sample keys must be unique",
+                        Some(item.span),
+                        path.to_vec(),
+                        vec!["samples".into(), "key".into()],
+                    );
+                }
+            }
+            if let Some(ReferenceTarget::Object { id, .. }) = asset {
+                match self.audio_sources.get(&id) {
+                    Some(asset) if Some(u64::from(asset.channels)) == channels => {
+                        if let Some(key) = key {
+                            samples.push(KitSampleRef { key, asset: id });
+                        }
+                    }
+                    Some(_) => self.push(
+                        DiagnosticCode::PortType,
+                        "kit sample channels must match kit",
+                        Some(item.span),
+                        path.to_vec(),
+                        vec!["samples".into()],
+                    ),
+                    None => self.push(
+                        DiagnosticCode::Reference,
+                        "kit sample must reference a valid core audio asset",
+                        Some(item.span),
+                        path.to_vec(),
+                        vec!["samples".into()],
+                    ),
+                }
+            }
+        }
+        let mut params = BTreeMap::from([("level".into(), BigRational::one())]);
+        if let Some(field) = object.field("params") {
+            if let ValueKind::Record(values) = &field.value.kind {
+                for (name, field) in values {
+                    if name != "level" {
+                        self.push(
+                            DiagnosticCode::UnknownField,
+                            format!("unknown kit parameter `{name}`"),
+                            Some(field.span),
+                            path.to_vec(),
+                            vec!["params".into(), name.clone()],
+                        );
+                    } else if let Some(value) = self.kit_level(&field.value, path) {
+                        params.insert(name.clone(), value);
+                    }
+                }
+            } else {
+                self.push_type(field, path, "params", "a record");
+            }
+        }
+        if let (Some(channels), Some(voices)) = (channels, voices) {
+            self.kit_nodes.insert(
+                object.id.clone(),
+                NodeV4 {
+                    id: object.id.clone(),
+                    processor: ProcessorV4::Kit {
+                        channels: channels as u8,
+                        voices: voices as u32,
+                        samples,
+                    },
+                    params,
+                },
+            );
+        }
     }
 
     fn validate_generic_node_records(&mut self, object: &Object, path: &[String]) {
@@ -2726,6 +3129,30 @@ impl<'a> Validator<'a> {
                 },
             );
             if object.kind == "node" {
+                if self.kit_nodes.contains_key(&id) {
+                    for port in self.node_ports(&id).unwrap_or_default() {
+                        self.references.insert(
+                            format!("&{id}:{}", port.name),
+                            ReferenceTarget::Port {
+                                node: id.clone(),
+                                port: port.name.into(),
+                                direction: port.direction,
+                                kind: port.kind,
+                                channels: port.channels,
+                            },
+                        );
+                    }
+                    self.references.insert(
+                        format!("&{id}.params.level"),
+                        ReferenceTarget::Parameter {
+                            node: id.clone(),
+                            parameter: "level".into(),
+                            unit: ParameterUnit::Dimensionless,
+                            range: RangePolicy::Error,
+                            rate: ParameterRate::Sample,
+                        },
+                    );
+                }
                 if let Some(descriptor) = self.nodes.get(&id).cloned() {
                     for port in ports_for(descriptor.processor, &descriptor.config) {
                         self.references.insert(
@@ -2776,9 +3203,10 @@ impl<'a> Validator<'a> {
         path: &[String],
         target: ReferenceTarget,
     ) {
-        let ReferenceTarget::Parameter { unit, .. } = target else {
+        let ReferenceTarget::Parameter { unit, node, .. } = target else {
             return;
         };
+        let kit_level = self.kit_nodes.contains_key(&node);
         let Some(curve_ref) = automation
             .field("curve")
             .and_then(|field| field.value.reference())
@@ -2811,6 +3239,9 @@ impl<'a> Validator<'a> {
         for point in &points {
             if let ValueKind::Tuple(items) = &point.kind {
                 if let Some(value) = items.get(1) {
+                    if kit_level {
+                        self.kit_level(value, path);
+                    }
                     let compatible = matches!(
                         (unit, value_dimension_of(value)),
                         (ParameterUnit::Dimensionless, Some(CurveDimension::Number))
@@ -2917,7 +3348,7 @@ impl<'a> Validator<'a> {
             return None;
         }
         let node_id = &reference.path[0];
-        let Some(descriptor) = self.nodes.get(node_id).cloned() else {
+        let Some(ports) = self.node_ports(node_id) else {
             self.push(
                 DiagnosticCode::Reference,
                 format!(
@@ -2929,10 +3360,7 @@ impl<'a> Validator<'a> {
             );
             return None;
         };
-        let Some(port) = ports_for(descriptor.processor, &descriptor.config)
-            .into_iter()
-            .find(|port| port.name == port_name)
-        else {
+        let Some(port) = ports.into_iter().find(|port| port.name == port_name) else {
             self.push(
                 DiagnosticCode::Reference,
                 format!("node `{node_id}` has no port `{port_name}`"),
@@ -2980,7 +3408,9 @@ impl<'a> Validator<'a> {
         }
         let node_id = &reference.path[0];
         let parameter_name = &reference.path[2];
-        let Some(descriptor) = self.nodes.get(node_id).cloned() else {
+        let descriptor = self.nodes.get(node_id).cloned();
+        let is_kit = self.kit_nodes.contains_key(node_id);
+        if descriptor.is_none() && !is_kit {
             self.push(
                 DiagnosticCode::Reference,
                 "parameter target node does not resolve to a supported node",
@@ -2990,13 +3420,22 @@ impl<'a> Validator<'a> {
             );
             return None;
         };
-        let parameter = if descriptor.processor == ProcessorKind::Instrument {
+        let is_instrument = descriptor
+            .as_ref()
+            .is_some_and(|d| d.processor == ProcessorKind::Instrument);
+        let parameter = if is_kit {
+            (parameter_name == "level").then_some((
+                ParameterUnit::Dimensionless,
+                RangePolicy::Error,
+                ParameterRate::Sample,
+            ))
+        } else if is_instrument {
             self.instrument_nodes
                 .get(node_id)
                 .and_then(|instrument| instrument.controls.get(parameter_name))
                 .map(|spec| (graph_unit(spec.unit), RangePolicy::Error, spec.rate))
         } else {
-            parameters_for(descriptor.processor)
+            parameters_for(descriptor.as_ref().expect("known core node").processor)
                 .into_iter()
                 .find(|parameter| parameter.name == parameter_name)
                 .map(|parameter| (parameter.unit, parameter.range, parameter.rate))
@@ -3011,7 +3450,7 @@ impl<'a> Validator<'a> {
             );
             return None;
         };
-        if descriptor.processor == ProcessorKind::Instrument && rate == ParameterRate::Reset {
+        if is_instrument && rate == ParameterRate::Reset {
             self.push(
                 DiagnosticCode::Capability,
                 format!(
@@ -4158,4 +4597,147 @@ pub(crate) fn production_node(object: &Object) -> Result<crate::plan::Node, Diag
         processor,
         params: values,
     })
+}
+
+#[cfg(test)]
+mod kit_profile_tests {
+    use super::*;
+    fn source(extra: &str) -> String {
+        format!(
+            r#"maac 1;
+        project p {{ score = [0q, 4q]; rate = 48000Hz; tempo = &clock; meter = &metre; output = &mix:out; }}
+        tempo clock {{ points = [(0q, 120bpm, step)]; }}
+        meter metre {{ points = [(0q, 4, 4)]; }}
+        asset sample {{ kind = audio; path = "sample.pcm"; hash = "sha256:{}"; format = "pcm_f32le_interleaved/1"; rate = 24kHz; channels = 1; frames = 0; }}
+        node kit {{ type = "core.kit/1"; config = {{ channels = 1; samples = [{{ key = ""; asset = &sample; }}]; }}; }}
+        node mix {{ type = "core.sum/1"; config = {{ channels = 1; }}; }}
+        connect route {{ from = &kit:out; to = &mix:in; }}
+        track t {{ target = &kit:events; }}
+        pattern pat {{ length = 2q; hit h {{ at = 0q; key = ""; }} }}
+        place place {{ pattern = &pat; track = &t; at = 0q; }}
+        {extra}"#,
+            "0".repeat(64)
+        )
+    }
+    fn validate(input: &str) -> Result<SourceGraph, Diagnostics> {
+        validate_source_with_kit_profile(&crate::parse(input).unwrap(), &BTreeMap::new(), true)
+    }
+    #[test]
+    fn mixed_routes_references_and_level_automation() {
+        for (clock, anchor, end) in [("score", "0q", "2q"), ("seconds", "0s", "2s")] {
+            let input = source(&format!(
+                r#"curve c {{ clock = {clock}; points = [(0{}, 0, linear), ({end}, 1, step)]; }} automation a {{ target = &kit.params.level; curve = &c; at = {anchor}; }}"#,
+                if clock == "score" { "q" } else { "s" }
+            ));
+            let graph = validate(&input).unwrap();
+            assert!(graph.node("kit").is_none());
+            assert!(graph.kit_nodes().contains_key("kit"));
+            assert_eq!(graph.audio_sources()["sample"].rate_hz, 24000);
+            assert_eq!(graph.audio_sources()["sample"].frames, 0);
+            let kit = &graph.kit_nodes()["kit"];
+            assert_eq!(kit.params["level"], BigRational::one());
+            assert!(
+                matches!(&kit.processor, ProcessorV4::Kit { voices: 64, samples, .. } if samples.len() == 1 && samples[0].key.is_empty())
+            );
+            assert!(matches!(
+                graph.resolve_text("&kit:out"),
+                Some(ReferenceTarget::Port {
+                    kind: PortKind::Audio,
+                    channels: 1,
+                    ..
+                })
+            ));
+            assert!(matches!(
+                graph.resolve_text("&kit.params.level"),
+                Some(ReferenceTarget::Parameter {
+                    rate: ParameterRate::Sample,
+                    ..
+                })
+            ));
+            assert!(validate_source(&crate::parse(&input).unwrap()).is_err());
+        }
+    }
+    #[test]
+    fn rejects_invalid_kit_config_assets_and_params_even_unused() {
+        let valid = source("");
+        assert!(validate(&valid.replace("channels = 1", "channels = 2")).is_ok());
+        for (from, to) in [
+            (
+                "samples = [{ key = \"\"; asset = &sample; }]",
+                "samples = []",
+            ),
+            (
+                "samples = [{ key = \"\"; asset = &sample; }]",
+                "samples = [{ key = \"\"; asset = &sample; }, { key = \"\"; asset = &sample; }]",
+            ),
+            ("asset = &sample", "asset = &missing"),
+            ("asset = &sample", "asset = &mix"),
+            ("asset = &sample", "asset = &sample:out"),
+            ("channels = 1; samples", "channels = 2; samples"),
+            ("channels = 1; samples", "voices = 0; channels = 1; samples"),
+            (
+                "channels = 1; samples",
+                "voices = 1000001; channels = 1; samples",
+            ),
+            (
+                "channels = 1; samples",
+                "channels = 1; choke = true; samples",
+            ),
+            ("channels = 1; samples", "samples"),
+            (
+                "type = \"core.kit/1\";",
+                "type = \"core.kit/1\"; params = { level = -1; };",
+            ),
+            (
+                "type = \"core.kit/1\";",
+                "type = \"core.kit/1\"; params = { attack = 1; };",
+            ),
+            ("pcm_f32le_interleaved/1", "wav"),
+            ("rate = 24kHz", "rate = 4294967296Hz"),
+            ("frames = 0", "frames = 18446744073709551616"),
+            ("frames = 0", "frames = -1"),
+            ("rate = 24kHz", "rate = 0Hz"),
+            ("rate = 24kHz", "rate = 1.5Hz"),
+            ("kind = audio", "kind = blob"),
+        ] {
+            assert_ne!(valid.replace(from, to), valid, "missing replacement {from}");
+            assert!(validate(&valid.replace(from, to)).is_err(), "accepted {to}");
+        }
+    }
+    #[test]
+    fn validates_unused_declarations_and_parameter_references() {
+        let huge = "9".repeat(400);
+        assert!(validate(&source("").replace(
+            "type = \"core.kit/1\";",
+            &format!("type = \"core.kit/1\"; params = {{ level = {huge}; }};")
+        ))
+        .is_err());
+        for extra in [
+            r#"node unused { type = "core.kit/1"; config = { channels = 1; samples = [{ key = "unused"; asset = &missing; }]; }; }"#,
+            r#"asset unused { kind = audio; path = "unused"; hash = "bad"; format = "pcm_f32le_interleaved/1"; rate = 48000Hz; channels = 1; frames = 0; }"#,
+            r#"curve c { clock = score; points = [(0q, 1, step)]; } automation a { target = &kit.params.attack; curve = &c; at = 0q; }"#,
+            r#"curve c { clock = score; points = [(0q, 1, step)]; } automation a { target = &kit.params.level; curve = &c; at = 0q; } automation b { target = &kit.params.level; curve = &c; at = 1q; }"#,
+        ] {
+            assert!(validate(&source(extra)).is_err(), "accepted {extra}");
+        }
+        assert!(validate(&source("").replace("from = &kit:out", "from = &kit:events")).is_err());
+        assert!(validate(&source("").replace("output = &mix:out", "output = &kit:out")).is_ok());
+        let input = source("").replace("place place { pattern = &pat; track = &t; at = 0q; }", r#"place place { pattern = &pat; track = &t; at = 0q; override o { event = "0/h"; set = { key = "other"; }; } }"#);
+        assert!(validate(&input).is_ok());
+    }
+    #[test]
+    fn hit_schema_and_unsupported_objects_remain_strict() {
+        for extra in [
+            "message m { at = 0q; protocol = midi1; bytes = [1]; }",
+            "audio clip { asset = &sample; at = 0q; source = [0frame, 1frame]; mode = rate; }",
+        ] {
+            assert!(validate(&source(extra)).is_err());
+        }
+        assert!(
+            validate(&source("").replace("hit h { at = 0q;", "hit h { dur = 1q; at = 0q;"))
+                .is_err()
+        );
+        assert!(validate(&source("hit bad { at = 0q; key = \"\"; }")).is_err());
+        assert!(validate(&source(r#"curve c { clock = score; points = [(0q, -1, linear), (2q, 1, step)]; } automation a { target = &kit.params.level; curve = &c; at = 0q; }"#)).is_err());
+    }
 }

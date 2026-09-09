@@ -26,7 +26,14 @@ Compiled plans embed everything needed for offline rendering.
 [Tempo ramps](docs/tempo-ramps.md) use the existing `linear` tempo shape to
 accelerate or slow down across score positions. Try
 `maac build examples/tempo-ramps.maac -o tempo-ramps.wav`.
-Ramp scores produce version 3 plans; step-only scores retain versions 1 and 2.
+Ramp scores without sample kits produce version 3 plans; other existing scores
+retain versions 1 and 2.
+
+[Native hits and sample kits](docs/core-kit.md) play pinned mono/stereo audio
+assets through `core.kit/1`. Hits use the existing pattern, placement, override,
+and tempo machinery. Version 4 plans embed the samples for offline replay.
+Sample preparation stays in external tools; this feature adds no language syntax.
+Try `maac build examples/core-kit.maac --project-root . -o core-kit.wav`.
 
 The [project-entrypoint guide](docs/project-entrypoint.md) specifies conventional
 `main.maac` discovery and the explicit finite `--profile song` allowance for
