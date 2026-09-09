@@ -1,0 +1,829 @@
+{
+  "status": "Bounded specification fixtures; renderer, SRC and authoritative meter conformance remain unimplemented.",
+  "independence": "Low-pass and high-pass expected EQ impulses are algebraic at omega=pi/2,Q=1/2: the unnormalized denominator is [2,0,0]. Peak zero gain cancels numerator/denominator. The boosted peak uses A=2, normalized b=[2,0,-2/3], a=[1,0,1/3], h[0]=2 and h[2]=-4/3; subsequent even impulse samples multiply the preceding even sample by -1/3, and odd samples are zero. Compressor constants use analytic piecewise and e-fold solutions. First reverb wet=1/2*1/2*1/sqrt(8)*1/sqrt(8)=1/32. Frame counts use exact rational duration. Dither digest vectors independently obtained with OpenSSL SHA256, not the checker implementation.",
+  "eq": [
+    {
+      "mode": "low_pass",
+      "frequency_hz": 12000,
+      "q": 0.5,
+      "gain_db": 0,
+      "expected": [
+        0.25,
+        0.5,
+        0.25,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "mode": "high_pass",
+      "frequency_hz": 12000,
+      "q": 0.5,
+      "gain_db": 0,
+      "expected": [
+        0.25,
+        -0.5,
+        0.25,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "mode": "peak",
+      "frequency_hz": 1000,
+      "q": 1,
+      "gain_db": 0,
+      "expected": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "mode": "peak",
+      "frequency_hz": 12000,
+      "q": 0.5,
+      "gain_db": 12.041199826559248,
+      "expected": [
+        2,
+        0,
+        -1.3333333333333333,
+        0,
+        0.4444444444444444,
+        0,
+        -0.14814814814814814
+      ]
+    }
+  ],
+  "compressor_knee": [
+    {
+      "level_db": -24,
+      "ratio": 4,
+      "knee_db": 0,
+      "expected_reduction_db": 0
+    },
+    {
+      "level_db": -18,
+      "ratio": 4,
+      "knee_db": 0,
+      "expected_reduction_db": 0
+    },
+    {
+      "level_db": -6,
+      "ratio": 4,
+      "knee_db": 0,
+      "expected_reduction_db": 9
+    },
+    {
+      "level_db": -21,
+      "ratio": 4,
+      "knee_db": 6,
+      "expected_reduction_db": 0
+    },
+    {
+      "level_db": -18,
+      "ratio": 4,
+      "knee_db": 6,
+      "expected_reduction_db": 0.5625
+    },
+    {
+      "level_db": -15,
+      "ratio": 4,
+      "knee_db": 6,
+      "expected_reduction_db": 2.25
+    },
+    {
+      "level_db": -6,
+      "ratio": 1,
+      "knee_db": 6,
+      "expected_reduction_db": 0
+    }
+  ],
+  "compressor_time": [
+    {
+      "initial_db": 0,
+      "target_db": 12,
+      "attack_seconds": 0.01,
+      "release_seconds": 0.1,
+      "frames": 480,
+      "expected_db": 7.585446705942692
+    },
+    {
+      "initial_db": 12,
+      "target_db": 0,
+      "attack_seconds": 0.01,
+      "release_seconds": 0.1,
+      "frames": 4800,
+      "expected_db": 4.414553294057308
+    },
+    {
+      "initial_db": 0,
+      "target_db": 12,
+      "attack_seconds": 0,
+      "release_seconds": 0.1,
+      "frames": 1,
+      "expected_db": 12
+    },
+    {
+      "initial_db": 12,
+      "target_db": 0,
+      "attack_seconds": 0.01,
+      "release_seconds": 0,
+      "frames": 1,
+      "expected_db": 0
+    }
+  ],
+  "reverb": [
+    {
+      "predelay_frames": 0,
+      "first_wet_frame": 1493,
+      "expected_first_wet": 0.03125
+    },
+    {
+      "predelay_frames": 960,
+      "first_wet_frame": 2453,
+      "expected_first_wet": 0.03125
+    }
+  ],
+  "quantization": [
+    {
+      "bits": 16,
+      "input": "0",
+      "expected_integer": 0
+    },
+    {
+      "bits": 16,
+      "input": "1",
+      "expected_integer": 32767,
+      "expected_decoded": "32767/32768"
+    },
+    {
+      "bits": 16,
+      "input": "-1",
+      "expected_integer": -32767
+    },
+    {
+      "bits": 16,
+      "input": "1/65534",
+      "expected_integer": 1
+    },
+    {
+      "bits": 16,
+      "input": "-1/65534",
+      "expected_integer": -1
+    },
+    {
+      "bits": 16,
+      "input": "10001/10000",
+      "dither_counts": "0",
+      "error": "E_OVERLOAD"
+    },
+    {
+      "bits": 16,
+      "input": "-10001/10000",
+      "dither_counts": "0",
+      "error": "E_OVERLOAD"
+    },
+    {
+      "bits": 16,
+      "input": "1",
+      "dither_counts": "1/4",
+      "error": "E_OVERLOAD"
+    },
+    {
+      "bits": 16,
+      "input": "-1",
+      "dither_counts": "-1/4",
+      "error": "E_OVERLOAD"
+    },
+    {
+      "bits": 24,
+      "input": "0",
+      "expected_integer": 0
+    },
+    {
+      "bits": 24,
+      "input": "1",
+      "expected_integer": 8388607,
+      "expected_decoded": "8388607/8388608"
+    },
+    {
+      "bits": 24,
+      "input": "-1",
+      "expected_integer": -8388607
+    },
+    {
+      "bits": 24,
+      "input": "1/16777214",
+      "expected_integer": 1
+    },
+    {
+      "bits": 24,
+      "input": "-1/16777214",
+      "expected_integer": -1
+    },
+    {
+      "bits": 24,
+      "input": "10001/10000",
+      "dither_counts": "0",
+      "error": "E_OVERLOAD"
+    },
+    {
+      "bits": 24,
+      "input": "-10001/10000",
+      "dither_counts": "0",
+      "error": "E_OVERLOAD"
+    },
+    {
+      "bits": 24,
+      "input": "1",
+      "dither_counts": "1/4",
+      "error": "E_OVERLOAD"
+    },
+    {
+      "bits": 24,
+      "input": "-1",
+      "dither_counts": "-1/4",
+      "error": "E_OVERLOAD"
+    },
+    {
+      "bits": 16,
+      "input": "0",
+      "dither_counts": "9007199254740991/18014398509481984",
+      "expected_integer": 0
+    },
+    {
+      "bits": 16,
+      "input": "0",
+      "dither_counts": "-9007199254740991/18014398509481984",
+      "expected_integer": 0
+    },
+    {
+      "bits": 16,
+      "input": "0",
+      "dither_counts": "1/2",
+      "expected_integer": 1
+    },
+    {
+      "bits": 16,
+      "input": "0",
+      "dither_counts": "-1/2",
+      "expected_integer": -1
+    },
+    {
+      "bits": 24,
+      "input": "0",
+      "dither_counts": "9007199254740991/18014398509481984",
+      "expected_integer": 0
+    },
+    {
+      "bits": 24,
+      "input": "0",
+      "dither_counts": "-9007199254740991/18014398509481984",
+      "expected_integer": 0
+    },
+    {
+      "bits": 24,
+      "input": "0",
+      "dither_counts": "1/2",
+      "expected_integer": 1
+    },
+    {
+      "bits": 24,
+      "input": "0",
+      "dither_counts": "-1/2",
+      "expected_integer": -1
+    }
+  ],
+  "dither": [
+    {
+      "seed": 1,
+      "delivery": "release_cd",
+      "target": "master",
+      "frame": 0,
+      "channel": 0,
+      "expected_hex": "-0x1.3d7359c04c146p-2",
+      "sha256_j0": "1810b03f8096006e08be5ba1c21b54eb0d1cfab75621ba519f31b667df997a08",
+      "sha256_j1": "676d86af939b1f780530cd5dcffd88db7e12c462b8f5ff793af602801eb8b9b6"
+    },
+    {
+      "seed": 1,
+      "delivery": "release_cd",
+      "target": "master",
+      "frame": 1,
+      "channel": 0,
+      "expected_hex": "-0x1.7d6c202c97dacp-1",
+      "sha256_j0": "350058b8bb7ab130ed9c830cee281383127ea3274c38593df0fdaf669939389e",
+      "sha256_j1": "f3b668cf07681482e4c4e706e3628f983ce956fc1e6f418829d71f6a036348b5"
+    }
+  ],
+  "frame_counts": [
+    {
+      "duration_seconds": "7",
+      "rate": 44100,
+      "expected_frames": 308700
+    },
+    {
+      "duration_seconds": "7",
+      "rate": 96000,
+      "expected_frames": 672000
+    },
+    {
+      "duration_seconds": "1/100000",
+      "rate": 96000,
+      "expected_frames": 1,
+      "wrong_engine_rounded_frames": 2
+    },
+    {
+      "duration_seconds": "1/44100",
+      "rate": 44100,
+      "expected_frames": 1,
+      "wrong_engine_rounded_frames": 2
+    },
+    {
+      "duration_seconds": "1/100000",
+      "rate": 48000,
+      "expected_frames": 1
+    }
+  ],
+  "invalid_source_mutations": [
+    {
+      "id": "missing_capability",
+      "replace": "requires = [\"maac.production/1\"];",
+      "error": "E_CAPABILITY",
+      "with": "requires = [];"
+    },
+    {
+      "id": "wrong_capability",
+      "replace": "requires = [\"maac.production/1\"];",
+      "error": "E_CAPABILITY",
+      "with": "requires = [\"maac.production/2\"];"
+    },
+    {
+      "id": "unsupported_processor",
+      "replace": "type = \"fx.eq/1\";",
+      "error": "E_CAPABILITY",
+      "with": "type = \"fx.eq/2\";"
+    },
+    {
+      "id": "engine_rate",
+      "replace": "rate = 48000Hz;",
+      "error": "E_RATE",
+      "with": "rate = 44100Hz;"
+    },
+    {
+      "id": "render_affecting",
+      "replace": "render_affecting = true;",
+      "error": "E_EXTENSION",
+      "with": "render_affecting = false;"
+    },
+    {
+      "id": "missing_schema_asset",
+      "replace": "schema = &production_schema;",
+      "error": "E_REFERENCE",
+      "with": "schema = &missing;"
+    },
+    {
+      "id": "wrong_schema_kind",
+      "replace": "kind = descriptor;",
+      "error": "E_SCHEMA_ASSET",
+      "with": "kind = blob;"
+    },
+    {
+      "id": "hash_pin",
+      "replace": "hash = \"sha256:",
+      "error": "E_HASH",
+      "with": "hash = \"sha257:"
+    },
+    {
+      "id": "unknown_data_field",
+      "replace": "deliveries = {",
+      "error": "E_SCHEMA",
+      "with": "unexpected = 1; deliveries = {"
+    },
+    {
+      "id": "delivery_rate_unit",
+      "replace": "rate = 44100Hz;",
+      "error": "E_SCHEMA",
+      "with": "rate = 44100s;"
+    },
+    {
+      "id": "delivery_rate",
+      "replace": "rate = 44100Hz;",
+      "error": "E_RATE",
+      "with": "rate = 88200Hz;"
+    },
+    {
+      "id": "resampler",
+      "replace": "resampler = \"maac.src.kaiser/1\";",
+      "error": "E_SCHEMA",
+      "with": "resampler = \"other/1\";"
+    },
+    {
+      "id": "delivery_extra_field",
+      "replace": "rate = 44100Hz;",
+      "error": "E_SCHEMA",
+      "with": "rate = 44100Hz; gain = 1;"
+    },
+    {
+      "id": "target_missing_output",
+      "replace": "output = &ducked_bass:out;",
+      "error": "E_SCHEMA",
+      "with": ""
+    },
+    {
+      "id": "target_missing_reference",
+      "replace": "output = &ducked_bass:out;",
+      "error": "E_REFERENCE",
+      "with": "output = &missing:out;"
+    },
+    {
+      "id": "target_wrong_port",
+      "replace": "output = &ducked_bass:out;",
+      "error": "E_PORT",
+      "with": "output = &ducked_bass:in;"
+    },
+    {
+      "id": "nested_reference",
+      "replace": "output = &ducked_bass:out;",
+      "error": "E_SCHEMA",
+      "with": "output = &library.ducked_bass:out;"
+    },
+    {
+      "id": "missing_port",
+      "replace": "output = &ducked_bass:out;",
+      "error": "E_SCHEMA",
+      "with": "output = &ducked_bass;"
+    },
+    {
+      "id": "role",
+      "replace": "role = stem;",
+      "error": "E_SCHEMA",
+      "with": "role = auxiliary;"
+    },
+    {
+      "id": "two_masters",
+      "replace": "role = stem;",
+      "error": "E_MASTER",
+      "with": "role = master;"
+    },
+    {
+      "id": "no_master",
+      "replace": "role = master;",
+      "error": "E_MASTER",
+      "with": "role = stem;"
+    },
+    {
+      "id": "master_mismatch",
+      "replace": "  output = &master:out;\n  tail",
+      "error": "E_MASTER",
+      "with": "  output = &bass_room:out;\n  tail"
+    },
+    {
+      "id": "encoding",
+      "replace": "encoding = wav_pcm16le;",
+      "error": "E_SCHEMA",
+      "with": "encoding = flac;"
+    },
+    {
+      "id": "missing_dither",
+      "replace": "dither = { type = tpdf; seed = 1; };",
+      "error": "E_SCHEMA",
+      "with": ""
+    },
+    {
+      "id": "float_dither",
+      "replace": "encoding = wav_pcm16le;",
+      "error": "E_SCHEMA",
+      "with": "encoding = wav_f32le;"
+    },
+    {
+      "id": "unknown_dither",
+      "replace": "type = tpdf; seed = 1;",
+      "error": "E_SCHEMA",
+      "with": "type = noise; seed = 1;"
+    },
+    {
+      "id": "negative_seed",
+      "replace": "type = tpdf; seed = 1;",
+      "error": "E_SCHEMA",
+      "with": "type = tpdf; seed = -1;"
+    },
+    {
+      "id": "fractional_seed",
+      "replace": "type = tpdf; seed = 1;",
+      "error": "E_SCHEMA",
+      "with": "type = tpdf; seed = 1/2;"
+    },
+    {
+      "id": "huge_seed",
+      "replace": "type = tpdf; seed = 1;",
+      "error": "E_SEED",
+      "with": "type = tpdf; seed = 18446744073709551616;"
+    },
+    {
+      "id": "none_seed",
+      "replace": "type = tpdf; seed = 1;",
+      "error": "E_SCHEMA",
+      "with": "type = none; seed = 1;"
+    },
+    {
+      "id": "limit_unit",
+      "replace": "unit = LUFS;",
+      "error": "E_SCHEMA",
+      "with": "unit = dBFS;"
+    },
+    {
+      "id": "limit_order",
+      "replace": "min = -24; max = -22;",
+      "error": "E_LIMIT",
+      "with": "min = -20; max = -22;"
+    },
+    {
+      "id": "limit_no_bounds",
+      "replace": "min = -24; max = -22;",
+      "error": "E_SCHEMA",
+      "with": ""
+    },
+    {
+      "id": "limit_quantity",
+      "replace": "min = -24;",
+      "error": "E_SCHEMA",
+      "with": "min = -24dB;"
+    },
+    {
+      "id": "unknown_limit",
+      "replace": "sample_peak = {",
+      "error": "E_SCHEMA",
+      "with": "loudness_range = {"
+    },
+    {
+      "id": "missing_native_channels",
+      "replace": "channels = 1; mode = peak;",
+      "error": "E_LAYOUT",
+      "with": "mode = peak;"
+    },
+    {
+      "id": "unsupported_native_layout",
+      "replace": "channels = 1; mode = peak;",
+      "error": "E_LAYOUT",
+      "with": "channels = 6; mode = peak;"
+    },
+    {
+      "id": "unknown_native_config",
+      "replace": "channels = 1; mode = peak;",
+      "error": "E_FIELD",
+      "with": "channels = 1; mode = peak; smoothing = 1;"
+    },
+    {
+      "id": "unknown_eq_mode",
+      "replace": "mode = peak;",
+      "error": "E_MODE",
+      "with": "mode = notch;"
+    },
+    {
+      "id": "eq_unit",
+      "replace": "frequency = 1000Hz;",
+      "error": "E_UNIT",
+      "with": "frequency = 1000s;"
+    },
+    {
+      "id": "eq_nyquist",
+      "replace": "frequency = 1000Hz;",
+      "error": "E_RANGE",
+      "with": "frequency = 24000Hz;"
+    },
+    {
+      "id": "eq_zero_frequency",
+      "replace": "frequency = 1000Hz;",
+      "error": "E_RANGE",
+      "with": "frequency = 0Hz;"
+    },
+    {
+      "id": "eq_q_range",
+      "replace": "q = 1;",
+      "error": "E_RANGE",
+      "with": "q = 19;"
+    },
+    {
+      "id": "eq_pass_gain",
+      "replace": "mode = peak;",
+      "error": "E_PARAMETER",
+      "with": "mode = low_pass;"
+    },
+    {
+      "id": "eq_shelf_q",
+      "replace": "mode = peak;",
+      "error": "E_PARAMETER",
+      "with": "mode = low_shelf;"
+    },
+    {
+      "id": "native_implementation",
+      "replace": "type = \"fx.eq/1\";",
+      "error": "E_FIELD",
+      "with": "type = \"fx.eq/1\"; implementation = &production_schema;"
+    },
+    {
+      "id": "native_state",
+      "replace": "type = \"fx.eq/1\";",
+      "error": "E_FIELD",
+      "with": "type = \"fx.eq/1\"; state = &production_schema;"
+    },
+    {
+      "id": "missing_main",
+      "replace": "connect bass_filter { from = &bass:out; to = &bass_eq:in; }",
+      "error": "E_INPUT",
+      "with": ""
+    },
+    {
+      "id": "main_layout",
+      "replace": "connect bass_main { from = &bass_pan:out;",
+      "error": "E_LAYOUT",
+      "with": "connect bass_main { from = &bass:out;"
+    },
+    {
+      "id": "sidechain_layout",
+      "replace": "detector = external; sidechain_channels = 1;",
+      "error": "E_SIDECHAIN",
+      "with": "detector = external; sidechain_channels = 3;"
+    },
+    {
+      "id": "sidechain_mismatch",
+      "replace": "from = &pulse:out; to = &ducked_bass:sidechain;",
+      "error": "E_LAYOUT",
+      "with": "from = &pulse_pan:out; to = &ducked_bass:sidechain;"
+    },
+    {
+      "id": "missing_sidechain_config",
+      "replace": "sidechain_channels = 1;",
+      "error": "E_SIDECHAIN",
+      "with": ""
+    },
+    {
+      "id": "missing_sidechain",
+      "replace": "connect pulse_detector { from = &pulse:out; to = &ducked_bass:sidechain; }",
+      "error": "E_SIDECHAIN",
+      "with": ""
+    },
+    {
+      "id": "extraneous_sidechain",
+      "replace": "detector = external; sidechain_channels = 1;",
+      "error": "E_SIDECHAIN",
+      "with": "detector = internal;"
+    },
+    {
+      "id": "duplicate_sidechain",
+      "replace": "connect pulse_detector {",
+      "error": "E_SIDECHAIN",
+      "with": "connect extra_detector { from = &pulse:out; to = &ducked_bass:sidechain; } connect pulse_detector {"
+    },
+    {
+      "id": "compressor_ratio",
+      "replace": "ratio = 4;",
+      "error": "E_RANGE",
+      "with": "ratio = 101;"
+    },
+    {
+      "id": "compressor_time_unit",
+      "replace": "attack = 10ms;",
+      "error": "E_UNIT",
+      "with": "attack = 10dB;"
+    },
+    {
+      "id": "reverb_predelay",
+      "replace": "predelay = 20ms;",
+      "error": "E_RANGE",
+      "with": "predelay = 251ms;"
+    },
+    {
+      "id": "reverb_damping",
+      "replace": "damping = 0.5;",
+      "error": "E_RANGE",
+      "with": "damping = 2;"
+    },
+    {
+      "id": "reverb_decay",
+      "replace": "decay = 1.5s;",
+      "error": "E_RANGE",
+      "with": "decay = 0s;"
+    },
+    {
+      "id": "immutable_automation",
+      "replace": "target = &bass_eq.params.frequency;",
+      "error": "E_AUTOMATION",
+      "with": "target = &bass_eq.config.mode;"
+    },
+    {
+      "id": "unknown_automation",
+      "replace": "target = &bass_room.params.decay;",
+      "error": "E_AUTOMATION",
+      "with": "target = &bass_room.params.predelay;"
+    },
+    {
+      "id": "duplicate_main",
+      "replace": "connect bass_filter {",
+      "error": "E_INPUT",
+      "with": "connect duplicate_main { from = &bass:out; to = &bass_eq:in; } connect bass_filter {"
+    },
+    {
+      "id": "control_stem",
+      "replace": "type = \"core.sine/1\";",
+      "error": "E_CAPABILITY",
+      "with": "type = \"core.lfo/1\";"
+    },
+    {
+      "id": "limit_binary64_overflow",
+      "replace": "min = -24;",
+      "error": "E_NONFINITE",
+      "with": "min = -9999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999;"
+    },
+    {
+      "id": "quoted_eq_mode",
+      "replace": "mode = peak;",
+      "error": "E_FIELD",
+      "with": "mode = \"peak\";"
+    },
+    {
+      "id": "quoted_detector",
+      "replace": "detector = external;",
+      "error": "E_FIELD",
+      "with": "detector = \"external\";"
+    },
+    {
+      "id": "unknown_extension",
+      "replace": "namespace = \"maac.production/1\";",
+      "error": "E_CAPABILITY",
+      "with": "namespace = \"maac.production/2\";"
+    },
+    {
+      "id": "automation_curve_unit",
+      "replace": "(0q, 600Hz, exponential)",
+      "error": "E_UNIT",
+      "with": "(0q, 600s, exponential)"
+    },
+    {
+      "id": "automation_curve_range",
+      "replace": "(0q, 600Hz, exponential)",
+      "error": "E_RANGE",
+      "with": "(0q, 25000Hz, exponential)"
+    },
+    {
+      "id": "automation_curve_reference",
+      "replace": "curve = &eq_sweep;",
+      "error": "E_REFERENCE",
+      "with": "curve = &missing;"
+    },
+    {
+      "id": "automation_curve_order",
+      "replace": "(8q, 1800Hz, step)",
+      "error": "E_AUTOMATION",
+      "with": "(0q, 1800Hz, step)"
+    },
+    {
+      "id": "automation_exponential_zero",
+      "replace": "(0s, 1.5s, linear)",
+      "error": "E_RANGE",
+      "with": "(0s, 0s, exponential)"
+    },
+    {
+      "id": "curve_missing_clock",
+      "replace": "curve eq_sweep {\n  clock = score;",
+      "with": "curve eq_sweep {",
+      "error": "E_AUTOMATION"
+    },
+    {
+      "id": "curve_first_nonzero",
+      "replace": "(0q, 600Hz, exponential)",
+      "with": "(1q, 600Hz, exponential)",
+      "error": "E_AUTOMATION"
+    },
+    {
+      "id": "curve_final_not_step",
+      "replace": "(8q, 1800Hz, step)",
+      "with": "(8q, 1800Hz, linear)",
+      "error": "E_AUTOMATION"
+    },
+    {
+      "id": "curve_exponential_logarithmic",
+      "replace": "curve eq_sweep {\n  clock = score;\n  points = [(0q, 600Hz, exponential), (8q, 1800Hz, step)];\n}\nautomation sweep_bass { target = &bass_eq.params.frequency;",
+      "with": "curve eq_sweep {\n  clock = score;\n  points = [(0q, 1dB, exponential), (8q, 2dB, step)];\n}\nautomation sweep_bass { target = &bass_eq.params.gain;",
+      "error": "E_AUTOMATION"
+    }
+  ],
+  "future_renderer_gates": [
+    "Run official applicable ITU/EBU metering fixtures at all delivery rates before claiming BS.1770 capability.",
+    "Verify SRC independently, including impulse phase, alias rejection, DC normalization, edges and passthrough.",
+    "Preserve external sidechains and complete graph during stem export.",
+    "Align every stem and master to exact full duration and declared tail.",
+    "Check state continuity through automation and tail, reset replay and finite-state failures.",
+    "Analyze decoded final artifacts after resampling and dither; test silence and unmeasurable loudness statuses.",
+    "Retain and atomically publish completed audio when selected limits fail; check failure status and complete manifest publication.",
+    "Numerical verification is separate from listening acceptance; no professional sound-quality claim."
+  ],
+  "diagnostics": "E_* values in invalid_source_mutations are checker-local classifications, not normative MaaC diagnostic codes or renderer requirements."
+}

@@ -11,6 +11,12 @@ actually published; no release tag or publication date is asserted here.
 
 ### Added
 
+- A normative [native mixing and delivery design](docs/production.md) for the
+  required `maac.production/1` capability, with a pinned delivery schema,
+  complete example, and bounded specification/conformance checks. EQ,
+  compression, reverb, named master/stem deliveries, resampling, and
+  final-artifact analysis are specified but unimplemented; this addition does
+  not ship production DSP or change implemented performance-plan versions.
 - A Rust library and `maac` CLI for checking source, compiling a standalone
   versioned performance plan, rendering an imported plan, and building source
   directly to WAV.

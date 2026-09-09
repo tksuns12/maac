@@ -69,5 +69,8 @@ jobs:
             fi
           done
 
+      - name: Check production specification and bounded fixtures
+        run: python check_production.py
+
       - name: Run macOS offline installed-CLI acceptance
         run: python scripts/acceptance.py

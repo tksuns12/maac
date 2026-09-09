@@ -54,6 +54,24 @@ implementation. It preserves source grammar, core processor and plan versions,
 public graph DAG rules, and frozen basic-library bytes. Numerical verification
 and user listening acceptance remain separate from this design approval.
 
+### 1.4 Specified native production extension
+
+The normative [native mixing and delivery contract](docs/production.md) defines
+the explicitly required capability `maac.production/1`: native `fx.eq/1`,
+`fx.compressor/1`, and `fx.reverb/1` nodes, plus named master/stem deliveries,
+resampling, encoding, and final-artifact loudness analysis. These processors
+use existing `node` syntax and require no external executable implementation
+asset. Named deliveries use an existing render-affecting `extension` object
+with a hash-pinned, self-contained [schema](production.schema.json).
+
+This capability preserves `maac 1` semantics and all Core Audio conformance
+obligations; supporting it does not establish Core Audio conformance. The
+grammar, generic syntax-tree schema, and implemented performance-plan versions
+remain unchanged. Production support is **specified but unimplemented** in the
+Rust foundation; the [example](examples/production.maac) and bounded
+[fixtures](production-conformance.json) document the proposed contract, not
+renderer availability or listening acceptance.
+
 ## 2. File format and lexical rules
 
 The recommended source extension is `.maac`. Files are UTF-8. A file begins with:
@@ -844,6 +862,11 @@ Rendered audio preserves a particular result, not the editable note/graph struct
 An `extension` requires `namespace`, an exact versioned identifier string; `schema`, a descriptor-asset reference; `render_affecting`, boolean; and `data`, a record. Its namespace must appear in `project.requires`. A host that does not understand a required extension may preserve it for Document-only inspection but must not claim semantic normalization or faithful rendering of that document. In particular, it must not trust an unknown schema's assertion that arbitrary data is non-rendering merely to omit it from a hash.
 
 Extensions may add explicitly namespaced object structures or capabilities only through their published schemas and adapters. They cannot redefine core units, mutate another object's behavior implicitly, shadow core IDs, or grant execution permission. Compatibility is demonstrated by conformance tests, not inferred from a shared filename extension.
+
+The [production extension](docs/production.md) applies these rules to
+`maac.production/1`. Its delivery data remains in the execution hash;
+delivery/render identity additionally records the selected targets and the
+encoding, resampler, dither, and analyzer identities defined by that contract.
 
 ---
 

@@ -41,6 +41,15 @@ small wavetable WAV is authored source data. The MaaC language specification is 
 design draft, and the Rust implementation deliberately covers a smaller,
 documented subset.
 
+The [native mixing and delivery specification](docs/production.md) defines
+`maac.production/1` for EQ, compression, algorithmic reverb, and named master/stem
+deliveries with resampling and loudness analysis. It is **specified but
+unimplemented**: the current CLI rejects these production features with
+`E_CAPABILITY`. The [production example](examples/production.maac),
+[delivery schema](production.schema.json), and
+[bounded fixtures](production-conformance.json) support specification review;
+Rust rendering support follows separately.
+
 ## Quick start
 
 Install a current stable Rust toolchain. From the repository root:
@@ -128,6 +137,7 @@ dependencies are pinned in `requirements-dev.txt`:
 python3 -m venv .venv
 source .venv/bin/activate
 python3 -m pip install -r requirements-dev.txt
+python3 check_production.py
 python3 scripts/acceptance.py
 ```
 
@@ -138,6 +148,12 @@ unverified. No minimum supported Rust version (MSRV) is promised.
 and `example.syntax.json` beside itself. Run it from a disposable copy if you
 do not intend to update those fixtures; CI uses a disposable copy and compares
 the generated results without changing the checkout.
+
+`check_production.py` is a separate, nonmutating production-specification check
+using the same pinned dependencies. It validates syntax, schema, selected
+semantics, and bounded numerical fixtures. Passing it does not establish
+renderer support, official ITU/EBU metering conformance, or listening quality;
+the [production contract](docs/production.md) records those future gates.
 
 For a local disposable run:
 

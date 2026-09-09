@@ -31,6 +31,19 @@ sample instruments, arranged audio, external plug-ins and extensions. Transactio
 MIDI transport, GUI and real-time playback are outside this release's interfaces.
 No deferred feature is approximated silently.
 
+The [native production contract](production.md), required capability
+`maac.production/1`, is **specified but unimplemented**. Its native `fx.eq/1`,
+`fx.compressor/1`, and `fx.reverb/1` processors, 44.1/48/96 kHz named master/stem
+deliveries from a 48 kHz graph, PCM24 and dither, resampling, and final-artifact
+loudness/peak analysis are future renderer work. The current CLI rejects these
+production features with `E_CAPABILITY`; the
+[production example](../examples/production.maac) is a specification fixture.
+The standalone `check_production.py` checks syntax, schema, selected semantics,
+and bounded arithmetic only. It does not advertise rendering, official ITU/EBU
+conformance, or listening acceptance. Existing Core Audio obligations, source
+grammars, the generic syntax-tree schema, and performance-plan versions are
+unchanged.
+
 The implemented [project-entrypoint extension](project-entrypoint.md) adds
 conventional `main.maac` discovery for source commands and explicit default/song
 execution profiles. All 323 integrated tests and the installed entrypoint

@@ -1,0 +1,165 @@
+maac 1;
+
+// Specified but unimplemented: a future maac.production/1 renderer is required.
+// The repository directory is the package root for the descriptor asset path.
+project production_demo {
+  score = [0q, 8q];
+  rate = 48000Hz;
+  tempo = &clock;
+  meter = &metre;
+  output = &master:out;
+  tail = 3s;
+  seed = 1;
+  requires = ["maac.production/1"];
+}
+
+tempo clock { points = [(0q, 120bpm, step)]; }
+meter metre { points = [(0q, 4, 4)]; }
+
+asset production_schema {
+  kind = descriptor;
+  path = "production.schema.json";
+  hash = "sha256:1f9f3623515e645834fd97ecb300cdf00c5e11f4dd260f5bd85a92d3af91568d";
+}
+
+pattern bass_phrase {
+  length = 4q;
+  note root { at = 0q; dur = 3/2q; pitch = C3; velocity = 0.7; }
+  note fifth { at = 2q; dur = 3/2q; pitch = G3; velocity = 0.6; }
+}
+pattern pulse_phrase {
+  length = 2q;
+  note pulse { at = 0q; dur = 1/8q; pitch = C2; velocity = 0.8; }
+}
+track bass_track { target = &bass:events; }
+track pulse_track { target = &pulse:events; }
+place bass_notes { pattern = &bass_phrase; track = &bass_track; at = 0q; count = 2; }
+place pulse_notes { pattern = &pulse_phrase; track = &pulse_track; at = 0q; count = 4; }
+
+node bass {
+  type = "core.sine/1";
+  config = { voices = 4; };
+  params = { attack = 5ms; release = 150ms; level = 0.2; };
+}
+node bass_eq {
+  type = "fx.eq/1";
+  config = { channels = 1; mode = peak; };
+  params = { frequency = 1000Hz; q = 1; gain = -3dB; };
+}
+node bass_pan { type = "core.pan/1"; params = { pan = -0.2; }; }
+node pulse {
+  type = "core.sine/1";
+  config = { voices = 4; };
+  params = { attack = 1ms; release = 60ms; level = 0.25; };
+}
+node pulse_pan { type = "core.pan/1"; params = { pan = 0.2; }; }
+
+// The mono pulse drives the linked detector for both stereo main channels.
+// Its sidechain connection is retained when exporting the processed bass stem.
+node ducked_bass {
+  type = "fx.compressor/1";
+  config = { channels = 2; detector = external; sidechain_channels = 1; };
+  params = {
+    threshold = -24dB;
+    ratio = 4;
+    knee = 6dB;
+    attack = 10ms;
+    release = 100ms;
+    makeup = 0dB;
+  };
+}
+node bass_room {
+  type = "fx.reverb/1";
+  config = { channels = 2; predelay = 20ms; damping = 0.5; };
+  params = { decay = 1.5s; mix = 0.2; };
+}
+node master { type = "core.sum/1"; config = { channels = 2; }; }
+
+connect bass_filter { from = &bass:out; to = &bass_eq:in; }
+connect bass_stereo { from = &bass_eq:out; to = &bass_pan:in; }
+connect bass_main { from = &bass_pan:out; to = &ducked_bass:in; }
+connect pulse_detector { from = &pulse:out; to = &ducked_bass:sidechain; }
+connect bass_space { from = &ducked_bass:out; to = &bass_room:in; }
+connect bass_mix { from = &bass_room:out; to = &master:in; }
+connect pulse_stereo { from = &pulse:out; to = &pulse_pan:in; }
+connect pulse_mix { from = &pulse_pan:out; to = &master:in; }
+
+curve eq_sweep {
+  clock = score;
+  points = [(0q, 600Hz, exponential), (8q, 1800Hz, step)];
+}
+automation sweep_bass { target = &bass_eq.params.frequency; curve = &eq_sweep; at = 0q; }
+curve room_decay {
+  clock = seconds;
+  points = [(0s, 1.5s, linear), (4s, 2s, step)];
+}
+automation extend_room { target = &bass_room.params.decay; curve = &room_decay; at = 0s; }
+
+extension production_deliveries {
+  namespace = "maac.production/1";
+  schema = &production_schema;
+  render_affecting = true;
+  data = {
+    deliveries = {
+      release_cd = {
+        rate = 44100Hz;
+        resampler = "maac.src.kaiser/1";
+        targets = {
+          master = {
+            role = master;
+            output = &master:out;
+            encoding = wav_pcm16le;
+            dither = { type = tpdf; seed = 1; };
+            // Illustrative caller policy: this source does not promise to pass.
+            // A failed requested limit retains completed audio for review.
+            limits = {
+              integrated_loudness = { unit = LUFS; min = -24; max = -22; };
+              sample_peak = { unit = dBFS; max = -1; };
+              true_peak = { unit = dBTP; max = -1; };
+            };
+          };
+          processed_bass = {
+            role = stem;
+            output = &ducked_bass:out;
+            encoding = wav_pcm24le;
+            dither = { type = tpdf; seed = 2; };
+          };
+          pulse = {
+            role = stem;
+            output = &pulse_pan:out;
+            encoding = wav_pcm24le;
+            dither = { type = none; };
+          };
+        };
+      };
+      archive = {
+        rate = 96kHz;
+        resampler = "maac.src.kaiser/1";
+        targets = {
+          master = {
+            role = master;
+            output = &master:out;
+            encoding = wav_f32le;
+            dither = { type = none; };
+          };
+          bass_with_room = {
+            role = stem;
+            output = &bass_room:out;
+            encoding = wav_f32le;
+            dither = { type = none; };
+          };
+          pulse = {
+            role = stem;
+            output = &pulse_pan:out;
+            encoding = wav_f32le;
+            dither = { type = none; };
+          };
+        };
+      };
+    };
+  };
+}
+
+// All targets capture the same 7-second execution, including its 3-second tail:
+// 308700 frames at 44100 Hz, 672000 frames at 96000 Hz. Stems select exact ports;
+// the processed_bass stem excludes reverb, so it need not reconstruct the master.

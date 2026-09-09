@@ -21,6 +21,7 @@ cargo fmt --all -- --check
 cargo clippy --all-targets --locked --offline -- -D warnings
 cargo test --locked --offline
 cargo build --release --locked --offline
+python3 check_production.py
 python3 scripts/acceptance.py
 ```
 
@@ -44,6 +45,15 @@ smoke_dir="$(mktemp -d)"
 cp check_spec.py grammar.lark syntax-tree.schema.json example.maac "$smoke_dir/"
 python3 "$smoke_dir/check_spec.py"
 ```
+
+Run `python3 check_production.py` from the repository root after installing the
+pinned checker dependencies above. This separate checker does not regenerate
+tracked files. It validates the [production specification](docs/production.md)
+example, hash-pinned schema, selected semantics, and bounded numerical fixtures.
+Keep those artifacts consistent when changing the contract. These checks cover
+specified but unimplemented behavior; future Rust renderer tests, applicable
+official ITU/EBU fixtures, independent SRC verification, and listening acceptance
+remain separate requirements.
 
 ## Contributions
 

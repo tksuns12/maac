@@ -1,0 +1,592 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MaaC production/1 delivery data (tagged syntax record)",
+  "description": "Validates extension.data shape only. See docs/production.md for rational reduction, allowed rates, u64 seeds, limit ordering, master uniqueness, references, native processors, and rendering semantics. Self-contained: every $ref is local.",
+  "x-maac-capability": "maac.production/1",
+  "type": "object",
+  "properties": {
+    "t": {
+      "const": "record"
+    },
+    "fields": {
+      "type": "object",
+      "properties": {
+        "deliveries": {
+          "$ref": "#/$defs/deliveries"
+        }
+      },
+      "required": [
+        "deliveries"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "t",
+    "fields"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "number": {
+      "type": "object",
+      "properties": {
+        "t": {
+          "const": "number"
+        },
+        "n": {
+          "type": "string",
+          "pattern": "^(0|-?[1-9][0-9]*)$"
+        },
+        "d": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*$"
+        }
+      },
+      "required": [
+        "t",
+        "n",
+        "d"
+      ],
+      "additionalProperties": false
+    },
+    "seed": {
+      "type": "object",
+      "properties": {
+        "t": {
+          "const": "number"
+        },
+        "n": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)$"
+        },
+        "d": {
+          "const": "1"
+        }
+      },
+      "required": [
+        "t",
+        "n",
+        "d"
+      ],
+      "additionalProperties": false
+    },
+    "rate": {
+      "type": "object",
+      "properties": {
+        "t": {
+          "const": "quantity"
+        },
+        "n": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*$"
+        },
+        "d": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*$"
+        },
+        "u": {
+          "enum": [
+            "Hz",
+            "kHz"
+          ]
+        }
+      },
+      "required": [
+        "t",
+        "n",
+        "d",
+        "u"
+      ],
+      "additionalProperties": false
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "t": {
+          "const": "ref"
+        },
+        "path": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+            "maxLength": 128
+          },
+          "minItems": 1,
+          "maxItems": 1
+        },
+        "port": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "maxLength": 128
+        }
+      },
+      "required": [
+        "t",
+        "path",
+        "port"
+      ],
+      "additionalProperties": false
+    },
+    "dither_none": {
+      "type": "object",
+      "properties": {
+        "t": {
+          "const": "record"
+        },
+        "fields": {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "object",
+              "properties": {
+                "t": {
+                  "const": "symbol"
+                },
+                "v": {
+                  "enum": [
+                    "none"
+                  ]
+                }
+              },
+              "required": [
+                "t",
+                "v"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "t",
+        "fields"
+      ],
+      "additionalProperties": false
+    },
+    "dither_tpdf": {
+      "type": "object",
+      "properties": {
+        "t": {
+          "const": "record"
+        },
+        "fields": {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "object",
+              "properties": {
+                "t": {
+                  "const": "symbol"
+                },
+                "v": {
+                  "enum": [
+                    "tpdf"
+                  ]
+                }
+              },
+              "required": [
+                "t",
+                "v"
+              ],
+              "additionalProperties": false
+            },
+            "seed": {
+              "$ref": "#/$defs/seed"
+            }
+          },
+          "required": [
+            "type",
+            "seed"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "t",
+        "fields"
+      ],
+      "additionalProperties": false
+    },
+    "dither": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/dither_none"
+        },
+        {
+          "$ref": "#/$defs/dither_tpdf"
+        }
+      ]
+    },
+    "integrated_loudness": {
+      "type": "object",
+      "properties": {
+        "t": {
+          "const": "record"
+        },
+        "fields": {
+          "type": "object",
+          "properties": {
+            "unit": {
+              "type": "object",
+              "properties": {
+                "t": {
+                  "const": "symbol"
+                },
+                "v": {
+                  "enum": [
+                    "LUFS"
+                  ]
+                }
+              },
+              "required": [
+                "t",
+                "v"
+              ],
+              "additionalProperties": false
+            },
+            "min": {
+              "$ref": "#/$defs/number"
+            },
+            "max": {
+              "$ref": "#/$defs/number"
+            }
+          },
+          "required": [
+            "unit"
+          ],
+          "additionalProperties": false,
+          "anyOf": [
+            {
+              "required": [
+                "min"
+              ]
+            },
+            {
+              "required": [
+                "max"
+              ]
+            }
+          ]
+        }
+      },
+      "required": [
+        "t",
+        "fields"
+      ],
+      "additionalProperties": false
+    },
+    "sample_peak": {
+      "type": "object",
+      "properties": {
+        "t": {
+          "const": "record"
+        },
+        "fields": {
+          "type": "object",
+          "properties": {
+            "unit": {
+              "type": "object",
+              "properties": {
+                "t": {
+                  "const": "symbol"
+                },
+                "v": {
+                  "enum": [
+                    "dBFS"
+                  ]
+                }
+              },
+              "required": [
+                "t",
+                "v"
+              ],
+              "additionalProperties": false
+            },
+            "max": {
+              "$ref": "#/$defs/number"
+            }
+          },
+          "required": [
+            "unit",
+            "max"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "t",
+        "fields"
+      ],
+      "additionalProperties": false
+    },
+    "true_peak": {
+      "type": "object",
+      "properties": {
+        "t": {
+          "const": "record"
+        },
+        "fields": {
+          "type": "object",
+          "properties": {
+            "unit": {
+              "type": "object",
+              "properties": {
+                "t": {
+                  "const": "symbol"
+                },
+                "v": {
+                  "enum": [
+                    "dBTP"
+                  ]
+                }
+              },
+              "required": [
+                "t",
+                "v"
+              ],
+              "additionalProperties": false
+            },
+            "max": {
+              "$ref": "#/$defs/number"
+            }
+          },
+          "required": [
+            "unit",
+            "max"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "t",
+        "fields"
+      ],
+      "additionalProperties": false
+    },
+    "limits": {
+      "type": "object",
+      "properties": {
+        "t": {
+          "const": "record"
+        },
+        "fields": {
+          "type": "object",
+          "properties": {
+            "integrated_loudness": {
+              "$ref": "#/$defs/integrated_loudness"
+            },
+            "sample_peak": {
+              "$ref": "#/$defs/sample_peak"
+            },
+            "true_peak": {
+              "$ref": "#/$defs/true_peak"
+            }
+          },
+          "required": [],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "t",
+        "fields"
+      ],
+      "additionalProperties": false
+    },
+    "target": {
+      "type": "object",
+      "properties": {
+        "t": {
+          "const": "record"
+        },
+        "fields": {
+          "type": "object",
+          "properties": {
+            "role": {
+              "type": "object",
+              "properties": {
+                "t": {
+                  "const": "symbol"
+                },
+                "v": {
+                  "enum": [
+                    "master",
+                    "stem"
+                  ]
+                }
+              },
+              "required": [
+                "t",
+                "v"
+              ],
+              "additionalProperties": false
+            },
+            "output": {
+              "$ref": "#/$defs/output"
+            },
+            "encoding": {
+              "type": "object",
+              "properties": {
+                "t": {
+                  "const": "symbol"
+                },
+                "v": {
+                  "enum": [
+                    "wav_f32le",
+                    "wav_pcm24le",
+                    "wav_pcm16le"
+                  ]
+                }
+              },
+              "required": [
+                "t",
+                "v"
+              ],
+              "additionalProperties": false
+            },
+            "dither": {
+              "$ref": "#/$defs/dither"
+            },
+            "limits": {
+              "$ref": "#/$defs/limits"
+            }
+          },
+          "required": [
+            "role",
+            "output",
+            "encoding",
+            "dither"
+          ],
+          "additionalProperties": false,
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "encoding": {
+                    "properties": {
+                      "v": {
+                        "const": "wav_f32le"
+                      }
+                    }
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "dither": {
+                    "$ref": "#/$defs/dither_none"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      "required": [
+        "t",
+        "fields"
+      ],
+      "additionalProperties": false
+    },
+    "targets": {
+      "type": "object",
+      "properties": {
+        "t": {
+          "const": "record"
+        },
+        "fields": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+            "maxLength": 128
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/target"
+          }
+        }
+      },
+      "required": [
+        "t",
+        "fields"
+      ],
+      "additionalProperties": false
+    },
+    "delivery": {
+      "type": "object",
+      "properties": {
+        "t": {
+          "const": "record"
+        },
+        "fields": {
+          "type": "object",
+          "properties": {
+            "rate": {
+              "$ref": "#/$defs/rate"
+            },
+            "resampler": {
+              "type": "object",
+              "properties": {
+                "t": {
+                  "const": "string"
+                },
+                "v": {
+                  "const": "maac.src.kaiser/1"
+                }
+              },
+              "required": [
+                "t",
+                "v"
+              ],
+              "additionalProperties": false
+            },
+            "targets": {
+              "$ref": "#/$defs/targets"
+            }
+          },
+          "required": [
+            "rate",
+            "resampler",
+            "targets"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "t",
+        "fields"
+      ],
+      "additionalProperties": false
+    },
+    "deliveries": {
+      "type": "object",
+      "properties": {
+        "t": {
+          "const": "record"
+        },
+        "fields": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+            "maxLength": 128
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/delivery"
+          }
+        }
+      },
+      "required": [
+        "t",
+        "fields"
+      ],
+      "additionalProperties": false
+    }
+  }
+}
