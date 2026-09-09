@@ -38,6 +38,7 @@ fn event(
         target: EventTarget::new(target, "events").unwrap(),
         kind: EventKind::Note {
             timbre_expression: None,
+            pressure_expression: None,
             pitch_hz,
             velocity,
             pitch_expression: None,

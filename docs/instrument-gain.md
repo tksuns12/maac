@@ -84,7 +84,9 @@ The [delivery report](instrument-gain-delivery.md) records automated playback,
 installed CLI verification, and the remaining validation limits.
 
 Custom voice graphs declaring `synth.timbre/1` may also attach one independent
-[timbre expression](timbre-expression.md) alongside pitch and gain. Frozen basic
-and acoustic graphs do not opt in. Automation, pitch, gain, and timbre share the
+[timbre expression](timbre-expression.md) alongside pitch and gain. Declaring
+`synth.pressure/1` independently permits [pressure](pressure-expression.md),
+so all four kinds may coexist when both sources are present. Frozen basic
+and acoustic graphs do not opt in to timbre or pressure. Automation, pitch, gain, timbre, and pressure share the
 65,536-point limit; each attached instrument expression contributes its own
 `17 + ceil(log2(point_count))` work charge per conservative active voice frame.

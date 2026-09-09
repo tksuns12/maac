@@ -11,6 +11,13 @@ actually published; no release tag or publication date is asserted here.
 
 ### Added
 
+- Per-note pressure for custom voice graphs declaring `synth.pressure/1`.
+  Independent exact 0…1 curves use authored graph mappings and hold through
+  release. Pitch, gain, timbre, and pressure can coexist on opted-in notes.
+  Optional strict `pressure_expression` payloads preserve absent-field JSON
+  and plan version 2; frozen libraries remain unchanged. See the
+  [pressure guide](docs/pressure-expression.md) and standalone example.
+
 - Per-note timbre for custom graphs declaring voice-only `synth.timbre/1`.
   Exact 0…1 curves map through existing signed-depth modulation, coexist with
   pitch and gain, and hold through release. Optional `timbre_expression` note
@@ -94,7 +101,7 @@ actually published; no release tag or publication date is asserted here.
 
 - The Rust implementation is a foundation subset; it does not claim full
   Document, Performance, Core Audio, or Locked Render conformance.
-- Tempo ramps, per-note pressure expression, hits/messages, top-level core modulation,
+- Tempo ramps, hits/messages, top-level core modulation,
   other processors, recorded-sample instruments, arranged audio, external plug-ins,
   transactional editing, MaaC Locked Render dependency-lock manifests
   (distinct from `Cargo.lock`), MIDI transport, GUI, and real-time playback

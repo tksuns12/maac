@@ -58,6 +58,8 @@ pub enum GraphProcessor {
     Adsr,
     #[serde(rename = "synth.timbre/1")]
     Timbre,
+    #[serde(rename = "synth.pressure/1")]
+    Pressure,
     #[serde(rename = "synth.lfo/1")]
     Lfo,
     #[serde(rename = "synth.gain/1")]
@@ -93,6 +95,8 @@ enum GraphProcessorWire {
     Adsr {},
     #[serde(rename = "synth.timbre/1")]
     Timbre {},
+    #[serde(rename = "synth.pressure/1")]
+    Pressure {},
     #[serde(rename = "synth.lfo/1")]
     Lfo {},
     #[serde(rename = "synth.gain/1")]
@@ -128,6 +132,7 @@ impl<'de> Deserialize<'de> for GraphProcessor {
             GraphProcessorWire::Wavetable { table } => Self::Wavetable { table },
             GraphProcessorWire::Adsr {} => Self::Adsr,
             GraphProcessorWire::Timbre {} => Self::Timbre,
+            GraphProcessorWire::Pressure {} => Self::Pressure,
             GraphProcessorWire::Lfo {} => Self::Lfo,
             GraphProcessorWire::Gain { channels } => Self::Gain { channels },
             GraphProcessorWire::OnePole { channels } => Self::OnePole { channels },
@@ -150,6 +155,7 @@ impl GraphProcessor {
             Self::Wavetable { .. } => "synth.wavetable/1",
             Self::Adsr => "synth.adsr/1",
             Self::Timbre => "synth.timbre/1",
+            Self::Pressure => "synth.pressure/1",
             Self::Lfo => "synth.lfo/1",
             Self::Gain { .. } => "synth.gain/1",
             Self::OnePole { .. } => "synth.onepole/1",
@@ -197,6 +203,7 @@ impl GraphProcessor {
                 | Self::Wavetable { .. }
                 | Self::Adsr
                 | Self::Timbre
+                | Self::Pressure
         )
     }
 }
@@ -292,6 +299,14 @@ impl InstrumentProgram {
             .nodes
             .iter()
             .any(|node| matches!(node.processor, GraphProcessor::Timbre))
+    }
+
+    /// Whether the voice graph opts into per-note pressure expression.
+    pub fn supports_pressure(&self) -> bool {
+        self.voice
+            .nodes
+            .iter()
+            .any(|node| matches!(node.processor, GraphProcessor::Pressure))
     }
 
     pub(crate) fn pluck_node_count(&self) -> usize {
@@ -587,7 +602,7 @@ pub fn parameter_descriptor(processor: &GraphProcessor, name: &str) -> Option<Pa
         GraphProcessor::Pan => {
             (name == "pan").then(|| dimensionless(ParameterRate::Sample, 0, -1, 1))
         }
-        GraphProcessor::Mix { .. } | GraphProcessor::Timbre => None,
+        GraphProcessor::Mix { .. } | GraphProcessor::Timbre | GraphProcessor::Pressure => None,
     }
 }
 

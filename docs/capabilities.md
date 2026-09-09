@@ -14,6 +14,7 @@ specification remains authoritative; this page describes the implementation scop
 | Per-note pitch | `core.sine/1` and reusable mono/stereo instruments (basic, acoustic, custom); cents curves; normalized, seconds and score clocks; step/linear interpolation and gate-end release holding |
 | Per-note gain | `core.sine/1` and reusable mono/stereo instruments (basic, acoustic, custom); nonnegative amplitude curves on all three clocks; step/linear/exponential interpolation; simultaneous independent pitch |
 | Per-note timbre | Voice graphs explicitly declaring `synth.timbre/1`; exact 0…1 curves on all three clocks; step/linear/exponential interpolation; independent pitch/gain coexistence and release holding |
+| Per-note pressure | Voice graphs explicitly declaring `synth.pressure/1`; exact 0…1 curves on all three clocks; step/linear/exponential interpolation; independent pitch/gain/timbre coexistence and release holding |
 | Automation | Global score/seconds clocks; step, linear and exponential interpolation; sample/event parameter rates |
 | Routing | Explicit mono/stereo audio graph and note targets; no implicit channel conversions or mixers |
 | Processors | `core.sine/1`, `core.onepole/1`, `core.pan/1`, `core.sum/1`, `core.gain/1` (mono/stereo) |
@@ -30,8 +31,7 @@ specification remains authoritative; this page describes the implementation scop
 | Named deliveries | Complete-graph master/stem capture; 44.1/48/96 kHz conversion; final-artifact loudness/sample-peak/experimental true-peak analysis |
 | Interchange | Independently validated standalone plans: version 1 legacy and version 2 embedded graph/data/provenance |
 
-Recognized deferred features fail with `E_CAPABILITY`: tempo ramps, per-note
-pressure expression,
+Recognized deferred features fail with `E_CAPABILITY`: tempo ramps,
 hits/messages, top-level core modulation, other processors, recorded
 sample instruments, arranged audio, external plug-ins and other extensions. Transactional editing, full render locks,
 MIDI transport, GUI and real-time playback are outside this release's interfaces.
@@ -46,6 +46,9 @@ covers reusable graphs and the additional execution-work charge. The
 base versus live node frequency validation. The [timbre guide](timbre-expression.md)
 defines explicit graph opt-in and authored mappings; `core.sine/1`, graphs without
 a source, and the frozen basic/acoustic libraries reject timbre with `E_CAPABILITY`.
+The [pressure guide](pressure-expression.md) adds independent authored pressure
+mappings with separate `synth.pressure/1` opt-in. All four expression kinds may
+coexist when the graph declares both sources; frozen libraries remain unchanged.
 
 The [native production contract](production.md), required capability
 `maac.production/1`, has an **experimental implementation**. Native `fx.eq/1`,
@@ -97,7 +100,7 @@ rates/channel capabilities use `E_CAPABILITY`). Additional bounds are:
 | Source/aggregate plan objects | 200,000 |
 | Connections | 4,096 |
 | Tempo points | 4,096 |
-| Global automation plus expanded per-note pitch, gain, and timbre points | 65,536 combined |
+| Global automation plus expanded per-note pitch, gain, timbre, and pressure points | 65,536 combined |
 | Regions | 16,384 |
 | Additional source mappings | 100,000 |
 | Identifier | 128 ASCII bytes |
@@ -136,7 +139,7 @@ creator, and license metadata each have the same byte limit.
 | Aggregate declared voice graph node states | 262,144 |
 | Conservative execution work | Default 500,000,000 normalized units; explicit song profile maximum 10,000,000,000 |
 | Pluck delay cells | 8,388,608 f64 cells / 64 MiB payload; 2402 cells per pluck voice-node |
-| Instrument expression execution charge | `17 + ceil(log2(point_count))` units per active voice frame for each attached pitch, gain, or timbre curve, additive when combined, including conservative release |
+| Instrument expression execution charge | `17 + ceil(log2(point_count))` units per active voice frame for each attached pitch, gain, timbre, or pressure curve, additive when combined, including conservative release |
 | Pluck execution charge | 16 units per sample visit plus 2402 initialization units per note per pluck node |
 
 Execution work includes every note's gate and maximum possible release, bounded

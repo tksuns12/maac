@@ -8,7 +8,7 @@
 use crate::expression::ExpressionRuntime;
 use crate::plan::{
     AutomationClock, EventKind, GainExpression, Interpolation, PitchExpression, Plan, PlanError,
-    PlanLimits, PortRef, Processor, Rational, ResolvedEvent, TimbreExpression,
+    PlanLimits, PortRef, PressureExpression, Processor, Rational, ResolvedEvent, TimbreExpression,
 };
 use crate::production_compressor::{Compressor, CompressorParams};
 use crate::production_eq::Eq;
@@ -494,6 +494,7 @@ impl<'a> DspEngine<'a> {
             pitch_expression,
             gain_expression,
             timbre_expression,
+            pressure_expression,
         } = event.data;
         if let Some(instrument) = &mut node.instrument {
             return instrument
@@ -505,6 +506,7 @@ impl<'a> DspEngine<'a> {
                     pitch_expression,
                     gain_expression,
                     timbre_expression,
+                    pressure_expression,
                 )
                 .map_err(|error| match error {
                     RenderError::VoiceLimit { address, .. } => RenderError::VoiceLimit {
@@ -1118,12 +1120,14 @@ enum EventData {
         pitch_expression: Option<ExpressionRuntime<PitchExpression>>,
         gain_expression: Option<ExpressionRuntime<GainExpression>>,
         timbre_expression: Option<ExpressionRuntime<TimbreExpression>>,
+        pressure_expression: Option<ExpressionRuntime<PressureExpression>>,
     },
 }
 
 impl EventRuntime {
     fn from_event(event: &ResolvedEvent, node: usize, rate: u32) -> Result<Self> {
         let EventKind::Note {
+            pressure_expression,
             timbre_expression,
             pitch_hz,
             velocity,
@@ -1155,6 +1159,15 @@ impl EventRuntime {
                 pitch_hz: *pitch_hz,
                 velocity,
                 timbre_expression: timbre_expression.as_ref().map(|curve| ExpressionRuntime {
+                    coordinate_per_frame: curve.clock.coordinate_at(
+                        event,
+                        event.on_frame + 1,
+                        rate,
+                    ),
+                    gate: event.off_frame.expect("validated note off") - event.on_frame,
+                    curve: Arc::new(curve.clone()),
+                }),
+                pressure_expression: pressure_expression.as_ref().map(|curve| ExpressionRuntime {
                     coordinate_per_frame: curve.clock.coordinate_at(
                         event,
                         event.on_frame + 1,

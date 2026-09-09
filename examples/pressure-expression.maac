@@ -1,0 +1,89 @@
+maac 1;
+
+// Explicit, independent pressure and timbre mappings; no imports or assets.
+project pressure_expression_demo {
+  score = [0q, 3q]; rate = 48000Hz;
+  tempo = &clock; meter = &metre; output = &synth:out; tail = 400ms;
+}
+tempo clock { points = [(0q, 120bpm, step)]; }
+meter metre { points = [(0q, 4, 4)]; }
+
+instrument responsive_voice {
+  channels = 2;
+  voice voice {
+    channels = 1; amplitude = &amp; output = &filter:out;
+    node amp {
+      type = "synth.adsr/1";
+      params = { attack = 5ms; sustain = 1; release = 300ms; };
+    }
+    node oscillator { type = "synth.saw/1"; params = { level = 1/16; }; }
+    node touch { type = "synth.pressure/1"; }
+    node color { type = "synth.timbre/1"; }
+    node filter {
+      type = "synth.onepole/1"; config = { channels = 1; };
+      params = { cutoff = 800Hz; };
+    }
+    connect oscillator_filter { from = &oscillator:out; to = &filter:in; }
+    // Pressure explicitly raises level and brightness; timbre adds separate color.
+    modulate touch_level {
+      from = &touch:out; to = &oscillator.params.level; depth = 1/8;
+    }
+    modulate touch_brightness {
+      from = &touch:out; to = &filter.params.cutoff; depth = 1200Hz;
+    }
+    modulate color_brightness {
+      from = &color:out; to = &filter.params.cutoff; depth = 2400Hz;
+    }
+  }
+  shared stereo {
+    channels = 2; output = &pan:out;
+    node pan { type = "synth.pan/1"; params = { pan = 0; }; }
+    connect input_pan { from = &input:out; to = &pan:in; }
+  }
+}
+node synth { instrument = &responsive_voice; config = { voices = 3; }; }
+
+curve pressing {
+  clock = normalized;
+  points = [(0, 0, linear), (1, 1, step)];
+}
+curve easing {
+  clock = seconds;
+  points = [(0s, 1, exponential), (1s, 1/8, step)];
+}
+curve pulse {
+  clock = score;
+  points = [(0q, 0, step), (1/2q, 3/4, linear), (1q, 0, step)];
+}
+curve shading {
+  clock = normalized;
+  points = [(0, 1, linear), (1, 0, step)];
+}
+curve bend {
+  clock = normalized;
+  points = [(0, 0ct, linear), (1, 50ct, step)];
+}
+curve swell {
+  clock = normalized;
+  points = [(0, 1/4, linear), (1/2, 1/2, linear), (1, 1/4, step)];
+}
+pattern phrase {
+  length = 3q;
+  note rising {
+    at = 0q; dur = 2q; pitch = C4; velocity = 1/2;
+    expression touch { kind = pressure; curve = &pressing; }
+    expression color { kind = timbre; curve = &shading; }
+    expression pitch_bend { kind = pitch; curve = &bend; }
+    expression dynamics { kind = gain; curve = &swell; }
+  }
+  note falling {
+    at = 1q; dur = 2q; pitch = E4; velocity = 1/4;
+    expression touch { kind = pressure; curve = &easing; }
+  }
+  note pulsing {
+    at = 2q; dur = 1q; pitch = G4; velocity = 1/4;
+    expression touch { kind = pressure; curve = &pulse; }
+  }
+}
+track melody { target = &synth:events; }
+place once { pattern = &phrase; track = &melody; at = 0q; }

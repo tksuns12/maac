@@ -329,6 +329,7 @@ fn note(address: &str, target: &str, on: u64, off: u64) -> ResolvedEvent {
         target: EventTarget::new(target, "events").unwrap(),
         kind: EventKind::Note {
             timbre_expression: None,
+            pressure_expression: None,
             pitch_expression: None,
             gain_expression: None,
             pitch_hz: 12_000.0,

@@ -1,3 +1,25 @@
+# Per-note pressure mappings
+
+[`pressure-expression.maac`](pressure-expression.maac) defines an inline stereo
+instrument whose pressure source raises oscillator level and filter cutoff.
+Independent timbre also controls cutoff; one note combines all four expression
+kinds: pitch, gain, timbre, and pressure. Three overlapping notes demonstrate
+normalized, seconds, and score pressure clocks, including positive exponential
+interpolation. No imports or assets are required.
+
+```sh
+maac check examples/pressure-expression.maac
+maac build examples/pressure-expression.maac -o pressure-expression.wav
+maac compile examples/pressure-expression.maac -o pressure-expression.plan.json
+maac render pressure-expression.plan.json -o pressure-expression-from-plan.wav
+```
+
+Expected output is 91,200 stereo frames at 48 kHz (1.9 seconds including the
+400 ms tail, which covers the 300 ms release). The [pressure guide](../docs/pressure-expression.md)
+explains explicit opt-in, mappings, release holding, and shared limits.
+Frozen basic/acoustic instruments do not opt in. No human listening approval
+is claimed.
+
 # Per-note timbre mappings
 
 [`timbre-expression.maac`](timbre-expression.maac) defines two inline custom

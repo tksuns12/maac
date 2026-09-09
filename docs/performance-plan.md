@@ -54,8 +54,9 @@ Each event contains:
 - `source`: source object, declaration path and optional byte `span`.
 - `target`: sine or instrument node's `events` port.
 - `kind`: a tagged note value with `kind: "note"`, `pitch_hz`, and rational
-  `velocity`; optional `pitch_expression`, `gain_expression`, and `timbre_expression`
-  carry per-note cents, amplitude, and authored timbre curves.
+  `velocity`; optional `pitch_expression`, `gain_expression`, `timbre_expression`, and
+  `pressure_expression` carry per-note cents, amplitude, authored timbre, and
+  authored pressure curves.
 - `score_on_q`, `score_off_q`: final musical coordinates after inherited
   transformations, repetition cuts, and occurrence edits.
 - `onset_offset_seconds`, `release_offset_seconds`: physical offsets.
@@ -91,10 +92,10 @@ zero-gain voice state, release holding, and simultaneous pitch/gain expression.
 The [instrument gain contract](instrument-gain.md) places gain after each
 complete voice contribution, before summation and shared effects, and adds a
 point-count-dependent charge to existing execution work. This receiver extension
-adds no wire fields or plan version. Pitch, gain, and timbre share the global
+adds no wire fields or plan version. Pitch, gain, timbre, and pressure share the global
 automation-point budget, including after pattern expansion. Instrument pitch adds
 `17 + ceil(log2(point_count))` work units per conservative active voice frame,
-additively with gain and timbre; the 65,536-point and 4,096-bit rational limits are unchanged.
+additively with gain, timbre, and pressure; the 65,536-point and 4,096-bit rational limits are unchanged.
 
 `timbre_expression` is a strict object with `clock` and `points`. Each point
 has canonical rational `position` and dimensionless `value` in `[0, 1]`, plus
@@ -107,10 +108,22 @@ capability is derived from its embedded program, even for an unconnected source.
 There is no separate capability flag. Graphs without that source, including
 frozen basic/acoustic graphs, and `core.sine/1` reject the expression.
 
+`pressure_expression` uses the same strict clock/points structure and exact
+`[0, 1]` bounds as timbre. Unknown fields are rejected at every payload level.
+The public Rust types are `PressureExpression` and `PressureExpressionPoint`.
+The [pressure contract](pressure-expression.md) requires a `synth.pressure/1`
+voice source independently of timbre opt-in. Absent pressure is zero; its gate-end
+value holds through release. All four kinds may coexist on an opted-in graph.
+Each pressure curve adds `17 + ceil(log2(point_count))` work units per conservative
+active voice frame, including release and silent voices. Automation and all four
+expression kinds share the 65,536 expanded-point limit and 4,096-bit rational bound.
+The public runtime `note_on` signature is unchanged.
+
 These optional note fields are additive in both plan versions. Absent fields
 are omitted, preserving previous JSON shapes; older readers reject fields they
 do not support. Rust `EventKind::Note` literals add `pitch_expression: None`,
-`gain_expression: None`, and `timbre_expression: None` when absent. The shared `ExpressionClock` retains
+`gain_expression: None`, `timbre_expression: None`, and
+`pressure_expression: None` when absent. The shared `ExpressionClock` retains
 `PitchExpressionClock` as a compatibility type alias.
 
 ## Processors and automation
@@ -273,13 +286,15 @@ limits. Implementations must propagate selected limits through every nested
 boundary. The implementation passed the integrated and installed checks
 recorded in the [entrypoint delivery report](project-entrypoint-delivery.md).
 
-## Timbre graph source
+## Timbre and pressure graph sources
 
 Version 2 instrument graphs additionally accept the exact processor object
-`{"kind":"synth.timbre/1"}` with no additional fields. It is voice-only,
-parameterless, inputless, and mono; its node `params` map is empty. All timbre
-sources in one voice share that voice's evaluated value, zero when absent.
+`{"kind":"synth.timbre/1"}` or `{"kind":"synth.pressure/1"}` with no
+additional fields. Each is voice-only,
+parameterless, inputless, and mono; its node `params` map is empty. All sources
+of each kind in one voice share that voice's evaluated value, zero when absent.
+Source `config` is rejected even when empty; empty `params` is allowed.
 Ordinary graph connections and sample-rate modulation retain their existing
 rules and costs. Instrument graphs still require version 2; this extension
 introduces no plan-version bump. Older readers reject the new processor or
-note field, and absent timbre fields remain omitted from existing plans.
+note field, and absent timbre/pressure fields remain omitted from existing plans.

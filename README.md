@@ -138,6 +138,9 @@ basic, acoustic, and custom instrument voices with a standalone example.
 The [timbre guide](docs/timbre-expression.md) maps independent per-note color
 curves through explicit custom graph sources, with a standalone filtered-oscillator
 and plucked-string example.
+The [pressure guide](docs/pressure-expression.md) completes all four per-note
+expression kinds for explicitly opted-in graphs, with independent pressure
+mappings to oscillator level and brightness in a standalone stereo example.
 The [diagnostics guide](docs/diagnostics.md) explains failures, while the
 [performance-plan format](docs/performance-plan.md) describes the standalone
 JSON interchange artifact. [Implementation decisions](docs/implementation-decisions.md)

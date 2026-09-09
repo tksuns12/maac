@@ -45,8 +45,9 @@ expression color_change { kind = timbre; curve = &shade; }
 Notes without timbre expression use zero. `core.sine/1` and instruments without
 a timbre source reject timbre expression with `E_CAPABILITY`, including zero
 curves and silent notes. The frozen `std/basic/1.0.0` and `std/acoustic/1.0.0`
-libraries retain their bytes and do not acquire implicit mappings. Pressure
-remains unsupported.
+libraries retain their bytes and do not acquire implicit mappings.
+[Pressure expression](pressure-expression.md) requires its own opt-in: a custom
+instrument voice graph must declare `synth.pressure/1`.
 
 ## Mapping, timing, and state
 
@@ -77,8 +78,9 @@ exponential interpolation behavior. Exact knot selection is right-continuous.
 
 Timbre is evaluated once per voice per frame. Its initial value applies at the
 first rendered sample, and its gate-end value holds through release. Overlapping
-voices retain independent curves. One pitch, one gain, and one timbre expression
-may coexist; expression child order does not determine mapping order.
+voices retain independent curves. One expression of each of pitch, gain, timbre,
+and [pressure](pressure-expression.md) may coexist when both graph sources are
+declared; expression child order does not determine mapping order.
 Oscillators, filters, envelopes, and plucked strings keep their existing state.
 Zero gain or velocity does not bypass timbre evaluation, graph work, parameter
 validation, voice allocation, or ordinary retirement. Shared effects continue
@@ -92,17 +94,18 @@ Note events gain an optional `timbre_expression` object containing `clock` and
 plans without the extension preserve their existing wire shape. No plan-version
 bump is introduced; graph instruments still require version 2. Older readers
 reject the new payload or processor identity. Rust `EventKind::Note` literals
-must supply `timbre_expression: None` when absent. The public
+must supply `pitch_expression: None`, `gain_expression: None`,
+`timbre_expression: None`, and `pressure_expression: None` for absent expressions. The public
 `InstrumentRuntime::note_on` signature stays unchanged.
 
-Automation, pitch, gain, and timbre share the existing combined 65,536-point
+Automation, pitch, gain, timbre, and pressure share the existing combined 65,536-point
 limit, including after expansion. The 4,096-bit rational limit remains in
 force. Source compilation counts expanded expression points before cloning
 curve data. Source and retained plans enforce the same capability and limits.
 
 Each timbre-bearing instrument voice frame adds
 `17 + ceil(log2(point_count))` normalized execution-work units, additive with
-pitch and gain. The conservative window includes the gate and maximum automated
+pitch, gain, and pressure. The conservative window includes the gate and maximum automated
 release, capped at render end, including silent voices. Timbre source nodes and
 their connections also consume the ordinary graph node, edge, state, and work
 budgets. Multiple source nodes reuse one evaluated timbre value per voice.

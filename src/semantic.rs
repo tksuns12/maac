@@ -281,6 +281,7 @@ struct Validator<'a> {
     total_objects: usize,
     validated_gain_curves: BTreeSet<String>,
     validated_timbre_curves: BTreeSet<String>,
+    validated_pressure_curves: BTreeSet<String>,
     instrument_nodes: &'a BTreeMap<String, InstrumentNodeDescriptor>,
 }
 
@@ -301,6 +302,7 @@ impl<'a> Validator<'a> {
             total_objects: 0,
             validated_gain_curves: BTreeSet::new(),
             validated_timbre_curves: BTreeSet::new(),
+            validated_pressure_curves: BTreeSet::new(),
             instrument_nodes,
         }
     }
@@ -1260,7 +1262,7 @@ impl<'a> Validator<'a> {
                 }
                 if matches!(
                     child.field("kind").and_then(|f| f.value.as_symbol()),
-                    Some("pitch" | "gain" | "timbre")
+                    Some("pitch" | "gain" | "timbre" | "pressure")
                 ) {
                     self.check_schema(
                         child,
@@ -2253,7 +2255,7 @@ impl<'a> Validator<'a> {
         if let Some(field) = object.field("curve") {
             self.expect_object_ref(field, "curve", &["curve"], path);
             let kind = object.field("kind").and_then(|f| f.value.as_symbol());
-            if matches!(kind, Some("pitch" | "gain" | "timbre")) {
+            if matches!(kind, Some("pitch" | "gain" | "timbre" | "pressure")) {
                 let curve_id = field.value.reference().and_then(|r| r.path.first());
                 let points = curve_id
                     .and_then(|id| self.document.object(id))
@@ -2280,6 +2282,8 @@ impl<'a> Validator<'a> {
                         DiagnosticCode::Unit,
                         if kind == Some("pitch") {
                             "pitch expression curve values must use cents"
+                        } else if kind == Some("pressure") {
+                            "pressure expression curve values must be dimensionless"
                         } else if kind == Some("timbre") {
                             "timbre expression curve values must be dimensionless"
                         } else {
@@ -2290,9 +2294,15 @@ impl<'a> Validator<'a> {
                         vec!["curve".into()],
                     );
                 }
-                if kind == Some("timbre")
-                    && curve_id.is_some_and(|id| self.validated_timbre_curves.insert(id.clone()))
-                {
+                let validate_unit_interval =
+                    match kind {
+                        Some("timbre") => curve_id
+                            .is_some_and(|id| self.validated_timbre_curves.insert(id.clone())),
+                        Some("pressure") => curve_id
+                            .is_some_and(|id| self.validated_pressure_curves.insert(id.clone())),
+                        _ => false,
+                    };
+                if validate_unit_interval {
                     if let Some(points) = points {
                         for point in points {
                             if let ValueKind::Tuple(items) = &point.kind {
@@ -2304,7 +2314,11 @@ impl<'a> Validator<'a> {
                                     if value < &BigRational::zero() || value > &BigRational::one() {
                                         self.push(
                                             DiagnosticCode::Range,
-                                            "timbre expression values must be within 0..=1",
+                                            if kind == Some("pressure") {
+                                                "pressure expression values must be within 0..=1"
+                                            } else {
+                                                "timbre expression values must be within 0..=1"
+                                            },
                                             Some(point.span),
                                             path.to_vec(),
                                             vec!["curve".into()],

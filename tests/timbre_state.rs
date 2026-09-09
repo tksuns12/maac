@@ -1,23 +1,47 @@
 use maac::{compiler::compile, dsp::DspEngine, graph::GraphProcessor, parse, Plan};
 
-fn fixture(generator: &str, extra: &str, output: &str, control: &str, automation: &str) -> Plan {
+fn fixture(
+    generator: &str,
+    extra: &str,
+    output: &str,
+    control: &str,
+    automation: &str,
+    pressure_enabled: bool,
+) -> Plan {
+    let pressure_node = if pressure_enabled {
+        r#"node touch { type = "synth.pressure/1"; }"#
+    } else {
+        ""
+    };
+    let pressure_a = if pressure_enabled {
+        "expression touch { kind = pressure; curve = &press_a; }"
+    } else {
+        ""
+    };
+    let pressure_b = if pressure_enabled {
+        "expression touch { kind = pressure; curve = &press_b; }"
+    } else {
+        ""
+    };
     let text = format!(
         r#"maac 1;
 project p {{ score = [0q, 1/25q]; tail = 1ms; rate = 48000Hz; tempo = &clock; meter = &metre; output = &sound:out; }}
 tempo clock {{ points = [(0q, 120bpm, step)]; }} meter metre {{ points = [(0q, 4, 4)]; }}
 instrument tone {{ channels = 1; voice v {{ channels = 1; amplitude = &amp; output = &{output}:out;
 node amp {{ type = "synth.adsr/1"; params = {{ release = 1ms; }}; }}
-node generator {{ {generator} }} node color {{ type = "synth.timbre/1"; }} {extra}
+node generator {{ {generator} }} node color {{ type = "synth.timbre/1"; }} {pressure_node} {extra}
 }} {control} }}
 node sound {{ instrument = &tone; config = {{ voices = 2; }}; }} track t {{ target = &sound:events; }}
 curve shade {{ clock = normalized; points = [(0, 1/4, linear), (1/3, 1, linear), (2/3, 0, linear), (1, 1/2, step)]; }}
 curve other {{ clock = normalized; points = [(0, 3/4, linear), (1, 1/4, step)]; }}
+curve press_a {{ clock = normalized; points = [(0, 1/4, linear), (1, 3/4, step)]; }}
+curve press_b {{ clock = normalized; points = [(0, 1, linear), (1, 0, step)]; }}
 curve bend {{ clock = normalized; points = [(0, 100ct, linear), (1, -100ct, step)]; }}
 curve gain {{ clock = seconds; points = [(0s, 1, step), (1ms, 0, step), (3ms, 1, step)]; }}
 {automation}
 pattern notes {{ length = 1/50q;
-note a {{ at = 0q; dur = 1/50q; pitch = 440Hz; velocity = 1/2; expression t {{ kind = timbre; curve = &shade; }} expression g {{ kind = gain; curve = &gain; }} expression p {{ kind = pitch; curve = &bend; }} }}
-note b {{ at = 1/200q; dur = 1/50q; pitch = 330Hz; velocity = 1/4; expression t {{ kind = timbre; curve = &other; }} }}
+note a {{ {pressure_a} at = 0q; dur = 1/50q; pitch = 440Hz; velocity = 1/2; expression t {{ kind = timbre; curve = &shade; }} expression g {{ kind = gain; curve = &gain; }} expression p {{ kind = pitch; curve = &bend; }} }}
+note b {{ {pressure_b} at = 1/200q; dur = 1/50q; pitch = 330Hz; velocity = 1/4; expression t {{ kind = timbre; curve = &other; }} }}
 }} place play {{ pattern = &notes; track = &t; at = 0q; }}"#
     );
     compile(&parse(&text).unwrap()).unwrap()
@@ -51,6 +75,16 @@ fn shade(index: usize, age: usize) -> f64 {
         2.0 - t
     } else {
         0.5 * (t - 2.0)
+    }
+}
+// Separate analytic pressure values: distinct from either timbre curve, with
+// nonzero first samples and a held gate endpoint throughout release.
+fn pressure(index: usize, age: usize) -> f64 {
+    let t = age.min(480) as f64 / 480.0;
+    if index == 0 {
+        0.25 + 0.5 * t
+    } else {
+        1.0 - t
     }
 }
 fn frequency(index: usize, age: usize) -> f64 {
@@ -137,17 +171,29 @@ fn envelope(age: usize, gate: usize) -> f64 {
 
 #[test]
 fn timbre_damping_keeps_seeded_strings_through_mute_overlap_and_release() {
-    let plan = fixture(
-        r#"type = "synth.pluck/1"; config = { seed = 1; }; params = { damping = 1; decay = 3s; };"#,
-        "modulate damping { from = &color:out; to = &generator.params.damping; depth = -1; }",
-        "generator",
-        "",
-        "",
-    );
-    let mut strings = [StringOracle::new(), StringOracle::new()];
-    verify(&plan, 3e-12, |index, age, _| {
-        strings[index].next(frequency(index, age), 1.0 - shade(index, age))
-    });
+    for pressure_enabled in [false, true] {
+        let plan = fixture(
+            r#"type = "synth.pluck/1"; config = { seed = 1; }; params = { damping = 1; decay = 3s; };"#,
+            if pressure_enabled {
+                "modulate damping { from = &color:out; to = &generator.params.damping; depth = -3/4; } modulate pressure { from = &touch:out; to = &generator.params.damping; depth = -1/4; }"
+            } else {
+                "modulate damping { from = &color:out; to = &generator.params.damping; depth = -1; }"
+            },
+            "generator",
+            "",
+            "",
+            pressure_enabled,
+        );
+        let mut strings = [StringOracle::new(), StringOracle::new()];
+        verify(&plan, 3e-12, |index, age, _| {
+            let damping = if pressure_enabled {
+                1.0 - 0.75 * shade(index, age) - 0.25 * pressure(index, age)
+            } else {
+                1.0 - shade(index, age)
+            };
+            strings[index].next(frequency(index, age), damping)
+        });
+    }
 }
 const CYCLES: [[f64; 8]; 2] = [
     [0.0, 0.5, 1.0, 0.25, -0.5, -1.0, -0.25, 0.125],
@@ -192,63 +238,94 @@ fn lookup(cycle: &[f64; 8], phase: f64) -> f64 {
 }
 #[test]
 fn timbre_morphs_frames_without_resetting_each_voices_phase() {
-    let mut plan = fixture(
-        r#"type = "synth.sine/1"; params = { phase = 1/8; };"#,
-        "",
-        "generator",
-        "",
-        "",
-    );
-    embed_table(&mut plan, true);
-    // Compile a legal modulation against a sample-rate scalar, then retarget the
-    // retained graph to the wavetable's position parameter before validation.
-    let mapped = fixture(
-        r#"type = "synth.sine/1"; params = { phase = 1/8; };"#,
-        "modulate morph { from = &color:out; to = &generator.params.ratio; depth = 1; }",
-        "generator",
-        "",
-        "",
-    );
-    let mut modulation = mapped.instruments.unwrap().programs[0].voice.modulations[0].clone();
-    modulation.to.parameter = "position".into();
-    plan.instruments.as_mut().unwrap().programs[0]
-        .voice
-        .modulations
-        .push(modulation);
-    let mut phases = [0.125, 0.125];
-    verify(&plan, 1e-12, |index, age, _| {
-        let low = lookup(&CYCLES[0], phases[index]);
-        let high = lookup(&CYCLES[1], phases[index]);
-        phases[index] = (phases[index] + frequency(index, age) / 48000.0).rem_euclid(1.0);
-        low + (high - low) * shade(index, age)
-    });
+    for pressure_enabled in [false, true] {
+        let mut plan = fixture(
+            r#"type = "synth.sine/1"; params = { phase = 1/8; };"#,
+            "",
+            "generator",
+            "",
+            "",
+            pressure_enabled,
+        );
+        embed_table(&mut plan, true);
+        // Compile a legal modulation against a sample-rate scalar, then retarget the
+        // retained graph to the wavetable's position parameter before validation.
+        let mapped = fixture(
+            r#"type = "synth.sine/1"; params = { phase = 1/8; };"#,
+            if pressure_enabled {
+                "modulate morph { from = &color:out; to = &generator.params.ratio; depth = 3/4; } modulate pressure { from = &touch:out; to = &generator.params.ratio; depth = 1/4; }"
+            } else {
+                "modulate morph { from = &color:out; to = &generator.params.ratio; depth = 1; }"
+            },
+            "generator",
+            "",
+            "",
+            pressure_enabled,
+        );
+        for mut modulation in mapped.instruments.unwrap().programs[0]
+            .voice
+            .modulations
+            .clone()
+        {
+            modulation.to.parameter = "position".into();
+            plan.instruments.as_mut().unwrap().programs[0]
+                .voice
+                .modulations
+                .push(modulation);
+        }
+        let mut phases = [0.125, 0.125];
+        verify(&plan, 1e-12, |index, age, _| {
+            let low = lookup(&CYCLES[0], phases[index]);
+            let high = lookup(&CYCLES[1], phases[index]);
+            phases[index] = (phases[index] + frequency(index, age) / 48000.0).rem_euclid(1.0);
+            let position = if pressure_enabled {
+                0.75 * shade(index, age) + 0.25 * pressure(index, age)
+            } else {
+                shade(index, age)
+            };
+            assert!((0.0..=1.0).contains(&position));
+            low + (high - low) * position
+        });
+    }
 }
 #[test]
 fn timbre_cutoff_combines_control_and_lfo_while_filter_history_continues() {
-    let mut plan = fixture(r#"type = "synth.sine/1"; params = { phase = 1/8; };"#,
-        r#"node filter { type = "synth.onepole/1"; config = { channels = 1; }; }
+    for pressure_enabled in [false, true] {
+        let pressure_mapping = if pressure_enabled {
+            "modulate pressure { from = &touch:out; to = &filter.params.cutoff; depth = -400Hz; }"
+        } else {
+            ""
+        };
+        let mut plan = fixture(r#"type = "synth.sine/1"; params = { phase = 1/8; };"#,
+        &(r#"node filter { type = "synth.onepole/1"; config = { channels = 1; }; }
 node lfo { type = "synth.lfo/1"; params = { frequency = 0Hz; phase = 1/4; }; }
 connect audio { from = &generator:out; to = &filter:in; }
 modulate color_cutoff { from = &color:out; to = &filter.params.cutoff; depth = 3000Hz; }
-modulate lfo_cutoff { from = &lfo:out; to = &filter.params.cutoff; depth = 100Hz; }"#, "filter",
+modulate lfo_cutoff { from = &lfo:out; to = &filter.params.cutoff; depth = 100Hz; }"#.to_owned() + pressure_mapping), "filter",
         "control cutoff { target = &v.filter.params.cutoff; default = 800Hz; }",
-        "curve bright { clock = seconds; points = [(0s, 800Hz, step), (2ms, 1200Hz, step), (6ms, 600Hz, step)]; } automation a { target = &sound.params.cutoff; curve = &bright; at = 0s; }");
-    embed_table(&mut plan, false);
-    let mut phases = [0.125, 0.125];
-    let mut history = [0.0, 0.0];
-    verify(&plan, 1e-12, |index, age, frame| {
-        let input = lookup(&CYCLES[0], phases[index]);
-        phases[index] = (phases[index] + frequency(index, age) / 48000.0).rem_euclid(1.0);
-        let baseline = if frame < 96 {
-            800.0
-        } else if frame < 288 {
-            1200.0
-        } else {
-            600.0
-        };
-        let cutoff = baseline + 3000.0 * shade(index, age) + 100.0;
-        let pole = (-std::f64::consts::TAU * cutoff / 48000.0).exp();
-        history[index] = (1.0 - pole) * input + pole * history[index];
-        history[index]
-    });
+        "curve bright { clock = seconds; points = [(0s, 800Hz, step), (2ms, 1200Hz, step), (6ms, 600Hz, step)]; } automation a { target = &sound.params.cutoff; curve = &bright; at = 0s; }", pressure_enabled);
+        embed_table(&mut plan, false);
+        let mut phases = [0.125, 0.125];
+        let mut history = [0.0, 0.0];
+        verify(&plan, 1e-12, |index, age, frame| {
+            let input = lookup(&CYCLES[0], phases[index]);
+            phases[index] = (phases[index] + frequency(index, age) / 48000.0).rem_euclid(1.0);
+            let baseline = if frame < 96 {
+                800.0
+            } else if frame < 288 {
+                1200.0
+            } else {
+                600.0
+            };
+            let cutoff = baseline + 3000.0 * shade(index, age) + 100.0
+                - if pressure_enabled {
+                    400.0 * pressure(index, age)
+                } else {
+                    0.0
+                };
+            let pole = (-std::f64::consts::TAU * cutoff / 48000.0).exp();
+            history[index] = (1.0 - pole) * input + pole * history[index];
+            history[index]
+        });
+    }
 }

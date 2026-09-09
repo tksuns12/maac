@@ -6,7 +6,7 @@ use crate::graph::{
     parameter_descriptor_for_stage, topological_order, GraphProcessor, GraphProgram, GraphStage,
     InstrumentProgram, ParameterRate, ParameterSpec,
 };
-use crate::plan::{GainExpression, PitchExpression, TimbreExpression};
+use crate::plan::{GainExpression, PitchExpression, PressureExpression, TimbreExpression};
 use crate::synth::{Adsr, Oscillator, Waveform};
 use crate::wavetable::TableBank;
 use num_traits::ToPrimitive;
@@ -67,6 +67,7 @@ enum ProcessorCode {
     Adsr,
     Lfo,
     Timbre,
+    Pressure,
     Gain(usize),
     OnePole(usize),
     HighPass(usize),
@@ -119,6 +120,7 @@ struct VoiceState {
     pitch_expression: Option<ExpressionRuntime<PitchExpression>>,
     gain_expression: Option<ExpressionRuntime<GainExpression>>,
     timbre_expression: Option<ExpressionRuntime<TimbreExpression>>,
+    pressure_expression: Option<ExpressionRuntime<PressureExpression>>,
     on_frame: u64,
     released: bool,
     graph: GraphState,
@@ -314,7 +316,7 @@ impl InstrumentRuntime {
         velocity: f64,
         frame: u64,
     ) -> Result<()> {
-        self.note_on_with_expressions(address, pitch_hz, velocity, frame, None, None, None)
+        self.note_on_with_expressions(address, pitch_hz, velocity, frame, None, None, None, None)
     }
 
     // Keep the public note-on contract unchanged while carrying the optional curves.
@@ -328,6 +330,7 @@ impl InstrumentRuntime {
         pitch_expression: Option<ExpressionRuntime<PitchExpression>>,
         gain_expression: Option<ExpressionRuntime<GainExpression>>,
         timbre_expression: Option<ExpressionRuntime<TimbreExpression>>,
+        pressure_expression: Option<ExpressionRuntime<PressureExpression>>,
     ) -> Result<()> {
         if !pitch_hz.is_finite() || !velocity.is_finite() || !(0.0..=1.0).contains(&velocity) {
             return Err(RenderError::Nonfinite(
@@ -347,6 +350,7 @@ impl InstrumentRuntime {
             pitch_expression,
             gain_expression,
             timbre_expression,
+            pressure_expression,
             on_frame: frame,
             released: false,
             graph: GraphState::new_voice(&self.program.voice, &self.controls, frame)?,
@@ -450,6 +454,20 @@ impl InstrumentRuntime {
                     voice.address
                 )));
             }
+            let pressure = voice
+                .pressure_expression
+                .as_ref()
+                .map_or(0.0, |expression| {
+                    expression
+                        .curve
+                        .value_at(&expression.coordinate_at(voice.on_frame, frame))
+                });
+            if !pressure.is_finite() || !(0.0..=1.0).contains(&pressure) {
+                return Err(RenderError::Nonfinite(format!(
+                    "pressure expression at {} produced an invalid value",
+                    voice.address
+                )));
+            }
             let sample = voice.graph.render(
                 &self.program.voice,
                 &self.controls,
@@ -457,6 +475,7 @@ impl InstrumentRuntime {
                 self.rate,
                 pitch_hz,
                 timbre,
+                pressure,
                 [0.0; 2],
             )?;
             let amplitude = voice
@@ -496,6 +515,7 @@ impl InstrumentRuntime {
                 &self.controls,
                 frame,
                 self.rate,
+                0.0,
                 0.0,
                 0.0,
                 voice_sum,
@@ -570,7 +590,8 @@ impl GraphState {
                 ProcessorCode::Gain(_)
                 | ProcessorCode::Mix(_)
                 | ProcessorCode::Pan
-                | ProcessorCode::Timbre => ProcessorState::Stateless,
+                | ProcessorCode::Timbre
+                | ProcessorCode::Pressure => ProcessorState::Stateless,
             };
             nodes.push(RuntimeNode {
                 state,
@@ -635,6 +656,7 @@ impl GraphState {
         rate: f64,
         pitch_hz: f64,
         timbre: f64,
+        pressure: f64,
         input: [f64; 2],
     ) -> Result<[f64; 2]> {
         for &node_index in &graph.order {
@@ -694,6 +716,9 @@ impl GraphState {
                 }
                 (ProcessorCode::Timbre, ProcessorState::Stateless) => {
                     runtime.output[0] = timbre;
+                }
+                (ProcessorCode::Pressure, ProcessorState::Stateless) => {
+                    runtime.output[0] = pressure;
                 }
                 (ProcessorCode::Gain(channels), ProcessorState::Stateless) => {
                     for (output, input) in
@@ -852,6 +877,7 @@ fn compile_processor(
             ProcessorCode::Adsr,
         ),
         GraphProcessor::Timbre => (&[], ProcessorCode::Timbre),
+        GraphProcessor::Pressure => (&[], ProcessorCode::Pressure),
         GraphProcessor::Lfo => (&["frequency", "phase", "level"], ProcessorCode::Lfo),
         GraphProcessor::Gain { channels } => (&["level"], ProcessorCode::Gain(*channels as usize)),
         GraphProcessor::OnePole { channels } => {
@@ -874,7 +900,7 @@ fn parameter_slot(processor: &ProcessorCode, name: &str) -> Option<usize> {
         ProcessorCode::Lfo => &["frequency", "phase", "level"],
         ProcessorCode::Gain(_) | ProcessorCode::Noise(_) => &["level"],
         ProcessorCode::OnePole(_) | ProcessorCode::HighPass(_) => &["cutoff"],
-        ProcessorCode::Mix(_) | ProcessorCode::Timbre => &[],
+        ProcessorCode::Mix(_) | ProcessorCode::Timbre | ProcessorCode::Pressure => &[],
         ProcessorCode::Pan => &["pan"],
     };
     names.iter().position(|candidate| *candidate == name)

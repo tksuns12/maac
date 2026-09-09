@@ -84,7 +84,7 @@ See the [performance-plan guide](performance-plan.md) for the wire format.
 For each conservative active instrument voice frame carrying pitch, validation
 adds `17 + ceil(log2(point_count))` normalized execution-work units to the
 existing `max_execution_work` budget. One point costs 17, two points cost 18,
-and 65,536 points cost 33 units per frame. This charge is additive with gain.
+and 65,536 points cost 33 units per frame. This charge is additive with gain, timbre, and pressure.
 The conservative lifetime includes the gate and maximum automated release,
 capped at render end, including silent voices. It is accounting, not a wall-clock
 performance guarantee.
@@ -97,7 +97,9 @@ The [delivery report](instrument-pitch-delivery.md) records automated checks,
 installed CLI evidence, and remaining validation limits.
 
 Custom voice graphs declaring `synth.timbre/1` may also attach one independent
-[timbre expression](timbre-expression.md) alongside pitch and gain. Frozen basic
-and acoustic graphs do not opt in. Automation, pitch, gain, and timbre share the
+[timbre expression](timbre-expression.md) alongside pitch and gain. Declaring
+`synth.pressure/1` independently permits [pressure](pressure-expression.md),
+so all four kinds may coexist when both sources are present. Frozen basic
+and acoustic graphs do not opt in to timbre or pressure. Automation, pitch, gain, timbre, and pressure share the
 65,536-point limit; each attached instrument expression contributes its own
 `17 + ceil(log2(point_count))` work charge per conservative active voice frame.

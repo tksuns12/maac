@@ -25,9 +25,9 @@ use crate::music::{
 use crate::plan::{
     Automation, AutomationClock, AutomationPoint, Connection, EventKind, EventTarget,
     ExpressionClock, GainExpression, GainExpressionPoint, Interpolation, Node, OutputSettings,
-    PitchExpression, PitchExpressionPoint, Plan, PlanLimits, PortRef, Processor, Region,
-    ResolvedEvent, SourceMapping, SourceSpan, TempoMap, TempoPoint, TimbreExpression,
-    TimbreExpressionPoint,
+    PitchExpression, PitchExpressionPoint, Plan, PlanLimits, PortRef, PressureExpression,
+    PressureExpressionPoint, Processor, Region, ResolvedEvent, SourceMapping, SourceSpan, TempoMap,
+    TempoPoint, TimbreExpression, TimbreExpressionPoint,
 };
 use crate::semantic::InstrumentNodeDescriptor;
 use crate::syntax::{Document, Field, Object, Reference, Unit, Value, ValueKind};
@@ -261,6 +261,7 @@ struct NoteDef {
     pitch_expression: Option<String>,
     gain_expression: Option<String>,
     timbre_expression: Option<String>,
+    pressure_expression: Option<String>,
     id: String,
     span: Span,
     at: Rational,
@@ -334,6 +335,7 @@ struct ExpandedNote {
     pitch_expression: Option<String>,
     gain_expression: Option<String>,
     timbre_expression: Option<String>,
+    pressure_expression: Option<String>,
     expression_scale: Rational,
     address: String,
     source: SourceMapping,
@@ -1474,10 +1476,12 @@ impl<'a> Compiler<'a> {
         let pitch_expression = expression_curve("pitch")?;
         let gain_expression = expression_curve("gain")?;
         let timbre_expression = expression_curve("timbre")?;
+        let pressure_expression = expression_curve("pressure")?;
         Ok(NoteDef {
             pitch_expression,
             gain_expression,
             timbre_expression,
+            pressure_expression,
             id: object.id.clone(),
             span: object.span,
             at,
@@ -2355,6 +2359,7 @@ impl<'a> Compiler<'a> {
                         pitch_expression: note.pitch_expression.clone(),
                         gain_expression: note.gain_expression.clone(),
                         timbre_expression: note.timbre_expression.clone(),
+                        pressure_expression: note.pressure_expression.clone(),
                         expression_scale: state.scale.clone(),
                         address: state.address.join("/"),
                         source: SourceMapping {
@@ -2507,6 +2512,7 @@ impl<'a> Compiler<'a> {
                 pitch_expression: insert.note.pitch_expression.clone(),
                 gain_expression: insert.note.gain_expression.clone(),
                 timbre_expression: insert.note.timbre_expression.clone(),
+                pressure_expression: insert.note.pressure_expression.clone(),
                 expression_scale: Rational::one(),
                 address: format!("{}/{}/{}", place.id, insert.id, insert.note.id),
                 source,
@@ -2628,6 +2634,7 @@ impl<'a> Compiler<'a> {
                         e.pitch_expression.as_ref(),
                         e.gain_expression.as_ref(),
                         e.timbre_expression.as_ref(),
+                        e.pressure_expression.as_ref(),
                     ]
                     .into_iter()
                     .flatten()
@@ -2792,6 +2799,38 @@ impl<'a> Compiler<'a> {
                 source: expanded.source.clone(),
                 target: expanded.target.clone(),
                 kind: EventKind::Note {
+                    pressure_expression: expanded
+                        .pressure_expression
+                        .as_ref()
+                        .map(|id| {
+                            let curve = &self.curves[id];
+                            let clock = match curve.clock.as_str() {
+                                "score" => ExpressionClock::Score,
+                                "seconds" => ExpressionClock::Seconds,
+                                _ => ExpressionClock::Normalized,
+                            };
+                            let points = curve
+                                .points
+                                .iter()
+                                .map(|(position, value, shape)| {
+                                    Ok(PressureExpressionPoint {
+                                        position: if clock == ExpressionClock::Score {
+                                            checked_mul(
+                                                position,
+                                                &expanded.expression_scale,
+                                                Some(expanded.source_span),
+                                            )?
+                                        } else {
+                                            position.clone()
+                                        },
+                                        value: value.clone(),
+                                        shape: *shape,
+                                    })
+                                })
+                                .collect::<CResult<Vec<_>>>()?;
+                            Ok(PressureExpression { clock, points })
+                        })
+                        .transpose()?,
                     timbre_expression: expanded
                         .timbre_expression
                         .as_ref()

@@ -70,7 +70,9 @@ expression point scale is 1.
   including both on one note. Reusable mono/stereo instruments support both
   [pitch](instrument-pitch.md) and [gain](instrument-gain.md), including together
   on one note. Custom voice graphs declaring `synth.timbre/1` also support
-  independent [timbre](timbre-expression.md) on that note. Pressure remains unsupported.
+  independent [timbre](timbre-expression.md) on that note. Graphs declaring
+  `synth.pressure/1` independently support [pressure](pressure-expression.md);
+  all four kinds can coexist when both sources are declared.
 - Expression changes the note's resolved base frequency by
   `2^(cents / 1200)`. Initial expression applies at note-on, each overlapping
   voice retains its own expression, and release holds the gate-end pitch.
@@ -85,7 +87,8 @@ expression point scale is 1.
   and `points` (`position`, `cents`, `shape`), using canonical rationals.
   Absent expression is omitted, preserving legacy JSON. Older readers reject
   expression-bearing plans. Rust `EventKind::Note` literals need
-  `pitch_expression: None`, `gain_expression: None`, and `timbre_expression: None`
+  `pitch_expression: None`, `gain_expression: None`, `timbre_expression: None`,
+  and `pressure_expression: None`
   for absent expressions.
 
 The governing rules are in [MaaC-1](../MaaC-1-Specification.md),
