@@ -280,6 +280,7 @@ struct Validator<'a> {
     automation_writers: BTreeSet<String>,
     total_objects: usize,
     validated_gain_curves: BTreeSet<String>,
+    validated_timbre_curves: BTreeSet<String>,
     instrument_nodes: &'a BTreeMap<String, InstrumentNodeDescriptor>,
 }
 
@@ -299,6 +300,7 @@ impl<'a> Validator<'a> {
             automation_writers: BTreeSet::new(),
             total_objects: 0,
             validated_gain_curves: BTreeSet::new(),
+            validated_timbre_curves: BTreeSet::new(),
             instrument_nodes,
         }
     }
@@ -1258,7 +1260,7 @@ impl<'a> Validator<'a> {
                 }
                 if matches!(
                     child.field("kind").and_then(|f| f.value.as_symbol()),
-                    Some("pitch" | "gain")
+                    Some("pitch" | "gain" | "timbre")
                 ) {
                     self.check_schema(
                         child,
@@ -2251,7 +2253,7 @@ impl<'a> Validator<'a> {
         if let Some(field) = object.field("curve") {
             self.expect_object_ref(field, "curve", &["curve"], path);
             let kind = object.field("kind").and_then(|f| f.value.as_symbol());
-            if matches!(kind, Some("pitch" | "gain")) {
+            if matches!(kind, Some("pitch" | "gain" | "timbre")) {
                 let curve_id = field.value.reference().and_then(|r| r.path.first());
                 let points = curve_id
                     .and_then(|id| self.document.object(id))
@@ -2278,6 +2280,8 @@ impl<'a> Validator<'a> {
                         DiagnosticCode::Unit,
                         if kind == Some("pitch") {
                             "pitch expression curve values must use cents"
+                        } else if kind == Some("timbre") {
+                            "timbre expression curve values must be dimensionless"
                         } else {
                             "gain expression curve values must be dimensionless"
                         },
@@ -2285,6 +2289,31 @@ impl<'a> Validator<'a> {
                         path.to_vec(),
                         vec!["curve".into()],
                     );
+                }
+                if kind == Some("timbre")
+                    && curve_id.is_some_and(|id| self.validated_timbre_curves.insert(id.clone()))
+                {
+                    if let Some(points) = points {
+                        for point in points {
+                            if let ValueKind::Tuple(items) = &point.kind {
+                                if let Some(Value {
+                                    kind: ValueKind::Number(value),
+                                    ..
+                                }) = items.get(1)
+                                {
+                                    if value < &BigRational::zero() || value > &BigRational::one() {
+                                        self.push(
+                                            DiagnosticCode::Range,
+                                            "timbre expression values must be within 0..=1",
+                                            Some(point.span),
+                                            path.to_vec(),
+                                            vec!["curve".into()],
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
                 // Curves can have many note consumers; scan gain ranges only once.
                 if kind == Some("gain")

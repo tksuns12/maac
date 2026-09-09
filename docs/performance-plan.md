@@ -54,8 +54,8 @@ Each event contains:
 - `source`: source object, declaration path and optional byte `span`.
 - `target`: sine or instrument node's `events` port.
 - `kind`: a tagged note value with `kind: "note"`, `pitch_hz`, and rational
-  `velocity`; optional `pitch_expression` and `gain_expression` carry per-note
-  cents and amplitude curves.
+  `velocity`; optional `pitch_expression`, `gain_expression`, and `timbre_expression`
+  carry per-note cents, amplitude, and authored timbre curves.
 - `score_on_q`, `score_off_q`: final musical coordinates after inherited
   transformations, repetition cuts, and occurrence edits.
 - `onset_offset_seconds`, `release_offset_seconds`: physical offsets.
@@ -91,15 +91,26 @@ zero-gain voice state, release holding, and simultaneous pitch/gain expression.
 The [instrument gain contract](instrument-gain.md) places gain after each
 complete voice contribution, before summation and shared effects, and adds a
 point-count-dependent charge to existing execution work. This receiver extension
-adds no wire fields or plan version. Both expression types share the global
+adds no wire fields or plan version. Pitch, gain, and timbre share the global
 automation-point budget, including after pattern expansion. Instrument pitch adds
 `17 + ceil(log2(point_count))` work units per conservative active voice frame,
-additively with gain; the 65,536-point and 4,096-bit rational limits are unchanged.
+additively with gain and timbre; the 65,536-point and 4,096-bit rational limits are unchanged.
+
+`timbre_expression` is a strict object with `clock` and `points`. Each point
+has canonical rational `position` and dimensionless `value` in `[0, 1]`, plus
+`shape` (`step`, `linear`, or `exponential`; the final shape is `step`).
+Exponential endpoints must be strictly positive. The
+[timbre contract](timbre-expression.md) defines timing, release holding, mapping,
+and the additive `17 + ceil(log2(point_count))` per-voice-frame work charge.
+Only a graph whose voice stage declares `synth.timbre/1` receives timbre;
+capability is derived from its embedded program, even for an unconnected source.
+There is no separate capability flag. Graphs without that source, including
+frozen basic/acoustic graphs, and `core.sine/1` reject the expression.
 
 These optional note fields are additive in both plan versions. Absent fields
 are omitted, preserving previous JSON shapes; older readers reject fields they
-do not support. Rust `EventKind::Note` literals add `pitch_expression: None`
-and `gain_expression: None` when absent. The shared `ExpressionClock` retains
+do not support. Rust `EventKind::Note` literals add `pitch_expression: None`,
+`gain_expression: None`, and `timbre_expression: None` when absent. The shared `ExpressionClock` retains
 `PitchExpressionClock` as a compatibility type alias.
 
 ## Processors and automation
@@ -261,3 +272,14 @@ allowance on load and render; it carries no profile or authority to elevate
 limits. Implementations must propagate selected limits through every nested
 boundary. The implementation passed the integrated and installed checks
 recorded in the [entrypoint delivery report](project-entrypoint-delivery.md).
+
+## Timbre graph source
+
+Version 2 instrument graphs additionally accept the exact processor object
+`{"kind":"synth.timbre/1"}` with no additional fields. It is voice-only,
+parameterless, inputless, and mono; its node `params` map is empty. All timbre
+sources in one voice share that voice's evaluated value, zero when absent.
+Ordinary graph connections and sample-rate modulation retain their existing
+rules and costs. Instrument graphs still require version 2; this extension
+introduces no plan-version bump. Older readers reject the new processor or
+note field, and absent timbre fields remain omitted from existing plans.

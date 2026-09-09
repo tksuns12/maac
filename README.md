@@ -135,6 +135,9 @@ The [instrument pitch guide](docs/instrument-pitch.md) applies independent bends
 and vibrato to reusable basic, acoustic, and custom voices.
 The [instrument gain guide](docs/instrument-gain.md) applies swells and fades to
 basic, acoustic, and custom instrument voices with a standalone example.
+The [timbre guide](docs/timbre-expression.md) maps independent per-note color
+curves through explicit custom graph sources, with a standalone filtered-oscillator
+and plucked-string example.
 The [diagnostics guide](docs/diagnostics.md) explains failures, while the
 [performance-plan format](docs/performance-plan.md) describes the standalone
 JSON interchange artifact. [Implementation decisions](docs/implementation-decisions.md)

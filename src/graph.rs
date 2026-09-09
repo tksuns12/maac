@@ -56,6 +56,8 @@ pub enum GraphProcessor {
     Wavetable { table: String },
     #[serde(rename = "synth.adsr/1")]
     Adsr,
+    #[serde(rename = "synth.timbre/1")]
+    Timbre,
     #[serde(rename = "synth.lfo/1")]
     Lfo,
     #[serde(rename = "synth.gain/1")]
@@ -89,6 +91,8 @@ enum GraphProcessorWire {
     Wavetable { table: String },
     #[serde(rename = "synth.adsr/1")]
     Adsr {},
+    #[serde(rename = "synth.timbre/1")]
+    Timbre {},
     #[serde(rename = "synth.lfo/1")]
     Lfo {},
     #[serde(rename = "synth.gain/1")]
@@ -123,6 +127,7 @@ impl<'de> Deserialize<'de> for GraphProcessor {
             GraphProcessorWire::Pluck { seed } => Self::Pluck { seed },
             GraphProcessorWire::Wavetable { table } => Self::Wavetable { table },
             GraphProcessorWire::Adsr {} => Self::Adsr,
+            GraphProcessorWire::Timbre {} => Self::Timbre,
             GraphProcessorWire::Lfo {} => Self::Lfo,
             GraphProcessorWire::Gain { channels } => Self::Gain { channels },
             GraphProcessorWire::OnePole { channels } => Self::OnePole { channels },
@@ -144,6 +149,7 @@ impl GraphProcessor {
             Self::Pluck { .. } => "synth.pluck/1",
             Self::Wavetable { .. } => "synth.wavetable/1",
             Self::Adsr => "synth.adsr/1",
+            Self::Timbre => "synth.timbre/1",
             Self::Lfo => "synth.lfo/1",
             Self::Gain { .. } => "synth.gain/1",
             Self::OnePole { .. } => "synth.onepole/1",
@@ -190,6 +196,7 @@ impl GraphProcessor {
                 | Self::Pluck { .. }
                 | Self::Wavetable { .. }
                 | Self::Adsr
+                | Self::Timbre
         )
     }
 }
@@ -279,6 +286,14 @@ pub struct InstrumentProgram {
 }
 
 impl InstrumentProgram {
+    /// Whether the voice graph opts into per-note timbre expression.
+    pub fn supports_timbre(&self) -> bool {
+        self.voice
+            .nodes
+            .iter()
+            .any(|node| matches!(node.processor, GraphProcessor::Timbre))
+    }
+
     pub(crate) fn pluck_node_count(&self) -> usize {
         self.voice
             .nodes
@@ -572,7 +587,7 @@ pub fn parameter_descriptor(processor: &GraphProcessor, name: &str) -> Option<Pa
         GraphProcessor::Pan => {
             (name == "pan").then(|| dimensionless(ParameterRate::Sample, 0, -1, 1))
         }
-        GraphProcessor::Mix { .. } => None,
+        GraphProcessor::Mix { .. } | GraphProcessor::Timbre => None,
     }
 }
 

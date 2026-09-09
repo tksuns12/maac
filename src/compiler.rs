@@ -26,7 +26,8 @@ use crate::plan::{
     Automation, AutomationClock, AutomationPoint, Connection, EventKind, EventTarget,
     ExpressionClock, GainExpression, GainExpressionPoint, Interpolation, Node, OutputSettings,
     PitchExpression, PitchExpressionPoint, Plan, PlanLimits, PortRef, Processor, Region,
-    ResolvedEvent, SourceMapping, SourceSpan, TempoMap, TempoPoint,
+    ResolvedEvent, SourceMapping, SourceSpan, TempoMap, TempoPoint, TimbreExpression,
+    TimbreExpressionPoint,
 };
 use crate::semantic::InstrumentNodeDescriptor;
 use crate::syntax::{Document, Field, Object, Reference, Unit, Value, ValueKind};
@@ -259,6 +260,7 @@ fn bigint_u64(value: &Rational, span: Option<Span>) -> CResult<u64> {
 struct NoteDef {
     pitch_expression: Option<String>,
     gain_expression: Option<String>,
+    timbre_expression: Option<String>,
     id: String,
     span: Span,
     at: Rational,
@@ -331,6 +333,7 @@ struct PlaceDef {
 struct ExpandedNote {
     pitch_expression: Option<String>,
     gain_expression: Option<String>,
+    timbre_expression: Option<String>,
     expression_scale: Rational,
     address: String,
     source: SourceMapping,
@@ -1470,9 +1473,11 @@ impl<'a> Compiler<'a> {
         };
         let pitch_expression = expression_curve("pitch")?;
         let gain_expression = expression_curve("gain")?;
+        let timbre_expression = expression_curve("timbre")?;
         Ok(NoteDef {
             pitch_expression,
             gain_expression,
+            timbre_expression,
             id: object.id.clone(),
             span: object.span,
             at,
@@ -2349,6 +2354,7 @@ impl<'a> Compiler<'a> {
                     self.events.push(ExpandedNote {
                         pitch_expression: note.pitch_expression.clone(),
                         gain_expression: note.gain_expression.clone(),
+                        timbre_expression: note.timbre_expression.clone(),
                         expression_scale: state.scale.clone(),
                         address: state.address.join("/"),
                         source: SourceMapping {
@@ -2500,6 +2506,7 @@ impl<'a> Compiler<'a> {
             let event = ExpandedNote {
                 pitch_expression: insert.note.pitch_expression.clone(),
                 gain_expression: insert.note.gain_expression.clone(),
+                timbre_expression: insert.note.timbre_expression.clone(),
                 expression_scale: Rational::one(),
                 address: format!("{}/{}/{}", place.id, insert.id, insert.note.id),
                 source,
@@ -2617,9 +2624,13 @@ impl<'a> Compiler<'a> {
             self.events
                 .iter()
                 .flat_map(|e| {
-                    [e.pitch_expression.as_ref(), e.gain_expression.as_ref()]
-                        .into_iter()
-                        .flatten()
+                    [
+                        e.pitch_expression.as_ref(),
+                        e.gain_expression.as_ref(),
+                        e.timbre_expression.as_ref(),
+                    ]
+                    .into_iter()
+                    .flatten()
                 })
                 .map(|id| self.curves[id].points.len()),
         ) {
@@ -2781,6 +2792,38 @@ impl<'a> Compiler<'a> {
                 source: expanded.source.clone(),
                 target: expanded.target.clone(),
                 kind: EventKind::Note {
+                    timbre_expression: expanded
+                        .timbre_expression
+                        .as_ref()
+                        .map(|id| {
+                            let curve = &self.curves[id];
+                            let clock = match curve.clock.as_str() {
+                                "score" => ExpressionClock::Score,
+                                "seconds" => ExpressionClock::Seconds,
+                                _ => ExpressionClock::Normalized,
+                            };
+                            let points = curve
+                                .points
+                                .iter()
+                                .map(|(position, value, shape)| {
+                                    Ok(TimbreExpressionPoint {
+                                        position: if clock == ExpressionClock::Score {
+                                            checked_mul(
+                                                position,
+                                                &expanded.expression_scale,
+                                                Some(expanded.source_span),
+                                            )?
+                                        } else {
+                                            position.clone()
+                                        },
+                                        value: value.clone(),
+                                        shape: *shape,
+                                    })
+                                })
+                                .collect::<CResult<Vec<_>>>()?;
+                            Ok(TimbreExpression { clock, points })
+                        })
+                        .transpose()?,
                     gain_expression: expanded
                         .gain_expression
                         .as_ref()

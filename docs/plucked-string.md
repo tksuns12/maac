@@ -177,6 +177,12 @@ inclusive after the live ratio. There is no frequency offset. Bends preserve
 ring pointers and history without refilling or retriggering. Existing mono
 graph modulation can drive ratio, including an LFO.
 
+A custom graph may opt into [per-note timbre](timbre-expression.md) by declaring
+`synth.timbre/1`. For example, damping baseline `3/4` and depth `-1/2` reduce
+the additional loss filter as timbre rises from zero to one. This changes live
+damping without refilling the ring; the combined-loop caveats above still apply.
+The frozen acoustic library does not gain this mapping implicitly.
+
 Zero level, zero velocity, and amplitude-envelope silence still advance the
 entire recurrence. The designated ADSR and velocity multiply voice output
 exactly once. Note-off changes the ADSR release, not string state. Natural

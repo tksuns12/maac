@@ -121,6 +121,7 @@ fn base_plan(version: u32) -> Plan {
             },
             target: EventTarget::new("bell", "events").unwrap(),
             kind: EventKind::Note {
+                timbre_expression: None,
                 pitch_expression: None,
                 gain_expression: None,
                 pitch_hz: 440.0,

@@ -74,7 +74,8 @@ These clock rules also apply to [pitch expression](pitch-expression.md).
 - `core.sine/1` and reusable mono/stereo instruments receive gain expression,
   including `std/basic/1.0.0`, `std/acoustic/1.0.0`, and custom graphs. See the
   [instrument gain guide](instrument-gain.md) for voice placement and limits.
-  Pressure and timbre remain unsupported. [Instrument pitch](instrument-pitch.md)
+  Pressure remains unsupported. [Timbre](timbre-expression.md) is supported
+  by custom voice graphs explicitly declaring `synth.timbre/1`. [Instrument pitch](instrument-pitch.md)
   is supported independently, including when combined with zero gain.
 - One pitch and one gain expression may coexist on a `core.sine/1` or reusable instrument note. Expression
   child IDs and their order do not affect the result; duplicate kinds fail.
@@ -88,8 +89,9 @@ These clock rules also apply to [pitch expression](pitch-expression.md).
   and `points` (`position`, `gain`, `shape`), using canonical rationals.
   `None` is omitted, preserving old JSON. Older readers reject plans
   containing the new field. Rust `EventKind::Note` literals need
-  `gain_expression: None` when gain expression is absent.
-- Gain and pitch share `ExpressionClock`; the `PitchExpressionClock`
+  `gain_expression: None` when gain expression is absent, and
+  `timbre_expression: None` when timbre expression is absent.
+- Gain, pitch, and timbre share `ExpressionClock`; the `PitchExpressionClock`
   type alias preserves the previous clock name for Rust callers.
 
 The governing rules are in [MaaC-1](../MaaC-1-Specification.md), sections

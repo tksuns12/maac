@@ -695,6 +695,7 @@ fn lower_graph_node(
             }
         }
         "synth.adsr/1" => no_config(config, file, object, &identity, GraphProcessor::Adsr)?,
+        "synth.timbre/1" => no_config(config, file, object, &identity, GraphProcessor::Timbre)?,
         "synth.lfo/1" => no_config(config, file, object, &identity, GraphProcessor::Lfo)?,
         "synth.pan/1" => no_config(config, file, object, &identity, GraphProcessor::Pan)?,
         "synth.gain/1" => GraphProcessor::Gain {

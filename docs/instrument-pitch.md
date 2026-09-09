@@ -95,3 +95,9 @@ validation enforce the same receiver and resource constraints.
 
 The [delivery report](instrument-pitch-delivery.md) records automated checks,
 installed CLI evidence, and remaining validation limits.
+
+Custom voice graphs declaring `synth.timbre/1` may also attach one independent
+[timbre expression](timbre-expression.md) alongside pitch and gain. Frozen basic
+and acoustic graphs do not opt in. Automation, pitch, gain, and timbre share the
+65,536-point limit; each attached instrument expression contributes its own
+`17 + ceil(log2(point_count))` work charge per conservative active voice frame.

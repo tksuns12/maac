@@ -11,6 +11,12 @@ actually published; no release tag or publication date is asserted here.
 
 ### Added
 
+- Per-note timbre for custom graphs declaring voice-only `synth.timbre/1`.
+  Exact 0…1 curves map through existing signed-depth modulation, coexist with
+  pitch and gain, and hold through release. Optional `timbre_expression` note
+  payloads preserve absent-field JSON; graph plans remain version 2. Frozen
+  basic/acoustic libraries do not opt in. See the [timbre guide](docs/timbre-expression.md).
+
 - Per-note pitch on reusable mono/stereo instruments, including basic, acoustic,
   and custom graphs. Independent cents curves preserve oscillator and string
   state, coexist with gain, and reuse existing source and plan fields. See the
@@ -88,7 +94,7 @@ actually published; no release tag or publication date is asserted here.
 
 - The Rust implementation is a foundation subset; it does not claim full
   Document, Performance, Core Audio, or Locked Render conformance.
-- Tempo ramps, per-note pressure/timbre expression, hits/messages, top-level core modulation,
+- Tempo ramps, per-note pressure expression, hits/messages, top-level core modulation,
   other processors, recorded-sample instruments, arranged audio, external plug-ins,
   transactional editing, MaaC Locked Render dependency-lock manifests
   (distinct from `Cargo.lock`), MIDI transport, GUI, and real-time playback

@@ -6,7 +6,7 @@ use crate::graph::{
     parameter_descriptor_for_stage, topological_order, GraphProcessor, GraphProgram, GraphStage,
     InstrumentProgram, ParameterRate, ParameterSpec,
 };
-use crate::plan::{GainExpression, PitchExpression};
+use crate::plan::{GainExpression, PitchExpression, TimbreExpression};
 use crate::synth::{Adsr, Oscillator, Waveform};
 use crate::wavetable::TableBank;
 use num_traits::ToPrimitive;
@@ -66,6 +66,7 @@ enum ProcessorCode {
     Wavetable(Arc<TableBank>),
     Adsr,
     Lfo,
+    Timbre,
     Gain(usize),
     OnePole(usize),
     HighPass(usize),
@@ -117,6 +118,7 @@ struct VoiceState {
     velocity: f64,
     pitch_expression: Option<ExpressionRuntime<PitchExpression>>,
     gain_expression: Option<ExpressionRuntime<GainExpression>>,
+    timbre_expression: Option<ExpressionRuntime<TimbreExpression>>,
     on_frame: u64,
     released: bool,
     graph: GraphState,
@@ -312,10 +314,10 @@ impl InstrumentRuntime {
         velocity: f64,
         frame: u64,
     ) -> Result<()> {
-        self.note_on_with_expressions(address, pitch_hz, velocity, frame, None, None)
+        self.note_on_with_expressions(address, pitch_hz, velocity, frame, None, None, None)
     }
 
-    // Keep the public note-on contract unchanged while carrying both optional curves.
+    // Keep the public note-on contract unchanged while carrying the optional curves.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn note_on_with_expressions(
         &mut self,
@@ -325,6 +327,7 @@ impl InstrumentRuntime {
         frame: u64,
         pitch_expression: Option<ExpressionRuntime<PitchExpression>>,
         gain_expression: Option<ExpressionRuntime<GainExpression>>,
+        timbre_expression: Option<ExpressionRuntime<TimbreExpression>>,
     ) -> Result<()> {
         if !pitch_hz.is_finite() || !velocity.is_finite() || !(0.0..=1.0).contains(&velocity) {
             return Err(RenderError::Nonfinite(
@@ -343,6 +346,7 @@ impl InstrumentRuntime {
             velocity,
             pitch_expression,
             gain_expression,
+            timbre_expression,
             on_frame: frame,
             released: false,
             graph: GraphState::new_voice(&self.program.voice, &self.controls, frame)?,
@@ -435,12 +439,24 @@ impl InstrumentRuntime {
             } else {
                 voice.pitch_hz
             };
+            let timbre = voice.timbre_expression.as_ref().map_or(0.0, |expression| {
+                expression
+                    .curve
+                    .value_at(&expression.coordinate_at(voice.on_frame, frame))
+            });
+            if !timbre.is_finite() || !(0.0..=1.0).contains(&timbre) {
+                return Err(RenderError::Nonfinite(format!(
+                    "timbre expression at {} produced an invalid value",
+                    voice.address
+                )));
+            }
             let sample = voice.graph.render(
                 &self.program.voice,
                 &self.controls,
                 frame,
                 self.rate,
                 pitch_hz,
+                timbre,
                 [0.0; 2],
             )?;
             let amplitude = voice
@@ -475,7 +491,15 @@ impl InstrumentRuntime {
         self.output = if let (Some(compiled), Some(shared)) =
             (self.program.shared.as_ref(), self.shared.as_mut())
         {
-            shared.render(compiled, &self.controls, frame, self.rate, 0.0, voice_sum)?
+            shared.render(
+                compiled,
+                &self.controls,
+                frame,
+                self.rate,
+                0.0,
+                0.0,
+                voice_sum,
+            )?
         } else {
             voice_sum
         };
@@ -543,9 +567,10 @@ impl GraphState {
                 ProcessorCode::OnePole(_) | ProcessorCode::HighPass(_) => {
                     ProcessorState::OnePole([0.0; 2])
                 }
-                ProcessorCode::Gain(_) | ProcessorCode::Mix(_) | ProcessorCode::Pan => {
-                    ProcessorState::Stateless
-                }
+                ProcessorCode::Gain(_)
+                | ProcessorCode::Mix(_)
+                | ProcessorCode::Pan
+                | ProcessorCode::Timbre => ProcessorState::Stateless,
             };
             nodes.push(RuntimeNode {
                 state,
@@ -609,6 +634,7 @@ impl GraphState {
         frame: u64,
         rate: f64,
         pitch_hz: f64,
+        timbre: f64,
         input: [f64; 2],
     ) -> Result<[f64; 2]> {
         for &node_index in &graph.order {
@@ -665,6 +691,9 @@ impl GraphState {
                 (ProcessorCode::Lfo, ProcessorState::Lfo(oscillator)) => {
                     runtime.output[0] =
                         oscillator.sample(runtime.params[0], rate)? * runtime.params[2];
+                }
+                (ProcessorCode::Timbre, ProcessorState::Stateless) => {
+                    runtime.output[0] = timbre;
                 }
                 (ProcessorCode::Gain(channels), ProcessorState::Stateless) => {
                     for (output, input) in
@@ -822,6 +851,7 @@ fn compile_processor(
             &["attack", "decay", "sustain", "release"],
             ProcessorCode::Adsr,
         ),
+        GraphProcessor::Timbre => (&[], ProcessorCode::Timbre),
         GraphProcessor::Lfo => (&["frequency", "phase", "level"], ProcessorCode::Lfo),
         GraphProcessor::Gain { channels } => (&["level"], ProcessorCode::Gain(*channels as usize)),
         GraphProcessor::OnePole { channels } => {
@@ -844,7 +874,7 @@ fn parameter_slot(processor: &ProcessorCode, name: &str) -> Option<usize> {
         ProcessorCode::Lfo => &["frequency", "phase", "level"],
         ProcessorCode::Gain(_) | ProcessorCode::Noise(_) => &["level"],
         ProcessorCode::OnePole(_) | ProcessorCode::HighPass(_) => &["cutoff"],
-        ProcessorCode::Mix(_) => &[],
+        ProcessorCode::Mix(_) | ProcessorCode::Timbre => &[],
         ProcessorCode::Pan => &["pan"],
     };
     names.iter().position(|candidate| *candidate == name)

@@ -1,0 +1,120 @@
+maac 1;
+
+// Authored timbre mappings in two inline graphs; no library or asset dependency.
+project timbre_expression_demo {
+  score = [0q, 3q]; rate = 48000Hz;
+  tempo = &clock; meter = &metre; output = &master:out; tail = 400ms;
+}
+tempo clock { points = [(0q, 120bpm, step)]; }
+meter metre { points = [(0q, 4, 4)]; }
+
+instrument filtered_voice {
+  channels = 2;
+  voice voice {
+    channels = 1; amplitude = &amp; output = &filter:out;
+    node amp {
+      type = "synth.adsr/1";
+      params = { attack = 5ms; sustain = 1; release = 300ms; };
+    }
+    node oscillator { type = "synth.saw/1"; params = { level = 0.12; }; }
+    node color { type = "synth.timbre/1"; }
+    node filter {
+      type = "synth.onepole/1"; config = { channels = 1; };
+      params = { cutoff = 800Hz; };
+    }
+    connect oscillator_filter { from = &oscillator:out; to = &filter:in; }
+    modulate brightness {
+      from = &color:out; to = &filter.params.cutoff; depth = 4200Hz;
+    }
+  }
+  shared stereo {
+    channels = 2; output = &pan:out;
+    node pan { type = "synth.pan/1"; params = { pan = -0.35; }; }
+    connect input_pan { from = &input:out; to = &pan:in; }
+  }
+  control brightness { target = &voice.filter.params.cutoff; default = 800Hz; }
+}
+
+instrument colored_string {
+  channels = 2;
+  voice voice {
+    channels = 1; amplitude = &amp; output = &string:out;
+    node amp {
+      type = "synth.adsr/1";
+      params = { attack = 2ms; sustain = 1; release = 300ms; };
+    }
+    node color { type = "synth.timbre/1"; }
+    node string {
+      type = "synth.pluck/1"; config = { seed = 1831565813; };
+      params = { decay = 3s; damping = 3/4; level = 0.12; };
+    }
+    // Higher timbre reduces the string's additional high-frequency damping.
+    modulate damping {
+      from = &color:out; to = &string.params.damping; depth = -1/2;
+    }
+  }
+  shared stereo {
+    channels = 2; output = &pan:out;
+    node pan { type = "synth.pan/1"; params = { pan = 0.35; }; }
+    connect input_pan { from = &input:out; to = &pan:in; }
+  }
+}
+
+node synth { instrument = &filtered_voice; config = { voices = 2; }; }
+node guitar { instrument = &colored_string; config = { voices = 2; }; }
+node master { type = "core.sum/1"; config = { channels = 2; }; }
+connect synth_master { from = &synth:out; to = &master:in; }
+connect guitar_master { from = &guitar:out; to = &master:in; }
+
+curve opening {
+  clock = normalized;
+  points = [(0, 0, linear), (1, 1, step)];
+}
+curve string_color {
+  clock = seconds;
+  points = [(0s, 1/8, exponential), (1s, 1, step)];
+}
+curve closing {
+  clock = score;
+  points = [(0q, 1, linear), (2q, 0, step)];
+}
+curve string_fade {
+  clock = normalized;
+  points = [(0, 1, linear), (1, 1/4, step)];
+}
+curve gentle_bend {
+  clock = score;
+  points = [(0q, 0ct, linear), (2q, 50ct, step)];
+}
+curve swell {
+  clock = normalized;
+  points = [(0, 1/4, linear), (1/2, 1/2, linear), (1, 1/4, step)];
+}
+pattern synth_phrase {
+  length = 3q;
+  note opening_note {
+    at = 0q; dur = 2q; pitch = C4; velocity = 0.35;
+    expression color { kind = timbre; curve = &opening; }
+    expression bend { kind = pitch; curve = &gentle_bend; }
+    expression dynamics { kind = gain; curve = &swell; }
+  }
+  note closing_note {
+    at = 1q; dur = 2q; pitch = E4; velocity = 0.25;
+    expression color { kind = timbre; curve = &closing; }
+  }
+}
+pattern string_phrase {
+  length = 3q;
+  note fading_note {
+    at = 0q; dur = 2q; pitch = C3; velocity = 0.25;
+    expression color { kind = timbre; curve = &string_fade; }
+  }
+  note brightening_note {
+    at = 1q; dur = 2q; pitch = G3; velocity = 0.3;
+    expression color { kind = timbre; curve = &string_color; }
+  }
+}
+track synth_track { target = &synth:events; }
+track string_track { target = &guitar:events; }
+place synth_once { pattern = &synth_phrase; track = &synth_track; at = 0q; }
+place string_once { pattern = &string_phrase; track = &string_track; at = 0q; }

@@ -1,3 +1,23 @@
+# Per-note timbre mappings
+
+[`timbre-expression.maac`](timbre-expression.maac) defines two inline custom
+instruments with explicit timbre sources: a filtered oscillator and a plucked
+string. Two notes overlap on each instrument and vary independently; timbre
+curves cover all three clocks, positive exponential interpolation, and simultaneous pitch,
+gain, and timbre. It needs no external library or asset file.
+
+```sh
+maac check examples/timbre-expression.maac
+maac build examples/timbre-expression.maac -o timbre-expression.wav
+maac compile examples/timbre-expression.maac -o timbre-expression.plan.json
+maac render timbre-expression.plan.json -o timbre-expression-from-plan.wav
+```
+
+Expected output is 91,200 stereo frames at 48 kHz (1.9 seconds including tail).
+The [timbre guide](../docs/timbre-expression.md) explains authored mappings,
+receiver opt-in, curve limits, and state continuity. Frozen basic/acoustic
+instruments do not accept timbre expression.
+
 # Per-note instrument pitch
 
 [`instrument-pitch.maac`](instrument-pitch.maac) overlaps independently bending

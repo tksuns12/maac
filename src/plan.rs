@@ -1036,35 +1036,51 @@ fn positive_rational_ln(value: &Rational) -> f64 {
     (numerator / denominator).ln() + (numerator_shift - denominator_shift) * std::f64::consts::LN_2
 }
 
+fn scalar_expression_at<T>(
+    points: &[T],
+    coordinate: &Rational,
+    fields: impl Fn(&T) -> (&Rational, &Rational, Interpolation),
+) -> f64 {
+    let right = expression_right_index(points, coordinate, |point| fields(point).0);
+    let left = &points[right.saturating_sub(1)];
+    let (left_position, left_value, left_shape) = fields(left);
+    let endpoint = |value: &Rational| {
+        value
+            .to_f64()
+            .expect("validated finite scalar expression value")
+    };
+    if right == 0
+        || right == points.len()
+        || left_shape == Interpolation::Step
+        || *coordinate == *left_position
+    {
+        return endpoint(left_value);
+    }
+    let next = &points[right];
+    let (next_position, next_value, _) = fields(next);
+    let fraction = (coordinate - left_position) / (next_position - left_position);
+    if left_shape == Interpolation::Linear {
+        return endpoint(&(left_value + (next_value - left_value) * fraction));
+    }
+    let left_weight = (one() - &fraction).to_f64().expect("unit fraction");
+    let right_weight = fraction.to_f64().expect("unit fraction");
+    let interpolated = (left_weight * positive_rational_ln(left_value)
+        + right_weight * positive_rational_ln(next_value))
+    .exp();
+    let a = endpoint(left_value);
+    let b = endpoint(next_value);
+    // Exponential interpolation is bounded by its endpoints. Correct only
+    // floating-point exp/log roundoff; this imposes no dynamic gain limit.
+    interpolated.clamp(a.min(b), a.max(b))
+}
+
 impl GainExpression {
     /// Requires validated points and a nonnegative clock coordinate. Knots and
     /// step/linear arithmetic stay exact until the final engine conversion.
     pub(crate) fn gain_at(&self, coordinate: &Rational) -> f64 {
-        let right = expression_right_index(&self.points, coordinate, |point| &point.position);
-        let left = &self.points[right.saturating_sub(1)];
-        let endpoint = |value: &Rational| value.to_f64().expect("validated finite gain");
-        if right == 0
-            || right == self.points.len()
-            || left.shape == Interpolation::Step
-            || *coordinate == left.position
-        {
-            return endpoint(&left.gain);
-        }
-        let next = &self.points[right];
-        let fraction = (coordinate - &left.position) / (&next.position - &left.position);
-        if left.shape == Interpolation::Linear {
-            return endpoint(&(&left.gain + (&next.gain - &left.gain) * fraction));
-        }
-        let left_weight = (one() - &fraction).to_f64().expect("unit fraction");
-        let right_weight = fraction.to_f64().expect("unit fraction");
-        let interpolated = (left_weight * positive_rational_ln(&left.gain)
-            + right_weight * positive_rational_ln(&next.gain))
-        .exp();
-        let a = endpoint(&left.gain);
-        let b = endpoint(&next.gain);
-        // Exponential interpolation is bounded by its endpoints. Correct only
-        // floating-point exp/log roundoff; this imposes no dynamic gain limit.
-        interpolated.clamp(a.min(b), a.max(b))
+        scalar_expression_at(&self.points, coordinate, |point| {
+            (&point.position, &point.gain, point.shape)
+        })
     }
 
     fn validate(&self, limits: &PlanLimits, path: &str) -> Result<(), PlanError> {
@@ -1128,6 +1144,95 @@ impl GainExpression {
     }
 }
 
+/// A per-note unit-interval timbre control for opted-in instruments.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TimbreExpression {
+    pub clock: ExpressionClock,
+    pub points: Vec<TimbreExpressionPoint>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TimbreExpressionPoint {
+    #[serde(with = "rational_serde")]
+    pub position: Rational,
+    #[serde(with = "rational_serde")]
+    pub value: Rational,
+    pub shape: Interpolation,
+}
+
+impl TimbreExpression {
+    /// Requires validated points and a nonnegative clock coordinate. Knots and
+    /// step/linear arithmetic stay exact until the final engine conversion.
+    pub(crate) fn value_at(&self, coordinate: &Rational) -> f64 {
+        scalar_expression_at(&self.points, coordinate, |point| {
+            (&point.position, &point.value, point.shape)
+        })
+    }
+
+    fn validate(&self, limits: &PlanLimits, path: &str) -> Result<(), PlanError> {
+        if self.points.is_empty() {
+            return Err(err("E_RANGE", path, "timbre expression requires points"));
+        }
+        // Validate every raw rational before comparisons or segment arithmetic.
+        for (index, point) in self.points.iter().enumerate() {
+            for (name, value) in [("position", &point.position), ("value", &point.value)] {
+                let field = format!("{path}.points[{index}].{name}");
+                rational_bit_limit(value, limits, &field)?;
+                if value.numer().gcd(value.denom()) != BigInt::one() {
+                    return Err(err(
+                        "E_RATIONAL",
+                        field,
+                        "timbre expression rationals must be canonical",
+                    ));
+                }
+            }
+        }
+        for (index, point) in self.points.iter().enumerate() {
+            if point.value.to_f64().is_none_or(|value| !value.is_finite()) {
+                return Err(err(
+                    "E_NONFINITE",
+                    format!("{path}.points[{index}].value"),
+                    "timbre value cannot be represented as a finite engine number",
+                ));
+            }
+            if point.value.is_negative()
+                || point.value > one()
+                || point.position.is_negative()
+                || (index == 0 && !point.position.is_zero())
+                || (index > 0 && point.position <= self.points[index - 1].position)
+            {
+                return Err(err("E_RANGE", path, "timbre value must be in [0,1] and positions must start at zero and strictly increase"));
+            }
+            if point.shape == Interpolation::Exponential
+                && (point.value.is_zero()
+                    || self
+                        .points
+                        .get(index + 1)
+                        .is_none_or(|next| next.value <= zero()))
+            {
+                return Err(err(
+                    "E_RANGE",
+                    path,
+                    "exponential timbre segments require strictly positive endpoints",
+                ));
+            }
+        }
+        let last = self.points.last().expect("nonempty points");
+        if last.shape != Interpolation::Step
+            || (self.clock == ExpressionClock::Normalized && last.position != one())
+        {
+            return Err(err(
+                "E_RANGE",
+                path,
+                "final timbre point must be step and normalized curves must end at one",
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SourceMapping {
@@ -1157,6 +1262,8 @@ pub enum EventKind {
         pitch_expression: Option<PitchExpression>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         gain_expression: Option<GainExpression>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timbre_expression: Option<TimbreExpression>,
         #[serde(with = "rational_serde")]
         velocity: Rational,
     },
@@ -1521,17 +1628,22 @@ impl Plan {
                         EventKind::Note {
                             pitch_expression,
                             gain_expression,
+                            timbre_expression,
                             ..
                         } => (
                             count
                                 .saturating_add(usize::from(pitch_expression.is_some()))
-                                .saturating_add(usize::from(gain_expression.is_some())),
+                                .saturating_add(usize::from(gain_expression.is_some()))
+                                .saturating_add(usize::from(timbre_expression.is_some())),
                             points
                                 .saturating_add(
                                     pitch_expression.as_ref().map_or(0, |e| e.points.len()),
                                 )
                                 .saturating_add(
                                     gain_expression.as_ref().map_or(0, |e| e.points.len()),
+                                )
+                                .saturating_add(
+                                    timbre_expression.as_ref().map_or(0, |e| e.points.len()),
                                 ),
                         ),
                         _ => (count, points),
@@ -2662,6 +2774,7 @@ impl Plan {
                     velocity,
                     pitch_expression,
                     gain_expression,
+                    timbre_expression,
                 } => {
                     if event.score_off_q.is_none() || event.off_seconds.is_none() {
                         return Err(err(
@@ -2730,6 +2843,23 @@ impl Plan {
                             ));
                         }
                         expression.validate(limits, &format!("events[{index}].gain_expression"))?;
+                    }
+                    if let Some(expression) = timbre_expression {
+                        let supported = match &target.processor {
+                            Processor::Instrument { program, .. } => self
+                                .instrument_program(program)
+                                .is_some_and(|program| program.supports_timbre()),
+                            _ => false,
+                        };
+                        if !supported {
+                            return Err(err(
+                                "E_CAPABILITY",
+                                format!("events[{index}].timbre_expression"),
+                                "timbre expression requires an instrument with synth.timbre/1",
+                            ));
+                        }
+                        expression
+                            .validate(limits, &format!("events[{index}].timbre_expression"))?;
                     }
                     voice_work = voice_work.saturating_add(target.processor.voice_capacity());
                 }
@@ -3168,6 +3298,7 @@ impl Plan {
                 if let EventKind::Note {
                     pitch_expression,
                     gain_expression,
+                    timbre_expression,
                     ..
                 } = &event.kind
                 {
@@ -3176,6 +3307,7 @@ impl Plan {
                     for (kind, points) in [
                         ("pitch", pitch_expression.as_ref().map(|e| e.points.len())),
                         ("gain", gain_expression.as_ref().map(|e| e.points.len())),
+                        ("timbre", timbre_expression.as_ref().map(|e| e.points.len())),
                     ] {
                         if let Some(points) = points {
                             let lookup = usize::BITS - (points - 1).leading_zeros();
@@ -3685,6 +3817,7 @@ mod gain_expression_tests {
                 velocity: one(),
                 pitch_expression: None,
                 gain_expression: None,
+                timbre_expression: None,
             },
             score_on_q: r(10, 1),
             score_off_q: Some(r(13, 1)),
@@ -3706,6 +3839,59 @@ mod gain_expression_tests {
             assert_eq!(clock.coordinate_at(&event, 60_000, 48_000), midpoint);
             assert_eq!(clock.coordinate_at(&event, 72_000, 48_000), end);
             assert_eq!(clock.coordinate_at(&event, 80_000, 48_000), end);
+        }
+    }
+}
+
+#[cfg(test)]
+mod timbre_expression_tests {
+    use super::*;
+
+    fn curve(a: Rational, b: Rational, shape: Interpolation) -> TimbreExpression {
+        TimbreExpression {
+            clock: ExpressionClock::Normalized,
+            points: vec![
+                TimbreExpressionPoint {
+                    position: zero(),
+                    value: a,
+                    shape,
+                },
+                TimbreExpressionPoint {
+                    position: one(),
+                    value: b,
+                    shape: Interpolation::Step,
+                },
+            ],
+        }
+    }
+    #[test]
+    fn exact_knots_and_bounded_scalar_interpolation() {
+        let half = Rational::new(1.into(), 2.into());
+        let epsilon = Rational::new(1.into(), BigInt::one() << 200);
+        let step = curve(zero(), one(), Interpolation::Step);
+        assert_eq!(step.value_at(&(one() - &epsilon)), 0.0);
+        assert_eq!(step.value_at(&one()), 1.0);
+        assert_eq!(step.value_at(&(one() + &epsilon)), 1.0);
+        let linear = curve(zero(), one(), Interpolation::Linear);
+        assert_eq!(linear.value_at(&half), 0.5);
+        let exponential = curve(
+            Rational::new(1.into(), 4.into()),
+            one(),
+            Interpolation::Exponential,
+        );
+        assert!((exponential.value_at(&half) - 0.5).abs() < 1e-15);
+        for power in [323, 400] {
+            let tiny = Rational::new(1.into(), BigInt::from(10).pow(power));
+            for (a, b) in [(tiny.clone(), one()), (one(), tiny.clone())] {
+                let expression = curve(a, b, Interpolation::Exponential);
+                expression.validate(&PlanLimits::default(), "test").unwrap();
+                let expected = 10.0_f64.powf(-(power as f64) / 2.0);
+                assert!((expression.value_at(&half) / expected - 1.0).abs() < 2e-12);
+            }
+            assert_eq!(
+                curve(tiny.clone(), tiny.clone(), Interpolation::Exponential).value_at(&half),
+                tiny.to_f64().unwrap()
+            );
         }
     }
 }

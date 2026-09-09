@@ -425,6 +425,7 @@ mod tests {
                 },
                 target: PortRef::new("sine", "events").unwrap(),
                 kind: crate::plan::EventKind::Note {
+                    timbre_expression: None,
                     pitch_hz: 440.0,
                     velocity: rat(1, 1),
                     pitch_expression: None,

@@ -268,7 +268,7 @@ fn invalid_gain_definitions_fail_even_when_unused() {
         ),
         (
             text.replace("kind = gain", "kind = timbre"),
-            DiagnosticCode::Capability,
+            DiagnosticCode::Range,
         ),
         (
             text.replace(

@@ -138,6 +138,7 @@ is rejected, including mixed audio/modulation cycles.
 | `synth.wavetable/1` | Oscillator parameters plus `position` (0; 0…1); required `config.table = &wavetable` | Mono |
 | `synth.noise/1` | `level` (1; 0…16); optional nonzero unsigned 32-bit `config.seed` (1831565813) | Mono |
 | `synth.adsr/1` | `attack` (0 s), `decay` (0 s), `sustain` (1; 0…1), `release` (0 s); times 0…1800 s | Mono control signal |
+| `synth.timbre/1` | No inputs, parameters, or configuration; voice-only | Mono per-note timbre signal (zero when absent) |
 | `synth.lfo/1` | `frequency` (1 Hz; −200…200 Hz), `phase` (0; 0…1), `level` (1; 0…16) | Mono control signal |
 | `synth.gain/1` | `level` (1; 0…16); required `config.channels` | Same channels as input |
 | `synth.onepole/1` | `cutoff` (1000 Hz; strictly between 0 and 24000 Hz); required `config.channels` | Same channels as input |
@@ -160,7 +161,7 @@ automated. ADSRs are voice-only.
 source signal; the result is added to the current parameter value. Multiple
 modulations sum in ID order. Event-rate modulation is rejected. Final evaluated
 values must satisfy the processor range; no depth adjustment or clipping occurs.
-ADSR and LFO signals may also feed mono audio inputs; stereo signals cannot
+ADSR, LFO, and timbre signals may also feed mono audio inputs; stereo signals cannot
 modulate a scalar parameter.
 
 ## Timing and audio contract
@@ -174,6 +175,12 @@ Optional [per-note pitch](instrument-pitch.md) changes each voice's base frequen
 before node ratios and oscillator frequency offsets. Bends preserve phase,
 wavetable state, and plucked-string history; gate-end pitch holds through release.
 Live effective-frequency checks still apply at zero gain or velocity.
+Optional [per-note timbre](timbre-expression.md) requires an explicit
+`synth.timbre/1` node in the voice graph. Its mono output uses ordinary connections
+or signed-depth modulation of sample-rate parameters, with final bounds checks.
+Each voice evaluates its own curve once per frame and holds its gate-end value
+through release; zero gain does not bypass timbre or graph evaluation. No automatic
+brightness mapping is inferred. Frozen basic/acoustic graphs do not opt in.
 A voice remains allocated until its note-off release
 reaches zero, even if its sustain is zero. Voices sum in unsigned UTF-8
 event-address order. Overflow is an explicit error. Note-offs and expired-tail

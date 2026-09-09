@@ -127,7 +127,7 @@ fn invalid_expressions_are_explicit_even_when_unused() {
         ),
         (
             valid.replace("kind = pitch", "kind = timbre"),
-            DiagnosticCode::Capability,
+            DiagnosticCode::Unit,
         ),
         (
             valid.replace("linear", "exponential"),

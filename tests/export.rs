@@ -49,6 +49,7 @@ fn one_note_plan_with_pitch(level: Rational, pitch_hz: f64) -> Plan {
             },
             target: EventTarget::new("sine", "events").unwrap(),
             kind: EventKind::Note {
+                timbre_expression: None,
                 pitch_expression: None,
                 gain_expression: None,
                 pitch_hz,
