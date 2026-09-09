@@ -42,6 +42,13 @@ the samples and transport settings for standalone replay; sample importing
 remains external tooling.
 Try `maac build examples/audio-clips.maac --project-root . -o audio-clips.wav`.
 
+[Warp-rate clips](docs/warp-rate.md) map source frames to musical anchors using
+`mode = warp_rate`. Playback follows the tempo map, changing pitch with speed,
+including tempo changes during the tail. Version 6 plans retain the exact warp
+recipe. This implements existing language semantics; preserve-pitch stretching
+remains an explicit extension capability.
+Try `maac build examples/warp-rate.maac --project-root . -o warp-rate.wav`.
+
 The [project-entrypoint guide](docs/project-entrypoint.md) specifies conventional
 `main.maac` discovery and the explicit finite `--profile song` allowance for
 larger projects. Existing explicit-file commands remain compatible.

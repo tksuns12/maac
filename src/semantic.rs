@@ -289,7 +289,7 @@ pub(crate) fn validate_source_with_tempo_profile(
     instruments: &BTreeMap<String, InstrumentNodeDescriptor>,
     allow_ramps: bool,
 ) -> Result<SourceGraph, Diagnostics> {
-    validate_source_profile(document, instruments, allow_ramps, false, false)
+    validate_source_profile(document, instruments, allow_ramps, false, false, false)
 }
 
 pub(crate) fn validate_source_with_kit_profile(
@@ -297,7 +297,7 @@ pub(crate) fn validate_source_with_kit_profile(
     instruments: &BTreeMap<String, InstrumentNodeDescriptor>,
     allow_ramps: bool,
 ) -> Result<SourceGraph, Diagnostics> {
-    validate_source_profile(document, instruments, allow_ramps, true, false)
+    validate_source_profile(document, instruments, allow_ramps, true, false, false)
 }
 
 pub(crate) fn validate_source_with_audio_profile(
@@ -305,7 +305,15 @@ pub(crate) fn validate_source_with_audio_profile(
     instruments: &BTreeMap<String, InstrumentNodeDescriptor>,
     allow_ramps: bool,
 ) -> Result<SourceGraph, Diagnostics> {
-    validate_source_profile(document, instruments, allow_ramps, true, true)
+    validate_source_profile(document, instruments, allow_ramps, true, true, false)
+}
+
+pub(crate) fn validate_source_with_warp_profile(
+    document: &Document,
+    instruments: &BTreeMap<String, InstrumentNodeDescriptor>,
+    allow_ramps: bool,
+) -> Result<SourceGraph, Diagnostics> {
+    validate_source_profile(document, instruments, allow_ramps, true, true, true)
 }
 
 fn validate_source_profile(
@@ -314,11 +322,13 @@ fn validate_source_profile(
     allow_ramps: bool,
     allow_kits: bool,
     allow_audio: bool,
+    allow_warp: bool,
 ) -> Result<SourceGraph, Diagnostics> {
     let mut validator = Validator::new(document, instruments);
     validator.allow_ramps = allow_ramps;
     validator.allow_kits = allow_kits;
     validator.allow_audio = allow_audio;
+    validator.allow_warp = allow_warp;
     validator.validate();
     if validator.diagnostics.has_errors() {
         return Err(validator.diagnostics);
@@ -342,6 +352,7 @@ pub fn validate(document: &Document) -> Result<SourceGraph, Diagnostics> {
 }
 
 struct Validator<'a> {
+    allow_warp: bool,
     allow_audio: bool,
     allow_ramps: bool,
     allow_kits: bool,
@@ -373,6 +384,7 @@ impl<'a> Validator<'a> {
             allow_ramps: false,
             allow_kits: false,
             allow_audio: false,
+            allow_warp: false,
             diagnostics: Diagnostics::new(),
             project_id: None,
             project_score: None,
@@ -721,7 +733,7 @@ impl<'a> Validator<'a> {
         }
         self.reject_children(object, path);
         if self.allow_audio && object.kind == "audio" && path.len() == 1 {
-            self.validate_rate_audio(object, path);
+            self.validate_audio_transport(object, path);
             return;
         }
         if self.allow_kits {
@@ -2950,22 +2962,35 @@ impl<'a> Validator<'a> {
         }
     }
 
-    fn validate_rate_audio(&mut self, object: &Object, path: &[String]) {
-        if object.field("mode").and_then(|f| f.value.as_symbol()) != Some("rate") {
+    fn validate_audio_transport(&mut self, object: &Object, path: &[String]) {
+        let warp = self.allow_warp
+            && object.field("mode").and_then(|f| f.value.as_symbol()) == Some("warp_rate");
+        if !warp && object.field("mode").and_then(|f| f.value.as_symbol()) != Some("rate") {
             self.push(
                 DiagnosticCode::Capability,
-                "only rate audio mode is supported",
+                if self.allow_warp {
+                    "only rate and warp_rate audio modes are supported"
+                } else {
+                    "only rate audio mode is supported"
+                },
                 Some(object.span),
                 path.to_vec(),
                 vec!["mode".into()],
             );
             return;
         }
-        for name in ["warp", "processor"] {
+        for &name in if warp {
+            &["speed", "reverse", "processor"][..]
+        } else {
+            &["warp", "processor"][..]
+        } {
             if let Some(field) = object.field(name) {
                 self.push(
                     DiagnosticCode::Range,
-                    format!("rate audio forbids {name}"),
+                    format!(
+                        "{} audio forbids {name}",
+                        if warp { "warp_rate" } else { "rate" }
+                    ),
                     Some(field.span),
                     path.to_vec(),
                     vec![name.into()],
@@ -3029,6 +3054,9 @@ impl<'a> Validator<'a> {
             );
             return;
         }
+        if warp {
+            self.validate_warp_recipe(object, path, frames[0], frames[1]);
+        }
         self.audio_clips.insert(
             object.id.clone(),
             AudioClipSource {
@@ -3036,6 +3064,92 @@ impl<'a> Validator<'a> {
                 object: object.clone(),
             },
         );
+    }
+
+    fn validate_warp_recipe(&mut self, object: &Object, path: &[String], a: u64, b: u64) {
+        if let Some(at) = object.field("at") {
+            self.position_q_value(&at.value, path, "at");
+        }
+        let invalid = |this: &mut Self, message: &str| {
+            this.push(
+                DiagnosticCode::Range,
+                message,
+                Some(object.span),
+                path.to_vec(),
+                vec!["warp".into()],
+            );
+        };
+        let Some(Value {
+            kind: ValueKind::List(points),
+            ..
+        }) = object.field("warp").map(|f| &f.value)
+        else {
+            invalid(self, "warp_rate requires a warp anchor list");
+            return;
+        };
+        if points.len() > 4096 {
+            self.push(
+                DiagnosticCode::ResourceLimit,
+                "warp anchor allowance exceeded",
+                Some(object.span),
+                path.to_vec(),
+                vec!["warp".into()],
+            );
+            return;
+        }
+        if points.len() < 2 {
+            invalid(self, "warp requires at least two anchors");
+            return;
+        }
+        let mut previous: Option<(&BigRational, u64)> = None;
+        for (index, point) in points.iter().enumerate() {
+            let ValueKind::Tuple(pair) = &point.kind else {
+                invalid(self, "warp anchors must be tuples");
+                return;
+            };
+            let [Value {
+                kind:
+                    ValueKind::Quantity {
+                        value: q,
+                        unit: Unit::Q,
+                    },
+                ..
+            }, Value {
+                kind:
+                    ValueKind::Quantity {
+                        value: frame,
+                        unit: Unit::Frame,
+                    },
+                ..
+            }] = pair.as_slice()
+            else {
+                invalid(
+                    self,
+                    "warp anchors require local q and integer source frames",
+                );
+                return;
+            };
+            let Some(frame) = is_integer(frame)
+                .then(|| frame.to_integer().to_u64())
+                .flatten()
+            else {
+                invalid(self, "warp frames must be nonnegative u64 integers");
+                return;
+            };
+            if (index == 0 && (!q.is_zero() || frame != a))
+                || previous.is_some_and(|(previous_q, previous_frame)| {
+                    q <= previous_q || frame <= previous_frame
+                })
+                || (index + 1 == points.len() && frame != b)
+            {
+                invalid(
+                    self,
+                    "warp requires endpoints (0,a), (L,b) and strictly increasing axes",
+                );
+                return;
+            }
+            previous = Some((q, frame));
+        }
     }
 
     fn validate_audio_shape(&mut self, object: &Object, path: &[String]) {
@@ -3140,7 +3254,12 @@ impl<'a> Validator<'a> {
             self.expect_object_ref(field, "processor", &["asset"], path);
         }
         if let Some(field) = object.field("warp") {
-            self.validate_pair_list(field, path, "warp");
+            // The native profile checks its bounded tuple list in one pass.
+            if !(self.allow_warp
+                && object.field("mode").and_then(|f| f.value.as_symbol()) == Some("warp_rate"))
+            {
+                self.validate_pair_list(field, path, "warp");
+            }
         }
     }
 
@@ -4914,6 +5033,95 @@ asset sample {{ kind = audio; path = "sample.pcm"; hash = "sha256:{}"; format = 
     fn validate(input: &str) -> Result<SourceGraph, Diagnostics> {
         validate_source_with_audio_profile(&crate::parse(input).unwrap(), &BTreeMap::new(), true)
     }
+    #[test]
+    fn warp_profile_accepts_score_anchors_and_keeps_rate_gate() {
+        for anchor in ["0q", "bar(1, 1)"] {
+            let input = source("").replace("bar(1, 1)", anchor).replace(
+                "mode = rate;",
+                "mode = warp_rate; warp = [(0q, 0frame), (1q, 4frame)];",
+            );
+            assert!(validate(&input).is_err());
+            let graph = validate_source_with_warp_profile(
+                &crate::parse(&input).unwrap(),
+                &BTreeMap::new(),
+                true,
+            )
+            .unwrap();
+            assert_eq!(graph.audio_clips()["clip"].channels, 2);
+        }
+    }
+
+    #[test]
+    fn warp_profile_rejects_invalid_recipes() {
+        let input = source("").replace(
+            "mode = rate;",
+            "mode = warp_rate; warp = [(0q, 0frame), (1q, 4frame)];",
+        );
+        for (old, new) in [
+            ("bar(1, 1)", "0s"),
+            ("bar(1, 1)", "0ms"),
+            ("bar(1, 1)", "bar(1q, 1)"),
+            ("warp_rate", "warp_preserve"),
+            ("warp = [(0q, 0frame), (1q, 4frame)];", ""),
+            ("[(0q, 0frame), (1q, 4frame)]", "[]"),
+            ("[(0q, 0frame), (1q, 4frame)]", "[(0q, 0frame)]"),
+            ("(0q, 0frame)", "(1q, 0frame)"),
+            ("(0q, 0frame)", "(0q, 1frame)"),
+            ("(1q, 4frame)", "(0q, 4frame)"),
+            ("(1q, 4frame)", "(-1q, 4frame)"),
+            ("(1q, 4frame)", "(1q, 3frame)"),
+            ("(1q, 4frame)", "(1s, 4frame)"),
+            ("(1q, 4frame)", "(1q, 7/2frame)"),
+            ("(1q, 4frame)", "(1/2q, 0frame), (1q, 4frame)"),
+            ("source = [0frame, 4frame]", "source = [0frame, 7/2frame]"),
+            ("warp_rate;", "warp_rate; speed = 1;"),
+            ("warp_rate;", "warp_rate; reverse = false;"),
+            ("warp_rate;", "warp_rate; processor = &sample;"),
+            ("warp_rate;", "warp_rate; gain = -1;"),
+            ("warp_rate;", "warp_rate; fade_in = -1ms;"),
+        ] {
+            let document = crate::parse(&input.replace(old, new)).unwrap();
+            assert!(
+                validate_source_with_warp_profile(&document, &BTreeMap::new(), true).is_err(),
+                "{old} -> {new}"
+            );
+        }
+        assert!(validate_source_with_warp_profile(
+            &crate::parse(&source("")).unwrap(),
+            &BTreeMap::new(),
+            true
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn warp_profile_anchor_count_boundary() {
+        for count in [4096usize, 4097] {
+            let anchors = (0..count)
+                .map(|n| format!("({n}q, {n}frame)"))
+                .collect::<Vec<_>>()
+                .join(",");
+            let input = source("")
+                .replace("frames = 4;", &format!("frames = {};", count - 1))
+                .replace("0frame, 4frame", &format!("0frame, {}frame", count - 1))
+                .replace(
+                    "mode = rate;",
+                    &format!("mode = warp_rate; warp = [{anchors}];"),
+                );
+            let result = validate_source_with_warp_profile(
+                &crate::parse(&input).unwrap(),
+                &BTreeMap::new(),
+                true,
+            );
+            assert_eq!(result.is_ok(), count == 4096);
+            if let Err(errors) = result {
+                assert!(errors
+                    .iter()
+                    .any(|e| e.code == DiagnosticCode::ResourceLimit));
+            }
+        }
+    }
+
     #[test]
     fn rate_master_group_and_forward_asset_reference() {
         let input = source("");

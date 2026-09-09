@@ -41,7 +41,8 @@ asset's channel count. Its output may be the project master or connect to other
 processors, including named delivery ports. Clips have no event input, implicit
 parameter ports, or automation lanes for their source fields.
 
-Unknown fields fail. Warp modes remain explicit unsupported capabilities;
+Unknown fields fail. The separate [warp-rate contract](warp-rate.md) implements
+musical warping; preserve-pitch warping remains unsupported.
 `warp` and `processor` fields are invalid for rate mode. Asset and output
 references remain declaration-order independent. Source IDs are globally unique.
 

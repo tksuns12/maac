@@ -55,7 +55,6 @@ fn frame(context: &TimingContext, value: &TimeValue, rate: u64) -> Result<u64, P
 
 struct Recipe {
     start: TimeValue,
-    duration: TimeValue,
     finish: TimeValue,
     clipped_finish: TimeValue,
     source_rate: Rational,
@@ -123,7 +122,6 @@ fn recipe(
     let end_frame = frame(context, &clipped_finish, rate)?;
     Ok(Recipe {
         start,
-        duration,
         finish,
         clipped_finish,
         source_rate,
@@ -241,28 +239,61 @@ fn segment(
     Ok(result)
 }
 
+/// Physical fade settings; gain is checked before caller clock preparation.
+pub(crate) struct EnvelopeSettings<'a> {
+    gain: f64,
+    fade_in_seconds: &'a Rational,
+    fade_out_seconds: &'a Rational,
+    shape: AudioFadeShape,
+}
+impl<'a> EnvelopeSettings<'a> {
+    /// Fades are ordered [fade-in, fade-out], both in physical seconds.
+    pub(crate) fn new(
+        gain: &Rational,
+        fades: [&'a Rational; 2],
+        shape: AudioFadeShape,
+    ) -> Result<Self, PlanError> {
+        let value = gain
+            .to_f64()
+            .filter(|x| x.is_finite() && (*x != 0. || gain.is_zero()))
+            .ok_or_else(|| {
+                error(
+                    "E_NONFINITE",
+                    "clip gain cannot be represented by the engine",
+                )
+            })?;
+        if gain < &Rational::zero() || fades.iter().any(|fade| *fade < &Rational::zero()) {
+            return Err(error("E_RANGE", "gain and fades must be nonnegative"));
+        }
+        Ok(Self {
+            gain: value,
+            fade_in_seconds: fades[0],
+            fade_out_seconds: fades[1],
+            shape,
+        })
+    }
+}
+
+/// The caller supplies already certified active bounds and physical recipes.
+pub(crate) struct EnvelopeSpan<'a> {
+    pub start: &'a TimeValue,
+    pub finish: &'a TimeValue,
+    pub clipped_finish: &'a TimeValue,
+    pub start_frame: u64,
+    pub end_frame: u64,
+    pub rate_hz: u32,
+}
+
 #[derive(Debug)]
-pub(crate) struct PreparedAudioClip {
-    pub(crate) start_frame: u64,
-    pub(crate) end_frame: u64,
-    phase: Segment,
+pub(crate) struct PreparedEnvelope {
+    start_frame: u64,
+    end_frame: u64,
     fade_in: Option<Segment>,
     fade_out: Option<Segment>,
     gain: f64,
     shape: AudioFadeShape,
 }
-impl PreparedAudioClip {
-    pub(crate) fn coordinate(&self, frame: u64) -> Option<(u64, f64)> {
-        if frame < self.start_frame || frame >= self.end_frame {
-            return None;
-        }
-        let u = self.phase.value(frame);
-        // Preparation checks both endpoints of this monotone affine phase,
-        // including positive source-end residuals. Every admitted sample has
-        // a finite coordinate inside the slice; no active sample is dropped.
-        let index = u.floor() as u64;
-        Some((index, u - index as f64))
-    }
+impl PreparedEnvelope {
     pub(crate) fn gain_at(&self, frame: u64) -> f64 {
         if frame < self.start_frame || frame >= self.end_frame {
             return 0.;
@@ -289,6 +320,92 @@ impl PreparedAudioClip {
     }
 }
 
+pub(crate) fn prepare_envelope(
+    settings: EnvelopeSettings<'_>,
+    span: EnvelopeSpan<'_>,
+    context: &TimingContext,
+) -> Result<PreparedEnvelope, PlanError> {
+    let rate = integer(u64::from(span.rate_hz));
+    let elapsed = subtract(&time(integer(span.start_frame) / &rate)?, span.start)?;
+    let duration = subtract(span.finish, span.start)?;
+    let fade_in = if settings.fade_in_seconds.is_zero() || span.start_frame == span.end_frame {
+        None
+    } else {
+        let fade_end = minimum(
+            context,
+            add(span.start, &time(settings.fade_in_seconds.clone())?)?,
+            span.clipped_finish,
+        )?;
+        let end = frame(context, &fade_end, u64::from(span.rate_hz))?;
+        Some(segment(
+            context,
+            span.start_frame,
+            end,
+            scaled(&elapsed, &settings.fade_in_seconds.recip())?,
+            Rational::one() / (&rate * settings.fade_in_seconds),
+        )?)
+    };
+    let fade_out = if settings.fade_out_seconds.is_zero() || span.start_frame == span.end_frame {
+        None
+    } else {
+        let local_start = subtract(&duration, &time(settings.fade_out_seconds.clone())?)?;
+        let local_start =
+            if context.compare_times(&local_start, &time(Rational::zero())?)? == Ordering::Less {
+                time(Rational::zero())?
+            } else {
+                local_start
+            };
+        let fade_start = minimum(context, add(span.start, &local_start)?, span.clipped_finish)?;
+        let start = frame(context, &fade_start, u64::from(span.rate_hz))?;
+        let remaining = subtract(span.finish, &time(integer(start) / &rate)?)?;
+        Some(segment(
+            context,
+            start,
+            span.end_frame,
+            scaled(&remaining, &settings.fade_out_seconds.recip())?,
+            -Rational::one() / (&rate * settings.fade_out_seconds),
+        )?)
+    };
+    if let Some(segment) = &fade_in {
+        segment.validate_domain(1.)?;
+    }
+    if let Some(segment) = &fade_out {
+        segment.validate_domain(1.)?;
+    }
+    Ok(PreparedEnvelope {
+        start_frame: span.start_frame,
+        end_frame: span.end_frame,
+        fade_in,
+        fade_out,
+        gain: settings.gain,
+        shape: settings.shape,
+    })
+}
+
+#[derive(Debug)]
+pub(crate) struct PreparedAudioClip {
+    pub(crate) start_frame: u64,
+    pub(crate) end_frame: u64,
+    phase: Segment,
+    envelope: PreparedEnvelope,
+}
+impl PreparedAudioClip {
+    pub(crate) fn coordinate(&self, frame: u64) -> Option<(u64, f64)> {
+        if frame < self.start_frame || frame >= self.end_frame {
+            return None;
+        }
+        let u = self.phase.value(frame);
+        // Preparation checks both endpoints of this monotone affine phase,
+        // including positive source-end residuals. Every admitted sample has
+        // a finite coordinate inside the slice; no active sample is dropped.
+        let index = u.floor() as u64;
+        Some((index, u - index as f64))
+    }
+    pub(crate) fn gain_at(&self, frame: u64) -> f64 {
+        self.envelope.gain_at(frame)
+    }
+}
+
 /// Prepare immutable floating-point values after independently checking bounds.
 pub(crate) fn prepare_clip(
     clip: &AudioClip,
@@ -297,16 +414,11 @@ pub(crate) fn prepare_clip(
     asset_rate: u32,
     asset_frames: u64,
 ) -> Result<PreparedAudioClip, PlanError> {
-    let gain = clip
-        .gain
-        .to_f64()
-        .filter(|x| x.is_finite() && (*x != 0. || clip.gain.is_zero()))
-        .ok_or_else(|| {
-            error(
-                "E_NONFINITE",
-                "clip gain cannot be represented by the engine",
-            )
-        })?;
+    let settings = EnvelopeSettings::new(
+        &clip.gain,
+        [&clip.fade_in_seconds, &clip.fade_out_seconds],
+        clip.fade_shape,
+    )?;
     let r = recipe(clip, context, output, asset_rate, asset_frames)?;
     if (clip.start_frame, clip.end_frame) != (r.start_frame, r.end_frame) {
         return Err(error(
@@ -324,44 +436,18 @@ pub(crate) fn prepare_clip(
         first_phase.clone(),
         &r.source_rate / &rate,
     )?;
-    let fade_in = if clip.fade_in_seconds.is_zero() || r.start_frame == r.end_frame {
-        None
-    } else {
-        let fade_end = minimum(
-            context,
-            add(&r.start, &time(clip.fade_in_seconds.clone())?)?,
-            &r.clipped_finish,
-        )?;
-        let end = frame(context, &fade_end, u64::from(output.sample_rate_hz))?;
-        Some(segment(
-            context,
-            r.start_frame,
-            end,
-            scaled(&elapsed, &clip.fade_in_seconds.recip())?,
-            Rational::one() / (&rate * &clip.fade_in_seconds),
-        )?)
-    };
-    let fade_out = if clip.fade_out_seconds.is_zero() || r.start_frame == r.end_frame {
-        None
-    } else {
-        let local_start = subtract(&r.duration, &time(clip.fade_out_seconds.clone())?)?;
-        let local_start =
-            if context.compare_times(&local_start, &time(Rational::zero())?)? == Ordering::Less {
-                time(Rational::zero())?
-            } else {
-                local_start
-            };
-        let fade_start = minimum(context, add(&r.start, &local_start)?, &r.clipped_finish)?;
-        let start = frame(context, &fade_start, u64::from(output.sample_rate_hz))?;
-        let remaining = subtract(&r.finish, &time(integer(start) / &rate)?)?;
-        Some(segment(
-            context,
-            start,
-            r.end_frame,
-            scaled(&remaining, &clip.fade_out_seconds.recip())?,
-            -Rational::one() / (&rate * &clip.fade_out_seconds),
-        )?)
-    };
+    let envelope = prepare_envelope(
+        settings,
+        EnvelopeSpan {
+            start: &r.start,
+            finish: &r.finish,
+            clipped_finish: &r.clipped_finish,
+            start_frame: r.start_frame,
+            end_frame: r.end_frame,
+            rate_hz: output.sample_rate_hz,
+        },
+        context,
+    )?;
     phase.validate_domain((clip.source_end_frame - clip.source_start_frame) as f64)?;
     if r.start_frame < r.end_frame {
         let source_end = time(integer(clip.source_end_frame - clip.source_start_frame))?;
@@ -386,20 +472,11 @@ pub(crate) fn prepare_clip(
             }
         }
     }
-    if let Some(segment) = &fade_in {
-        segment.validate_domain(1.)?;
-    }
-    if let Some(segment) = &fade_out {
-        segment.validate_domain(1.)?;
-    }
     Ok(PreparedAudioClip {
         start_frame: r.start_frame,
         end_frame: r.end_frame,
         phase,
-        fade_in,
-        fade_out,
-        gain,
-        shape: clip.fade_shape,
+        envelope,
     })
 }
 
@@ -681,6 +758,24 @@ mod tests {
         let p = prepared(c, &out, &ctx, 48000, 1);
         assert_eq!((p.start_frame, p.end_frame), (0, 1));
         assert_eq!(p.coordinate(0), Some((0, 0.)));
+    }
+
+    #[test]
+    fn ramp_preparation_budget_threshold_is_preserved() {
+        let out = output();
+        let mut c = clip();
+        c.at = AutomationAnchor::Score { q: r(1, 2) };
+        let generous = context(&out, true, 1_000_000);
+        (c.start_frame, c.end_frame) = schedule_clip(&c, &generous, &out, 24000, 3).unwrap();
+        let threshold = (0..=1_000_000)
+            .step_by(64)
+            .find(|work| {
+                let ctx = context(&out, true, *work);
+                prepare_clip(&c, &ctx, &out, 24000, 3).is_ok()
+            })
+            .expect("bounded preparation succeeds");
+        println!("rate_envelope_budget_threshold={threshold}");
+        assert_eq!(threshold, 5120);
     }
 
     #[test]

@@ -15,6 +15,7 @@ unchanged.
 | Expansion | Nested uses, repetition and stretch, additive transposition, nested cuts before physical offsets, stable addresses, isolated final-state overrides and inserts |
 | Scheduling | Score-origin reset, invalid effective onsets, score-end note-off truncation, negative/zero gates, sub-sample collapse |
 | Arranged audio | Sliced mono/stereo rate playback, reverse, fractional phase, both overlapping fade shapes, empty sampled intervals, tail admission, reset, mixed graph routing and exact source-free replay; forged bounds, numerical loss and resource exhaustion fail explicitly |
+| Warp-rate audio | Ordered musical anchors, piecewise source mapping through constant/step/ramp tempo, fractional starts, right-owned boundaries, future tempo during tails, natural-duration fades, mixed graph and retained delivery; malformed anchors, forbidden fields, forged bounds and precision/budget failures reject explicitly |
 | Plan import | Unknown versions/fields, inconsistent time/frame values, duplicates, missing references, invalid parameter ranges, cycles, oversized input and collections |
 | DSP | Sine/envelope samples, one-pole impulse, equal-power pan, connection-ID sum order, right-continuous automation knots, event-rate attack/release capture |
 | Voices | Note-offs precede note-ons; release tails retain allocation; zero velocity retains allocation; overflow fails without stealing |

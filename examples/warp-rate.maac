@@ -1,0 +1,98 @@
+maac 1;
+
+// Reuse the original synthesized PCM from the core-kit example.
+// Run from the repository root:
+// maac build examples/warp-rate.maac --project-root . -o warp-rate.wav
+project demo {
+  score = [0q, 8q];
+  tail = 1/2s;
+  rate = 48000Hz;
+  tempo = &clock;
+  meter = &metre;
+  output = &master:out;
+  requires = ["maac.production/1"];
+}
+tempo clock { points = [(0q, 120bpm, linear), (4q, 150bpm, linear), (8q, 120bpm, step), (33/4q, 100bpm, step)]; }
+meter metre { points = [(0q, 4, 4)]; }
+
+asset kick_sample {
+  kind = audio;
+  path = "examples/sounds/core-kit/kick.pcm";
+  hash = "sha256:b29ea5c52a79d974b5d897530609d0d06a7d6cd315ae2d774340a8322c887b04";
+  format = "pcm_f32le_interleaved/1";
+  rate = 24000Hz; channels = 1; frames = 4800;
+}
+
+// This targetless track groups clips; tracks add no gain or routing.
+track arranged {}
+audio forward {
+  asset = &kick_sample;
+  at = 0q;
+  source = [0frame, 4800frame];
+  mode = rate;
+  gain = 1/2;
+  fade_in = 1ms; fade_out = 20ms;
+  track = &arranged;
+}
+// The first half of the slice crosses fewer score beats than its second half.
+// A changing tempo and piecewise anchors both alter playback rate and pitch.
+audio shaped {
+  asset = &kick_sample;
+  at = bar(1, 3);
+  source = [0frame, 4800frame];
+  mode = warp_rate;
+  warp = [(0q, 0frame), (1/8q, 2400frame), (1/2q, 4800frame)];
+  gain = 1/2;
+  fade_in = 1ms; fade_out = 30ms;
+  fade_shape = equal_power;
+  track = &arranged;
+}
+// This pre-score-end transport continues into the declared physical tail,
+// crossing the tempo change at 33/4q after score end (8q).
+audio tail_slice {
+  asset = &kick_sample;
+  at = 31/4q;
+  source = [240frame, 3600frame];
+  mode = warp_rate;
+  warp = [(0q, 240frame), (1/4q, 1200frame), (3/4q, 3600frame)];
+  gain = 1/3;
+  fade_in = 5ms; fade_out = 40ms;
+  track = &arranged;
+}
+
+// A native hit and a pitched note join the clips in the same explicit graph.
+node kit {
+  type = "core.kit/1";
+  config = {
+    channels = 1; voices = 2;
+    samples = [{ key = "kick"; asset = &kick_sample; }];
+  };
+  params = { level = 1/3; };
+}
+track drums { target = &kit:events; }
+pattern pulse {
+  length = 4q;
+  hit beat { at = 2q; key = "kick"; velocity = 3/4; }
+}
+place pulses { pattern = &pulse; track = &drums; at = 0q; count = 2; }
+node tone {
+  type = "core.sine/1";
+  params = { attack = 10ms; release = 50ms; level = 1/10; };
+}
+track melody { target = &tone:events; }
+pattern phrase {
+  length = 8q;
+  note last { at = 6q; dur = 1q; pitch = key(57); velocity = 1/2; }
+}
+place ending { pattern = &phrase; track = &melody; at = 0q; }
+
+node mix { type = "core.sum/1"; config = { channels = 1; }; }
+node room { type = "fx.reverb/1"; config = { channels = 1; }; params = { mix = 1/10; }; }
+node master { type = "core.gain/1"; config = { channels = 1; }; params = { gain = 3/4; }; }
+connect forward_route { from = &forward:out; to = &mix:in; }
+connect shaped_route { from = &shaped:out; to = &mix:in; }
+connect tail_route { from = &tail_slice:out; to = &mix:in; }
+connect kit_route { from = &kit:out; to = &mix:in; }
+connect tone_route { from = &tone:out; to = &mix:in; }
+connect room_route { from = &mix:out; to = &room:in; }
+connect master_route { from = &room:out; to = &master:in; }

@@ -384,6 +384,27 @@ impl RampTempoMap {
     pub fn has_linear(&self) -> bool {
         self.points.iter().any(|p| p.shape == TempoShape::Linear)
     }
+    /// Local tempo coefficients with right ownership at exact score cuts.
+    pub(crate) fn segment_at(
+        &self,
+        q: &Rational,
+    ) -> Result<(Rational, Rational, Option<Rational>), MusicError> {
+        check(q, 4096)?;
+        let next = self.points.partition_point(|point| point.position_q <= *q);
+        let point = &self.points[next.saturating_sub(1)];
+        let next_q = self.points.get(next).map(|point| point.position_q.clone());
+        if next > 0 && next < self.points.len() && point.shape == TempoShape::Linear {
+            let following = &self.points[next];
+            let slope = bounded(
+                bounded(&following.bpm - &point.bpm)?
+                    / bounded(&following.position_q - &point.position_q)?,
+            )?;
+            let bpm = bounded(&point.bpm + bounded(&slope * bounded(q - &point.position_q)?)?)?;
+            Ok((bpm, slope, next_q))
+        } else {
+            Ok((point.bpm.clone(), Rational::zero(), next_q))
+        }
+    }
     pub fn seconds_at(&self, q: &Rational) -> Result<TimeValue, MusicError> {
         self.seconds_between(&Rational::zero(), q)
     }

@@ -234,6 +234,29 @@ impl<'a> DspEngine<'a> {
         for (index, node) in plan.nodes.iter().enumerate() {
             node_indices.insert(node.id.clone(), index);
             let (mut state, compiled) = match node.processor {
+                ProcessorView::WarpRate(clip) => {
+                    let sample = kit_samples
+                        .get(&clip.asset)
+                        .ok_or_else(|| RenderError::RenderState("clip asset missing".into()))?;
+                    let timing = timing
+                        .as_ref()
+                        .ok_or_else(|| RenderError::RenderState("clip timing missing".into()))?;
+                    let prepared = PreparedTransport::Warp(crate::warp_clip::prepare_clip(
+                        clip,
+                        timing,
+                        plan.output,
+                        sample.frames(),
+                    )?);
+                    let slice = sample.owned_slice(
+                        clip.source_start_frame,
+                        clip.source_end_frame,
+                        false,
+                    )?;
+                    (
+                        NodeState::new_audio(node.id.clone(), AudioRuntime { slice, prepared }),
+                        None,
+                    )
+                }
                 ProcessorView::Audio(clip) => {
                     let sample = kit_samples
                         .get(&clip.asset)
@@ -241,8 +264,13 @@ impl<'a> DspEngine<'a> {
                     let timing = timing
                         .as_ref()
                         .ok_or_else(|| RenderError::RenderState("clip timing missing".into()))?;
-                    let prepared =
-                        prepare_clip(clip, timing, plan.output, sample.rate_hz(), sample.frames())?;
+                    let prepared = PreparedTransport::Rate(prepare_clip(
+                        clip,
+                        timing,
+                        plan.output,
+                        sample.rate_hz(),
+                        sample.frames(),
+                    )?);
                     let slice = sample.owned_slice(
                         clip.source_start_frame,
                         clip.source_end_frame,
@@ -918,11 +946,33 @@ impl<'a> DspEngine<'a> {
     }
 }
 
+#[derive(Debug)]
+enum PreparedTransport {
+    Rate(PreparedAudioClip),
+    Warp(crate::warp_clip::PreparedWarpClip),
+}
+impl PreparedTransport {
+    fn coordinate(&self, frame: u64) -> Option<(u64, f64)> {
+        match self {
+            Self::Rate(prepared) => prepared.coordinate(frame),
+            Self::Warp(prepared) => prepared
+                .coordinate(frame)
+                .map(|(index, fraction)| (index as u64, fraction)),
+        }
+    }
+    fn gain_at(&self, frame: u64) -> f64 {
+        match self {
+            Self::Rate(prepared) => prepared.gain_at(frame),
+            Self::Warp(prepared) => prepared.gain_at(frame),
+        }
+    }
+}
+
 /// Stateless transport evaluated from the absolute output frame after preparation.
 #[derive(Debug)]
 struct AudioRuntime {
     slice: OwnedAudioSlice,
-    prepared: PreparedAudioClip,
+    prepared: PreparedTransport,
 }
 impl AudioRuntime {
     fn render_frame(&self, frame: u64) -> Result<[f64; 2]> {
@@ -1554,7 +1604,7 @@ struct TempoRuntimePoint {
 
 impl TempoRuntime {
     fn new(plan: &PlanView<'_>, timing: Option<&TimingContext>) -> Result<Self> {
-        if matches!(plan.version, 3..=5) {
+        if matches!(plan.version, 3..=6) {
             let timing = timing.ok_or_else(|| {
                 RenderError::RenderState("certified plan validation omitted timing".into())
             })?;
@@ -1884,7 +1934,7 @@ fn build_automations(
                     default_parameter(processor, &automation.target.port)
                 }
                 ProcessorView::Kit { .. } => 1.0,
-                ProcessorView::Audio(_) => {
+                ProcessorView::Audio(_) | ProcessorView::WarpRate(_) => {
                     return Err(crate::plan::err(
                         "E_CAPABILITY",
                         "nodes.audio",

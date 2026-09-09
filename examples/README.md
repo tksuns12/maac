@@ -20,6 +20,21 @@ The plan embeds its samples for source-free replay. The external
 assets were made; rendering needs only the committed PCM files or retained plan.
 See the [kit contract](../docs/core-kit.md) for raw format, playback and limits.
 
+# Musical audio warping
+
+[`warp-rate.maac`](warp-rate.maac) combines two native warp-rate clips, a rate
+clip, two kit hits, and a pitched note through an explicit mixer, reverb, and
+master gain. It reuses the original core-kit kick PCM. Piecewise musical anchors
+and a tempo ramp change playback rate and pitch; the final clip continues into
+the declared tail and crosses a tempo change after score end. The V6 plan
+embeds the PCM for source-free replay.
+
+```sh
+maac build examples/warp-rate.maac --project-root . -o warp-rate.wav --format pcm16
+maac compile examples/warp-rate.maac --project-root . -o warp-rate.plan.json
+maac render warp-rate.plan.json -o warp-rate-from-plan.wav --format pcm16
+```
+
 # Per-note pressure mappings
 
 [`pressure-expression.maac`](pressure-expression.maac) defines an inline stereo

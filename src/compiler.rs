@@ -36,6 +36,7 @@ use crate::plan::{
 use crate::plan_artifact::PlanArtifact;
 use crate::plan_v4::{NodeV4, PlanV4, ProcessorV4};
 use crate::plan_v5::{AudioClip, AudioFadeShape, NodeV5, PlanV5, ProcessorV5};
+use crate::plan_v6::{NodeV6, PlanV6, ProcessorV6, WarpAnchor, WarpClip};
 use crate::semantic::InstrumentNodeDescriptor;
 use crate::syntax::{Document, Field, Object, Reference, Unit, Value, ValueKind};
 
@@ -582,7 +583,20 @@ impl<'a> Compiler<'a> {
         self.allow_ramps = true;
         self.allow_hits = true;
         let has_audio = uses_audio_profile(self.document);
-        let graph = if has_audio {
+        let has_warp = self.document.objects.values().any(|object| {
+            object.kind == "audio"
+                && object
+                    .field("mode")
+                    .and_then(|field| field.value.as_symbol())
+                    == Some("warp_rate")
+        });
+        let graph = if has_warp {
+            crate::semantic::validate_source_with_warp_profile(
+                self.document,
+                &self.instrument_descriptors,
+                true,
+            )?
+        } else if has_audio {
             crate::semantic::validate_source_with_audio_profile(
                 self.document,
                 &self.instrument_descriptors,
@@ -617,7 +631,10 @@ impl<'a> Compiler<'a> {
             });
         }
         self.read_composition(limits)?;
-        if has_audio {
+        if has_warp {
+            self.finish_v6(limits, production, original)
+                .map(PlanArtifact::from_v6)
+        } else if has_audio {
             self.finish_v5(limits, production, original)
                 .map(PlanArtifact::from_v5)
         } else {
@@ -691,6 +708,7 @@ impl<'a> Compiler<'a> {
                     "at",
                     "source",
                     "mode",
+                    "warp",
                     "speed",
                     "reverse",
                     "gain",
@@ -3076,25 +3094,43 @@ impl<'a> Compiler<'a> {
     fn check_point_budget(&self, limits: &PlanLimits) -> CResult<()> {
         // Expansion keeps only curve identities; bound the aggregate before cloning points.
         let mut point_count = 0usize;
-        for count in self.automations.iter().map(|a| a.points.len()).chain(
-            self.events
-                .iter()
-                .filter_map(|e| match &e.kind {
-                    ExpandedKind::Note(note) => Some(note),
-                    ExpandedKind::Hit { .. } => None,
-                })
-                .flat_map(|e| {
-                    [
-                        e.pitch_expression.as_ref(),
-                        e.gain_expression.as_ref(),
-                        e.timbre_expression.as_ref(),
-                        e.pressure_expression.as_ref(),
-                    ]
-                    .into_iter()
-                    .flatten()
-                })
-                .map(|id| self.curves[id].points.len()),
-        ) {
+        let warp_counts = self.audio_clips.values().filter_map(|source| {
+            if source
+                .object
+                .field("mode")
+                .and_then(|field| field.value.as_symbol())
+                != Some("warp_rate")
+            {
+                return None;
+            }
+            match &source.object.field("warp")?.value.kind {
+                ValueKind::List(points) => Some(points.len()),
+                _ => None,
+            }
+        });
+        let has_warp_points = warp_counts.clone().any(|count| count != 0);
+        for count in warp_counts
+            .chain(self.automations.iter().map(|a| a.points.len()))
+            .chain(
+                self.events
+                    .iter()
+                    .filter_map(|e| match &e.kind {
+                        ExpandedKind::Note(note) => Some(note),
+                        ExpandedKind::Hit { .. } => None,
+                    })
+                    .flat_map(|e| {
+                        [
+                            e.pitch_expression.as_ref(),
+                            e.gain_expression.as_ref(),
+                            e.timbre_expression.as_ref(),
+                            e.pressure_expression.as_ref(),
+                        ]
+                        .into_iter()
+                        .flatten()
+                    })
+                    .map(|id| self.curves[id].points.len()),
+            )
+        {
             point_count = point_count.checked_add(count).ok_or_else(|| {
                 diagnostics(
                     DiagnosticCode::ResourceLimit,
@@ -3105,7 +3141,11 @@ impl<'a> Compiler<'a> {
             if point_count > limits.max_automation_points {
                 return Err(diagnostics(
                     DiagnosticCode::ResourceLimit,
-                    "aggregate automation and expression point budget exceeded",
+                    if has_warp_points {
+                        "aggregate automation, expression and warp point budget exceeded"
+                    } else {
+                        "aggregate automation and expression point budget exceeded"
+                    },
                     None,
                 ));
             }
@@ -3229,6 +3269,13 @@ impl<'a> Compiler<'a> {
     fn lower_audio_clips(&self) -> CResult<Vec<NodeV5>> {
         self.audio_clips
             .values()
+            .filter(|source| {
+                source
+                    .object
+                    .field("mode")
+                    .and_then(|field| field.value.as_symbol())
+                    == Some("rate")
+            })
             .map(|source| {
                 let object = &source.object;
                 let asset_field = self.field(object, "asset")?;
@@ -3341,6 +3388,268 @@ impl<'a> Compiler<'a> {
                 })
             })
             .collect()
+    }
+
+    fn lower_warp_clips(&self) -> CResult<Vec<NodeV6>> {
+        self.audio_clips
+            .values()
+            .filter(|source| {
+                source
+                    .object
+                    .field("mode")
+                    .and_then(|field| field.value.as_symbol())
+                    == Some("warp_rate")
+            })
+            .map(|source| {
+                let object = &source.object;
+                let asset = self.field(object, "asset")?;
+                let at = self.field(object, "at")?;
+                let source_field = self.field(object, "source")?;
+                let ValueKind::List(frames) = &source_field.value.kind else {
+                    return Err(path_diagnostic(
+                        DiagnosticCode::Range,
+                        "source requires frame endpoints",
+                        object,
+                        Some(source_field),
+                    ));
+                };
+                let frame = |value: &Value| -> CResult<u64> {
+                    match &value.kind {
+                        ValueKind::Quantity {
+                            value,
+                            unit: Unit::Frame,
+                        } => bigint_u64(value, Some(source_field.span)),
+                        _ => Err(path_diagnostic(
+                            DiagnosticCode::Unit,
+                            "source endpoint requires integer frames",
+                            object,
+                            Some(source_field),
+                        )),
+                    }
+                };
+                let warp_field = self.field(object, "warp")?;
+                let ValueKind::List(points) = &warp_field.value.kind else {
+                    return Err(path_diagnostic(
+                        DiagnosticCode::Range,
+                        "warp requires anchors",
+                        object,
+                        Some(warp_field),
+                    ));
+                };
+                let warp = points
+                    .iter()
+                    .map(|point| {
+                        let ValueKind::Tuple(pair) = &point.kind else {
+                            return Err(path_diagnostic(
+                                DiagnosticCode::Range,
+                                "warp requires tuples",
+                                object,
+                                Some(warp_field),
+                            ));
+                        };
+                        let [q, f] = pair.as_slice() else {
+                            return Err(path_diagnostic(
+                                DiagnosticCode::Range,
+                                "warp requires pairs",
+                                object,
+                                Some(warp_field),
+                            ));
+                        };
+                        Ok(WarpAnchor {
+                            q: self.q_value(q, object, Some(warp_field), false)?,
+                            source_frame: frame(f)?,
+                        })
+                    })
+                    .collect::<CResult<Vec<_>>>()?;
+                let seconds = |name: &str| -> CResult<Rational> {
+                    object
+                        .field(name)
+                        .map(|field| self.seconds_value(&field.value, object, Some(field)))
+                        .unwrap_or(Ok(Rational::zero()))
+                };
+                let gain = object
+                    .field("gain")
+                    .map(|field| self.rational_value(&field.value, object, Some(field)))
+                    .unwrap_or(Ok(Rational::one()))?;
+                let fade_shape = match object
+                    .field("fade_shape")
+                    .and_then(|field| field.value.as_symbol())
+                {
+                    None | Some("linear") => AudioFadeShape::Linear,
+                    Some("equal_power") => AudioFadeShape::EqualPower,
+                    _ => {
+                        return Err(path_diagnostic(
+                            DiagnosticCode::Range,
+                            "unsupported fade shape",
+                            object,
+                            object.field("fade_shape"),
+                        ))
+                    }
+                };
+                let [start, end] = frames.as_slice() else {
+                    return Err(path_diagnostic(
+                        DiagnosticCode::Range,
+                        "source requires two endpoints",
+                        object,
+                        Some(source_field),
+                    ));
+                };
+                Ok(NodeV6 {
+                    id: object.id.clone(),
+                    params: BTreeMap::new(),
+                    processor: ProcessorV6::WarpRate {
+                        clip: Box::new(WarpClip {
+                            asset: self.one_reference(&asset.value, object, Some(asset))?,
+                            channels: source.channels,
+                            at_q: self.q_value(&at.value, object, Some(at), true)?,
+                            source_start_frame: frame(start)?,
+                            source_end_frame: frame(end)?,
+                            warp,
+                            gain,
+                            fade_in_seconds: seconds("fade_in")?,
+                            fade_out_seconds: seconds("fade_out")?,
+                            fade_shape,
+                            source: SourceMapping {
+                                object: object.id.clone(),
+                                path: vec![object.id.clone()],
+                                span: Some(SourceSpan {
+                                    start: object.span.start,
+                                    end: object.span.end,
+                                }),
+                            },
+                            track: object
+                                .field("track")
+                                .map(|field| self.one_reference(&field.value, object, Some(field)))
+                                .transpose()?,
+                            start_frame: 0,
+                            end_frame: 0,
+                        }),
+                    },
+                })
+            })
+            .collect()
+    }
+
+    fn finish_v6(
+        &self,
+        limits: &PlanLimits,
+        mut production: Option<crate::production_data::ProductionSettings>,
+        original: &Document,
+    ) -> CResult<PlanV6> {
+        self.check_point_budget(limits)?;
+        let mut nodes: Vec<NodeV6> = self
+            .nodes
+            .iter()
+            .map(|node| NodeV6 {
+                id: node.id.clone(),
+                processor: ProcessorV6::Core {
+                    processor: node.processor.clone(),
+                },
+                params: node.params.clone(),
+            })
+            .collect();
+        nodes.extend(
+            self.kit_nodes
+                .values()
+                .cloned()
+                .map(NodeV5::from)
+                .map(NodeV6::from),
+        );
+        nodes.extend(self.lower_audio_clips()?.into_iter().map(NodeV6::from));
+        nodes.extend(self.lower_warp_clips()?);
+        nodes.sort_by(|a, b| a.id.cmp(&b.id));
+        let mut plan = PlanV6 {
+            version: 6,
+            output: OutputSettings {
+                score_start_q: self.score_start.clone(),
+                score_end_q: self.score_end.clone(),
+                tail_seconds: self.tail_seconds.clone(),
+                sample_rate_hz: self.sample_rate,
+                channels: self.output_channels()?,
+                total_frames: 0,
+                output: self.output.clone(),
+            },
+            tempo: self.plan_tempo.clone(),
+            events: self.lower_score_events()?,
+            nodes,
+            audio_assets: self.audio_assets.clone(),
+            connections: self.connections.clone(),
+            automation: self.automations.clone(),
+            regions: self.regions.clone(),
+            source_mappings: Vec::new(),
+            instruments: self.instrument_resources.clone(),
+            production: None,
+        };
+        if let Some(settings) = &mut production {
+            settings.execution_identity = Some(
+                crate::production_identity::execution_identity_for_view(original, &plan.view())
+                    .map_err(|error| {
+                        diagnostics(
+                            DiagnosticCode::Range,
+                            format!("execution identity: {error}"),
+                            None,
+                        )
+                    })?,
+            );
+        }
+        plan.production = production;
+        let limits = limits.bounded();
+        plan.view().preflight_timing(&limits).map_err(plan_error)?;
+        let timing = TimingContext::new_with_limits(&plan.tempo, &plan.output, &limits)
+            .map_err(plan_error)?;
+        Self::schedule_score_events(&mut plan.output, &mut plan.events, &timing, &limits)?;
+        for node in &mut plan.nodes {
+            if let ProcessorV6::Audio { clip } = &mut node.processor {
+                let asset = plan
+                    .audio_assets
+                    .iter()
+                    .find(|asset| asset.id == clip.asset)
+                    .ok_or_else(|| {
+                        diagnostics(DiagnosticCode::Reference, "clip asset does not exist", None)
+                    })?;
+                (clip.start_frame, clip.end_frame) = crate::audio_clip::schedule_clip(
+                    clip,
+                    &timing,
+                    &plan.output,
+                    asset.rate_hz,
+                    asset.frames,
+                )
+                .map_err(plan_error)?;
+            }
+        }
+        for node in &mut plan.nodes {
+            if let ProcessorV6::WarpRate { clip } = &mut node.processor {
+                let asset = plan
+                    .audio_assets
+                    .iter()
+                    .find(|asset| asset.id == clip.asset)
+                    .ok_or_else(|| {
+                        diagnostics(DiagnosticCode::Reference, "clip asset does not exist", None)
+                    })?;
+                (clip.start_frame, clip.end_frame) =
+                    crate::warp_clip::schedule_clip(clip, &timing, &plan.output, asset.frames)
+                        .map_err(plan_error)?;
+            }
+        }
+        plan.view()
+            .validate_with_timing(&limits, &timing)
+            .map_err(plan_error)?;
+        struct ByteBudget(usize);
+        impl std::io::Write for ByteBudget {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0 = self
+                    .0
+                    .checked_sub(bytes.len())
+                    .ok_or_else(|| std::io::Error::other("artifact JSON exceeds byte limit"))?;
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        serde_json::to_writer(ByteBudget(limits.max_json_bytes), &plan)
+            .map_err(|error| diagnostics(DiagnosticCode::ResourceLimit, error.to_string(), None))?;
+        Ok(plan)
     }
 
     fn finish_v5(

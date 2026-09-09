@@ -433,9 +433,17 @@ impl Normalizer<'_> {
                 }
             }
             "audio" => {
+                if object
+                    .field("mode")
+                    .and_then(|field| field.value.as_symbol())
+                    == Some("rate")
+                {
+                    fields.entry("speed").or_insert(number(1));
+                    fields
+                        .entry("reverse")
+                        .or_insert(json!({"t":"boolean","v":false}));
+                }
                 for (name, value) in [
-                    ("speed", number(1)),
-                    ("reverse", json!({"t":"boolean","v":false})),
                     ("gain", number(1)),
                     ("fade_in", quantity(0, 1, Unit::S)),
                     ("fade_out", quantity(0, 1, Unit::S)),
@@ -568,7 +576,7 @@ impl Normalizer<'_> {
                 }
                 for (name, value) in node.params {
                     let unit = match node.processor {
-                        ProcessorView::Audio(_) => {
+                        ProcessorView::Audio(_) | ProcessorView::WarpRate(_) => {
                             return Err(error("audio transports cannot carry node parameters"))
                         }
                         ProcessorView::Kit { .. } => None,

@@ -24,6 +24,7 @@ enum ArtifactVersion {
     Existing(VersionedPlan),
     V4(PlanV4),
     V5(crate::plan_v5::PlanV5),
+    V6(crate::plan_v6::PlanV6),
 }
 impl PlanArtifact {
     pub fn from_json(bytes: &[u8]) -> Result<Self, PlanError> {
@@ -40,6 +41,11 @@ impl PlanArtifact {
         let inner = match version.version {
             1..=3 => {
                 ArtifactVersion::Existing(VersionedPlan::from_json_with_limits(bytes, &limits)?)
+            }
+            6 => {
+                let plan = crate::plan_v6::PlanV6::decode_wire(bytes).map_err(json_error)?;
+                plan.validate_with_limits(&limits)?;
+                ArtifactVersion::V6(plan)
             }
             5 => {
                 let plan = crate::plan_v5::PlanV5::decode_wire(bytes).map_err(json_error)?;
@@ -74,6 +80,13 @@ impl PlanArtifact {
                 check_bytes(&bytes, &limits)?;
                 Ok(bytes)
             }
+            ArtifactVersion::V6(plan) => {
+                let limits = limits.bounded();
+                self.validate_with_limits(&limits)?;
+                let bytes = serde_json::to_vec(plan).map_err(json_error)?;
+                check_bytes(&bytes, &limits)?;
+                Ok(bytes)
+            }
             ArtifactVersion::V5(plan) => {
                 let limits = limits.bounded();
                 self.validate_with_limits(&limits)?;
@@ -94,6 +107,7 @@ impl PlanArtifact {
             ArtifactVersion::Existing(VersionedPlan::V3(plan)) => plan.validate_with_limits(limits),
             ArtifactVersion::V4(plan) => plan.validate_with_limits(limits),
             ArtifactVersion::V5(plan) => plan.validate_with_limits(limits),
+            ArtifactVersion::V6(plan) => plan.validate_with_limits(limits),
         }
     }
     pub fn version(&self) -> u32 {
@@ -106,8 +120,18 @@ impl PlanArtifact {
         self.view()
             .nodes
             .iter()
-            .filter(|node| matches!(node.processor, crate::plan::ProcessorView::Audio(_)))
+            .filter(|node| {
+                matches!(
+                    node.processor,
+                    crate::plan::ProcessorView::Audio(_) | crate::plan::ProcessorView::WarpRate(_)
+                )
+            })
             .count()
+    }
+    pub(crate) fn from_v6(plan: crate::plan_v6::PlanV6) -> Self {
+        Self {
+            inner: ArtifactVersion::V6(plan),
+        }
     }
     pub(crate) fn from_v5(plan: crate::plan_v5::PlanV5) -> Self {
         Self {
@@ -123,6 +147,7 @@ impl PlanArtifact {
             ArtifactVersion::Existing(VersionedPlan::V3(plan)) => plan.view(),
             ArtifactVersion::V4(plan) => plan.view(),
             ArtifactVersion::V5(plan) => plan.view(),
+            ArtifactVersion::V6(plan) => plan.view(),
         }
     }
     #[cfg(test)]
@@ -559,7 +584,7 @@ mod tests {
                 .code,
             "E_VERSION"
         );
-        for version in [0, 6] {
+        for version in [0, 7] {
             let mut v = wire();
             v["version"] = json!(version);
             assert_eq!(load(&v).unwrap_err().code, "E_VERSION");
