@@ -5,6 +5,8 @@
 //! every render.  A callback receives one interleaved output frame at a time;
 //! the slice is valid until the callback returns.
 
+use crate::audio_buffer::OwnedAudioSlice;
+use crate::audio_clip::{prepare_clip, PreparedAudioClip};
 use crate::expression::ExpressionRuntime;
 use crate::kit::{KitRuntime, KitSample};
 use crate::plan::{
@@ -232,6 +234,25 @@ impl<'a> DspEngine<'a> {
         for (index, node) in plan.nodes.iter().enumerate() {
             node_indices.insert(node.id.clone(), index);
             let (mut state, compiled) = match node.processor {
+                ProcessorView::Audio(clip) => {
+                    let sample = kit_samples
+                        .get(&clip.asset)
+                        .ok_or_else(|| RenderError::RenderState("clip asset missing".into()))?;
+                    let timing = timing
+                        .as_ref()
+                        .ok_or_else(|| RenderError::RenderState("clip timing missing".into()))?;
+                    let prepared =
+                        prepare_clip(clip, timing, plan.output, sample.rate_hz(), sample.frames())?;
+                    let slice = sample.owned_slice(
+                        clip.source_start_frame,
+                        clip.source_end_frame,
+                        clip.reverse,
+                    )?;
+                    (
+                        NodeState::new_audio(node.id.clone(), AudioRuntime { slice, prepared }),
+                        None,
+                    )
+                }
                 ProcessorView::Core(processor) => {
                     let compiled = match processor {
                         Processor::Instrument { program, .. } => {
@@ -707,6 +728,17 @@ impl<'a> DspEngine<'a> {
 
     fn process_node(&mut self, node_index: usize, frame: u64) -> Result<()> {
         let processor = match self.nodes[node_index].processor.clone() {
+            RuntimeProcessor::Audio => {
+                let node = &mut self.nodes[node_index];
+                let output = node
+                    .audio
+                    .as_ref()
+                    .ok_or_else(|| RenderError::RenderState("audio state missing".into()))?
+                    .render_frame(frame)?;
+                let channels = node.output.len();
+                node.output.copy_from_slice(&output[..channels]);
+                return Ok(());
+            }
             RuntimeProcessor::Core(processor) => processor,
             RuntimeProcessor::Kit => {
                 let node = &mut self.nodes[node_index];
@@ -886,10 +918,42 @@ impl<'a> DspEngine<'a> {
     }
 }
 
+/// Stateless transport evaluated from the absolute output frame after preparation.
+#[derive(Debug)]
+struct AudioRuntime {
+    slice: OwnedAudioSlice,
+    prepared: PreparedAudioClip,
+}
+impl AudioRuntime {
+    fn render_frame(&self, frame: u64) -> Result<[f64; 2]> {
+        let mut output = [0.; 2];
+        if let Some((index, fraction)) = self.prepared.coordinate(frame) {
+            let gain = self.prepared.gain_at(frame);
+            for (channel, sample) in output
+                .iter_mut()
+                .enumerate()
+                .take(usize::from(self.slice.channels()))
+            {
+                *sample = self.slice.interpolate(index, fraction, channel) * gain;
+                if !sample.is_finite() {
+                    return Err(crate::plan::err(
+                        "E_NONFINITE",
+                        "nodes.audio",
+                        "audio clip produced a nonfinite sample",
+                    )
+                    .into());
+                }
+            }
+        }
+        Ok(output)
+    }
+}
+
 #[derive(Clone, Debug)]
 enum RuntimeProcessor {
     Core(Processor),
     Kit,
+    Audio,
 }
 
 #[derive(Debug)]
@@ -897,6 +961,7 @@ struct NodeState {
     id: String,
     processor: RuntimeProcessor,
     kit: Option<KitRuntime>,
+    audio: Option<AudioRuntime>,
     base_params: BTreeMap<String, f64>,
     current_params: BTreeMap<String, f64>,
     automations: BTreeMap<String, AutomationBinding>,
@@ -1005,6 +1070,7 @@ impl NodeState {
             id,
             processor: RuntimeProcessor::Core(processor),
             kit: None,
+            audio: None,
             current_params: base_params.clone(),
             base_params,
             automations: BTreeMap::new(),
@@ -1027,6 +1093,7 @@ impl NodeState {
             id,
             processor: RuntimeProcessor::Kit,
             kit: Some(kit),
+            audio: None,
             current_params: base_params.clone(),
             base_params,
             automations: BTreeMap::new(),
@@ -1039,6 +1106,27 @@ impl NodeState {
             reverb: None,
             native_bounds: BTreeMap::new(),
         })
+    }
+
+    fn new_audio(id: String, audio: AudioRuntime) -> Self {
+        let channels = usize::from(audio.slice.channels());
+        Self {
+            id,
+            processor: RuntimeProcessor::Audio,
+            kit: None,
+            audio: Some(audio),
+            base_params: BTreeMap::new(),
+            current_params: BTreeMap::new(),
+            automations: BTreeMap::new(),
+            output: vec![0.; channels],
+            onepole_previous: Vec::new(),
+            voices: Vec::new(),
+            instrument: None,
+            eq: None,
+            compressor: None,
+            reverb: None,
+            native_bounds: BTreeMap::new(),
+        }
     }
 
     fn initialize_instrument(
@@ -1466,7 +1554,7 @@ struct TempoRuntimePoint {
 
 impl TempoRuntime {
     fn new(plan: &PlanView<'_>, timing: Option<&TimingContext>) -> Result<Self> {
-        if matches!(plan.version, 3 | 4) {
+        if matches!(plan.version, 3..=5) {
             let timing = timing.ok_or_else(|| {
                 RenderError::RenderState("certified plan validation omitted timing".into())
             })?;
@@ -1796,6 +1884,14 @@ fn build_automations(
                     default_parameter(processor, &automation.target.port)
                 }
                 ProcessorView::Kit { .. } => 1.0,
+                ProcessorView::Audio(_) => {
+                    return Err(crate::plan::err(
+                        "E_CAPABILITY",
+                        "nodes.audio",
+                        "audio rendering is not supported at this boundary yet",
+                    )
+                    .into())
+                }
             },
         };
         if let Some(timing) = timing {

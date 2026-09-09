@@ -805,12 +805,12 @@ fn prepare(
             if document
                 .objects
                 .get(&target.output.node)
-                .is_none_or(|object| object.kind != "node")
+                .is_none_or(|object| !matches!(object.kind.as_str(), "node" | "audio"))
             {
                 return Err(error(
                     "E_REFERENCE",
                     "production.output",
-                    "target must reference an existing project node",
+                    "target must reference an existing project audio source",
                 ));
             }
         }

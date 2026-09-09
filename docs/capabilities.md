@@ -19,6 +19,7 @@ specification remains authoritative; this page describes the implementation scop
 | Routing | Explicit mono/stereo audio graph and note/hit targets; no implicit channel conversions or mixers |
 | Processors | `core.sine/1`, `core.kit/1`, `core.onepole/1`, `core.pan/1`, `core.sum/1`, `core.gain/1` (mono/stereo) |
 | Sample kits | Pinned raw float32 mono/stereo assets, native-rate one-shot playback, linear interpolation, natural tails and sample-rate level automation |
+| Arranged audio | Top-level rate-mode clips, q/bar/physical placement, source-frame slicing, speed, reverse, gain, linear/equal-power fades, explicit routing and tails |
 | Reusable instruments | Named libraries, typed public controls, presets, independent polyphonic instances, voice and shared graphs |
 | Sound graphs | Versioned sine/saw/square/triangle/wavetable oscillators, deterministic noise and recirculating plucked strings, linear ADSR, sine LFO, gain, low/high-pass one-pole filtering, mixing and panning |
 | Modulation | Feed-forward graph modulation and sample-wise through-zero linear FM; no oversampling |
@@ -30,19 +31,24 @@ specification remains authoritative; this page describes the implementation scop
 | Export | Legacy build/render: Float32 WAV or overload-rejecting PCM16; production delivery also adds PCM24 and explicit seeded TPDF |
 | Native production | Project-level EQ, linked peak compression with external sidechains, eight-delay reverb; required `maac.production/1` |
 | Named deliveries | Complete-graph master/stem capture; 44.1/48/96 kHz conversion; final-artifact loudness/sample-peak/experimental true-peak analysis |
-| Interchange | Independently validated standalone plans: version 1 legacy, version 2 embedded graph/data/provenance, version 3 exact ramp timing recipes, version 4 embedded audio assets and kit nodes |
+| Interchange | Independently validated standalone plans: version 1 legacy, version 2 embedded graph/data/provenance, version 3 exact ramp timing recipes, version 4 embedded audio assets and kit nodes, version 5 arranged audio clips |
 
 Recognized deferred features fail with `E_CAPABILITY`: messages,
 top-level core modulation, other processors, pitched sample instruments,
-arranged audio, external plug-ins and other extensions. Transactional editing, full render locks,
+audio warp modes, external plug-ins and other extensions. Transactional editing, full render locks,
 MIDI transport, GUI and real-time playback are outside this release's interfaces.
 No deferred feature is approximated silently.
 
 The [kit contract](core-kit.md) defines native hit scheduling, raw sample assets,
 voice capacity, interpolation and standalone replay. The additive `*_artifact`
-Rust APIs support versions 1–4 through opaque `PlanArtifact`; existing APIs keep
+Rust APIs support versions 1–5 through opaque `PlanArtifact`; existing APIs keep
 their supported versions. WAV importing and reusable sample-kit library exports
 remain outside this slice.
+
+The [audio clip contract](audio-clips.md) defines rate-mode transport through
+the same clock and graph. Clips remain independent of pattern note/hit events.
+Tracks may group clips without an event target; grouping creates no routing.
+Warp modes and placement inside patterns remain unsupported.
 
 The [tempo ramp contract](tempo-ramps.md) defines linear BPM in score position,
 inverse-clock automation, and version 3 interchange. The CLI automatically

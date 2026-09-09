@@ -185,6 +185,13 @@ pub(crate) struct CoreAudioSource {
     pub frames: u64,
 }
 
+/// Source-preserving rate transport validated before compiler timing normalization.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct AudioClipSource {
+    pub channels: u8,
+    pub object: Object,
+}
+
 /// A validated, source-preserving graph.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SourceGraph {
@@ -193,10 +200,14 @@ pub struct SourceGraph {
     nodes: BTreeMap<String, NodeDescriptor>,
     kit_nodes: BTreeMap<String, NodeV4>,
     audio_sources: BTreeMap<String, CoreAudioSource>,
+    audio_clips: BTreeMap<String, AudioClipSource>,
     references: BTreeMap<String, ReferenceTarget>,
 }
 
 impl SourceGraph {
+    pub(crate) fn audio_clips(&self) -> &BTreeMap<String, AudioClipSource> {
+        &self.audio_clips
+    }
     pub(crate) fn kit_nodes(&self) -> &BTreeMap<String, NodeV4> {
         &self.kit_nodes
     }
@@ -278,7 +289,7 @@ pub(crate) fn validate_source_with_tempo_profile(
     instruments: &BTreeMap<String, InstrumentNodeDescriptor>,
     allow_ramps: bool,
 ) -> Result<SourceGraph, Diagnostics> {
-    validate_source_profile(document, instruments, allow_ramps, false)
+    validate_source_profile(document, instruments, allow_ramps, false, false)
 }
 
 pub(crate) fn validate_source_with_kit_profile(
@@ -286,7 +297,15 @@ pub(crate) fn validate_source_with_kit_profile(
     instruments: &BTreeMap<String, InstrumentNodeDescriptor>,
     allow_ramps: bool,
 ) -> Result<SourceGraph, Diagnostics> {
-    validate_source_profile(document, instruments, allow_ramps, true)
+    validate_source_profile(document, instruments, allow_ramps, true, false)
+}
+
+pub(crate) fn validate_source_with_audio_profile(
+    document: &Document,
+    instruments: &BTreeMap<String, InstrumentNodeDescriptor>,
+    allow_ramps: bool,
+) -> Result<SourceGraph, Diagnostics> {
+    validate_source_profile(document, instruments, allow_ramps, true, true)
 }
 
 fn validate_source_profile(
@@ -294,10 +313,12 @@ fn validate_source_profile(
     instruments: &BTreeMap<String, InstrumentNodeDescriptor>,
     allow_ramps: bool,
     allow_kits: bool,
+    allow_audio: bool,
 ) -> Result<SourceGraph, Diagnostics> {
     let mut validator = Validator::new(document, instruments);
     validator.allow_ramps = allow_ramps;
     validator.allow_kits = allow_kits;
+    validator.allow_audio = allow_audio;
     validator.validate();
     if validator.diagnostics.has_errors() {
         return Err(validator.diagnostics);
@@ -310,6 +331,7 @@ fn validate_source_profile(
         nodes: validator.nodes,
         kit_nodes: validator.kit_nodes,
         audio_sources: validator.audio_sources,
+        audio_clips: validator.audio_clips,
         references: validator.references,
     })
 }
@@ -320,6 +342,7 @@ pub fn validate(document: &Document) -> Result<SourceGraph, Diagnostics> {
 }
 
 struct Validator<'a> {
+    allow_audio: bool,
     allow_ramps: bool,
     allow_kits: bool,
     document: &'a Document,
@@ -330,6 +353,7 @@ struct Validator<'a> {
     nodes: BTreeMap<String, NodeDescriptor>,
     kit_nodes: BTreeMap<String, NodeV4>,
     audio_sources: BTreeMap<String, CoreAudioSource>,
+    audio_clips: BTreeMap<String, AudioClipSource>,
     references: BTreeMap<String, ReferenceTarget>,
     automation_writers: BTreeSet<String>,
     total_objects: usize,
@@ -348,6 +372,7 @@ impl<'a> Validator<'a> {
             document,
             allow_ramps: false,
             allow_kits: false,
+            allow_audio: false,
             diagnostics: Diagnostics::new(),
             project_id: None,
             project_score: None,
@@ -355,6 +380,7 @@ impl<'a> Validator<'a> {
             nodes: BTreeMap::new(),
             kit_nodes: BTreeMap::new(),
             audio_sources: BTreeMap::new(),
+            audio_clips: BTreeMap::new(),
             references: BTreeMap::new(),
             automation_writers: BTreeSet::new(),
             total_objects: 0,
@@ -397,7 +423,9 @@ impl<'a> Validator<'a> {
         let node_count = self
             .document
             .objects()
-            .filter(|(_, object)| object.kind == "node")
+            .filter(|(_, object)| {
+                object.kind == "node" || (self.allow_audio && object.kind == "audio")
+            })
             .count();
         if node_count > MAX_SOURCE_NODES {
             self.push(
@@ -453,6 +481,11 @@ impl<'a> Validator<'a> {
                 self.validate_deferred_object(object, std::slice::from_ref(&object.id));
             }
         }
+        if self.allow_audio {
+            for object in objects.iter().filter(|object| object.kind == "audio") {
+                self.validate_deferred_object(object, std::slice::from_ref(&object.id));
+            }
+        }
         for object in objects.iter().filter(|object| object.kind == "node") {
             self.validate_node(object, std::slice::from_ref(&object.id));
         }
@@ -472,6 +505,7 @@ impl<'a> Validator<'a> {
             if object.kind == "project"
                 || object.kind == "node"
                 || (self.allow_kits && object.kind == "asset")
+                || (self.allow_audio && object.kind == "audio")
             {
                 continue;
             }
@@ -686,6 +720,10 @@ impl<'a> Validator<'a> {
             _ => {}
         }
         self.reject_children(object, path);
+        if self.allow_audio && object.kind == "audio" && path.len() == 1 {
+            self.validate_rate_audio(object, path);
+            return;
+        }
         if self.allow_kits {
             if object.kind == "hit" && path.len() > 1 {
                 return;
@@ -2022,6 +2060,16 @@ impl<'a> Validator<'a> {
         if let Some(node) = self.nodes.get(id) {
             return Some(ports_for(node.processor, &node.config));
         }
+        if let Some(clip) = self.audio_clips.get(id) {
+            return Some(vec![PortDescriptor {
+                name: "out",
+                direction: PortDirection::Output,
+                kind: PortKind::Audio,
+                channels: u32::from(clip.channels),
+                accepts_multiple: false,
+                zero_default: true,
+            }]);
+        }
         let node = self.kit_nodes.get(id)?;
         let ProcessorV4::Kit { channels, .. } = &node.processor else {
             return None;
@@ -2902,12 +2950,103 @@ impl<'a> Validator<'a> {
         }
     }
 
+    fn validate_rate_audio(&mut self, object: &Object, path: &[String]) {
+        if object.field("mode").and_then(|f| f.value.as_symbol()) != Some("rate") {
+            self.push(
+                DiagnosticCode::Capability,
+                "only rate audio mode is supported",
+                Some(object.span),
+                path.to_vec(),
+                vec!["mode".into()],
+            );
+            return;
+        }
+        for name in ["warp", "processor"] {
+            if let Some(field) = object.field(name) {
+                self.push(
+                    DiagnosticCode::Range,
+                    format!("rate audio forbids {name}"),
+                    Some(field.span),
+                    path.to_vec(),
+                    vec![name.into()],
+                );
+            }
+        }
+        let Some(asset_id) = object
+            .field("asset")
+            .and_then(|f| f.value.reference())
+            .and_then(|r| (r.path.len() == 1 && r.port.is_none()).then(|| r.path[0].clone()))
+        else {
+            return;
+        };
+        let Some(asset) = self.audio_sources.get(&asset_id).cloned() else {
+            self.push(
+                DiagnosticCode::Reference,
+                "audio requires a supported core audio asset",
+                Some(object.span),
+                path.to_vec(),
+                vec!["asset".into()],
+            );
+            return;
+        };
+        let Some(Value {
+            kind: ValueKind::List(items),
+            ..
+        }) = object.field("source").map(|f| &f.value)
+        else {
+            return;
+        };
+        if items.len() != 2 {
+            return;
+        }
+        let frames: Option<Vec<u64>> = items
+            .iter()
+            .map(|item| match &item.kind {
+                ValueKind::Quantity {
+                    value,
+                    unit: Unit::Frame,
+                } if is_integer(value) => value.to_integer().to_u64(),
+                _ => None,
+            })
+            .collect();
+        let Some(frames) = frames else {
+            self.push(
+                DiagnosticCode::Range,
+                "audio source frames must be u64 integers",
+                Some(object.span),
+                path.to_vec(),
+                vec!["source".into()],
+            );
+            return;
+        };
+        if frames[0] >= frames[1] || frames[1] > asset.frames {
+            self.push(
+                DiagnosticCode::Range,
+                "audio source requires 0 <= a < b <= asset.frames",
+                Some(object.span),
+                path.to_vec(),
+                vec!["source".into()],
+            );
+            return;
+        }
+        self.audio_clips.insert(
+            object.id.clone(),
+            AudioClipSource {
+                channels: asset.channels,
+                object: object.clone(),
+            },
+        );
+    }
+
     fn validate_audio_shape(&mut self, object: &Object, path: &[String]) {
         if let Some(field) = object.field("asset") {
             self.expect_object_ref(field, "asset", &["asset"], path);
         }
         if let Some(field) = object.field("at") {
-            match field.value.kind {
+            match &field.value.kind {
+                ValueKind::Call { function, .. } if function == "bar" => {
+                    self.position_q_value(&field.value, path, "at");
+                }
                 ValueKind::Quantity {
                     unit: Unit::Q | Unit::S | Unit::Ms,
                     ..
@@ -3128,6 +3267,20 @@ impl<'a> Validator<'a> {
                     kind: object.kind.clone(),
                 },
             );
+            if object.kind == "audio" && self.audio_clips.contains_key(&id) {
+                for port in self.node_ports(&id).unwrap_or_default() {
+                    self.references.insert(
+                        format!("&{id}:{}", port.name),
+                        ReferenceTarget::Port {
+                            node: id.clone(),
+                            port: port.name.into(),
+                            direction: port.direction,
+                            kind: port.kind,
+                            channels: port.channels,
+                        },
+                    );
+                }
+            }
             if object.kind == "node" {
                 if self.kit_nodes.contains_key(&id) {
                     for port in self.node_ports(&id).unwrap_or_default() {
@@ -4739,5 +4892,139 @@ mod kit_profile_tests {
         );
         assert!(validate(&source("hit bad { at = 0q; key = \"\"; }")).is_err());
         assert!(validate(&source(r#"curve c { clock = score; points = [(0q, -1, linear), (2q, 1, step)]; } automation a { target = &kit.params.level; curve = &c; at = 0q; }"#)).is_err());
+    }
+}
+
+#[cfg(test)]
+mod audio_profile_tests {
+    use super::*;
+    fn source(extra: &str) -> String {
+        format!(
+            r#"maac 1;
+project p {{ score = [0q, 4q]; rate = 48000Hz; tempo = &clock; meter = &metre; output = &clip:out; }}
+tempo clock {{ points = [(0q, 120bpm, step)]; }}
+meter metre {{ points = [(0q, 4, 4)]; }}
+audio clip {{ asset = &sample; at = bar(1, 1); source = [0frame, 4frame]; mode = rate; track = &group; }}
+track group {{}}
+asset sample {{ kind = audio; path = "sample.pcm"; hash = "sha256:{}"; format = "pcm_f32le_interleaved/1"; rate = 24kHz; channels = 2; frames = 4; }}
+{extra}"#,
+            "0".repeat(64)
+        )
+    }
+    fn validate(input: &str) -> Result<SourceGraph, Diagnostics> {
+        validate_source_with_audio_profile(&crate::parse(input).unwrap(), &BTreeMap::new(), true)
+    }
+    #[test]
+    fn rate_master_group_and_forward_asset_reference() {
+        let input = source("");
+        let graph = validate(&input).unwrap();
+        assert!(matches!(
+            graph.resolve_text("&clip:out"),
+            Some(ReferenceTarget::Port {
+                channels: 2,
+                kind: PortKind::Audio,
+                ..
+            })
+        ));
+        assert!(graph.resolve_text("&clip:events").is_none());
+        assert!(graph.resolve_text("&clip.params.gain").is_none());
+        assert!(validate_source(&crate::parse(&input).unwrap()).is_err());
+        assert!(validate_source_with_kit_profile(
+            &crate::parse(&input).unwrap(),
+            &BTreeMap::new(),
+            true
+        )
+        .is_err());
+    }
+    #[test]
+    fn mixed_kit_notes_hits_and_audio_routes() {
+        let input = source(r#"
+node synth { type = "core.sine/1"; }
+node kit { type = "core.kit/1"; config = { channels = 2; samples = [{ key = "hit"; asset = &sample; }]; }; }
+node mix { type = "core.sum/1"; config = { channels = 2; }; }
+connect a { from = &clip:out; to = &mix:in; }
+connect b { from = &kit:out; to = &mix:in; }
+track notes { target = &synth:events; }
+track hits { target = &kit:events; }
+pattern np { length = 1q; note n { at = 0q; dur = 1q; pitch = key(69); } }
+pattern hp { length = 1q; hit h { at = 0q; key = "hit"; } }
+place n { pattern = &np; track = &notes; at = 0q; }
+place h { pattern = &hp; track = &hits; at = 0q; }
+"#).replace("output = &clip:out", "output = &mix:out");
+        assert!(validate(&input).is_ok());
+        assert!(validate(&input.replace("from = &clip:out", "from = &clip:in")).is_err());
+        assert!(validate(&input.replace("to = &mix:in", "to = &clip:out")).is_err());
+        assert!(validate(&input.replace(
+            "track notes { target = &synth:events; }",
+            "track notes { target = &clip:out; }"
+        ))
+        .is_err());
+        assert!(validate(&input.replace(
+            "node mix { type = \"core.sum/1\"; config = { channels = 2; }; }",
+            "node mix { type = \"core.sum/1\"; config = { channels = 1; }; }"
+        ))
+        .is_err());
+        assert!(validate(&source(r#"curve c { clock = score; points = [(0q, 1, step)]; } automation a { target = &clip.params.gain; curve = &c; at = 0q; }"#)).is_err());
+    }
+
+    #[test]
+    fn anchors_options_and_resource_limit() {
+        for anchor in ["0q", "0s", "0ms", "bar(1, 3/2)"] {
+            let input = source("").replace("bar(1, 1)", anchor).replace("mode = rate;", "mode = rate; speed = 3/2; reverse = true; gain = 0; fade_in = 5ms; fade_out = 1s; fade_shape = equal_power;");
+            let graph = validate(&input).unwrap();
+            assert_eq!(graph.audio_clips()["clip"].channels, 2);
+            assert_eq!(graph.audio_clips()["clip"].object.id, "clip");
+        }
+        let mut extra = String::new();
+        for n in 0..MAX_SOURCE_NODES {
+            extra.push_str(&format!("audio extra{n} {{ asset = &sample; at = 0q; source = [0frame, 1frame]; mode = rate; }}\n"));
+        }
+        let errors = validate(&source(&extra)).unwrap_err();
+        assert!(errors
+            .iter()
+            .any(|e| e.code == DiagnosticCode::ResourceLimit));
+        assert!(validate(&source("audio unused { asset = &sample; at = 0q; source = [0frame, 18446744073709551616frame]; mode = rate; }")).is_err());
+    }
+
+    #[test]
+    fn rejects_invalid_rate_clips_even_unused() {
+        for (old, new) in [
+            ("0frame, 4frame", "0frame, 5frame"),
+            ("0frame, 4frame", "1frame, 1frame"),
+            ("0frame, 4frame", "-1frame, 4frame"),
+            ("0frame, 4frame", "0frame, 1/2frame"),
+            ("asset = &sample", "asset = &group"),
+            ("asset = &sample", "asset = &missing"),
+            ("track = &group", "track = &missing"),
+            ("mode = rate;", "mode = warp_rate;"),
+            ("mode = rate;", "mode = warp_preserve;"),
+            (
+                "mode = rate;",
+                "mode = rate; warp = [(0q, 0frame), (1q, 4frame)];",
+            ),
+            ("mode = rate;", "mode = rate; processor = &sample;"),
+            ("mode = rate;", "mode = rate; speed = 0;"),
+            ("mode = rate;", "mode = rate; gain = -1;"),
+            ("mode = rate;", "mode = rate; fade_in = -1ms;"),
+            ("mode = rate;", "mode = rate; fade_out = 1q;"),
+            ("mode = rate;", "mode = rate; reverse = 1;"),
+            ("mode = rate;", "mode = rate; fade_shape = nope;"),
+            ("mode = rate;", "mode = rate; unknown = 1;"),
+            ("mode = rate;", ""),
+            ("asset = &sample;", ""),
+            ("at = bar(1, 1);", ""),
+            ("source = [0frame, 4frame];", ""),
+            ("at = bar(1, 1)", "at = 1Hz"),
+            ("output = &clip:out", "output = &clip:events"),
+        ] {
+            assert!(
+                validate(&source("").replace(old, new)).is_err(),
+                "{old} -> {new}"
+            );
+        }
+        assert!(validate(&source(
+            "audio unused { asset = &sample; at = 0q; source = [4frame, 5frame]; mode = rate; }"
+        ))
+        .is_err());
     }
 }

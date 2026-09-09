@@ -14,6 +14,7 @@ unchanged.
 | Per-note gain | Step/linear/exponential amplitude curves on all clocks; simultaneous pitch and gain; zero-gain phase/capacity preservation; release holding; extreme positive exponential endpoints; combined point budgets and source-free replay |
 | Expansion | Nested uses, repetition and stretch, additive transposition, nested cuts before physical offsets, stable addresses, isolated final-state overrides and inserts |
 | Scheduling | Score-origin reset, invalid effective onsets, score-end note-off truncation, negative/zero gates, sub-sample collapse |
+| Arranged audio | Sliced mono/stereo rate playback, reverse, fractional phase, both overlapping fade shapes, empty sampled intervals, tail admission, reset, mixed graph routing and exact source-free replay; forged bounds, numerical loss and resource exhaustion fail explicitly |
 | Plan import | Unknown versions/fields, inconsistent time/frame values, duplicates, missing references, invalid parameter ranges, cycles, oversized input and collections |
 | DSP | Sine/envelope samples, one-pole impulse, equal-power pan, connection-ID sum order, right-continuous automation knots, event-rate attack/release capture |
 | Voices | Note-offs precede note-ons; release tails retain allocation; zero velocity retains allocation; overflow fails without stealing |

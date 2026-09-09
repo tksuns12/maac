@@ -382,6 +382,7 @@ impl Normalizer<'_> {
                 | "control"
                 | "modulate"
                 | "asset"
+                | "audio"
                 | "extension"
         );
         if !known {
@@ -427,6 +428,18 @@ impl Normalizer<'_> {
                     ("onset_offset", quantity(0, 1, Unit::S)),
                     ("release_offset", quantity(0, 1, Unit::S)),
                     ("order", number(0)),
+                ] {
+                    fields.entry(name).or_insert(value);
+                }
+            }
+            "audio" => {
+                for (name, value) in [
+                    ("speed", number(1)),
+                    ("reverse", json!({"t":"boolean","v":false})),
+                    ("gain", number(1)),
+                    ("fade_in", quantity(0, 1, Unit::S)),
+                    ("fade_out", quantity(0, 1, Unit::S)),
+                    ("fade_shape", symbol("linear")),
                 ] {
                     fields.entry(name).or_insert(value);
                 }
@@ -555,6 +568,9 @@ impl Normalizer<'_> {
                 }
                 for (name, value) in node.params {
                     let unit = match node.processor {
+                        ProcessorView::Audio(_) => {
+                            return Err(error("audio transports cannot carry node parameters"))
+                        }
                         ProcessorView::Kit { .. } => None,
                         ProcessorView::Core(processor) => match processor {
                             Processor::Instrument { .. } => graph_unit(

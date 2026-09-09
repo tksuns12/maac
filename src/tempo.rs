@@ -117,6 +117,19 @@ impl TimeValue {
     pub fn difference(&self, other: &Self) -> Result<Self, MusicError> {
         self.sum(&other.negated())
     }
+    /// Scale a derived local-time recipe before DSP approximation. This uses
+    /// the existing bounded intermediate allowance rather than the input limit.
+    pub(crate) fn scaled(&self, factor: &Rational) -> Result<Self, MusicError> {
+        check(factor, WORK_BITS)?;
+        let mut result = Self {
+            rational: bounded(&self.rational * factor)?,
+            logs: BTreeMap::new(),
+        };
+        for (argument, coefficient) in &self.logs {
+            result.add_log(argument.clone(), bounded(coefficient * factor)?)?;
+        }
+        Ok(result)
+    }
     fn add_log(&mut self, mut arg: Rational, mut coefficient: Rational) -> Result<(), MusicError> {
         check(&arg, WORK_BITS)?;
         check(&coefficient, WORK_BITS)?;

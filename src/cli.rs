@@ -191,6 +191,8 @@ pub struct ArtifactCommandResult {
     base: CommandResult,
     #[serde(skip_serializing_if = "is_zero")]
     hits: usize,
+    #[serde(skip_serializing_if = "is_zero")]
+    audio_clips: usize,
 }
 impl ArtifactCommandResult {
     pub fn base(&self) -> &CommandResult {
@@ -198,6 +200,9 @@ impl ArtifactCommandResult {
     }
     pub fn hits(&self) -> usize {
         self.hits
+    }
+    pub fn audio_clips(&self) -> usize {
+        self.audio_clips
     }
 }
 fn is_zero(value: &usize) -> bool {
@@ -411,27 +416,30 @@ impl std::error::Error for CliError {}
 pub fn execute(command: &Command) -> Result<CommandResult, CliError> {
     execute_impl(command, PlanCapability::Legacy, &mut EventCounts::default())
 }
-/// Execute the same commands with standalone artifact support, including native hits.
+/// Execute the same commands with standalone artifact support, including hits and audio clips.
 pub fn execute_artifact(command: &Command) -> Result<ArtifactCommandResult, CliError> {
     let mut counts = EventCounts::default();
     let mut base = execute_impl(command, PlanCapability::Artifact, &mut counts)?;
-    if counts.hits > 0 {
+    if counts.hits > 0 || counts.audio_clips > 0 {
         base.notes = Some(counts.notes);
     }
     Ok(ArtifactCommandResult {
         base,
         hits: counts.hits,
+        audio_clips: counts.audio_clips,
     })
 }
 #[derive(Default)]
 struct EventCounts {
     notes: usize,
     hits: usize,
+    audio_clips: usize,
 }
 impl EventCounts {
     fn record(&mut self, plan: &PlanArtifact) {
         self.notes = 0;
         self.hits = 0;
+        self.audio_clips = plan.audio_clip_count();
         for event in plan.view().events() {
             match event.kind {
                 crate::plan::EventKind::Note { .. } => self.notes += 1,
@@ -821,21 +829,25 @@ pub fn read_bounded(path: &Path) -> Result<Vec<u8>, CliError> {
 }
 
 pub fn format_human(result: &CommandResult) -> String {
-    format_human_with_hits(result, 0)
+    format_human_with_counts(result, 0, 0)
 }
-/// Format an artifact-aware result with actual note and hit counts.
+/// Format an artifact-aware result with actual note, hit, and audio clip counts.
 pub fn format_human_artifact(result: &ArtifactCommandResult) -> String {
-    format_human_with_hits(result.base(), result.hits())
+    format_human_with_counts(result.base(), result.hits(), result.audio_clips())
 }
-fn format_human_with_hits(result: &CommandResult, hits: usize) -> String {
+fn format_human_with_counts(result: &CommandResult, hits: usize, audio_clips: usize) -> String {
     if let Some(delivery) = &result.delivery {
-        return format!(
+        let mut message = format!(
             "deliver {} -> {} (artifacts: {}, checks: {})",
             result.input,
             result.output.as_deref().unwrap_or(&delivery.manifest_file),
             delivery.artifact_status,
             delivery.check_status
         );
+        if audio_clips > 0 {
+            message.push_str(&format!(" ({audio_clips} audio clips)"));
+        }
+        return message;
     }
     if let Some(libraries) = &result.libraries {
         return libraries
@@ -888,7 +900,13 @@ fn format_human_with_hits(result: &CommandResult, hits: usize) -> String {
         message.push_str(&format!(" -> {output}"));
     }
     if let Some(notes) = result.notes {
-        if hits > 0 {
+        if audio_clips > 0 && hits > 0 {
+            message.push_str(&format!(
+                " ({notes} notes, {hits} hits, {audio_clips} audio clips)"
+            ));
+        } else if audio_clips > 0 {
+            message.push_str(&format!(" ({notes} notes, {audio_clips} audio clips)"));
+        } else if hits > 0 {
             message.push_str(&format!(" ({notes} notes, {hits} hits)"));
         } else {
             message.push_str(&format!(" ({notes} notes)"));

@@ -193,26 +193,27 @@ variants. Delivery already takes explicit `PlanLimits`. The CLI selects these
 boundaries automatically. `VersionedPlan` contains `Legacy(Plan)` or `V3(PlanV3)`;
 no existing public plan struct gains a required field.
 
-For [native hits and sample kits](core-kit.md), use the additive artifact APIs.
-They also accept existing versions 1–3 and retain their behavior:
+For [native hits and sample kits](core-kit.md) and [arranged audio](audio-clips.md),
+use the additive artifact APIs. They also accept older plans and retain their behavior:
 
 | API | Responsibility |
 | --- | --- |
-| `maac::compile_bundle_artifact` / `maac::check_bundle_artifact` | Compile or check bundles with native hits and embedded audio assets |
+| `maac::compile_bundle_artifact` / `maac::check_bundle_artifact` | Compile or check bundles with native hits, arranged clips and embedded audio assets |
 | `PlanArtifact::from_json` / `PlanArtifact::to_json` | Independently validate and load/encode opaque standalone artifacts |
-| `maac::render_artifact` / `DspEngine::new_artifact` | Render or prepare versions 1–4 |
+| `maac::render_artifact` / `DspEngine::new_artifact` | Render or prepare versions 1–5 |
 | `dsp::render_ports_artifact_with_limits` | Capture selected ports from the complete graph |
 | `export::write_wav_artifact` / `export::render_wav_to_path_artifact` | Export with existing encoding and atomic publication rules |
-| `production_delivery::deliver_artifact` | Execute named deliveries; version 4 uses manifest version 2 |
+| `production_delivery::deliver_artifact` | Execute named deliveries; versions 4 and 5 use manifest version 2 |
 
 Compiler, load/encode, renderer and WAV helpers provide `_with_limits` variants.
 The artifact's representation is private; inspect `version()`, `output()`,
-`event_count()` or validated JSON. Public `Plan`, `PlanV3`, `VersionedPlan` and
+`event_count()`, `audio_clip_count()` or validated JSON. Public `Plan`, `PlanV3`, `VersionedPlan` and
 `Processor` remain unchanged. The CLI automatically selects the artifact APIs.
 For embedded CLI use, `cli::execute_artifact` returns an opaque
-`ArtifactCommandResult` with `base()` and `hits()` accessors; `cli::execute` and
-`CommandResult` retain their existing contracts. JSON adds `hits` only when
-positive, and `notes` counts actual notes. Use `format_human_artifact` to format
+`ArtifactCommandResult` with `base()`, `hits()` and `audio_clips()` accessors;
+`cli::execute` and `CommandResult` retain their existing contracts. JSON adds
+`hits` and `audio_clips` only when positive, and `notes` counts actual notes.
+Use `format_human_artifact` to format
 the new result.
 
 The compiler and DSP do not perform filesystem or network operations.
@@ -316,11 +317,11 @@ retains resolved events and source mappings; it is not a substitute for the
 authored source. See the [format reference](performance-plan.md) and
 [diagnostics guide](diagnostics.md).
 
-All four plan versions retain optional `production` settings; plans without
+All five plan versions retain optional `production` settings; plans without
 those settings omit the field. The existing Rust fields are `Plan.production`
-and `PlanV3.production`; version 4 is accessed through the opaque artifact API.
+and `PlanV3.production`; versions 4 and 5 are accessed through the opaque artifact API.
 Native processor tags were introduced in versions 1 and 2 and are also supported
-in versions 3 and 4.
+in versions 3–5.
 `PlanLimits` adds `max_production_delay_cells`; exhaustive Rust struct literals
 must include it or use `..PlanLimits::default()`. Exhaustive `Plan` literals
 need `production: None` when no delivery is defined. These Rust additions do

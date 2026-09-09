@@ -35,6 +35,7 @@ use crate::plan::{
 };
 use crate::plan_artifact::PlanArtifact;
 use crate::plan_v4::{NodeV4, PlanV4, ProcessorV4};
+use crate::plan_v5::{AudioClip, AudioFadeShape, NodeV5, PlanV5, ProcessorV5};
 use crate::semantic::InstrumentNodeDescriptor;
 use crate::syntax::{Document, Field, Object, Reference, Unit, Value, ValueKind};
 
@@ -422,6 +423,7 @@ struct Compiler<'a> {
     nodes: Vec<Node>,
     kit_nodes: BTreeMap<String, NodeV4>,
     audio_assets: Vec<AudioAsset>,
+    audio_clips: BTreeMap<String, crate::semantic::AudioClipSource>,
     connections: Vec<Connection>,
     curves: BTreeMap<String, CurveDef>,
     automations: Vec<AutomationV3>,
@@ -469,6 +471,7 @@ impl<'a> Compiler<'a> {
             nodes: Vec::new(),
             kit_nodes: BTreeMap::new(),
             audio_assets: Vec::new(),
+            audio_clips: BTreeMap::new(),
             connections: Vec::new(),
             curves: BTreeMap::new(),
             automations: Vec::new(),
@@ -578,11 +581,21 @@ impl<'a> Compiler<'a> {
     ) -> CResult<PlanArtifact> {
         self.allow_ramps = true;
         self.allow_hits = true;
-        let graph = crate::semantic::validate_source_with_kit_profile(
-            self.document,
-            &self.instrument_descriptors,
-            true,
-        )?;
+        let has_audio = uses_audio_profile(self.document);
+        let graph = if has_audio {
+            crate::semantic::validate_source_with_audio_profile(
+                self.document,
+                &self.instrument_descriptors,
+                true,
+            )?
+        } else {
+            crate::semantic::validate_source_with_kit_profile(
+                self.document,
+                &self.instrument_descriptors,
+                true,
+            )?
+        };
+        self.audio_clips = graph.audio_clips().clone();
         self.kit_nodes = graph.kit_nodes().clone();
         for (id, source) in graph.audio_sources() {
             let path = crate::bundle::normalize_file_reference("package.maac", &source.path)?;
@@ -604,8 +617,13 @@ impl<'a> Compiler<'a> {
             });
         }
         self.read_composition(limits)?;
-        self.finish_v4(limits, production, original)
-            .map(PlanArtifact::from_v4)
+        if has_audio {
+            self.finish_v5(limits, production, original)
+                .map(PlanArtifact::from_v5)
+        } else {
+            self.finish_v4(limits, production, original)
+                .map(PlanArtifact::from_v4)
+        }
     }
 
     fn optional<'b>(&self, object: &'b Object, name: &str) -> Option<&'b Value> {
@@ -667,6 +685,19 @@ impl<'a> Compiler<'a> {
                 "region" => &["span", "label"][..],
                 "asset" if self.allow_hits => &[
                     "kind", "path", "hash", "format", "rate", "channels", "frames",
+                ][..],
+                "audio" if self.audio_clips.contains_key(&object.id) => &[
+                    "asset",
+                    "at",
+                    "source",
+                    "mode",
+                    "speed",
+                    "reverse",
+                    "gain",
+                    "fade_in",
+                    "fade_out",
+                    "fade_shape",
+                    "track",
                 ][..],
                 "modulate" | "asset" | "audio" | "extension" => {
                     return Err(path_diagnostic(
@@ -3195,6 +3226,224 @@ impl<'a> Compiler<'a> {
         Ok(plan)
     }
 
+    fn lower_audio_clips(&self) -> CResult<Vec<NodeV5>> {
+        self.audio_clips
+            .values()
+            .map(|source| {
+                let object = &source.object;
+                let asset_field = self.field(object, "asset")?;
+                let asset = self.one_reference(&asset_field.value, object, Some(asset_field))?;
+                let at_field = self.field(object, "at")?;
+                let at = match at_field.value.kind {
+                    ValueKind::Quantity {
+                        unit: Unit::S | Unit::Ms,
+                        ..
+                    } => AutomationAnchor::Seconds {
+                        seconds: self.seconds_value(&at_field.value, object, Some(at_field))?,
+                    },
+                    _ => AutomationAnchor::Score {
+                        q: self.q_value(&at_field.value, object, Some(at_field), true)?,
+                    },
+                };
+                let source_field = self.field(object, "source")?;
+                let frames = match &source_field.value.kind {
+                    ValueKind::List(frames) if frames.len() == 2 => frames,
+                    _ => {
+                        return Err(path_diagnostic(
+                            DiagnosticCode::Range,
+                            "source must contain two frame endpoints",
+                            object,
+                            Some(source_field),
+                        ))
+                    }
+                };
+                let frame = |value: &Value| -> CResult<u64> {
+                    match &value.kind {
+                        ValueKind::Quantity {
+                            value: number,
+                            unit: Unit::Frame,
+                        } => bigint_u64(number, Some(value.span)),
+                        _ => Err(path_diagnostic(
+                            DiagnosticCode::Unit,
+                            "source endpoints must be integer frames",
+                            object,
+                            Some(source_field),
+                        )),
+                    }
+                };
+                let number = |name: &str, default: Rational| -> CResult<Rational> {
+                    object
+                        .field(name)
+                        .map(|field| self.rational_value(&field.value, object, Some(field)))
+                        .unwrap_or(Ok(default))
+                };
+                let seconds = |name: &str| -> CResult<Rational> {
+                    object
+                        .field(name)
+                        .map(|field| self.seconds_value(&field.value, object, Some(field)))
+                        .unwrap_or(Ok(Rational::zero()))
+                };
+                let reverse = object
+                    .field("reverse")
+                    .map(|field| self.bool_value(&field.value, object, Some(field)))
+                    .unwrap_or(Ok(false))?;
+                let fade_shape = match object.field("fade_shape") {
+                    None => AudioFadeShape::Linear,
+                    Some(field) => match self
+                        .symbol_value(&field.value, object, Some(field))?
+                        .as_str()
+                    {
+                        "linear" => AudioFadeShape::Linear,
+                        "equal_power" => AudioFadeShape::EqualPower,
+                        _ => {
+                            return Err(path_diagnostic(
+                                DiagnosticCode::Range,
+                                "unsupported fade shape",
+                                object,
+                                Some(field),
+                            ))
+                        }
+                    },
+                };
+                let track = object
+                    .field("track")
+                    .map(|field| self.one_reference(&field.value, object, Some(field)))
+                    .transpose()?;
+                Ok(NodeV5 {
+                    id: object.id.clone(),
+                    params: BTreeMap::new(),
+                    processor: ProcessorV5::Audio {
+                        clip: Box::new(AudioClip {
+                            asset,
+                            channels: source.channels,
+                            at,
+                            source_start_frame: frame(&frames[0])?,
+                            source_end_frame: frame(&frames[1])?,
+                            speed: number("speed", Rational::one())?,
+                            reverse,
+                            gain: number("gain", Rational::one())?,
+                            fade_in_seconds: seconds("fade_in")?,
+                            fade_out_seconds: seconds("fade_out")?,
+                            fade_shape,
+                            source: SourceMapping {
+                                object: object.id.clone(),
+                                path: vec![object.id.clone()],
+                                span: Some(SourceSpan {
+                                    start: object.span.start,
+                                    end: object.span.end,
+                                }),
+                            },
+                            track,
+                            start_frame: 0,
+                            end_frame: 0,
+                        }),
+                    },
+                })
+            })
+            .collect()
+    }
+
+    fn finish_v5(
+        &self,
+        limits: &PlanLimits,
+        mut production: Option<crate::production_data::ProductionSettings>,
+        original: &Document,
+    ) -> CResult<PlanV5> {
+        self.check_point_budget(limits)?;
+        let mut nodes: Vec<NodeV5> = self
+            .nodes
+            .iter()
+            .map(|node| NodeV5 {
+                id: node.id.clone(),
+                processor: ProcessorV5::Core {
+                    processor: node.processor.clone(),
+                },
+                params: node.params.clone(),
+            })
+            .collect();
+        nodes.extend(self.kit_nodes.values().cloned().map(NodeV5::from));
+        nodes.extend(self.lower_audio_clips()?);
+        nodes.sort_by(|a, b| a.id.cmp(&b.id));
+        let mut plan = PlanV5 {
+            version: 5,
+            output: OutputSettings {
+                score_start_q: self.score_start.clone(),
+                score_end_q: self.score_end.clone(),
+                tail_seconds: self.tail_seconds.clone(),
+                sample_rate_hz: self.sample_rate,
+                channels: self.output_channels()?,
+                total_frames: 0,
+                output: self.output.clone(),
+            },
+            tempo: self.plan_tempo.clone(),
+            events: self.lower_score_events()?,
+            nodes,
+            audio_assets: self.audio_assets.clone(),
+            connections: self.connections.clone(),
+            automation: self.automations.clone(),
+            regions: self.regions.clone(),
+            source_mappings: Vec::new(),
+            instruments: self.instrument_resources.clone(),
+            production: None,
+        };
+        if let Some(settings) = &mut production {
+            settings.execution_identity = Some(
+                crate::production_identity::execution_identity_for_view(original, &plan.view())
+                    .map_err(|error| {
+                        diagnostics(
+                            DiagnosticCode::Range,
+                            format!("execution identity: {error}"),
+                            None,
+                        )
+                    })?,
+            );
+        }
+        plan.production = production;
+        let limits = limits.bounded();
+        plan.view().preflight_timing(&limits).map_err(plan_error)?;
+        let timing = TimingContext::new_with_limits(&plan.tempo, &plan.output, &limits)
+            .map_err(plan_error)?;
+        Self::schedule_score_events(&mut plan.output, &mut plan.events, &timing, &limits)?;
+        for node in &mut plan.nodes {
+            if let ProcessorV5::Audio { clip } = &mut node.processor {
+                let asset = plan
+                    .audio_assets
+                    .iter()
+                    .find(|asset| asset.id == clip.asset)
+                    .ok_or_else(|| {
+                        diagnostics(DiagnosticCode::Reference, "clip asset does not exist", None)
+                    })?;
+                (clip.start_frame, clip.end_frame) = crate::audio_clip::schedule_clip(
+                    clip,
+                    &timing,
+                    &plan.output,
+                    asset.rate_hz,
+                    asset.frames,
+                )
+                .map_err(plan_error)?;
+            }
+        }
+        plan.view()
+            .validate_with_timing(&limits, &timing)
+            .map_err(plan_error)?;
+        struct ByteBudget(usize);
+        impl std::io::Write for ByteBudget {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0 = self
+                    .0
+                    .checked_sub(bytes.len())
+                    .ok_or_else(|| std::io::Error::other("artifact JSON exceeds byte limit"))?;
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        serde_json::to_writer(ByteBudget(limits.max_json_bytes), &plan)
+            .map_err(|error| diagnostics(DiagnosticCode::ResourceLimit, error.to_string(), None))?;
+        Ok(plan)
+    }
+
     fn finish_v4(
         &self,
         limits: &PlanLimits,
@@ -3465,6 +3714,9 @@ impl<'a> Compiler<'a> {
     }
 
     fn output_channels(&self) -> CResult<u8> {
+        if let Some(clip) = self.audio_clips.get(&self.output.node) {
+            return Ok(clip.channels);
+        }
         if let Some(node) = self.kit_nodes.get(&self.output.node) {
             if let ProcessorV4::Kit { channels, .. } = node.processor {
                 return Ok(channels);
@@ -3799,6 +4051,13 @@ fn compile_resolved_versioned(
     }
 }
 
+fn uses_audio_profile(document: &Document) -> bool {
+    document
+        .objects
+        .values()
+        .any(|object| object.kind == "audio")
+}
+
 fn uses_kit_profile(document: &Document) -> bool {
     fn visit(object: &Object) -> bool {
         object.kind == "hit"
@@ -3840,7 +4099,7 @@ fn compile_resolved_artifact(
     original: &Document,
 ) -> CResult<PlanArtifact> {
     let document = libraries.entry_document();
-    if !uses_kit_profile(&document) {
+    if !uses_kit_profile(&document) && !uses_audio_profile(&document) {
         return compile_resolved_versioned(resolved, libraries, limits, production, original)
             .map(PlanArtifact::from);
     }

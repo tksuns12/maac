@@ -1,4 +1,6 @@
 mod audio_asset;
+mod audio_buffer;
+mod audio_clip;
 pub mod bundle;
 pub mod bundle_fs;
 pub mod cli;
@@ -18,6 +20,7 @@ mod plan_artifact;
 pub use plan_artifact::PlanArtifact;
 pub mod plan_v3;
 mod plan_v4;
+mod plan_v5;
 mod pluck;
 pub mod production_analysis;
 mod production_compressor;

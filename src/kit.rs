@@ -5,31 +5,11 @@ use std::{
     sync::Arc,
 };
 
-use crate::{
-    audio_asset::AudioAsset,
-    plan::{PlanError, PlanLimits},
-};
+use crate::plan::{PlanError, PlanLimits};
 
 const ENGINE_RATE: u128 = 48_000;
 
-#[derive(Debug)]
-pub(crate) struct KitSample {
-    rate_hz: u32,
-    channels: u8,
-    frames: u64,
-    samples: Arc<[f32]>,
-}
-impl KitSample {
-    pub(crate) fn from_asset(asset: &AudioAsset) -> Result<Self, PlanError> {
-        let samples = asset.decode()?;
-        Ok(Self {
-            rate_hz: asset.rate_hz,
-            channels: asset.channels,
-            frames: asset.frames,
-            samples,
-        })
-    }
-}
+pub(crate) type KitSample = crate::audio_buffer::AudioBuffer;
 
 #[derive(Debug)]
 struct Voice {
@@ -41,9 +21,9 @@ struct Voice {
 impl Voice {
     fn coordinate(&self, frame: u64) -> Option<(u64, f64)> {
         let elapsed = frame.checked_sub(self.onset)?;
-        let numerator = u128::from(elapsed) * u128::from(self.sample.rate_hz);
+        let numerator = u128::from(elapsed) * u128::from(self.sample.rate_hz());
         let index = numerator / ENGINE_RATE;
-        if index >= u128::from(self.sample.frames) {
+        if index >= u128::from(self.sample.frames()) {
             return None;
         }
         Some((
@@ -91,7 +71,7 @@ impl KitRuntime {
             if key.len() > PlanLimits::MAX_STRING_BYTES {
                 return Err(error("E_RESOURCE_LIMIT", "kit key exceeds length limit"));
             }
-            if sample.channels != channels {
+            if sample.channels() != channels {
                 return Err(error("E_PORT_TYPE", "sample channels differ from kit"));
             }
             key_bytes = key_bytes
@@ -99,7 +79,7 @@ impl KitRuntime {
                 .ok_or_else(|| error("E_RESOURCE_LIMIT", "key storage overflow"))?;
             if unique.insert(Arc::as_ptr(sample)) {
                 bytes = bytes
-                    .checked_add(sample.samples.len() * 4)
+                    .checked_add(sample.byte_len())
                     .ok_or_else(|| error("E_RESOURCE_LIMIT", "sample storage overflow"))?;
             }
         }
@@ -143,7 +123,7 @@ impl KitRuntime {
             .ok_or_else(|| error("E_REFERENCE", "unknown kit key"))?
             .clone();
         self.voices.retain(|voice| !voice.expired(frame));
-        if sample.frames == 0 {
+        if sample.frames() == 0 {
             return Ok(());
         }
         if self.voices.iter().any(|voice| voice.address == address) {
@@ -186,16 +166,7 @@ impl KitRuntime {
                 continue;
             };
             for (channel, sum) in output.iter_mut().enumerate().take(self.channels as usize) {
-                let offset = index as usize * self.channels as usize + channel;
-                let left = f64::from(voice.sample.samples[offset]);
-                let right = voice
-                    .sample
-                    .samples
-                    .get(offset + self.channels as usize)
-                    .copied()
-                    .map(f64::from)
-                    .unwrap_or(0.);
-                *sum += ((1. - fraction) * left + fraction * right) * voice.velocity * level;
+                *sum += voice.sample.interpolate(index, fraction, channel) * voice.velocity * level;
                 if !sum.is_finite() {
                     return Err(error("E_NONFINITE", "kit output is nonfinite"));
                 }
@@ -219,7 +190,7 @@ fn error(code: &str, message: &str) -> PlanError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::audio_asset::CORE_AUDIO_FORMAT;
+    use crate::audio_asset::{AudioAsset, CORE_AUDIO_FORMAT};
     use crate::bundle::sha256_digest;
 
     fn sample(rate: u32, channels: u8, values: &[f32]) -> Arc<KitSample> {
