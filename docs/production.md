@@ -2,10 +2,10 @@
 
 This is the normative contract for the required capability `maac.production/1`.
 An **experimental Rust implementation** is available through native nodes,
-retained plans, and `maac deliver`. The currently specified 16-times true-peak
-profile fails an external metering gate and remains unqualified; the
-[metering evidence](production-metering-evidence.md) records the results and a
-candidate awaiting a normative decision. Syntax, schema, and bounded arithmetic
+retained plans, and `maac deliver`. The true-peak profile uses one Annex 2
+four-times interpolator; the [metering evidence](production-metering-evidence.md)
+records external acceptance results and the superseded two-stage profile.
+Syntax, schema, and bounded arithmetic
 fixtures provide specification evidence only; they do not establish native
 rendering, SRC, or metering conformance.
 
@@ -380,13 +380,20 @@ stored Float32 values exactly into binary64.
 
 ## 9. Authoritative final-artifact analysis
 
-The analyzer identity is `maac.analysis.bs1770-5/1`, with the K-weighting,
+The analyzer identity is `maac.analysis.bs1770-5/2`, with the K-weighting,
 gating, and deterministic true-peak profile below. Its normative external
 reference is [ITU-R BS.1770-5, November 2023](https://www.itu.int/rec/R-REC-BS.1770-5-202311-I/en).
 It reports integrated LUFS, maximum sample peak, and maximum true peak. Loudness
 range and a full EBU Mode claim are deferred. This profile fixes choices beyond
 the recommendation so multiple implementations can be compared; it is not a
 claim that the repository already passes official meter acceptance tests.
+
+Analyzer revision 2 replaces revision 1's two-stage, sixteen-times true-peak
+profile with the single-stage profile below. K-weighting and loudness gating
+are unchanged. This revision changes analysis, dependent check results, and
+analysis/render identities; it does not change rendering, encoding, or the
+encoded audio bytes. Historical manifests retain their original analyzer and
+true-peak identities and must not be relabeled as revision 2.
 
 Analyze samples reconstructed from each successfully encoded final artifact,
 after resampling and dither, using the encoding reconstruction in section 8.
@@ -463,14 +470,14 @@ Sample peak amplitude is the maximum absolute reconstructed sample over every
 frame and channel, before K-weighting. For a positive maximum P report
 `20*log10(P)` dBFS. Silence has amplitude zero and a null logarithmic value.
 
-The true-peak subprofile is `maac.truepeak.bs1770-5.annex2-16x/1`. It uses two
-cascaded instances of the Annex 2 four-times interpolator. For input x with M
-frames, each stage produces `v[4*n+p] = sum(k=0..11,h[k,p]*x[n-k])`, with
-phase p from 0 through 3 and n from 0 through M+10 inclusive. Samples outside
-the input interval are zero; each stage therefore produces exactly `4*(M+11)`
-frames and includes its complete FIR tail. The second stage includes the first
-stage's full tail, yielding `16*M+220` frames. Both stages reset to zero. Sum
-k in ascending order, independently for each channel.
+The true-peak subprofile is `maac.truepeak.bs1770-5.annex2-4x/1`. It uses one
+Annex 2 four-times interpolator with twelve taps per phase. For input x with N
+frames, it produces `v[4*n+p] = sum(k=0..11,h[k,p]*x[n-k])`, with phase p
+from 0 through 3 and n from 0 through N+10 inclusive. Samples outside the
+input interval are zero; the stage therefore produces exactly `4*(N+11)`
+frames and includes its complete FIR tail. Reset the stage to zero for each
+artifact. Sum k in ascending order, independently for each channel. There is
+no second interpolation stage.
 
 The following exact binary fractions, written as decimals, are the Annex 2
 coefficients. Each row is k; columns are phases 0, 1, 2, 3:
@@ -493,12 +500,25 @@ coefficients. Each row is k; columns are phases 0, 1, 2, 3:
 For floating-point processing, omit the Annex 2 fixed-point headroom
 attenuation/restoration pair; do not multiply phase results by four. Do not
 renormalize these coefficients. Let T be the larger of the original sample
-peak and the maximum absolute sample across the complete second-stage output,
-including both filters' flushed tails. Report `20*log10(T)` dBTP when T is
+peak and the maximum absolute sample across the complete interpolator output,
+including its flushed tail. Report `20*log10(T)` dBTP when T is
 positive. The original sample peak is a mandatory lower bound. No K-weighting,
 gating, per-block maximum reset, delay cropping, or extra gain applies to true
 peak. This finite interpolator is a specified estimate, not an exact
 continuous-time reconstruction guarantee.
+
+For a unit impulse, the largest interpolated magnitude is exactly
+`1991/2048 = 0.97216796875`; the original-sample lower bound makes the reported
+true-peak amplitude exactly 1 (0 dBTP). A one-frame artifact produces 48
+interpolated frames, including the complete tail.
+
+The Rust delivery implementation conservatively charges analyzer work as
+`channels * (64*N + 24*4*(N+11))`: 64 units per original frame for K-weighting,
+loudness, and sample-peak overhead, plus twelve multiplies and twelve additions
+per interpolated output. The charge includes all 44 flushed outputs even for
+an empty artifact. Checked preflight accounting adds this work to SRC and
+spool work under the caller's delivery budget; this analyzer revision does not
+change those other charges or resource caps.
 
 ### 9.4 Statuses and limits
 
@@ -595,7 +615,8 @@ replace the acceptance gates below.
 syntax/schema and selected semantics and arithmetic. Independent expected
 results cover EQ impulses, compressor knees and time constants, the reverb's
 first wet impulse, symmetric integer quantization and deterministic dither,
-and exact delivery frame counts. Invalid cases cover capabilities, units,
+exact delivery frame counts, and the four-times true-peak impulse, adjacent
+samples, silence, and complete tail counts. Invalid cases cover capabilities, units,
 fields, references, sidechains, formats, rates, and limits. These checks do not
 establish Rust renderer conformance or change performance-plan versions.
 The Rust implementation has separate native, delivery, and resource tests;

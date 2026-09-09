@@ -1,6 +1,6 @@
 {
-  "status": "Bounded specification fixtures; renderer, SRC and authoritative meter conformance remain unimplemented.",
-  "independence": "Low-pass and high-pass expected EQ impulses are algebraic at omega=pi/2,Q=1/2: the unnormalized denominator is [2,0,0]. Peak zero gain cancels numerator/denominator. The boosted peak uses A=2, normalized b=[2,0,-2/3], a=[1,0,1/3], h[0]=2 and h[2]=-4/3; subsequent even impulse samples multiply the preceding even sample by -1/3, and odd samples are zero. Compressor constants use analytic piecewise and e-fold solutions. First reverb wet=1/2*1/2*1/sqrt(8)*1/sqrt(8)=1/32. Frame counts use exact rational duration. Dither digest vectors independently obtained with OpenSSL SHA256, not the checker implementation.",
+  "status": "Bounded specification fixtures only; Rust renderer, SRC, and external metering acceptance require separate evidence.",
+  "independence": "Low-pass and high-pass expected EQ impulses are algebraic at omega=pi/2,Q=1/2: the unnormalized denominator is [2,0,0]. Peak zero gain cancels numerator/denominator. The boosted peak uses A=2, normalized b=[2,0,-2/3], a=[1,0,1/3], h[0]=2 and h[2]=-4/3; subsequent even impulse samples multiply the preceding even sample by -1/3, and odd samples are zero. Compressor constants use analytic piecewise and e-fold solutions. First reverb wet=1/2*1/2*1/sqrt(8)*1/sqrt(8)=1/32. Frame counts use exact rational duration. Dither digest vectors independently obtained with OpenSSL SHA256, not the checker implementation. True-peak fixtures use exact Annex 2 binary fractions: a unit impulse has raw maximum 1991/2048, then original-sample lower bound 1; two adjacent unit samples have maximum (0.77978515625+0.465087890625)=5099/4096. The last flushed unit-impulse coefficient is 7/4096, with 4*(N+11) total output frames.",
   "eq": [
     {
       "mode": "low_pass",
@@ -825,5 +825,70 @@
     "Retain and atomically publish completed audio when selected limits fail; check failure status and complete manifest publication.",
     "Numerical verification is separate from listening acceptance; no professional sound-quality claim."
   ],
-  "diagnostics": "E_* values in invalid_source_mutations are checker-local classifications, not normative MaaC diagnostic codes or renderer requirements."
+  "diagnostics": "E_* values in invalid_source_mutations are checker-local classifications, not normative MaaC diagnostic codes or renderer requirements.",
+  "analysis_identity": "maac.analysis.bs1770-5/2",
+  "true_peak_profile": "maac.truepeak.bs1770-5.annex2-4x/1",
+  "true_peak": [
+    {
+      "id": "empty",
+      "input": [],
+      "expected_output_frames": 44,
+      "expected_interpolated_peak": "0",
+      "expected_amplitude": "0",
+      "expected_last_sample": "0"
+    },
+    {
+      "id": "silence",
+      "input": [
+        "0"
+      ],
+      "expected_output_frames": 48,
+      "expected_interpolated_peak": "0",
+      "expected_amplitude": "0",
+      "expected_last_sample": "0"
+    },
+    {
+      "id": "unit_impulse",
+      "input": [
+        "1"
+      ],
+      "expected_output_frames": 48,
+      "expected_interpolated_peak": "1991/2048",
+      "expected_amplitude": "1",
+      "expected_last_sample": "7/4096"
+    },
+    {
+      "id": "negative_impulse",
+      "input": [
+        "-1"
+      ],
+      "expected_output_frames": 48,
+      "expected_interpolated_peak": "1991/2048",
+      "expected_amplitude": "1",
+      "expected_last_sample": "-7/4096"
+    },
+    {
+      "id": "last_frame_impulse",
+      "input": [
+        "0",
+        "0",
+        "1"
+      ],
+      "expected_output_frames": 56,
+      "expected_interpolated_peak": "1991/2048",
+      "expected_amplitude": "1",
+      "expected_last_sample": "7/4096"
+    },
+    {
+      "id": "adjacent_units",
+      "input": [
+        "1",
+        "1"
+      ],
+      "expected_output_frames": 52,
+      "expected_interpolated_peak": "5099/4096",
+      "expected_amplitude": "5099/4096",
+      "expected_last_sample": "7/4096"
+    }
+  ]
 }

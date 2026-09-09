@@ -247,6 +247,23 @@ fn byte_count(frames: u64, channels: u8, width: usize) -> Result<u64, DeliveryEr
         .ok_or_else(resource)
 }
 
+/// Conservative meter work units: 64 per original channel sample cover
+/// K-weighting, loudness blocks/gates and sample-peak overhead. The single
+/// four-times interpolator charges 24 units (12 multiplies and 12 additions)
+/// per output/channel, including all 44 flush outputs even for an empty input.
+fn analysis_work(frames: u64, channels: u8) -> Result<u64, DeliveryError> {
+    let ordinary = frames.checked_mul(64).ok_or_else(resource)?;
+    let interpolation = frames
+        .checked_add(11)
+        .and_then(|n| n.checked_mul(4))
+        .and_then(|n| n.checked_mul(24))
+        .ok_or_else(resource)?;
+    ordinary
+        .checked_add(interpolation)
+        .and_then(|n| n.checked_mul(u64::from(channels)))
+        .ok_or_else(resource)
+}
+
 /// Execute and publish a validated named delivery. Failed checks return a
 /// complete manifest with `ok=false`; fatal preflight/render errors return Err.
 /// Per-target conversion/analysis/publication failures are retained in the
@@ -351,15 +368,7 @@ pub fn deliver(
         )?;
         checked_add(&mut disk_bytes, pcm_bytes + 128)?;
         checked_add(&mut work, converter.work())?;
-        // Two cascaded 12-tap 4x stages, K-weighting and metering overhead.
-        checked_add(
-            &mut work,
-            output_frames
-                .checked_mul(u64::from(channels))
-                .and_then(|n| n.checked_mul(600))
-                .ok_or_else(resource)?,
-        )?;
-        checked_add(&mut work, u64::from(channels) * 4096)?; // complete meter flush
+        checked_add(&mut work, analysis_work(output_frames, channels)?)?;
         let filename = artifact_filename(&options.delivery_id, id);
         destinations.push(options.output_dir.join(&filename));
         reports.insert(
@@ -1000,6 +1009,26 @@ pub fn evaluate_limits(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn analysis_work_accounts_for_empty_and_tiny_filter_flushes_without_overflow() {
+        assert_eq!(analysis_work(0, 1).unwrap(), 1056);
+        assert_eq!(analysis_work(1, 2).unwrap(), 2432);
+        assert_eq!(
+            analysis_work(u64::MAX, 1).unwrap_err().code,
+            "E_RESOURCE_LIMIT"
+        );
+        // Each intermediate per-channel term fits, but their sum does not.
+        assert_eq!(
+            analysis_work(u64::MAX / 128, 1).unwrap_err().code,
+            "E_RESOURCE_LIMIT"
+        );
+        // The per-channel total fits; the stereo aggregate does not.
+        assert_eq!(
+            analysis_work(u64::MAX / 256, 2).unwrap_err().code,
+            "E_RESOURCE_LIMIT"
+        );
+    }
 
     fn fixture(
         directory: &Path,

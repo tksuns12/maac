@@ -367,8 +367,41 @@ def near(actual, expected, tolerance=1e-12):
     assert math.isfinite(actual) and abs(actual - expected) <= tolerance, (actual, expected)
 
 
+def true_peak_4x(samples):
+    """Exact Annex 2 convolution for bounded fixtures, independent of Rust DSP."""
+    coefficients = [list(map(Fraction, row.split())) for row in """
+ 0.001708984375  -0.0291748046875 -0.0189208984375 -0.00830078125
+ 0.010986328125   0.029296875      0.0330810546875  0.014892578125
+-0.0196533203125 -0.0517578125    -0.0582275390625 -0.026611328125
+ 0.033203125     0.089111328125   0.1015625        0.047607421875
+-0.0594482421875 -0.16650390625   -0.2003173828125 -0.102294921875
+ 0.1373291015625  0.465087890625   0.77978515625    0.97216796875
+ 0.97216796875    0.77978515625    0.465087890625   0.1373291015625
+-0.102294921875  -0.2003173828125 -0.16650390625   -0.0594482421875
+ 0.047607421875   0.1015625        0.089111328125   0.033203125
+-0.026611328125  -0.0582275390625 -0.0517578125    -0.0196533203125
+ 0.014892578125   0.0330810546875  0.029296875      0.010986328125
+-0.00830078125   -0.0189208984375 -0.0291748046875  0.001708984375
+""".strip().splitlines()]
+    output = [sum((coefficients[k][phase] * samples[n-k]
+                   for k in range(12) if 0 <= n-k < len(samples)), Fraction(0))
+              for n in range(len(samples) + 11) for phase in range(4)]
+    sample_peak = max(map(abs, samples), default=Fraction(0))
+    interpolated_peak = max(map(abs, output), default=Fraction(0))
+    return output, interpolated_peak, max(sample_peak, interpolated_peak)
+
+
 def arithmetic(fixtures):
     checks = 0
+    assert fixtures["analysis_identity"] == "maac.analysis.bs1770-5/2"
+    assert fixtures["true_peak_profile"] == "maac.truepeak.bs1770-5.annex2-4x/1"
+    for case in fixtures["true_peak"]:
+        output, interpolated, amplitude = true_peak_4x(list(map(Fraction, case["input"])))
+        assert len(output) == case["expected_output_frames"]
+        assert interpolated == Fraction(case["expected_interpolated_peak"])
+        assert amplitude == Fraction(case["expected_amplitude"])
+        assert output[-1] == Fraction(case["expected_last_sample"])
+        checks += 1
     for case in fixtures["eq"]:
         actual = eq_impulse(case["mode"], case["frequency_hz"], case["q"], case["gain_db"], len(case["expected"]))
         for got, expected in zip(actual, case["expected"]):

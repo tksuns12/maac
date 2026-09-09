@@ -1,10 +1,11 @@
 # Production metering evidence
 
-This audit implements the current specified estimator faithfully and identifies
-a failing external acceptance gate. It does **not** certify metering or claim
-full EBU Mode support. The production implementation still uses the specified
-two-stage, 16-times Annex 2 cascade. A one-stage alternative below is an audit
-candidate pending a normative decision.
+The approved single-stage four-times Annex 2 estimator passed all applicable
+mono/stereo fixtures audited here through the public production analyzer.
+Its identities are `maac.analysis.bs1770-5/2` and
+`maac.truepeak.bs1770-5.annex2-4x/1`. This evidence does **not** certify metering
+or claim full EBU Mode support. The historical two-stage 16× results below
+explain the profile revision; that estimator is no longer selected.
 
 ## Provenance and reproduction
 
@@ -39,14 +40,14 @@ Commands (after privately downloading, verifying, and extracting the ZIP):
 ```sh
 cargo test --lib production_analysis
 cargo test --release --lib ebu_3341_prescribed_loudness -- --ignored --nocapture
-MAAC_EBU_CORPUS=/tmp/ebu-v05 MAAC_METER_AUDIT_REPORT=/tmp/maac-meter-audit.json \
+MAAC_EBU_CORPUS=/tmp/ebu-v05 MAAC_METER_AUDIT_REPORT=/tmp/maac-meter-audit-4x.json \
   cargo test --release --lib ebu_official_corpus_audit -- --ignored --nocapture
-cargo test --lib ebu_3341_prescribed_true_peak -- --ignored --nocapture
+cargo test --lib ebu_3341_prescribed_true_peak -- --nocapture
 ```
 
-The final command intentionally fails the existing specified profile's external
-acceptance test. Ordinary tests preserve the expected baseline overread as a
-regression; they do not convert that failure into external conformance.
+The final command now passes as an ordinary regression using the public 4×
+analyzer. It no longer requires an ignored-test flag or accepts the historical
+16× overread as the current result.
 
 ## Actual EBU corpus: integrated loudness
 
@@ -74,11 +75,11 @@ recreations of the published mathematical definitions, not original EBU files.
 ## Actual EBU corpus: true peak
 
 The required tolerance is −0.4/+0.2 dB relative to the published expected value.
-All original fixtures are 48 kHz. The current baseline fails cases 16 and 19.
-The one-stage candidate passes all nine applicable true-peak cases, including
-the four isolated transient/downsampling-phase cases.
+All original fixtures are 48 kHz. The public 4× analyzer passes all nine
+applicable true-peak cases, including the four isolated transient/downsampling
+phase cases. The historical 16× estimator failed cases 16 and 19.
 
-| Case | Expected dBTP | Current 16× dBTP | Current result | Candidate 4× dBTP | Candidate result |
+| Case | Expected dBTP | Historical 16× dBTP | Historical result | Current 4× dBTP | Current result |
 | --- | ---: | ---: | --- | ---: | --- |
 | 15 | -6.0 | -5.964747309 | Pass | -6.000264939 | Pass |
 | 16 | -6.0 | -5.640300929 | **Fail** | -5.955520147 | Pass |
@@ -90,7 +91,7 @@ the four isolated transient/downsampling-phase cases.
 | 22 | 0.0 | -0.121562115 | Pass | -0.204109672 | Pass |
 | 23 | 0.0 | 0.011607195 | Pass | -0.078910896 | Pass |
 
-The candidate was run at 44.1, 48, and 96 kHz on the same normalized input
+The public 4× analyzer was run at 44.1, 48, and 96 kHz on the same normalized input
 sample sequences. Its interpolation equation is independent of rate: the
 fixtures' Fs/4, Fs/6, and Fs/8 definitions scale with the selected rate. The
 reported peak values were identical at all three rates. This is a test of the
@@ -106,21 +107,22 @@ passband ripple adds about 0.315 dB here. The original-sample lower bound cannot
 correct overreading. Rescaling or changing report tolerances would change the
 contract and was not used.
 
-## Concrete candidate for a normative revision
+## Approved profile revision
 
-Use exactly **one** published Annex 2 four-times interpolator with the existing
-48 coefficients and ascending tap/phase order. Keep binary64 arithmetic,
-independent per-channel state, zero reset, and zero extension. For N input
-frames, include the entire `4*(N+11)` output frames. Set true peak to the maximum
-of that output's absolute sample values and the original sample peak. Apply no
-phase renormalization, additional factor of four, or calibration gain.
+The implementation uses exactly **one** published Annex 2 four-times
+interpolator with the existing 48 coefficients and ascending tap/phase order.
+It preserves binary64 arithmetic, independent per-channel state, zero reset,
+and zero extension. For N input frames, it includes all `4*(N+11)` output
+frames. True peak is the maximum of that output's absolute sample values and
+the original sample peak. There is no phase renormalization, additional
+factor of four, or calibration gain.
 
-This candidate requires a distinct true-peak profile identity and corresponding
-analysis identity/version decision, updated output-frame fixtures, normative
-documentation, and manifest/render-identity updates. It has not been selected
-in the production implementation by this audit. A unit impulse's estimate
-would be exactly 1 through the original-sample lower bound, replacing the
-current cascade's `67176863/67108864` expectation.
+The analyzer and true-peak identities above select the revised contract in
+measurements and render identity. The numerical-environment coefficient
+identity is `maac.analysis.bs1770-5/2:literal48k-rational-bilinear;annex2-table`.
+A unit impulse's estimate is exactly 1 through the original-sample lower
+bound, replacing the historical cascade's `67176863/67108864` expectation.
+Loudness filters, gating, SRC, encoding, dither, and rendered audio are unchanged.
 
 Passing these minimum requirements does not prove a continuous-frequency error
 bound, performance on every possible signal, full EBU Mode compliance, or
@@ -189,7 +191,7 @@ the ITU index does not publish independent SHA-256 values.
 | 0040 | 13112523 | `518c5d5a9184b28336949d57826b2be780d1ec3d3ab058a88e392e84282c9105` |
 
 ```sh
-MAAC_ITU_CORPUS=/tmp/itu-2217/audio MAAC_ITU_AUDIT_REPORT=/tmp/maac-itu-audit.json \
+MAAC_ITU_CORPUS=/tmp/itu-2217/audio MAAC_ITU_AUDIT_REPORT=/tmp/maac-itu-audit-4x.json \
   cargo test --release --lib itu_official_loudness_corpus_audit -- --ignored --nocapture
 ```
 
@@ -198,10 +200,29 @@ range resumption completed them from the same official URLs without replacing
 or weakening the acceptance inputs. All applicable files were subsequently
 measured; no download-based gap remains in this mono/stereo ITU corpus audit.
 
-Final verification reran both official corpus audits together in the full
-repository release build: **2 audit tests passed**, including all 19 ITU files,
-all seven applicable EBU loudness files, and the nine EBU true-peak candidate
-comparisons at each rate selection. The ordinary repository analyzer suite also
-passed **12 tests**, with four explicitly opt-in external/acceptance tests.
-The combined audit preserves and reports the baseline's two true-peak failures;
-its success asserts the candidate's acceptance, not the baseline's conformance.
+Fresh verification reran both official corpus audits together in the full
+repository release build through the public `/2` analyzer:
+
+```sh
+MAAC_EBU_CORPUS=/tmp/ebu-v05 MAAC_METER_AUDIT_REPORT=/tmp/maac-meter-audit-4x.json \
+MAAC_ITU_CORPUS=/tmp/itu-2217/audio MAAC_ITU_AUDIT_REPORT=/tmp/maac-itu-audit-4x.json \
+  cargo test --release --lib official -- --ignored --nocapture
+```
+
+**Two audit tests passed**, with zero failures: all 19 ITU files, all seven
+applicable EBU loudness files, and all nine EBU true-peak cases at each supported
+rate selection. The ordinary analyzer suite passed **13 tests**, with three
+explicitly opt-in audits. There is no current known-failure ignore. The EBU
+report records the public analyzer/profile identities and each measured
+`value_dbtp`/`pass` result; it does not validate a separate candidate path.
+
+The remaining opt-in full-duration prescribed-loudness audit was also rerun:
+
+```sh
+cargo test --locked --offline --release --lib ebu_3341_prescribed_loudness -- --ignored --nocapture
+```
+
+It passed one test with zero failures. Cases 1–5 measured −22.993297102,
+−32.993297041, −23.013868674, −23.013868674, and −22.978657437 LUFS,
+respectively, all within ±0.1 LUFS. Thus all three opt-in analyzer audits have
+observed success on the current public profile.

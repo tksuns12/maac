@@ -7,8 +7,8 @@ use num_rational::BigRational;
 use num_traits::ToPrimitive;
 use serde::Serialize;
 
-pub const ANALYZER_ID: &str = "maac.analysis.bs1770-5/1";
-pub const TRUE_PEAK_PROFILE: &str = "maac.truepeak.bs1770-5.annex2-16x/1";
+pub const ANALYZER_ID: &str = "maac.analysis.bs1770-5/2";
+pub const TRUE_PEAK_PROFILE: &str = "maac.truepeak.bs1770-5.annex2-4x/1";
 
 #[derive(Clone, Debug, Serialize)]
 pub struct NumericalEnvironment {
@@ -119,7 +119,7 @@ pub fn numerical_environment() -> Result<NumericalEnvironment, AnalysisError> {
         math_library: "Rust f64::log10 (platform math implementation)".into(),
         arithmetic_mode:
             "binary64-nearest-ties-even; ordered-multiply-add; no-FMA; no-denormal-flushing".into(),
-        coefficient_identity: "maac.analysis.bs1770-5/1:literal48k-rational-bilinear;annex2-table"
+        coefficient_identity: "maac.analysis.bs1770-5/2:literal48k-rational-bilinear;annex2-table"
             .into(),
     })
 }
@@ -286,8 +286,8 @@ struct ActiveBlock {
     active: bool,
 }
 
-/// Push one reconstructed frame at a time, then finish to flush both true-peak
-/// stages. After an error discard this analyzer; no partial measurement is valid.
+/// Push one reconstructed frame at a time, then finish to flush the true-peak
+/// interpolator. After an error discard this analyzer; no partial measurement is valid.
 pub struct Analyzer {
     rate: u32,
     channels: u8,
@@ -296,8 +296,7 @@ pub struct Analyzer {
     filters: [[Biquad; 2]; 2],
     blocks: [ActiveBlock; 4],
     energies: Vec<f64>,
-    first: Interpolator,
-    second: Interpolator,
+    interpolator: Interpolator,
     sample_peak: f64,
     true_peak: f64,
     true_peak_frames: u64,
@@ -324,7 +323,7 @@ impl Analyzer {
                 "analysis requires mono or stereo",
             ));
         }
-        if limits.max_frames > (u64::MAX - 220) / 16 {
+        if limits.max_frames > u64::MAX / 4 - 11 {
             return Err(error(
                 "E_PRODUCTION_ANALYSIS_LIMIT",
                 "frame budget overflows true-peak frame count",
@@ -339,8 +338,7 @@ impl Analyzer {
             filters: [filters; 2],
             blocks: [ActiveBlock::default(); 4],
             energies: Vec::new(),
-            first: Interpolator::default(),
-            second: Interpolator::default(),
+            interpolator: Interpolator::default(),
             sample_peak: 0.0,
             true_peak: 0.0,
             true_peak_frames: 0,
@@ -424,8 +422,8 @@ impl Analyzer {
         self.frames += 1;
         Ok(())
     }
-    fn observe_second(&mut self, frame: [f64; 2]) -> Result<(), AnalysisError> {
-        for output in self.second.push(frame, usize::from(self.channels))? {
+    fn push_true_peak(&mut self, frame: [f64; 2]) -> Result<(), AnalysisError> {
+        for output in self.interpolator.push(frame, usize::from(self.channels))? {
             for value in output.iter().take(usize::from(self.channels)) {
                 self.true_peak = self.true_peak.max(value.abs());
             }
@@ -433,18 +431,9 @@ impl Analyzer {
         }
         Ok(())
     }
-    fn push_true_peak(&mut self, frame: [f64; 2]) -> Result<(), AnalysisError> {
-        for output in self.first.push(frame, usize::from(self.channels))? {
-            self.observe_second(output)?;
-        }
-        Ok(())
-    }
     pub fn finish(mut self) -> Result<Analysis, AnalysisError> {
         for _ in 0..11 {
             self.push_true_peak([0.0; 2])?;
-        }
-        for _ in 0..11 {
-            self.observe_second([0.0; 2])?;
         }
         let integrated_loudness = integrated(&self.energies, self.sample_peak == 0.0)?;
         Ok(Analysis {
@@ -609,12 +598,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn impulse_tail_has_exact_cascade_peak() {
+    fn single_stage_impulse_preserves_original_peak_and_complete_tail() {
         let mut analyzer = Analyzer::new(48000, 1).unwrap();
         analyzer.push_frame(&[1.0]).unwrap();
         let result = analyzer.finish().unwrap();
-        assert_eq!(result.true_peak.amplitude, 67176863.0 / 67108864.0);
-        assert_eq!(result.true_peak_frames, 236);
+        assert_eq!(result.true_peak.amplitude, 1.0);
+        assert_eq!(result.true_peak_frames, 48);
+        assert_eq!(result.analyzer, "maac.analysis.bs1770-5/2");
+        assert_eq!(
+            result.true_peak_profile,
+            "maac.truepeak.bs1770-5.annex2-4x/1"
+        );
         assert_eq!(
             result.integrated_loudness.reason.as_deref(),
             Some("insufficient_duration")
@@ -798,8 +792,8 @@ mod tests {
         }
         last.push_frame(&[0.0, 1.0]).unwrap();
         let result = last.finish().unwrap();
-        assert_eq!(result.true_peak.amplitude, 67176863.0 / 67108864.0);
-        assert_eq!(result.true_peak_frames, 16 * 100 + 220);
+        assert_eq!(result.true_peak.amplitude, 1.0);
+        assert_eq!(result.true_peak_frames, 4 * (100 + 11));
         for _ in 0..2 {
             let mut fresh = Analyzer::new(48000, 2).unwrap();
             fresh.push_frame(&[0.0, 1.0]).unwrap();
@@ -808,6 +802,18 @@ mod tests {
                 result.true_peak.amplitude
             );
         }
+    }
+
+    #[test]
+    fn peak_in_flushed_tail_is_included() {
+        let mut analyzer = Analyzer::new(48000, 1).unwrap();
+        analyzer.push_frame(&[1.0]).unwrap();
+        analyzer.push_frame(&[1.0]).unwrap();
+        let result = analyzer.finish().unwrap();
+        // Independent tap-pair sum at n=6, p=1: 0.465087890625+
+        // 0.77978515625 = 5099/4096, strictly after both input frames.
+        assert_eq!(result.true_peak.amplitude, 5099.0 / 4096.0);
+        assert_eq!(result.true_peak_frames, 52);
     }
 
     #[test]
@@ -948,7 +954,7 @@ mod tests {
     // Independently synthesize EBU Tech 3341 v4 (November 2023), Table 1,
     // cases 15–19. These are mathematical definitions, not redistributed EBU
     // audio fixtures: https://tech.ebu.ch/docs/tech/tech3341v4_0.pdf
-    fn prescribed_true_peak_tones() -> Vec<(u32, u32, f64, f64, f64)> {
+    fn prescribed_true_peak_tones() -> Vec<(u32, u32, f64, f64)> {
         let mut results = Vec::new();
         for rate in [44100, 48000, 96000] {
             for (case, period, amplitude, phase, expected) in [
@@ -980,64 +986,23 @@ mod tests {
                 }
                 writer.finalize().unwrap();
                 let value = analyze_wav(file.path()).unwrap().true_peak.value.unwrap();
-                results.push((
-                    case,
-                    rate,
-                    value,
-                    expected,
-                    single_stage_candidate(file.path(), rate),
-                ));
+                results.push((case, rate, value, expected));
             }
         }
         results
     }
 
     #[test]
-    fn pinned_cascade_tone_behavior_records_known_ebu_overread() {
-        for (case, rate, value, expected, candidate) in prescribed_true_peak_tones() {
-            assert!(
-                (expected - 0.4..=expected + 0.2).contains(&candidate),
-                "single-stage candidate case {case}, {rate}: {candidate}"
-            );
-            if case == 16 || case == 19 {
-                // Independent periodic direct convolution gives -5.660664171
-                // and +3.344317995 dBTP. Finite taper/Float32 change <0.002 dB.
-                assert!(
-                    (value
-                        - (if case == 16 {
-                            -5.660664171
-                        } else {
-                            3.344317995
-                        }))
-                    .abs()
-                        < 0.002,
-                    "case {case}, {rate}: {value}"
-                );
-                assert!(
-                    value > expected + 0.2,
-                    "known official acceptance failure must remain visible"
-                );
-            } else {
-                assert!(
-                    (expected - 0.4..=expected + 0.2).contains(&value),
-                    "case {case}, {rate}: {value}"
-                );
-            }
-        }
-    }
-
-    #[test]
-    #[ignore = "known acceptance failure: pinned cascade overreads EBU cases 16 and 19; profile revision required"]
     fn ebu_3341_prescribed_true_peak_tones_15_through_19() {
         let results = prescribed_true_peak_tones();
-        for (case, rate, value, expected, _) in &results {
+        for (case, rate, value, expected) in &results {
             eprintln!("EBU true-peak case {case}, {rate} Hz: {value:.9} dBTP (expected {expected} +0.2/-0.4)");
         }
         assert!(
-            results.into_iter().all(
-                |(_, _, value, expected, _)| (expected - 0.4..=expected + 0.2).contains(&value)
-            ),
-            "pinned profile does not pass applicable EBU true-peak acceptance"
+            results
+                .into_iter()
+                .all(|(_, _, value, expected)| (expected - 0.4..=expected + 0.2).contains(&value)),
+            "public 4x profile does not pass applicable EBU true-peak acceptance"
         );
     }
 
@@ -1099,44 +1064,28 @@ mod tests {
             );
         }
     }
-    // Audit candidate only. The production profile still uses two cascaded
-    // stages; changing it requires a normative/profile identity revision.
-    fn single_stage_candidate(path: &Path, rate: u32) -> f64 {
-        assert!(matches!(rate, 44100 | 48000 | 96000));
+    // Decode original official PCM directly into the public streaming analyzer.
+    // A rate override reinterprets the same Fs-normalized sequence; no resampled
+    // or rewritten file is presented as an official alternate-rate artifact.
+    fn analyze_official_pcm_at_rate(path: &Path, rate: u32) -> Analysis {
         let mut reader = hound::WavReader::open(path).unwrap();
-        let channels = usize::from(reader.spec().channels);
-        let bits = reader.spec().bits_per_sample;
-        let format = reader.spec().sample_format;
+        let spec = reader.spec();
+        assert_eq!(spec.sample_format, hound::SampleFormat::Int);
+        let channels = usize::from(spec.channels);
         assert!(channels <= 2);
+        let mut analyzer = Analyzer::new(rate, channels as u8).unwrap();
         let frames = reader.duration();
-        let scale = (1_u64 << (bits - 1)) as f64;
-        let mut samples: Box<dyn Iterator<Item = Result<f64, hound::Error>> + '_> =
-            if format == hound::SampleFormat::Float {
-                Box::new(reader.samples::<f32>().map(|v| v.map(f64::from)))
-            } else {
-                Box::new(
-                    reader
-                        .samples::<i32>()
-                        .map(move |v| v.map(|n| f64::from(n) / scale)),
-                )
-            };
-        let mut stage = Interpolator::default();
-        let mut peak = 0.0_f64;
-        for n in 0..u64::from(frames) + 11 {
+        analyzer.preflight_frames(u64::from(frames)).unwrap();
+        let scale = (1_u64 << (spec.bits_per_sample - 1)) as f64;
+        let mut samples = reader.samples::<i32>();
+        for _ in 0..frames {
             let mut frame = [0.0; 2];
-            if n < u64::from(frames) {
-                for value in frame.iter_mut().take(channels) {
-                    *value = samples.next().unwrap().unwrap();
-                    peak = peak.max(value.abs());
-                }
+            for value in frame.iter_mut().take(channels) {
+                *value = f64::from(samples.next().unwrap().unwrap()) / scale;
             }
-            for output in stage.push(frame, channels).unwrap() {
-                for value in output.iter().take(channels) {
-                    peak = peak.max(value.abs());
-                }
-            }
+            analyzer.push_frame(&frame[..channels]).unwrap();
         }
-        20.0 * peak.log10()
+        analyzer.finish().unwrap()
     }
 
     /// Run with official, privately downloaded EBU v05 artifacts. No official
@@ -1180,19 +1129,23 @@ mod tests {
             } else {
                 0.0
             };
-            let baseline = analyze_wav(&path).unwrap().true_peak.value.unwrap();
-            let baseline_pass = (expected - 0.4..=expected + 0.2).contains(&baseline);
+            let actual = analyze_wav(&path).unwrap();
             for rate in [44100, 48000, 96000] {
-                // True-peak equations are sample-rate independent. Feeding the
-                // original normalized sample sequence at F exercises Fs/4 etc.
-                // This does not claim resampled audio is an official fixture.
-                let candidate = single_stage_candidate(&path, rate);
-                let candidate_pass = (expected - 0.4..=expected + 0.2).contains(&candidate);
-                eprintln!("EBU official TP {case}, {rate}: baseline={baseline:.9}/{baseline_pass}, single-stage={candidate:.9}/{candidate_pass}");
-                true_peak_results.push(serde_json::json!({"case":case,"file":name,"rate":rate,"expected_dbtp":expected,"lower_tolerance":0.4,"upper_tolerance":0.2,"baseline_dbtp":baseline,"baseline_pass":baseline_pass,"single_stage_dbtp":candidate,"single_stage_pass":candidate_pass}));
+                let analysis = if rate == 48000 {
+                    actual.clone()
+                } else {
+                    analyze_official_pcm_at_rate(&path, rate)
+                };
+                assert_eq!(analysis.analyzer, ANALYZER_ID);
+                assert_eq!(analysis.true_peak_profile, TRUE_PEAK_PROFILE);
+                assert_eq!(analysis.true_peak_frames, 4 * (analysis.frames + 11));
+                let value = analysis.true_peak.value.unwrap();
+                let pass = (expected - 0.4..=expected + 0.2).contains(&value);
+                eprintln!("EBU official TP {case}, {rate}: public4x={value:.9}, pass={pass}");
+                true_peak_results.push(serde_json::json!({"case":case,"file":name,"rate":rate,"expected_dbtp":expected,"lower_tolerance":0.4,"upper_tolerance":0.2,"value_dbtp":value,"pass":pass}));
             }
         }
-        let report = serde_json::json!({"corpus":"EBU Loudness test set v05 (2016-03-30)","credit":"© EBU","loudness":loudness_results,"true_peak":true_peak_results,"note":"Single-stage candidate is audit-only; Fs-normalized sequence reinterpretation at alternate rates is not a claim about official alternate-rate WAV fixtures."});
+        let report = serde_json::json!({"corpus":"EBU Loudness test set v05 (2016-03-30)","credit":"© EBU","analyzer":ANALYZER_ID,"true_peak_profile":TRUE_PEAK_PROFILE,"loudness":loudness_results,"true_peak":true_peak_results,"note":"Measurements use the public analyzer; Fs-normalized sequence reinterpretation at alternate rates is not a claim about official alternate-rate WAV fixtures."});
         if let Ok(path) = std::env::var("MAAC_METER_AUDIT_REPORT") {
             std::fs::write(path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
         }
@@ -1201,10 +1154,8 @@ mod tests {
             "official integrated loudness acceptance failed"
         );
         assert!(
-            true_peak_results
-                .iter()
-                .all(|v| v["single_stage_pass"] == true),
-            "single-stage candidate fails official minimum"
+            true_peak_results.iter().all(|v| v["pass"] == true),
+            "public 4x analyzer fails official minimum"
         );
     }
     #[test]

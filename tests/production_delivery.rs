@@ -276,6 +276,67 @@ fn destinations_and_aggregate_budgets_fail_before_rendering() {
 }
 
 #[test]
+fn four_times_analysis_identity_and_budget_include_the_complete_filter_tail() {
+    let plan = plan(&source(48000, "", ""));
+    let directory = tempdir().unwrap();
+    let mut opts = options(&directory.path().join("enough"));
+    // This fixture has 2640 frames and three captured channels (stereo master,
+    // mono stem). SRC and spool each charge 7920. Ordinary meter work is
+    // 506880, and 10604 interpolated frames/channel charge 763488.
+    // The former two-stage allowance charged 4780128 and rejected this budget.
+    opts.limits.max_work = 1_286_208;
+    let report = deliver(&plan, &opts, &PlanLimits::default()).unwrap();
+    assert!(report.ok);
+    assert_eq!(report.charged_work, 1_286_208);
+    assert_eq!(
+        report.identity_context["analyzer"]["identity"],
+        "maac.analysis.bs1770-5/2"
+    );
+    assert_eq!(
+        report.identity_context["analyzer"]["true_peak_profile"],
+        "maac.truepeak.bs1770-5.annex2-4x/1"
+    );
+    for target in report.targets.values() {
+        let measured = target.measurements.as_ref().unwrap();
+        assert_eq!(measured.analyzer, "maac.analysis.bs1770-5/2");
+        assert_eq!(
+            measured.true_peak_profile,
+            "maac.truepeak.bs1770-5.annex2-4x/1"
+        );
+        assert_eq!(measured.true_peak_frames, 10_604);
+    }
+    let mut old_context = report.identity_context.clone();
+    old_context["analyzer"]["identity"] = "maac.analysis.bs1770-5/1".into();
+    old_context["analyzer"]["true_peak_profile"] = "maac.truepeak.bs1770-5.annex2-16x/1".into();
+    let identity = plan
+        .production
+        .as_ref()
+        .unwrap()
+        .execution_identity
+        .as_ref()
+        .unwrap();
+    let old_key =
+        maac::production_identity::render_key(identity, &plan.to_json().unwrap(), &old_context)
+            .unwrap();
+    assert_ne!(
+        report.render_key, old_key,
+        "analyzer revision must affect render identity"
+    );
+    opts.output_dir = directory.path().join("insufficient");
+    opts.limits.max_work -= 1;
+    assert_eq!(
+        deliver(&plan, &opts, &PlanLimits::default())
+            .unwrap_err()
+            .code,
+        "E_RESOURCE_LIMIT"
+    );
+    assert!(
+        !opts.output_dir.exists(),
+        "budget must fail before any output is created"
+    );
+}
+
+#[test]
 fn long_and_case_distinct_ids_get_bounded_selection_independent_filenames() {
     let delivery_id = "d".repeat(128);
     let target_id = "t".repeat(128);

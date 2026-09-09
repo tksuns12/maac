@@ -42,9 +42,9 @@ kHz, Float32/PCM24/PCM16 WAV, explicit none/seeded TPDF dither, and measurements
 of the reconstructed final artifact. Failed requested limits retain completed
 audio and produce a failed check result; they do not trigger automatic gain.
 
-The current specified 16-times true-peak estimator fails two applicable EBU
-fixtures. A four-times candidate passed those audited cases but awaits a
-normative/profile decision; see the [metering evidence](production-metering-evidence.md).
+Analyzer `maac.analysis.bs1770-5/2` uses the approved single-stage four-times
+Annex 2 true-peak profile. The [metering evidence](production-metering-evidence.md)
+records applicable current fixtures and the historical 16× profile comparison.
 These results do not establish full ITU/EBU compliance or listening acceptance.
 `check_production.py` remains a separate syntax/schema/arithmetic smoke checker;
 Rust tests and external metering/SRC gates provide separate implementation

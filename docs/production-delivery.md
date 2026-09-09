@@ -2,9 +2,10 @@
 
 The installed Rust CLI passed the complete production example and delivery
 publication checks on 2026-09-09. This is implementation evidence for native
-processing, conversion, artifact analysis, and replay. Meter qualification is
-still incomplete: the specified 16× true-peak estimator fails two applicable
-EBU acceptance cases. See [metering evidence](production-metering-evidence.md).
+processing, conversion, artifact analysis, and replay. The approved public 4×
+true-peak analyzer passed the applicable audited ITU/EBU mono/stereo fixtures;
+see [metering evidence](production-metering-evidence.md) for scope and the
+historical 16× comparison. Full EBU Mode is outside this implementation.
 No listening or professional sound-quality acceptance is claimed.
 
 ## Reproduce the installed boundary
@@ -25,14 +26,15 @@ The latest local report is
 these generated artifacts are not committed.
 
 The default runner profile is `song`. The full CD delivery charged
-2,148,740,376 work units and the archive charged 4,493,688,576, exceeding the
-default profile's 2,000,000,000 limit. Selecting `song` explicitly supplies the
-larger caller budget; acceptance does not bypass resource checks.
+1,333,754,136 work units, below the default profile's 2,000,000,000 limit. The
+archive charged 2,719,590,336 and requires the larger `song` allowance. The
+4× analyzer's reduced work accounting includes its complete filter flush;
+acceptance does not bypass resource checks.
 
-Observed run: `run-30_ee26p`, 2026-09-09 00:48:06–00:50:14 UTC, Astra High,
-macOS 26.6.2 arm64, Python 3.14.4. The runner completed **114 checks**, including
+Observed run: `run-rdfj8cds`, 2026-09-09 01:12:26–01:14:53 UTC, Astra High,
+macOS 26.6.2 arm64, Python 3.14.4. The runner completed **157 checks**, including
 nine delivery renders, and exited 0. Its fresh offline install completed in
-49.85 seconds. Input and executable identities were:
+52.10 seconds. Input and executable identities were:
 
 ```text
 examples/production.maac
@@ -40,13 +42,27 @@ sha256:4289604a6c75fd72fce25a8d397a40dd4b15e7f503351454e7ab134ed176a2f0
 production.schema.json
 sha256:1f9f3623515e645834fd97ecb300cdf00c5e11f4dd260f5bd85a92d3af91568d
 installed bin/maac
-sha256:ad25da36787633c1f521f9dfecd418c8482897b8c74097327bbff8dfec3fdbfb
+sha256:b8ef92b6ca9dd06494fa6fa2eb4ba41cbad586d4a638db6d8e27b29ef2f1ca7d
 ```
 
 The executable hash records this build; it is not a cross-platform build
 reproducibility promise. The report preserves exact measurements and full
 manifest provenance, including converter certificates, dither identities and
 seeds, selected ports, execution identity, and render identity.
+
+This run also used the following optional baseline argument to compare the six WAVs
+with the previous 16× macOS run. All six file and PCM hashes were identical.
+
+```sh
+python3 scripts/production_acceptance.py --profile song \
+  --baseline-report target/production-acceptance/run-30_ee26p/results.json
+```
+
+The optional comparison uses a caller-selected report instead of imposing
+platform-specific hashes on all installations. Both delivery render keys
+changed with the analyzer identity; all six loudness and sample-peak records
+were unchanged. Every current measurement and manifest identifies `/2` and
+the 4× profile, with exactly `4*(N+11)` true-peak output frames.
 
 ## Original example artifacts
 
@@ -57,12 +73,12 @@ as 336,000 engine frames at 48 kHz. Every artifact below is stereo.
 
 | Delivery / target | Rate (Hz) | Frames | Encoding | File bytes | LUFS | Sample peak dBFS | Reported true peak dBTP |
 | --- | ---: | ---: | --- | ---: | ---: | ---: | ---: |
-| CD / master | 44,100 | 308,700 | PCM16 | 1,234,844 | -23.764452 | -14.163712 | -14.114586 |
-| CD / processed_bass | 44,100 | 308,700 | PCM24 | 1,852,244 | -23.829638 | -18.958675 | -18.909692 |
-| CD / pulse | 44,100 | 308,700 | PCM24 | 1,852,244 | -27.125072 | -15.820249 | -15.771153 |
-| Archive / master | 96,000 | 672,000 | Float32 | 5,376,058 | -23.764223 | -14.164027 | -14.114896 |
-| Archive / bass_with_room | 96,000 | 672,000 | Float32 | 5,376,058 | -24.465882 | -19.069497 | -19.020459 |
-| Archive / pulse | 96,000 | 672,000 | Float32 | 5,376,058 | -27.125072 | -15.820246 | -15.771096 |
+| CD / master | 44,100 | 308,700 | PCM16 | 1,234,844 | -23.764452 | -14.163712 | -14.149842 |
+| CD / processed_bass | 44,100 | 308,700 | PCM24 | 1,852,244 | -23.829638 | -18.958675 | -18.944885 |
+| CD / pulse | 44,100 | 308,700 | PCM24 | 1,852,244 | -27.125072 | -15.820249 | -15.806501 |
+| Archive / master | 96,000 | 672,000 | Float32 | 5,376,058 | -23.764223 | -14.164027 | -14.150270 |
+| Archive / bass_with_room | 96,000 | 672,000 | Float32 | 5,376,058 | -24.465882 | -19.069497 | -19.055772 |
+| Archive / pulse | 96,000 | 672,000 | Float32 | 5,376,058 | -27.125072 | -15.820246 | -15.806480 |
 
 The CD master passed its illustrative −24…−22 LUFS interval and −1 dBFS/dBTP
 maximums. Archive targets requested no limits and reported
@@ -118,10 +134,10 @@ All of the following passed at the installed CLI boundary:
   manifest, with no staging files left behind. Publication is atomic per
   artifact; this does not establish a transaction across multiple files.
 
-## Numerical environment and remaining qualification
+## Numerical environment and qualification scope
 
-The manifest records analyzer `maac.analysis.bs1770-5/1`, true-peak profile
-`maac.truepeak.bs1770-5.annex2-16x/1`, and converter `maac.src.kaiser/1`.
+The manifest records analyzer `maac.analysis.bs1770-5/2`, true-peak profile
+`maac.truepeak.bs1770-5.annex2-4x/1`, and converter `maac.src.kaiser/1`.
 Arithmetic is ordered binary64 multiply/add, nearest ties-to-even, no FMA,
 and no denormal flushing. The measured platform is `aarch64-macos-unix`;
 logarithms use the platform implementation behind Rust `f64::log10`.
@@ -130,11 +146,11 @@ recorded executable digest above identifies this acceptance binary.
 
 The separate [official metering audit](production-metering-evidence.md)
 passed all 19 applicable ITU mono/stereo loudness files and all seven applicable
-EBU integrated-loudness cases. The specified 16× true-peak cascade still
-overreads EBU cases 16 and 19. A 4× candidate passed its applicable fixtures,
-but it is not the selected implementation. Accordingly, delivery mechanics
-pass while the current meter remains unqualified. Numerical checks do not
-establish acoustic realism or listening quality for the reverb or other DSP.
+EBU integrated-loudness cases. The public 4× analyzer also passed all nine
+applicable EBU true-peak cases at each supported rate selection. The historical
+16× cascade overread cases 16 and 19; it is no longer selected. These bounded
+fixture results do not establish full EBU Mode, a continuous-frequency error
+bound, acoustic realism, or listening quality for the reverb or other DSP.
 
 The following integration checks were also observed on this implementation:
 
@@ -142,15 +158,17 @@ The following integration checks were also observed on this implementation:
 | --- | --- |
 | `cargo fmt --all -- --check` | Pass |
 | `cargo clippy --all-targets --locked --offline -- -D warnings` | Pass |
-| `cargo test --locked --offline` | 421 passed, 0 failed, 4 ignored |
+| `cargo test --locked --offline` | 424 passed, 0 failed, 3 ignored |
 | `python3 scripts/acceptance.py` | 38 checks passed through the freshly installed legacy CLI; `target/acceptance/results.json` reports `ok: true` |
-| Pinned Python `check_production.py` | 8 valid, 77 invalid, 54 arithmetic fixtures; schema pin checked; no tracked writes |
-| Legacy `check_spec.py` in a disposable copy | Pass; all three generated snapshots unchanged |
-| SRC generator `--verify`, normal Python and `python3 -O` | Both pass, including full coefficient recomputation |
+| Pinned Python `check_production.py` | 8 valid, 77 invalid, 60 arithmetic fixtures; schema pin checked; no tracked writes |
+| Legacy `check_spec.py` in a disposable copy | Previously passed; checker, grammar, and all three snapshots are unchanged in this revision |
+| SRC generator `--verify`, normal Python and `python3 -O` | Both passed before this analyzer revision, including full recomputation; generator, certificate, and table bytes are unchanged |
 | SRC generator `--self-test`, normal Python and `python3 -O` | Both pass; five invalid proof/verification cases rejected |
 | `python3 -m py_compile scripts/production_acceptance.py` | Pass |
 
-The four ignored Rust tests are explicit metering audits. Their separately
-run results and the deliberately failing current-profile acceptance test are
-documented in the metering report; the ordinary suite's success does not
-override that external failure.
+The three ignored Rust tests are explicit metering audits. The fresh official
+corpus tests passed (two tests), as did the separately rerun full-duration
+prescribed-loudness audit (one test). All three therefore have observed
+current-profile success, documented in the metering report. Prescribed true-peak
+cases now pass through the public analyzer as ordinary tests; there is no
+current known-failure ignore.

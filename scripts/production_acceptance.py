@@ -24,6 +24,8 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 ARTIFACTS = ROOT / "target" / "production-acceptance"
+ANALYZER_ID = "maac.analysis.bs1770-5/2"
+TRUE_PEAK_PROFILE = "maac.truepeak.bs1770-5.annex2-4x/1"
 
 
 class GateFailure(RuntimeError):
@@ -156,6 +158,9 @@ def inspect_delivery(evidence: Evidence, name: str, result, value: dict, directo
                      and manifest["engine_frames"] == 336000 and manifest["engine_rate"] == 48000
                      and (manifest["check_status"] == "fail") == failed
                      and set(manifest["targets"]) == expected_ids, manifest)
+    analyzer = manifest["identity_context"]["analyzer"]
+    evidence.require(name + "-analyzer-identity", analyzer["identity"] == ANALYZER_ID
+                     and analyzer["true_peak_profile"] == TRUE_PEAK_PROFILE, analyzer)
     published = directory / manifest["manifest_file"]
     evidence.require(name + "-published-manifest", published.is_file()
                      and json.loads(published.read_text()) == manifest)
@@ -171,6 +176,10 @@ def inspect_delivery(evidence: Evidence, name: str, result, value: dict, directo
                          and metadata["frames"] == frames and metadata["nonzero_samples"] > 0
                          and all(metadata[k] == target[k] for k in ("rate", "channels", "encoding", "file_hash", "pcm_hash")), metadata)
         measurements = target["measurements"]
+        evidence.require(name + "-" + target_id + "-analyzer-profile",
+                         measurements["analyzer"] == ANALYZER_ID
+                         and measurements["true_peak_profile"] == TRUE_PEAK_PROFILE
+                         and measurements["true_peak_frames"] == 4 * (frames + 11), measurements)
         evidence.require(name + "-" + target_id + "-final-measurement",
                          measurements["frames"] == frames and measurements["rate"] == metadata["rate"]
                          and measurements["channels"] == metadata["channels"]
@@ -181,7 +190,12 @@ def inspect_delivery(evidence: Evidence, name: str, result, value: dict, directo
     return files
 
 
-def run_acceptance(evidence: Evidence, profile: str):
+def run_acceptance(evidence: Evidence, profile: str, baseline_report: Path | None):
+    baseline = None
+    if baseline_report is not None:
+        baseline = json.loads(baseline_report.read_text())
+        evidence.require("baseline-report-complete", baseline["status"] == "pass",
+                         {"path": str(baseline_report), "hash": sha256(baseline_report)})
     for name, flags in [("coefficient-guards", []), ("coefficient-guards-optimized", ["-O"])]:
         result = evidence.command(name, [sys.executable, *flags, ROOT / "scripts" / "production_src_coefficients.py", "--self-test"])
         evidence.require(name, result.returncode == 0, result.stderr)
@@ -219,6 +233,15 @@ def run_acceptance(evidence: Evidence, profile: str):
         evidence.require("compile-retained", result.returncode == 0 and value.get("ok") is True and plan.is_file(), value)
         cd = deliver("source-cd", source, "release_cd", cd_ids, original=True)
         archive = deliver("source-archive", source, "archive", archive_ids, original=True)
+        if baseline is not None:
+            for name, current in [("source-cd", cd), ("source-archive", archive)]:
+                prior = baseline["deliveries"][name]["files"]
+                evidence.require(name + "-baseline-targets", set(current) == set(prior))
+                for target_id, metadata in current.items():
+                    evidence.require(name + "-" + target_id + "-baseline-audio",
+                                     all(metadata[k] == prior[target_id][k] for k in
+                                         ("file_hash", "pcm_hash", "rate", "frames", "channels", "encoding")),
+                                     {"current": metadata, "baseline": prior[target_id]})
         # The unchanged example currently passes its illustrative limits.
         # A separate caller policy changes only a limit, never the audio graph.
         original_text = source.read_text()
@@ -258,6 +281,8 @@ def run_acceptance(evidence: Evidence, profile: str):
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--profile", choices=("default", "song"), default="song")
+    parser.add_argument("--baseline-report", type=Path,
+                        help="compare all six example WAV hashes with an earlier report from the same platform")
     args = parser.parse_args()
     ARTIFACTS.mkdir(parents=True, exist_ok=True)
     run = Path(tempfile.mkdtemp(prefix="run-", dir=ARTIFACTS))
@@ -265,7 +290,7 @@ def main() -> int:
     failure = None
     start = datetime.now(timezone.utc).isoformat()
     try:
-        run_acceptance(evidence, args.profile)
+        run_acceptance(evidence, args.profile, args.baseline_report)
     except (GateFailure, OSError, ValueError, KeyError) as error:
         failure = str(error)
         print(f"Acceptance failed: {failure}", file=sys.stderr, flush=True)
@@ -275,6 +300,7 @@ def main() -> int:
                               "python": platform.python_version()}, "run_directory": str(run),
               "scope": "real installed CLI delivery; no official meter or listening conformance claim",
               "metering_evidence": "docs/production-metering-evidence.md",
+              "baseline_report": str(args.baseline_report) if args.baseline_report is not None else None,
               "source_hash": sha256(ROOT / "examples" / "production.maac"),
               "schema_hash": sha256(ROOT / "production.schema.json"),
               "commands": evidence.commands, "checks": evidence.checks, "deliveries": evidence.deliveries,

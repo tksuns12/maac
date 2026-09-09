@@ -50,9 +50,9 @@ The [production example](examples/production.maac),
 [bounded fixtures](production-conformance.json) describe the contract. The
 [production delivery report](docs/production-delivery.md) records installed-CLI
 acceptance separately from the specification fixtures.
-Metering remains experimental: the specified 16-times true-peak profile fails
-two applicable official EBU cases, while a tested alternative awaits a normative
-decision. See the [metering evidence](docs/production-metering-evidence.md).
+Metering uses analyzer `maac.analysis.bs1770-5/2` and the approved single-stage
+four-times Annex 2 true-peak profile. See the applicable fixture results and
+historical profile comparison in the [metering evidence](docs/production-metering-evidence.md).
 No professional sound-quality or full ITU/EBU conformance claim is made.
 
 ## Quick start
@@ -196,6 +196,9 @@ deliberately failing limits. Runs are preserved under
 `target/production-acceptance/run-*`, with the latest report at
 `target/production-acceptance/results.json`. This CI gate does not download
 official audio or replace the [metering audit](docs/production-metering-evidence.md).
+Use `--baseline-report PATH` to compare all six example WAV hashes with an
+earlier successful production report from the same platform. This optional
+regression check does not impose platform-specific hashes on other systems.
 
 The instrument delivery checks also run the installed CLI, retained-plan audio,
 qualified legacy WAV comparisons, and a disposable syntax-checker copy:

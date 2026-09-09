@@ -95,9 +95,10 @@ Publication is atomic per file, with overwrite protection unless `--force` is
 present; the complete manifest follows processing and analysis. Publication is
 not a transaction across all files. The [resource bounds](capabilities.md#production-resource-bounds)
 include separate plan and delivery work budgets. The
-[metering audit](production-metering-evidence.md) records the current 16-times
-true-peak profile's failed external gate and its pending replacement candidate;
-these commands do not advertise full ITU/EBU conformance.
+[metering audit](production-metering-evidence.md) records applicable fixtures
+for analyzer `maac.analysis.bs1770-5/2` and true-peak profile
+`maac.truepeak.bs1770-5.annex2-4x/1`, plus the historical 16× comparison. These
+commands do not advertise full ITU/EBU conformance.
 
 For the repository example, use `--project-root .`: its descriptor asset path
 is package-relative while the source is in `examples/`. For example:

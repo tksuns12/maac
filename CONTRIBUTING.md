@@ -45,6 +45,10 @@ retains its install, artifacts, and report under
 `target/production-acceptance/run-*`; the latest report is
 `target/production-acceptance/results.json`. See the
 [production delivery report](docs/production-delivery.md) for observed evidence.
+An optional `--baseline-report PATH` checks that all six example WAVs retain
+their hashes against an earlier successful report from the same platform.
+Every run checks the current analyzer/profile identities and complete 4×
+true-peak filter flushing, even without a baseline report.
 
 Cargo may need network access during `cargo fetch --locked` to populate the
 local cache. The later checks use `--offline` and must run only after that fetch
@@ -69,8 +73,8 @@ Keep those artifacts consistent when changing the contract. These checks cover
 specification arithmetic; Rust renderer tests and installed-CLI acceptance
 provide separate implementation evidence. Applicable official ITU/EBU fixtures,
 independent SRC verification, and listening acceptance remain distinct gates.
-The [metering audit](docs/production-metering-evidence.md) records the current
-16-times true-peak profile's failed external gate and pending alternative.
+The [metering audit](docs/production-metering-evidence.md) records applicable
+current 4× profile fixtures and the historical 16× profile's failed gate.
 
 ## Contributions
 

@@ -22,8 +22,10 @@ actually published; no release tag or publication date is asserted here.
   exhaustive literal updates. The [specification](docs/production.md), pinned
   schema, examples, and bounded fixture checker remain distinct from renderer
   acceptance. The [metering audit](docs/production-metering-evidence.md) records
-  current 16-times true-peak failures and a candidate awaiting a normative
-  decision; no full ITU/EBU or professional sound-quality claim is made.
+  applicable current 4× fixtures and historical 16× failures. Analyzer identity
+  `maac.analysis.bs1770-5/2` selects the approved single-stage Annex 2 profile
+  `maac.truepeak.bs1770-5.annex2-4x/1`; rendered audio is unchanged by this
+  analysis revision. No full ITU/EBU or professional sound-quality claim is made.
 - A Rust library and `maac` CLI for checking source, compiling a standalone
   versioned performance plan, rendering an imported plan, and building source
   directly to WAV.

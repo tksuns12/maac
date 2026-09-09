@@ -70,9 +70,10 @@ grammar, generic syntax-tree schema, and implemented performance-plan versions
 remain unchanged. An **experimental Rust implementation** and runnable
 [example](examples/production.maac) are available. The bounded
 [fixtures](production-conformance.json) remain specification evidence; they do
-not establish rendering or listening conformance. The currently specified
-16-times true-peak profile fails an external metering gate and is unqualified;
-see the [metering evidence](docs/production-metering-evidence.md).
+not establish rendering or listening conformance. Analyzer
+`maac.analysis.bs1770-5/2` selects the approved single-stage four-times Annex 2
+true-peak profile. See the applicable fixture evidence and historical 16×
+comparison in the [metering report](docs/production-metering-evidence.md).
 
 ## 2. File format and lexical rules
 
