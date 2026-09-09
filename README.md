@@ -131,6 +131,8 @@ Read the [quick start](docs/quickstart.md), [authoring tutorial](docs/tutorial.m
 [CLI and library reference](docs/reference.md), and [capability matrix](docs/capabilities.md).
 The [pitch guide](docs/pitch-expression.md) and [gain guide](docs/gain-expression.md)
 demonstrate independent bends, swells, and fades on overlapping `core.sine/1` voices.
+The [instrument gain guide](docs/instrument-gain.md) applies swells and fades to
+basic, acoustic, and custom instrument voices with a standalone example.
 The [diagnostics guide](docs/diagnostics.md) explains failures, while the
 [performance-plan format](docs/performance-plan.md) describes the standalone
 JSON interchange artifact. [Implementation decisions](docs/implementation-decisions.md)

@@ -12,7 +12,7 @@ specification remains authoritative; this page describes the implementation scop
 | Time | Step tempo maps, meter maps, global `bar` positions, independent physical offsets, exact ceiling scheduling |
 | Pitch | Letter pitches, `key`, `degree`, `ratio`, Hz/kHz, explicit tunings |
 | Per-note pitch | `core.sine/1` cents curves; normalized, seconds and score clocks; step/linear interpolation and gate-end release holding |
-| Per-note gain | `core.sine/1` nonnegative amplitude curves; all three clocks; step/linear/exponential interpolation, independent of simultaneous pitch expression |
+| Per-note gain | `core.sine/1` and reusable mono/stereo instruments (basic, acoustic, custom); nonnegative amplitude curves on all three clocks; step/linear/exponential interpolation; simultaneous pitch only on `core.sine/1` |
 | Automation | Global score/seconds clocks; step, linear and exponential interpolation; sample/event parameter rates |
 | Routing | Explicit mono/stereo audio graph and note targets; no implicit channel conversions or mixers |
 | Processors | `core.sine/1`, `core.onepole/1`, `core.pan/1`, `core.sum/1`, `core.gain/1` (mono/stereo) |
@@ -30,7 +30,7 @@ specification remains authoritative; this page describes the implementation scop
 | Interchange | Independently validated standalone plans: version 1 legacy and version 2 embedded graph/data/provenance |
 
 Recognized deferred features fail with `E_CAPABILITY`: tempo ramps, per-note
-pressure/timbre expression, pitch/gain expression on graph instruments,
+pressure/timbre expression, pitch expression on graph instruments,
 hits/messages, top-level core modulation, other processors, recorded
 sample instruments, arranged audio, external plug-ins and other extensions. Transactional editing, full render locks,
 MIDI transport, GUI and real-time playback are outside this release's interfaces.
@@ -39,7 +39,8 @@ No deferred feature is approximated silently.
 The [per-note pitch guide](pitch-expression.md) defines the supported receiver,
 curve clocks, instance transformations, and standalone-plan compatibility.
 The [gain guide](gain-expression.md) adds independent swells and fades while
-preserving voice state at zero gain.
+preserving voice state at zero gain. The [instrument gain guide](instrument-gain.md)
+covers reusable graphs and the additional execution-work charge.
 
 The [native production contract](production.md), required capability
 `maac.production/1`, has an **experimental implementation**. Native `fx.eq/1`,
@@ -130,6 +131,7 @@ creator, and license metadata each have the same byte limit.
 | Aggregate declared voice graph node states | 262,144 |
 | Conservative execution work | Default 500,000,000 normalized units; explicit song profile maximum 10,000,000,000 |
 | Pluck delay cells | 8,388,608 f64 cells / 64 MiB payload; 2402 cells per pluck voice-node |
+| Instrument gain execution charge | `17 + ceil(log2(point_count))` units per active voice frame carrying gain, including conservative release |
 | Pluck execution charge | 16 units per sample visit plus 2402 initialization units per note per pluck node |
 
 Execution work includes every note's gate and maximum possible release, bounded

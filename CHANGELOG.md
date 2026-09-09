@@ -11,6 +11,12 @@ actually published; no release tag or publication date is asserted here.
 
 ### Added
 
+- Per-note gain on reusable mono/stereo instruments, including basic, acoustic,
+  and custom graphs. Gain follows the complete voice contribution and precedes
+  shared effects; zero gain preserves DSP and voice lifecycle. Existing curve
+  syntax and plan fields are reused, with a bounded additional execution-work
+  charge. See the [instrument gain guide](docs/instrument-gain.md).
+
 - Per-note gain expression on `core.sine/1`, with nonnegative amplitude curves,
   step/linear/exponential interpolation, and simultaneous pitch expression.
   Zero gain preserves voice state. Optional `gain_expression` extends plan
@@ -77,7 +83,7 @@ actually published; no release tag or publication date is asserted here.
 
 - The Rust implementation is a foundation subset; it does not claim full
   Document, Performance, Core Audio, or Locked Render conformance.
-- Tempo ramps, per-note pressure/timbre expression, pitch/gain expression on
+- Tempo ramps, per-note pressure/timbre expression, pitch expression on
   graph instruments, hits/messages, top-level core modulation,
   other processors, recorded-sample instruments, arranged audio, external plug-ins,
   transactional editing, MaaC Locked Render dependency-lock manifests

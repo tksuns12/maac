@@ -2716,11 +2716,14 @@ impl Plan {
                         )?;
                     }
                     if let Some(expression) = gain_expression {
-                        if !matches!(target.processor, Processor::Sine { .. }) {
+                        if !matches!(
+                            target.processor,
+                            Processor::Sine { .. } | Processor::Instrument { .. }
+                        ) {
                             return Err(err(
                                 "E_CAPABILITY",
                                 format!("events[{index}].gain_expression"),
-                                "gain expression is supported only by core.sine/1",
+                                "gain expression requires core.sine/1 or an instrument",
                             ));
                         }
                         expression.validate(limits, &format!("events[{index}].gain_expression"))?;
@@ -3159,6 +3162,26 @@ impl Plan {
                 let active_frames = active_end.saturating_sub(event.on_frame);
                 work = work.saturating_add(active_frames.saturating_mul(voice_cost));
                 work = work.saturating_add(initialization_cost);
+                if let EventKind::Note {
+                    gain_expression: Some(expression),
+                    ..
+                } = &event.kind
+                {
+                    // Normalized accounting units: exact-coordinate interpolation plus
+                    // binary knot lookup. Silence still executes the full voice window.
+                    let lookup = usize::BITS - (expression.points.len() - 1).leading_zeros();
+                    let gain_cost = 17 + u64::from(lookup);
+                    work = active_frames
+                        .checked_mul(gain_cost)
+                        .and_then(|gain_work| work.checked_add(gain_work))
+                        .ok_or_else(|| {
+                            err(
+                                "E_RESOURCE_LIMIT",
+                                "instruments",
+                                "gain expression work overflow",
+                            )
+                        })?;
+                }
             }
         }
         if work > limits.max_execution_work {

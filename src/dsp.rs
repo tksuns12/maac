@@ -5,6 +5,7 @@
 //! every render.  A callback receives one interleaved output frame at a time;
 //! the slice is valid until the callback returns.
 
+use crate::expression::ExpressionRuntime;
 use crate::plan::{
     AutomationClock, EventKind, GainExpression, Interpolation, PitchExpression, Plan, PlanError,
     PlanLimits, PortRef, Processor, Rational, ResolvedEvent,
@@ -495,7 +496,13 @@ impl<'a> DspEngine<'a> {
         } = event.data;
         if let Some(instrument) = &mut node.instrument {
             return instrument
-                .note_on(event.address.clone(), pitch_hz, velocity, frame)
+                .note_on_with_gain(
+                    event.address.clone(),
+                    pitch_hz,
+                    velocity,
+                    frame,
+                    gain_expression,
+                )
                 .map_err(|error| match error {
                     RenderError::VoiceLimit { address, .. } => RenderError::VoiceLimit {
                         node: node.id.clone(),
@@ -1108,22 +1115,6 @@ enum EventData {
         pitch_expression: Option<ExpressionRuntime<PitchExpression>>,
         gain_expression: Option<ExpressionRuntime<GainExpression>>,
     },
-}
-
-// Keep the immutable curve shared across scheduled events and live voices. Exact
-// rational coordinates preserve knot selection even below binary64 resolution.
-#[derive(Clone, Debug)]
-struct ExpressionRuntime<T> {
-    curve: Arc<T>,
-    coordinate_per_frame: Rational,
-    gate: u64,
-}
-
-impl<T> ExpressionRuntime<T> {
-    fn coordinate_at(&self, on_frame: u64, frame: u64) -> Rational {
-        &self.coordinate_per_frame
-            * Rational::from_integer(frame.saturating_sub(on_frame).min(self.gate).into())
-    }
 }
 
 impl EventRuntime {

@@ -83,8 +83,13 @@ are nonnegative finite engine values with no upper limit of 1. Step and linear
 segments allow zero; exponential segments require strictly positive endpoints.
 The [gain-expression contract](gain-expression.md) defines sample evaluation,
 zero-gain voice state, release holding, and simultaneous pitch/gain expression.
-Only `core.sine/1` receives gain expression. Both expression types share the
-global automation-point budget, including after pattern expansion.
+`core.sine/1` and reusable mono/stereo instruments receive gain expression.
+Instrument pitch remains `E_CAPABILITY`, even with zero gain.
+The [instrument gain contract](instrument-gain.md) places gain after each
+complete voice contribution, before summation and shared effects, and adds a
+point-count-dependent charge to existing execution work. This receiver extension
+adds no wire fields or plan version. Both expression types share the global
+automation-point budget, including after pattern expansion.
 
 These optional note fields are additive in both plan versions. Absent fields
 are omitted, preserving previous JSON shapes; older readers reject fields they

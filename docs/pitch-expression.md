@@ -65,8 +65,9 @@ expression point scale is 1.
 ## Acceptance contract and limits
 
 - `core.sine/1` supports pitch and [gain expression](gain-expression.md),
-  including both on one note. Pressure, timbre, and expression on custom or
-  other built-in instruments remain `E_CAPABILITY` errors.
+  including both on one note. Reusable instruments support
+  [gain expression](instrument-gain.md), but instrument pitch remains
+  `E_CAPABILITY`, even alongside zero gain. Pressure and timbre remain unsupported.
 - Expression changes the note's resolved base frequency by
   `2^(cents / 1200)`. Initial expression applies at note-on, each overlapping
   voice retains its own expression, and release holds the gate-end pitch.

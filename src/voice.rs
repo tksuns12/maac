@@ -1,10 +1,12 @@
 //! Compiled reusable instrument graphs and their per-instance DSP state.
 
 use crate::dsp::{one_pole_step, pan_sample, RenderError, Result};
+use crate::expression::ExpressionRuntime;
 use crate::graph::{
     parameter_descriptor_for_stage, topological_order, GraphProcessor, GraphProgram, GraphStage,
     InstrumentProgram, ParameterRate, ParameterSpec,
 };
+use crate::plan::GainExpression;
 use crate::synth::{Adsr, Oscillator, Waveform};
 use crate::wavetable::TableBank;
 use num_traits::ToPrimitive;
@@ -113,6 +115,8 @@ struct VoiceState {
     address: String,
     pitch_hz: f64,
     velocity: f64,
+    gain_expression: Option<ExpressionRuntime<GainExpression>>,
+    on_frame: u64,
     released: bool,
     graph: GraphState,
 }
@@ -307,6 +311,17 @@ impl InstrumentRuntime {
         velocity: f64,
         frame: u64,
     ) -> Result<()> {
+        self.note_on_with_gain(address, pitch_hz, velocity, frame, None)
+    }
+
+    pub(crate) fn note_on_with_gain(
+        &mut self,
+        address: impl Into<String>,
+        pitch_hz: f64,
+        velocity: f64,
+        frame: u64,
+        gain_expression: Option<ExpressionRuntime<GainExpression>>,
+    ) -> Result<()> {
         if !pitch_hz.is_finite() || !velocity.is_finite() || !(0.0..=1.0).contains(&velocity) {
             return Err(RenderError::Nonfinite(
                 "instrument note pitch must be finite and velocity must be within 0..=1".into(),
@@ -322,6 +337,8 @@ impl InstrumentRuntime {
             address: address.into(),
             pitch_hz,
             velocity,
+            gain_expression,
+            on_frame: frame,
             released: false,
             graph: GraphState::new_voice(&self.program.voice, &self.controls, frame)?,
         };
@@ -403,8 +420,23 @@ impl InstrumentRuntime {
             let amplitude = voice
                 .graph
                 .amplitude(&self.program.voice, frame, self.rate)?;
+            let gain = voice.gain_expression.as_ref().map(|expression| {
+                expression
+                    .curve
+                    .gain_at(&expression.coordinate_at(voice.on_frame, frame))
+            });
+            if gain.is_some_and(|value| !value.is_finite() || value < 0.0) {
+                return Err(RenderError::Nonfinite(format!(
+                    "gain expression at {} produced an invalid value",
+                    voice.address
+                )));
+            }
             for channel in 0..voice_channels {
-                voice_sum[channel] += sample[channel] * amplitude * voice.velocity;
+                let contribution = sample[channel] * amplitude * voice.velocity;
+                voice_sum[channel] += match gain {
+                    Some(gain) => contribution * gain,
+                    None => contribution,
+                };
                 if !voice_sum[channel].is_finite() {
                     return Err(RenderError::Nonfinite(format!(
                         "instrument {} voice sum is nonfinite",

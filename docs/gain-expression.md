@@ -71,12 +71,14 @@ These clock rules also apply to [pitch expression](pitch-expression.md).
 
 ## Acceptance contract and limits
 
-- Only `core.sine/1` receives gain expression. Pressure, timbre, and
-  expression on graph instruments or other built-in instruments remain
-  unsupported and fail explicitly.
-- One pitch and one gain expression may coexist on a note. Expression
+- `core.sine/1` and reusable mono/stereo instruments receive gain expression,
+  including `std/basic/1.0.0`, `std/acoustic/1.0.0`, and custom graphs. See the
+  [instrument gain guide](instrument-gain.md) for voice placement and limits.
+  Pressure and timbre remain unsupported. Instrument pitch remains
+  `E_CAPABILITY`, including when combined with zero gain.
+- One pitch and one gain expression may coexist on a `core.sine/1` note. Expression
   child IDs and their order do not affect the result; duplicate kinds fail.
-- Each voice emits `velocity * gain * envelope * level * sin(phase)`.
+- Each `core.sine/1` voice emits `velocity * gain * envelope * level * sin(phase)`.
   Zero gain silences its contribution but preserves phase updates, voice
   allocation, and the ordinary note/release lifecycle.
 - There is no automatic normalization or limiting. Gain above 1 can

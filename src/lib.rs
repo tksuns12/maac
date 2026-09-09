@@ -6,6 +6,7 @@ pub mod diagnostic;
 pub mod dsp;
 pub mod exact;
 pub mod export;
+mod expression;
 pub mod graph;
 pub mod instrument_plan;
 pub mod library;

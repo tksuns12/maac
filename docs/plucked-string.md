@@ -166,8 +166,11 @@ Smooth bend and vibrato curves retain string history. Abrupt valid changes may
 produce artifacts; stability does not promise click-free arbitrary automation.
 
 Existing global control automation affects all active voices in an instrument
-instance. This extension adds no per-note expression lanes. Existing mono graph
-modulation can drive ratio, including an LFO.
+instance. [Per-note gain](instrument-gain.md) applies after the full voice
+graph, ADSR, and velocity, before voice summation and shared effects. Zero gain
+never retriggers or refills the string; its recurrence continues normally.
+Per-note pitch remains unsupported. Existing mono graph modulation can drive
+ratio, including an LFO.
 
 Zero level, zero velocity, and amplitude-envelope silence still advance the
 entire recurrence. The designated ADSR and velocity multiply voice output

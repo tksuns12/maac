@@ -609,13 +609,26 @@ fn graph_instrument_rejects_per_note_pitch_expression() {
             shape: Interpolation::Step,
         }],
     });
+    if let EventKind::Note {
+        gain_expression, ..
+    } = &mut plan.events[0].kind
+    {
+        *gain_expression = Some(maac::plan::GainExpression {
+            clock: maac::plan::ExpressionClock::Seconds,
+            points: vec![maac::plan::GainExpressionPoint {
+                position: r(0, 1),
+                gain: r(0, 1),
+                shape: Interpolation::Step,
+            }],
+        });
+    }
     let error = plan.validate().unwrap_err();
     assert_eq!(error.code, "E_CAPABILITY");
     assert!(error.path.contains("pitch_expression"));
 }
 
 #[test]
-fn graph_instrument_rejects_per_note_gain_expression() {
+fn graph_instrument_accepts_per_note_gain_expression() {
     let mut plan = base_plan(PLAN_VERSION);
     plan.validate().unwrap();
     let EventKind::Note {
@@ -632,7 +645,64 @@ fn graph_instrument_rejects_per_note_gain_expression() {
             shape: Interpolation::Step,
         }],
     });
-    let error = plan.validate().unwrap_err();
-    assert_eq!(error.code, "E_CAPABILITY");
-    assert!(error.path.contains("gain_expression"));
+    plan.validate().unwrap();
+    Plan::from_json(&plan.to_json().unwrap()).unwrap();
+}
+
+#[test]
+fn gain_work_has_exact_point_and_active_release_window_cost_even_when_silent() {
+    use maac::plan::{ExpressionClock, GainExpression, GainExpressionPoint, PlanLimits};
+    for (points, extra) in [(0, 0), (1, 17), (2, 18), (3, 19), (65536, 33)] {
+        for automated in [false, true] {
+            // The 65,536-point curve already consumes the aggregate point limit.
+            if points == 65536 && automated {
+                continue;
+            }
+            let mut plan = base_plan(PLAN_VERSION);
+            if automated {
+                plan.automation.push(Automation {
+                    id: "long_release".into(),
+                    target: PortRef::new("bell", "release").unwrap(),
+                    clock: AutomationClock::Seconds,
+                    at: r(0, 1),
+                    points: vec![AutomationPoint {
+                        position: r(0, 1),
+                        value: r(2, 1),
+                        shape: Interpolation::Step,
+                    }],
+                });
+            }
+            if let EventKind::Note {
+                gain_expression,
+                velocity,
+                ..
+            } = &mut plan.events[0].kind
+            {
+                *velocity = r(0, 1);
+                if points != 0 {
+                    *gain_expression = Some(GainExpression {
+                        clock: ExpressionClock::Seconds,
+                        points: (0..points)
+                            .map(|i| GainExpressionPoint {
+                                position: r(i, 48000),
+                                gain: r(0, 1),
+                                shape: Interpolation::Step,
+                            })
+                            .collect(),
+                    });
+                }
+            }
+            let active = if automated { 72000 } else { 16800 };
+            let mut limits = PlanLimits {
+                max_execution_work: active * (2 + extra),
+                ..Default::default()
+            };
+            plan.validate_with_limits(&limits).unwrap();
+            limits.max_execution_work -= 1;
+            assert_eq!(
+                plan.validate_with_limits(&limits).unwrap_err().code,
+                "E_RESOURCE_LIMIT"
+            );
+        }
+    }
 }

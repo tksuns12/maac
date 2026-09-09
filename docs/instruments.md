@@ -167,7 +167,11 @@ modulate a scalar parameter.
 
 Every note receives independent oscillator, envelope, filter, and modulation
 state. The designated amplitude envelope and note velocity multiply the voice
-graph output exactly once. A voice remains allocated until its note-off release
+graph output exactly once. Optional [per-note gain](instrument-gain.md) then
+multiplies each output channel before voice summation and shared effects. The
+full voice graph still advances at zero gain; gate-end gain holds through release.
+Instrument pitch expression remains unsupported, even alongside zero gain.
+A voice remains allocated until its note-off release
 reaches zero, even if its sustain is zero. Voices sum in unsigned UTF-8
 event-address order. Overflow is an explicit error. Note-offs and expired-tail
 retirement precede note-ons at a shared frame, preserving the existing schedule.
