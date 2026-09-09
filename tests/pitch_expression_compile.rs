@@ -217,15 +217,12 @@ fn source_v1_and_bundle_v2_roundtrip() {
 }
 
 #[test]
-fn graph_receiver_rejects_pitch_expression_and_cents_are_not_parameter_units() {
+fn graph_receiver_accepts_pitch_expression_and_cents_are_not_parameter_units() {
     let text = source("normalized", "[(0, 0ct, linear), (1, 100ct, step)]", PLACE);
     let graph = text.replace("node sine { type = \"core.sine/1\"; config = { voices = 8; }; }", r#"instrument lead { channels = 1; voice v { channels = 1; amplitude = &amp; output = &osc:out; node amp { type = "synth.adsr/1"; } node osc { type = "synth.sine/1"; } } }
 node sine { instrument = &lead; }"#);
     assert_ne!(graph, text);
-    assert!(compile(&parse(&graph).unwrap())
-        .unwrap_err()
-        .iter()
-        .any(|e| e.code == DiagnosticCode::Capability));
+    assert!(compile(&parse(&graph).unwrap()).is_ok());
     let parameter = text.replace(
         "type = \"core.sine/1\";",
         "type = \"core.sine/1\"; params = { level = 1ct; };",

@@ -1,3 +1,13 @@
+# Per-note instrument pitch
+
+[`instrument-pitch.maac`](instrument-pitch.maac) overlaps independently bending
+piano and acoustic guitar notes, including piecewise-linear vibrato, all three
+curve clocks, and simultaneous pitch and gain. Its embedded imports are standalone.
+Build it with `maac build examples/instrument-pitch.maac -o instrument-pitch.wav`.
+Expected output is 91,200 stereo frames at 48 kHz (1.9 seconds including tail).
+The [instrument pitch guide](../docs/instrument-pitch.md) explains frequency
+limits, state continuity, and retained-plan rendering.
+
 # Per-note gain swells and fades
 
 [`gain-expression.maac`](gain-expression.maac) combines pitch and gain on one

@@ -2,7 +2,9 @@
 
 Attach an `expression` with `kind = pitch` to a note and reference a curve
 whose values are cents. Each voice evaluates its own curve independently,
-including when notes overlap on the same `core.sine/1` node.
+including when notes overlap on the same `core.sine/1` or reusable mono/stereo
+instrument node. See the [instrument pitch guide](instrument-pitch.md) for
+basic, acoustic, and custom graph behavior and a standalone example.
 
 [The example](../examples/pitch-expression.maac) slides A3 up one octave
 over a three-quarter-note gate while a later E5 slides down 700 cents.
@@ -65,13 +67,17 @@ expression point scale is 1.
 ## Acceptance contract and limits
 
 - `core.sine/1` supports pitch and [gain expression](gain-expression.md),
-  including both on one note. Reusable instruments support
-  [gain expression](instrument-gain.md), but instrument pitch remains
-  `E_CAPABILITY`, even alongside zero gain. Pressure and timbre remain unsupported.
+  including both on one note. Reusable mono/stereo instruments support both
+  [pitch](instrument-pitch.md) and [gain](instrument-gain.md), including together
+  on one note. Pressure and timbre remain unsupported.
 - Expression changes the note's resolved base frequency by
   `2^(cents / 1200)`. Initial expression applies at note-on, each overlapping
   voice retains its own expression, and release holds the gate-end pitch.
-- Pitch at or above Nyquist, including the bend, must fail explicitly.
+- The expressed base `resolvedHz * 2^(cents / 1200)` must be finite, positive,
+  and strictly below Nyquist, including the initial value and reachable curve
+  domain and gate end. A node down-ratio does not excuse an invalid base.
+  Reusable node effective-frequency checks also apply at render time after
+  live controls and modulation, even at zero gain or velocity.
 - Direct build and compile-then-render must produce identical audio;
   ordinary notes without expression must preserve their previous output.
 - Plan v1/v2 carry an optional note `pitch_expression` object with `clock`

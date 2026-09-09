@@ -75,7 +75,11 @@ note-ons; equal-class events sort by `order`, then unsigned UTF-8 event address.
 positions already include inherited musical stretch. The
 [pitch-expression contract](pitch-expression.md) defines evaluation over the
 scheduled frame gate, release holding, and effective-domain frequency checks.
-Only `core.sine/1` receives pitch expression.
+`core.sine/1` and reusable mono/stereo instruments receive pitch expression.
+The [instrument pitch contract](instrument-pitch.md) validates the expressed
+base across the reachable curve domain, including the gate end; node effective
+frequency bounds depend on live controls and modulation and are checked at render
+time, even for silent voices.
 
 `gain_expression` uses the same clocks and a strict `points` array with
 canonical rational `position` and dimensionless `gain`, plus `shape`. Gains
@@ -84,12 +88,13 @@ segments allow zero; exponential segments require strictly positive endpoints.
 The [gain-expression contract](gain-expression.md) defines sample evaluation,
 zero-gain voice state, release holding, and simultaneous pitch/gain expression.
 `core.sine/1` and reusable mono/stereo instruments receive gain expression.
-Instrument pitch remains `E_CAPABILITY`, even with zero gain.
 The [instrument gain contract](instrument-gain.md) places gain after each
 complete voice contribution, before summation and shared effects, and adds a
 point-count-dependent charge to existing execution work. This receiver extension
 adds no wire fields or plan version. Both expression types share the global
-automation-point budget, including after pattern expansion.
+automation-point budget, including after pattern expansion. Instrument pitch adds
+`17 + ceil(log2(point_count))` work units per conservative active voice frame,
+additively with gain; the 65,536-point and 4,096-bit rational limits are unchanged.
 
 These optional note fields are additive in both plan versions. Absent fields
 are omitted, preserving previous JSON shapes; older readers reject fields they

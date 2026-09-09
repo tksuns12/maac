@@ -2679,7 +2679,7 @@ impl Plan {
                         return Err(err(
                             "E_RANGE",
                             format!("events[{index}].pitch_hz"),
-                            "sine pitch must be positive and below Nyquist",
+                            "note pitch must be positive and below Nyquist",
                         ));
                     }
                     if velocity.is_negative() || *velocity > one() {
@@ -2700,11 +2700,14 @@ impl Plan {
                         ));
                     }
                     if let Some(expression) = pitch_expression {
-                        if !matches!(target.processor, Processor::Sine { .. }) {
+                        if !matches!(
+                            target.processor,
+                            Processor::Sine { .. } | Processor::Instrument { .. }
+                        ) {
                             return Err(err(
                                 "E_CAPABILITY",
                                 format!("events[{index}].pitch_expression"),
-                                "pitch expression is supported only by core.sine/1",
+                                "pitch expression requires core.sine/1 or an instrument",
                             ));
                         }
                         expression.validate_for_note(
@@ -3163,24 +3166,32 @@ impl Plan {
                 work = work.saturating_add(active_frames.saturating_mul(voice_cost));
                 work = work.saturating_add(initialization_cost);
                 if let EventKind::Note {
-                    gain_expression: Some(expression),
+                    pitch_expression,
+                    gain_expression,
                     ..
                 } = &event.kind
                 {
-                    // Normalized accounting units: exact-coordinate interpolation plus
-                    // binary knot lookup. Silence still executes the full voice window.
-                    let lookup = usize::BITS - (expression.points.len() - 1).leading_zeros();
-                    let gain_cost = 17 + u64::from(lookup);
-                    work = active_frames
-                        .checked_mul(gain_cost)
-                        .and_then(|gain_work| work.checked_add(gain_work))
-                        .ok_or_else(|| {
-                            err(
-                                "E_RESOURCE_LIMIT",
-                                "instruments",
-                                "gain expression work overflow",
-                            )
-                        })?;
+                    // Each expression executes independently throughout the conservative
+                    // voice window, including silent frames and release tails.
+                    for (kind, points) in [
+                        ("pitch", pitch_expression.as_ref().map(|e| e.points.len())),
+                        ("gain", gain_expression.as_ref().map(|e| e.points.len())),
+                    ] {
+                        if let Some(points) = points {
+                            let lookup = usize::BITS - (points - 1).leading_zeros();
+                            let cost = 17 + u64::from(lookup);
+                            work = active_frames
+                                .checked_mul(cost)
+                                .and_then(|expression_work| work.checked_add(expression_work))
+                                .ok_or_else(|| {
+                                    err(
+                                        "E_RESOURCE_LIMIT",
+                                        "instruments",
+                                        format!("{kind} expression work overflow"),
+                                    )
+                                })?;
+                        }
+                    }
                 }
             }
         }

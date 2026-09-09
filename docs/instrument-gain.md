@@ -17,8 +17,8 @@ expression dynamics { kind = gain; curve = &swell; }
 The [gain guide](gain-expression.md) defines the unchanged normalized, seconds,
 and score clocks, step/linear/exponential interpolation, and pattern expansion
 rules. Gain above 1 is allowed without normalization or limiting; allow output
-headroom. Instrument pitch expression remains `E_CAPABILITY`, even alongside
-zero gain. Simultaneous pitch and gain remain supported only on `core.sine/1`.
+headroom. [Per-note pitch](instrument-pitch.md) can coexist independently with gain on
+these instruments and on `core.sine/1`; zero gain still preserves pitch validation.
 
 ## Voice behavior
 

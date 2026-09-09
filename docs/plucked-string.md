@@ -38,7 +38,7 @@ control or automation target. Unknown configuration fields fail.
 Existing rational unit/range validation, public controls, and mono sample-rate
 modulation apply to all four parameters. There is no oscillator `phase` or
 frequency-offset parameter. At each frame, after controls and modulation,
-`f = note_pitch_hz * ratio` must be finite and in 20…4000 Hz inclusive. This
+`f = expressed_base_hz * ratio` must be finite and in 20…4000 Hz inclusive. This
 effective-frequency constraint applies even when level, velocity, or amplitude
 is zero. A valid ratio alone does not guarantee a valid effective frequency.
 General live expressions are checked at render time without clipping,
@@ -169,8 +169,13 @@ Existing global control automation affects all active voices in an instrument
 instance. [Per-note gain](instrument-gain.md) applies after the full voice
 graph, ADSR, and velocity, before voice summation and shared effects. Zero gain
 never retriggers or refills the string; its recurrence continues normally.
-Per-note pitch remains unsupported. Existing mono graph modulation can drive
-ratio, including an LFO.
+[Per-note pitch](instrument-pitch.md) supplies
+`expressed_base_hz = note_pitch_hz * 2^(cents / 1200)` independently for each
+voice, with gate-end holding through release. The base remains finite, positive,
+and strictly below Nyquist; the effective pluck frequency remains 20…4000 Hz
+inclusive after the live ratio. There is no frequency offset. Bends preserve
+ring pointers and history without refilling or retriggering. Existing mono
+graph modulation can drive ratio, including an LFO.
 
 Zero level, zero velocity, and amplitude-envelope silence still advance the
 entire recurrence. The designated ADSR and velocity multiply voice output

@@ -170,7 +170,10 @@ state. The designated amplitude envelope and note velocity multiply the voice
 graph output exactly once. Optional [per-note gain](instrument-gain.md) then
 multiplies each output channel before voice summation and shared effects. The
 full voice graph still advances at zero gain; gate-end gain holds through release.
-Instrument pitch expression remains unsupported, even alongside zero gain.
+Optional [per-note pitch](instrument-pitch.md) changes each voice's base frequency
+before node ratios and oscillator frequency offsets. Bends preserve phase,
+wavetable state, and plucked-string history; gate-end pitch holds through release.
+Live effective-frequency checks still apply at zero gain or velocity.
 A voice remains allocated until its note-off release
 reaches zero, even if its sustain is zero. Voices sum in unsigned UTF-8
 event-address order. Overflow is an explicit error. Note-offs and expired-tail

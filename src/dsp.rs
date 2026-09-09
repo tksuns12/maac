@@ -496,11 +496,12 @@ impl<'a> DspEngine<'a> {
         } = event.data;
         if let Some(instrument) = &mut node.instrument {
             return instrument
-                .note_on_with_gain(
+                .note_on_with_expressions(
                     event.address.clone(),
                     pitch_hz,
                     velocity,
                     frame,
+                    pitch_expression,
                     gain_expression,
                 )
                 .map_err(|error| match error {

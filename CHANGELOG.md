@@ -11,6 +11,11 @@ actually published; no release tag or publication date is asserted here.
 
 ### Added
 
+- Per-note pitch on reusable mono/stereo instruments, including basic, acoustic,
+  and custom graphs. Independent cents curves preserve oscillator and string
+  state, coexist with gain, and reuse existing source and plan fields. See the
+  [instrument pitch guide](docs/instrument-pitch.md) for live frequency limits.
+
 - Per-note gain on reusable mono/stereo instruments, including basic, acoustic,
   and custom graphs. Gain follows the complete voice contribution and precedes
   shared effects; zero gain preserves DSP and voice lifecycle. Existing curve
@@ -83,8 +88,7 @@ actually published; no release tag or publication date is asserted here.
 
 - The Rust implementation is a foundation subset; it does not claim full
   Document, Performance, Core Audio, or Locked Render conformance.
-- Tempo ramps, per-note pressure/timbre expression, pitch expression on
-  graph instruments, hits/messages, top-level core modulation,
+- Tempo ramps, per-note pressure/timbre expression, hits/messages, top-level core modulation,
   other processors, recorded-sample instruments, arranged audio, external plug-ins,
   transactional editing, MaaC Locked Render dependency-lock manifests
   (distinct from `Cargo.lock`), MIDI transport, GUI, and real-time playback

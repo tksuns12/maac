@@ -6,7 +6,7 @@ use crate::graph::{
     parameter_descriptor_for_stage, topological_order, GraphProcessor, GraphProgram, GraphStage,
     InstrumentProgram, ParameterRate, ParameterSpec,
 };
-use crate::plan::GainExpression;
+use crate::plan::{GainExpression, PitchExpression};
 use crate::synth::{Adsr, Oscillator, Waveform};
 use crate::wavetable::TableBank;
 use num_traits::ToPrimitive;
@@ -115,6 +115,7 @@ struct VoiceState {
     address: String,
     pitch_hz: f64,
     velocity: f64,
+    pitch_expression: Option<ExpressionRuntime<PitchExpression>>,
     gain_expression: Option<ExpressionRuntime<GainExpression>>,
     on_frame: u64,
     released: bool,
@@ -311,15 +312,18 @@ impl InstrumentRuntime {
         velocity: f64,
         frame: u64,
     ) -> Result<()> {
-        self.note_on_with_gain(address, pitch_hz, velocity, frame, None)
+        self.note_on_with_expressions(address, pitch_hz, velocity, frame, None, None)
     }
 
-    pub(crate) fn note_on_with_gain(
+    // Keep the public note-on contract unchanged while carrying both optional curves.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn note_on_with_expressions(
         &mut self,
         address: impl Into<String>,
         pitch_hz: f64,
         velocity: f64,
         frame: u64,
+        pitch_expression: Option<ExpressionRuntime<PitchExpression>>,
         gain_expression: Option<ExpressionRuntime<GainExpression>>,
     ) -> Result<()> {
         if !pitch_hz.is_finite() || !velocity.is_finite() || !(0.0..=1.0).contains(&velocity) {
@@ -337,6 +341,7 @@ impl InstrumentRuntime {
             address: address.into(),
             pitch_hz,
             velocity,
+            pitch_expression,
             gain_expression,
             on_frame: frame,
             released: false,
@@ -409,12 +414,33 @@ impl InstrumentRuntime {
         let voice_channels = self.program.voice.channels;
         let mut voice_sum = [0.0; 2];
         for voice in &mut self.voices {
+            let pitch_hz = if let Some(expression) = &voice.pitch_expression {
+                let cents = expression
+                    .curve
+                    .cents_at(&expression.coordinate_at(voice.on_frame, frame))
+                    .to_f64()
+                    .ok_or_else(|| {
+                        RenderError::Nonfinite(
+                            "pitch expression cents cannot be represented".into(),
+                        )
+                    })?;
+                let frequency = voice.pitch_hz * 2.0_f64.powf(cents / 1200.0);
+                if !frequency.is_finite() || frequency <= 0.0 || frequency >= self.rate / 2.0 {
+                    return Err(RenderError::RenderState(format!(
+                        "pitch expression at {} is outside (0, Nyquist)",
+                        voice.address
+                    )));
+                }
+                frequency
+            } else {
+                voice.pitch_hz
+            };
             let sample = voice.graph.render(
                 &self.program.voice,
                 &self.controls,
                 frame,
                 self.rate,
-                voice.pitch_hz,
+                pitch_hz,
                 [0.0; 2],
             )?;
             let amplitude = voice

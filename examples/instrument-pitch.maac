@@ -1,0 +1,71 @@
+maac 1;
+
+// Independent bends and piecewise-linear vibrato across two embedded instrument collections.
+project instrument_pitch_demo {
+  score = [0q, 3q]; rate = 48000Hz;
+  tempo = &clock; meter = &metre; output = &master:out; tail = 400ms;
+}
+tempo clock { points = [(0q, 120bpm, step)]; }
+meter metre { points = [(0q, 4, 4)]; }
+import basic { builtin = "std/basic/1.0.0"; }
+import acoustic { builtin = "std/acoustic/1.0.0"; }
+
+node keys {
+  instrument = &basic.mellow_piano; config = { voices = 4; };
+  params = { level = 0.15; release = 300ms; };
+}
+node guitar {
+  instrument = &acoustic.nylon_guitar; config = { voices = 4; };
+  params = { level = 0.15; release = 300ms; };
+}
+node master { type = "core.sum/1"; config = { channels = 2; }; }
+connect keys_master { from = &keys:out; to = &master:in; }
+connect guitar_master { from = &guitar:out; to = &master:in; }
+
+curve upward {
+  clock = normalized;
+  points = [(0, 0ct, linear), (1, 200ct, step)];
+}
+curve downward {
+  clock = score;
+  points = [(0q, 0ct, linear), (2q, -200ct, step)];
+}
+curve vibrato {
+  clock = seconds;
+  points = [(0s, 0ct, linear), (100ms, 20ct, linear),
+    (200ms, -20ct, linear), (300ms, 20ct, linear),
+    (400ms, -20ct, linear), (500ms, 20ct, linear),
+    (600ms, -20ct, linear), (700ms, 20ct, linear),
+    (800ms, -20ct, linear), (900ms, 20ct, linear), (1s, 0ct, step)];
+}
+curve swell {
+  clock = normalized;
+  points = [(0, 1/4, linear), (1/2, 3/4, linear), (1, 1/4, step)];
+}
+pattern piano_phrase {
+  length = 3q;
+  note swelling {
+    at = 0q; dur = 2q; pitch = C4; velocity = 0.35;
+    expression bend { kind = pitch; curve = &upward; }
+    expression gain { kind = gain; curve = &swell; }
+  }
+  note rising {
+    at = 1q; dur = 2q; pitch = E4; velocity = 0.3;
+    expression bend { kind = pitch; curve = &downward; }
+  }
+}
+pattern guitar_phrase {
+  length = 3q;
+  note returning {
+    at = 0q; dur = 2q; pitch = G3; velocity = 0.35;
+    expression vibrate { kind = pitch; curve = &vibrato; }
+  }
+  note fading {
+    at = 1q; dur = 2q; pitch = C4; velocity = 0.3;
+    expression bend { kind = pitch; curve = &upward; }
+  }
+}
+track piano { target = &keys:events; }
+track strings { target = &guitar:events; }
+place piano_once { pattern = &piano_phrase; track = &piano; at = 0q; }
+place guitar_once { pattern = &guitar_phrase; track = &strings; at = 0q; }

@@ -592,7 +592,7 @@ fn resource_collection_limits_precede_deep_program_validation() {
 }
 
 #[test]
-fn graph_instrument_rejects_per_note_pitch_expression() {
+fn graph_instrument_accepts_per_note_pitch_and_gain_expression() {
     let mut plan = base_plan(PLAN_VERSION);
     plan.validate().unwrap();
     let EventKind::Note {
@@ -622,9 +622,8 @@ fn graph_instrument_rejects_per_note_pitch_expression() {
             }],
         });
     }
-    let error = plan.validate().unwrap_err();
-    assert_eq!(error.code, "E_CAPABILITY");
-    assert!(error.path.contains("pitch_expression"));
+    plan.validate().unwrap();
+    Plan::from_json(&plan.to_json().unwrap()).unwrap();
 }
 
 #[test]
