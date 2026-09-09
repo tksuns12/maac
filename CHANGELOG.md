@@ -11,6 +11,10 @@ actually published; no release tag or publication date is asserted here.
 
 ### Added
 
+- Per-note pitch expression on `core.sine/1`, with cents-based step/linear
+  curves on normalized, seconds, or score clocks and independent release
+  holding. Optional note payloads extend plan versions 1 and 2 while preserving
+  expression-free JSON. See the [authoring guide](docs/pitch-expression.md).
 - Experimental native `fx.eq/1`, `fx.compressor/1`, and `fx.reverb/1`, with
   strict source and retained-plan validation, sample automation, reset replay,
   external sidechains, and bounded complete-graph master/stem capture.
@@ -68,7 +72,8 @@ actually published; no release tag or publication date is asserted here.
 
 - The Rust implementation is a foundation subset; it does not claim full
   Document, Performance, Core Audio, or Locked Render conformance.
-- Tempo ramps, per-note expression, hits/messages, top-level core modulation,
+- Tempo ramps, per-note gain/pressure/timbre expression, pitch expression on
+  graph instruments, hits/messages, top-level core modulation,
   other processors, recorded-sample instruments, arranged audio, external plug-ins,
   transactional editing, MaaC Locked Render dependency-lock manifests
   (distinct from `Cargo.lock`), MIDI transport, GUI, and real-time playback

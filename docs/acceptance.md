@@ -10,6 +10,7 @@ unchanged.
 | Source semantics | Unknown fields/kinds, invalid nesting, wrong references/units, invalid unused declarations, and recognized unsupported features fail explicitly |
 | Musical clocks | Exact thirds and step changes; meter-boundary checks; positive and negative bar coordinates; exact ceiling scheduling |
 | Pitch | Letter accidentals, key, ratio, frequency, tuning degrees including negative indices; finite positive frequencies below Nyquist |
+| Per-note pitch | All three curve clocks, exact knot selection, inherited score stretch, offsets/cuts/overrides/inserts, independent overlapping voices and release holding; source/plan/audio roundtrip; unsupported receivers and malformed/over-budget curves fail |
 | Expansion | Nested uses, repetition and stretch, additive transposition, nested cuts before physical offsets, stable addresses, isolated final-state overrides and inserts |
 | Scheduling | Score-origin reset, invalid effective onsets, score-end note-off truncation, negative/zero gates, sub-sample collapse |
 | Plan import | Unknown versions/fields, inconsistent time/frame values, duplicates, missing references, invalid parameter ranges, cycles, oversized input and collections |

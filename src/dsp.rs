@@ -6,8 +6,8 @@
 //! the slice is valid until the callback returns.
 
 use crate::plan::{
-    AutomationClock, EventKind, Interpolation, Plan, PlanError, PlanLimits, PortRef, Processor,
-    Rational, ResolvedEvent,
+    AutomationClock, EventKind, Interpolation, PitchExpression, Plan, PlanError, PlanLimits,
+    PortRef, Processor, Rational, ResolvedEvent,
 };
 use crate::production_compressor::{Compressor, CompressorParams};
 use crate::production_eq::Eq;
@@ -264,7 +264,7 @@ impl<'a> DspEngine<'a> {
             let node = *node_indices.get(&event.target.node).ok_or_else(|| {
                 RenderError::RenderState(format!("event {} has no target node", event.address))
             })?;
-            let runtime = EventRuntime::from_event(event, node)?;
+            let runtime = EventRuntime::from_event(event, node, plan.output.sample_rate_hz)?;
             let index = events.len();
             on_events.entry(runtime.on_frame).or_default().push(index);
             if let Some(frame) = runtime.off_frame {
@@ -487,7 +487,11 @@ impl<'a> DspEngine<'a> {
             .nodes
             .get_mut(event.node)
             .ok_or_else(|| RenderError::RenderState("event node index is invalid".into()))?;
-        let EventData::Note { pitch_hz, velocity } = event.data;
+        let EventData::Note {
+            pitch_hz,
+            velocity,
+            pitch_expression,
+        } = event.data;
         if let Some(instrument) = &mut node.instrument {
             return instrument
                 .note_on(event.address.clone(), pitch_hz, velocity, frame)
@@ -517,6 +521,7 @@ impl<'a> DspEngine<'a> {
         let voice = Voice {
             address: event.address,
             pitch_hz,
+            pitch_expression,
             velocity,
             on_frame: frame,
             attack,
@@ -987,7 +992,35 @@ impl NodeState {
                 )));
             }
             sum += value;
-            let phase_increment = 2.0 * std::f64::consts::PI * voice.pitch_hz / rate;
+            let pitch_hz = if let Some(expression) = &voice.pitch_expression {
+                let coordinate = &expression.coordinate_per_frame
+                    * Rational::from_integer(
+                        frame
+                            .saturating_sub(voice.on_frame)
+                            .min(expression.gate)
+                            .into(),
+                    );
+                let cents = expression
+                    .curve
+                    .cents_at(&coordinate)
+                    .to_f64()
+                    .ok_or_else(|| {
+                        RenderError::Nonfinite(
+                            "pitch expression cents cannot be represented".into(),
+                        )
+                    })?;
+                let frequency = voice.pitch_hz * 2.0_f64.powf(cents / 1200.0);
+                if !frequency.is_finite() || frequency <= 0.0 || frequency >= rate / 2.0 {
+                    return Err(RenderError::RenderState(format!(
+                        "pitch expression at {} is outside (0, Nyquist)",
+                        voice.address
+                    )));
+                }
+                frequency
+            } else {
+                voice.pitch_hz
+            };
+            let phase_increment = 2.0 * std::f64::consts::PI * pitch_hz / rate;
             voice.phase = (voice.phase + phase_increment).rem_euclid(2.0 * std::f64::consts::PI);
         }
         // A release voice is retained through the frame at which its envelope
@@ -1013,6 +1046,7 @@ impl NodeState {
 struct Voice {
     address: String,
     pitch_hz: f64,
+    pitch_expression: Option<ExpressionRuntime>,
     velocity: f64,
     on_frame: u64,
     attack: f64,
@@ -1057,12 +1091,30 @@ struct EventRuntime {
 
 #[derive(Clone, Debug)]
 enum EventData {
-    Note { pitch_hz: f64, velocity: f64 },
+    Note {
+        pitch_hz: f64,
+        velocity: f64,
+        pitch_expression: Option<ExpressionRuntime>,
+    },
+}
+
+// Keep the immutable curve shared across scheduled events and live voices. Exact
+// rational coordinates preserve knot selection even below binary64 resolution.
+#[derive(Clone, Debug)]
+struct ExpressionRuntime {
+    curve: Arc<PitchExpression>,
+    coordinate_per_frame: Rational,
+    gate: u64,
 }
 
 impl EventRuntime {
-    fn from_event(event: &ResolvedEvent, node: usize) -> Result<Self> {
-        let EventKind::Note { pitch_hz, velocity } = &event.kind else {
+    fn from_event(event: &ResolvedEvent, node: usize, rate: u32) -> Result<Self> {
+        let EventKind::Note {
+            pitch_hz,
+            velocity,
+            pitch_expression,
+        } = &event.kind
+        else {
             return Err(RenderError::RenderState(format!(
                 "unsupported event kind at {}",
                 event.address
@@ -1086,6 +1138,11 @@ impl EventRuntime {
             data: EventData::Note {
                 pitch_hz: *pitch_hz,
                 velocity,
+                pitch_expression: pitch_expression.as_ref().map(|curve| ExpressionRuntime {
+                    coordinate_per_frame: curve.coordinate_at(event, event.on_frame + 1, rate),
+                    gate: event.off_frame.expect("validated note off") - event.on_frame,
+                    curve: Arc::new(curve.clone()),
+                }),
             },
             on_frame: event.on_frame,
             off_frame: event.off_frame,

@@ -11,6 +11,7 @@ specification remains authoritative; this page describes the implementation scop
 | Arrangement | Explicit tracks and placements, stable occurrence addresses, final-state overrides, deletion and inserts |
 | Time | Step tempo maps, meter maps, global `bar` positions, independent physical offsets, exact ceiling scheduling |
 | Pitch | Letter pitches, `key`, `degree`, `ratio`, Hz/kHz, explicit tunings |
+| Per-note pitch | `core.sine/1` cents curves; normalized, seconds and score clocks; step/linear interpolation and gate-end release holding |
 | Automation | Global score/seconds clocks; step, linear and exponential interpolation; sample/event parameter rates |
 | Routing | Explicit mono/stereo audio graph and note targets; no implicit channel conversions or mixers |
 | Processors | `core.sine/1`, `core.onepole/1`, `core.pan/1`, `core.sum/1`, `core.gain/1` (mono/stereo) |
@@ -28,10 +29,14 @@ specification remains authoritative; this page describes the implementation scop
 | Interchange | Independently validated standalone plans: version 1 legacy and version 2 embedded graph/data/provenance |
 
 Recognized deferred features fail with `E_CAPABILITY`: tempo ramps, per-note
-expression, hits/messages, top-level core modulation, other processors, recorded
+gain/pressure/timbre expression, pitch expression on graph instruments,
+hits/messages, top-level core modulation, other processors, recorded
 sample instruments, arranged audio, external plug-ins and other extensions. Transactional editing, full render locks,
 MIDI transport, GUI and real-time playback are outside this release's interfaces.
 No deferred feature is approximated silently.
+
+The [per-note pitch guide](pitch-expression.md) defines the supported receiver,
+curve clocks, instance transformations, and standalone-plan compatibility.
 
 The [native production contract](production.md), required capability
 `maac.production/1`, has an **experimental implementation**. Native `fx.eq/1`,
@@ -83,7 +88,7 @@ rates/channel capabilities use `E_CAPABILITY`). Additional bounds are:
 | Source/aggregate plan objects | 200,000 |
 | Connections | 4,096 |
 | Tempo points | 4,096 |
-| Automation points | 65,536 |
+| Global automation plus expanded per-note pitch points | 65,536 combined |
 | Regions | 16,384 |
 | Additional source mappings | 100,000 |
 | Identifier | 128 ASCII bytes |

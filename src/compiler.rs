@@ -24,8 +24,9 @@ use crate::music::{
 };
 use crate::plan::{
     Automation, AutomationClock, AutomationPoint, Connection, EventKind, EventTarget,
-    Interpolation, Node, OutputSettings, Plan, PlanLimits, PortRef, Processor, Region,
-    ResolvedEvent, SourceMapping, SourceSpan, TempoMap, TempoPoint,
+    Interpolation, Node, OutputSettings, PitchExpression, PitchExpressionClock,
+    PitchExpressionPoint, Plan, PlanLimits, PortRef, Processor, Region, ResolvedEvent,
+    SourceMapping, SourceSpan, TempoMap, TempoPoint,
 };
 use crate::semantic::InstrumentNodeDescriptor;
 use crate::syntax::{Document, Field, Object, Reference, Unit, Value, ValueKind};
@@ -256,6 +257,7 @@ fn bigint_u64(value: &Rational, span: Option<Span>) -> CResult<u64> {
 
 #[derive(Clone, Debug)]
 struct NoteDef {
+    pitch_expression: Option<String>,
     id: String,
     span: Span,
     at: Rational,
@@ -326,6 +328,8 @@ struct PlaceDef {
 
 #[derive(Clone, Debug)]
 struct ExpandedNote {
+    pitch_expression: Option<String>,
+    expression_scale: Rational,
     address: String,
     source: SourceMapping,
     source_span: Span,
@@ -456,10 +460,10 @@ impl<'a> Compiler<'a> {
         self.read_patterns()?;
         self.validate_pattern_graph()?;
         self.read_tracks_and_places()?;
-        self.read_curves_and_automation()?;
+        self.read_curves_and_automation(limits)?;
         self.read_regions()?;
         self.expand_places()?;
-        let plan = self.finish_plan()?;
+        let plan = self.finish_plan(limits)?;
         plan.validate_with_limits(limits).map_err(plan_error)?;
         Ok(plan)
     }
@@ -1445,19 +1449,20 @@ impl<'a> Compiler<'a> {
                 Some(object.span),
             )
         })?;
-        if object
+        let pitch_expression = object
             .children
             .values()
-            .any(|child| child.kind == "expression")
-        {
-            return Err(path_diagnostic(
-                DiagnosticCode::Capability,
-                "per-note expression is outside the standalone plan profile",
-                object,
-                None,
-            ));
-        }
+            .find(|child| child.kind == "expression")
+            .map(|child| {
+                self.one_reference(
+                    &self.field(child, "curve")?.value,
+                    child,
+                    child.field("curve"),
+                )
+            })
+            .transpose()?;
         Ok(NoteDef {
+            pitch_expression,
             id: object.id.clone(),
             span: object.span,
             at,
@@ -1888,7 +1893,8 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn read_curves_and_automation(&mut self) -> CResult<()> {
+    fn read_curves_and_automation(&mut self, limits: &PlanLimits) -> CResult<()> {
+        let mut automation_points = 0usize;
         for object in self
             .document
             .objects
@@ -1900,10 +1906,10 @@ impl<'a> Compiler<'a> {
                 object,
                 object.field("clock"),
             )?;
-            if !matches!(clock.as_str(), "score" | "seconds") {
+            if !matches!(clock.as_str(), "score" | "seconds" | "normalized") {
                 return Err(path_diagnostic(
                     DiagnosticCode::Capability,
-                    "normalized global automation is unsupported",
+                    "unsupported curve clock",
                     object,
                     None,
                 ));
@@ -1923,9 +1929,14 @@ impl<'a> Compiler<'a> {
                 let tuple = self.tuple(value, object, Some(field), 3)?;
                 let position = match clock.as_str() {
                     "score" => self.q_value(&tuple[0], object, Some(field), false)?,
+                    "normalized" => self.rational_value(&tuple[0], object, Some(field))?,
                     _ => self.seconds_value(&tuple[0], object, Some(field))?,
                 };
-                let value = self.numeric_parameter_value(&tuple[1], object, Some(field))?;
+                let value = if matches!(tuple[1].kind, ValueKind::Quantity { unit: Unit::Ct, .. }) {
+                    self.cents_value(&tuple[1], object, Some(field))?
+                } else {
+                    self.numeric_parameter_value(&tuple[1], object, Some(field))?
+                };
                 let shape = match self.symbol_value(&tuple[2], object, Some(field))?.as_str() {
                     "step" => Interpolation::Step,
                     "linear" => Interpolation::Linear,
@@ -1979,6 +1990,31 @@ impl<'a> Compiler<'a> {
                     object.field("curve"),
                 )
             })?;
+            if curve.clock == "normalized" {
+                return Err(path_diagnostic(
+                    DiagnosticCode::Capability,
+                    "normalized curves cannot be global automation",
+                    object,
+                    object.field("curve"),
+                ));
+            }
+            automation_points = automation_points
+                .checked_add(curve.points.len())
+                .ok_or_else(|| {
+                    diagnostics(
+                        DiagnosticCode::ResourceLimit,
+                        "automation point budget overflow",
+                        Some(object.span),
+                    )
+                })?;
+            if automation_points > limits.max_automation_points {
+                return Err(path_diagnostic(
+                    DiagnosticCode::ResourceLimit,
+                    "automation point budget exceeded",
+                    object,
+                    None,
+                ));
+            }
             let at_value = self.field(object, "at")?;
             let at = if curve.clock == "score" {
                 self.q_value(&at_value.value, object, Some(at_value), true)?
@@ -2301,6 +2337,8 @@ impl<'a> Compiler<'a> {
                         ));
                     }
                     self.events.push(ExpandedNote {
+                        pitch_expression: note.pitch_expression.clone(),
+                        expression_scale: state.scale.clone(),
                         address: state.address.join("/"),
                         source: SourceMapping {
                             object: note.id.clone(),
@@ -2449,6 +2487,8 @@ impl<'a> Compiler<'a> {
                 }),
             };
             let event = ExpandedNote {
+                pitch_expression: insert.note.pitch_expression.clone(),
+                expression_scale: Rational::one(),
                 address: format!("{}/{}/{}", place.id, insert.id, insert.note.id),
                 source,
                 source_span: insert.note.span,
@@ -2558,7 +2598,31 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn finish_plan(&self) -> CResult<Plan> {
+    fn finish_plan(&self, limits: &PlanLimits) -> CResult<Plan> {
+        // Expansion keeps only curve identities; bound the aggregate before cloning points.
+        let mut point_count = 0usize;
+        for count in self.automations.iter().map(|a| a.points.len()).chain(
+            self.events
+                .iter()
+                .filter_map(|e| e.pitch_expression.as_ref())
+                .map(|id| self.curves[id].points.len()),
+        ) {
+            point_count = point_count.checked_add(count).ok_or_else(|| {
+                diagnostics(
+                    DiagnosticCode::ResourceLimit,
+                    "expression point budget overflow",
+                    None,
+                )
+            })?;
+            if point_count > limits.max_automation_points {
+                return Err(diagnostics(
+                    DiagnosticCode::ResourceLimit,
+                    "aggregate automation and expression point budget exceeded",
+                    None,
+                ));
+            }
+        }
+
         let score_start_seconds = self
             .exact_tempo
             .seconds_at(&self.score_start)
@@ -2701,6 +2765,38 @@ impl<'a> Compiler<'a> {
                 source: expanded.source.clone(),
                 target: expanded.target.clone(),
                 kind: EventKind::Note {
+                    pitch_expression: expanded
+                        .pitch_expression
+                        .as_ref()
+                        .map(|id| {
+                            let curve = &self.curves[id];
+                            let clock = match curve.clock.as_str() {
+                                "score" => PitchExpressionClock::Score,
+                                "seconds" => PitchExpressionClock::Seconds,
+                                _ => PitchExpressionClock::Normalized,
+                            };
+                            let points = curve
+                                .points
+                                .iter()
+                                .map(|(position, cents, shape)| {
+                                    Ok(PitchExpressionPoint {
+                                        position: if clock == PitchExpressionClock::Score {
+                                            checked_mul(
+                                                position,
+                                                &expanded.expression_scale,
+                                                Some(expanded.source_span),
+                                            )?
+                                        } else {
+                                            position.clone()
+                                        },
+                                        cents: cents.clone(),
+                                        shape: *shape,
+                                    })
+                                })
+                                .collect::<CResult<Vec<_>>>()?;
+                            Ok(PitchExpression { clock, points })
+                        })
+                        .transpose()?,
                     pitch_hz: frequency,
                     velocity: expanded.velocity.clone(),
                 },

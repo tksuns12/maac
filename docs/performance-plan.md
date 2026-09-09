@@ -54,7 +54,7 @@ Each event contains:
 - `source`: source object, declaration path and optional byte `span`.
 - `target`: sine or instrument node's `events` port.
 - `kind`: a tagged note value with `kind: "note"`, `pitch_hz`, and rational
-  `velocity`.
+  `velocity`; optional `pitch_expression` carries per-note cents curves.
 - `score_on_q`, `score_off_q`: final musical coordinates after inherited
   transformations, repetition cuts, and occurrence edits.
 - `onset_offset_seconds`, `release_offset_seconds`: physical offsets.
@@ -67,6 +67,20 @@ Validation recomputes the physical times from score coordinates and offsets,
 checks effective score bounds, and recomputes the frame ceilings. A positive gate
 that collapses to one frame boundary fails. At a shared frame, note-offs precede
 note-ons; equal-class events sort by `order`, then unsigned UTF-8 event address.
+
+`pitch_expression` is a strict object with `clock` (`score`, `seconds`, or
+`normalized`) and `points`. Each point has canonical rational `position` and
+`cents`, plus `shape` (`step` or `linear`; the final shape is `step`). Score
+positions already include inherited musical stretch. The
+[pitch-expression contract](pitch-expression.md) defines evaluation over the
+scheduled frame gate, release holding, and effective-domain frequency checks.
+Only `core.sine/1` receives pitch expression. Expression points share the global
+automation-point budget, including after pattern expansion.
+
+This optional note field is additive in both plan versions. Notes without
+expression omit it and retain their previous JSON shape; older readers reject
+expression-bearing plans. Rust `EventKind::Note` literals add
+`pitch_expression: None` when absent.
 
 ## Processors and automation
 

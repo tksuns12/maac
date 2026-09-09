@@ -1,0 +1,45 @@
+maac 1;
+
+// Independent bends on overlapping voices of one mono instrument.
+project pitch_expression_demo {
+  score = [0q, 4q];
+  rate = 48000Hz;
+  tempo = &clock;
+  meter = &metre;
+  output = &sine:out;
+  tail = 300ms;
+  seed = 1;
+  requires = [];
+}
+
+tempo clock { points = [(0q, 120bpm, step)]; }
+meter metre { points = [(0q, 4, 4)]; }
+
+curve rise {
+  clock = normalized;
+  points = [(0, 0ct, linear), (1, 1200ct, step)];
+}
+curve fall {
+  clock = normalized;
+  points = [(0, 0ct, linear), (1, -700ct, step)];
+}
+
+pattern duet {
+  length = 4q;
+  note rising {
+    at = 0q; dur = 3q; pitch = A3; velocity = 0.6;
+    expression bend { kind = pitch; curve = &rise; }
+  }
+  note falling {
+    at = 1q; dur = 3q; pitch = E5; velocity = 0.5;
+    expression bend { kind = pitch; curve = &fall; }
+  }
+}
+
+track melody { target = &sine:events; }
+place phrase { pattern = &duet; track = &melody; at = 0q; }
+node sine {
+  type = "core.sine/1";
+  config = { voices = 4; };
+  params = { attack = 5ms; release = 200ms; level = 0.15; };
+}

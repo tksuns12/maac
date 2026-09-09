@@ -121,6 +121,7 @@ fn base_plan(version: u32) -> Plan {
             },
             target: EventTarget::new("bell", "events").unwrap(),
             kind: EventKind::Note {
+                pitch_expression: None,
                 pitch_hz: 440.0,
                 velocity: r(1, 1),
             },
@@ -587,4 +588,27 @@ fn resource_collection_limits_precede_deep_program_validation() {
         plan.validate_with_limits(&limits).unwrap_err().code,
         "E_RESOURCE_LIMIT"
     );
+}
+
+#[test]
+fn graph_instrument_rejects_per_note_pitch_expression() {
+    let mut plan = base_plan(PLAN_VERSION);
+    plan.validate().unwrap();
+    let EventKind::Note {
+        pitch_expression, ..
+    } = &mut plan.events[0].kind
+    else {
+        unreachable!()
+    };
+    *pitch_expression = Some(maac::plan::PitchExpression {
+        clock: maac::plan::PitchExpressionClock::Seconds,
+        points: vec![maac::plan::PitchExpressionPoint {
+            position: r(0, 1),
+            cents: r(0, 1),
+            shape: Interpolation::Step,
+        }],
+    });
+    let error = plan.validate().unwrap_err();
+    assert_eq!(error.code, "E_CAPABILITY");
+    assert!(error.path.contains("pitch_expression"));
 }

@@ -1,3 +1,10 @@
+# Per-note pitch bends
+
+[`pitch-expression.maac`](pitch-expression.maac) demonstrates two overlapping
+notes bending independently on `core.sine/1`. Build it with
+`maac build examples/pitch-expression.maac -o pitch-expression.wav`.
+The [pitch guide](../docs/pitch-expression.md) explains curve clocks and limits.
+
 # Built-in instrument examples
 
 [`basic/`](basic/) contains one standalone audition for each of the 24 exports

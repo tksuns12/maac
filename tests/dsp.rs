@@ -42,7 +42,11 @@ fn event(
             span: None,
         },
         target: EventTarget::new(target, "events").unwrap(),
-        kind: EventKind::Note { pitch_hz, velocity },
+        kind: EventKind::Note {
+            pitch_hz,
+            velocity,
+            pitch_expression: None,
+        },
         score_on_q: on_q,
         score_off_q: Some(off_q),
         onset_offset_seconds: r(0, 1),

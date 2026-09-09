@@ -849,6 +849,138 @@ pub struct Automation {
     pub points: Vec<AutomationPoint>,
 }
 
+/// Per-note pitch offsets, in cents, on the effective scheduled gate.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PitchExpressionClock {
+    Score,
+    Seconds,
+    Normalized,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PitchExpressionPoint {
+    #[serde(with = "rational_serde")]
+    pub position: Rational,
+    #[serde(with = "rational_serde")]
+    pub cents: Rational,
+    pub shape: Interpolation,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PitchExpression {
+    pub clock: PitchExpressionClock,
+    pub points: Vec<PitchExpressionPoint>,
+}
+
+impl PitchExpression {
+    /// Exact clock coordinate; release frames hold the effective gate endpoint.
+    /// Requires a validated note and expression.
+    pub(crate) fn coordinate_at(&self, event: &ResolvedEvent, frame: u64, rate: u32) -> Rational {
+        let gate = event.off_frame.expect("validated note off") - event.on_frame;
+        let elapsed = frame.saturating_sub(event.on_frame).min(gate);
+        match self.clock {
+            PitchExpressionClock::Seconds => Rational::new(elapsed.into(), rate.into()),
+            PitchExpressionClock::Normalized => Rational::new(elapsed.into(), gate.into()),
+            PitchExpressionClock::Score => {
+                Rational::new(elapsed.into(), gate.into())
+                    * (event.score_off_q.as_ref().expect("validated score off") - &event.score_on_q)
+            }
+        }
+    }
+
+    /// Right-continuous step/linear evaluation with exact knot selection.
+    /// Requires validated points; arithmetic stays exact until cents conversion.
+    pub(crate) fn cents_at(&self, coordinate: &Rational) -> Rational {
+        let right = self
+            .points
+            .partition_point(|point| point.position <= *coordinate);
+        let left = &self.points[right.saturating_sub(1)];
+        if right == 0 || right == self.points.len() || left.shape == Interpolation::Step {
+            return left.cents.clone();
+        }
+        let next = &self.points[right];
+        &left.cents
+            + (&next.cents - &left.cents)
+                * ((coordinate - &left.position) / (&next.position - &left.position))
+    }
+
+    fn validate_for_note(
+        &self,
+        event: &ResolvedEvent,
+        base_hz: f64,
+        rate: u32,
+        limits: &PlanLimits,
+        path: &str,
+    ) -> Result<(), PlanError> {
+        if self.points.is_empty() {
+            return Err(err("E_RANGE", path, "pitch expression requires points"));
+        }
+        for (index, point) in self.points.iter().enumerate() {
+            for (name, value) in [("position", &point.position), ("cents", &point.cents)] {
+                let field = format!("{path}.points[{index}].{name}");
+                rational_bit_limit(value, limits, &field)?;
+                if value.numer().gcd(value.denom()) != BigInt::one() {
+                    return Err(err(
+                        "E_RATIONAL",
+                        field,
+                        "pitch expression rationals must be canonical",
+                    ));
+                }
+            }
+            if point.cents.to_f64().is_none_or(|value| !value.is_finite()) {
+                return Err(err(
+                    "E_NONFINITE",
+                    format!("{path}.points[{index}].cents"),
+                    "pitch cents cannot be represented as a finite engine number",
+                ));
+            }
+            if point.position.is_negative()
+                || (index == 0 && !point.position.is_zero())
+                || (index > 0 && point.position <= self.points[index - 1].position)
+                || point.shape == Interpolation::Exponential
+            {
+                return Err(err("E_RANGE", path, "pitch points must start at zero, increase, and use step or linear interpolation"));
+            }
+        }
+        let last = self.points.last().expect("nonempty points");
+        if last.shape != Interpolation::Step
+            || (self.clock == PitchExpressionClock::Normalized && last.position != one())
+        {
+            return Err(err(
+                "E_RANGE",
+                path,
+                "final pitch point must be step and normalized curves must end at one",
+            ));
+        }
+        let end = self.coordinate_at(event, event.off_frame.expect("validated note off"), rate);
+        // Linear cents and their exponential frequency transform are monotone on
+        // each segment. Knots in the domain plus its endpoint bound every value;
+        // future knots only contribute through interpolation at the endpoint.
+        let check = |cents: &Rational| -> Result<(), PlanError> {
+            let cents = cents
+                .to_f64()
+                .filter(|value| value.is_finite())
+                .ok_or_else(|| err("E_NONFINITE", path, "evaluated pitch cents must be finite"))?;
+            let frequency = base_hz * 2.0_f64.powf(cents / 1200.0);
+            if !frequency.is_finite() || frequency <= 0.0 || frequency >= f64::from(rate) / 2.0 {
+                return Err(err(
+                    "E_RANGE",
+                    path,
+                    "expressed pitch must be finite, positive, and below Nyquist",
+                ));
+            }
+            Ok(())
+        };
+        for point in self.points.iter().take_while(|point| point.position <= end) {
+            check(&point.cents)?;
+        }
+        check(&self.cents_at(&end))
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SourceMapping {
@@ -874,6 +1006,8 @@ pub enum EventKind {
         /// transforms are generally irrational.  Source/timing quantities
         /// remain exact rationals elsewhere in the plan.
         pitch_hz: f64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pitch_expression: Option<PitchExpression>,
         #[serde(with = "rational_serde")]
         velocity: Rational,
     },
@@ -1230,11 +1364,35 @@ impl Plan {
             .as_ref()
             .map(|settings| settings.resource_usage(limits))
             .transpose()?;
+        let expression_count = self
+            .events
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event.kind,
+                    EventKind::Note {
+                        pitch_expression: Some(_),
+                        ..
+                    }
+                )
+            })
+            .count();
+        let expression_points = self
+            .events
+            .iter()
+            .map(|event| match &event.kind {
+                EventKind::Note {
+                    pitch_expression: Some(expression),
+                    ..
+                } => expression.points.len(),
+                _ => 0,
+            })
+            .fold(0usize, usize::saturating_add);
         let automation_points = self
             .automation
             .iter()
             .map(|lane| lane.points.len())
-            .fold(0usize, usize::saturating_add);
+            .fold(expression_points, usize::saturating_add);
         let parameter_count = self
             .nodes
             .iter()
@@ -1470,6 +1628,7 @@ impl Plan {
             .saturating_add(self.source_mappings.len())
             .saturating_add(self.tempo.points.len())
             .saturating_add(automation_points)
+            .saturating_add(expression_count)
             .saturating_add(parameter_count)
             .saturating_add(span_count)
             .saturating_add(path_component_count)
@@ -1492,6 +1651,7 @@ impl Plan {
             .saturating_add(self.events.len())
             .saturating_add(self.automation.len())
             .saturating_add(automation_points)
+            .saturating_add(expression_count)
             .saturating_add(self.regions.len())
             .saturating_add(self.source_mappings.len())
             .saturating_add(self.tempo.points.len())
@@ -2348,7 +2508,11 @@ impl Plan {
                 ));
             }
             match &event.kind {
-                EventKind::Note { pitch_hz, velocity } => {
+                EventKind::Note {
+                    pitch_hz,
+                    velocity,
+                    pitch_expression,
+                } => {
                     if event.score_off_q.is_none() || event.off_seconds.is_none() {
                         return Err(err(
                             "E_INTERVAL",
@@ -2384,6 +2548,22 @@ impl Plan {
                             format!("events[{index}].release_velocity"),
                             "release velocity must be finite in [0,1]",
                         ));
+                    }
+                    if let Some(expression) = pitch_expression {
+                        if !matches!(target.processor, Processor::Sine { .. }) {
+                            return Err(err(
+                                "E_CAPABILITY",
+                                format!("events[{index}].pitch_expression"),
+                                "pitch expression is supported only by core.sine/1",
+                            ));
+                        }
+                        expression.validate_for_note(
+                            event,
+                            *pitch_hz,
+                            self.output.sample_rate_hz,
+                            limits,
+                            &format!("events[{index}].pitch_expression"),
+                        )?;
                     }
                     voice_work = voice_work.saturating_add(target.processor.voice_capacity());
                 }

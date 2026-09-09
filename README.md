@@ -129,6 +129,8 @@ or wavetable pin after editing a dependency.
 
 Read the [quick start](docs/quickstart.md), [authoring tutorial](docs/tutorial.md),
 [CLI and library reference](docs/reference.md), and [capability matrix](docs/capabilities.md).
+The [per-note pitch guide](docs/pitch-expression.md) demonstrates independent
+bends on overlapping `core.sine/1` voices.
 The [diagnostics guide](docs/diagnostics.md) explains failures, while the
 [performance-plan format](docs/performance-plan.md) describes the standalone
 JSON interchange artifact. [Implementation decisions](docs/implementation-decisions.md)

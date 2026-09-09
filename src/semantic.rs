@@ -1239,10 +1239,34 @@ impl<'a> Validator<'a> {
             self.integer(field, path, "order");
         }
         let children: Vec<Object> = object.children.values().cloned().collect();
+        let mut expression_kinds = std::collections::HashSet::new();
         for child in &children {
             let child_path = child_path(path, &child.id);
             if child.kind == "expression" {
-                self.validate_deferred_object(child, &child_path);
+                if let Some(kind) = child.field("kind").and_then(|f| f.value.as_symbol()) {
+                    if !expression_kinds.insert(kind) {
+                        self.push(
+                            DiagnosticCode::Range,
+                            "duplicate note expression kind",
+                            Some(child.span),
+                            child_path.clone(),
+                            Vec::new(),
+                        );
+                    }
+                }
+                if child.field("kind").and_then(|f| f.value.as_symbol()) == Some("pitch") {
+                    self.check_schema(
+                        child,
+                        &child_path,
+                        &["kind", "curve"],
+                        &["kind", "curve", "label"],
+                        &[],
+                    );
+                    self.validate_expression_shape(child, &child_path);
+                    self.reject_children(child, &child_path);
+                } else {
+                    self.validate_deferred_object(child, &child_path);
+                }
             } else {
                 self.validate_misplaced_child(child, path);
             }
@@ -2221,6 +2245,35 @@ impl<'a> Validator<'a> {
         }
         if let Some(field) = object.field("curve") {
             self.expect_object_ref(field, "curve", &["curve"], path);
+            if object.field("kind").and_then(|f| f.value.as_symbol()) == Some("pitch") {
+                let invalid_units = field
+                    .value
+                    .reference()
+                    .and_then(|r| r.path.first())
+                    .and_then(|id| self.document.object(id))
+                    .and_then(|c| c.field("points"))
+                    .is_some_and(|f| match &f.value.kind {
+                        ValueKind::List(points) => {
+                            points.first().is_some_and(|point| match &point.kind {
+                                ValueKind::Tuple(items) => {
+                                    items.get(1).map(value_dimension_of)
+                                        != Some(Some(CurveDimension::Cents))
+                                }
+                                _ => false,
+                            })
+                        }
+                        _ => false,
+                    });
+                if invalid_units {
+                    self.push(
+                        DiagnosticCode::Unit,
+                        "pitch expression curve values must use cents",
+                        Some(field.span),
+                        path.to_vec(),
+                        vec!["curve".into()],
+                    );
+                }
+            }
         }
     }
 
