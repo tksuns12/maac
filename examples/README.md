@@ -1,3 +1,10 @@
+# Per-note gain swells and fades
+
+[`gain-expression.maac`](gain-expression.maac) combines pitch and gain on one
+note while a second voice rises exponentially. Build it with
+`maac build examples/gain-expression.maac -o gain-expression.wav`.
+The [gain guide](../docs/gain-expression.md) explains curves and voice behavior.
+
 # Per-note pitch bends
 
 [`pitch-expression.maac`](pitch-expression.maac) demonstrates two overlapping

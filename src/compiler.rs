@@ -24,9 +24,9 @@ use crate::music::{
 };
 use crate::plan::{
     Automation, AutomationClock, AutomationPoint, Connection, EventKind, EventTarget,
-    Interpolation, Node, OutputSettings, PitchExpression, PitchExpressionClock,
-    PitchExpressionPoint, Plan, PlanLimits, PortRef, Processor, Region, ResolvedEvent,
-    SourceMapping, SourceSpan, TempoMap, TempoPoint,
+    ExpressionClock, GainExpression, GainExpressionPoint, Interpolation, Node, OutputSettings,
+    PitchExpression, PitchExpressionPoint, Plan, PlanLimits, PortRef, Processor, Region,
+    ResolvedEvent, SourceMapping, SourceSpan, TempoMap, TempoPoint,
 };
 use crate::semantic::InstrumentNodeDescriptor;
 use crate::syntax::{Document, Field, Object, Reference, Unit, Value, ValueKind};
@@ -258,6 +258,7 @@ fn bigint_u64(value: &Rational, span: Option<Span>) -> CResult<u64> {
 #[derive(Clone, Debug)]
 struct NoteDef {
     pitch_expression: Option<String>,
+    gain_expression: Option<String>,
     id: String,
     span: Span,
     at: Rational,
@@ -329,6 +330,7 @@ struct PlaceDef {
 #[derive(Clone, Debug)]
 struct ExpandedNote {
     pitch_expression: Option<String>,
+    gain_expression: Option<String>,
     expression_scale: Rational,
     address: String,
     source: SourceMapping,
@@ -1449,20 +1451,28 @@ impl<'a> Compiler<'a> {
                 Some(object.span),
             )
         })?;
-        let pitch_expression = object
-            .children
-            .values()
-            .find(|child| child.kind == "expression")
-            .map(|child| {
-                self.one_reference(
-                    &self.field(child, "curve")?.value,
-                    child,
-                    child.field("curve"),
-                )
-            })
-            .transpose()?;
+        let expression_curve = |kind: &str| {
+            object
+                .children
+                .values()
+                .find(|child| {
+                    child.kind == "expression"
+                        && child.field("kind").and_then(|f| f.value.as_symbol()) == Some(kind)
+                })
+                .map(|child| {
+                    self.one_reference(
+                        &self.field(child, "curve")?.value,
+                        child,
+                        child.field("curve"),
+                    )
+                })
+                .transpose()
+        };
+        let pitch_expression = expression_curve("pitch")?;
+        let gain_expression = expression_curve("gain")?;
         Ok(NoteDef {
             pitch_expression,
+            gain_expression,
             id: object.id.clone(),
             span: object.span,
             at,
@@ -2338,6 +2348,7 @@ impl<'a> Compiler<'a> {
                     }
                     self.events.push(ExpandedNote {
                         pitch_expression: note.pitch_expression.clone(),
+                        gain_expression: note.gain_expression.clone(),
                         expression_scale: state.scale.clone(),
                         address: state.address.join("/"),
                         source: SourceMapping {
@@ -2488,6 +2499,7 @@ impl<'a> Compiler<'a> {
             };
             let event = ExpandedNote {
                 pitch_expression: insert.note.pitch_expression.clone(),
+                gain_expression: insert.note.gain_expression.clone(),
                 expression_scale: Rational::one(),
                 address: format!("{}/{}/{}", place.id, insert.id, insert.note.id),
                 source,
@@ -2604,7 +2616,11 @@ impl<'a> Compiler<'a> {
         for count in self.automations.iter().map(|a| a.points.len()).chain(
             self.events
                 .iter()
-                .filter_map(|e| e.pitch_expression.as_ref())
+                .flat_map(|e| {
+                    [e.pitch_expression.as_ref(), e.gain_expression.as_ref()]
+                        .into_iter()
+                        .flatten()
+                })
                 .map(|id| self.curves[id].points.len()),
         ) {
             point_count = point_count.checked_add(count).ok_or_else(|| {
@@ -2765,22 +2781,54 @@ impl<'a> Compiler<'a> {
                 source: expanded.source.clone(),
                 target: expanded.target.clone(),
                 kind: EventKind::Note {
+                    gain_expression: expanded
+                        .gain_expression
+                        .as_ref()
+                        .map(|id| {
+                            let curve = &self.curves[id];
+                            let clock = match curve.clock.as_str() {
+                                "score" => ExpressionClock::Score,
+                                "seconds" => ExpressionClock::Seconds,
+                                _ => ExpressionClock::Normalized,
+                            };
+                            let points = curve
+                                .points
+                                .iter()
+                                .map(|(position, gain, shape)| {
+                                    Ok(GainExpressionPoint {
+                                        position: if clock == ExpressionClock::Score {
+                                            checked_mul(
+                                                position,
+                                                &expanded.expression_scale,
+                                                Some(expanded.source_span),
+                                            )?
+                                        } else {
+                                            position.clone()
+                                        },
+                                        gain: gain.clone(),
+                                        shape: *shape,
+                                    })
+                                })
+                                .collect::<CResult<Vec<_>>>()?;
+                            Ok(GainExpression { clock, points })
+                        })
+                        .transpose()?,
                     pitch_expression: expanded
                         .pitch_expression
                         .as_ref()
                         .map(|id| {
                             let curve = &self.curves[id];
                             let clock = match curve.clock.as_str() {
-                                "score" => PitchExpressionClock::Score,
-                                "seconds" => PitchExpressionClock::Seconds,
-                                _ => PitchExpressionClock::Normalized,
+                                "score" => ExpressionClock::Score,
+                                "seconds" => ExpressionClock::Seconds,
+                                _ => ExpressionClock::Normalized,
                             };
                             let points = curve
                                 .points
                                 .iter()
                                 .map(|(position, cents, shape)| {
                                     Ok(PitchExpressionPoint {
-                                        position: if clock == PitchExpressionClock::Score {
+                                        position: if clock == ExpressionClock::Score {
                                             checked_mul(
                                                 position,
                                                 &expanded.expression_scale,

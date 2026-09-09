@@ -428,6 +428,7 @@ mod tests {
                     pitch_hz: 440.0,
                     velocity: rat(1, 1),
                     pitch_expression: None,
+                    gain_expression: None,
                 },
                 score_on_q: rat(0, 1),
                 score_off_q: Some(rat(1, 2)),

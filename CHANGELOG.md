@@ -11,6 +11,11 @@ actually published; no release tag or publication date is asserted here.
 
 ### Added
 
+- Per-note gain expression on `core.sine/1`, with nonnegative amplitude curves,
+  step/linear/exponential interpolation, and simultaneous pitch expression.
+  Zero gain preserves voice state. Optional `gain_expression` extends plan
+  versions 1 and 2; absent gain retains previous JSON and audio behavior.
+  See the [gain guide](docs/gain-expression.md).
 - Per-note pitch expression on `core.sine/1`, with cents-based step/linear
   curves on normalized, seconds, or score clocks and independent release
   holding. Optional note payloads extend plan versions 1 and 2 while preserving
@@ -72,7 +77,7 @@ actually published; no release tag or publication date is asserted here.
 
 - The Rust implementation is a foundation subset; it does not claim full
   Document, Performance, Core Audio, or Locked Render conformance.
-- Tempo ramps, per-note gain/pressure/timbre expression, pitch expression on
+- Tempo ramps, per-note pressure/timbre expression, pitch/gain expression on
   graph instruments, hits/messages, top-level core modulation,
   other processors, recorded-sample instruments, arranged audio, external plug-ins,
   transactional editing, MaaC Locked Render dependency-lock manifests

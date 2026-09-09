@@ -11,6 +11,7 @@ unchanged.
 | Musical clocks | Exact thirds and step changes; meter-boundary checks; positive and negative bar coordinates; exact ceiling scheduling |
 | Pitch | Letter accidentals, key, ratio, frequency, tuning degrees including negative indices; finite positive frequencies below Nyquist |
 | Per-note pitch | All three curve clocks, exact knot selection, inherited score stretch, offsets/cuts/overrides/inserts, independent overlapping voices and release holding; source/plan/audio roundtrip; unsupported receivers and malformed/over-budget curves fail |
+| Per-note gain | Step/linear/exponential amplitude curves on all clocks; simultaneous pitch and gain; zero-gain phase/capacity preservation; release holding; extreme positive exponential endpoints; combined point budgets and source-free replay |
 | Expansion | Nested uses, repetition and stretch, additive transposition, nested cuts before physical offsets, stable addresses, isolated final-state overrides and inserts |
 | Scheduling | Score-origin reset, invalid effective onsets, score-end note-off truncation, negative/zero gates, sub-sample collapse |
 | Plan import | Unknown versions/fields, inconsistent time/frame values, duplicates, missing references, invalid parameter ranges, cycles, oversized input and collections |

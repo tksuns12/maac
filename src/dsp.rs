@@ -6,8 +6,8 @@
 //! the slice is valid until the callback returns.
 
 use crate::plan::{
-    AutomationClock, EventKind, Interpolation, PitchExpression, Plan, PlanError, PlanLimits,
-    PortRef, Processor, Rational, ResolvedEvent,
+    AutomationClock, EventKind, GainExpression, Interpolation, PitchExpression, Plan, PlanError,
+    PlanLimits, PortRef, Processor, Rational, ResolvedEvent,
 };
 use crate::production_compressor::{Compressor, CompressorParams};
 use crate::production_eq::Eq;
@@ -491,6 +491,7 @@ impl<'a> DspEngine<'a> {
             pitch_hz,
             velocity,
             pitch_expression,
+            gain_expression,
         } = event.data;
         if let Some(instrument) = &mut node.instrument {
             return instrument
@@ -522,6 +523,7 @@ impl<'a> DspEngine<'a> {
             address: event.address,
             pitch_hz,
             pitch_expression,
+            gain_expression,
             velocity,
             on_frame: frame,
             attack,
@@ -984,7 +986,21 @@ impl NodeState {
         let mut sum = 0.0;
         for voice in &mut self.voices {
             let envelope = voice.envelope(frame, rate);
-            let value = voice.velocity * envelope * level * voice.phase.sin();
+            let gain = if let Some(expression) = &voice.gain_expression {
+                let gain = expression
+                    .curve
+                    .gain_at(&expression.coordinate_at(voice.on_frame, frame));
+                if !gain.is_finite() || gain < 0.0 {
+                    return Err(RenderError::Nonfinite(format!(
+                        "gain expression at {} produced an invalid value",
+                        voice.address
+                    )));
+                }
+                gain
+            } else {
+                1.0
+            };
+            let value = voice.velocity * gain * envelope * level * voice.phase.sin();
             if !value.is_finite() {
                 return Err(RenderError::Nonfinite(format!(
                     "sine node {} produced a nonfinite value",
@@ -993,13 +1009,7 @@ impl NodeState {
             }
             sum += value;
             let pitch_hz = if let Some(expression) = &voice.pitch_expression {
-                let coordinate = &expression.coordinate_per_frame
-                    * Rational::from_integer(
-                        frame
-                            .saturating_sub(voice.on_frame)
-                            .min(expression.gate)
-                            .into(),
-                    );
+                let coordinate = expression.coordinate_at(voice.on_frame, frame);
                 let cents = expression
                     .curve
                     .cents_at(&coordinate)
@@ -1046,7 +1056,8 @@ impl NodeState {
 struct Voice {
     address: String,
     pitch_hz: f64,
-    pitch_expression: Option<ExpressionRuntime>,
+    pitch_expression: Option<ExpressionRuntime<PitchExpression>>,
+    gain_expression: Option<ExpressionRuntime<GainExpression>>,
     velocity: f64,
     on_frame: u64,
     attack: f64,
@@ -1094,17 +1105,25 @@ enum EventData {
     Note {
         pitch_hz: f64,
         velocity: f64,
-        pitch_expression: Option<ExpressionRuntime>,
+        pitch_expression: Option<ExpressionRuntime<PitchExpression>>,
+        gain_expression: Option<ExpressionRuntime<GainExpression>>,
     },
 }
 
 // Keep the immutable curve shared across scheduled events and live voices. Exact
 // rational coordinates preserve knot selection even below binary64 resolution.
 #[derive(Clone, Debug)]
-struct ExpressionRuntime {
-    curve: Arc<PitchExpression>,
+struct ExpressionRuntime<T> {
+    curve: Arc<T>,
     coordinate_per_frame: Rational,
     gate: u64,
+}
+
+impl<T> ExpressionRuntime<T> {
+    fn coordinate_at(&self, on_frame: u64, frame: u64) -> Rational {
+        &self.coordinate_per_frame
+            * Rational::from_integer(frame.saturating_sub(on_frame).min(self.gate).into())
+    }
 }
 
 impl EventRuntime {
@@ -1113,6 +1132,7 @@ impl EventRuntime {
             pitch_hz,
             velocity,
             pitch_expression,
+            gain_expression,
         } = &event.kind
         else {
             return Err(RenderError::RenderState(format!(
@@ -1138,6 +1158,15 @@ impl EventRuntime {
             data: EventData::Note {
                 pitch_hz: *pitch_hz,
                 velocity,
+                gain_expression: gain_expression.as_ref().map(|curve| ExpressionRuntime {
+                    coordinate_per_frame: curve.clock.coordinate_at(
+                        event,
+                        event.on_frame + 1,
+                        rate,
+                    ),
+                    gate: event.off_frame.expect("validated note off") - event.on_frame,
+                    curve: Arc::new(curve.clone()),
+                }),
                 pitch_expression: pitch_expression.as_ref().map(|curve| ExpressionRuntime {
                     coordinate_per_frame: curve.coordinate_at(event, event.on_frame + 1, rate),
                     gate: event.off_frame.expect("validated note off") - event.on_frame,

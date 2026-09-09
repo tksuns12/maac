@@ -41,6 +41,7 @@ fn base_plan() -> Plan {
             target: EventTarget::new("sine", "events").unwrap(),
             kind: EventKind::Note {
                 pitch_expression: None,
+                gain_expression: None,
                 pitch_hz: 440.0,
                 velocity: rat(1, 1),
             },

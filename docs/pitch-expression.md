@@ -64,10 +64,9 @@ expression point scale is 1.
 
 ## Acceptance contract and limits
 
-- Only pitch expression on `core.sine/1` is supported in this slice.
-  Gain, pressure, timbre, and expression on custom or other built-in
-  instruments remain `E_CAPABILITY` errors. This is narrower than the full
-  specification's `core.sine/1` expression contract.
+- `core.sine/1` supports pitch and [gain expression](gain-expression.md),
+  including both on one note. Pressure, timbre, and expression on custom or
+  other built-in instruments remain `E_CAPABILITY` errors.
 - Expression changes the note's resolved base frequency by
   `2^(cents / 1200)`. Initial expression applies at note-on, each overlapping
   voice retains its own expression, and release holds the gate-end pitch.
@@ -78,7 +77,7 @@ expression point scale is 1.
   and `points` (`position`, `cents`, `shape`), using canonical rationals.
   Absent expression is omitted, preserving legacy JSON. Older readers reject
   expression-bearing plans. Rust `EventKind::Note` literals need
-  `pitch_expression: None` when expression is absent.
+  `pitch_expression: None` and `gain_expression: None` for absent expressions.
 
 The governing rules are in [MaaC-1](../MaaC-1-Specification.md),
 sections 6.1, 8.1, 12, and 18.7. This guide states the acceptance contract;

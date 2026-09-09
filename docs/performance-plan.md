@@ -54,7 +54,8 @@ Each event contains:
 - `source`: source object, declaration path and optional byte `span`.
 - `target`: sine or instrument node's `events` port.
 - `kind`: a tagged note value with `kind: "note"`, `pitch_hz`, and rational
-  `velocity`; optional `pitch_expression` carries per-note cents curves.
+  `velocity`; optional `pitch_expression` and `gain_expression` carry per-note
+  cents and amplitude curves.
 - `score_on_q`, `score_off_q`: final musical coordinates after inherited
   transformations, repetition cuts, and occurrence edits.
 - `onset_offset_seconds`, `release_offset_seconds`: physical offsets.
@@ -74,13 +75,22 @@ note-ons; equal-class events sort by `order`, then unsigned UTF-8 event address.
 positions already include inherited musical stretch. The
 [pitch-expression contract](pitch-expression.md) defines evaluation over the
 scheduled frame gate, release holding, and effective-domain frequency checks.
-Only `core.sine/1` receives pitch expression. Expression points share the global
-automation-point budget, including after pattern expansion.
+Only `core.sine/1` receives pitch expression.
 
-This optional note field is additive in both plan versions. Notes without
-expression omit it and retain their previous JSON shape; older readers reject
-expression-bearing plans. Rust `EventKind::Note` literals add
-`pitch_expression: None` when absent.
+`gain_expression` uses the same clocks and a strict `points` array with
+canonical rational `position` and dimensionless `gain`, plus `shape`. Gains
+are nonnegative finite engine values with no upper limit of 1. Step and linear
+segments allow zero; exponential segments require strictly positive endpoints.
+The [gain-expression contract](gain-expression.md) defines sample evaluation,
+zero-gain voice state, release holding, and simultaneous pitch/gain expression.
+Only `core.sine/1` receives gain expression. Both expression types share the
+global automation-point budget, including after pattern expansion.
+
+These optional note fields are additive in both plan versions. Absent fields
+are omitted, preserving previous JSON shapes; older readers reject fields they
+do not support. Rust `EventKind::Note` literals add `pitch_expression: None`
+and `gain_expression: None` when absent. The shared `ExpressionClock` retains
+`PitchExpressionClock` as a compatibility type alias.
 
 ## Processors and automation
 

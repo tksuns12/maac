@@ -1,0 +1,50 @@
+maac 1;
+
+// Independent gain curves on overlapping voices; the first also bends pitch.
+project gain_expression_demo {
+  score = [0q, 3q];
+  rate = 48000Hz;
+  tempo = &clock;
+  meter = &metre;
+  output = &sine:out;
+  tail = 200ms;
+  seed = 1;
+  requires = [];
+}
+
+tempo clock { points = [(0q, 120bpm, step)]; }
+meter metre { points = [(0q, 4, 4)]; }
+
+curve bend {
+  clock = normalized;
+  points = [(0, 0ct, linear), (1, 700ct, step)];
+}
+curve swell {
+  clock = normalized;
+  points = [(0, 0, linear), (1/2, 1, linear), (1, 0, step)];
+}
+curve rise {
+  clock = seconds;
+  points = [(0s, 1/8, exponential), (1s, 1/2, step)];
+}
+
+pattern duet {
+  length = 3q;
+  note swelling {
+    at = 0q; dur = 2q; pitch = A3; velocity = 0.6;
+    expression bend_pitch { kind = pitch; curve = &bend; }
+    expression swell_gain { kind = gain; curve = &swell; }
+  }
+  note rising {
+    at = 1q; dur = 2q; pitch = E4; velocity = 0.5;
+    expression rise_gain { kind = gain; curve = &rise; }
+  }
+}
+
+track melody { target = &sine:events; }
+place phrase { pattern = &duet; track = &melody; at = 0q; }
+node sine {
+  type = "core.sine/1";
+  config = { voices = 4; };
+  params = { attack = 5ms; release = 150ms; level = 0.15; };
+}

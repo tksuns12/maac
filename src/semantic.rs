@@ -279,6 +279,7 @@ struct Validator<'a> {
     references: BTreeMap<String, ReferenceTarget>,
     automation_writers: BTreeSet<String>,
     total_objects: usize,
+    validated_gain_curves: BTreeSet<String>,
     instrument_nodes: &'a BTreeMap<String, InstrumentNodeDescriptor>,
 }
 
@@ -297,6 +298,7 @@ impl<'a> Validator<'a> {
             references: BTreeMap::new(),
             automation_writers: BTreeSet::new(),
             total_objects: 0,
+            validated_gain_curves: BTreeSet::new(),
             instrument_nodes,
         }
     }
@@ -1254,7 +1256,10 @@ impl<'a> Validator<'a> {
                         );
                     }
                 }
-                if child.field("kind").and_then(|f| f.value.as_symbol()) == Some("pitch") {
+                if matches!(
+                    child.field("kind").and_then(|f| f.value.as_symbol()),
+                    Some("pitch" | "gain")
+                ) {
                     self.check_schema(
                         child,
                         &child_path,
@@ -2245,33 +2250,75 @@ impl<'a> Validator<'a> {
         }
         if let Some(field) = object.field("curve") {
             self.expect_object_ref(field, "curve", &["curve"], path);
-            if object.field("kind").and_then(|f| f.value.as_symbol()) == Some("pitch") {
-                let invalid_units = field
-                    .value
-                    .reference()
-                    .and_then(|r| r.path.first())
+            let kind = object.field("kind").and_then(|f| f.value.as_symbol());
+            if matches!(kind, Some("pitch" | "gain")) {
+                let curve_id = field.value.reference().and_then(|r| r.path.first());
+                let points = curve_id
                     .and_then(|id| self.document.object(id))
                     .and_then(|c| c.field("points"))
-                    .is_some_and(|f| match &f.value.kind {
-                        ValueKind::List(points) => {
-                            points.first().is_some_and(|point| match &point.kind {
-                                ValueKind::Tuple(items) => {
-                                    items.get(1).map(value_dimension_of)
-                                        != Some(Some(CurveDimension::Cents))
-                                }
-                                _ => false,
-                            })
+                    .and_then(|f| match &f.value.kind {
+                        ValueKind::List(points) => Some(points),
+                        _ => None,
+                    });
+                let expected = if kind == Some("pitch") {
+                    CurveDimension::Cents
+                } else {
+                    CurveDimension::Number
+                };
+                if points
+                    .and_then(|p| p.first())
+                    .is_some_and(|point| match &point.kind {
+                        ValueKind::Tuple(items) => {
+                            items.get(1).and_then(value_dimension_of) != Some(expected)
                         }
                         _ => false,
-                    });
-                if invalid_units {
+                    })
+                {
                     self.push(
                         DiagnosticCode::Unit,
-                        "pitch expression curve values must use cents",
+                        if kind == Some("pitch") {
+                            "pitch expression curve values must use cents"
+                        } else {
+                            "gain expression curve values must be dimensionless"
+                        },
                         Some(field.span),
                         path.to_vec(),
                         vec!["curve".into()],
                     );
+                }
+                // Curves can have many note consumers; scan gain ranges only once.
+                if kind == Some("gain")
+                    && curve_id.is_some_and(|id| self.validated_gain_curves.insert(id.clone()))
+                {
+                    if let Some(points) = points {
+                        for point in points {
+                            if let ValueKind::Tuple(items) = &point.kind {
+                                if let Some(Value {
+                                    kind: ValueKind::Number(gain),
+                                    ..
+                                }) = items.get(1)
+                                {
+                                    if gain < &BigRational::zero() {
+                                        self.push(
+                                            DiagnosticCode::Range,
+                                            "gain expression values must be nonnegative",
+                                            Some(point.span),
+                                            path.to_vec(),
+                                            vec!["curve".into()],
+                                        );
+                                    } else if !gain.to_f64().is_some_and(f64::is_finite) {
+                                        self.push(
+                                            DiagnosticCode::Nonfinite,
+                                            "gain expression values must be finite",
+                                            Some(point.span),
+                                            path.to_vec(),
+                                            vec!["curve".into()],
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }

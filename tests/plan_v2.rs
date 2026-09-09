@@ -122,6 +122,7 @@ fn base_plan(version: u32) -> Plan {
             target: EventTarget::new("bell", "events").unwrap(),
             kind: EventKind::Note {
                 pitch_expression: None,
+                gain_expression: None,
                 pitch_hz: 440.0,
                 velocity: r(1, 1),
             },
@@ -611,4 +612,27 @@ fn graph_instrument_rejects_per_note_pitch_expression() {
     let error = plan.validate().unwrap_err();
     assert_eq!(error.code, "E_CAPABILITY");
     assert!(error.path.contains("pitch_expression"));
+}
+
+#[test]
+fn graph_instrument_rejects_per_note_gain_expression() {
+    let mut plan = base_plan(PLAN_VERSION);
+    plan.validate().unwrap();
+    let EventKind::Note {
+        gain_expression, ..
+    } = &mut plan.events[0].kind
+    else {
+        unreachable!()
+    };
+    *gain_expression = Some(maac::plan::GainExpression {
+        clock: maac::plan::ExpressionClock::Seconds,
+        points: vec![maac::plan::GainExpressionPoint {
+            position: r(0, 1),
+            gain: r(1, 1),
+            shape: Interpolation::Step,
+        }],
+    });
+    let error = plan.validate().unwrap_err();
+    assert_eq!(error.code, "E_CAPABILITY");
+    assert!(error.path.contains("gain_expression"));
 }

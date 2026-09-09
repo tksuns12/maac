@@ -849,14 +849,17 @@ pub struct Automation {
     pub points: Vec<AutomationPoint>,
 }
 
-/// Per-note pitch offsets, in cents, on the effective scheduled gate.
+/// Shared per-note expression clock on the effective scheduled gate.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum PitchExpressionClock {
+pub enum ExpressionClock {
     Score,
     Seconds,
     Normalized,
 }
+
+/// Compatibility name retained for existing pitch-expression callers.
+pub type PitchExpressionClock = ExpressionClock;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -875,28 +878,32 @@ pub struct PitchExpression {
     pub points: Vec<PitchExpressionPoint>,
 }
 
-impl PitchExpression {
+impl ExpressionClock {
     /// Exact clock coordinate; release frames hold the effective gate endpoint.
     /// Requires a validated note and expression.
     pub(crate) fn coordinate_at(&self, event: &ResolvedEvent, frame: u64, rate: u32) -> Rational {
         let gate = event.off_frame.expect("validated note off") - event.on_frame;
         let elapsed = frame.saturating_sub(event.on_frame).min(gate);
-        match self.clock {
-            PitchExpressionClock::Seconds => Rational::new(elapsed.into(), rate.into()),
-            PitchExpressionClock::Normalized => Rational::new(elapsed.into(), gate.into()),
-            PitchExpressionClock::Score => {
+        match self {
+            ExpressionClock::Seconds => Rational::new(elapsed.into(), rate.into()),
+            ExpressionClock::Normalized => Rational::new(elapsed.into(), gate.into()),
+            ExpressionClock::Score => {
                 Rational::new(elapsed.into(), gate.into())
                     * (event.score_off_q.as_ref().expect("validated score off") - &event.score_on_q)
             }
         }
     }
+}
+
+impl PitchExpression {
+    pub(crate) fn coordinate_at(&self, event: &ResolvedEvent, frame: u64, rate: u32) -> Rational {
+        self.clock.coordinate_at(event, frame, rate)
+    }
 
     /// Right-continuous step/linear evaluation with exact knot selection.
     /// Requires validated points; arithmetic stays exact until cents conversion.
     pub(crate) fn cents_at(&self, coordinate: &Rational) -> Rational {
-        let right = self
-            .points
-            .partition_point(|point| point.position <= *coordinate);
+        let right = expression_right_index(&self.points, coordinate, |point| &point.position);
         let left = &self.points[right.saturating_sub(1)];
         if right == 0 || right == self.points.len() || left.shape == Interpolation::Step {
             return left.cents.clone();
@@ -981,6 +988,146 @@ impl PitchExpression {
     }
 }
 
+/// A nonnegative per-note linear-amplitude multiplier, independent of pitch.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GainExpression {
+    pub clock: ExpressionClock,
+    pub points: Vec<GainExpressionPoint>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GainExpressionPoint {
+    #[serde(with = "rational_serde")]
+    pub position: Rational,
+    #[serde(with = "rational_serde")]
+    pub gain: Rational,
+    pub shape: Interpolation,
+}
+
+fn expression_right_index<T>(
+    points: &[T],
+    coordinate: &Rational,
+    position: impl Fn(&T) -> &Rational,
+) -> usize {
+    points.partition_point(|point| position(point) <= coordinate)
+}
+
+// Positive rational endpoints may round to zero or imprecise subnormals. Their logarithm
+// remains representable: retain the high mantissa bits and the binary exponent
+// without first converting an overflowing numerator or underflowing quotient.
+fn positive_rational_ln(value: &Rational) -> f64 {
+    if let Some(number) = value
+        .to_f64()
+        .filter(|number| *number > 0.0 && number.is_normal())
+    {
+        return number.ln();
+    }
+    let parts = |integer: &BigInt| {
+        let shift = integer.magnitude().bits().saturating_sub(53);
+        let mantissa = (integer >> shift as usize)
+            .to_f64()
+            .expect("53-bit mantissa");
+        (mantissa, shift as f64)
+    };
+    let (numerator, numerator_shift) = parts(value.numer());
+    let (denominator, denominator_shift) = parts(value.denom());
+    (numerator / denominator).ln() + (numerator_shift - denominator_shift) * std::f64::consts::LN_2
+}
+
+impl GainExpression {
+    /// Requires validated points and a nonnegative clock coordinate. Knots and
+    /// step/linear arithmetic stay exact until the final engine conversion.
+    pub(crate) fn gain_at(&self, coordinate: &Rational) -> f64 {
+        let right = expression_right_index(&self.points, coordinate, |point| &point.position);
+        let left = &self.points[right.saturating_sub(1)];
+        let endpoint = |value: &Rational| value.to_f64().expect("validated finite gain");
+        if right == 0
+            || right == self.points.len()
+            || left.shape == Interpolation::Step
+            || *coordinate == left.position
+        {
+            return endpoint(&left.gain);
+        }
+        let next = &self.points[right];
+        let fraction = (coordinate - &left.position) / (&next.position - &left.position);
+        if left.shape == Interpolation::Linear {
+            return endpoint(&(&left.gain + (&next.gain - &left.gain) * fraction));
+        }
+        let left_weight = (one() - &fraction).to_f64().expect("unit fraction");
+        let right_weight = fraction.to_f64().expect("unit fraction");
+        let interpolated = (left_weight * positive_rational_ln(&left.gain)
+            + right_weight * positive_rational_ln(&next.gain))
+        .exp();
+        let a = endpoint(&left.gain);
+        let b = endpoint(&next.gain);
+        // Exponential interpolation is bounded by its endpoints. Correct only
+        // floating-point exp/log roundoff; this imposes no dynamic gain limit.
+        interpolated.clamp(a.min(b), a.max(b))
+    }
+
+    fn validate(&self, limits: &PlanLimits, path: &str) -> Result<(), PlanError> {
+        if self.points.is_empty() {
+            return Err(err("E_RANGE", path, "gain expression requires points"));
+        }
+        // Validate every raw rational before comparisons or segment arithmetic.
+        for (index, point) in self.points.iter().enumerate() {
+            for (name, value) in [("position", &point.position), ("gain", &point.gain)] {
+                let field = format!("{path}.points[{index}].{name}");
+                rational_bit_limit(value, limits, &field)?;
+                if value.numer().gcd(value.denom()) != BigInt::one() {
+                    return Err(err(
+                        "E_RATIONAL",
+                        field,
+                        "gain expression rationals must be canonical",
+                    ));
+                }
+            }
+        }
+        for (index, point) in self.points.iter().enumerate() {
+            if point.gain.to_f64().is_none_or(|value| !value.is_finite()) {
+                return Err(err(
+                    "E_NONFINITE",
+                    format!("{path}.points[{index}].gain"),
+                    "gain cannot be represented as a finite engine number",
+                ));
+            }
+            if point.gain.is_negative()
+                || point.position.is_negative()
+                || (index == 0 && !point.position.is_zero())
+                || (index > 0 && point.position <= self.points[index - 1].position)
+            {
+                return Err(err("E_RANGE", path, "gain must be nonnegative and positions must start at zero and strictly increase"));
+            }
+            if point.shape == Interpolation::Exponential
+                && (point.gain.is_zero()
+                    || self
+                        .points
+                        .get(index + 1)
+                        .is_none_or(|next| next.gain <= zero()))
+            {
+                return Err(err(
+                    "E_RANGE",
+                    path,
+                    "exponential gain segments require strictly positive endpoints",
+                ));
+            }
+        }
+        let last = self.points.last().expect("nonempty points");
+        if last.shape != Interpolation::Step
+            || (self.clock == ExpressionClock::Normalized && last.position != one())
+        {
+            return Err(err(
+                "E_RANGE",
+                path,
+                "final gain point must be step and normalized curves must end at one",
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SourceMapping {
@@ -1008,6 +1155,8 @@ pub enum EventKind {
         pitch_hz: f64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pitch_expression: Option<PitchExpression>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        gain_expression: Option<GainExpression>,
         #[serde(with = "rational_serde")]
         velocity: Rational,
     },
@@ -1364,30 +1513,30 @@ impl Plan {
             .as_ref()
             .map(|settings| settings.resource_usage(limits))
             .transpose()?;
-        let expression_count = self
-            .events
-            .iter()
-            .filter(|event| {
-                matches!(
-                    event.kind,
-                    EventKind::Note {
-                        pitch_expression: Some(_),
-                        ..
+        let (expression_count, expression_points) =
+            self.events
+                .iter()
+                .fold((0usize, 0usize), |(count, points), event| {
+                    match &event.kind {
+                        EventKind::Note {
+                            pitch_expression,
+                            gain_expression,
+                            ..
+                        } => (
+                            count
+                                .saturating_add(usize::from(pitch_expression.is_some()))
+                                .saturating_add(usize::from(gain_expression.is_some())),
+                            points
+                                .saturating_add(
+                                    pitch_expression.as_ref().map_or(0, |e| e.points.len()),
+                                )
+                                .saturating_add(
+                                    gain_expression.as_ref().map_or(0, |e| e.points.len()),
+                                ),
+                        ),
+                        _ => (count, points),
                     }
-                )
-            })
-            .count();
-        let expression_points = self
-            .events
-            .iter()
-            .map(|event| match &event.kind {
-                EventKind::Note {
-                    pitch_expression: Some(expression),
-                    ..
-                } => expression.points.len(),
-                _ => 0,
-            })
-            .fold(0usize, usize::saturating_add);
+                });
         let automation_points = self
             .automation
             .iter()
@@ -2512,6 +2661,7 @@ impl Plan {
                     pitch_hz,
                     velocity,
                     pitch_expression,
+                    gain_expression,
                 } => {
                     if event.score_off_q.is_none() || event.off_seconds.is_none() {
                         return Err(err(
@@ -2564,6 +2714,16 @@ impl Plan {
                             limits,
                             &format!("events[{index}].pitch_expression"),
                         )?;
+                    }
+                    if let Some(expression) = gain_expression {
+                        if !matches!(target.processor, Processor::Sine { .. }) {
+                            return Err(err(
+                                "E_CAPABILITY",
+                                format!("events[{index}].gain_expression"),
+                                "gain expression is supported only by core.sine/1",
+                            ));
+                        }
+                        expression.validate(limits, &format!("events[{index}].gain_expression"))?;
                     }
                     voice_work = voice_work.saturating_add(target.processor.voice_capacity());
                 }
@@ -3387,4 +3547,131 @@ pub(crate) fn production_parameter_bounds(
         Rational::new(hi.into(), den.into()),
         open,
     ))
+}
+
+#[cfg(test)]
+mod gain_expression_tests {
+    use super::*;
+
+    fn r(n: i64, d: i64) -> Rational {
+        Rational::new(n.into(), d.into())
+    }
+    fn curve(a: Rational, b: Rational, shape: Interpolation) -> GainExpression {
+        GainExpression {
+            clock: ExpressionClock::Normalized,
+            points: vec![
+                GainExpressionPoint {
+                    position: zero(),
+                    gain: a,
+                    shape,
+                },
+                GainExpressionPoint {
+                    position: one(),
+                    gain: b,
+                    shape: Interpolation::Step,
+                },
+            ],
+        }
+    }
+    fn close(actual: f64, expected: f64) {
+        assert!(
+            (actual / expected - 1.0).abs() < 2e-12,
+            "actual {actual:e}, expected {expected:e}"
+        );
+    }
+    #[test]
+    fn analytic_step_linear_exponential_and_exact_knots() {
+        let step = curve(r(2, 1), r(8, 1), Interpolation::Step);
+        assert_eq!(step.gain_at(&r(1, 2)), 2.0);
+        assert_eq!(step.gain_at(&one()), 8.0);
+        let linear = curve(zero(), r(8, 1), Interpolation::Linear);
+        assert_eq!(linear.gain_at(&r(1, 4)), 2.0);
+        assert_eq!(linear.gain_at(&zero()), 0.0);
+        let exponential = curve(r(2, 1), r(8, 1), Interpolation::Exponential);
+        close(exponential.gain_at(&r(1, 2)), 4.0);
+        assert_eq!(exponential.gain_at(&zero()), 2.0);
+        assert_eq!(exponential.gain_at(&one()), 8.0);
+        assert_eq!(exponential.gain_at(&r(2, 1)), 8.0);
+        // Distinct rational positions that collapse onto the same f64 still
+        // select the correct right-continuous step at the exact knot.
+        let epsilon = Rational::new(1.into(), BigInt::one() << 200);
+        assert_eq!(step.gain_at(&(one() - &epsilon)), 2.0);
+        assert_eq!(step.gain_at(&(one() + &epsilon)), 8.0);
+    }
+    #[test]
+    fn exponential_extremes_use_rational_logs_without_endpoint_ratio_overflow() {
+        let ten = BigInt::from(10);
+        for (power, expected) in [(400, 1e-50), (323, 10.0_f64.powf(-11.5))] {
+            let tiny = Rational::new(1.into(), ten.pow(power));
+            let huge = Rational::from_integer(ten.pow(300));
+            let expression = curve(tiny.clone(), huge.clone(), Interpolation::Exponential);
+            expression.validate(&PlanLimits::default(), "test").unwrap();
+            close(expression.gain_at(&r(1, 2)), expected);
+            let descending = curve(huge, tiny.clone(), Interpolation::Exponential);
+            close(descending.gain_at(&r(1, 2)), expected);
+            assert_eq!(expression.gain_at(&zero()), tiny.to_f64().unwrap());
+        }
+        let tiny = Rational::new(1.into(), ten.pow(400));
+        assert_eq!(
+            curve(tiny.clone(), tiny, Interpolation::Exponential).gain_at(&r(1, 2)),
+            0.0
+        );
+        let max = Rational::from_float(f64::MAX).unwrap();
+        assert_eq!(
+            curve(max.clone(), max, Interpolation::Exponential).gain_at(&r(1, 2)),
+            f64::MAX
+        );
+    }
+    #[test]
+    fn linear_extremes_interpolate_exact_rationals_before_conversion() {
+        let huge = Rational::from_integer(BigInt::from(10).pow(300));
+        let tiny = Rational::new(1.into(), BigInt::from(10).pow(400));
+        close(
+            curve(tiny, huge, Interpolation::Linear).gain_at(&r(1, 2)),
+            5e299,
+        );
+        let epsilon = Rational::new(1.into(), BigInt::one() << 200);
+        let mut expression = curve(zero(), r(2, 1), Interpolation::Linear);
+        expression.points[0].position = one() - &epsilon;
+        expression.points[1].position = one() + &epsilon;
+        assert_eq!(expression.gain_at(&one()), 1.0);
+    }
+    #[test]
+    fn shared_clock_uses_effective_gate_and_holds_release_endpoint() {
+        let event = ResolvedEvent {
+            address: "note".into(),
+            source: SourceMapping {
+                object: "note".into(),
+                path: vec!["note".into()],
+                span: None,
+            },
+            target: EventTarget::new("sine", "events").unwrap(),
+            kind: EventKind::Note {
+                pitch_hz: 440.0,
+                velocity: one(),
+                pitch_expression: None,
+                gain_expression: None,
+            },
+            score_on_q: r(10, 1),
+            score_off_q: Some(r(13, 1)),
+            onset_offset_seconds: zero(),
+            release_offset_seconds: zero(),
+            on_seconds: r(1, 1),
+            off_seconds: Some(r(3, 2)),
+            release_velocity: 0.0,
+            on_frame: 48_000,
+            off_frame: Some(72_000),
+            order: 0,
+        };
+        for (clock, midpoint, end) in [
+            (ExpressionClock::Seconds, r(1, 4), r(1, 2)),
+            (ExpressionClock::Score, r(3, 2), r(3, 1)),
+            (ExpressionClock::Normalized, r(1, 2), one()),
+        ] {
+            assert_eq!(clock.coordinate_at(&event, 47_999, 48_000), zero());
+            assert_eq!(clock.coordinate_at(&event, 60_000, 48_000), midpoint);
+            assert_eq!(clock.coordinate_at(&event, 72_000, 48_000), end);
+            assert_eq!(clock.coordinate_at(&event, 80_000, 48_000), end);
+        }
+    }
 }

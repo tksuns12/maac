@@ -40,6 +40,7 @@ fn event(
             pitch_hz,
             velocity,
             pitch_expression: None,
+            gain_expression: None,
         },
         score_on_q: on_q,
         score_off_q: Some(off_q),
