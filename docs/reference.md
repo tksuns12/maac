@@ -194,17 +194,17 @@ boundaries automatically. `VersionedPlan` contains `Legacy(Plan)` or `V3(PlanV3)
 no existing public plan struct gains a required field.
 
 For [native hits and sample kits](core-kit.md), [rate clips](audio-clips.md),
-and [warp-rate clips](warp-rate.md),
+[warp-rate clips](warp-rate.md), and [core modulation](core-modulation.md),
 use the additive artifact APIs. They also accept older plans and retain their behavior:
 
 | API | Responsibility |
 | --- | --- |
-| `maac::compile_bundle_artifact` / `maac::check_bundle_artifact` | Compile or check bundles with native hits, arranged clips and embedded audio assets |
+| `maac::compile_bundle_artifact` / `maac::check_bundle_artifact` | Compile or check bundles with native hits, arranged clips, embedded audio assets and core modulation |
 | `PlanArtifact::from_json` / `PlanArtifact::to_json` | Independently validate and load/encode opaque standalone artifacts |
-| `maac::render_artifact` / `DspEngine::new_artifact` | Render or prepare versions 1–6 |
+| `maac::render_artifact` / `DspEngine::new_artifact` | Render or prepare versions 1–7 |
 | `dsp::render_ports_artifact_with_limits` | Capture selected ports from the complete graph |
 | `export::write_wav_artifact` / `export::render_wav_to_path_artifact` | Export with existing encoding and atomic publication rules |
-| `production_delivery::deliver_artifact` | Execute named deliveries; versions 4–6 use manifest version 2 |
+| `production_delivery::deliver_artifact` | Execute named deliveries; versions 4–7 use manifest version 2 |
 
 Compiler, load/encode, renderer and WAV helpers provide `_with_limits` variants.
 The artifact's representation is private; inspect `version()`, `output()`,
@@ -216,6 +216,8 @@ For embedded CLI use, `cli::execute_artifact` returns an opaque
 `hits` and `audio_clips` only when positive, and `notes` counts actual notes.
 Use `format_human_artifact` to format
 the new result. Clip counts include both rate and warp-rate transports.
+Control nodes and modulation edges do not add notes, hits, or clips. Control
+ports cannot be captured as audio or selected as delivery outputs.
 
 The compiler and DSP do not perform filesystem or network operations.
 `stdlib::catalog()` and `stdlib::instrument(name)` derive public control
@@ -318,11 +320,11 @@ retains resolved events and source mappings; it is not a substitute for the
 authored source. See the [format reference](performance-plan.md) and
 [diagnostics guide](diagnostics.md).
 
-All six plan versions retain optional `production` settings; plans without
+All seven plan versions retain optional `production` settings; plans without
 those settings omit the field. The existing Rust fields are `Plan.production`
-and `PlanV3.production`; versions 4–6 are accessed through the opaque artifact API.
+and `PlanV3.production`; versions 4–7 are accessed through the opaque artifact API.
 Native processor tags were introduced in versions 1 and 2 and are also supported
-in versions 3–6.
+in versions 3–7.
 `PlanLimits` adds `max_production_delay_cells`; exhaustive Rust struct literals
 must include it or use `..PlanLimits::default()`. Exhaustive `Plan` literals
 need `production: None` when no delivery is defined. These Rust additions do

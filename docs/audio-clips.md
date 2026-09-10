@@ -93,9 +93,10 @@ successful preparation remains part of the reference engine.
 
 ## Saved plans and compatibility
 
-Clip-enabled sources emit performance-plan version 5 through the opaque
-`PlanArtifact` API. Versions 1–4 retain their supported behavior and bytes;
-sources without clips retain their previous version. Existing public plan,
+Rate clips require performance-plan version 5 or later through the opaque
+`PlanArtifact` API. The compiler selects V5 unless another feature requires a
+later version: warp clips select V6 and core modulation selects V7. Earlier
+features retain their supported behavior and records. Existing public plan,
 processor, event and CLI result types remain compatible.
 
 The private V5 representation reuses embedded raw audio assets and the current

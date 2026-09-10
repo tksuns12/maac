@@ -35,6 +35,24 @@ maac compile examples/warp-rate.maac --project-root . -o warp-rate.plan.json
 maac render warp-rate.plan.json -o warp-rate-from-plan.wav --format pcm16
 ```
 
+# Core modulation
+
+[`core-modulation.maac`](core-modulation.maac) uses score-clock and seconds-clock
+LFOs to vary gain, filter cutoff, and pan. An automated constant combines control
+signals alongside a pitched note, a kit hit, and three audio clips. The stereo
+output is 109,688 frames at 48 kHz, including its tail. Its V7 plan embeds the
+assets for source-free replay.
+
+```sh
+maac check examples/core-modulation.maac --project-root .
+maac build examples/core-modulation.maac --project-root . -o core-modulation.wav --format pcm16
+maac compile examples/core-modulation.maac --project-root . -o core-modulation.plan.json
+maac render core-modulation.plan.json -o core-modulation-from-plan.wav --format pcm16
+```
+
+See the [modulation contract](../docs/core-modulation.md) for waves, clocks,
+additive amounts, and supported continuous parameters.
+
 # Per-note pressure mappings
 
 [`pressure-expression.maac`](pressure-expression.maac) defines an inline stereo

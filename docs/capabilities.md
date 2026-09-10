@@ -22,7 +22,7 @@ specification remains authoritative; this page describes the implementation scop
 | Arranged audio | Top-level rate and warp-rate clips; source-frame slicing, musical warp anchors, rate-mode speed/reverse/physical placement, gain, linear/equal-power fades, explicit routing and tempo-aware tails |
 | Reusable instruments | Named libraries, typed public controls, presets, independent polyphonic instances, voice and shared graphs |
 | Sound graphs | Versioned sine/saw/square/triangle/wavetable oscillators, deterministic noise and recirculating plucked strings, linear ADSR, sine LFO, gain, low/high-pass one-pole filtering, mixing and panning |
-| Modulation | Feed-forward graph modulation and sample-wise through-zero linear FM; no oversampling |
+| Modulation | Top-level typed control modulation of continuous sample-rate parameters, score/seconds LFOs and automated constants; instrument feed-forward graph modulation and sample-wise through-zero linear FM; no oversampling |
 | Built-in instruments | 24 stereo exports in `std/basic/1.0.0` with four common controls; three separate `std/acoustic/1.0.0` guitars with six controls; exact-version CLI/Rust discovery |
 | Local dependencies | Explicit namespace aliases, transitive declaring-file resolution, SHA-256 source/WAV pins, project containment |
 | Wavetables | Explicit mono WAV cycles, cyclic interpolation, adjacent-frame morphing and harmonic-limited banks |
@@ -31,17 +31,17 @@ specification remains authoritative; this page describes the implementation scop
 | Export | Legacy build/render: Float32 WAV or overload-rejecting PCM16; production delivery also adds PCM24 and explicit seeded TPDF |
 | Native production | Project-level EQ, linked peak compression with external sidechains, eight-delay reverb; required `maac.production/1` |
 | Named deliveries | Complete-graph master/stem capture; 44.1/48/96 kHz conversion; final-artifact loudness/sample-peak/experimental true-peak analysis |
-| Interchange | Independently validated standalone plans: version 1 legacy, version 2 embedded graph/data/provenance, version 3 exact ramp timing recipes, version 4 embedded audio assets and kit nodes, version 5 rate clips, version 6 warp-rate clips |
+| Interchange | Independently validated standalone plans: version 1 legacy, version 2 embedded graph/data/provenance, version 3 exact ramp timing recipes, version 4 embedded audio assets and kit nodes, version 5 rate clips, version 6 warp-rate clips, version 7 core control modulation |
 
 Recognized deferred features fail with `E_CAPABILITY`: messages,
-top-level core modulation, other processors, pitched sample instruments,
+event-rate core modulation, other processors, pitched sample instruments,
 preserve-pitch audio warping, external plug-ins and other extensions. Transactional editing, full render locks,
 MIDI transport, GUI and real-time playback are outside this release's interfaces.
 No deferred feature is approximated silently.
 
 The [kit contract](core-kit.md) defines native hit scheduling, raw sample assets,
 voice capacity, interpolation and standalone replay. The additive `*_artifact`
-Rust APIs support versions 1–6 through opaque `PlanArtifact`; existing APIs keep
+Rust APIs support versions 1–7 through opaque `PlanArtifact`; existing APIs keep
 their supported versions. WAV importing and reusable sample-kit library exports
 remain outside this slice.
 
@@ -51,6 +51,12 @@ Tracks may group clips without an event target; grouping creates no routing.
 The [warp-rate contract](warp-rate.md) adds ordered musical source-frame anchors
 through the full tempo map, including the tail. Preserve-pitch warping and
 placement inside patterns remain unsupported.
+
+The [core modulation contract](core-modulation.md) implements explicit control
+edges, `core.lfo/1`, and `core.constant/1`. Score LFOs follow tempo and hold at
+score end; seconds LFOs continue through the tail. Additive contributions follow
+modulation-ID order and the target's final range policy. Controls remain distinct
+from audio outputs. Event-rate targets and same-sample cycles are rejected.
 
 The [tempo ramp contract](tempo-ramps.md) defines linear BPM in score position,
 inverse-clock automation, and version 3 interchange. The CLI automatically
@@ -121,7 +127,7 @@ rates/channel capabilities use `E_CAPABILITY`). Additional bounds are:
 | Resource | Limit |
 | --- | --- |
 | Source/aggregate plan objects | 200,000 |
-| Connections | 4,096 |
+| Audio connections and top-level modulation edges | 4,096 combined |
 | Tempo points | 4,096 |
 | Global automation, expanded per-note pitch/gain/timbre/pressure points, and warp anchors | 65,536 combined |
 | Warp anchors per clip | 4,096 |

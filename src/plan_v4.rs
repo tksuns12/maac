@@ -60,6 +60,7 @@ impl PlanV4 {
             nodes: crate::plan::NodeSlice::V4(&self.nodes),
             audio_assets: Some(&self.audio_assets),
             connections: &self.connections,
+            modulations: &[],
             automation: crate::plan::AutomationSlice::V3(&self.automation),
             regions: &self.regions,
             source_mappings: &self.source_mappings,

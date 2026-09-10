@@ -7,6 +7,8 @@
 //! expansion, sample scheduling, DSP, and same-sample graph validation belong
 //! to later plan/renderer stages.
 
+use crate::plan_v7::{ControlClock, LfoConfig, LfoWave, ModulationV7, NodeV7, ProcessorV7};
+use num_integer::Integer;
 use std::collections::{BTreeMap, BTreeSet};
 
 use num_bigint::BigInt;
@@ -201,10 +203,18 @@ pub struct SourceGraph {
     kit_nodes: BTreeMap<String, NodeV4>,
     audio_sources: BTreeMap<String, CoreAudioSource>,
     audio_clips: BTreeMap<String, AudioClipSource>,
+    control_nodes: BTreeMap<String, NodeV7>,
+    modulations: Vec<ModulationV7>,
     references: BTreeMap<String, ReferenceTarget>,
 }
 
 impl SourceGraph {
+    pub(crate) fn control_nodes(&self) -> &BTreeMap<String, NodeV7> {
+        &self.control_nodes
+    }
+    pub(crate) fn modulations(&self) -> &[ModulationV7] {
+        &self.modulations
+    }
     pub(crate) fn audio_clips(&self) -> &BTreeMap<String, AudioClipSource> {
         &self.audio_clips
     }
@@ -289,7 +299,15 @@ pub(crate) fn validate_source_with_tempo_profile(
     instruments: &BTreeMap<String, InstrumentNodeDescriptor>,
     allow_ramps: bool,
 ) -> Result<SourceGraph, Diagnostics> {
-    validate_source_profile(document, instruments, allow_ramps, false, false, false)
+    validate_source_profile(
+        document,
+        instruments,
+        allow_ramps,
+        false,
+        false,
+        false,
+        false,
+    )
 }
 
 pub(crate) fn validate_source_with_kit_profile(
@@ -297,7 +315,15 @@ pub(crate) fn validate_source_with_kit_profile(
     instruments: &BTreeMap<String, InstrumentNodeDescriptor>,
     allow_ramps: bool,
 ) -> Result<SourceGraph, Diagnostics> {
-    validate_source_profile(document, instruments, allow_ramps, true, false, false)
+    validate_source_profile(
+        document,
+        instruments,
+        allow_ramps,
+        true,
+        false,
+        false,
+        false,
+    )
 }
 
 pub(crate) fn validate_source_with_audio_profile(
@@ -305,7 +331,7 @@ pub(crate) fn validate_source_with_audio_profile(
     instruments: &BTreeMap<String, InstrumentNodeDescriptor>,
     allow_ramps: bool,
 ) -> Result<SourceGraph, Diagnostics> {
-    validate_source_profile(document, instruments, allow_ramps, true, true, false)
+    validate_source_profile(document, instruments, allow_ramps, true, true, false, false)
 }
 
 pub(crate) fn validate_source_with_warp_profile(
@@ -313,7 +339,15 @@ pub(crate) fn validate_source_with_warp_profile(
     instruments: &BTreeMap<String, InstrumentNodeDescriptor>,
     allow_ramps: bool,
 ) -> Result<SourceGraph, Diagnostics> {
-    validate_source_profile(document, instruments, allow_ramps, true, true, true)
+    validate_source_profile(document, instruments, allow_ramps, true, true, true, false)
+}
+
+pub(crate) fn validate_source_with_control_profile(
+    document: &Document,
+    instruments: &BTreeMap<String, InstrumentNodeDescriptor>,
+    allow_ramps: bool,
+) -> Result<SourceGraph, Diagnostics> {
+    validate_source_profile(document, instruments, allow_ramps, true, true, true, true)
 }
 
 fn validate_source_profile(
@@ -323,12 +357,14 @@ fn validate_source_profile(
     allow_kits: bool,
     allow_audio: bool,
     allow_warp: bool,
+    allow_controls: bool,
 ) -> Result<SourceGraph, Diagnostics> {
     let mut validator = Validator::new(document, instruments);
     validator.allow_ramps = allow_ramps;
     validator.allow_kits = allow_kits;
     validator.allow_audio = allow_audio;
     validator.allow_warp = allow_warp;
+    validator.allow_controls = allow_controls;
     validator.validate();
     if validator.diagnostics.has_errors() {
         return Err(validator.diagnostics);
@@ -342,6 +378,8 @@ fn validate_source_profile(
         kit_nodes: validator.kit_nodes,
         audio_sources: validator.audio_sources,
         audio_clips: validator.audio_clips,
+        control_nodes: validator.control_nodes,
+        modulations: validator.modulations,
         references: validator.references,
     })
 }
@@ -353,6 +391,7 @@ pub fn validate(document: &Document) -> Result<SourceGraph, Diagnostics> {
 
 struct Validator<'a> {
     allow_warp: bool,
+    allow_controls: bool,
     allow_audio: bool,
     allow_ramps: bool,
     allow_kits: bool,
@@ -365,6 +404,8 @@ struct Validator<'a> {
     kit_nodes: BTreeMap<String, NodeV4>,
     audio_sources: BTreeMap<String, CoreAudioSource>,
     audio_clips: BTreeMap<String, AudioClipSource>,
+    control_nodes: BTreeMap<String, NodeV7>,
+    modulations: Vec<ModulationV7>,
     references: BTreeMap<String, ReferenceTarget>,
     automation_writers: BTreeSet<String>,
     total_objects: usize,
@@ -385,6 +426,7 @@ impl<'a> Validator<'a> {
             allow_kits: false,
             allow_audio: false,
             allow_warp: false,
+            allow_controls: false,
             diagnostics: Diagnostics::new(),
             project_id: None,
             project_score: None,
@@ -393,6 +435,8 @@ impl<'a> Validator<'a> {
             kit_nodes: BTreeMap::new(),
             audio_sources: BTreeMap::new(),
             audio_clips: BTreeMap::new(),
+            control_nodes: BTreeMap::new(),
+            modulations: Vec::new(),
             references: BTreeMap::new(),
             automation_writers: BTreeSet::new(),
             total_objects: 0,
@@ -732,6 +776,9 @@ impl<'a> Validator<'a> {
             _ => {}
         }
         self.reject_children(object, path);
+        if self.allow_controls && object.kind == "modulate" && path.len() == 1 {
+            return;
+        }
         if self.allow_audio && object.kind == "audio" && path.len() == 1 {
             self.validate_audio_transport(object, path);
             return;
@@ -1897,6 +1944,16 @@ impl<'a> Validator<'a> {
     }
 
     fn validate_node(&mut self, object: &Object, path: &[String]) {
+        if self.allow_controls
+            && object
+                .field("type")
+                .and_then(|f| f.value.as_string())
+                .is_some_and(|kind| matches!(kind, "core.lfo/1" | "core.constant/1"))
+        {
+            self.validate_control_node(object, path);
+            return;
+        }
+
         if let Some(instrument) = self.instrument_nodes.get(&object.id).cloned() {
             self.check_schema(
                 object,
@@ -2069,6 +2126,17 @@ impl<'a> Validator<'a> {
     }
 
     fn node_ports(&self, id: &str) -> Option<Vec<PortDescriptor>> {
+        if self.control_nodes.contains_key(id) {
+            return Some(vec![PortDescriptor {
+                name: "out",
+                direction: PortDirection::Output,
+                kind: PortKind::Control,
+                channels: 1,
+                accepts_multiple: false,
+                zero_default: true,
+            }]);
+        }
+
         if let Some(node) = self.nodes.get(id) {
             return Some(ports_for(node.processor, &node.config));
         }
@@ -2841,7 +2909,249 @@ impl<'a> Validator<'a> {
         }
     }
 
+    fn control_number(
+        &mut self,
+        value: BigRational,
+        field: &Field,
+        path: &[String],
+        finite: bool,
+    ) -> Option<BigRational> {
+        if value.numer().bits() > 4096 || value.denom().bits() > 4096 {
+            self.push(
+                DiagnosticCode::ResourceLimit,
+                "control rational exceeds bit allowance",
+                Some(field.value.span),
+                path.to_vec(),
+                Vec::new(),
+            );
+            return None;
+        }
+        if finite
+            && !value
+                .to_f64()
+                .is_some_and(|v| v.is_finite() && (v != 0. || value.is_zero()))
+        {
+            self.push(
+                DiagnosticCode::Nonfinite,
+                "control numeric value is not engine-representable",
+                Some(field.value.span),
+                path.to_vec(),
+                Vec::new(),
+            );
+            return None;
+        }
+        Some(value)
+    }
+    fn validate_control_node(&mut self, object: &Object, path: &[String]) {
+        self.reject_children(object, path);
+        let lfo = object.field("type").and_then(|f| f.value.as_string()) == Some("core.lfo/1");
+        self.check_schema(
+            object,
+            path,
+            &["type"],
+            if lfo {
+                &["type", "config", "label"]
+            } else {
+                &["type", "params", "label"]
+            },
+            &[],
+        );
+        let mut params = BTreeMap::new();
+        let processor = if lfo {
+            let Some(config) = self.record_field(object, "config", path).cloned() else {
+                self.push(
+                    DiagnosticCode::Range,
+                    "LFO config with period is required",
+                    Some(object.span),
+                    path.to_vec(),
+                    vec!["config".into()],
+                );
+                return;
+            };
+            for (name, field) in &config {
+                if !matches!(name.as_str(), "period" | "wave" | "phase") {
+                    self.push(
+                        DiagnosticCode::UnknownField,
+                        "unknown LFO config field",
+                        Some(field.value.span),
+                        path.to_vec(),
+                        vec!["config".into(), name.clone()],
+                    );
+                }
+            }
+            let Some(field) = config.get("period") else {
+                self.push(
+                    DiagnosticCode::Range,
+                    "LFO period is required",
+                    Some(object.span),
+                    path.to_vec(),
+                    vec!["config".into(), "period".into()],
+                );
+                return;
+            };
+            let clock = if matches!(field.value.kind, ValueKind::Quantity { unit: Unit::Q, .. }) {
+                ControlClock::Score
+            } else {
+                ControlClock::Seconds
+            };
+            let Some(period) = self
+                .quantity(field, &[Unit::Q, Unit::S], path, "period")
+                .and_then(|v| self.control_number(v, field, path, false))
+            else {
+                return;
+            };
+            if period <= BigRational::zero() {
+                self.push(
+                    DiagnosticCode::Range,
+                    "LFO period must be positive",
+                    Some(field.value.span),
+                    path.to_vec(),
+                    vec!["period".into()],
+                );
+                return;
+            }
+            let wave = match config.get("wave") {
+                None => LfoWave::Sine,
+                Some(field) => match field.value.as_symbol() {
+                    Some("sine") => LfoWave::Sine,
+                    Some("triangle") => LfoWave::Triangle,
+                    Some("saw") => LfoWave::Saw,
+                    Some("square") => LfoWave::Square,
+                    _ => {
+                        self.push(
+                            DiagnosticCode::Range,
+                            "LFO wave must be sine, triangle, saw or square",
+                            Some(field.value.span),
+                            path.to_vec(),
+                            vec!["wave".into()],
+                        );
+                        return;
+                    }
+                },
+            };
+            let phase = if let Some(field) = config.get("phase") {
+                let Some(phase) = self
+                    .number(field, path, "phase")
+                    .and_then(|v| self.control_number(v, field, path, false))
+                else {
+                    return;
+                };
+                BigRational::new(
+                    phase.numer().mod_floor(phase.denom()),
+                    phase.denom().clone(),
+                )
+            } else {
+                BigRational::zero()
+            };
+            ProcessorV7::Lfo {
+                config: LfoConfig {
+                    clock,
+                    period,
+                    wave,
+                    phase,
+                },
+            }
+        } else {
+            if let Some(fields) = self.record_field(object, "params", path).cloned() {
+                for (name, field) in fields {
+                    if name != "value" {
+                        self.push(
+                            DiagnosticCode::UnknownField,
+                            "constant has only value parameter",
+                            Some(field.value.span),
+                            path.to_vec(),
+                            vec![name],
+                        );
+                        continue;
+                    }
+                    if let Some(value) = self
+                        .number(&field, path, "value")
+                        .and_then(|v| self.control_number(v, &field, path, true))
+                    {
+                        params.insert("value".into(), value);
+                    }
+                }
+            }
+            params
+                .entry("value".into())
+                .or_insert_with(BigRational::zero);
+            ProcessorV7::Constant {}
+        };
+        self.control_nodes.insert(
+            object.id.clone(),
+            NodeV7 {
+                id: object.id.clone(),
+                processor,
+                params,
+            },
+        );
+    }
+    fn validate_core_modulation(&mut self, object: &Object, path: &[String]) {
+        let target = object
+            .field("target")
+            .and_then(|f| self.resolve_parameter_ref(f, path, false));
+        let from = object.field("from").and_then(|f| {
+            self.expect_port_ref(
+                f,
+                "from",
+                Some(PortDirection::Output),
+                Some(PortKind::Control),
+                path,
+            )?;
+            f.value.reference().cloned()
+        });
+        let Some(ReferenceTarget::Parameter {
+            node,
+            parameter,
+            unit,
+            rate,
+            ..
+        }) = target
+        else {
+            return;
+        };
+        if rate != ParameterRate::Sample {
+            self.push(
+                DiagnosticCode::Capability,
+                "only sample-rate parameters can receive core modulation",
+                Some(object.span),
+                path.to_vec(),
+                vec!["target".into()],
+            );
+            return;
+        }
+        let Some(field) = object.field("amount") else {
+            return;
+        };
+        let amount = match unit {
+            ParameterUnit::Dimensionless => self.number(field, path, "amount"),
+            ParameterUnit::Seconds => self.quantity(field, &[Unit::S], path, "amount"),
+            ParameterUnit::Hertz => self.quantity(field, &[Unit::Hz], path, "amount"),
+            ParameterUnit::Decibels => self.quantity(field, &[Unit::Db], path, "amount"),
+        }
+        .and_then(|v| self.control_number(v, field, path, true));
+        if let (Some(from), Some(amount)) = (from, amount) {
+            self.modulations.push(ModulationV7 {
+                id: object.id.clone(),
+                from: crate::plan::PortRef {
+                    node: from.path[0].clone(),
+                    port: from.port.unwrap_or_default(),
+                },
+                target: crate::plan::PortRef {
+                    node,
+                    port: parameter,
+                },
+                amount,
+            });
+        }
+    }
+
     fn validate_modulate_shape(&mut self, object: &Object, path: &[String]) {
+        if self.allow_controls {
+            self.validate_core_modulation(object, path);
+            return;
+        }
+
         if let Some(field) = object.field("target") {
             self.expect_parameter_ref(field, path);
         }
@@ -3359,7 +3669,9 @@ impl<'a> Validator<'a> {
         let count = self
             .document
             .objects()
-            .filter(|(_, object)| object.kind == "connect")
+            .filter(|(_, object)| {
+                object.kind == "connect" || (self.allow_controls && object.kind == "modulate")
+            })
             .count();
         if count > MAX_SOURCE_CONNECTIONS {
             self.push(
@@ -3396,6 +3708,34 @@ impl<'a> Validator<'a> {
                             direction: port.direction,
                             kind: port.kind,
                             channels: port.channels,
+                        },
+                    );
+                }
+            }
+            if self.control_nodes.contains_key(&id) {
+                self.references.insert(
+                    format!("&{id}:out"),
+                    ReferenceTarget::Port {
+                        node: id.clone(),
+                        port: "out".into(),
+                        direction: PortDirection::Output,
+                        kind: PortKind::Control,
+                        channels: 1,
+                    },
+                );
+                if self
+                    .control_nodes
+                    .get(&id)
+                    .is_some_and(|n| matches!(n.processor, ProcessorV7::Constant {}))
+                {
+                    self.references.insert(
+                        format!("&{id}.params.value"),
+                        ReferenceTarget::Parameter {
+                            node: id.clone(),
+                            parameter: "value".into(),
+                            unit: ParameterUnit::Dimensionless,
+                            range: RangePolicy::Error,
+                            rate: ParameterRate::Sample,
                         },
                     );
                 }
@@ -3664,6 +4004,14 @@ impl<'a> Validator<'a> {
     }
 
     fn expect_parameter_ref(&mut self, field: &Field, path: &[String]) -> Option<ReferenceTarget> {
+        self.resolve_parameter_ref(field, path, true)
+    }
+    fn resolve_parameter_ref(
+        &mut self,
+        field: &Field,
+        path: &[String],
+        writer: bool,
+    ) -> Option<ReferenceTarget> {
         let Some(reference) = field.value.reference() else {
             self.push_type(field, path, "target", "a node parameter reference");
             return None;
@@ -3682,7 +4030,11 @@ impl<'a> Validator<'a> {
         let parameter_name = &reference.path[2];
         let descriptor = self.nodes.get(node_id).cloned();
         let is_kit = self.kit_nodes.contains_key(node_id);
-        if descriptor.is_none() && !is_kit {
+        let is_constant = self
+            .control_nodes
+            .get(node_id)
+            .is_some_and(|n| matches!(n.processor, ProcessorV7::Constant {}));
+        if descriptor.is_none() && !is_kit && !is_constant {
             self.push(
                 DiagnosticCode::Reference,
                 "parameter target node does not resolve to a supported node",
@@ -3695,7 +4047,13 @@ impl<'a> Validator<'a> {
         let is_instrument = descriptor
             .as_ref()
             .is_some_and(|d| d.processor == ProcessorKind::Instrument);
-        let parameter = if is_kit {
+        let parameter = if is_constant {
+            (parameter_name == "value").then_some((
+                ParameterUnit::Dimensionless,
+                RangePolicy::Error,
+                ParameterRate::Sample,
+            ))
+        } else if is_kit {
             (parameter_name == "level").then_some((
                 ParameterUnit::Dimensionless,
                 RangePolicy::Error,
@@ -3735,7 +4093,7 @@ impl<'a> Validator<'a> {
             return None;
         }
         let key = format!("{node_id}.{parameter_name}");
-        if !self.automation_writers.insert(key) {
+        if writer && !self.automation_writers.insert(key) {
             self.push(
                 DiagnosticCode::AutomationWriter,
                 "a parameter may have only one global automation writer",

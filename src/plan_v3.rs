@@ -134,6 +134,7 @@ impl PlanV3 {
             nodes: NodeSlice::Legacy(&self.nodes),
             audio_assets: None,
             connections: &self.connections,
+            modulations: &[],
             regions: &self.regions,
             source_mappings: &self.source_mappings,
             instruments: self.instruments.as_ref(),

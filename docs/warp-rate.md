@@ -114,8 +114,8 @@ including clips without audible output.
 
 ## Saved plans and compatibility
 
-Sources containing warp-rate clips emit private performance-plan version 6
-through `PlanArtifact`. V6 includes a distinct `warp_rate` graph processor
+Warp-rate clips require private performance-plan version 6 or later through
+`PlanArtifact`; adding core modulation selects V7. V6 includes a distinct `warp_rate` graph processor
 retaining musical placement, exact warp anchors, source bounds, physical fades,
 source identity, optional grouping, and certified active frame bounds. Its
 parameter map is empty. Rate clips in V6 retain their V5 record unchanged.

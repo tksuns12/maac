@@ -8,6 +8,7 @@
 use crate::plan_v3::{
     AutomationAnchor, AutomationV3, PlanV3, ResolvedEventV3, TimingContext, VersionedPlan,
 };
+use crate::plan_v7::{ModulationV7, NodeV7, PlanV7, ProcessorV7};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::convert::TryFrom;
 use std::sync::Arc;
@@ -424,6 +425,8 @@ struct Compiler<'a> {
     nodes: Vec<Node>,
     kit_nodes: BTreeMap<String, NodeV4>,
     audio_assets: Vec<AudioAsset>,
+    control_nodes: BTreeMap<String, NodeV7>,
+    modulations: Vec<ModulationV7>,
     audio_clips: BTreeMap<String, crate::semantic::AudioClipSource>,
     connections: Vec<Connection>,
     curves: BTreeMap<String, CurveDef>,
@@ -472,6 +475,8 @@ impl<'a> Compiler<'a> {
             nodes: Vec::new(),
             kit_nodes: BTreeMap::new(),
             audio_assets: Vec::new(),
+            control_nodes: BTreeMap::new(),
+            modulations: Vec::new(),
             audio_clips: BTreeMap::new(),
             connections: Vec::new(),
             curves: BTreeMap::new(),
@@ -582,6 +587,28 @@ impl<'a> Compiler<'a> {
     ) -> CResult<PlanArtifact> {
         self.allow_ramps = true;
         self.allow_hits = true;
+        let has_controls = uses_control_profile(self.document);
+        if has_controls {
+            let nodes = self
+                .document
+                .objects
+                .values()
+                .filter(|o| matches!(o.kind.as_str(), "node" | "audio"))
+                .count();
+            let edges = self
+                .document
+                .objects
+                .values()
+                .filter(|o| matches!(o.kind.as_str(), "connect" | "modulate"))
+                .count();
+            if nodes > limits.max_nodes || edges > limits.max_connections {
+                return Err(diagnostics(
+                    DiagnosticCode::ResourceLimit,
+                    "aggregate node or connection/modulation budget exceeded",
+                    None,
+                ));
+            }
+        }
         let has_audio = uses_audio_profile(self.document);
         let has_warp = self.document.objects.values().any(|object| {
             object.kind == "audio"
@@ -590,7 +617,13 @@ impl<'a> Compiler<'a> {
                     .and_then(|field| field.value.as_symbol())
                     == Some("warp_rate")
         });
-        let graph = if has_warp {
+        let graph = if has_controls {
+            crate::semantic::validate_source_with_control_profile(
+                self.document,
+                &self.instrument_descriptors,
+                true,
+            )?
+        } else if has_warp {
             crate::semantic::validate_source_with_warp_profile(
                 self.document,
                 &self.instrument_descriptors,
@@ -609,6 +642,8 @@ impl<'a> Compiler<'a> {
                 true,
             )?
         };
+        self.control_nodes = graph.control_nodes().clone();
+        self.modulations = graph.modulations().to_vec();
         self.audio_clips = graph.audio_clips().clone();
         self.kit_nodes = graph.kit_nodes().clone();
         for (id, source) in graph.audio_sources() {
@@ -631,7 +666,10 @@ impl<'a> Compiler<'a> {
             });
         }
         self.read_composition(limits)?;
-        if has_warp {
+        if has_controls {
+            self.finish_v7(limits, production, original)
+                .map(PlanArtifact::from_v7)
+        } else if has_warp {
             self.finish_v6(limits, production, original)
                 .map(PlanArtifact::from_v6)
         } else if has_audio {
@@ -717,6 +755,9 @@ impl<'a> Compiler<'a> {
                     "fade_shape",
                     "track",
                 ][..],
+                "modulate" if uses_control_profile(self.document) => {
+                    &["from", "target", "amount", "label"][..]
+                }
                 "modulate" | "asset" | "audio" | "extension" => {
                     return Err(path_diagnostic(
                         DiagnosticCode::Capability,
@@ -1259,7 +1300,9 @@ impl<'a> Compiler<'a> {
             .values()
             .filter(|object| object.kind == "node")
         {
-            if self.kit_nodes.contains_key(&object.id) {
+            if self.kit_nodes.contains_key(&object.id)
+                || self.control_nodes.contains_key(&object.id)
+            {
                 continue;
             }
             if let Some(instance) = self.instrument_instances.get(&object.id).cloned() {
@@ -3530,6 +3573,145 @@ impl<'a> Compiler<'a> {
             .collect()
     }
 
+    fn finish_v7(
+        &self,
+        limits: &PlanLimits,
+        mut production: Option<crate::production_data::ProductionSettings>,
+        original: &Document,
+    ) -> CResult<PlanV7> {
+        self.check_point_budget(limits)?;
+        let mut nodes: Vec<NodeV6> = self
+            .nodes
+            .iter()
+            .map(|node| NodeV6 {
+                id: node.id.clone(),
+                processor: ProcessorV6::Core {
+                    processor: node.processor.clone(),
+                },
+                params: node.params.clone(),
+            })
+            .collect();
+        nodes.extend(
+            self.kit_nodes
+                .values()
+                .cloned()
+                .map(NodeV5::from)
+                .map(NodeV6::from),
+        );
+        nodes.extend(self.lower_audio_clips()?.into_iter().map(NodeV6::from));
+        nodes.extend(self.lower_warp_clips()?);
+        nodes.sort_by(|a, b| a.id.cmp(&b.id));
+        let mut nodes: Vec<NodeV7> = nodes.into_iter().map(NodeV7::from).collect();
+        nodes.extend(self.control_nodes.values().cloned());
+        nodes.sort_by(|a, b| a.id.cmp(&b.id));
+        let mut plan = PlanV7 {
+            version: 7,
+            output: OutputSettings {
+                score_start_q: self.score_start.clone(),
+                score_end_q: self.score_end.clone(),
+                tail_seconds: self.tail_seconds.clone(),
+                sample_rate_hz: self.sample_rate,
+                channels: self.output_channels()?,
+                total_frames: 0,
+                output: self.output.clone(),
+            },
+            tempo: self.plan_tempo.clone(),
+            events: self.lower_score_events()?,
+            nodes,
+            audio_assets: self.audio_assets.clone(),
+            connections: self.connections.clone(),
+            modulations: self.modulations.clone(),
+            automation: self.automations.clone(),
+            regions: self.regions.clone(),
+            source_mappings: self
+                .document
+                .objects
+                .values()
+                .filter(|o| self.control_nodes.contains_key(&o.id) || o.kind == "modulate")
+                .map(|o| SourceMapping {
+                    object: o.id.clone(),
+                    path: vec![o.id.clone()],
+                    span: Some(SourceSpan {
+                        start: o.span.start,
+                        end: o.span.end,
+                    }),
+                })
+                .collect(),
+            instruments: self.instrument_resources.clone(),
+            production: None,
+        };
+        if let Some(settings) = &mut production {
+            settings.execution_identity = Some(
+                crate::production_identity::execution_identity_for_view(original, &plan.view())
+                    .map_err(|error| {
+                        diagnostics(
+                            DiagnosticCode::Range,
+                            format!("execution identity: {error}"),
+                            None,
+                        )
+                    })?,
+            );
+        }
+        plan.production = production;
+        let limits = limits.bounded();
+        plan.view().preflight_timing(&limits).map_err(plan_error)?;
+        let timing = TimingContext::new_with_limits(&plan.tempo, &plan.output, &limits)
+            .map_err(plan_error)?;
+        Self::schedule_score_events(&mut plan.output, &mut plan.events, &timing, &limits)?;
+        for node in &mut plan.nodes {
+            if let ProcessorV7::Audio { clip } = &mut node.processor {
+                let asset = plan
+                    .audio_assets
+                    .iter()
+                    .find(|asset| asset.id == clip.asset)
+                    .ok_or_else(|| {
+                        diagnostics(DiagnosticCode::Reference, "clip asset does not exist", None)
+                    })?;
+                (clip.start_frame, clip.end_frame) = crate::audio_clip::schedule_clip(
+                    clip,
+                    &timing,
+                    &plan.output,
+                    asset.rate_hz,
+                    asset.frames,
+                )
+                .map_err(plan_error)?;
+            }
+        }
+        for node in &mut plan.nodes {
+            if let ProcessorV7::WarpRate { clip } = &mut node.processor {
+                let asset = plan
+                    .audio_assets
+                    .iter()
+                    .find(|asset| asset.id == clip.asset)
+                    .ok_or_else(|| {
+                        diagnostics(DiagnosticCode::Reference, "clip asset does not exist", None)
+                    })?;
+                (clip.start_frame, clip.end_frame) =
+                    crate::warp_clip::schedule_clip(clip, &timing, &plan.output, asset.frames)
+                        .map_err(plan_error)?;
+            }
+        }
+        plan.view()
+            .validate_with_timing(&limits, &timing)
+            .map_err(plan_error)?;
+        struct ByteBudget(usize);
+        impl std::io::Write for ByteBudget {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0 = self
+                    .0
+                    .checked_sub(bytes.len())
+                    .ok_or_else(|| std::io::Error::other("artifact JSON exceeds byte limit"))?;
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        serde_json::to_writer(ByteBudget(limits.max_json_bytes), &plan)
+            .map_err(|error| diagnostics(DiagnosticCode::ResourceLimit, error.to_string(), None))?;
+        Ok(plan)
+    }
+
     fn finish_v6(
         &self,
         limits: &PlanLimits,
@@ -4367,6 +4549,16 @@ fn uses_audio_profile(document: &Document) -> bool {
         .any(|object| object.kind == "audio")
 }
 
+fn uses_control_profile(document: &Document) -> bool {
+    document.objects.values().any(|o| {
+        o.kind == "modulate"
+            || (o.kind == "node"
+                && o.field("type")
+                    .and_then(|f| f.value.as_string())
+                    .is_some_and(|kind| matches!(kind, "core.lfo/1" | "core.constant/1")))
+    })
+}
+
 fn uses_kit_profile(document: &Document) -> bool {
     fn visit(object: &Object) -> bool {
         object.kind == "hit"
@@ -4408,7 +4600,10 @@ fn compile_resolved_artifact(
     original: &Document,
 ) -> CResult<PlanArtifact> {
     let document = libraries.entry_document();
-    if !uses_kit_profile(&document) && !uses_audio_profile(&document) {
+    if !uses_kit_profile(&document)
+        && !uses_audio_profile(&document)
+        && !uses_control_profile(&document)
+    {
         return compile_resolved_versioned(resolved, libraries, limits, production, original)
             .map(PlanArtifact::from);
     }

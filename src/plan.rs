@@ -1570,6 +1570,7 @@ impl Plan {
             nodes: NodeSlice::Legacy(&self.nodes),
             audio_assets: None,
             connections: &self.connections,
+            modulations: &[],
             automation: AutomationSlice::Legacy(&self.automation),
             regions: &self.regions,
             source_mappings: &self.source_mappings,
@@ -1616,6 +1617,7 @@ pub(crate) struct PlanView<'a> {
     pub(crate) nodes: NodeSlice<'a>,
     pub(crate) audio_assets: Option<&'a [crate::audio_asset::AudioAsset]>,
     pub(crate) connections: &'a [Connection],
+    pub(crate) modulations: &'a [crate::plan_v7::ModulationV7],
     pub(crate) automation: AutomationSlice<'a>,
     pub(crate) regions: &'a [Region],
     pub(crate) source_mappings: &'a [SourceMapping],
@@ -1629,6 +1631,7 @@ pub(crate) enum NodeSlice<'a> {
     V4(&'a [crate::plan_v4::NodeV4]),
     V5(&'a [crate::plan_v5::NodeV5]),
     V6(&'a [crate::plan_v6::NodeV6]),
+    V7(&'a [crate::plan_v7::NodeV7]),
 }
 impl<'a> NodeSlice<'a> {
     pub(crate) fn len(self) -> usize {
@@ -1637,6 +1640,7 @@ impl<'a> NodeSlice<'a> {
             Self::V4(nodes) => nodes.len(),
             Self::V5(nodes) => nodes.len(),
             Self::V6(nodes) => nodes.len(),
+            Self::V7(nodes) => nodes.len(),
         }
     }
     pub(crate) fn iter(self) -> Box<dyn ExactSizeIterator<Item = NodeView<'a>> + 'a> {
@@ -1645,6 +1649,7 @@ impl<'a> NodeSlice<'a> {
             Self::V4(nodes) => Box::new(nodes.iter().map(NodeView::from)),
             Self::V5(nodes) => Box::new(nodes.iter().map(NodeView::from)),
             Self::V6(nodes) => Box::new(nodes.iter().map(NodeView::from)),
+            Self::V7(nodes) => Box::new(nodes.iter().map(NodeView::from)),
         }
     }
     pub(crate) fn get(self, index: usize) -> Option<NodeView<'a>> {
@@ -1653,6 +1658,7 @@ impl<'a> NodeSlice<'a> {
             Self::V4(nodes) => nodes.get(index).map(NodeView::from),
             Self::V5(nodes) => nodes.get(index).map(NodeView::from),
             Self::V6(nodes) => nodes.get(index).map(NodeView::from),
+            Self::V7(nodes) => nodes.get(index).map(NodeView::from),
         }
     }
 }
@@ -1666,6 +1672,8 @@ impl<'a> IntoIterator for NodeSlice<'a> {
 
 #[derive(Clone, Copy)]
 pub(crate) enum ProcessorView<'a> {
+    Lfo(&'a crate::plan_v7::LfoConfig),
+    Constant,
     Audio(&'a crate::plan_v5::AudioClip),
     WarpRate(&'a crate::plan_v6::WarpClip),
     Core(&'a Processor),
@@ -1734,7 +1742,11 @@ impl<'a> ProcessorView<'a> {
     pub(crate) fn core(self) -> Result<&'a Processor, PlanError> {
         match self {
             Self::Core(processor) => Ok(processor),
-            Self::Kit { .. } | Self::Audio(_) | Self::WarpRate(_) => Err(err(
+            Self::Lfo(_)
+            | Self::Constant
+            | Self::Kit { .. }
+            | Self::Audio(_)
+            | Self::WarpRate(_) => Err(err(
                 "E_CAPABILITY",
                 "nodes.processor",
                 "non-core processor is not supported at this boundary yet",
@@ -1748,6 +1760,7 @@ enum NodeWire<'a> {
     V4(&'a crate::plan_v4::NodeV4),
     V5(&'a crate::plan_v5::NodeV5),
     V6(&'a crate::plan_v6::NodeV6),
+    V7(&'a crate::plan_v7::NodeV7),
 }
 #[derive(Clone, Copy)]
 pub(crate) struct NodeView<'a> {
@@ -1835,6 +1848,32 @@ impl<'a> From<&'a crate::plan_v6::NodeV6> for NodeView<'a> {
         }
     }
 }
+impl<'a> From<&'a crate::plan_v7::NodeV7> for NodeView<'a> {
+    fn from(node: &'a crate::plan_v7::NodeV7) -> Self {
+        let processor = match &node.processor {
+            crate::plan_v7::ProcessorV7::Lfo { config } => ProcessorView::Lfo(config),
+            crate::plan_v7::ProcessorV7::Constant {} => ProcessorView::Constant,
+            crate::plan_v7::ProcessorV7::Core { processor } => ProcessorView::Core(processor),
+            crate::plan_v7::ProcessorV7::Kit {
+                channels,
+                voices,
+                samples,
+            } => ProcessorView::Kit {
+                channels: *channels,
+                voices: *voices,
+                samples,
+            },
+            crate::plan_v7::ProcessorV7::Audio { clip } => ProcessorView::Audio(clip),
+            crate::plan_v7::ProcessorV7::WarpRate { clip } => ProcessorView::WarpRate(clip),
+        };
+        Self {
+            id: &node.id,
+            processor,
+            params: &node.params,
+            wire: NodeWire::V7(node),
+        }
+    }
+}
 impl Serialize for NodeView<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match self.wire {
@@ -1842,6 +1881,7 @@ impl Serialize for NodeView<'_> {
             NodeWire::V4(node) => node.serialize(serializer),
             NodeWire::V5(node) => node.serialize(serializer),
             NodeWire::V6(node) => node.serialize(serializer),
+            NodeWire::V7(node) => node.serialize(serializer),
         }
     }
 }
@@ -1985,7 +2025,7 @@ impl<'a> PlanView<'a> {
         &self,
         limits: &PlanLimits,
     ) -> Result<Option<crate::plan_v3::TimingContext>, PlanError> {
-        if !matches!(self.version, 3..=6) {
+        if !matches!(self.version, 3..=7) {
             self.validate_with_optional_timing(limits, None)?;
             return Ok(None);
         }
@@ -2002,7 +2042,7 @@ impl<'a> PlanView<'a> {
         limits: &PlanLimits,
         timing: &crate::plan_v3::TimingContext,
     ) -> Result<(), PlanError> {
-        if !matches!(self.version, 3..=6) {
+        if !matches!(self.version, 3..=7) {
             return Err(err(
                 "E_VERSION",
                 "version",
@@ -2020,7 +2060,7 @@ impl<'a> PlanView<'a> {
         if !matches!(
             (&self.events, &self.automation, self.version),
             (EventSlice::Legacy(_), AutomationSlice::Legacy(_), 1 | 2)
-                | (EventSlice::V3(_), AutomationSlice::V3(_), 3..=6)
+                | (EventSlice::V3(_), AutomationSlice::V3(_), 3..=7)
         ) {
             return Err(err(
                 "E_VERSION",
@@ -2034,6 +2074,7 @@ impl<'a> PlanView<'a> {
                 | (NodeSlice::V4(_), Some(_), 4)
                 | (NodeSlice::V5(_), Some(_), 5)
                 | (NodeSlice::V6(_), Some(_), 6)
+                | (NodeSlice::V7(_), Some(_), 7)
         ) {
             return Err(err(
                 "E_VERSION",
@@ -2059,7 +2100,7 @@ impl<'a> PlanView<'a> {
                     ));
                 }
             }
-            3..=6 => {
+            3..=7 => {
                 if self.instruments.is_none()
                     && self.nodes.iter().any(|n| {
                         matches!(
@@ -2092,7 +2133,7 @@ impl<'a> PlanView<'a> {
                 ));
             }
         }
-        if matches!(self.version, 3..=6) {
+        if matches!(self.version, 3..=7) {
             self.preflight_timing(&limits)?;
         } else {
             self.validate_counts(&limits)?;
@@ -2108,6 +2149,18 @@ impl<'a> PlanView<'a> {
         self.validate_global_ids()?;
         self.validate_nodes(&limits)?;
         self.validate_output(&limits, timing)?;
+        for node in self.nodes {
+            if let ProcessorView::Lfo(config) = node.processor {
+                let timing = timing
+                    .ok_or_else(|| err("E_VERSION", "version", "LFO requires certified timing"))?;
+                crate::core_control::prepare_lfo(config, self.output, timing, &limits).map_err(
+                    |mut error| {
+                        error.path = format!("nodes.{}.processor.config", node.id);
+                        error
+                    },
+                )?;
+            }
+        }
         for node in self.nodes {
             if let ProcessorView::Audio(clip) = node.processor {
                 let asset = self
@@ -2212,7 +2265,14 @@ impl<'a> PlanView<'a> {
         &self,
         node: NodeView<'_>,
     ) -> Result<BTreeMap<String, Rational>, PlanError> {
-        if let ProcessorView::Audio(_) | ProcessorView::WarpRate(_) = node.processor {
+        if matches!(node.processor, ProcessorView::Constant) {
+            let mut params = node.params.clone();
+            params.entry("value".into()).or_insert_with(zero);
+            return Ok(params);
+        }
+        if let ProcessorView::Lfo(_) | ProcessorView::Audio(_) | ProcessorView::WarpRate(_) =
+            node.processor
+        {
             return Ok(node.params.clone());
         }
         if let ProcessorView::Kit { .. } = node.processor {
@@ -2340,6 +2400,69 @@ impl<'a> PlanView<'a> {
         self.validate_tempo(limits)
     }
     fn validate_counts(&self, limits: &PlanLimits) -> Result<(), PlanError> {
+        for node in self.nodes {
+            if let ProcessorView::Lfo(config) = node.processor {
+                let path = format!("nodes.{}.processor.config", node.id);
+                rational_bit_limit(&config.period, limits, format!("{path}.period"))?;
+                rational_bit_limit(&config.phase, limits, format!("{path}.phase"))?;
+                if config.phase < zero() || config.phase >= one() {
+                    return Err(err(
+                        "E_RANGE",
+                        format!("{path}.phase"),
+                        "retained LFO phase must be canonical in [0,1)",
+                    ));
+                }
+                if config.period <= zero() {
+                    return Err(err(
+                        "E_RANGE",
+                        format!("{path}.period"),
+                        "LFO period must be positive",
+                    ));
+                }
+            }
+            if matches!(
+                node.processor,
+                ProcessorView::Constant | ProcessorView::Lfo(_)
+            ) {
+                for value in node.params.values() {
+                    rational_bit_limit(value, limits, "nodes.params")?;
+                }
+            }
+        }
+        for edge in self.modulations {
+            rational_bit_limit(&edge.amount, limits, "modulations.amount")?;
+        }
+        let mut control_preparation_work = 0u64;
+        for node in self.nodes {
+            if let ProcessorView::Lfo(config) = node.processor {
+                let candidates = crate::core_control::candidate_bound(
+                    config,
+                    self.output,
+                    self.tempo.points.len(),
+                    limits,
+                )
+                .map_err(|mut error| {
+                    error.path = format!("nodes.{}.processor.config", node.id);
+                    error
+                })?;
+                control_preparation_work = candidates
+                    .checked_mul(128)
+                    .and_then(|cost| control_preparation_work.checked_add(cost))
+                    .ok_or_else(|| {
+                        err(
+                            "E_RESOURCE_LIMIT",
+                            "nodes.lfo",
+                            "control preparation work overflow",
+                        )
+                    })?;
+            }
+        }
+        let control_objects = self
+            .nodes
+            .iter()
+            .filter(|node| matches!(node.processor, ProcessorView::Lfo(_)))
+            .count()
+            .saturating_mul(4);
         let production_usage = self
             .production
             .as_ref()
@@ -2652,7 +2775,11 @@ impl<'a> PlanView<'a> {
         }
         if self.events().len() > limits.max_events
             || self.nodes.len() > limits.max_nodes
-            || self.connections.len() > limits.max_connections
+            || self
+                .connections
+                .len()
+                .saturating_add(self.modulations.len())
+                > limits.max_connections
             || automation_points > limits.max_automation_points
             || self.tempo.points.len() > limits.max_tempo_points
             || self.regions.len() > limits.max_regions
@@ -2668,6 +2795,8 @@ impl<'a> PlanView<'a> {
             .nodes
             .len()
             .saturating_add(self.connections.len())
+            .saturating_add(self.modulations.len().saturating_mul(4))
+            .saturating_add(control_objects)
             .saturating_add(self.events().len())
             .saturating_add(self.automations().len())
             .saturating_add(self.regions.len())
@@ -2694,6 +2823,8 @@ impl<'a> PlanView<'a> {
             .nodes
             .len()
             .saturating_add(self.connections.len())
+            .saturating_add(self.modulations.len().saturating_mul(4))
+            .saturating_add(control_objects)
             .saturating_add(self.events().len())
             .saturating_add(self.automations().len())
             .saturating_add(automation_points)
@@ -2706,13 +2837,14 @@ impl<'a> PlanView<'a> {
             .saturating_add(path_component_count)
             .saturating_add(resource_objects)
             .saturating_add(production_usage.as_ref().map_or(0, |usage| usage.objects));
-        let timing_work = if matches!(self.version, 3..=6) {
+        let timing_work = if matches!(self.version, 3..=7) {
             self.timing_work()
         } else {
             0
         };
         if (work as u64)
             .saturating_add(timing_work)
+            .saturating_add(control_preparation_work)
             .saturating_add(asset_bytes as u64)
             > limits.max_work
         {
@@ -2737,6 +2869,38 @@ impl<'a> PlanView<'a> {
             string_bytes = string_bytes.saturating_add(value.len());
             Ok(())
         };
+        for edge in self.modulations {
+            for value in [
+                &edge.id,
+                &edge.from.node,
+                &edge.from.port,
+                &edge.target.node,
+                &edge.target.port,
+            ] {
+                count_string(value, "modulations".into())?;
+                validate_identifier_limit(value, "modulations", limits.max_id_bytes)?;
+            }
+        }
+        for node in self.nodes {
+            if let ProcessorView::Lfo(config) = node.processor {
+                count_string(
+                    match config.clock {
+                        crate::plan_v7::ControlClock::Score => "score",
+                        crate::plan_v7::ControlClock::Seconds => "seconds",
+                    },
+                    "nodes.lfo.clock".into(),
+                )?;
+                count_string(
+                    match config.wave {
+                        crate::plan_v7::LfoWave::Sine => "sine",
+                        crate::plan_v7::LfoWave::Triangle => "triangle",
+                        crate::plan_v7::LfoWave::Saw => "saw",
+                        crate::plan_v7::LfoWave::Square => "square",
+                    },
+                    "nodes.lfo.wave".into(),
+                )?;
+            }
+        }
         for asset in assets {
             count_string(&asset.id, "audio_assets.id".into())?;
             count_string(&asset.format, "audio_assets.format".into())?;
@@ -3122,6 +3286,15 @@ impl<'a> PlanView<'a> {
                 ));
             }
         }
+        for edge in self.modulations {
+            if !ids.insert(edge.id.clone()) {
+                return Err(err(
+                    "E_DUPLICATE_ID",
+                    "modulations.id",
+                    "duplicate plan object ID",
+                ));
+            }
+        }
         for connection in self.connections {
             if !ids.insert(connection.id.clone()) {
                 return Err(err(
@@ -3190,7 +3363,7 @@ impl<'a> PlanView<'a> {
                 }
             }
             if point.shape != Interpolation::Step
-                && (!matches!(self.version, 3..=6) || point.shape != Interpolation::Linear)
+                && (!matches!(self.version, 3..=7) || point.shape != Interpolation::Linear)
             {
                 return Err(err(
                     "E_CAPABILITY",
@@ -3200,7 +3373,7 @@ impl<'a> PlanView<'a> {
             }
             previous = Some(&point.q);
         }
-        if !matches!(self.version, 3..=6) {
+        if !matches!(self.version, 3..=7) {
             self.tempo.checked()?;
         } else if self
             .tempo
@@ -3227,6 +3400,39 @@ impl<'a> PlanView<'a> {
                     format!("nodes.{}", node.id),
                     "duplicate node ID",
                 ));
+            }
+            if matches!(
+                node.processor,
+                ProcessorView::Lfo(_) | ProcessorView::Constant
+            ) {
+                for (name, value) in node.params {
+                    if !matches!(node.processor, ProcessorView::Constant) || name != "value" {
+                        return Err(err(
+                            "E_UNKNOWN_FIELD",
+                            "nodes.params",
+                            "control parameter does not exist",
+                        ));
+                    }
+                    rational_bit_limit(value, limits, "nodes.params.value")?;
+                    finite_engine_rational(value, "nodes.params.value")?;
+                }
+                if let ProcessorView::Lfo(config) = node.processor {
+                    if config.phase < zero() || config.phase >= one() {
+                        return Err(err(
+                            "E_RANGE",
+                            format!("nodes.{}.processor.config.phase", node.id),
+                            "retained LFO phase must be canonical in [0,1)",
+                        ));
+                    }
+                    if config.period <= zero() {
+                        return Err(err(
+                            "E_RANGE",
+                            format!("nodes.{}.processor.config.period", node.id),
+                            "LFO period must be positive",
+                        ));
+                    }
+                }
+                continue;
             }
             if let Some(clip) = node.processor.audio_transport() {
                 if !node.params.is_empty() {
@@ -3519,6 +3725,51 @@ impl<'a> PlanView<'a> {
         Ok(())
     }
 
+    pub(crate) fn validate_modulation_target(
+        &self,
+        node: NodeView<'_>,
+        name: &str,
+    ) -> Result<(), PlanError> {
+        let missing = || {
+            err(
+                "E_REFERENCE",
+                "modulations.target",
+                "continuous parameter does not exist",
+            )
+        };
+        match node.processor {
+            ProcessorView::Constant if name == "value" => Ok(()),
+            ProcessorView::Kit { .. } if name == "level" => Ok(()),
+            ProcessorView::Core(Processor::Instrument { program, .. }) => {
+                let spec = self
+                    .instrument_program(program)
+                    .and_then(|p| p.control_spec(name))
+                    .ok_or_else(missing)?;
+                if spec.rate != ParameterRate::Sample {
+                    return Err(err(
+                        "E_CAPABILITY",
+                        "modulations.target",
+                        "modulation requires a sample-rate parameter",
+                    ));
+                }
+                Ok(())
+            }
+            ProcessorView::Core(processor) if processor.parameter_allowed(name) => {
+                if matches!(processor, Processor::Sine { .. })
+                    && matches!(name, "attack" | "release")
+                {
+                    return Err(err(
+                        "E_CAPABILITY",
+                        "modulations.target",
+                        "modulation requires a sample-rate parameter",
+                    ));
+                }
+                Ok(())
+            }
+            _ => Err(missing()),
+        }
+    }
+
     fn validate_connections(&self, limits: &PlanLimits) -> Result<(), PlanError> {
         let node_by_id: HashMap<&str, NodeView<'_>> = self
             .nodes
@@ -3627,6 +3878,34 @@ impl<'a> PlanView<'a> {
                 ));
             }
         }
+        for edge in self.modulations {
+            let from = node_by_id.get(edge.from.node.as_str()).ok_or_else(|| {
+                err(
+                    "E_REFERENCE",
+                    "modulations.from",
+                    "source node does not exist",
+                )
+            })?;
+            if !port_descriptor(*from, &edge.from.port, false)
+                .is_some_and(|p| p.kind == PortKind::Control)
+            {
+                return Err(err(
+                    "E_PORT_TYPE",
+                    "modulations.from",
+                    "source must be a control output",
+                ));
+            }
+            let target = node_by_id.get(edge.target.node.as_str()).ok_or_else(|| {
+                err(
+                    "E_REFERENCE",
+                    "modulations.target",
+                    "target node does not exist",
+                )
+            })?;
+            self.validate_modulation_target(*target, &edge.target.port)?;
+            finite_engine_rational(&edge.amount, "modulations.amount")?;
+            edges.push((edge.from.node.clone(), edge.target.node.clone()));
+        }
         detect_cycle(self.nodes, &edges)
     }
 
@@ -3669,7 +3948,10 @@ impl<'a> PlanView<'a> {
             if !match target.processor {
                 ProcessorView::Core(processor) => processor.accepts_events(),
                 ProcessorView::Kit { .. } => matches!(event.kind, EventKind::Hit { .. }),
-                ProcessorView::Audio(_) | ProcessorView::WarpRate(_) => false,
+                ProcessorView::Lfo(_)
+                | ProcessorView::Constant
+                | ProcessorView::Audio(_)
+                | ProcessorView::WarpRate(_) => false,
             } || event.target.port != "events"
             {
                 return Err(err(
@@ -4097,7 +4379,22 @@ impl<'a> PlanView<'a> {
                     "audio clips have no parameter ports",
                 ));
             }
-            if let ProcessorView::Kit { .. } = node.processor {
+            if matches!(
+                node.processor,
+                ProcessorView::Constant | ProcessorView::Lfo(_)
+            ) {
+                if !matches!(node.processor, ProcessorView::Constant) || lane.target.port != "value"
+                {
+                    return Err(err(
+                        "E_REFERENCE",
+                        "automation.target",
+                        "control parameter does not exist",
+                    ));
+                }
+                for point in lane.points {
+                    finite_engine_rational(&point.value, "automation.points.value")?;
+                }
+            } else if let ProcessorView::Kit { .. } = node.processor {
                 if lane.target.port != "level" {
                     return Err(err(
                         "E_REFERENCE",
@@ -4154,7 +4451,7 @@ impl<'a> PlanView<'a> {
                     self.output.sample_rate_hz,
                 )?;
             }
-            if matches!(self.version, 3..=6)
+            if matches!(self.version, 3..=7)
                 && lane.clock == AutomationClock::Score
                 && matches!(lane.anchor, AutomationAnchorView::Seconds(_))
             {
@@ -4329,6 +4626,42 @@ impl<'a> PlanView<'a> {
         Ok(())
     }
 
+    pub(crate) fn control_execution_work(&self, limits: &PlanLimits) -> Result<u64, PlanError> {
+        let overflow = || {
+            err(
+                "E_RESOURCE_LIMIT",
+                "modulations",
+                "control execution work overflow",
+            )
+        };
+        let mut per_frame = (self.modulations.len() as u64)
+            .checked_mul(8)
+            .ok_or_else(overflow)?;
+        for node in self.nodes {
+            let weight = match node.processor {
+                ProcessorView::Constant => 8,
+                ProcessorView::Lfo(config) => {
+                    let candidates = crate::core_control::candidate_bound(
+                        config,
+                        self.output,
+                        self.tempo.points.len(),
+                        limits,
+                    )
+                    .map_err(|mut error| {
+                        error.path = format!("nodes.{}.processor.config", node.id);
+                        error
+                    })?;
+                    128 + u64::from(u64::BITS - candidates.max(1).saturating_sub(1).leading_zeros())
+                }
+                _ => 0,
+            };
+            per_frame = per_frame.checked_add(weight).ok_or_else(overflow)?;
+        }
+        per_frame
+            .checked_mul(self.output.total_frames)
+            .ok_or_else(overflow)
+    }
+
     fn audio_execution_work(&self) -> Result<u64, PlanError> {
         let overflow = || {
             err(
@@ -4457,9 +4790,11 @@ impl<'a> PlanView<'a> {
     }
 
     fn validate_instrument_work(&self, limits: &PlanLimits) -> Result<u64, PlanError> {
+        let control_work = self.control_execution_work(limits)?;
         let mut work = self
             .kit_execution_work()?
             .checked_add(self.audio_execution_work()?)
+            .and_then(|work| work.checked_add(control_work))
             .ok_or_else(|| {
                 err(
                     "E_RESOURCE_LIMIT",
@@ -4471,7 +4806,11 @@ impl<'a> PlanView<'a> {
         for node in self.nodes {
             if matches!(
                 node.processor,
-                ProcessorView::Kit { .. } | ProcessorView::Audio(_) | ProcessorView::WarpRate(_)
+                ProcessorView::Lfo(_)
+                    | ProcessorView::Constant
+                    | ProcessorView::Kit { .. }
+                    | ProcessorView::Audio(_)
+                    | ProcessorView::WarpRate(_)
             ) {
                 continue;
             }
@@ -4885,6 +5224,7 @@ fn validate_automation_parameter(
 enum PortKind {
     Audio,
     Events,
+    Control,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -4895,6 +5235,16 @@ struct PortDescriptor {
 }
 
 fn port_descriptor(node: NodeView<'_>, port: &str, input: bool) -> Option<PortDescriptor> {
+    if matches!(
+        node.processor,
+        ProcessorView::Lfo(_) | ProcessorView::Constant
+    ) {
+        return (!input && port == "out").then_some(PortDescriptor {
+            kind: PortKind::Control,
+            channels: 0,
+            summing: false,
+        });
+    }
     if let Some(clip) = node.processor.audio_transport() {
         return (!input && port == "out").then_some(PortDescriptor {
             kind: PortKind::Audio,
@@ -5309,5 +5659,34 @@ mod pressure_expression_tests {
                 tiny.to_f64().unwrap()
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod modulation_admission_tests {
+    #[test]
+    fn lfo_admission_consumes_the_existing_timing_budget() {
+        let bundle = crate::SourceBundle::new(
+            "score.maac",
+            r#"maac 1;
+project p {score=[0q,1q];tail=0s;rate=48000Hz;tempo=&clock;meter=&metre;output=&sound:out;}
+tempo clock {points=[(0q,60bpm,linear),(1q,120bpm,step)];} meter metre {points=[(0q,4,4)];}
+node sound {type="core.sine/1";} node motion {type="core.lfo/1";config={period=1q;};}
+"#,
+        );
+        let artifact = crate::compiler::compile_bundle_artifact(&bundle).unwrap();
+        let view = artifact.view();
+        let limits = super::PlanLimits::default();
+        let depleted = crate::plan_v3::TimingContext::new_with_limits(
+            view.tempo,
+            view.output,
+            &super::PlanLimits {
+                max_work: 0,
+                ..limits
+            },
+        )
+        .unwrap();
+        let error = view.validate_with_timing(&limits, &depleted).unwrap_err();
+        assert_eq!(error.code, "E_RESOURCE_LIMIT");
     }
 }

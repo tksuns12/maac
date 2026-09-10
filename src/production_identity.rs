@@ -529,6 +529,21 @@ impl Normalizer<'_> {
                     .iter()
                     .find(|n| *n.id == object.id)
                     .ok_or_else(|| error(format!("compiled node `{}` missing", object.id)))?;
+                if let ProcessorView::Lfo(lfo) = node.processor {
+                    config.entry("wave").or_insert_with(|| {
+                        symbol(match lfo.wave {
+                            crate::plan_v7::LfoWave::Sine => "sine",
+                            crate::plan_v7::LfoWave::Triangle => "triangle",
+                            crate::plan_v7::LfoWave::Saw => "saw",
+                            crate::plan_v7::LfoWave::Square => "square",
+                        })
+                    });
+                    config.entry("phase").or_insert_with(|| number(0));
+                }
+                if matches!(node.processor, ProcessorView::Constant) {
+                    accepts_config = false;
+                    params.entry("value").or_insert_with(|| number(0));
+                }
                 if let ProcessorView::Kit {
                     voices, channels, ..
                 } = node.processor
@@ -576,6 +591,8 @@ impl Normalizer<'_> {
                 }
                 for (name, value) in node.params {
                     let unit = match node.processor {
+                        ProcessorView::Constant => None,
+                        ProcessorView::Lfo(_) => return Err(error("LFO cannot carry parameters")),
                         ProcessorView::Audio(_) | ProcessorView::WarpRate(_) => {
                             return Err(error("audio transports cannot carry node parameters"))
                         }

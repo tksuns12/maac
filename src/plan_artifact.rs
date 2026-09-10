@@ -25,6 +25,7 @@ enum ArtifactVersion {
     V4(PlanV4),
     V5(crate::plan_v5::PlanV5),
     V6(crate::plan_v6::PlanV6),
+    V7(crate::plan_v7::PlanV7),
 }
 impl PlanArtifact {
     pub fn from_json(bytes: &[u8]) -> Result<Self, PlanError> {
@@ -41,6 +42,11 @@ impl PlanArtifact {
         let inner = match version.version {
             1..=3 => {
                 ArtifactVersion::Existing(VersionedPlan::from_json_with_limits(bytes, &limits)?)
+            }
+            7 => {
+                let plan = crate::plan_v7::PlanV7::decode_wire(bytes).map_err(json_error)?;
+                plan.validate_with_limits(&limits)?;
+                ArtifactVersion::V7(plan)
             }
             6 => {
                 let plan = crate::plan_v6::PlanV6::decode_wire(bytes).map_err(json_error)?;
@@ -80,6 +86,13 @@ impl PlanArtifact {
                 check_bytes(&bytes, &limits)?;
                 Ok(bytes)
             }
+            ArtifactVersion::V7(plan) => {
+                let limits = limits.bounded();
+                self.validate_with_limits(&limits)?;
+                let bytes = serde_json::to_vec(plan).map_err(json_error)?;
+                check_bytes(&bytes, &limits)?;
+                Ok(bytes)
+            }
             ArtifactVersion::V6(plan) => {
                 let limits = limits.bounded();
                 self.validate_with_limits(&limits)?;
@@ -108,6 +121,7 @@ impl PlanArtifact {
             ArtifactVersion::V4(plan) => plan.validate_with_limits(limits),
             ArtifactVersion::V5(plan) => plan.validate_with_limits(limits),
             ArtifactVersion::V6(plan) => plan.validate_with_limits(limits),
+            ArtifactVersion::V7(plan) => plan.validate_with_limits(limits),
         }
     }
     pub fn version(&self) -> u32 {
@@ -127,6 +141,11 @@ impl PlanArtifact {
                 )
             })
             .count()
+    }
+    pub(crate) fn from_v7(plan: crate::plan_v7::PlanV7) -> Self {
+        Self {
+            inner: ArtifactVersion::V7(plan),
+        }
     }
     pub(crate) fn from_v6(plan: crate::plan_v6::PlanV6) -> Self {
         Self {
@@ -148,6 +167,7 @@ impl PlanArtifact {
             ArtifactVersion::V4(plan) => plan.view(),
             ArtifactVersion::V5(plan) => plan.view(),
             ArtifactVersion::V6(plan) => plan.view(),
+            ArtifactVersion::V7(plan) => plan.view(),
         }
     }
     #[cfg(test)]
@@ -197,6 +217,27 @@ mod tests {
     }
     fn load(v: &Value) -> Result<PlanArtifact, crate::plan::PlanError> {
         PlanArtifact::from_json(&serde_json::to_vec(v).unwrap())
+    }
+    #[test]
+    fn v7_control_artifact_roundtrips() {
+        let mut v = wire();
+        v["version"] = json!(7);
+        v["modulations"] = json!([]);
+        v["nodes"].as_array_mut().unwrap().push(
+            json!({"id":"control","processor":{"kind":"constant"},"params":{"value":"-2/1"}}),
+        );
+        let artifact = load(&v).unwrap();
+        assert_eq!(artifact.version(), 7);
+        assert_eq!(artifact.event_count(), 1);
+        assert_eq!(artifact.audio_clip_count(), 0);
+        let encoded = artifact.to_json().unwrap();
+        assert_eq!(
+            PlanArtifact::from_json(&encoded)
+                .unwrap()
+                .to_json()
+                .unwrap(),
+            encoded
+        );
     }
     #[test]
     fn embedded_hit_roundtrips_step_ramp_and_negative_origin() {
@@ -584,7 +625,7 @@ mod tests {
                 .code,
             "E_VERSION"
         );
-        for version in [0, 7] {
+        for version in [0, 8] {
             let mut v = wire();
             v["version"] = json!(version);
             assert_eq!(load(&v).unwrap_err().code, "E_VERSION");

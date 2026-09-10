@@ -49,6 +49,12 @@ recipe. This implements existing language semantics; preserve-pitch stretching
 remains an explicit extension capability.
 Try `maac build examples/warp-rate.maac --project-root . -o warp-rate.wav`.
 
+[Core modulation](docs/core-modulation.md) connects score- or seconds-clock LFOs
+and automated constants to continuous sample-rate controls such as cutoff, pan,
+and gain. Existing `modulate` objects add their contributions to base automation;
+version 7 plans retain the control graph for standalone replay.
+Try `maac build examples/core-modulation.maac --project-root . -o core-modulation.wav`.
+
 The [project-entrypoint guide](docs/project-entrypoint.md) specifies conventional
 `main.maac` discovery and the explicit finite `--profile song` allowance for
 larger projects. Existing explicit-file commands remain compatible.

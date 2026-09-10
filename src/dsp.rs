@@ -150,6 +150,9 @@ pub struct DspEngine<'a> {
     nodes: Vec<NodeState>,
     node_indices: HashMap<String, usize>,
     topo_order: Vec<usize>,
+    control_order: Vec<usize>,
+    modulations: Vec<ModulationRuntime>,
+    incoming_modulations: Vec<Vec<usize>>,
     incoming: Vec<Vec<usize>>,
     connections: Vec<ConnectionRuntime>,
     events: Vec<EventRuntime>,
@@ -234,6 +237,21 @@ impl<'a> DspEngine<'a> {
         for (index, node) in plan.nodes.iter().enumerate() {
             node_indices.insert(node.id.clone(), index);
             let (mut state, compiled) = match node.processor {
+                ProcessorView::Lfo(config) => {
+                    let context = timing
+                        .as_ref()
+                        .ok_or_else(|| RenderError::RenderState("LFO timing missing".into()))?;
+                    let lfo =
+                        crate::core_control::prepare_lfo(config, plan.output, context, limits)?;
+                    (
+                        NodeState::new_control(node.id.clone(), ControlRuntime::Lfo(lfo)),
+                        None,
+                    )
+                }
+                ProcessorView::Constant => (
+                    NodeState::new_control(node.id.clone(), ControlRuntime::Constant),
+                    None,
+                ),
                 ProcessorView::WarpRate(clip) => {
                     let sample = kit_samples
                         .get(&clip.asset)
@@ -375,7 +393,34 @@ impl<'a> DspEngine<'a> {
             incoming[connection.to].push(index);
         }
 
-        let topo_order = stable_topological_order(&nodes, &connections)?;
+        let mut modulations = plan
+            .modulations
+            .iter()
+            .map(|edge| {
+                Ok(ModulationRuntime {
+                    id: edge.id.clone(),
+                    from: node_indices[&edge.from.node],
+                    to: node_indices[&edge.target.node],
+                    parameter: edge.target.port.clone(),
+                    amount: rational_f64(&edge.amount, "modulation amount")?,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        modulations.sort_by(|a, b| a.id.as_bytes().cmp(b.id.as_bytes()));
+        let mut incoming_modulations = vec![Vec::new(); nodes.len()];
+        for (i, edge) in modulations.iter().enumerate() {
+            incoming_modulations[edge.to].push(i);
+        }
+        let order = stable_topological_order(&nodes, &connections, &modulations)?;
+        let control_order = order
+            .iter()
+            .copied()
+            .filter(|i| nodes[*i].control.is_some())
+            .collect();
+        let topo_order = order
+            .into_iter()
+            .filter(|i| nodes[*i].control.is_none())
+            .collect();
         let automation = build_automations(&plan, &node_indices, &tempo, rate, timing.as_ref())?;
         for lane in automation {
             let parameter = lane.parameter.clone();
@@ -417,6 +462,9 @@ impl<'a> DspEngine<'a> {
             nodes,
             node_indices,
             topo_order,
+            control_order,
+            modulations,
+            incoming_modulations,
             incoming,
             connections,
             events,
@@ -582,6 +630,9 @@ impl<'a> DspEngine<'a> {
     }
 
     fn evaluate_parameters(&mut self, frame: u64) -> Result<()> {
+        if self.plan.version == 7 {
+            return self.evaluate_modulated_parameters(frame);
+        }
         for node in &mut self.nodes {
             node.current_params.clone_from(&node.base_params);
             for (name, lane) in &node.automations {
@@ -598,6 +649,90 @@ impl<'a> DspEngine<'a> {
             if let Some(instrument) = &mut node.instrument {
                 instrument.update_controls(&node.current_params)?;
             }
+        }
+        Ok(())
+    }
+
+    /// V7 controls have only control parents. Evaluate their DAG before audio,
+    /// then apply audio targets before the existing note-off/note-on sequence.
+    fn evaluate_modulated_parameters(&mut self, frame: u64) -> Result<()> {
+        for node in &mut self.nodes {
+            for (name, value) in &node.base_params {
+                *node
+                    .current_params
+                    .get_mut(name)
+                    .expect("prepared base parameter exists") = *value;
+            }
+            for (name, lane) in &node.automations {
+                let value = lane.lane.value_at(frame, &self.tempo)?;
+                if !value.is_finite() {
+                    return Err(RenderError::Nonfinite(
+                        "control automation is nonfinite".into(),
+                    ));
+                }
+                *node.current_params.get_mut(name).ok_or_else(|| {
+                    RenderError::RenderState("automation parameter missing".into())
+                })? = value;
+            }
+        }
+        for order_index in 0..self.control_order.len() {
+            let index = self.control_order[order_index];
+            self.apply_modulations(index)?;
+            let node = &mut self.nodes[index];
+            node.validate_modulated_parameters(self.rate)?;
+            node.control_value = match node.control.as_ref() {
+                Some(ControlRuntime::Lfo(lfo)) => lfo.value_at(frame)?,
+                Some(ControlRuntime::Constant) => node.current_param("value"),
+                None => return Err(RenderError::RenderState("control state missing".into())),
+            };
+            if !node.control_value.is_finite() {
+                return Err(RenderError::Nonfinite("control output is nonfinite".into()));
+            }
+        }
+        for index in 0..self.nodes.len() {
+            if self.nodes[index].control.is_some() {
+                continue;
+            }
+            self.apply_modulations(index)?;
+            let node = &mut self.nodes[index];
+            node.validate_modulated_parameters(self.rate)?;
+            if let Some(instrument) = &mut node.instrument {
+                instrument
+                    .update_controls(&node.current_params)
+                    .map_err(|_| {
+                        crate::plan::err(
+                            "E_RANGE",
+                            "modulations.target",
+                            "instrument control is outside its declared range",
+                        )
+                    })?;
+            }
+        }
+        Ok(())
+    }
+
+    fn apply_modulations(&mut self, node: usize) -> Result<()> {
+        for &index in &self.incoming_modulations[node] {
+            let edge = &self.modulations[index];
+            let product = edge.amount * self.nodes[edge.from].control_value;
+            if !product.is_finite() {
+                return Err(RenderError::Nonfinite(format!(
+                    "modulation {} product is nonfinite",
+                    edge.id
+                )));
+            }
+            let target = self.nodes[node]
+                .current_params
+                .get_mut(&edge.parameter)
+                .ok_or_else(|| RenderError::RenderState("modulation parameter missing".into()))?;
+            let sum = *target + product;
+            if !sum.is_finite() {
+                return Err(RenderError::Nonfinite(format!(
+                    "modulation {} sum is nonfinite",
+                    edge.id
+                )));
+            }
+            *target = sum;
         }
         Ok(())
     }
@@ -756,6 +891,11 @@ impl<'a> DspEngine<'a> {
 
     fn process_node(&mut self, node_index: usize, frame: u64) -> Result<()> {
         let processor = match self.nodes[node_index].processor.clone() {
+            RuntimeProcessor::Control => {
+                return Err(RenderError::RenderState(
+                    "control entered audio evaluation".into(),
+                ))
+            }
             RuntimeProcessor::Audio => {
                 let node = &mut self.nodes[node_index];
                 let output = node
@@ -1001,15 +1141,31 @@ impl AudioRuntime {
 
 #[derive(Clone, Debug)]
 enum RuntimeProcessor {
+    Control,
     Core(Processor),
     Kit,
     Audio,
 }
 
 #[derive(Debug)]
+enum ControlRuntime {
+    Lfo(crate::core_control::PreparedLfo),
+    Constant,
+}
+struct ModulationRuntime {
+    id: String,
+    from: usize,
+    to: usize,
+    parameter: String,
+    amount: f64,
+}
+
+#[derive(Debug)]
 struct NodeState {
     id: String,
     processor: RuntimeProcessor,
+    control: Option<ControlRuntime>,
+    control_value: f64,
     kit: Option<KitRuntime>,
     audio: Option<AudioRuntime>,
     base_params: BTreeMap<String, f64>,
@@ -1119,6 +1275,8 @@ impl NodeState {
         let state = Self {
             id,
             processor: RuntimeProcessor::Core(processor),
+            control: None,
+            control_value: 0.,
             kit: None,
             audio: None,
             current_params: base_params.clone(),
@@ -1142,6 +1300,8 @@ impl NodeState {
         Ok(Self {
             id,
             processor: RuntimeProcessor::Kit,
+            control: None,
+            control_value: 0.,
             kit: Some(kit),
             audio: None,
             current_params: base_params.clone(),
@@ -1163,6 +1323,8 @@ impl NodeState {
         Self {
             id,
             processor: RuntimeProcessor::Audio,
+            control: None,
+            control_value: 0.,
             kit: None,
             audio: Some(audio),
             base_params: BTreeMap::new(),
@@ -1177,6 +1339,55 @@ impl NodeState {
             reverb: None,
             native_bounds: BTreeMap::new(),
         }
+    }
+
+    fn new_control(id: String, control: ControlRuntime) -> Self {
+        let base_params = if matches!(control, ControlRuntime::Constant) {
+            BTreeMap::from([("value".into(), 0.)])
+        } else {
+            BTreeMap::new()
+        };
+        Self {
+            id,
+            processor: RuntimeProcessor::Control,
+            control: Some(control),
+            control_value: 0.,
+            kit: None,
+            audio: None,
+            current_params: base_params.clone(),
+            base_params,
+            automations: BTreeMap::new(),
+            output: Vec::new(),
+            onepole_previous: Vec::new(),
+            voices: Vec::new(),
+            instrument: None,
+            eq: None,
+            compressor: None,
+            reverb: None,
+            native_bounds: BTreeMap::new(),
+        }
+    }
+
+    fn validate_modulated_parameters(&mut self, rate: f64) -> Result<()> {
+        if self.current_params.values().any(|v| !v.is_finite()) {
+            return Err(RenderError::Nonfinite(
+                "combined parameter is nonfinite".into(),
+            ));
+        }
+        // Pan is the core clamp-policy parameter; clamp only the final sum.
+        if matches!(self.processor, RuntimeProcessor::Core(Processor::Pan)) {
+            if let Some(pan) = self.current_params.get_mut("pan") {
+                *pan = pan.clamp(-1., 1.);
+            }
+        }
+        self.validate_current_parameters(rate).map_err(|_| {
+            crate::plan::err(
+                "E_RANGE",
+                "modulations.target",
+                "combined parameter is outside its declared range",
+            )
+            .into()
+        })
     }
 
     fn initialize_instrument(
@@ -1204,6 +1415,7 @@ impl NodeState {
     }
 
     fn reset(&mut self) {
+        self.control_value = 0.;
         self.output.fill(0.0);
         self.onepole_previous.fill(0.0);
         self.voices.clear();
@@ -1545,12 +1757,17 @@ fn sort_event_indices(events: &mut BTreeMap<u64, Vec<usize>>, all: &[EventRuntim
 fn stable_topological_order(
     nodes: &[NodeState],
     connections: &[ConnectionRuntime],
+    modulations: &[ModulationRuntime],
 ) -> Result<Vec<usize>> {
     let mut indegree = vec![0usize; nodes.len()];
     let mut outgoing: Vec<Vec<usize>> = vec![Vec::new(); nodes.len()];
     for connection in connections {
         indegree[connection.to] = indegree[connection.to].saturating_add(1);
         outgoing[connection.from].push(connection.to);
+    }
+    for edge in modulations {
+        indegree[edge.to] = indegree[edge.to].saturating_add(1);
+        outgoing[edge.from].push(edge.to);
     }
     let mut ready: BTreeSet<(Vec<u8>, usize)> = nodes
         .iter()
@@ -1604,7 +1821,7 @@ struct TempoRuntimePoint {
 
 impl TempoRuntime {
     fn new(plan: &PlanView<'_>, timing: Option<&TimingContext>) -> Result<Self> {
-        if matches!(plan.version, 3..=6) {
+        if matches!(plan.version, 3..=7) {
             let timing = timing.ok_or_else(|| {
                 RenderError::RenderState("certified plan validation omitted timing".into())
             })?;
@@ -1934,7 +2151,8 @@ fn build_automations(
                     default_parameter(processor, &automation.target.port)
                 }
                 ProcessorView::Kit { .. } => 1.0,
-                ProcessorView::Audio(_) | ProcessorView::WarpRate(_) => {
+                ProcessorView::Constant => 0.0,
+                ProcessorView::Lfo(_) | ProcessorView::Audio(_) | ProcessorView::WarpRate(_) => {
                     return Err(crate::plan::err(
                         "E_CAPABILITY",
                         "nodes.audio",
