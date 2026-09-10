@@ -4,6 +4,10 @@ The foundation implements a bounded subset of MaaC/1. It does **not** claim
 full Document, Performance, Core Audio, or Locked Render conformance. The language
 specification remains authoritative; this page describes the implementation scope.
 
+The [Core Audio conformance audit](core-audio-conformance-audit.md) records
+processor coverage, confirmed discrepancies, and remaining profile obligations.
+Coverage of every reference processor identifier is not a full-profile claim.
+
 | Feature | Foundation scope |
 | --- | --- |
 | Source | UTF-8, span-aware parsing, exact rational quantities, comments and source text retained in the parsed document |
