@@ -620,6 +620,9 @@ pub enum Processor {
     Gain {
         channels: u8,
     },
+    Fader {
+        channels: u8,
+    },
     #[serde(rename = "fx.eq/1")]
     Eq {
         channels: u8,
@@ -662,6 +665,10 @@ impl Processor {
         Self::Gain { channels }
     }
 
+    pub fn fader(channels: u8) -> Self {
+        Self::Fader { channels }
+    }
+
     pub fn pan() -> Self {
         Self::Pan
     }
@@ -675,6 +682,7 @@ impl Processor {
             Self::Sine { .. } => "sine",
             Self::OnePole { .. } => "onepole",
             Self::Gain { .. } => "gain",
+            Self::Fader { .. } => "fader",
             Self::Eq { .. } => "fx.eq/1",
             Self::Compressor { .. } => "fx.compressor/1",
             Self::Reverb { .. } => "fx.reverb/1",
@@ -693,6 +701,7 @@ impl Processor {
             Self::Sine { .. } => matches!(parameter, "attack" | "release" | "level"),
             Self::OnePole { .. } => parameter == "cutoff",
             Self::Gain { .. } => parameter == "gain",
+            Self::Fader { .. } => parameter == "level",
             Self::Eq { mode, .. } => {
                 parameter == "frequency"
                     || (parameter == "q"
@@ -3596,6 +3605,29 @@ impl<'a> PlanView<'a> {
                         ));
                     }
                 }
+                Processor::Fader { channels } => {
+                    if *channels == 0 {
+                        return Err(err(
+                            "E_RANGE",
+                            format!("nodes.{}.processor.channels", node.id),
+                            "fader channels must be positive",
+                        ));
+                    }
+                    if *channels > 2 {
+                        return Err(err(
+                            "E_CAPABILITY",
+                            format!("nodes.{}.processor.channels", node.id),
+                            "core.fader/1 supports only mono or stereo",
+                        ));
+                    }
+                    if *channels > limits.max_channels {
+                        return Err(err(
+                            "E_RANGE",
+                            format!("nodes.{}.processor.channels", node.id),
+                            "channels exceed the caller channel limit",
+                        ));
+                    }
+                }
                 Processor::Pan => {}
                 Processor::Instrument {
                     program,
@@ -3827,6 +3859,7 @@ impl<'a> PlanView<'a> {
                 ProcessorView::Core(
                     Processor::OnePole { .. }
                         | Processor::Gain { .. }
+                        | Processor::Fader { .. }
                         | Processor::Eq { .. }
                         | Processor::Compressor { .. }
                         | Processor::Reverb { .. }
@@ -4918,6 +4951,7 @@ impl<'a> PlanView<'a> {
             }
             let cost = match node.processor.core()? {
                 Processor::Eq { channels, .. } => 32 + 10 * u64::from(*channels),
+                Processor::Fader { channels } => 128 + u64::from(*channels),
                 Processor::Compressor {
                     channels,
                     sidechain_channels,
@@ -5405,6 +5439,7 @@ pub(crate) fn validate_parameter(
                 "parameter must be nonnegative",
             ))
         }
+        (Processor::Fader { .. }, "level") => Ok(()),
         (Processor::OnePole { .. }, "cutoff")
             if *value <= zero()
                 || *value >= Rational::from_integer(BigInt::from(sample_rate_hz / 2)) =>
@@ -5465,10 +5500,11 @@ fn validate_automation_parameter(
         )?;
         finite_engine_rational(&point.value, format!("{path}.points[{index}].value"))?;
         validate_parameter(processor, name, &point.value, path, sample_rate_hz)?;
-        if matches!(
+        if ((matches!(
             processor,
             Processor::Eq { .. } | Processor::Compressor { .. }
-        ) && matches!(name, "gain" | "threshold" | "knee" | "makeup")
+        ) && matches!(name, "gain" | "threshold" | "knee" | "makeup"))
+            || matches!((processor, name), (Processor::Fader { .. }, "level")))
             && point.shape == Interpolation::Exponential
         {
             return Err(err(
@@ -5570,6 +5606,8 @@ fn port_descriptor(node: NodeView<'_>, port: &str, input: bool) -> Option<PortDe
         | (Processor::OnePole { channels }, false, "out")
         | (Processor::Gain { channels }, true, "in")
         | (Processor::Gain { channels }, false, "out")
+        | (Processor::Fader { channels }, true, "in")
+        | (Processor::Fader { channels }, false, "out")
         | (Processor::Eq { channels, .. }, true, "in")
         | (Processor::Eq { channels, .. }, false, "out")
         | (Processor::Compressor { channels, .. }, true, "in")

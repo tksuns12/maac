@@ -1,0 +1,54 @@
+maac 1;
+
+// A score-automated dB fader with a small control-rate wobble around a
+// three-note sine phrase. The fader remains a declared audio node with no
+// implicit smoothing or clipping.
+project fader_demo {
+  score = [0q, 2q];
+  tail = 40ms;
+  rate = 48000Hz;
+  tempo = &clock;
+  meter = &metre;
+  output = &fader:out;
+}
+tempo clock { points = [(0q, 120bpm, step)]; }
+meter metre { points = [(0q, 4, 4)]; }
+
+node tone {
+  type = "core.sine/1";
+  params = { attack = 8ms; release = 30ms; level = 1/4; };
+}
+node fader {
+  type = "core.fader/1";
+  config = { channels = 1; };
+  params = { level = -12dB; };
+}
+connect tone_to_fader { from = &tone:out; to = &fader:in; }
+
+curve fader_level {
+  clock = score;
+  points = [(0q, -18dB, linear), (1q, -6dB, linear), (2q, -12dB, step)];
+}
+automation level_ride {
+  target = &fader.params.level;
+  curve = &fader_level;
+  at = 0q;
+}
+node motion {
+  type = "core.lfo/1";
+  config = { period = 1/2s; wave = triangle; };
+}
+modulate level_wobble {
+  from = &motion:out;
+  target = &fader.params.level;
+  amount = 3dB;
+}
+
+pattern phrase {
+  length = 2q;
+  note first { at = 0q; dur = 1/2q; pitch = C4; velocity = 1/2; }
+  note second { at = 1/2q; dur = 1/2q; pitch = E4; velocity = 1/2; }
+  note third { at = 1q; dur = 3/4q; pitch = G4; velocity = 1/2; }
+}
+track notes { target = &tone:events; }
+place play { pattern = &phrase; track = &notes; at = 0q; }

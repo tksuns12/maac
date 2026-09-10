@@ -995,6 +995,31 @@ impl<'a> DspEngine<'a> {
                     .output
                     .copy_from_slice(&output[..usize::from(channels)]);
             }
+            Processor::Fader { channels } => {
+                let level = self.nodes[node_index].current_param("level");
+                let factor = 10.0_f64.powf(level / 20.0);
+                if !factor.is_finite() {
+                    return Err(RenderError::Nonfinite(format!(
+                        "fader node {} produced a nonfinite factor",
+                        self.nodes[node_index].id
+                    )));
+                }
+                let mut output = [0.0; 2];
+                for (channel, sample) in output.iter_mut().enumerate().take(usize::from(channels)) {
+                    // Plan validation guarantees exactly one audio input.
+                    let connection = &self.connections[incoming[0]];
+                    *sample = factor * self.nodes[connection.from].output[channel];
+                    if !sample.is_finite() {
+                        return Err(RenderError::Nonfinite(format!(
+                            "fader node {} produced a nonfinite value",
+                            self.nodes[node_index].id
+                        )));
+                    }
+                }
+                self.nodes[node_index]
+                    .output
+                    .copy_from_slice(&output[..usize::from(channels)]);
+            }
             Processor::Eq { channels, .. }
             | Processor::Compressor { channels, .. }
             | Processor::Reverb { channels, .. } => {
@@ -1387,6 +1412,7 @@ impl NodeState {
             Processor::Sine { .. } => 1,
             Processor::OnePole { channels }
             | Processor::Gain { channels }
+            | Processor::Fader { channels }
             | Processor::Eq { channels, .. }
             | Processor::Compressor { channels, .. }
             | Processor::Reverb { channels, .. }
@@ -1406,6 +1432,9 @@ impl NodeState {
             }
             Processor::Gain { .. } => {
                 base_params.insert("gain".into(), 1.0);
+            }
+            Processor::Fader { .. } => {
+                base_params.insert("level".into(), 0.0);
             }
             Processor::Pan => {
                 base_params.insert("pan".into(), 0.0);
@@ -2447,6 +2476,7 @@ fn default_parameter(processor: &Processor, parameter: &str) -> f64 {
         (Processor::Sine { .. }, "level") => 0.2,
         (Processor::OnePole { .. }, "cutoff") => 1000.0,
         (Processor::Gain { .. }, "gain") => 1.0,
+        (Processor::Fader { .. }, "level") => 0.0,
         (Processor::Pan, "pan") => 0.0,
         _ => 0.0,
     }

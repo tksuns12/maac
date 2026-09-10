@@ -17,7 +17,7 @@ specification remains authoritative; this page describes the implementation scop
 | Per-note pressure | Voice graphs explicitly declaring `synth.pressure/1`; exact 0…1 curves on all three clocks; step/linear/exponential interpolation; independent pitch/gain/timbre coexistence and release holding |
 | Automation | Global score/seconds clocks; step, linear and exponential interpolation; sample/event parameter rates |
 | Routing | Explicit mono/stereo audio graph and note/hit targets; no implicit channel conversions or mixers |
-| Processors | `core.sine/1`, `core.kit/1`, `core.onepole/1`, `core.pan/1`, `core.sum/1`, `core.gain/1` (mono/stereo) |
+| Processors | `core.sine/1`, `core.kit/1`, `core.onepole/1`, `core.pan/1`, `core.sum/1`, `core.gain/1`, `core.fader/1` (mono/stereo) |
 | Sample kits | Pinned raw float32 mono/stereo assets, native-rate one-shot playback, linear interpolation, natural tails and sample-rate level automation |
 | Arranged audio | Top-level rate and warp-rate clips; source-frame slicing, musical warp anchors, rate-mode speed/reverse/physical placement, gain, linear/equal-power fades, explicit routing and tempo-aware tails |
 | Reusable instruments | Named libraries, typed public controls, presets, independent polyphonic instances, voice and shared graphs |

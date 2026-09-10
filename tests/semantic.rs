@@ -1,6 +1,10 @@
 use maac::diagnostic::DiagnosticCode;
-use maac::semantic::{validate_source, SourceGraph};
-use maac::syntax::parse;
+use maac::graph::ParameterRate;
+use maac::semantic::{
+    validate_source, ParameterUnit, PortDirection, PortKind, ProcessorKind, RangePolicy,
+    ReferenceTarget, SourceGraph, ValueType,
+};
+use maac::syntax::{parse, Unit};
 
 fn codes(source: &str) -> Vec<DiagnosticCode> {
     let document = parse(source).expect("semantic test source must parse");
@@ -67,7 +71,7 @@ fn validates_unused_declarations_and_does_not_discard_bad_objects() {
 #[test]
 fn reports_recognized_deferred_features_as_capability_errors() {
     let source = base(
-        r#"node unsupported { type = "core.fader/1"; config = { channels = 1; }; }
+        r#"node unsupported { type = "core.delay/1"; config = { channels = 1; }; }
 pattern ptn { length = 1q; hit kick { at = 0q; key = "kick"; } }
 "#,
     );
@@ -79,6 +83,133 @@ pattern ptn { length = 1q; hit kick { at = 0q; key = "kick"; } }
             .count()
             >= 2
     );
+}
+
+#[test]
+fn accepts_core_fader_channels_ports_and_signed_db_level() {
+    let mono = base(
+        r#"node fader {
+  type = "core.fader/1";
+  config = { channels = 1; };
+  params = { level = -12dB; };
+}
+"#,
+    );
+    let mono_graph = validate_source(&parse(&mono).unwrap()).expect("mono fader should validate");
+    let mono_node = mono_graph.node("fader").expect("fader node retained");
+    assert_eq!(mono_node.processor, ProcessorKind::Fader);
+    assert_eq!(
+        mono_node.params.get("level"),
+        Some(&ValueType::Quantity(Unit::Db))
+    );
+    assert!(matches!(
+        mono_graph.resolve_text("&fader.params.level"),
+        Some(ReferenceTarget::Parameter {
+            unit: ParameterUnit::Decibels,
+            range: RangePolicy::Error,
+            rate: ParameterRate::Sample,
+            ..
+        })
+    ));
+    assert!(matches!(
+        mono_graph.resolve_text("&fader:in"),
+        Some(ReferenceTarget::Port {
+            direction: PortDirection::Input,
+            kind: PortKind::Audio,
+            channels: 1,
+            ..
+        })
+    ));
+    assert!(matches!(
+        mono_graph.resolve_text("&fader:out"),
+        Some(ReferenceTarget::Port {
+            direction: PortDirection::Output,
+            kind: PortKind::Audio,
+            channels: 1,
+            ..
+        })
+    ));
+
+    let stereo = base(
+        r#"node fader {
+  type = "core.fader/1";
+  config = { channels = 2; };
+}
+connect fader_to_master { from = &fader:out; to = &master:in; }
+"#,
+    );
+    let stereo_graph =
+        validate_source(&parse(&stereo).unwrap()).expect("stereo fader should validate");
+    assert!(matches!(
+        stereo_graph.resolve_text("&fader:in"),
+        Some(ReferenceTarget::Port { channels: 2, .. })
+    ));
+    assert!(matches!(
+        stereo_graph.resolve_text("&fader:out"),
+        Some(ReferenceTarget::Port { channels: 2, .. })
+    ));
+}
+
+#[test]
+fn enforces_core_fader_channel_and_db_contract() {
+    let invalid_channels = base(
+        r#"node fader { type = "core.fader/1"; config = { channels = 0; }; }
+"#,
+    );
+    assert!(codes(&invalid_channels).contains(&DiagnosticCode::Range));
+
+    let too_many_channels = base(
+        r#"node fader { type = "core.fader/1"; config = { channels = 3; }; }
+"#,
+    );
+    let diagnostics = codes(&too_many_channels);
+    assert!(diagnostics.contains(&DiagnosticCode::Capability));
+    assert!(!diagnostics.contains(&DiagnosticCode::Range));
+
+    let fractional_channels = base(
+        r#"node fader { type = "core.fader/1"; config = { channels = 3/2; }; }
+"#,
+    );
+    assert!(codes(&fractional_channels).contains(&DiagnosticCode::Range));
+
+    let missing_db = base(
+        r#"node fader { type = "core.fader/1"; config = { channels = 1; }; params = { level = -12; }; }
+"#,
+    );
+    assert!(codes(&missing_db).contains(&DiagnosticCode::Unit));
+
+    let wrong_db_unit = base(
+        r#"node fader { type = "core.fader/1"; config = { channels = 1; }; params = { level = 1Hz; }; }
+"#,
+    );
+    assert!(codes(&wrong_db_unit).contains(&DiagnosticCode::Unit));
+}
+
+#[test]
+fn fader_automation_requires_db_and_rejects_exponential_interpolation() {
+    let valid = base(
+        r#"node fader { type = "core.fader/1"; config = { channels = 1; }; }
+curve level { clock = score; points = [(0q, -12dB, linear), (1q, 0dB, step)]; }
+automation move_level { target = &fader.params.level; curve = &level; at = 0q; }
+"#,
+    );
+    validate_source(&parse(&valid).unwrap()).expect("dB fader automation should validate");
+
+    let wrong_unit = base(
+        r#"node fader { type = "core.fader/1"; config = { channels = 1; }; }
+curve level { clock = score; points = [(0q, -12, linear), (1q, 0, step)]; }
+automation move_level { target = &fader.params.level; curve = &level; at = 0q; }
+"#,
+    );
+    assert!(codes(&wrong_unit).contains(&DiagnosticCode::Unit));
+
+    let exponential = base(
+        r#"node fader { type = "core.fader/1"; config = { channels = 1; }; }
+curve level { clock = score; points = [(0q, 1dB, exponential), (1q, 2dB, step)]; }
+automation move_level { target = &fader.params.level; curve = &level; at = 0q; }
+"#,
+    );
+    assert!(codes(&exponential).contains(&DiagnosticCode::Range));
 }
 
 #[test]

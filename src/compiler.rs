@@ -1372,7 +1372,7 @@ impl<'a> Compiler<'a> {
                         )
                     })?)
                 }
-                "core.onepole/1" | "core.gain/1" => {
+                "core.onepole/1" | "core.gain/1" | "core.fader/1" => {
                     let channels_field = config
                         .and_then(|fields| fields.get("channels"))
                         .ok_or_else(|| {
@@ -1400,6 +1400,8 @@ impl<'a> Compiler<'a> {
                     })?;
                     if node_type == "core.gain/1" {
                         Processor::gain(channels)
+                    } else if node_type == "core.fader/1" {
+                        Processor::fader(channels)
                     } else {
                         Processor::one_pole(channels)
                     }
@@ -1458,6 +1460,9 @@ impl<'a> Compiler<'a> {
                 Processor::Gain { .. } => {
                     node.params.insert("gain".into(), Rational::one());
                 }
+                Processor::Fader { .. } => {
+                    node.params.insert("level".into(), Rational::zero());
+                }
                 Processor::Pan => {
                     node.params.insert("pan".into(), Rational::zero());
                 }
@@ -1490,6 +1495,9 @@ impl<'a> Compiler<'a> {
                         }
                         Processor::Gain { .. } if name == "gain" => {
                             self.rational_value(&field.value, object, Some(field))?
+                        }
+                        Processor::Fader { .. } if name == "level" => {
+                            self.quantity(&field.value, Unit::Db, object, Some(field))?
                         }
                         Processor::Pan if name == "pan" => {
                             self.rational_value(&field.value, object, Some(field))?
@@ -4229,6 +4237,7 @@ impl<'a> Compiler<'a> {
             Processor::Pan => Ok(2),
             Processor::OnePole { channels }
             | Processor::Gain { channels }
+            | Processor::Fader { channels }
             | Processor::Eq { channels, .. }
             | Processor::Compressor { channels, .. }
             | Processor::Reverb { channels, .. } => Ok(channels),

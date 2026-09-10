@@ -20,6 +20,7 @@ unchanged.
 | Top-level reset modulation | Frame-zero source automation/chains, reset controls initialized before internal capture, authored non-reset controls, held phase with per-frame range validation, deterministic replay and one-time preparation work |
 | Plan import | Unknown versions/fields, inconsistent time/frame values, duplicates, missing references, invalid parameter ranges, cycles, oversized input and collections |
 | DSP | Sine/envelope samples, one-pole impulse, equal-power pan, connection-ID sum order, right-continuous automation knots, event-rate attack/release capture |
+| Core fader | Mono/stereo 0dB unity and signed levels, step/linear dB automation, additive dB modulation without smoothing, finite-output enforcement, strict source/retained contracts, identity and CLI replay |
 | Voices | Note-offs precede note-ons; release tails retain allocation; zero velocity retains allocation; overflow fails without stealing |
 | Internal ADSR modulation | Initial per-note and pre-release source snapshots, ID-ordered capture, held event values, no double advancement, conservative preview/release work, source-free replay; stage restrictions and cycles reject |
 | Internal phase modulation | Voice oscillator/wavetable/LFO onset capture, inclusive cycle endpoints, ordered phase/ADSR chains, held phase initialization, independent voices, reset replay, preview work bounds, source-free replay |

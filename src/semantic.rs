@@ -34,6 +34,7 @@ pub enum ProcessorKind {
     Sine,
     OnePole,
     Gain,
+    Fader,
     Eq(EqMode),
     Compressor(Option<u8>),
     Reverb,
@@ -48,6 +49,7 @@ impl ProcessorKind {
             Self::Sine => "core.sine/1",
             Self::OnePole => "core.onepole/1",
             Self::Gain => "core.gain/1",
+            Self::Fader => "core.fader/1",
             Self::Eq(_) => "fx.eq/1",
             Self::Compressor(_) => "fx.compressor/1",
             Self::Reverb => "fx.reverb/1",
@@ -62,6 +64,7 @@ impl ProcessorKind {
             "core.sine/1" => Self::Sine,
             "core.onepole/1" => Self::OnePole,
             "core.gain/1" => Self::Gain,
+            "core.fader/1" => Self::Fader,
             "core.pan/1" => Self::Pan,
             "core.sum/1" => Self::Sum,
             _ => return None,
@@ -2105,6 +2108,14 @@ impl<'a> Validator<'a> {
                 path.to_vec(),
                 vec!["config".into(), "channels".into()],
             );
+        } else if processor == ProcessorKind::Fader && object.field("config").is_none() {
+            self.push(
+                DiagnosticCode::Range,
+                "core.fader/1 requires config.channels",
+                Some(object.span),
+                path.to_vec(),
+                vec!["config".into(), "channels".into()],
+            );
         }
         let config_map = config
             .as_ref()
@@ -2490,7 +2501,7 @@ impl<'a> Validator<'a> {
     ) -> BTreeMap<String, BigRational> {
         let allowed: &[&str] = match processor {
             ProcessorKind::Sine => &["voices"],
-            ProcessorKind::OnePole | ProcessorKind::Gain => &["channels"],
+            ProcessorKind::OnePole | ProcessorKind::Gain | ProcessorKind::Fader => &["channels"],
             ProcessorKind::Pan => &[],
             ProcessorKind::Sum => &["channels"],
             ProcessorKind::Instrument
@@ -2513,17 +2524,30 @@ impl<'a> Validator<'a> {
             let Some(value) = self.number_value(&field.value, path, name) else {
                 continue;
             };
-            if value <= BigRational::zero()
-                || !is_integer(&value)
-                || (processor == ProcessorKind::Gain && value > BigRational::from_integer(2.into()))
+            if value <= BigRational::zero() || !is_integer(&value) {
+                self.push(
+                    DiagnosticCode::Range,
+                    format!("config.{name} must be a positive integer"),
+                    Some(field.value.span),
+                    path.to_vec(),
+                    vec!["config".into(), name.clone()],
+                );
+            } else if processor == ProcessorKind::Gain
+                && value > BigRational::from_integer(2.into())
             {
                 self.push(
                     DiagnosticCode::Range,
-                    if processor == ProcessorKind::Gain {
-                        "config.channels must be 1 or 2".into()
-                    } else {
-                        format!("config.{name} must be a positive integer")
-                    },
+                    "config.channels must be 1 or 2",
+                    Some(field.value.span),
+                    path.to_vec(),
+                    vec!["config".into(), name.clone()],
+                );
+            } else if processor == ProcessorKind::Fader
+                && value > BigRational::from_integer(2.into())
+            {
+                self.push(
+                    DiagnosticCode::Capability,
+                    "core.fader/1 supports only 1 or 2 channels",
                     Some(field.value.span),
                     path.to_vec(),
                     vec!["config".into(), name.clone()],
@@ -2534,7 +2558,10 @@ impl<'a> Validator<'a> {
         }
         match processor {
             ProcessorKind::Sine if !fields.contains_key("voices") => {}
-            ProcessorKind::OnePole | ProcessorKind::Gain | ProcessorKind::Sum
+            ProcessorKind::OnePole
+            | ProcessorKind::Gain
+            | ProcessorKind::Fader
+            | ProcessorKind::Sum
                 if !fields.contains_key("channels") =>
             {
                 self.push(
@@ -2560,6 +2587,7 @@ impl<'a> Validator<'a> {
             ProcessorKind::Sine => &["attack", "release", "level"],
             ProcessorKind::OnePole => &["cutoff"],
             ProcessorKind::Gain => &["gain"],
+            ProcessorKind::Fader => &["level"],
             ProcessorKind::Pan => &["pan"],
             ProcessorKind::Sum => &[],
             ProcessorKind::Instrument
@@ -2598,6 +2626,9 @@ impl<'a> Validator<'a> {
                     }),
                 (ProcessorKind::Sine, "level") | (ProcessorKind::Gain, "gain") => {
                     self.number_nonnegative(field, path, name)
+                }
+                (ProcessorKind::Fader, "level") => {
+                    self.quantity(field, &[Unit::Db], path, name).is_some()
                 }
                 (ProcessorKind::OnePole, "cutoff") => self
                     .quantity(field, &[Unit::Hz, Unit::KHz], path, name)
@@ -4776,7 +4807,7 @@ fn ports_for(
                 zero_default: true,
             },
         ],
-        ProcessorKind::OnePole | ProcessorKind::Gain => {
+        ProcessorKind::OnePole | ProcessorKind::Gain | ProcessorKind::Fader => {
             let channels = config
                 .get("channels")
                 .and_then(|value| value.to_u32())
@@ -4932,6 +4963,12 @@ fn parameters_for(processor: ProcessorKind) -> Vec<ParameterDescriptor> {
         ProcessorKind::Gain => vec![ParameterDescriptor {
             name: "gain",
             unit: ParameterUnit::Dimensionless,
+            range: RangePolicy::Error,
+            rate: ParameterRate::Sample,
+        }],
+        ProcessorKind::Fader => vec![ParameterDescriptor {
+            name: "level",
+            unit: ParameterUnit::Decibels,
             range: RangePolicy::Error,
             rate: ParameterRate::Sample,
         }],

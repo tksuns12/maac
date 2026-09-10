@@ -610,6 +610,7 @@ impl Normalizer<'_> {
                                 Some(Unit::S)
                             }
                             Processor::OnePole { .. } => Some(Unit::Hz),
+                            Processor::Fader { .. } if name == "level" => Some(Unit::Db),
                             Processor::Eq { .. } => match name.as_str() {
                                 "frequency" => Some(Unit::Hz),
                                 "gain" => Some(Unit::Db),

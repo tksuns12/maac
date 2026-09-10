@@ -236,8 +236,8 @@ Its public parameter is `gain`, not `level`: finite, dimensionless, nonnegative,
 default 1, sample-rate, error range policy, and `output = gain * input` without
 smoothing. It requires `config.channels` and exactly one audio input. The
 existing implementation scope admits channels 1 or 2 only; a larger positive
-channel count remains unsupported. This does not implement `core.fader/1` or
-redefine either processor's normative behavior.
+channel count remains unsupported. The separate [core fader](core-fader.md) provides dB-valued `level`; neither
+processor aliases or changes the other's parameter contract.
 
 Use additive strict plan processor tag `{"kind":"gain","channels":2}` with
 the ordinary node parameter map. Missing/invalid channels, unknown processor
