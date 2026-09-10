@@ -40,13 +40,19 @@ fn event_rate_core_targets_lower_with_zero_and_nonzero_amounts() {
         .iter()
         .find(|modulation| modulation["id"] == "attack_zero")
         .unwrap();
-    assert_eq!(attack["target"], serde_json::json!({"node":"sound","port":"attack"}));
+    assert_eq!(
+        attack["target"],
+        serde_json::json!({"node":"sound","port":"attack"})
+    );
     assert_eq!(attack["amount"], "0/1");
     let release = modulations
         .iter()
         .find(|modulation| modulation["id"] == "release")
         .unwrap();
-    assert_eq!(release["target"], serde_json::json!({"node":"sound","port":"release"}));
+    assert_eq!(
+        release["target"],
+        serde_json::json!({"node":"sound","port":"release"})
+    );
     assert_eq!(release["amount"], "1/2");
 }
 #[test]
@@ -84,11 +90,9 @@ node synth {instrument=&local;} node c {type="core.constant/1";}"#;
         "1/2"
     );
 
-    let reset = format!(
-        "{base} modulate reset_mod {{from=&c:out;target=&synth.params.reset;amount=0;}}"
-    );
-    let diagnostics = compile_bundle_artifact(&SourceBundle::new("score.maac", reset))
-        .unwrap_err();
+    let reset =
+        format!("{base} modulate reset_mod {{from=&c:out;target=&synth.params.reset;amount=0;}}");
+    let diagnostics = compile_bundle_artifact(&SourceBundle::new("score.maac", reset)).unwrap_err();
     assert!(diagnostics
         .iter()
         .any(|diagnostic| diagnostic.code == maac::diagnostic::DiagnosticCode::Capability));

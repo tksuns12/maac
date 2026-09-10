@@ -53,6 +53,19 @@ maac render core-modulation.plan.json -o core-modulation-from-plan.wav --format 
 See the [modulation contract](../docs/core-modulation.md) for waves, clocks,
 additive amounts, and supported continuous parameters.
 
+# Event-rate modulation
+
+[`event-rate-modulation.maac`](event-rate-modulation.maac) modulates attack at
+note-on and release at note-off for a core sine and a reusable instrument.
+The self-contained three-note phrase renders 50,400 mono frames at 48 kHz,
+including its 50 ms tail. Its V7 plan replays without the source file.
+
+```sh
+maac build examples/event-rate-modulation.maac -o event-rate.wav
+maac compile examples/event-rate-modulation.maac -o event-rate.plan.json
+maac render event-rate.plan.json -o event-rate-from-plan.wav
+```
+
 # Per-note pressure mappings
 
 [`pressure-expression.maac`](pressure-expression.maac) defines an inline stereo

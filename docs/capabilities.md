@@ -22,7 +22,7 @@ specification remains authoritative; this page describes the implementation scop
 | Arranged audio | Top-level rate and warp-rate clips; source-frame slicing, musical warp anchors, rate-mode speed/reverse/physical placement, gain, linear/equal-power fades, explicit routing and tempo-aware tails |
 | Reusable instruments | Named libraries, typed public controls, presets, independent polyphonic instances, voice and shared graphs |
 | Sound graphs | Versioned sine/saw/square/triangle/wavetable oscillators, deterministic noise and recirculating plucked strings, linear ADSR, sine LFO, gain, low/high-pass one-pole filtering, mixing and panning |
-| Modulation | Top-level typed control modulation of continuous sample-rate parameters, score/seconds LFOs and automated constants; instrument feed-forward graph modulation and sample-wise through-zero linear FM; no oversampling |
+| Modulation | Top-level typed control modulation of continuous sample-rate and note-on/note-off parameters, score/seconds LFOs and automated constants; instrument feed-forward graph modulation and sample-wise through-zero linear FM; no oversampling |
 | Built-in instruments | 24 stereo exports in `std/basic/1.0.0` with four common controls; three separate `std/acoustic/1.0.0` guitars with six controls; exact-version CLI/Rust discovery |
 | Local dependencies | Explicit namespace aliases, transitive declaring-file resolution, SHA-256 source/WAV pins, project containment |
 | Wavetables | Explicit mono WAV cycles, cyclic interpolation, adjacent-frame morphing and harmonic-limited banks |
@@ -34,7 +34,7 @@ specification remains authoritative; this page describes the implementation scop
 | Interchange | Independently validated standalone plans: version 1 legacy, version 2 embedded graph/data/provenance, version 3 exact ramp timing recipes, version 4 embedded audio assets and kit nodes, version 5 rate clips, version 6 warp-rate clips, version 7 core control modulation |
 
 Recognized deferred features fail with `E_CAPABILITY`: messages,
-event-rate core modulation, other processors, pitched sample instruments,
+reset-rate and instrument-internal event-rate modulation, other processors, pitched sample instruments,
 preserve-pitch audio warping, external plug-ins and other extensions. Transactional editing, full render locks,
 MIDI transport, GUI and real-time playback are outside this release's interfaces.
 No deferred feature is approximated silently.
@@ -56,7 +56,8 @@ The [core modulation contract](core-modulation.md) implements explicit control
 edges, `core.lfo/1`, and `core.constant/1`. Score LFOs follow tempo and hold at
 score end; seconds LFOs continue through the tail. Additive contributions follow
 modulation-ID order and the target's final range policy. Controls remain distinct
-from audio outputs. Event-rate targets and same-sample cycles are rejected.
+from audio outputs. Event-rate targets capture the combined value at note-on or
+note-off. Reset-rate targets and same-sample cycles are rejected.
 
 The [tempo ramp contract](tempo-ramps.md) defines linear BPM in score position,
 inverse-clock automation, and version 3 interchange. The CLI automatically

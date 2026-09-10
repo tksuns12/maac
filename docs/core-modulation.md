@@ -1,7 +1,8 @@
 # Native core modulation
 
-Implemented and qualified; final evidence verification is recorded in the
-[validation report](core-modulation-validation.md).
+The initial sample-rate slice's qualification is recorded in the
+[validation report](core-modulation-validation.md). Event-rate support extends
+that slice with the capture and release-accounting rules below.
 This slice implements existing MaaC/1 §13 and the
 `core.lfo/1` and `core.constant/1` definitions in §18.9–10. It adds no syntax,
 general computation, library format, or executable plug-in boundary.
@@ -26,6 +27,9 @@ an automated constant, notes, a hit, rate/warp clips, filtering, and reverb:
 maac build examples/core-modulation.maac --project-root . -o core-modulation.wav
 ```
 
+[Event-rate modulation](../examples/event-rate-modulation.maac) demonstrates
+note-on and note-off capture with core sine and instrument public controls.
+
 ## Supported controls and targets
 
 An LFO has no inputs or parameters. Its required `period` is positive score q
@@ -36,17 +40,24 @@ defaults to zero, and permits global automation and incoming modulation.
 Both expose only the dimensionless scalar control port `out`.
 
 A top-level `modulate` requires `from`, `target`, and `amount`. The source must
-be a control output; the target must be a continuous numeric sample-rate
-parameter. The amount uses the target's native unit, including valid equivalent
+be a control output; the target must be a continuous numeric sample-rate or
+event-rate parameter. The amount uses the target's native unit, including valid equivalent
 units already accepted by automation. Existing core, kit, native effect, and
 instrument public controls are eligible when their descriptors satisfy these
 requirements. `core.constant/1.value` is also eligible.
 
-Event-rate parameters remain unsupported with `E_CAPABILITY` in this first
-slice. Config fields, discrete parameters, and audio-clip transport metadata
-cannot be modulation targets. Instrument-internal modulation retains its own
-existing contract. No additional note lifecycle or release-budget behavior is
-introduced.
+Event-rate targets include `core.sine/1.attack` and `release`, and instrument
+public controls whose descriptors declare note-on or note-off capture. Reset-rate
+controls remain unsupported with `E_CAPABILITY`. Config fields, discrete parameters,
+and audio-clip transport metadata cannot be modulation targets.
+Instrument-internal modulation retains its existing sample-rate-only contract.
+
+The combined parameter is evaluated and range-checked each frame before note-offs
+and note-ons. Attack and other note-on parameters are captured at note-on; release
+and other note-off parameters are captured at note-off. Later modulation does not
+change an already captured value. Coincident events use the same frame's control
+values, with note-offs and finished-voice retirement preceding note-ons. Invalid
+combined values still fail on frames without events and on disconnected nodes.
 
 Control ports are not audio or event ports. They cannot be project outputs,
 audio connections, selected render outputs, or production delivery targets.
@@ -152,6 +163,14 @@ charges per rendered frame are 8 for a constant, `128+ceil(log2(max(1,M_i)))`
 for an LFO, and 8 for every modulation edge. Existing graph overhead and other
 processor charges remain in force. These are conservative resource units, not
 performance measurements; no new public limit field is introduced.
+
+When modulation targets an instrument's public amplitude-envelope release
+control, voice and expression work use the descriptor's maximum release duration,
+clipped to the declared render endpoint. This includes zero-amount edges and avoids
+undercharging tails whose duration depends on a control signal. Unmodulated
+release controls retain their existing base/automation bounds. This conservative
+bound can reject long, dense arrangements even when the actual modulation is
+small. It does not extend the render tail or change voice-capacity rules.
 
 ## Acceptance
 

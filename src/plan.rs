@@ -3754,9 +3754,7 @@ impl<'a> PlanView<'a> {
                 }
                 Ok(())
             }
-            ProcessorView::Core(processor) if processor.parameter_allowed(name) => {
-                Ok(())
-            }
+            ProcessorView::Core(processor) if processor.parameter_allowed(name) => Ok(()),
             _ => Err(missing()),
         }
     }
@@ -4923,6 +4921,26 @@ impl<'a> PlanView<'a> {
                             release = point.value.clone();
                         }
                     }
+                }
+                if self
+                    .modulations
+                    .iter()
+                    .any(|edge| edge.target.node == *node.id && edge.target.port == *control_name)
+                {
+                    // Bound signal-dependent releases by the descriptor
+                    // maximum. Apply this conservative policy to all matching
+                    // edges, including zero-amount edges.
+                    let spec = program.control_spec(control_name).ok_or_else(|| {
+                        err(
+                            "E_REFERENCE",
+                            format!(
+                                "instruments.programs.{}.controls.{}",
+                                program.id, control_name
+                            ),
+                            "instrument control descriptor does not exist",
+                        )
+                    })?;
+                    release = spec.max;
                 }
             }
             let release_frames =

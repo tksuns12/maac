@@ -1,0 +1,83 @@
+maac 1;
+
+// Attack is captured at note-on and release is captured at note-off for both a
+// core sine and a reusable local instrument.
+project event_rate_demo {
+  score = [0q, 2q];
+  tail = 50ms;
+  rate = 48000Hz;
+  tempo = &clock;
+  meter = &metre;
+  output = &mix:out;
+}
+tempo clock { points = [(0q, 120bpm, step)]; }
+meter metre { points = [(0q, 4, 4)]; }
+
+instrument soft_voice {
+  channels = 1;
+  voice v {
+    channels = 1;
+    amplitude = &amp;
+    output = &carrier:out;
+    node amp {
+      type = "synth.adsr/1";
+      params = { attack = 10ms; decay = 10ms; sustain = 1; release = 35ms; };
+    }
+    node carrier {
+      type = "synth.sine/1";
+      params = { ratio = 1; level = 3/25; };
+    }
+  }
+  control attack { target = &v.amp.params.attack; default = 10ms; }
+  control release { target = &v.amp.params.release; default = 35ms; }
+}
+
+node tone {
+  type = "core.sine/1";
+  params = { attack = 10ms; release = 35ms; level = 1/10; };
+}
+node voice {
+  instrument = &soft_voice;
+  config = { voices = 2; };
+  params = { attack = 10ms; release = 35ms; };
+}
+node mix { type = "core.sum/1"; config = { channels = 1; }; }
+connect tone_mix { from = &tone:out; to = &mix:in; }
+connect voice_mix { from = &voice:out; to = &mix:in; }
+
+node attack_shape { type = "core.constant/1"; params = { value = 1/2; }; }
+node release_shape { type = "core.lfo/1"; config = { period = 1/2s; wave = triangle; }; }
+modulate tone_attack {
+  from = &attack_shape:out;
+  target = &tone.params.attack;
+  amount = 10ms;
+}
+modulate voice_attack {
+  from = &attack_shape:out;
+  target = &voice.params.attack;
+  amount = 10ms;
+}
+modulate tone_release {
+  from = &release_shape:out;
+  target = &tone.params.release;
+  amount = 10ms;
+}
+modulate voice_release {
+  from = &release_shape:out;
+  target = &voice.params.release;
+  amount = 10ms;
+}
+
+pattern tone_phrase {
+  length = 2q;
+  note first { at = 0q; dur = 1/2q; pitch = C4; velocity = 1/2; }
+  note second { at = 1q; dur = 1/2q; pitch = E4; velocity = 1/2; }
+}
+pattern voice_phrase {
+  length = 2q;
+  note third { at = 1/2q; dur = 3/4q; pitch = G3; velocity = 1/2; }
+}
+track tone_events { target = &tone:events; }
+track voice_events { target = &voice:events; }
+place tone_once { pattern = &tone_phrase; track = &tone_events; at = 0q; }
+place voice_once { pattern = &voice_phrase; track = &voice_events; at = 0q; }

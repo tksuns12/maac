@@ -51,7 +51,9 @@ Try `maac build examples/warp-rate.maac --project-root . -o warp-rate.wav`.
 
 [Core modulation](docs/core-modulation.md) connects score- or seconds-clock LFOs
 and automated constants to continuous sample-rate controls such as cutoff, pan,
-and gain. Existing `modulate` objects add their contributions to base automation;
+and gain, plus event-rate attack/release and instrument public controls.
+Event-rate values are captured at note-on or note-off. Existing `modulate` objects
+add their contributions to base automation;
 version 7 plans retain the control graph for standalone replay.
 Try `maac build examples/core-modulation.maac --project-root . -o core-modulation.wav`.
 
