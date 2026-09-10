@@ -64,7 +64,7 @@ pub struct PlanLimits {
     pub max_execution_work: u64,
     /// Maximum f64 delay cells reserved by declared pluck voice capacities.
     pub max_pluck_delay_cells: usize,
-    /// Aggregate native reverb history storage, in binary64 cells.
+    /// Aggregate native delay/reverb history storage, in binary64 cells.
     pub max_production_delay_cells: usize,
 }
 
@@ -659,6 +659,10 @@ pub enum Processor {
     Fader {
         channels: u8,
     },
+    Delay {
+        channels: u8,
+        frames: u64,
+    },
     Matrix {
         inputs: u8,
         outputs: u8,
@@ -711,11 +715,25 @@ impl Processor {
         Self::Fader { channels }
     }
 
+    pub fn delay(channels: u8, frames: u64) -> Self {
+        Self::Delay { channels, frames }
+    }
+
     pub fn matrix(inputs: u8, outputs: u8, coefficients: Vec<Vec<Rational>>) -> Self {
         Self::Matrix {
             inputs,
             outputs,
             coefficients,
+        }
+    }
+
+    /// Return declared technical latency in frames. A Delay is also an explicit
+    /// same-sample causality break; callers must keep those two concepts
+    /// separate when reasoning about other graph edges.
+    pub fn technical_latency_frames(&self) -> u64 {
+        match self {
+            Self::Delay { frames, .. } => *frames,
+            _ => 0,
         }
     }
 
@@ -733,6 +751,7 @@ impl Processor {
             Self::OnePole { .. } => "onepole",
             Self::Gain { .. } => "gain",
             Self::Fader { .. } => "fader",
+            Self::Delay { .. } => "delay",
             Self::Matrix { .. } => "matrix",
             Self::Eq { .. } => "fx.eq/1",
             Self::Compressor { .. } => "fx.compressor/1",
@@ -753,6 +772,7 @@ impl Processor {
             Self::OnePole { .. } => parameter == "cutoff",
             Self::Gain { .. } => parameter == "gain",
             Self::Fader { .. } => parameter == "level",
+            Self::Delay { .. } => false,
             Self::Matrix { .. } => false,
             Self::Eq { mode, .. } => {
                 parameter == "frequency"
@@ -3680,6 +3700,36 @@ impl<'a> PlanView<'a> {
                         ));
                     }
                 }
+                Processor::Delay { channels, frames } => {
+                    if *channels == 0 {
+                        return Err(err(
+                            "E_RANGE",
+                            format!("nodes.{}.processor.channels", node.id),
+                            "delay channels must be positive",
+                        ));
+                    }
+                    if *channels > 2 {
+                        return Err(err(
+                            "E_CAPABILITY",
+                            format!("nodes.{}.processor.channels", node.id),
+                            "core.delay/1 supports only mono or stereo",
+                        ));
+                    }
+                    if *channels > limits.max_channels {
+                        return Err(err(
+                            "E_RANGE",
+                            format!("nodes.{}.processor.channels", node.id),
+                            "channels exceed the caller channel limit",
+                        ));
+                    }
+                    if *frames == 0 {
+                        return Err(err(
+                            "E_RANGE",
+                            format!("nodes.{}.processor.frames", node.id),
+                            "delay frames must be positive",
+                        ));
+                    }
+                }
                 Processor::Matrix {
                     inputs,
                     outputs,
@@ -3963,7 +4013,12 @@ impl<'a> PlanView<'a> {
                     "single-input port has multiple connections",
                 ));
             }
-            if from.kind == PortKind::Audio {
+            if from.kind == PortKind::Audio
+                && !matches!(
+                    to_node.processor,
+                    ProcessorView::Core(Processor::Delay { .. })
+                )
+            {
                 edges.push((connection.from.node.clone(), connection.to.node.clone()));
             }
         }
@@ -3974,6 +4029,7 @@ impl<'a> PlanView<'a> {
                     Processor::OnePole { .. }
                         | Processor::Gain { .. }
                         | Processor::Fader { .. }
+                        | Processor::Delay { .. }
                         | Processor::Matrix { .. }
                         | Processor::Eq { .. }
                         | Processor::Compressor { .. }
@@ -5070,6 +5126,19 @@ impl<'a> PlanView<'a> {
                 Processor::Matrix {
                     inputs, outputs, ..
                 } => 2 * u64::from(*inputs) * u64::from(*outputs),
+                Processor::Delay { channels, frames } => {
+                    let count = usize::from(*channels)
+                        .checked_mul(usize::try_from(*frames).map_err(|_| {
+                            err("E_RESOURCE_LIMIT", "production", "native storage overflow")
+                        })?)
+                        .ok_or_else(|| {
+                            err("E_RESOURCE_LIMIT", "production", "native storage overflow")
+                        })?;
+                    cells = cells.checked_add(count).ok_or_else(|| {
+                        err("E_RESOURCE_LIMIT", "production", "native storage overflow")
+                    })?;
+                    2 * u64::from(*channels)
+                }
                 Processor::Compressor {
                     channels,
                     sidechain_channels,
@@ -5108,7 +5177,7 @@ impl<'a> PlanView<'a> {
             return Err(err(
                 "E_RESOURCE_LIMIT",
                 "production",
-                "aggregate native reverb history exceeds the caller limit",
+                "aggregate native delay/reverb history exceeds the caller limit",
             ));
         }
         for node in self.nodes {
@@ -5726,6 +5795,8 @@ fn port_descriptor(node: NodeView<'_>, port: &str, input: bool) -> Option<PortDe
         | (Processor::Gain { channels }, false, "out")
         | (Processor::Fader { channels }, true, "in")
         | (Processor::Fader { channels }, false, "out")
+        | (Processor::Delay { channels, .. }, true, "in")
+        | (Processor::Delay { channels, .. }, false, "out")
         | (Processor::Eq { channels, .. }, true, "in")
         | (Processor::Eq { channels, .. }, false, "out")
         | (Processor::Compressor { channels, .. }, true, "in")

@@ -55,6 +55,9 @@ automation and modulation. Try `maac build examples/core-fader.maac -o core-fade
 [Core matrix](docs/core-matrix.md) provides explicit mono/stereo channel mapping,
 duplication, and downmixing. Try `maac build examples/core-matrix.maac -o core-matrix.wav`.
 
+[Core delay](docs/core-delay.md) provides exact frame delays and causal feedback.
+Try `maac build examples/core-delay.maac -o core-delay.wav`.
+
 [Core modulation](docs/core-modulation.md) connects score- or seconds-clock LFOs
 and automated constants to continuous sample-rate controls such as cutoff, pan,
 and gain, plus event-rate attack/release and instrument public controls.

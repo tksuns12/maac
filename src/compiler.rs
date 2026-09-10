@@ -1372,6 +1372,32 @@ impl<'a> Compiler<'a> {
                         )
                     })?)
                 }
+                "core.delay/1" => {
+                    let field_value = |name: &str| -> CResult<u64> {
+                        let field =
+                            config.and_then(|fields| fields.get(name)).ok_or_else(|| {
+                                path_diagnostic(
+                                    DiagnosticCode::Range,
+                                    format!("core.delay/1 requires config.{name}"),
+                                    object,
+                                    object.field("config"),
+                                )
+                            })?;
+                        bigint_u64(
+                            &self.rational_value(&field.value, object, Some(field))?,
+                            Some(field.value.span),
+                        )
+                    };
+                    let channels = u8::try_from(field_value("channels")?).map_err(|_| {
+                        diagnostics(
+                            DiagnosticCode::Range,
+                            "delay channels is out of range",
+                            Some(type_field.value.span),
+                        )
+                    })?;
+                    let frames = field_value("frames")?;
+                    Processor::delay(channels, frames)
+                }
                 "core.matrix/1" => {
                     let dimension = |name: &str| -> CResult<u8> {
                         let field =
@@ -1515,6 +1541,7 @@ impl<'a> Compiler<'a> {
                 Processor::Fader { .. } => {
                     node.params.insert("level".into(), Rational::zero());
                 }
+                Processor::Delay { .. } => {}
                 Processor::Matrix { .. } => {}
                 Processor::Pan => {
                     node.params.insert("pan".into(), Rational::zero());
@@ -1551,6 +1578,14 @@ impl<'a> Compiler<'a> {
                         }
                         Processor::Fader { .. } if name == "level" => {
                             self.quantity(&field.value, Unit::Db, object, Some(field))?
+                        }
+                        Processor::Delay { .. } => {
+                            return Err(path_diagnostic(
+                                DiagnosticCode::UnknownField,
+                                format!("delay has no parameter `{name}`"),
+                                object,
+                                Some(field),
+                            ))
                         }
                         Processor::Matrix { .. } => {
                             return Err(path_diagnostic(
@@ -4299,6 +4334,7 @@ impl<'a> Compiler<'a> {
             Processor::OnePole { channels }
             | Processor::Gain { channels }
             | Processor::Fader { channels }
+            | Processor::Delay { channels, .. }
             | Processor::Matrix {
                 outputs: channels, ..
             }

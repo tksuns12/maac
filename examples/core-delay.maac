@@ -1,0 +1,44 @@
+maac 1;
+
+// A short sine note feeds a causal delay loop. The dry signal and each
+// returned echo meet at the summing node; the positive delay keeps the loop
+// causal while the feedback gain keeps the tail bounded.
+project delay_demo {
+  score = [0q, 1q];
+  tail = 300ms;
+  rate = 48000Hz;
+  tempo = &clock;
+  meter = &metre;
+  output = &mix:out;
+}
+tempo clock { points = [(0q, 120bpm, step)]; }
+meter metre { points = [(0q, 4, 4)]; }
+
+node tone {
+  type = "core.sine/1";
+  params = { attack = 8ms; release = 30ms; level = 1/4; };
+}
+node mix {
+  type = "core.sum/1";
+  config = { channels = 1; };
+}
+node delay {
+  type = "core.delay/1";
+  config = { channels = 1; frames = 2400; };
+}
+node feedback {
+  type = "core.gain/1";
+  config = { channels = 1; };
+  params = { gain = 2/5; };
+}
+connect dry_signal { from = &tone:out; to = &mix:in; }
+connect delayed_signal { from = &mix:out; to = &delay:in; }
+connect echo_gain { from = &delay:out; to = &feedback:in; }
+connect echo_return { from = &feedback:out; to = &mix:in; }
+
+pattern phrase {
+  length = 1q;
+  note impulse { at = 0q; dur = 1/8q; pitch = A4; velocity = 1/2; }
+}
+track notes { target = &tone:events; }
+place play { pattern = &phrase; track = &notes; at = 0q; }

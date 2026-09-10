@@ -36,6 +36,7 @@ pub enum ProcessorKind {
     Gain,
     Fader,
     Matrix,
+    Delay,
     Eq(EqMode),
     Compressor(Option<u8>),
     Reverb,
@@ -52,6 +53,7 @@ impl ProcessorKind {
             Self::Gain => "core.gain/1",
             Self::Fader => "core.fader/1",
             Self::Matrix => "core.matrix/1",
+            Self::Delay => "core.delay/1",
             Self::Eq(_) => "fx.eq/1",
             Self::Compressor(_) => "fx.compressor/1",
             Self::Reverb => "fx.reverb/1",
@@ -68,6 +70,7 @@ impl ProcessorKind {
             "core.gain/1" => Self::Gain,
             "core.fader/1" => Self::Fader,
             "core.matrix/1" => Self::Matrix,
+            "core.delay/1" => Self::Delay,
             "core.pan/1" => Self::Pan,
             "core.sum/1" => Self::Sum,
             _ => return None,
@@ -2127,6 +2130,14 @@ impl<'a> Validator<'a> {
                 path.to_vec(),
                 vec!["config".into()],
             );
+        } else if processor == ProcessorKind::Delay && object.field("config").is_none() {
+            self.push(
+                DiagnosticCode::Range,
+                "core.delay/1 requires config.channels and config.frames",
+                Some(object.span),
+                path.to_vec(),
+                vec!["config".into()],
+            );
         }
         let config_map = config
             .as_ref()
@@ -2514,6 +2525,7 @@ impl<'a> Validator<'a> {
             ProcessorKind::Sine => &["voices"],
             ProcessorKind::OnePole | ProcessorKind::Gain | ProcessorKind::Fader => &["channels"],
             ProcessorKind::Matrix => &["inputs", "outputs", "coefficients"],
+            ProcessorKind::Delay => &["channels", "frames"],
             ProcessorKind::Pan => &[],
             ProcessorKind::Sum => &["channels"],
             ProcessorKind::Instrument
@@ -2577,6 +2589,17 @@ impl<'a> Validator<'a> {
                     path.to_vec(),
                     vec!["config".into(), name.clone()],
                 );
+            } else if processor == ProcessorKind::Delay
+                && name == "channels"
+                && value > BigRational::from_integer(2.into())
+            {
+                self.push(
+                    DiagnosticCode::Capability,
+                    "core.delay/1 supports only 1 or 2 channels",
+                    Some(field.value.span),
+                    path.to_vec(),
+                    vec!["config".into(), name.clone()],
+                );
             } else {
                 result.insert(name.clone(), value);
             }
@@ -2599,6 +2622,19 @@ impl<'a> Validator<'a> {
             }
             ProcessorKind::Matrix => {
                 for name in ["inputs", "outputs", "coefficients"] {
+                    if !fields.contains_key(name) {
+                        self.push(
+                            DiagnosticCode::Range,
+                            format!("processor config requires {name}"),
+                            None,
+                            path.to_vec(),
+                            vec!["config".into(), name.into()],
+                        );
+                    }
+                }
+            }
+            ProcessorKind::Delay => {
+                for name in ["channels", "frames"] {
                     if !fields.contains_key(name) {
                         self.push(
                             DiagnosticCode::Range,
@@ -2690,6 +2726,7 @@ impl<'a> Validator<'a> {
             ProcessorKind::Gain => &["gain"],
             ProcessorKind::Fader => &["level"],
             ProcessorKind::Matrix => &[],
+            ProcessorKind::Delay => &[],
             ProcessorKind::Pan => &["pan"],
             ProcessorKind::Sum => &[],
             ProcessorKind::Instrument
@@ -4909,7 +4946,10 @@ fn ports_for(
                 zero_default: true,
             },
         ],
-        ProcessorKind::OnePole | ProcessorKind::Gain | ProcessorKind::Fader => {
+        ProcessorKind::OnePole
+        | ProcessorKind::Gain
+        | ProcessorKind::Fader
+        | ProcessorKind::Delay => {
             let channels = config
                 .get("channels")
                 .and_then(|value| value.to_u32())
@@ -5103,6 +5143,7 @@ fn parameters_for(processor: ProcessorKind) -> Vec<ParameterDescriptor> {
             rate: ParameterRate::Sample,
         }],
         ProcessorKind::Matrix => Vec::new(),
+        ProcessorKind::Delay => Vec::new(),
         ProcessorKind::Pan => vec![ParameterDescriptor {
             name: "pan",
             unit: ParameterUnit::Dimensionless,

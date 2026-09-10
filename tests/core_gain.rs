@@ -290,9 +290,9 @@ fn finite_gain_product_overflow_fails_instead_of_clipping() {
 }
 
 #[test]
-fn unsupported_delay_remains_a_capability_error() {
+fn unsupported_noise_remains_a_capability_error() {
     let doc =
-        parse(&source(1, "config = { channels = 1; };").replace("core.gain/1", "core.delay/1"))
+        parse(&source(1, "config = { channels = 1; };").replace("core.gain/1", "core.noise/1"))
             .unwrap();
     assert!(compile(&doc)
         .unwrap_err()

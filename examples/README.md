@@ -123,6 +123,14 @@ maac compile examples/core-matrix.maac -o core-matrix.plan.json
 maac render core-matrix.plan.json -o core-matrix-from-plan.wav
 ```
 
+[`core-delay.maac`](core-delay.maac) creates a feedback echo with an explicit frame delay.
+
+```sh
+maac build examples/core-delay.maac -o core-delay.wav
+maac compile examples/core-delay.maac -o core-delay.plan.json
+maac render core-delay.plan.json -o core-delay-from-plan.wav
+```
+
 [`pressure-expression.maac`](pressure-expression.maac) defines an inline stereo
 instrument whose pressure source raises oscillator level and filter cutoff.
 Independent timbre also controls cutoff; one note combines all four expression

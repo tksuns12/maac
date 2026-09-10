@@ -447,7 +447,7 @@ impl<'a> DspEngine<'a> {
             .collect();
         let topo_order = order
             .into_iter()
-            .filter(|i| nodes[*i].control.is_none())
+            .filter(|i| nodes[*i].control.is_none() && nodes[*i].delay.is_none())
             .collect();
         let automation = build_automations(&plan, &node_indices, &tempo, rate, timing.as_ref())?;
         for lane in automation {
@@ -619,6 +619,7 @@ impl<'a> DspEngine<'a> {
             .ok_or_else(|| RenderError::RenderState("output node does not exist".into()))?;
 
         for frame_index in 0..self.plan.output.total_frames {
+            self.read_delays();
             self.evaluate_parameters(frame_index)?;
 
             // The score schedule requires every note-off to be applied before
@@ -646,6 +647,7 @@ impl<'a> DspEngine<'a> {
             for node_index in topo_order {
                 self.process_node(node_index, frame_index)?;
             }
+            self.commit_delays()?;
 
             self.frame
                 .copy_from_slice(&self.nodes[output_node].output[..self.channels]);
@@ -668,6 +670,38 @@ impl<'a> DspEngine<'a> {
             node.reset();
         }
         self.frame.fill(0.0);
+    }
+
+    fn read_delays(&mut self) {
+        for node in &mut self.nodes {
+            if let Some(delay) = &node.delay {
+                let output = delay.read();
+                node.output.copy_from_slice(&output[..delay.channels]);
+            }
+        }
+    }
+
+    fn commit_delays(&mut self) -> Result<()> {
+        for index in 0..self.nodes.len() {
+            let Some(channels) = self.nodes[index].delay.as_ref().map(|delay| delay.channels)
+            else {
+                continue;
+            };
+            let connection = &self.connections[self.incoming[index][0]];
+            let mut input = [0.0; 2];
+            input[..channels].copy_from_slice(&self.nodes[connection.from].output[..channels]);
+            self.nodes[index]
+                .delay
+                .as_mut()
+                .expect("delay state exists")
+                .stage(&input[..channels])?;
+        }
+        for node in &mut self.nodes {
+            if let Some(delay) = &mut node.delay {
+                delay.commit();
+            }
+        }
+        Ok(())
     }
 
     fn evaluate_parameters(&mut self, frame: u64) -> Result<()> {
@@ -1144,6 +1178,7 @@ impl<'a> DspEngine<'a> {
                 }
             }
             Processor::Matrix { .. } => unreachable!("matrix uses its prepared runtime"),
+            Processor::Delay { .. } => unreachable!("delay uses the frame scheduler"),
             Processor::Instrument { .. } => {
                 let node = &mut self.nodes[node_index];
                 let node_id = node.id.clone();
@@ -1447,6 +1482,73 @@ impl MatrixRuntime {
 }
 
 #[derive(Debug)]
+struct DelayRuntime {
+    channels: usize,
+    frames: usize,
+    cursor: usize,
+    history: Vec<f64>,
+    pending: [f64; 2],
+}
+
+impl DelayRuntime {
+    fn new(channels: u8, frames: u64) -> Result<Self> {
+        let channels = usize::from(channels);
+        let frames = usize::try_from(frames).map_err(|_| {
+            delay_resource_error("delay frame count cannot be represented by this runtime")
+        })?;
+        let cells = frames.checked_mul(channels).ok_or_else(|| {
+            delay_resource_error("delay storage arithmetic overflowed this runtime")
+        })?;
+        let mut history = Vec::new();
+        history
+            .try_reserve_exact(cells)
+            .map_err(|_| delay_resource_error("delay storage allocation failed"))?;
+        history.resize(cells, 0.0);
+        Ok(Self {
+            channels,
+            frames,
+            cursor: 0,
+            history,
+            pending: [0.0; 2],
+        })
+    }
+
+    fn read(&self) -> [f64; 2] {
+        let mut output = [0.0; 2];
+        let offset = self.cursor * self.channels;
+        output[..self.channels].copy_from_slice(&self.history[offset..offset + self.channels]);
+        output
+    }
+
+    fn stage(&mut self, input: &[f64]) -> Result<()> {
+        if input.iter().any(|sample| !sample.is_finite()) {
+            return Err(RenderError::Nonfinite(
+                "delay input contains a nonfinite sample".into(),
+            ));
+        }
+        self.pending[..self.channels].copy_from_slice(input);
+        Ok(())
+    }
+
+    fn commit(&mut self) {
+        let offset = self.cursor * self.channels;
+        self.history[offset..offset + self.channels]
+            .copy_from_slice(&self.pending[..self.channels]);
+        self.cursor = (self.cursor + 1) % self.frames;
+    }
+
+    fn reset(&mut self) {
+        self.cursor = 0;
+        self.history.fill(0.0);
+        self.pending.fill(0.0);
+    }
+}
+
+fn delay_resource_error(message: &str) -> RenderError {
+    crate::plan::err("E_RESOURCE_LIMIT", "nodes.delay", message).into()
+}
+
+#[derive(Debug)]
 struct NodeState {
     id: String,
     processor: RuntimeProcessor,
@@ -1465,6 +1567,7 @@ struct NodeState {
     compressor: Option<Compressor>,
     reverb: Option<Reverb>,
     matrix: Option<MatrixRuntime>,
+    delay: Option<DelayRuntime>,
     native_bounds: BTreeMap<String, (f64, f64, bool)>,
 }
 
@@ -1484,6 +1587,7 @@ impl NodeState {
             | Processor::Compressor { channels, .. }
             | Processor::Reverb { channels, .. }
             | Processor::Sum { channels } => usize::from(channels),
+            Processor::Delay { channels, .. } => usize::from(channels),
             Processor::Matrix { outputs, .. } => usize::from(outputs),
             Processor::Pan => 2,
             Processor::Instrument { channels, .. } => usize::from(channels),
@@ -1507,7 +1611,7 @@ impl NodeState {
             Processor::Pan => {
                 base_params.insert("pan".into(), 0.0);
             }
-            Processor::Sum { .. } | Processor::Matrix { .. } => {}
+            Processor::Sum { .. } | Processor::Matrix { .. } | Processor::Delay { .. } => {}
             Processor::Eq { .. } | Processor::Compressor { .. } | Processor::Reverb { .. } => {
                 for (name, value) in crate::plan::production_defaults(&processor) {
                     base_params.insert(name, rational_f64(&value, "native default")?);
@@ -1559,6 +1663,11 @@ impl NodeState {
         } else {
             None
         };
+        let delay = if let Processor::Delay { channels, frames } = processor {
+            Some(DelayRuntime::new(channels, frames)?)
+        } else {
+            None
+        };
         let mut native_bounds = BTreeMap::new();
         for name in base_params.keys() {
             if let Some((min, max, open)) =
@@ -1592,6 +1701,7 @@ impl NodeState {
             compressor,
             reverb,
             matrix,
+            delay,
             native_bounds,
         };
         state.validate_current_parameters(rate)?;
@@ -1618,6 +1728,7 @@ impl NodeState {
             compressor: None,
             reverb: None,
             matrix: None,
+            delay: None,
             native_bounds: BTreeMap::new(),
         })
     }
@@ -1642,6 +1753,7 @@ impl NodeState {
             compressor: None,
             reverb: None,
             matrix: None,
+            delay: None,
             native_bounds: BTreeMap::new(),
         }
     }
@@ -1670,6 +1782,7 @@ impl NodeState {
             compressor: None,
             reverb: None,
             matrix: None,
+            delay: None,
             native_bounds: BTreeMap::new(),
         }
     }
@@ -1736,6 +1849,9 @@ impl NodeState {
         }
         if let Some(reverb) = &mut self.reverb {
             reverb.reset();
+        }
+        if let Some(delay) = &mut self.delay {
+            delay.reset();
         }
         self.current_params.clone_from(&self.base_params);
         if let Some(instrument) = &mut self.instrument {
@@ -2068,6 +2184,9 @@ fn stable_topological_order(
     let mut indegree = vec![0usize; nodes.len()];
     let mut outgoing: Vec<Vec<usize>> = vec![Vec::new(); nodes.len()];
     for connection in connections {
+        if nodes[connection.from].delay.is_some() || nodes[connection.to].delay.is_some() {
+            continue;
+        }
         indegree[connection.to] = indegree[connection.to].saturating_add(1);
         outgoing[connection.from].push(connection.to);
     }
@@ -2976,5 +3095,32 @@ automation source_level_at_origin {{ target = &sound.params.source_level; curve 
             Err(error) => error,
         };
         assert_eq!(error.code(), "E_RANGE");
+    }
+}
+
+#[cfg(test)]
+mod delay_scheduler_tests {
+    use super::*;
+
+    #[test]
+    fn published_delay_outputs_do_not_constrain_zero_delay_node_order() {
+        let nodes = vec![
+            NodeState::new("z_delay".into(), Processor::delay(1, 1), 48_000.0, None).unwrap(),
+            NodeState::new("a_consumer".into(), Processor::gain(1), 48_000.0, None).unwrap(),
+            NodeState::new("b_independent".into(), Processor::gain(1), 48_000.0, None).unwrap(),
+        ];
+        let connections = vec![ConnectionRuntime {
+            id: "delay_consumer".into(),
+            from: 0,
+            to: 1,
+            to_port: "in".into(),
+        }];
+        let order = stable_topological_order(&nodes, &connections, &[]).unwrap();
+        let processing = order
+            .into_iter()
+            .filter(|index| nodes[*index].delay.is_none())
+            .map(|index| nodes[index].id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(processing, ["a_consumer", "b_independent"]);
     }
 }
