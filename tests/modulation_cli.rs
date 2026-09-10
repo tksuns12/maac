@@ -138,8 +138,8 @@ fn invalid_source_and_retained_controls_preserve_existing_and_absent_outputs() {
     let saved = root.join("saved.json");
     for (extra, code) in [
         (
-            "modulate bad {from=&c:out;target=&sound.params.attack;amount=1s;}",
-            "E_CAPABILITY",
+            "modulate bad {from=&c:out;target=&sound.params.attack;amount=1;}",
+            "E_UNIT",
         ),
         ("connect bad {from=&c:out;to=&sound:events;}", ""),
     ] {

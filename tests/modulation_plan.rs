@@ -92,20 +92,31 @@ modulate m {from=&c:out;target=&sound.params.sample;amount=0;}
 "#;
     let p = compile_bundle_artifact(&SourceBundle::new("score.maac", source)).unwrap();
     let original: Value = serde_json::from_slice(&p.to_json().unwrap()).unwrap();
-    for (field, accepted) in [
-        ("sample", true),
-        ("on", false),
-        ("off", false),
-        ("reset", false),
+    for (field, amount, accepted) in [
+        ("sample", "0/1", true),
+        ("on", "1/2", true),
+        ("off", "0/1", true),
+        ("reset", "0/1", false),
     ] {
         let mut v = original.clone();
         v["modulations"][0]["target"]["port"] = json!(field);
+        v["modulations"][0]["amount"] = json!(amount);
         if accepted {
             load(&v).unwrap().to_json().unwrap();
         } else {
             assert_eq!(load(&v).unwrap_err().code, "E_CAPABILITY", "{field}");
         }
     }
+}
+#[test]
+fn retained_core_event_rate_targets_are_admitted() {
+    let mut v = fixture();
+    v["modulations"][0]["target"] = json!({"node":"sound","port":"attack"});
+    v["modulations"][0]["amount"] = json!("0/1");
+    load(&v).unwrap().to_json().unwrap();
+    v["modulations"][0]["target"] = json!({"node":"sound","port":"release"});
+    v["modulations"][0]["amount"] = json!("1/2");
+    load(&v).unwrap().to_json().unwrap();
 }
 #[test]
 fn disconnected_controls_and_encoder_enforce_aggregate_work() {

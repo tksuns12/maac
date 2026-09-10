@@ -30,6 +30,70 @@ fn native_controls_lower_to_v7_with_exact_defaults() {
     assert_eq!(m["processor"]["config"]["wave"], "sine");
 }
 #[test]
+fn event_rate_core_targets_lower_with_zero_and_nonzero_amounts() {
+    let v = compile(
+        r#"node c {type="core.constant/1";} modulate attack_zero {from=&c:out;target=&sound.params.attack;amount=0s;} modulate release {from=&c:out;target=&sound.params.release;amount=1/2s;}"#,
+    );
+    let modulations = v["modulations"].as_array().unwrap();
+    assert_eq!(modulations.len(), 2);
+    let attack = modulations
+        .iter()
+        .find(|modulation| modulation["id"] == "attack_zero")
+        .unwrap();
+    assert_eq!(attack["target"], serde_json::json!({"node":"sound","port":"attack"}));
+    assert_eq!(attack["amount"], "0/1");
+    let release = modulations
+        .iter()
+        .find(|modulation| modulation["id"] == "release")
+        .unwrap();
+    assert_eq!(release["target"], serde_json::json!({"node":"sound","port":"release"}));
+    assert_eq!(release["amount"], "1/2");
+}
+#[test]
+fn event_rate_instrument_controls_lower_and_reset_stays_rejected() {
+    let base = r#"maac 1;
+project p {score=[0q,1q];tail=0s;rate=48000Hz;tempo=&clock;meter=&metre;output=&synth:out;}
+tempo clock {points=[(0q,60bpm,step)];} meter metre {points=[(0q,4,4)];}
+instrument local {channels=1;
+voice v {channels=1;amplitude=&amp;output=&osc:out;node amp {type="synth.adsr/1";} node osc {type="synth.sine/1";}}
+shared s {channels=1;output=&gain:out;node gain {type="synth.gain/1";config={channels=1;};} connect route {from=&input:out;to=&gain:in;} node lfo {type="synth.lfo/1";}}
+control on {target=&v.amp.params.attack;default=0s;}
+control off {target=&v.amp.params.release;default=0s;}
+control reset {target=&s.lfo.params.phase;default=0;}}
+node synth {instrument=&local;} node c {type="core.constant/1";}"#;
+    let positive = format!(
+        "{base} modulate on_zero {{from=&c:out;target=&synth.params.on;amount=0s;}} modulate off_nonzero {{from=&c:out;target=&synth.params.off;amount=1/2s;}}"
+    );
+    let artifact = compile_bundle_artifact(&SourceBundle::new("score.maac", positive)).unwrap();
+    let v: Value = serde_json::from_slice(&artifact.to_json().unwrap()).unwrap();
+    assert_eq!(v["version"], 7);
+    let modulations = v["modulations"].as_array().unwrap();
+    assert_eq!(modulations.len(), 2);
+    assert_eq!(
+        modulations
+            .iter()
+            .find(|modulation| modulation["id"] == "on_zero")
+            .unwrap()["amount"],
+        "0/1"
+    );
+    assert_eq!(
+        modulations
+            .iter()
+            .find(|modulation| modulation["id"] == "off_nonzero")
+            .unwrap()["amount"],
+        "1/2"
+    );
+
+    let reset = format!(
+        "{base} modulate reset_mod {{from=&c:out;target=&synth.params.reset;amount=0;}}"
+    );
+    let diagnostics = compile_bundle_artifact(&SourceBundle::new("score.maac", reset))
+        .unwrap_err();
+    assert!(diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.code == maac::diagnostic::DiagnosticCode::Capability));
+}
+#[test]
 fn units_phase_automation_and_legacy_entrypoint_contracts() {
     let v = compile(
         r#"node motion {type="core.lfo/1";config={period=250ms;wave=square;phase=100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001/4;};} node offset {type="core.constant/1";params={value=-1/2;};} curve line {clock=seconds;points=[(0s,-1,linear),(1s,1,step)];} automation lane {target=&offset.params.value;curve=&line;at=0s;} modulate m {from=&offset:out;target=&sound.params.level;amount=1/4;}"#,
@@ -72,11 +136,11 @@ fn invalid_declarations_and_references_fail_even_unused() {
     ] {
         assert!(compile_bundle_artifact(&bundle(body)).is_err(), "{body}");
     }
-    let body = r#"node c {type="core.constant/1";} modulate m {from=&c:out;target=&sound.params.attack;amount=0s;}"#;
+    let body = r#"node c {type="core.constant/1";} modulate m {from=&c:out;target=&sound.params.attack;amount=0;}"#;
     assert!(compile_bundle_artifact(&bundle(body))
         .unwrap_err()
         .iter()
-        .any(|d| d.code == maac::diagnostic::DiagnosticCode::Capability));
+        .any(|d| d.code == maac::diagnostic::DiagnosticCode::Unit));
     for body in [
         r#"node c {type="core.constant/1";} modulate m {from=&c:out;target=&c.params.value;amount=0;}"#,
         r#"node c {type="core.constant/1";} node d {type="core.constant/1";} modulate m {from=&c:out;target=&d.params.value;amount=0;} modulate n {from=&d:out;target=&c.params.value;amount=0;}"#,

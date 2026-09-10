@@ -228,11 +228,6 @@ mod tests {
             ("/modulations/0/from/port", json!("events"), "E_PORT_TYPE"),
             ("/modulations/0/target/port", json!("out"), "E_REFERENCE"),
             (
-                "/modulations/1/target/port",
-                json!("attack"),
-                "E_CAPABILITY",
-            ),
-            (
                 "/modulations/0/from/node",
                 json!("offset"),
                 "E_ALGEBRAIC_LOOP",
