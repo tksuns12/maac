@@ -88,6 +88,15 @@ maac compile examples/internal-phase-modulation.maac -o internal-phase.plan.json
 maac render internal-phase.plan.json -o internal-phase-from-plan.wav
 ```
 
+[`internal-reset-modulation.maac`](internal-reset-modulation.maac) captures shared
+LFO phase before notes begin, using authored controls and silent shared input.
+
+```sh
+maac build examples/internal-reset-modulation.maac -o internal-reset.wav
+maac compile examples/internal-reset-modulation.maac -o internal-reset.plan.json
+maac render internal-reset.plan.json -o internal-reset-from-plan.wav
+```
+
 [`pressure-expression.maac`](pressure-expression.maac) defines an inline stereo
 instrument whose pressure source raises oscillator level and filter cutoff.
 Independent timbre also controls cutoff; one note combines all four expression

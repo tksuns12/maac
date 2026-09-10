@@ -58,9 +58,10 @@ version 7 plans retain the control graph for standalone replay.
 Try `maac build examples/core-modulation.maac --project-root . -o core-modulation.wav`.
 
 [Internal event modulation](docs/internal-event-modulation.md) captures per-voice
-signals at note-on and note-off without advancing their audio state twice.
+signals at note-on, note-off, and shared-LFO reset without advancing their audio state twice.
 Try `maac build examples/internal-event-modulation.maac -o internal-event.wav`
 or `maac build examples/internal-phase-modulation.maac -o internal-phase.wav`.
+Shared reset capture: `maac build examples/internal-reset-modulation.maac -o internal-reset.wav`.
 
 The [project-entrypoint guide](docs/project-entrypoint.md) specifies conventional
 `main.maac` discovery and the explicit finite `--profile song` allowance for

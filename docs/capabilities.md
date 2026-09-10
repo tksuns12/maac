@@ -22,7 +22,7 @@ specification remains authoritative; this page describes the implementation scop
 | Arranged audio | Top-level rate and warp-rate clips; source-frame slicing, musical warp anchors, rate-mode speed/reverse/physical placement, gain, linear/equal-power fades, explicit routing and tempo-aware tails |
 | Reusable instruments | Named libraries, typed public controls, presets, independent polyphonic instances, voice and shared graphs |
 | Sound graphs | Versioned sine/saw/square/triangle/wavetable oscillators, deterministic noise and recirculating plucked strings, linear ADSR, sine LFO, gain, low/high-pass one-pole filtering, mixing and panning |
-| Modulation | Top-level typed control modulation of continuous sample-rate and note-on/note-off parameters, score/seconds LFOs and automated constants; instrument feed-forward graph modulation, ADSR and voice phase event-time capture, and sample-wise through-zero linear FM; no oversampling |
+| Modulation | Top-level typed control modulation of continuous sample-rate and note-on/note-off parameters, score/seconds LFOs and automated constants; instrument feed-forward graph modulation, ADSR, voice phase, and shared-LFO reset capture, and sample-wise through-zero linear FM; no oversampling |
 | Built-in instruments | 24 stereo exports in `std/basic/1.0.0` with four common controls; three separate `std/acoustic/1.0.0` guitars with six controls; exact-version CLI/Rust discovery |
 | Local dependencies | Explicit namespace aliases, transitive declaring-file resolution, SHA-256 source/WAV pins, project containment |
 | Wavetables | Explicit mono WAV cycles, cyclic interpolation, adjacent-frame morphing and harmonic-limited banks |
@@ -38,8 +38,6 @@ reset-rate top-level modulation, other processors, pitched sample instruments,
 preserve-pitch audio warping, external plug-ins and other extensions. Transactional editing, full render locks,
 MIDI transport, GUI and real-time playback are outside this release's interfaces.
 No deferred feature is approximated silently.
-Unsupported instrument-internal reset modulation targets fail graph
-validation with `E_PORT_TYPE`.
 
 The [kit contract](core-kit.md) defines native hit scheduling, raw sample assets,
 voice capacity, interpolation and standalone replay. The additive `*_artifact`

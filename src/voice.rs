@@ -46,8 +46,10 @@ struct CompiledGraph {
     order: Vec<usize>,
     has_note_on_modulations: bool,
     has_note_off_modulations: bool,
+    has_reset_modulations: bool,
     note_on_required: [bool; MAX_GRAPH_NODES],
     note_off_required: [bool; MAX_GRAPH_NODES],
+    reset_required: [bool; MAX_GRAPH_NODES],
     output: usize,
     amplitude: Option<usize>,
     channels: usize,
@@ -62,6 +64,7 @@ struct CompiledNode {
     incoming: Vec<Source>,
     modulations: Vec<ModulationBinding>,
     has_note_on_modulations: bool,
+    has_reset_modulations: bool,
     controls: Vec<ControlBinding>,
 }
 
@@ -86,6 +89,13 @@ enum ProcessorCode {
 enum Source {
     Input,
     Node(usize),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PreviewCapture {
+    None,
+    NoteOn,
+    Reset,
 }
 
 #[derive(Debug)]
@@ -299,7 +309,7 @@ impl InstrumentRuntime {
         let shared = program
             .shared
             .as_ref()
-            .map(|graph| GraphState::new_shared(graph, &resolved))
+            .map(|graph| GraphState::new_shared(graph, &resolved, rate))
             .transpose()?;
         Ok(Self {
             program,
@@ -516,16 +526,20 @@ impl InstrumentRuntime {
     }
 
     pub fn reset(&mut self, controls: &BTreeMap<String, f64>) -> Result<()> {
-        self.controls = resolve_controls(&self.program, controls)?;
-        self.voices.clear();
-        self.output = [0.0; 2];
-        self.shared = self
+        let resolved = resolve_controls(&self.program, controls)?;
+        let shared = self
             .program
             .shared
             .as_ref()
-            .map(|graph| GraphState::new_shared(graph, &self.controls))
+            .map(|graph| GraphState::new_shared(graph, &resolved, self.rate))
             .transpose()?;
-        self.shared_reset = self.shared.clone();
+        let shared_reset = shared.clone();
+
+        self.controls = resolved;
+        self.voices.clear();
+        self.output = [0.0; 2];
+        self.shared = shared;
+        self.shared_reset = shared_reset;
         Ok(())
     }
 
@@ -592,8 +606,12 @@ impl GraphState {
         Self::new(graph, controls, Some(frame))
     }
 
-    fn new_shared(graph: &CompiledGraph, controls: &[f64]) -> Result<Self> {
-        Self::new(graph, controls, None)
+    fn new_shared(graph: &CompiledGraph, controls: &[f64], rate: f64) -> Result<Self> {
+        let mut state = Self::new(graph, controls, None)?;
+        if graph.has_reset_modulations {
+            state.capture_reset(graph, controls, rate)?;
+        }
+        Ok(state)
     }
 
     fn new(graph: &CompiledGraph, controls: &[f64], on_frame: Option<u64>) -> Result<Self> {
@@ -658,7 +676,22 @@ impl GraphState {
             timbre,
             pressure,
             &graph.note_on_required,
-            true,
+            PreviewCapture::NoteOn,
+        )?;
+        Ok(())
+    }
+
+    fn capture_reset(&mut self, graph: &CompiledGraph, controls: &[f64], rate: f64) -> Result<()> {
+        self.preview_required(
+            graph,
+            controls,
+            0,
+            rate,
+            0.0,
+            0.0,
+            0.0,
+            &graph.reset_required,
+            PreviewCapture::Reset,
         )?;
         Ok(())
     }
@@ -704,7 +737,7 @@ impl GraphState {
             timbre,
             pressure,
             &graph.note_off_required,
-            false,
+            PreviewCapture::None,
         )?;
 
         // Validate every release against the same pre-release graph state.
@@ -763,7 +796,7 @@ impl GraphState {
         timbre: f64,
         pressure: f64,
         required: &[bool; MAX_GRAPH_NODES],
-        initialize_note_on: bool,
+        capture: PreviewCapture,
     ) -> Result<[[f64; 2]; MAX_GRAPH_NODES]> {
         let mut outputs = [[0.0; 2]; MAX_GRAPH_NODES];
         for &node_index in &graph.order {
@@ -771,7 +804,7 @@ impl GraphState {
                 continue;
             }
             let compiled = &graph.nodes[node_index];
-            if initialize_note_on
+            if capture == PreviewCapture::NoteOn
                 && (matches!(compiled.processor, ProcessorCode::Adsr)
                     || compiled.has_note_on_modulations)
             {
@@ -816,6 +849,33 @@ impl GraphState {
                     _ => {
                         return Err(RenderError::RenderState(format!(
                             "instrument graph node {} has mismatched note-on state",
+                            compiled.id
+                        )))
+                    }
+                }
+            } else if capture == PreviewCapture::Reset && compiled.has_reset_modulations {
+                let mut event_params = parameter_scratch(compiled);
+                apply_controls(
+                    compiled,
+                    controls,
+                    ParameterRate::Reset,
+                    &mut event_params[..compiled.base_params.len()],
+                );
+                apply_event_modulations(
+                    compiled,
+                    ParameterRate::Reset,
+                    &outputs,
+                    [0.0; 2],
+                    &mut event_params,
+                )?;
+                match (&compiled.processor, &mut self.nodes[node_index].state) {
+                    (ProcessorCode::Lfo, ProcessorState::Lfo(oscillator)) => {
+                        validate_event_parameter(compiled, 1, event_params[1])?;
+                        oscillator.reset(event_params[1])?;
+                    }
+                    _ => {
+                        return Err(RenderError::RenderState(format!(
+                            "instrument graph node {} has mismatched reset state",
                             compiled.id
                         )))
                     }
@@ -940,9 +1000,14 @@ impl GraphState {
 fn capture_dependency_masks(
     nodes: &[CompiledNode],
     order: &[usize],
-) -> ([bool; MAX_GRAPH_NODES], [bool; MAX_GRAPH_NODES]) {
+) -> (
+    [bool; MAX_GRAPH_NODES],
+    [bool; MAX_GRAPH_NODES],
+    [bool; MAX_GRAPH_NODES],
+) {
     let mut note_on = [false; MAX_GRAPH_NODES];
     let mut note_off = [false; MAX_GRAPH_NODES];
+    let mut reset = [false; MAX_GRAPH_NODES];
     for (index, node) in nodes.iter().enumerate() {
         if matches!(node.processor, ProcessorCode::Adsr) {
             note_on[index] = true;
@@ -955,17 +1020,21 @@ fn capture_dependency_masks(
         if node.has_note_on_modulations {
             note_on[index] = true;
         }
+        if node.has_reset_modulations {
+            reset[index] = true;
+        }
     }
-    expand_capture_dependencies(nodes, order, &mut note_on, true);
-    expand_capture_dependencies(nodes, order, &mut note_off, false);
-    (note_on, note_off)
+    expand_capture_dependencies(nodes, order, &mut note_on, Some(ParameterRate::NoteOn));
+    expand_capture_dependencies(nodes, order, &mut note_off, None);
+    expand_capture_dependencies(nodes, order, &mut reset, Some(ParameterRate::Reset));
+    (note_on, note_off, reset)
 }
 
 fn expand_capture_dependencies(
     nodes: &[CompiledNode],
     order: &[usize],
     required: &mut [bool; MAX_GRAPH_NODES],
-    include_note_on: bool,
+    capture_rate: Option<ParameterRate>,
 ) {
     for &index in order.iter().rev() {
         if !required[index] {
@@ -977,7 +1046,7 @@ fn expand_capture_dependencies(
         }
         for binding in &node.modulations {
             if binding.rate == ParameterRate::Sample
-                || (include_note_on && binding.rate == ParameterRate::NoteOn)
+                || capture_rate.is_some_and(|rate| binding.rate == rate)
             {
                 mark_source(required, binding.source);
             }
@@ -1258,6 +1327,7 @@ fn compile_graph(
             incoming: Vec::new(),
             modulations: Vec::new(),
             has_note_on_modulations: false,
+            has_reset_modulations: false,
             controls: Vec::new(),
         });
     }
@@ -1303,6 +1373,8 @@ fn compile_graph(
         });
         if rate == ParameterRate::NoteOn {
             nodes[target].has_note_on_modulations = true;
+        } else if rate == ParameterRate::Reset {
+            nodes[target].has_reset_modulations = true;
         }
     }
 
@@ -1317,13 +1389,17 @@ fn compile_graph(
             .iter()
             .any(|binding| binding.rate == ParameterRate::NoteOff)
     });
-    let (note_on_required, note_off_required) = capture_dependency_masks(&nodes, &order);
+    let has_reset_modulations = nodes.iter().any(|node| node.has_reset_modulations);
+    let (note_on_required, note_off_required, reset_required) =
+        capture_dependency_masks(&nodes, &order);
     Ok(CompiledGraph {
         order,
         has_note_on_modulations,
         has_note_off_modulations,
+        has_reset_modulations,
         note_on_required,
         note_off_required,
+        reset_required,
         output: indices[graph.output.node.as_str()],
         amplitude: graph.amplitude.as_ref().map(|node| indices[node.as_str()]),
         channels: graph.channels as usize,
@@ -1902,6 +1978,200 @@ mod tests {
             runtime.note_on("voice", 440.0, 1.0, 0).unwrap_err().code(),
             "E_RANGE"
         );
+    }
+
+    fn shared_reset_program(
+        shared: GraphProgram,
+        controls: BTreeMap<String, crate::graph::Control>,
+    ) -> InstrumentProgram {
+        use crate::graph::{GraphNode, ProgramSource};
+        InstrumentProgram {
+            id: "shared_reset_capture".into(),
+            voice: GraphProgram {
+                channels: 1,
+                nodes: vec![
+                    GraphNode {
+                        id: "amp".into(),
+                        processor: GraphProcessor::Adsr,
+                        params: BTreeMap::new(),
+                    },
+                    GraphNode {
+                        id: "tone".into(),
+                        processor: GraphProcessor::Sine,
+                        params: BTreeMap::new(),
+                    },
+                ],
+                connections: Vec::new(),
+                modulations: Vec::new(),
+                output: crate::plan::PortRef::new("tone", "out").unwrap(),
+                amplitude: Some("amp".into()),
+            },
+            shared: Some(shared),
+            controls,
+            source: ProgramSource {
+                file: "test.maac".into(),
+                object: "shared_reset_capture".into(),
+                span: None,
+            },
+        }
+    }
+
+    #[test]
+    fn shared_reset_preview_does_not_advance_filter_history() {
+        use crate::graph::{GraphNode, Modulation, ParameterTarget};
+        use crate::plan::Connection;
+        let out = |node| crate::plan::PortRef::new(node, "out").unwrap();
+        let input = |node| crate::plan::PortRef::new(node, "in").unwrap();
+        let shared = GraphProgram {
+            channels: 1,
+            nodes: vec![
+                GraphNode {
+                    id: "source".into(),
+                    processor: GraphProcessor::Lfo,
+                    params: BTreeMap::from([
+                        ("frequency".into(), rat(100)),
+                        ("phase".into(), rat(0)),
+                        ("level".into(), rat(1)),
+                    ]),
+                },
+                GraphNode {
+                    id: "filter".into(),
+                    processor: GraphProcessor::OnePole { channels: 1 },
+                    params: BTreeMap::from([("cutoff".into(), rat(12_000))]),
+                },
+                GraphNode {
+                    id: "target".into(),
+                    processor: GraphProcessor::Lfo,
+                    params: BTreeMap::from([("frequency".into(), rat(0))]),
+                },
+                GraphNode {
+                    id: "mix".into(),
+                    processor: GraphProcessor::Mix { channels: 1 },
+                    params: BTreeMap::new(),
+                },
+                GraphNode {
+                    id: "driver".into(),
+                    processor: GraphProcessor::Lfo,
+                    params: BTreeMap::from([
+                        (
+                            "phase".into(),
+                            crate::plan::Rational::new(1.into(), 4.into()),
+                        ),
+                        ("level".into(), rat(1)),
+                    ]),
+                },
+            ],
+            connections: vec![
+                Connection::new("source_filter", out("source"), input("filter")).unwrap(),
+                Connection::new("filter_mix", out("filter"), input("mix")).unwrap(),
+                Connection::new("target_mix", out("target"), input("mix")).unwrap(),
+            ],
+            modulations: vec![
+                Modulation {
+                    id: "driver_source_phase".into(),
+                    from: out("driver"),
+                    to: ParameterTarget {
+                        node: "source".into(),
+                        parameter: "phase".into(),
+                    },
+                    depth: crate::plan::Rational::new(1.into(), 4.into()),
+                },
+                Modulation {
+                    id: "filter_phase".into(),
+                    from: out("filter"),
+                    to: ParameterTarget {
+                        node: "target".into(),
+                        parameter: "phase".into(),
+                    },
+                    depth: rat(1),
+                },
+            ],
+            output: out("mix"),
+            amplitude: None,
+        };
+        let program = shared_reset_program(shared, BTreeMap::new());
+        let compiled = Arc::new(CompiledInstrument::compile(&program, &BTreeMap::new()).unwrap());
+        let mut runtime = InstrumentRuntime::new(compiled, 1, 48_000.0, &BTreeMap::new()).unwrap();
+
+        let a = (-std::f64::consts::PI / 2.0).exp();
+        let mut source = Oscillator::new(Waveform::Sine, 0.25).unwrap();
+        let source_first = source.sample(100.0, 48_000.0).unwrap();
+        let first_filter = (1.0 - a) * source_first;
+        let mut target = Oscillator::new(Waveform::Sine, first_filter).unwrap();
+        let captured_target = target.sample(0.0, 48_000.0).unwrap();
+        let first = first_filter + captured_target;
+        let source_second = source.sample(100.0, 48_000.0).unwrap();
+        let second_filter = (1.0 - a) * source_second + a * first_filter;
+        let second = second_filter + target.sample(0.0, 48_000.0).unwrap();
+        assert!((runtime.render(0).unwrap()[0] - first).abs() < 1.0e-12);
+        assert!((runtime.render(1).unwrap()[0] - second).abs() < 1.0e-12);
+
+        runtime.reset(&BTreeMap::new()).unwrap();
+        assert!((runtime.render(0).unwrap()[0] - first).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn failed_public_reset_capture_preserves_the_previous_runtime() {
+        use crate::graph::{
+            Control, ControlTarget, GraphNode, GraphStage, Modulation, ParameterTarget,
+        };
+        let shared = GraphProgram {
+            channels: 1,
+            nodes: vec![
+                GraphNode {
+                    id: "source".into(),
+                    processor: GraphProcessor::Lfo,
+                    params: BTreeMap::from([
+                        ("frequency".into(), rat(0)),
+                        (
+                            "phase".into(),
+                            crate::plan::Rational::new(1.into(), 4.into()),
+                        ),
+                    ]),
+                },
+                GraphNode {
+                    id: "target".into(),
+                    processor: GraphProcessor::Lfo,
+                    params: BTreeMap::from([("frequency".into(), rat(0))]),
+                },
+            ],
+            connections: Vec::new(),
+            modulations: vec![Modulation {
+                id: "source_phase".into(),
+                from: crate::plan::PortRef::new("source", "out").unwrap(),
+                to: ParameterTarget {
+                    node: "target".into(),
+                    parameter: "phase".into(),
+                },
+                depth: crate::plan::Rational::new(1.into(), 4.into()),
+            }],
+            output: crate::plan::PortRef::new("target", "out").unwrap(),
+            amplitude: None,
+        };
+        let controls = BTreeMap::from([(
+            "phase".into(),
+            Control {
+                target: ControlTarget {
+                    graph: GraphStage::Shared,
+                    node: "target".into(),
+                    parameter: "phase".into(),
+                },
+                default: rat(0),
+            },
+        )]);
+        let program = shared_reset_program(shared, controls);
+        let compiled = Arc::new(CompiledInstrument::compile(&program, &BTreeMap::new()).unwrap());
+        let mut runtime = InstrumentRuntime::new(compiled, 1, 48_000.0, &BTreeMap::new()).unwrap();
+        assert_eq!(runtime.render(0).unwrap(), &[1.0]);
+
+        let error = runtime
+            .reset(&BTreeMap::from([("phase".into(), 1.0)]))
+            .unwrap_err();
+        assert_eq!(error.code(), "E_RANGE");
+        assert_eq!(runtime.render(1).unwrap(), &[1.0]);
+
+        runtime.reset(&BTreeMap::new()).unwrap();
+        assert_eq!(runtime.render(0).unwrap(), &[1.0]);
     }
 }
 

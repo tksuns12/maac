@@ -58,8 +58,8 @@ the target parameter's unit and may be negative. Thus a timbre mapping produces
 `baseline + depth * timbre`, plus any other authored modulation contributions.
 Final parameter bounds are checked after the contributions are combined.
 There is no implicit clipping, normalization, or remapping. Voice ADSR and phase event-rate
-targets use [event-time capture](internal-event-modulation.md); reset-rate
-targets remain invalid. Shared parameters cannot receive a voice's signal through
+targets use [event-time capture](internal-event-modulation.md). Shared reset
+parameters cannot receive a voice's signal through
 a cross-graph edge.
 
 For example, a cutoff baseline of 1000 Hz and depth of 6000 Hz maps timbre

@@ -936,11 +936,14 @@ fn validate_graph_inner(
                     | GraphProcessor::Lfo
             )
             && matches!(spec.rate, ParameterRate::NoteOn | ParameterRate::NoteOff);
-        if spec.rate != ParameterRate::Sample && !voice_event_rate {
+        let shared_lfo_reset = stage == GraphStage::Shared
+            && matches!(target.processor, GraphProcessor::Lfo)
+            && spec.rate == ParameterRate::Reset;
+        if spec.rate != ParameterRate::Sample && !voice_event_rate && !shared_lfo_reset {
             return Err(error(
                 "E_PORT_TYPE",
                 format!("{edge_path}.to.parameter"),
-                "modulation requires a sample-rate parameter or voice event-rate parameter",
+                "modulation requires a sample-rate parameter or supported event-rate parameter",
             ));
         }
         validate_modulation_depth(&modulation.depth, spec.unit, format!("{edge_path}.depth"))?;

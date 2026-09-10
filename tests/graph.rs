@@ -447,9 +447,43 @@ fn voice_adsr_and_phase_event_rate_modulations_allow_signed_depths_only() {
         output: port("gain", "out"),
         amplitude: None,
     };
+    validate_graph(&shared, false, Some(1)).unwrap();
+
+    let mut stereo_source = shared.clone();
+    stereo_source.nodes.push(node("pan", GraphProcessor::Pan));
+    stereo_source
+        .connections
+        .push(connection("input_pan", ("input", "out"), ("pan", "in")));
+    stereo_source.modulations[0].from = port("pan", "out");
     assert_eq!(
-        validate_graph(&shared, false, Some(1)).unwrap_err().code,
+        validate_graph(&stereo_source, false, Some(1))
+            .unwrap_err()
+            .code,
         "E_PORT_TYPE"
+    );
+
+    let mut self_cycle = shared.clone();
+    self_cycle.modulations[0].from = port("lfo", "out");
+    assert_eq!(
+        validate_graph(&self_cycle, false, Some(1))
+            .unwrap_err()
+            .code,
+        "E_ALGEBRAIC_LOOP"
+    );
+
+    let mut mixed_cycle = shared.clone();
+    mixed_cycle
+        .nodes
+        .push(node("filter", GraphProcessor::OnePole { channels: 1 }));
+    mixed_cycle
+        .connections
+        .push(connection("lfo_filter", ("lfo", "out"), ("filter", "in")));
+    mixed_cycle.modulations[0].from = port("filter", "out");
+    assert_eq!(
+        validate_graph(&mixed_cycle, false, Some(1))
+            .unwrap_err()
+            .code,
+        "E_ALGEBRAIC_LOOP"
     );
     shared.modulations.clear();
     validate_graph(&shared, false, Some(1)).unwrap();

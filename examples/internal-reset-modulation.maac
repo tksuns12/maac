@@ -1,0 +1,102 @@
+maac 1;
+
+// A shared source LFO contributes to a target LFO's phase at reset.  The
+// source level is then automated at frame zero for ordinary sample rendering;
+// reset capture still uses the authored instance value.
+project internal_reset_demo {
+  score = [0q, 2q];
+  tail = 40ms;
+  rate = 48000Hz;
+  tempo = &clock;
+  meter = &metre;
+  output = &sound:out;
+}
+tempo clock { points = [(0q, 120bpm, step)]; }
+meter metre { points = [(0q, 4, 4)]; }
+
+instrument reset_voice {
+  channels = 1;
+  voice v {
+    channels = 1;
+    amplitude = &amp;
+    output = &osc:out;
+    node amp {
+      type = "synth.adsr/1";
+      params = { attack = 10ms; decay = 10ms; sustain = 3/4; release = 30ms; };
+    }
+    node osc {
+      type = "synth.sine/1";
+      params = { ratio = 1; level = 1/16; };
+    }
+  }
+  shared fx {
+    channels = 1;
+    output = &gain:out;
+    node source {
+      type = "synth.lfo/1";
+      params = { frequency = 1Hz; phase = 0; level = 1/4; };
+    }
+    node target {
+      type = "synth.lfo/1";
+      params = { frequency = 2Hz; phase = 0; level = 1/4; };
+    }
+    node mix {
+      type = "synth.mix/1";
+      config = { channels = 1; };
+    }
+    node gain {
+      type = "synth.gain/1";
+      config = { channels = 1; };
+      params = { level = 1/2; };
+    }
+    connect target_mix { from = &target:out; to = &mix:in; }
+    connect input_mix { from = &input:out; to = &mix:in; }
+    connect mix_gain { from = &mix:out; to = &gain:in; }
+    modulate reset_phase {
+      from = &source:out;
+      to = &target.params.phase;
+      depth = 1/2;
+    }
+    modulate source_level {
+      from = &source:out;
+      to = &gain.params.level;
+      depth = 1/4;
+    }
+  }
+  control source_phase { target = &fx.source.params.phase; default = 0; }
+  control source_level { target = &fx.source.params.level; default = 1/4; }
+  control target_phase { target = &fx.target.params.phase; default = 0; }
+}
+
+preset warm_reset {
+  instrument = &reset_voice;
+  params = { source_phase = 1/4; source_level = 1/2; target_phase = 1/8; };
+}
+node sound {
+  instrument = &reset_voice;
+  preset = &warm_reset;
+  config = { voices = 1; };
+  params = { target_phase = 0; };
+}
+
+curve frame0_level {
+  clock = score;
+  points = [(0q, 1, step), (2q, 1, step)];
+}
+automation loud_at_frame0 {
+  target = &sound.params.source_level;
+  curve = &frame0_level;
+  at = 0q;
+}
+
+pattern phrase {
+  length = 2q;
+  note note {
+    at = 0q;
+    dur = 1q;
+    pitch = C4;
+    velocity = 1/4;
+  }
+}
+track notes { target = &sound:events; }
+place once { pattern = &phrase; track = &notes; at = 0q; }

@@ -240,6 +240,29 @@ fn internal_voice_phase_rates_compile_for_every_supported_processor_and_roundtri
 }
 
 #[test]
+fn shared_lfo_reset_modulation_compiles_and_roundtrips_as_v2_program_data() {
+    let reset = source_with_shared(
+        "",
+        r#"modulate reset { from = &input:out; to = &lfo.params.phase; depth = 1/2; }"#,
+    );
+    let plan = compile_bundle(&reset).expect("shared LFO reset modulation should compile");
+    assert_eq!(plan.version, 2);
+    let program = plan
+        .instrument_program("program_0")
+        .expect("embedded instrument program");
+    let shared = program.shared.as_ref().expect("shared graph");
+    assert_eq!(shared.modulations.len(), 1);
+    assert_eq!(shared.modulations[0].to.node, "lfo");
+    assert_eq!(shared.modulations[0].to.parameter, "phase");
+    assert_eq!(shared.modulations[0].depth, rat(1, 2));
+
+    let bytes = plan.to_json().unwrap();
+    let retained = Plan::from_json(&bytes).unwrap();
+    retained.validate().unwrap();
+    assert_eq!(retained, plan);
+}
+
+#[test]
 fn invalid_internal_event_modulations_keep_units_ports_references_and_dags_strict() {
     let cases = [
         (
@@ -287,11 +310,33 @@ modulate osc_source { from = &osc:out; to = &source.params.frequency; depth = 1H
         assert_eq!(diagnostic_code(&source(body)), expected, "{body}");
     }
 
-    let reset = source_with_shared(
+    let wrong_unit_reset = source_with_shared(
         "",
-        r#"modulate reset { from = &input:out; to = &lfo.params.phase; depth = 0; }"#,
+        r#"modulate wrong_reset_unit { from = &input:out; to = &lfo.params.phase; depth = 1s; }"#,
     );
-    assert_eq!(diagnostic_code(&reset), DiagnosticCode::PortType);
+    assert_eq!(diagnostic_code(&wrong_unit_reset), DiagnosticCode::Unit);
+
+    let stereo_reset = source_with_shared(
+        "",
+        r#"node pan { type = "synth.pan/1"; }
+connect input_pan { from = &input:out; to = &pan:in; }
+modulate stereo_reset { from = &pan:out; to = &lfo.params.phase; depth = 0; }"#,
+    );
+    assert_eq!(diagnostic_code(&stereo_reset), DiagnosticCode::PortType);
+
+    let self_reset = source_with_shared(
+        "",
+        r#"modulate self_reset { from = &lfo:out; to = &lfo.params.phase; depth = 0; }"#,
+    );
+    assert_eq!(diagnostic_code(&self_reset), DiagnosticCode::AlgebraicLoop);
+
+    let mixed_reset = source_with_shared(
+        "",
+        r#"node filter { type = "synth.onepole/1"; config = { channels = 1; }; }
+connect lfo_filter { from = &lfo:out; to = &filter:in; }
+modulate filter_reset { from = &filter:out; to = &lfo.params.phase; depth = 0; }"#,
+    );
+    assert_eq!(diagnostic_code(&mixed_reset), DiagnosticCode::AlgebraicLoop);
 }
 
 fn rat(numerator: i64, denominator: i64) -> Rational {

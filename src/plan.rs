@@ -4875,8 +4875,70 @@ impl<'a> PlanView<'a> {
                     .saturating_add(graph.modulations.len() as u64)
             };
             if let Some(shared) = &program.shared {
-                work = work
-                    .saturating_add(self.output.total_frames.saturating_mul(graph_cost(shared)));
+                let shared_cost = graph_cost(shared);
+                work = work.saturating_add(self.output.total_frames.saturating_mul(shared_cost));
+
+                // A reset-rate shared LFO phase edge is captured once while a
+                // runtime instance is constructed (and again only when its
+                // public reset path explicitly reconstructs that state). The
+                // preview is independent of notes and shared output routing,
+                // so charge it at the instrument-instance boundary. Its
+                // bounded sweep pays the full shared graph cost plus one unit
+                // per node and modulation edge, including zero-depth edges.
+                let mut has_reset_modulation = false;
+                for (edge_index, modulation) in shared.modulations.iter().enumerate() {
+                    let target = shared
+                        .nodes
+                        .iter()
+                        .find(|candidate| candidate.id == modulation.to.node)
+                        .ok_or_else(|| {
+                            err(
+                                "E_REFERENCE",
+                                format!(
+                                    "instruments.programs.{}.shared.modulations[{edge_index}].to.node",
+                                    program.id
+                                ),
+                                "shared graph modulation target node does not exist",
+                            )
+                        })?;
+                    let spec = crate::graph::parameter_descriptor_for_stage(
+                        &target.processor,
+                        &modulation.to.parameter,
+                        crate::graph::GraphStage::Shared,
+                    )
+                    .ok_or_else(|| {
+                        err(
+                            "E_REFERENCE",
+                            format!(
+                                "instruments.programs.{}.shared.modulations[{edge_index}].to.parameter",
+                                program.id
+                            ),
+                            "shared graph modulation target has no parameter descriptor",
+                        )
+                    })?;
+                    if spec.rate == ParameterRate::Reset {
+                        has_reset_modulation = true;
+                    }
+                }
+                if has_reset_modulation {
+                    let reset_preview_cost = shared_cost
+                        .checked_add(shared.nodes.len() as u64)
+                        .and_then(|cost| cost.checked_add(shared.modulations.len() as u64))
+                        .ok_or_else(|| {
+                            err(
+                                "E_RESOURCE_LIMIT",
+                                format!("instruments.programs.{}.shared", program.id),
+                                "shared reset preview work overflow",
+                            )
+                        })?;
+                    work = work.checked_add(reset_preview_cost).ok_or_else(|| {
+                        err(
+                            "E_RESOURCE_LIMIT",
+                            format!("instruments.programs.{}.shared", program.id),
+                            "shared reset preview work overflow",
+                        )
+                    })?;
+                }
             }
 
             let amplitude = program.voice.amplitude.as_deref().ok_or_else(|| {

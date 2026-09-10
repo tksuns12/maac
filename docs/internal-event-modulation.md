@@ -4,8 +4,9 @@ Instrument voice graphs can modulate the event-rate parameters of `synth.adsr/1`
 `attack`, `decay`, and `sustain` are captured at note-on; `release` is captured at
 note-off. This extends the existing internal `modulate { from; to; depth; }`
 syntax. Voice sine, saw, square, triangle, wavetable, and LFO `phase` parameters
-also capture at note-on. Reset-rate targets remain unsupported, including shared
-LFO phase. Shared graphs still cannot contain ADSRs.
+also capture at note-on. Shared LFO `phase` captures at render reset. Shared
+graphs still cannot contain ADSRs; top-level reset-rate modulation remains
+unsupported.
 
 ```maac
 node touch { type = "synth.pressure/1"; }
@@ -44,7 +45,7 @@ there is no clipping or smoothing. Authored bases, controls, and depths retain
 their independent validation.
 
 Internal event-rate contributions are evaluated and range-checked only at their
-capture event. Later signal changes do not change the captured onset values or cause
+capture event. Later signal changes do not change the captured values or cause
 an unused event-rate sum to fail between events. Sample-rate modulation and its
 sources continue to run and validate each audio frame, including at zero gain or
 velocity. Top-level modulation retains its separate per-frame evaluation and
@@ -55,6 +56,22 @@ graph's stable topological order. Each ADSR or phase target captures and initial
 its onset state before its initial output supplies another capture. This also
 applies to chains mixing phase and ADSR targets. Initial pitch, timbre, and pressure
 expression belong to the new note and are available during this preview.
+
+At reset, a shared graph captures LFO phase before any notes start, using silent
+shared input and resolved control defaults, presets, and instance values. It does
+not evaluate frame-zero automation or top-level modulation for this capture;
+those affect the subsequent normal audio pass. This preserves the existing
+instrument initialization boundary. The
+[reset example](../examples/internal-reset-modulation.maac) demonstrates this
+shared-graph mapping.
+
+Reset capture follows the same stable graph order: each target LFO initializes
+before its output supplies downstream captures. Source LFO phases and filter
+history start at their reset state, and previews do not advance them. Captured
+phase is validated in `0..=1` and one is canonicalized to zero. Later control or
+input changes do not recapture it. Each instrument instance captures independently;
+renderer reset restores its captured pristine state. A public runtime reset with
+new controls captures anew; a failed capture preserves the previous runtime state.
 
 At note-off, all release captures use the current frame's **pre-release** state.
 This follows MaaC/1 section 6's parameter-before-event ordering. The preview uses
@@ -103,6 +120,13 @@ when its actual modulation is small; it does not extend the authored render tail
 Phase targets use the same single onset-preview charge, including when combined
 with ADSR onset targets; they do not extend release duration or voice storage.
 
+For a shared graph with reset modulation, each instrument instance is charged
+one `G_shared + node_count + modulation_count` reset preview. `G_shared` uses
+the same graph-cost rule. This includes zero-depth edges, disconnected instances,
+and instances with no notes. It adds no expression lookup, per-voice multiplier,
+or release bound. Ordinary shared-frame work and existing reset snapshot storage
+remain unchanged.
+
 Preview scratch space is bounded by the existing 64-node graph limit and the
 fixed native parameter counts. Previews allocate no extra voice history or pluck
 rings. Existing initialization and storage charges remain unchanged. Graphs
@@ -111,11 +135,13 @@ accounting.
 
 ## Acceptance
 
-- Source and retained programs agree on ADSR and voice phase admission, units,
-  mono sources, unsupported reset targets, and cycles.
+- Source and retained programs agree on ADSR, voice phase, and shared-LFO reset
+  admission, units, mono sources, stage restrictions, and cycles.
 - Phase capture uses initial expression and public controls, supports both cycle
   endpoints, holds across later expression changes, and initializes downstream
   capture sources in graph order.
+- Shared reset capture uses authored controls and silent input, preserves source
+  state through previews, restores deterministic replay, and fails atomically.
 - Analytical audio proves onset capture, the all-envelope pre-release snapshot,
   capture holding, expression endpoints, independent voices, and same-frame
   capacity reuse.
