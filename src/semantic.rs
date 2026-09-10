@@ -2109,18 +2109,17 @@ impl<'a> Validator<'a> {
         }
         let config = self.record_field(object, "config", path).cloned();
         let params = self.record_field(object, "params", path).cloned();
-        if processor == ProcessorKind::Gain && object.field("config").is_none() {
+        if matches!(
+            processor,
+            ProcessorKind::OnePole
+                | ProcessorKind::Gain
+                | ProcessorKind::Fader
+                | ProcessorKind::Sum
+        ) && object.field("config").is_none()
+        {
             self.push(
                 DiagnosticCode::Range,
-                "core.gain/1 requires config.channels",
-                Some(object.span),
-                path.to_vec(),
-                vec!["config".into(), "channels".into()],
-            );
-        } else if processor == ProcessorKind::Fader && object.field("config").is_none() {
-            self.push(
-                DiagnosticCode::Range,
-                "core.fader/1 requires config.channels",
+                format!("{} requires config.channels", processor.as_str()),
                 Some(object.span),
                 path.to_vec(),
                 vec!["config".into(), "channels".into()],

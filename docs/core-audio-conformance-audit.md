@@ -7,8 +7,9 @@ Audit date: 2026-09-10. Implementation baseline:
 
 The implementation has a path for every reference processor identifier in
 MaaC/1 §18 within its declared capability and resource limits. The audit
-confirmed a Sine arithmetic mismatch; the A1 follow-up below records its fix.
-Other findings remain open. Processor coverage does **not** establish
+confirmed a Sine arithmetic mismatch and a required-configuration validation
+gap; the A1 and A2 follow-ups below record their fixes. Other findings remain
+open. Processor coverage does **not** establish
 the full Core Audio profile. Under [§1.2](../MaaC-1-Specification.md#12-conformance-profiles),
 Core Audio additionally inherits Document and Performance requirements and
 includes the core asset/transport profile.
@@ -189,11 +190,29 @@ and [sine_envelope_cli](../tests/sine_envelope_cli.rs). They check the reproduce
 case at the engine and final WAV boundaries, together with ordinary envelope
 arithmetic and retained replay.
 
+## A2 follow-up: required processor configuration
+
+Source validation now requires an explicit `config.channels` for Sum and
+OnePole, as specified in §§18.1 and 18.6. An omitted config record reports
+`E_RANGE` at `config.channels`, matching the required-channel guard already used
+for Gain and Fader. Explicit empty records continue to fail the existing
+required-field check. Kit retains its separate required-configuration path.
+
+This corrects validation-only acceptance of invalid implicit mono nodes.
+Compilation already rejected these declarations; valid processor behavior and
+optional configuration defaults are unchanged.
+
+The [required-configuration regressions](../tests/required_processor_config.rs)
+exercise omitted, empty, and valid mono/stereo configuration through source
+validation and compilation for Sum, OnePole, Gain, Fader, Matrix, Delay, and
+Noise. They also retain positive controls for omitted Sine/Pan configuration.
+
 ## Recommended next implementation slice
 
-Address **A2**, with omitted/empty/valid configuration cases across all required
-reference-processor configs. A3 and A4 are separate, bounded follow-ups. The A1
-fix does not change those validation or evidence findings.
+Address **A3**, distinguishing caller resource-limit diagnostics from invalid
+authored ranges and unsupported capabilities. Add a diagnostic-matrix
+regression before changing the affected channel-limit checks. A4 remains a
+separate rendered-graph evidence follow-up.
 
 ## Verification record
 
@@ -241,3 +260,13 @@ one passing doctest in that total. It ran with `--locked --offline`, LTO disable
 and 16 codegen units. The orchestrator independently checked the saved logs and
 all four zero exit statuses in `target/sine-envelope-validation/`. The ignored
 audits were not run; this fix does not establish full Core Audio conformance.
+
+For A2, the executor reproduced missing-config source validation returning an
+accepted graph before the fix. The focused required-configuration target then
+passed all four tests after the fix. Final formatting, whitespace checks, and
+all-target Clippy with warnings denied passed. The optimized full suite passed
+968 tests, with zero failures and the same three existing ignored EBU/ITU
+audits; the total includes one doctest. The run used `--locked --offline`, LTO
+disabled, and 16 codegen units. The orchestrator independently checked the
+aggregate results and four zero exit statuses saved under
+`target/required-config-validation/`. No external corpus audit was run for A2.
