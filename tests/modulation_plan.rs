@@ -96,7 +96,7 @@ modulate m {from=&c:out;target=&sound.params.sample;amount=0;}
         ("sample", "0/1", true),
         ("on", "1/2", true),
         ("off", "0/1", true),
-        ("reset", "0/1", false),
+        ("reset", "0/1", true),
     ] {
         let mut v = original.clone();
         v["modulations"][0]["target"]["port"] = json!(field);

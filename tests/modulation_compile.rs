@@ -56,7 +56,7 @@ fn event_rate_core_targets_lower_with_zero_and_nonzero_amounts() {
     assert_eq!(release["amount"], "1/2");
 }
 #[test]
-fn event_rate_instrument_controls_lower_and_reset_stays_rejected() {
+fn event_rate_instrument_controls_lower_and_reset_modulation_is_admitted() {
     let base = r#"maac 1;
 project p {score=[0q,1q];tail=0s;rate=48000Hz;tempo=&clock;meter=&metre;output=&synth:out;}
 tempo clock {points=[(0q,60bpm,step)];} meter metre {points=[(0q,4,4)];}
@@ -68,13 +68,13 @@ control off {target=&v.amp.params.release;default=0s;}
 control reset {target=&s.lfo.params.phase;default=0;}}
 node synth {instrument=&local;} node c {type="core.constant/1";}"#;
     let positive = format!(
-        "{base} modulate on_zero {{from=&c:out;target=&synth.params.on;amount=0s;}} modulate off_nonzero {{from=&c:out;target=&synth.params.off;amount=1/2s;}}"
+        "{base} modulate on_zero {{from=&c:out;target=&synth.params.on;amount=0s;}} modulate off_nonzero {{from=&c:out;target=&synth.params.off;amount=1/2s;}} modulate reset_zero {{from=&c:out;target=&synth.params.reset;amount=0;}}"
     );
     let artifact = compile_bundle_artifact(&SourceBundle::new("score.maac", positive)).unwrap();
     let v: Value = serde_json::from_slice(&artifact.to_json().unwrap()).unwrap();
     assert_eq!(v["version"], 7);
     let modulations = v["modulations"].as_array().unwrap();
-    assert_eq!(modulations.len(), 2);
+    assert_eq!(modulations.len(), 3);
     assert_eq!(
         modulations
             .iter()
@@ -89,13 +89,25 @@ node synth {instrument=&local;} node c {type="core.constant/1";}"#;
             .unwrap()["amount"],
         "1/2"
     );
-
-    let reset =
-        format!("{base} modulate reset_mod {{from=&c:out;target=&synth.params.reset;amount=0;}}");
-    let diagnostics = compile_bundle_artifact(&SourceBundle::new("score.maac", reset)).unwrap_err();
-    assert!(diagnostics
+    let reset = modulations
         .iter()
-        .any(|diagnostic| diagnostic.code == maac::diagnostic::DiagnosticCode::Capability));
+        .find(|modulation| modulation["id"] == "reset_zero")
+        .unwrap();
+    assert_eq!(
+        reset["target"],
+        serde_json::json!({"node":"synth","port":"reset"})
+    );
+    assert_eq!(reset["amount"], "0/1");
+
+    let reset_signed = format!(
+        "{base} modulate reset_signed {{from=&c:out;target=&synth.params.reset;amount=-1/2;}}"
+    );
+    let retained = compile_bundle_artifact(&SourceBundle::new("score.maac", reset_signed)).unwrap();
+    let bytes = retained.to_json().unwrap();
+    assert_eq!(
+        PlanArtifact::from_json(&bytes).unwrap().to_json().unwrap(),
+        bytes
+    );
 }
 #[test]
 fn units_phase_automation_and_legacy_entrypoint_contracts() {

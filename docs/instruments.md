@@ -164,8 +164,8 @@ source signal; the result is added to the current parameter value. Multiple
 modulations sum in ID order. ADSR attack/decay/sustain capture at note-on and
 release captures at note-off from a non-advancing pre-release snapshot.
 Voice phase captures at note-on before supplying downstream capture sources.
-Shared-LFO phase captures at reset from resolved authored controls and silent
-shared input. Internal event-rate sums are checked only when captured. See [internal event modulation](internal-event-modulation.md)
+Shared-LFO phase captures at reset from resolved authored controls, captured
+top-level reset-control contributions when present, and silent shared input. Internal event-rate sums are checked only when captured. See [internal event modulation](internal-event-modulation.md)
 for ordering, source previews, and conservative release-work bounds. Final evaluated
 values must satisfy the processor range; no depth adjustment or clipping occurs.
 ADSR, LFO, timbre, and pressure signals may also feed mono audio inputs; stereo signals cannot

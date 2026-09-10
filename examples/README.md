@@ -97,6 +97,15 @@ maac compile examples/internal-reset-modulation.maac -o internal-reset.plan.json
 maac render internal-reset.plan.json -o internal-reset-from-plan.wav
 ```
 
+[`reset-rate-modulation.maac`](reset-rate-modulation.maac) captures a top-level
+control graph into instrument reset controls before shared-graph initialization.
+
+```sh
+maac build examples/reset-rate-modulation.maac -o reset-rate.wav
+maac compile examples/reset-rate-modulation.maac -o reset-rate.plan.json
+maac render reset-rate.plan.json -o reset-rate-from-plan.wav
+```
+
 [`pressure-expression.maac`](pressure-expression.maac) defines an inline stereo
 instrument whose pressure source raises oscillator level and filter cutoff.
 Independent timbre also controls cutoff; one note combines all four expression

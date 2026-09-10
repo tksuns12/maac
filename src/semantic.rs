@@ -3104,22 +3104,12 @@ impl<'a> Validator<'a> {
             node,
             parameter,
             unit,
-            rate,
+            rate: _,
             ..
         }) = target
         else {
             return;
         };
-        if rate == ParameterRate::Reset {
-            self.push(
-                DiagnosticCode::Capability,
-                "reset-rate parameters cannot receive core modulation",
-                Some(object.span),
-                path.to_vec(),
-                vec!["target".into()],
-            );
-            return;
-        }
         let Some(field) = object.field("amount") else {
             return;
         };
@@ -4080,7 +4070,7 @@ impl<'a> Validator<'a> {
             );
             return None;
         };
-        if is_instrument && rate == ParameterRate::Reset {
+        if is_instrument && rate == ParameterRate::Reset && writer {
             self.push(
                 DiagnosticCode::Capability,
                 format!(

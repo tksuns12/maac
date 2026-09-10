@@ -35,7 +35,9 @@ capture uses a non-advancing pre-release snapshot; normal audio uses post-event
 state and advances each processor once. Internal event sums are checked only
 when captured, unlike top-level modulation's per-frame validation. Voice instances share immutable
 compiled programs and table banks while retaining their own mutable DSP state.
-Shared effects continue through the declared tail. These rules preserve the
+Top-level reset controls capture required control dependencies at frame zero
+before instrument construction; non-reset controls retain authored values for
+the internal reset preview. Shared effects continue through the declared tail. These rules preserve the
 foundation's event schedules and explicit rendering endpoint.
 
 ## Plucked-string processor contract

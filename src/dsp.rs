@@ -8,6 +8,7 @@
 use crate::audio_buffer::OwnedAudioSlice;
 use crate::audio_clip::{prepare_clip, PreparedAudioClip};
 use crate::expression::ExpressionRuntime;
+use crate::graph::ParameterRate;
 use crate::kit::{KitRuntime, KitSample};
 use crate::plan::{
     AutomationAnchorView, AutomationClock, EventKind, EventView, GainExpression, Interpolation,
@@ -232,10 +233,28 @@ impl<'a> DspEngine<'a> {
         for asset in plan.audio_assets.unwrap_or(&[]) {
             kit_samples.insert(asset.id.clone(), Arc::new(KitSample::from_asset(asset)?));
         }
-        let mut node_indices = HashMap::with_capacity(plan.nodes.len());
+        let node_indices: HashMap<String, usize> = plan
+            .nodes
+            .iter()
+            .enumerate()
+            .map(|(index, node)| (node.id.clone(), index))
+            .collect();
+        let mut reset_instrument_nodes = vec![false; plan.nodes.len()];
+        for edge in plan.modulations {
+            let target_index = node_indices[&edge.target.node];
+            let target = plan
+                .nodes
+                .get(target_index)
+                .expect("validated modulation target exists");
+            if plan
+                .instrument_control_spec(target, &edge.target.port)
+                .is_some_and(|spec| spec.rate == ParameterRate::Reset)
+            {
+                reset_instrument_nodes[target_index] = true;
+            }
+        }
         let mut nodes = Vec::with_capacity(plan.nodes.len());
         for (index, node) in plan.nodes.iter().enumerate() {
-            node_indices.insert(node.id.clone(), index);
             let (mut state, compiled) = match node.processor {
                 ProcessorView::Lfo(config) => {
                     let context = timing
@@ -356,7 +375,9 @@ impl<'a> DspEngine<'a> {
                 state.current_params.insert(parameter.clone(), value);
             }
             state.validate_current_parameters(rate)?;
-            state.initialize_instrument(compiled, rate)?;
+            if !reset_instrument_nodes[index] {
+                state.initialize_instrument(compiled, rate)?;
+            }
             nodes.push(state);
         }
 
@@ -397,12 +418,19 @@ impl<'a> DspEngine<'a> {
             .modulations
             .iter()
             .map(|edge| {
+                let to = node_indices[&edge.target.node];
+                let rate = plan
+                    .nodes
+                    .get(to)
+                    .and_then(|target| plan.instrument_control_spec(target, &edge.target.port))
+                    .map_or(ParameterRate::Sample, |spec| spec.rate);
                 Ok(ModulationRuntime {
                     id: edge.id.clone(),
                     from: node_indices[&edge.from.node],
-                    to: node_indices[&edge.target.node],
+                    to,
                     parameter: edge.target.port.clone(),
                     amount: rational_f64(&edge.amount, "modulation amount")?,
+                    rate,
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -412,7 +440,7 @@ impl<'a> DspEngine<'a> {
             incoming_modulations[edge.to].push(i);
         }
         let order = stable_topological_order(&nodes, &connections, &modulations)?;
-        let control_order = order
+        let control_order: Vec<usize> = order
             .iter()
             .copied()
             .filter(|i| nodes[*i].control.is_some())
@@ -425,6 +453,19 @@ impl<'a> DspEngine<'a> {
         for lane in automation {
             let parameter = lane.parameter.clone();
             nodes[lane.node].automations.insert(parameter, lane);
+        }
+
+        if reset_instrument_nodes.iter().any(|targeted| *targeted) {
+            bootstrap_reset_instruments(
+                &plan,
+                &mut nodes,
+                &control_order,
+                &modulations,
+                &incoming_modulations,
+                &instrument_programs,
+                &tempo,
+                rate,
+            )?;
         }
 
         let mut events = Vec::with_capacity(plan.events().len());
@@ -713,26 +754,7 @@ impl<'a> DspEngine<'a> {
 
     fn apply_modulations(&mut self, node: usize) -> Result<()> {
         for &index in &self.incoming_modulations[node] {
-            let edge = &self.modulations[index];
-            let product = edge.amount * self.nodes[edge.from].control_value;
-            if !product.is_finite() {
-                return Err(RenderError::Nonfinite(format!(
-                    "modulation {} product is nonfinite",
-                    edge.id
-                )));
-            }
-            let target = self.nodes[node]
-                .current_params
-                .get_mut(&edge.parameter)
-                .ok_or_else(|| RenderError::RenderState("modulation parameter missing".into()))?;
-            let sum = *target + product;
-            if !sum.is_finite() {
-                return Err(RenderError::Nonfinite(format!(
-                    "modulation {} sum is nonfinite",
-                    edge.id
-                )));
-            }
-            *target = sum;
+            apply_modulation_to_parameter(&mut self.nodes, &self.modulations[index])?;
         }
         Ok(())
     }
@@ -1086,6 +1108,169 @@ impl<'a> DspEngine<'a> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn bootstrap_reset_instruments(
+    plan: &PlanView<'_>,
+    nodes: &mut [NodeState],
+    control_order: &[usize],
+    modulations: &[ModulationRuntime],
+    incoming_modulations: &[Vec<usize>],
+    instrument_programs: &BTreeMap<String, Arc<CompiledInstrument>>,
+    tempo: &TempoRuntime,
+    rate: f64,
+) -> Result<()> {
+    let mut required_controls = vec![false; nodes.len()];
+    let mut target_nodes = vec![false; nodes.len()];
+    let mut target_bounds: BTreeMap<usize, BTreeMap<String, ResetTargetBounds>> = BTreeMap::new();
+    for edge in modulations {
+        if edge.rate != ParameterRate::Reset {
+            continue;
+        }
+        required_controls[edge.from] = true;
+        target_nodes[edge.to] = true;
+        let target = plan
+            .nodes
+            .get(edge.to)
+            .ok_or_else(|| RenderError::RenderState("reset target node missing".into()))?;
+        let spec = plan
+            .instrument_control_spec(target, &edge.parameter)
+            .filter(|spec| spec.rate == ParameterRate::Reset)
+            .ok_or_else(|| RenderError::RenderState("reset target control missing".into()))?;
+        target_bounds
+            .entry(edge.to)
+            .or_default()
+            .entry(edge.parameter.clone())
+            .or_insert(ResetTargetBounds {
+                parameter: edge.parameter.clone(),
+                min: rational_f64(&spec.min, "reset control minimum")?,
+                max: rational_f64(&spec.max, "reset control maximum")?,
+                min_open: spec.min_open,
+                max_open: spec.max_open,
+            });
+    }
+
+    for &index in control_order.iter().rev() {
+        if !required_controls[index] {
+            continue;
+        }
+        for &edge_index in &incoming_modulations[index] {
+            required_controls[modulations[edge_index].from] = true;
+        }
+    }
+
+    for &index in control_order {
+        if !required_controls[index] {
+            continue;
+        }
+        nodes[index]
+            .current_params
+            .clone_from(&nodes[index].base_params);
+        for (name, lane) in &nodes[index].automations {
+            let value = lane.lane.value_at(0, tempo)?;
+            if !value.is_finite() {
+                return Err(RenderError::Nonfinite(
+                    "control automation is nonfinite".into(),
+                ));
+            }
+            *nodes[index]
+                .current_params
+                .get_mut(name)
+                .ok_or_else(|| RenderError::RenderState("automation parameter missing".into()))? =
+                value;
+        }
+        for &edge_index in &incoming_modulations[index] {
+            apply_modulation_to_parameter(nodes, &modulations[edge_index])?;
+        }
+        nodes[index].validate_modulated_parameters(rate)?;
+        nodes[index].control_value = match nodes[index].control.as_ref() {
+            Some(ControlRuntime::Lfo(lfo)) => lfo.value_at(0)?,
+            Some(ControlRuntime::Constant) => nodes[index].current_param("value"),
+            None => return Err(RenderError::RenderState("control state missing".into())),
+        };
+        if !nodes[index].control_value.is_finite() {
+            return Err(RenderError::Nonfinite("control output is nonfinite".into()));
+        }
+    }
+
+    for (index, targeted) in target_nodes.into_iter().enumerate() {
+        if !targeted {
+            continue;
+        }
+        nodes[index]
+            .current_params
+            .clone_from(&nodes[index].base_params);
+        for &edge_index in &incoming_modulations[index] {
+            let edge = &modulations[edge_index];
+            if edge.rate != ParameterRate::Reset {
+                continue;
+            }
+            apply_modulation_to_parameter(nodes, edge)?;
+        }
+        if let Some(bounds_by_parameter) = target_bounds.get(&index) {
+            for bounds in bounds_by_parameter.values() {
+                let value = nodes[index].current_param(&bounds.parameter);
+                let below = if bounds.min_open {
+                    value <= bounds.min
+                } else {
+                    value < bounds.min
+                };
+                let above = if bounds.max_open {
+                    value >= bounds.max
+                } else {
+                    value > bounds.max
+                };
+                if !value.is_finite() || below || above {
+                    return Err(crate::plan::err(
+                        "E_RANGE",
+                        "modulations.target",
+                        "instrument control is outside its declared range",
+                    )
+                    .into());
+                }
+            }
+        }
+        let program = match &nodes[index].processor {
+            RuntimeProcessor::Core(Processor::Instrument { program, .. }) => program,
+            _ => {
+                return Err(RenderError::RenderState(
+                    "reset modulation target is not an instrument".into(),
+                ))
+            }
+        };
+        let compiled = instrument_programs.get(program).cloned().ok_or_else(|| {
+            RenderError::RenderState(format!(
+                "instrument node {} refers to missing program {program}",
+                nodes[index].id
+            ))
+        })?;
+        nodes[index].initialize_instrument(Some(compiled), rate)?;
+    }
+    Ok(())
+}
+
+fn apply_modulation_to_parameter(nodes: &mut [NodeState], edge: &ModulationRuntime) -> Result<()> {
+    let product = edge.amount * nodes[edge.from].control_value;
+    if !product.is_finite() {
+        return Err(RenderError::Nonfinite(format!(
+            "modulation {} product is nonfinite",
+            edge.id
+        )));
+    }
+    let target = nodes[edge.to]
+        .current_params
+        .get_mut(&edge.parameter)
+        .ok_or_else(|| RenderError::RenderState("modulation parameter missing".into()))?;
+    let sum = *target + product;
+    if !sum.is_finite() {
+        return Err(RenderError::Nonfinite(format!(
+            "modulation {} sum is nonfinite",
+            edge.id
+        )));
+    }
+    *target = sum;
+    Ok(())
+}
+
 #[derive(Debug)]
 enum PreparedTransport {
     Rate(PreparedAudioClip),
@@ -1158,6 +1343,16 @@ struct ModulationRuntime {
     to: usize,
     parameter: String,
     amount: f64,
+    rate: ParameterRate,
+}
+
+#[derive(Clone, Debug)]
+struct ResetTargetBounds {
+    parameter: String,
+    min: f64,
+    max: f64,
+    min_open: bool,
+    max_open: bool,
 }
 
 #[derive(Debug)]
@@ -2599,4 +2794,75 @@ fn build_automation_v3(
             tail_value,
         },
     })
+}
+
+#[cfg(test)]
+mod reset_bootstrap_tests {
+    use super::*;
+    use crate::bundle::SourceBundle;
+
+    fn source(outer_reset: bool) -> SourceBundle {
+        let outer = if outer_reset {
+            r#"
+node cure { type = "core.constant/1"; params = { value = 1; }; }
+modulate cure_phase { from = &cure:out; target = &sound.params.phase; amount = -1/2; }
+"#
+        } else {
+            ""
+        };
+        SourceBundle::new(
+            "reset-bootstrap.maac",
+            format!(
+                r#"maac 1;
+project bootstrap {{ score = [0q, 1/48000q]; tail = 0s; rate = 48000Hz; tempo = &clock; meter = &metre; output = &sound:out; }}
+tempo clock {{ points = [(0q, 60bpm, step)]; }}
+meter metre {{ points = [(0q, 4, 4)]; }}
+instrument local {{
+ channels = 1;
+ voice v {{
+  channels = 1; amplitude = &amp; output = &osc:out;
+  node amp {{ type = "synth.adsr/1"; params = {{ attack = 0s; decay = 0s; sustain = 1; release = 0s; }}; }}
+  node osc {{ type = "synth.sine/1"; params = {{ frequency = 0Hz; }}; }}
+ }}
+ shared fx {{
+  channels = 1; output = &target:out;
+  node source {{ type = "synth.lfo/1"; params = {{ frequency = 0Hz; phase = 1/4; level = 1; }}; }}
+  node target {{ type = "synth.lfo/1"; params = {{ frequency = 0Hz; phase = 0; level = 1; }}; }}
+  modulate internal_phase {{ from = &source:out; to = &target.params.phase; depth = 1/4; }}
+ }}
+ control phase {{ target = &fx.target.params.phase; default = 1; }}
+ control source_level {{ target = &fx.source.params.level; default = 1; }}
+}}
+node sound {{ instrument = &local; params = {{ phase = 1; source_level = 1; }}; config = {{ voices = 1; }}; }}
+curve source_level_values {{ clock = score; points = [(0q, 0, step), (1/48000q, 0, step)]; }}
+automation source_level_at_origin {{ target = &sound.params.source_level; curve = &source_level_values; at = 0q; }}
+{outer}"#
+            ),
+        )
+    }
+
+    #[test]
+    fn outer_reset_capture_precedes_internal_reset_construction() {
+        let plan = crate::compiler::compile_bundle_artifact(&source(true)).unwrap();
+        let mut engine = DspEngine::new_artifact(&plan).unwrap();
+        let mut samples = Vec::new();
+        engine
+            .render(|frame| {
+                samples.push(frame[0]);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(samples.len(), 1);
+        assert!((samples[0] + 1.0).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn instrument_without_outer_reset_keeps_eager_error_timing() {
+        let plan = crate::compiler::compile_bundle_artifact(&source(false)).unwrap();
+        let error = match DspEngine::new_artifact(&plan) {
+            Ok(_) => panic!("invalid internal reset capture unexpectedly prepared"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code(), "E_RANGE");
+    }
 }

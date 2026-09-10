@@ -52,10 +52,11 @@ Try `maac build examples/warp-rate.maac --project-root . -o warp-rate.wav`.
 [Core modulation](docs/core-modulation.md) connects score- or seconds-clock LFOs
 and automated constants to continuous sample-rate controls such as cutoff, pan,
 and gain, plus event-rate attack/release and instrument public controls.
-Event-rate values are captured at note-on or note-off. Existing `modulate` objects
+Event-rate values are captured at note-on, note-off, or reset. Existing `modulate` objects
 add their contributions to base automation;
 version 7 plans retain the control graph for standalone replay.
 Try `maac build examples/core-modulation.maac --project-root . -o core-modulation.wav`.
+Reset capture: `maac build examples/reset-rate-modulation.maac -o reset-rate.wav`.
 
 [Internal event modulation](docs/internal-event-modulation.md) captures per-voice
 signals at note-on, note-off, and shared-LFO reset without advancing their audio state twice.

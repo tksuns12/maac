@@ -5,8 +5,8 @@ Instrument voice graphs can modulate the event-rate parameters of `synth.adsr/1`
 note-off. This extends the existing internal `modulate { from; to; depth; }`
 syntax. Voice sine, saw, square, triangle, wavetable, and LFO `phase` parameters
 also capture at note-on. Shared LFO `phase` captures at render reset. Shared
-graphs still cannot contain ADSRs; top-level reset-rate modulation remains
-unsupported.
+graphs still cannot contain ADSRs. Top-level modulation can also supply an
+instrument's public reset controls under its [own contract](core-modulation.md).
 
 ```maac
 node touch { type = "synth.pressure/1"; }
@@ -58,10 +58,12 @@ applies to chains mixing phase and ADSR targets. Initial pitch, timbre, and pres
 expression belong to the new note and are available during this preview.
 
 At reset, a shared graph captures LFO phase before any notes start, using silent
-shared input and resolved control defaults, presets, and instance values. It does
-not evaluate frame-zero automation or top-level modulation for this capture;
-those affect the subsequent normal audio pass. This preserves the existing
-instrument initialization boundary. The
+shared input and resolved control defaults, presets, and instance values.
+Top-level reset-control modulation, when present, supplies its captured frame-zero
+values before this internal capture. Other controls retain their authored values:
+frame-zero automation and top-level modulation of non-reset controls affect the
+subsequent normal audio pass. This preserves the existing instrument initialization
+boundary for instruments without top-level reset edges. The
 [reset example](../examples/internal-reset-modulation.maac) demonstrates this
 shared-graph mapping.
 

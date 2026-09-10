@@ -3741,17 +3741,9 @@ impl<'a> PlanView<'a> {
             ProcessorView::Constant if name == "value" => Ok(()),
             ProcessorView::Kit { .. } if name == "level" => Ok(()),
             ProcessorView::Core(Processor::Instrument { program, .. }) => {
-                let spec = self
-                    .instrument_program(program)
+                self.instrument_program(program)
                     .and_then(|p| p.control_spec(name))
                     .ok_or_else(missing)?;
-                if spec.rate == ParameterRate::Reset {
-                    return Err(err(
-                        "E_CAPABILITY",
-                        "modulations.target",
-                        "reset-rate parameters cannot receive modulation",
-                    ));
-                }
                 Ok(())
             }
             ProcessorView::Core(processor) if processor.parameter_allowed(name) => Ok(()),
@@ -4623,12 +4615,9 @@ impl<'a> PlanView<'a> {
                 "control execution work overflow",
             )
         };
-        let mut per_frame = (self.modulations.len() as u64)
-            .checked_mul(8)
-            .ok_or_else(overflow)?;
-        for node in self.nodes {
-            let weight = match node.processor {
-                ProcessorView::Constant => 8,
+        let control_weight = |node: NodeView<'_>| -> Result<u64, PlanError> {
+            match node.processor {
+                ProcessorView::Constant => Ok(8),
                 ProcessorView::Lfo(config) => {
                     let candidates = crate::core_control::candidate_bound(
                         config,
@@ -4640,15 +4629,139 @@ impl<'a> PlanView<'a> {
                         error.path = format!("nodes.{}.processor.config", node.id);
                         error
                     })?;
-                    128 + u64::from(u64::BITS - candidates.max(1).saturating_sub(1).leading_zeros())
+                    Ok(128
+                        + u64::from(
+                            u64::BITS - candidates.max(1).saturating_sub(1).leading_zeros(),
+                        ))
                 }
-                _ => 0,
-            };
+                _ => Ok(0),
+            }
+        };
+        let mut per_frame = (self.modulations.len() as u64)
+            .checked_mul(8)
+            .ok_or_else(overflow)?;
+        for node in self.nodes {
+            let weight = control_weight(node)?;
             per_frame = per_frame.checked_add(weight).ok_or_else(overflow)?;
         }
-        per_frame
+        let frame_work = per_frame
             .checked_mul(self.output.total_frames)
-            .ok_or_else(overflow)
+            .ok_or_else(overflow)?;
+        let node_indices: HashMap<&str, usize> = self
+            .nodes
+            .iter()
+            .enumerate()
+            .map(|(index, node)| (node.id.as_str(), index))
+            .collect();
+        let mut required_controls = vec![false; self.nodes.len()];
+        let mut incoming_sources = vec![Vec::new(); self.nodes.len()];
+        let mut reset_edge_count = 0usize;
+        for edge in self.modulations {
+            let target_index = *node_indices.get(edge.target.node.as_str()).ok_or_else(|| {
+                err(
+                    "E_REFERENCE",
+                    "modulations.target",
+                    "reset modulation target node does not exist",
+                )
+            })?;
+            let source_index = *node_indices.get(edge.from.node.as_str()).ok_or_else(|| {
+                err(
+                    "E_REFERENCE",
+                    "modulations.from",
+                    "modulation source node does not exist",
+                )
+            })?;
+            incoming_sources[target_index].push(source_index);
+            let target = self.nodes.get(target_index).ok_or_else(|| {
+                err(
+                    "E_REFERENCE",
+                    "modulations.target",
+                    "reset modulation target node does not exist",
+                )
+            })?;
+            let is_reset = matches!(
+                target.processor,
+                ProcessorView::Core(Processor::Instrument { .. })
+            ) && self
+                .instrument_control_spec(target, &edge.target.port)
+                .is_some_and(|spec| spec.rate == ParameterRate::Reset);
+            if is_reset {
+                required_controls[source_index] = true;
+                reset_edge_count = reset_edge_count.checked_add(1).ok_or_else(overflow)?;
+            }
+        }
+        if reset_edge_count == 0 {
+            return Ok(frame_work);
+        }
+
+        // Reset targets consume the transitive control-only dependency closure
+        // once during renderer preparation. A reverse adjacency walk keeps the
+        // charge independent of declaration order while validation guarantees
+        // the same-sample graph is acyclic.
+        let mut pending = required_controls
+            .iter()
+            .enumerate()
+            .filter_map(|(index, required)| (*required).then_some(index))
+            .collect::<Vec<_>>();
+        while let Some(target_index) = pending.pop() {
+            for source_index in incoming_sources[target_index].iter().copied() {
+                if !required_controls[source_index] {
+                    required_controls[source_index] = true;
+                    pending.push(source_index);
+                }
+            }
+        }
+
+        let mut preparation = 0u64;
+        let mut automation_lookup = vec![0u64; self.nodes.len()];
+        for lane in self.automations() {
+            let node_index = *node_indices.get(lane.target.node.as_str()).ok_or_else(|| {
+                err(
+                    "E_REFERENCE",
+                    "automation.target",
+                    "automation node does not exist",
+                )
+            })?;
+            let points = lane.points.len().max(1);
+            let lookup = 17u64
+                .checked_add(u64::from(usize::BITS - (points - 1).leading_zeros()))
+                .ok_or_else(overflow)?;
+            automation_lookup[node_index] = automation_lookup[node_index]
+                .checked_add(lookup)
+                .ok_or_else(overflow)?;
+        }
+        for (index, required) in required_controls.iter().copied().enumerate() {
+            if !required {
+                continue;
+            }
+            let node = self.nodes.get(index).ok_or_else(|| {
+                err(
+                    "E_REFERENCE",
+                    "modulations.from",
+                    "reset modulation source node does not exist",
+                )
+            })?;
+            preparation = preparation
+                .checked_add(control_weight(node)?)
+                .and_then(|work| work.checked_add(automation_lookup[index]))
+                .ok_or_else(overflow)?;
+        }
+        let closure_edges = required_controls
+            .iter()
+            .enumerate()
+            .filter(|(_, required)| **required)
+            .try_fold(0usize, |count, (index, _)| {
+                count
+                    .checked_add(incoming_sources[index].len())
+                    .ok_or_else(overflow)
+            })?;
+        let edge_count = closure_edges
+            .checked_add(reset_edge_count)
+            .ok_or_else(overflow)?;
+        preparation = preparation
+            .checked_add((edge_count as u64).checked_mul(8).ok_or_else(overflow)?)
+            .ok_or_else(overflow)?;
+        frame_work.checked_add(preparation).ok_or_else(overflow)
     }
 
     fn audio_execution_work(&self) -> Result<u64, PlanError> {

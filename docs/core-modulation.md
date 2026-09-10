@@ -47,8 +47,9 @@ instrument public controls are eligible when their descriptors satisfy these
 requirements. `core.constant/1.value` is also eligible.
 
 Event-rate targets include `core.sine/1.attack` and `release`, and instrument
-public controls whose descriptors declare note-on or note-off capture. Reset-rate
-controls remain unsupported with `E_CAPABILITY`. Config fields, discrete parameters,
+public controls whose descriptors declare note-on, note-off, or reset capture.
+Reset controls capture once during renderer preparation; direct automation of
+those controls remains unsupported. Config fields, discrete parameters,
 and audio-clip transport metadata cannot be modulation targets.
 Instrument-internal modulation also supports voice ADSR, voice phase, and shared-LFO
 reset parameters under
@@ -62,6 +63,23 @@ and other note-off parameters are captured at note-off. Later modulation does no
 change an already captured value. Coincident events use the same frame's control
 values, with note-offs and finished-voice retirement preceding note-ons. Invalid
 combined values still fail on frames without events and on disconnected nodes.
+
+Reset-rate instrument controls capture the frame-zero value of their top-level
+control dependencies, including source-constant automation and control chains.
+The renderer evaluates only the required control dependencies, combines reset
+targets in modulation-ID order, validates their public bounds, and then constructs
+the affected instrument instances. Each instance is initialized once, so an
+authored internal-reset sum is not prematurely rejected before its top-level
+reset contribution is available.
+
+Captured reset controls enter the instrument's existing shared-reset capture
+alongside authored non-reset controls and silent shared input. Frame-zero
+automation or modulation of sample-rate instrument controls does not enter that
+internal reset preview. Normal rendering subsequently evaluates all top-level
+parameters as before. Reset sums are still checked every frame: a later invalid
+sum fails with `E_RANGE`, although a later valid value does not recapture phase.
+Renderer reset restores the captured pristine state for deterministic replay.
+See the [reset-rate example](../examples/reset-rate-modulation.maac).
 
 Control ports are not audio or event ports. They cannot be project outputs,
 audio connections, selected render outputs, or production delivery targets.
@@ -167,6 +185,17 @@ charges per rendered frame are 8 for a constant, `128+ceil(log2(max(1,M_i)))`
 for an LFO, and 8 for every modulation edge. Existing graph overhead and other
 processor charges remain in force. These are conservative resource units, not
 performance measurements; no new public limit field is introduced.
+
+When an instrument reset target is modulated, preparation also charges one
+evaluation of the union of its required control ancestors. Each required
+constant or LFO uses the same node weight above; each edge into a required
+control and each reset-target edge costs 8. Each automation lane on a required
+control adds `17 + ceil(log2(point_count))` for its frame-zero lookup. Shared
+ancestors are charged once even when they feed multiple reset targets or
+instances. Zero-amount edges and disconnected targets still count. This adds no
+release-duration bound and does not duplicate the separate per-instance internal
+shared-reset preview charge. Plans without top-level reset edges retain their
+previous work estimate.
 
 When modulation targets an instrument's public amplitude-envelope release
 control, voice and expression work use the descriptor's maximum release duration,
