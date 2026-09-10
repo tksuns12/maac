@@ -924,11 +924,14 @@ fn validate_graph_inner(
                         "modulation target parameter does not exist",
                     )
                 })?;
-        if spec.rate != ParameterRate::Sample {
+        let voice_adsr_event_rate = stage == GraphStage::Voice
+            && matches!(target.processor, GraphProcessor::Adsr)
+            && matches!(spec.rate, ParameterRate::NoteOn | ParameterRate::NoteOff);
+        if spec.rate != ParameterRate::Sample && !voice_adsr_event_rate {
             return Err(error(
                 "E_PORT_TYPE",
                 format!("{edge_path}.to.parameter"),
-                "only sample-rate parameters can be modulated",
+                "modulation requires a sample-rate parameter or voice ADSR event-rate parameter",
             ));
         }
         validate_modulation_depth(&modulation.depth, spec.unit, format!("{edge_path}.depth"))?;

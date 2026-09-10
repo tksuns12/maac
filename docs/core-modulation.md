@@ -50,7 +50,10 @@ Event-rate targets include `core.sine/1.attack` and `release`, and instrument
 public controls whose descriptors declare note-on or note-off capture. Reset-rate
 controls remain unsupported with `E_CAPABILITY`. Config fields, discrete parameters,
 and audio-clip transport metadata cannot be modulation targets.
-Instrument-internal modulation retains its existing sample-rate-only contract.
+Instrument-internal modulation also supports voice ADSR event parameters under
+its [separate capture contract](internal-event-modulation.md). Internal event
+contributions are checked only at capture; the top-level contract below continues
+to check combined parameters each frame.
 
 The combined parameter is evaluated and range-checked each frame before note-offs
 and note-ons. Attack and other note-on parameters are captured at note-on; release

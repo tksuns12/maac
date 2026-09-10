@@ -4,7 +4,7 @@ use crate::dsp::{one_pole_step, pan_sample, RenderError, Result};
 use crate::expression::ExpressionRuntime;
 use crate::graph::{
     parameter_descriptor_for_stage, topological_order, GraphProcessor, GraphProgram, GraphStage,
-    InstrumentProgram, ParameterRate, ParameterSpec,
+    InstrumentProgram, ParameterRate, ParameterSpec, MAX_GRAPH_NODES,
 };
 use crate::plan::{GainExpression, PitchExpression, PressureExpression, TimbreExpression};
 use crate::synth::{Adsr, Oscillator, Waveform};
@@ -12,6 +12,8 @@ use crate::wavetable::TableBank;
 use num_traits::ToPrimitive;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
+
+const MAX_PARAMETER_SLOTS: usize = 5;
 
 /// Immutable executable code shared by every instance of one instrument.
 #[derive(Debug)]
@@ -42,6 +44,10 @@ pub struct InstrumentRuntime {
 struct CompiledGraph {
     nodes: Vec<CompiledNode>,
     order: Vec<usize>,
+    has_note_on_modulations: bool,
+    has_note_off_modulations: bool,
+    note_on_required: [bool; MAX_GRAPH_NODES],
+    note_off_required: [bool; MAX_GRAPH_NODES],
     output: usize,
     amplitude: Option<usize>,
     channels: usize,
@@ -83,9 +89,11 @@ enum Source {
 
 #[derive(Debug)]
 struct ModulationBinding {
+    id: String,
     source: Source,
     parameter: usize,
     depth: f64,
+    rate: ParameterRate,
 }
 
 #[derive(Debug)]
@@ -343,7 +351,7 @@ impl InstrumentRuntime {
                 address: address.into(),
             });
         }
-        let voice = VoiceState {
+        let mut voice = VoiceState {
             address: address.into(),
             pitch_hz,
             velocity,
@@ -355,6 +363,18 @@ impl InstrumentRuntime {
             released: false,
             graph: GraphState::new_voice(&self.program.voice, &self.controls, frame)?,
         };
+        if self.program.voice.has_note_on_modulations {
+            let (pitch_hz, timbre, pressure) = voice.expression_inputs(frame, self.rate)?;
+            voice.graph.capture_note_on(
+                &self.program.voice,
+                &self.controls,
+                frame,
+                self.rate,
+                pitch_hz,
+                timbre,
+                pressure,
+            )?;
+        }
         let insertion = match self
             .voices
             .binary_search_by(|existing| existing.address.as_bytes().cmp(voice.address.as_bytes()))
@@ -386,9 +406,22 @@ impl InstrumentRuntime {
                 "note-off for {address} was delivered twice"
             )));
         }
-        voice
-            .graph
-            .release(&self.program.voice, &self.controls, frame, self.rate)?;
+        if self.program.voice.has_note_off_modulations {
+            let (pitch_hz, timbre, pressure) = voice.expression_inputs(frame, self.rate)?;
+            voice.graph.release_modulated(
+                &self.program.voice,
+                &self.controls,
+                frame,
+                self.rate,
+                pitch_hz,
+                timbre,
+                pressure,
+            )?;
+        } else {
+            voice
+                .graph
+                .release(&self.program.voice, &self.controls, frame, self.rate)?;
+        }
         voice.released = true;
         Ok(())
     }
@@ -422,52 +455,7 @@ impl InstrumentRuntime {
         let voice_channels = self.program.voice.channels;
         let mut voice_sum = [0.0; 2];
         for voice in &mut self.voices {
-            let pitch_hz = if let Some(expression) = &voice.pitch_expression {
-                let cents = expression
-                    .curve
-                    .cents_at(&expression.coordinate_at(voice.on_frame, frame))
-                    .to_f64()
-                    .ok_or_else(|| {
-                        RenderError::Nonfinite(
-                            "pitch expression cents cannot be represented".into(),
-                        )
-                    })?;
-                let frequency = voice.pitch_hz * 2.0_f64.powf(cents / 1200.0);
-                if !frequency.is_finite() || frequency <= 0.0 || frequency >= self.rate / 2.0 {
-                    return Err(RenderError::RenderState(format!(
-                        "pitch expression at {} is outside (0, Nyquist)",
-                        voice.address
-                    )));
-                }
-                frequency
-            } else {
-                voice.pitch_hz
-            };
-            let timbre = voice.timbre_expression.as_ref().map_or(0.0, |expression| {
-                expression
-                    .curve
-                    .value_at(&expression.coordinate_at(voice.on_frame, frame))
-            });
-            if !timbre.is_finite() || !(0.0..=1.0).contains(&timbre) {
-                return Err(RenderError::Nonfinite(format!(
-                    "timbre expression at {} produced an invalid value",
-                    voice.address
-                )));
-            }
-            let pressure = voice
-                .pressure_expression
-                .as_ref()
-                .map_or(0.0, |expression| {
-                    expression
-                        .curve
-                        .value_at(&expression.coordinate_at(voice.on_frame, frame))
-                });
-            if !pressure.is_finite() || !(0.0..=1.0).contains(&pressure) {
-                return Err(RenderError::Nonfinite(format!(
-                    "pressure expression at {} produced an invalid value",
-                    voice.address
-                )));
-            }
+            let (pitch_hz, timbre, pressure) = voice.expression_inputs(frame, self.rate)?;
             let sample = voice.graph.render(
                 &self.program.voice,
                 &self.controls,
@@ -551,6 +539,53 @@ impl InstrumentRuntime {
     }
 }
 
+impl VoiceState {
+    fn expression_inputs(&self, frame: u64, rate: f64) -> Result<(f64, f64, f64)> {
+        let pitch_hz = if let Some(expression) = &self.pitch_expression {
+            let cents = expression
+                .curve
+                .cents_at(&expression.coordinate_at(self.on_frame, frame))
+                .to_f64()
+                .ok_or_else(|| {
+                    RenderError::Nonfinite("pitch expression cents cannot be represented".into())
+                })?;
+            let frequency = self.pitch_hz * 2.0_f64.powf(cents / 1200.0);
+            if !frequency.is_finite() || frequency <= 0.0 || frequency >= rate / 2.0 {
+                return Err(RenderError::RenderState(format!(
+                    "pitch expression at {} is outside (0, Nyquist)",
+                    self.address
+                )));
+            }
+            frequency
+        } else {
+            self.pitch_hz
+        };
+        let timbre = self.timbre_expression.as_ref().map_or(0.0, |expression| {
+            expression
+                .curve
+                .value_at(&expression.coordinate_at(self.on_frame, frame))
+        });
+        if !timbre.is_finite() || !(0.0..=1.0).contains(&timbre) {
+            return Err(RenderError::Nonfinite(format!(
+                "timbre expression at {} produced an invalid value",
+                self.address
+            )));
+        }
+        let pressure = self.pressure_expression.as_ref().map_or(0.0, |expression| {
+            expression
+                .curve
+                .value_at(&expression.coordinate_at(self.on_frame, frame))
+        });
+        if !pressure.is_finite() || !(0.0..=1.0).contains(&pressure) {
+            return Err(RenderError::Nonfinite(format!(
+                "pressure expression at {} produced an invalid value",
+                self.address
+            )));
+        }
+        Ok((pitch_hz, timbre, pressure))
+    }
+}
+
 impl GraphState {
     fn new_voice(graph: &CompiledGraph, controls: &[f64], frame: u64) -> Result<Self> {
         Self::new(graph, controls, Some(frame))
@@ -602,6 +637,31 @@ impl GraphState {
         Ok(Self { nodes })
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn capture_note_on(
+        &mut self,
+        graph: &CompiledGraph,
+        controls: &[f64],
+        frame: u64,
+        rate: f64,
+        pitch_hz: f64,
+        timbre: f64,
+        pressure: f64,
+    ) -> Result<()> {
+        self.preview_required(
+            graph,
+            controls,
+            frame,
+            rate,
+            pitch_hz,
+            timbre,
+            pressure,
+            &graph.note_on_required,
+            true,
+        )?;
+        Ok(())
+    }
+
     fn release(
         &mut self,
         graph: &CompiledGraph,
@@ -621,6 +681,145 @@ impl GraphState {
             }
         }
         Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn release_modulated(
+        &mut self,
+        graph: &CompiledGraph,
+        controls: &[f64],
+        frame: u64,
+        rate: f64,
+        pitch_hz: f64,
+        timbre: f64,
+        pressure: f64,
+    ) -> Result<()> {
+        let outputs = self.preview_required(
+            graph,
+            controls,
+            frame,
+            rate,
+            pitch_hz,
+            timbre,
+            pressure,
+            &graph.note_off_required,
+            false,
+        )?;
+
+        // Validate every release against the same pre-release graph state.
+        // Only after all reductions succeed may any envelope be mutated.
+        let mut releases = [0.0; MAX_GRAPH_NODES];
+        let mut has_release = [false; MAX_GRAPH_NODES];
+        for (index, compiled) in graph.nodes.iter().enumerate() {
+            if !matches!(compiled.processor, ProcessorCode::Adsr) {
+                continue;
+            }
+            let mut params = parameter_scratch(compiled);
+            apply_controls(
+                compiled,
+                controls,
+                ParameterRate::NoteOff,
+                &mut params[..compiled.base_params.len()],
+            );
+            apply_event_modulations(
+                compiled,
+                ParameterRate::NoteOff,
+                &outputs,
+                [0.0; 2],
+                &mut params,
+            )?;
+            validate_event_parameter(compiled, 3, params[3])?;
+            releases[index] = params[3];
+            has_release[index] = true;
+        }
+        for index in 0..graph.nodes.len() {
+            if !has_release[index] {
+                continue;
+            }
+            match &mut self.nodes[index].state {
+                ProcessorState::Adsr(envelope) => {
+                    envelope.release(frame, rate, releases[index])?;
+                }
+                _ => {
+                    return Err(RenderError::RenderState(format!(
+                        "instrument graph node {} has mismatched compiled state",
+                        graph.nodes[index].id
+                    )))
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn preview_required(
+        &mut self,
+        graph: &CompiledGraph,
+        controls: &[f64],
+        frame: u64,
+        rate: f64,
+        pitch_hz: f64,
+        timbre: f64,
+        pressure: f64,
+        required: &[bool; MAX_GRAPH_NODES],
+        initialize_note_on: bool,
+    ) -> Result<[[f64; 2]; MAX_GRAPH_NODES]> {
+        let mut outputs = [[0.0; 2]; MAX_GRAPH_NODES];
+        for &node_index in &graph.order {
+            if !required[node_index] {
+                continue;
+            }
+            let compiled = &graph.nodes[node_index];
+            if initialize_note_on && matches!(compiled.processor, ProcessorCode::Adsr) {
+                let mut event_params = parameter_scratch(compiled);
+                apply_controls(
+                    compiled,
+                    controls,
+                    ParameterRate::NoteOn,
+                    &mut event_params[..compiled.base_params.len()],
+                );
+                apply_event_modulations(
+                    compiled,
+                    ParameterRate::NoteOn,
+                    &outputs,
+                    [0.0; 2],
+                    &mut event_params,
+                )?;
+                for (parameter, &value) in event_params.iter().enumerate().take(3) {
+                    validate_event_parameter(compiled, parameter, value)?;
+                }
+                self.nodes[node_index].state = ProcessorState::Adsr(Adsr::new(
+                    frame,
+                    event_params[0],
+                    event_params[1],
+                    event_params[2],
+                )?);
+            }
+
+            let mut params = parameter_scratch(compiled);
+            apply_controls(
+                compiled,
+                controls,
+                ParameterRate::Sample,
+                &mut params[..compiled.base_params.len()],
+            );
+            apply_sample_modulations(compiled, &outputs, [0.0; 2], &mut params)?;
+            validate_params(compiled, &params[..compiled.base_params.len()])?;
+            let audio_input = sum_scratch_inputs(&outputs, &compiled.incoming, [0.0; 2])?;
+            outputs[node_index] = process_graph_node(
+                compiled,
+                &mut self.nodes[node_index].state,
+                &params[..compiled.base_params.len()],
+                frame,
+                rate,
+                pitch_hz,
+                timbre,
+                pressure,
+                audio_input,
+                false,
+            )?;
+        }
+        Ok(outputs)
     }
 
     fn finished(&self, graph: &CompiledGraph, frame: u64, rate: f64) -> Result<bool> {
@@ -671,103 +870,315 @@ impl GraphState {
                 &mut self.nodes[node_index].params,
             );
             for modulation in &compiled.modulations {
+                if modulation.rate != ParameterRate::Sample {
+                    continue;
+                }
                 let source = source_sample(&self.nodes, modulation.source, input)[0];
-                self.nodes[node_index].params[modulation.parameter] += source * modulation.depth;
+                let product = source * modulation.depth;
+                if !product.is_finite() {
+                    return Err(RenderError::Nonfinite(format!(
+                        "modulation {} product is nonfinite",
+                        modulation.id
+                    )));
+                }
+                let sum = self.nodes[node_index].params[modulation.parameter] + product;
+                if !sum.is_finite() {
+                    return Err(RenderError::Nonfinite(format!(
+                        "modulation {} sum is nonfinite",
+                        modulation.id
+                    )));
+                }
+                self.nodes[node_index].params[modulation.parameter] = sum;
             }
             validate_params(compiled, &self.nodes[node_index].params)?;
 
             let audio_input = sum_inputs(&self.nodes, &compiled.incoming, input)?;
             let runtime = &mut self.nodes[node_index];
-            runtime.output = [0.0; 2];
-            match (&compiled.processor, &mut runtime.state) {
-                (ProcessorCode::Noise(_), ProcessorState::Noise(state)) => {
-                    // Version 1 fixes xorshift32's width, shifts and advance-before-output order.
-                    *state ^= *state << 13;
-                    *state ^= *state >> 17;
-                    *state ^= *state << 5;
-                    runtime.output[0] = (*state as f64 / 2147483648.0 - 1.0) * runtime.params[0];
-                }
-                (ProcessorCode::Pluck(_), ProcessorState::Pluck(pluck)) => {
-                    runtime.output[0] = pluck.sample(
-                        pitch_hz * runtime.params[0],
-                        runtime.params[1],
-                        runtime.params[2],
-                        runtime.params[3],
-                    )?;
-                }
-                (ProcessorCode::Oscillator(_), ProcessorState::Oscillator(oscillator)) => {
-                    let frequency = pitch_hz * runtime.params[0] + runtime.params[1];
-                    validate_frequency(frequency)?;
-                    runtime.output[0] = oscillator.sample(frequency, rate)? * runtime.params[3];
-                }
-                (ProcessorCode::Wavetable(table), ProcessorState::Wavetable { phase }) => {
-                    let frequency = pitch_hz * runtime.params[0] + runtime.params[1];
-                    validate_frequency(frequency)?;
-                    runtime.output[0] = table.sample(*phase, runtime.params[4], frequency, rate)?
-                        * runtime.params[3];
-                    *phase = (*phase + frequency / rate).rem_euclid(1.0);
-                }
-                (ProcessorCode::Adsr, ProcessorState::Adsr(envelope)) => {
-                    runtime.output[0] = envelope.value(frame, rate)?;
-                }
-                (ProcessorCode::Lfo, ProcessorState::Lfo(oscillator)) => {
-                    runtime.output[0] =
-                        oscillator.sample(runtime.params[0], rate)? * runtime.params[2];
-                }
-                (ProcessorCode::Timbre, ProcessorState::Stateless) => {
-                    runtime.output[0] = timbre;
-                }
-                (ProcessorCode::Pressure, ProcessorState::Stateless) => {
-                    runtime.output[0] = pressure;
-                }
-                (ProcessorCode::Gain(channels), ProcessorState::Stateless) => {
-                    for (output, input) in
-                        runtime.output.iter_mut().zip(audio_input).take(*channels)
-                    {
-                        *output = input * runtime.params[0];
-                    }
-                }
-                (
-                    ProcessorCode::OnePole(channels) | ProcessorCode::HighPass(channels),
-                    ProcessorState::OnePole(previous),
-                ) => {
-                    for ((output, previous), input) in runtime
-                        .output
-                        .iter_mut()
-                        .zip(previous.iter_mut())
-                        .zip(audio_input)
-                        .take(*channels)
-                    {
-                        let lowpass = one_pole_step(input, previous, runtime.params[0], rate)?;
-                        *output = if matches!(compiled.processor, ProcessorCode::HighPass(_)) {
-                            input - lowpass
-                        } else {
-                            lowpass
-                        };
-                    }
-                }
-                (ProcessorCode::Mix(channels), ProcessorState::Stateless) => {
-                    runtime.output[..*channels].copy_from_slice(&audio_input[..*channels]);
-                }
-                (ProcessorCode::Pan, ProcessorState::Stateless) => {
-                    runtime.output = pan_sample(audio_input[0], runtime.params[0])?;
-                }
-                _ => {
-                    return Err(RenderError::RenderState(format!(
-                        "instrument graph node {} has mismatched compiled state",
-                        compiled.id
-                    )))
-                }
-            }
-            if runtime.output.iter().any(|sample| !sample.is_finite()) {
-                return Err(RenderError::Nonfinite(format!(
-                    "instrument graph node {} produced a nonfinite sample",
-                    compiled.id
-                )));
-            }
+            runtime.output = process_graph_node(
+                compiled,
+                &mut runtime.state,
+                &runtime.params,
+                frame,
+                rate,
+                pitch_hz,
+                timbre,
+                pressure,
+                audio_input,
+                true,
+            )?;
         }
         Ok(self.nodes[graph.output].output)
     }
+}
+
+fn capture_dependency_masks(
+    nodes: &[CompiledNode],
+    order: &[usize],
+) -> ([bool; MAX_GRAPH_NODES], [bool; MAX_GRAPH_NODES]) {
+    let mut note_on = [false; MAX_GRAPH_NODES];
+    let mut note_off = [false; MAX_GRAPH_NODES];
+    for (index, node) in nodes.iter().enumerate() {
+        if matches!(node.processor, ProcessorCode::Adsr) {
+            note_on[index] = true;
+            for binding in &node.modulations {
+                if binding.rate == ParameterRate::NoteOff {
+                    mark_source(&mut note_off, binding.source);
+                }
+            }
+        }
+    }
+    expand_capture_dependencies(nodes, order, &mut note_on, true);
+    expand_capture_dependencies(nodes, order, &mut note_off, false);
+    (note_on, note_off)
+}
+
+fn expand_capture_dependencies(
+    nodes: &[CompiledNode],
+    order: &[usize],
+    required: &mut [bool; MAX_GRAPH_NODES],
+    include_note_on: bool,
+) {
+    for &index in order.iter().rev() {
+        if !required[index] {
+            continue;
+        }
+        let node = &nodes[index];
+        for &source in &node.incoming {
+            mark_source(required, source);
+        }
+        for binding in &node.modulations {
+            if binding.rate == ParameterRate::Sample
+                || (include_note_on
+                    && binding.rate == ParameterRate::NoteOn
+                    && matches!(node.processor, ProcessorCode::Adsr))
+            {
+                mark_source(required, binding.source);
+            }
+        }
+    }
+}
+
+fn mark_source(required: &mut [bool; MAX_GRAPH_NODES], source: Source) {
+    if let Source::Node(index) = source {
+        required[index] = true;
+    }
+}
+
+fn parameter_scratch(node: &CompiledNode) -> [f64; MAX_PARAMETER_SLOTS] {
+    let mut params = [0.0; MAX_PARAMETER_SLOTS];
+    params[..node.base_params.len()].copy_from_slice(&node.base_params);
+    params
+}
+
+fn apply_sample_modulations(
+    node: &CompiledNode,
+    outputs: &[[f64; 2]; MAX_GRAPH_NODES],
+    input: [f64; 2],
+    params: &mut [f64; MAX_PARAMETER_SLOTS],
+) -> Result<()> {
+    for binding in &node.modulations {
+        if binding.rate != ParameterRate::Sample {
+            continue;
+        }
+        apply_modulation(binding, outputs, input, params)?;
+    }
+    Ok(())
+}
+
+fn apply_event_modulations(
+    node: &CompiledNode,
+    rate: ParameterRate,
+    outputs: &[[f64; 2]; MAX_GRAPH_NODES],
+    input: [f64; 2],
+    params: &mut [f64; MAX_PARAMETER_SLOTS],
+) -> Result<()> {
+    for binding in &node.modulations {
+        if binding.rate != rate {
+            continue;
+        }
+        apply_modulation(binding, outputs, input, params)?;
+    }
+    Ok(())
+}
+
+fn apply_modulation(
+    binding: &ModulationBinding,
+    outputs: &[[f64; 2]; MAX_GRAPH_NODES],
+    input: [f64; 2],
+    params: &mut [f64; MAX_PARAMETER_SLOTS],
+) -> Result<()> {
+    let source = scratch_source_sample(outputs, binding.source, input)[0];
+    let product = source * binding.depth;
+    if !product.is_finite() {
+        return Err(RenderError::Nonfinite(format!(
+            "modulation {} product is nonfinite",
+            binding.id
+        )));
+    }
+    let sum = params[binding.parameter] + product;
+    if !sum.is_finite() {
+        return Err(RenderError::Nonfinite(format!(
+            "modulation {} sum is nonfinite",
+            binding.id
+        )));
+    }
+    params[binding.parameter] = sum;
+    Ok(())
+}
+
+fn validate_event_parameter(node: &CompiledNode, parameter: usize, value: f64) -> Result<()> {
+    validate_value(value, &node.specs[parameter]).map_err(|_| {
+        crate::plan::err(
+            "E_RANGE",
+            "instrument.modulations.target",
+            "combined event-rate parameter is outside its declared range",
+        )
+        .into()
+    })
+}
+
+fn scratch_source_sample(
+    outputs: &[[f64; 2]; MAX_GRAPH_NODES],
+    source: Source,
+    input: [f64; 2],
+) -> [f64; 2] {
+    match source {
+        Source::Input => input,
+        Source::Node(index) => outputs[index],
+    }
+}
+
+fn sum_scratch_inputs(
+    outputs: &[[f64; 2]; MAX_GRAPH_NODES],
+    incoming: &[Source],
+    input: [f64; 2],
+) -> Result<[f64; 2]> {
+    let mut sum = [0.0; 2];
+    for &source in incoming {
+        let source = scratch_source_sample(outputs, source, input);
+        for channel in 0..2 {
+            sum[channel] += source[channel];
+            if !sum[channel].is_finite() {
+                return Err(RenderError::Nonfinite(
+                    "instrument graph input sum is nonfinite".into(),
+                ));
+            }
+        }
+    }
+    Ok(sum)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn process_graph_node(
+    compiled: &CompiledNode,
+    state: &mut ProcessorState,
+    params: &[f64],
+    frame: u64,
+    rate: f64,
+    pitch_hz: f64,
+    timbre: f64,
+    pressure: f64,
+    audio_input: [f64; 2],
+    commit: bool,
+) -> Result<[f64; 2]> {
+    let mut output = [0.0; 2];
+    match (&compiled.processor, state) {
+        (ProcessorCode::Noise(_), ProcessorState::Noise(state)) => {
+            // Version 1 fixes xorshift32's width, shifts and advance-before-output order.
+            let mut next = *state;
+            next ^= next << 13;
+            next ^= next >> 17;
+            next ^= next << 5;
+            output[0] = (next as f64 / 2147483648.0 - 1.0) * params[0];
+            if commit {
+                *state = next;
+            }
+        }
+        (ProcessorCode::Pluck(_), ProcessorState::Pluck(pluck)) => {
+            output[0] = if commit {
+                pluck.sample(pitch_hz * params[0], params[1], params[2], params[3])?
+            } else {
+                pluck.preview(pitch_hz * params[0], params[1], params[2], params[3])?
+            };
+        }
+        (ProcessorCode::Oscillator(_), ProcessorState::Oscillator(oscillator)) => {
+            let frequency = pitch_hz * params[0] + params[1];
+            validate_frequency(frequency)?;
+            if commit {
+                output[0] = oscillator.sample(frequency, rate)? * params[3];
+            } else {
+                let mut preview = oscillator.clone();
+                output[0] = preview.sample(frequency, rate)? * params[3];
+            }
+        }
+        (ProcessorCode::Wavetable(table), ProcessorState::Wavetable { phase }) => {
+            let frequency = pitch_hz * params[0] + params[1];
+            validate_frequency(frequency)?;
+            output[0] = table.sample(*phase, params[4], frequency, rate)? * params[3];
+            if commit {
+                *phase = (*phase + frequency / rate).rem_euclid(1.0);
+            }
+        }
+        (ProcessorCode::Adsr, ProcessorState::Adsr(envelope)) => {
+            output[0] = envelope.value(frame, rate)?;
+        }
+        (ProcessorCode::Lfo, ProcessorState::Lfo(oscillator)) => {
+            if commit {
+                output[0] = oscillator.sample(params[0], rate)? * params[2];
+            } else {
+                let mut preview = oscillator.clone();
+                output[0] = preview.sample(params[0], rate)? * params[2];
+            }
+        }
+        (ProcessorCode::Timbre, ProcessorState::Stateless) => output[0] = timbre,
+        (ProcessorCode::Pressure, ProcessorState::Stateless) => output[0] = pressure,
+        (ProcessorCode::Gain(channels), ProcessorState::Stateless) => {
+            for (output, input) in output.iter_mut().zip(audio_input).take(*channels) {
+                *output = input * params[0];
+            }
+        }
+        (
+            ProcessorCode::OnePole(channels) | ProcessorCode::HighPass(channels),
+            ProcessorState::OnePole(previous),
+        ) => {
+            let mut next = *previous;
+            for ((output, previous), input) in output
+                .iter_mut()
+                .zip(next.iter_mut())
+                .zip(audio_input)
+                .take(*channels)
+            {
+                let lowpass = one_pole_step(input, previous, params[0], rate)?;
+                *output = if matches!(compiled.processor, ProcessorCode::HighPass(_)) {
+                    input - lowpass
+                } else {
+                    lowpass
+                };
+            }
+            if commit {
+                *previous = next;
+            }
+        }
+        (ProcessorCode::Mix(channels), ProcessorState::Stateless) => {
+            output[..*channels].copy_from_slice(&audio_input[..*channels]);
+        }
+        (ProcessorCode::Pan, ProcessorState::Stateless) => {
+            output = pan_sample(audio_input[0], params[0])?;
+        }
+        _ => {
+            return Err(RenderError::RenderState(format!(
+                "instrument graph node {} has mismatched compiled state",
+                compiled.id
+            )))
+        }
+    }
+    if output.iter().any(|sample| !sample.is_finite()) {
+        return Err(RenderError::Nonfinite(format!(
+            "instrument graph node {} produced a nonfinite sample",
+            compiled.id
+        )));
+    }
+    Ok(output)
 }
 
 fn compile_graph(
@@ -835,15 +1246,45 @@ fn compile_graph(
                     modulation.id
                 ))
             })?;
+        let rate = parameter_descriptor_for_stage(
+            &graph.nodes[target].processor,
+            &modulation.to.parameter,
+            stage,
+        )
+        .ok_or_else(|| {
+            RenderError::RenderState(format!(
+                "modulation {} targets a missing parameter descriptor",
+                modulation.id
+            ))
+        })?
+        .rate;
         nodes[target].modulations.push(ModulationBinding {
+            id: modulation.id.clone(),
             source: compile_source(&modulation.from.node, &indices)?,
             parameter,
             depth: rational_f64(&modulation.depth, "modulation depth")?,
+            rate,
         });
     }
 
+    let order = topological_order(graph).map_err(RenderError::Plan)?;
+    let has_note_on_modulations = nodes.iter().any(|node| {
+        node.modulations
+            .iter()
+            .any(|binding| binding.rate == ParameterRate::NoteOn)
+    });
+    let has_note_off_modulations = nodes.iter().any(|node| {
+        node.modulations
+            .iter()
+            .any(|binding| binding.rate == ParameterRate::NoteOff)
+    });
+    let (note_on_required, note_off_required) = capture_dependency_masks(&nodes, &order);
     Ok(CompiledGraph {
-        order: topological_order(graph).map_err(RenderError::Plan)?,
+        order,
+        has_note_on_modulations,
+        has_note_off_modulations,
+        note_on_required,
+        note_off_required,
         output: indices[graph.output.node.as_str()],
         amplitude: graph.amplitude.as_ref().map(|node| indices[node.as_str()]),
         channels: graph.channels as usize,
@@ -1087,6 +1528,10 @@ fn pluck_resource_error(message: &str) -> RenderError {
 mod tests {
     use super::*;
 
+    fn rat(value: i64) -> crate::plan::Rational {
+        crate::plan::Rational::from_integer(value.into())
+    }
+
     #[test]
     fn zero_velocity_voice_still_advances_noise_state() {
         use crate::graph::{GraphNode, ProgramSource};
@@ -1133,6 +1578,154 @@ mod tests {
                 _ => None,
             });
         assert_eq!(state, Some(67634689));
+    }
+
+    #[test]
+    fn release_modulation_reads_every_adsr_before_releasing_any_adsr() {
+        use crate::graph::{GraphNode, Modulation, ParameterTarget, ProgramSource};
+        let adsr = |id: &str| GraphNode {
+            id: id.into(),
+            processor: GraphProcessor::Adsr,
+            params: BTreeMap::from([
+                ("attack".into(), rat(0)),
+                ("decay".into(), rat(0)),
+                ("sustain".into(), rat(1)),
+                ("release".into(), rat(0)),
+            ]),
+        };
+        let program = InstrumentProgram {
+            id: "adsr_release_order".into(),
+            voice: GraphProgram {
+                channels: 1,
+                nodes: vec![
+                    adsr("driver"),
+                    adsr("amp"),
+                    GraphNode {
+                        id: "tone".into(),
+                        processor: GraphProcessor::Sine,
+                        params: BTreeMap::from([
+                            ("ratio".into(), rat(0)),
+                            ("frequency".into(), rat(0)),
+                            (
+                                "phase".into(),
+                                crate::plan::Rational::new(1.into(), 4.into()),
+                            ),
+                            ("level".into(), rat(1)),
+                        ]),
+                    },
+                ],
+                connections: Vec::new(),
+                modulations: vec![Modulation {
+                    id: "driver_release".into(),
+                    from: crate::plan::PortRef::new("driver", "out").unwrap(),
+                    to: ParameterTarget {
+                        node: "amp".into(),
+                        parameter: "release".into(),
+                    },
+                    depth: crate::plan::Rational::new(1.into(), 48_000.into()),
+                }],
+                output: crate::plan::PortRef::new("tone", "out").unwrap(),
+                amplitude: Some("amp".into()),
+            },
+            shared: None,
+            controls: BTreeMap::new(),
+            source: ProgramSource {
+                file: "test.maac".into(),
+                object: "adsr_release_order".into(),
+                span: None,
+            },
+        };
+        let compiled = Arc::new(CompiledInstrument::compile(&program, &BTreeMap::new()).unwrap());
+        let mut runtime = InstrumentRuntime::new(compiled, 1, 48_000.0, &BTreeMap::new()).unwrap();
+        runtime.note_on("voice", 440.0, 1.0, 0).unwrap();
+        assert_eq!(runtime.render(0).unwrap(), &[1.0]);
+
+        runtime.note_off("voice", 1).unwrap();
+        assert_eq!(runtime.render(1).unwrap(), &[1.0]);
+        assert_eq!(runtime.active_voice_count(), 1);
+        runtime.prune_finished(2).unwrap();
+        assert_eq!(runtime.active_voice_count(), 0);
+    }
+
+    #[test]
+    fn note_on_modulations_reduce_in_id_order() {
+        use crate::graph::{GraphNode, Modulation, ParameterTarget, ProgramSource};
+        let source = crate::plan::PortRef::new("tone", "out").unwrap();
+        let target = || ParameterTarget {
+            node: "amp".into(),
+            parameter: "sustain".into(),
+        };
+        let mut program = InstrumentProgram {
+            id: "ordered_event_sum".into(),
+            voice: GraphProgram {
+                channels: 1,
+                nodes: vec![
+                    GraphNode {
+                        id: "amp".into(),
+                        processor: GraphProcessor::Adsr,
+                        params: BTreeMap::from([("sustain".into(), rat(0))]),
+                    },
+                    GraphNode {
+                        id: "tone".into(),
+                        processor: GraphProcessor::Sine,
+                        params: BTreeMap::from([
+                            ("ratio".into(), rat(0)),
+                            ("frequency".into(), rat(0)),
+                            (
+                                "phase".into(),
+                                crate::plan::Rational::new(1.into(), 4.into()),
+                            ),
+                            ("level".into(), rat(1)),
+                        ]),
+                    },
+                ],
+                connections: Vec::new(),
+                modulations: vec![
+                    Modulation {
+                        id: "c_small".into(),
+                        from: source.clone(),
+                        to: target(),
+                        depth: crate::plan::Rational::new(
+                            1.into(),
+                            1_152_921_504_606_846_976_i64.into(),
+                        ),
+                    },
+                    Modulation {
+                        id: "b_negative".into(),
+                        from: source.clone(),
+                        to: target(),
+                        depth: rat(-128),
+                    },
+                    Modulation {
+                        id: "a_positive".into(),
+                        from: source.clone(),
+                        to: target(),
+                        depth: rat(128),
+                    },
+                ],
+                output: source,
+                amplitude: Some("amp".into()),
+            },
+            shared: None,
+            controls: BTreeMap::new(),
+            source: ProgramSource {
+                file: "test.maac".into(),
+                object: "ordered_event_sum".into(),
+                span: None,
+            },
+        };
+        let render = |program: &InstrumentProgram| {
+            let compiled =
+                Arc::new(CompiledInstrument::compile(program, &BTreeMap::new()).unwrap());
+            let mut runtime =
+                InstrumentRuntime::new(compiled, 1, 48_000.0, &BTreeMap::new()).unwrap();
+            runtime.note_on("voice", 440.0, 1.0, 0).unwrap();
+            runtime.render(0).unwrap()[0]
+        };
+        let expected = 2.0_f64.powi(-60);
+        assert_eq!(render(&program).to_bits(), expected.to_bits());
+        program.voice.modulations.reverse();
+        assert_eq!(render(&program).to_bits(), expected.to_bits());
     }
 }
 

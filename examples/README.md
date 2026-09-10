@@ -68,6 +68,17 @@ maac render event-rate.plan.json -o event-rate-from-plan.wav
 
 # Per-note pressure mappings
 
+[`internal-event-modulation.maac`](internal-event-modulation.maac) uses each
+note's initial pressure to set ADSR attack and a per-voice LFO to set release
+at note-off. Three overlapping notes demonstrate independent captures without
+imports or assets.
+
+```sh
+maac build examples/internal-event-modulation.maac -o internal-event.wav
+maac compile examples/internal-event-modulation.maac -o internal-event.plan.json
+maac render internal-event.plan.json -o internal-event-from-plan.wav
+```
+
 [`pressure-expression.maac`](pressure-expression.maac) defines an inline stereo
 instrument whose pressure source raises oscillator level and filter cutoff.
 Independent timbre also controls cutoff; one note combines all four expression

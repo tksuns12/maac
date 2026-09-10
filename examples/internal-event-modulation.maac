@@ -1,0 +1,87 @@
+maac 1;
+
+// Internal event-rate modulation captures attack from note pressure at note-on
+// and release from the running LFO at note-off.
+project internal_event_demo {
+  score = [0q, 2q];
+  tail = 50ms;
+  rate = 48000Hz;
+  tempo = &clock;
+  meter = &metre;
+  output = &sound:out;
+}
+tempo clock { points = [(0q, 120bpm, step)]; }
+meter metre { points = [(0q, 4, 4)]; }
+
+instrument internal_voice {
+  channels = 1;
+  voice v {
+    channels = 1;
+    amplitude = &amp;
+    output = &osc:out;
+    node amp {
+      type = "synth.adsr/1";
+      params = { attack = 20ms; decay = 10ms; sustain = 3/4; release = 30ms; };
+    }
+    node osc {
+      type = "synth.sine/1";
+      params = { ratio = 1; level = 1/8; };
+    }
+    node touch { type = "synth.pressure/1"; }
+    node release_lfo {
+      type = "synth.lfo/1";
+      params = { frequency = 2Hz; phase = 0; level = 1; };
+    }
+    modulate pressure_attack {
+      from = &touch:out;
+      to = &amp.params.attack;
+      depth = 15ms;
+    }
+    modulate lfo_release {
+      from = &release_lfo:out;
+      to = &amp.params.release;
+      depth = 15ms;
+    }
+  }
+}
+node sound { instrument = &internal_voice; config = { voices = 3; }; }
+
+curve gentle {
+  clock = normalized;
+  points = [(0, 1/4, linear), (1, 1/2, step)];
+}
+curve firm {
+  clock = normalized;
+  points = [(0, 3/4, linear), (1, 1/4, step)];
+}
+curve accent {
+  clock = normalized;
+  points = [(0, 1/2, linear), (1, 3/4, step)];
+}
+
+pattern phrase {
+  length = 2q;
+  note first {
+    at = 0q;
+    dur = 3/4q;
+    pitch = C4;
+    velocity = 1/2;
+    expression touch { kind = pressure; curve = &gentle; }
+  }
+  note second {
+    at = 1/2q;
+    dur = 3/4q;
+    pitch = E4;
+    velocity = 1/2;
+    expression touch { kind = pressure; curve = &firm; }
+  }
+  note third {
+    at = 1q;
+    dur = 1/2q;
+    pitch = G4;
+    velocity = 1/2;
+    expression touch { kind = pressure; curve = &accent; }
+  }
+}
+track notes { target = &sound:events; }
+place once { pattern = &phrase; track = &notes; at = 0q; }

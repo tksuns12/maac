@@ -19,8 +19,10 @@ modulate dynamics {
 The processor is voice-only, stateless, inputless, and parameterless, with one
 mono `out`. Omit `config`; even an empty configuration is rejected. An empty
 `params` record is allowed. Its output may feed ordinary mono audio inputs or
-existing sample-rate modulation targets. Shared graphs and event-rate modulation
-targets remain invalid.
+existing sample-rate modulation targets or voice ADSR event-rate targets.
+[ADSR event modulation](internal-event-modulation.md) captures initial pressure
+at note-on or gate-end pressure at note-off. Shared graphs and phase/reset
+modulation targets remain invalid.
 
 An instrument opts in by declaring at least one `synth.pressure/1` node in its
 voice graph, including an unused node. `InstrumentProgram::supports_pressure()`

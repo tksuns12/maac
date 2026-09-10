@@ -24,6 +24,15 @@ struct Coefficients {
     gain: f64,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct PreparedSample {
+    key: [u64; 3],
+    coefficients: Coefficients,
+    value: f64,
+    next: f64,
+    output: f64,
+}
+
 impl Pluck {
     pub(crate) fn new(seed: u32) -> Result<Self> {
         if seed == 0 {
@@ -57,6 +66,27 @@ impl Pluck {
         damping: f64,
         level: f64,
     ) -> Result<f64> {
+        let prepared = self.prepare(frequency_hz, decay, damping, level)?;
+        Ok(self.commit(prepared))
+    }
+
+    pub(crate) fn preview(
+        &self,
+        frequency_hz: f64,
+        decay: f64,
+        damping: f64,
+        level: f64,
+    ) -> Result<f64> {
+        Ok(self.prepare(frequency_hz, decay, damping, level)?.output)
+    }
+
+    fn prepare(
+        &self,
+        frequency_hz: f64,
+        decay: f64,
+        damping: f64,
+        level: f64,
+    ) -> Result<PreparedSample> {
         if !frequency_hz.is_finite()
             || !(20.0..=4000.0).contains(&frequency_hz)
             || !decay.is_finite()
@@ -75,12 +105,25 @@ impl Pluck {
             Some((cached_key, coefficients)) if key == cached_key => coefficients,
             _ => Coefficients::new(frequency_hz, decay, damping)?,
         };
-        let output = self.advance(coefficients, level)?;
-        self.cached = Some((key, coefficients));
-        Ok(output)
+        let (value, next, output) = self.read(coefficients, level)?;
+        Ok(PreparedSample {
+            key,
+            coefficients,
+            value,
+            next,
+            output,
+        })
     }
 
-    fn advance(&mut self, coefficients: Coefficients, level: f64) -> Result<f64> {
+    fn commit(&mut self, prepared: PreparedSample) -> f64 {
+        self.ring[self.write] = prepared.next;
+        self.previous = prepared.value;
+        self.write = (self.write + 1) % DELAY_CELLS;
+        self.cached = Some((prepared.key, prepared.coefficients));
+        prepared.output
+    }
+
+    fn read(&self, coefficients: Coefficients, level: f64) -> Result<(f64, f64, f64)> {
         let i0 = (self.write + DELAY_CELLS - coefficients.delay) % DELAY_CELLS;
         let i1 = (self.write + DELAY_CELLS - coefficients.delay - 1) % DELAY_CELLS;
         let value =
@@ -94,10 +137,7 @@ impl Pluck {
                 "pluck string state or output is nonfinite".into(),
             ));
         }
-        self.ring[self.write] = next;
-        self.previous = value;
-        self.write = (self.write + 1) % DELAY_CELLS;
-        Ok(output)
+        Ok((value, next, output))
     }
 }
 
@@ -202,6 +242,94 @@ mod tests {
     }
 
     #[test]
+    fn preview_repeats_without_state_change_and_matches_next_sample() {
+        let mut pluck = Pluck::new(1).unwrap();
+        let snapshot = pluck.clone();
+        let first = pluck.preview(440.0, 3.0, 0.5, 1.0).unwrap();
+        let repeated = pluck.preview(440.0, 3.0, 0.5, 1.0).unwrap();
+
+        assert_eq!(first.to_bits(), repeated.to_bits());
+        assert_eq!(pluck.ring, snapshot.ring);
+        assert_eq!(pluck.write, snapshot.write);
+        assert_eq!(pluck.previous, snapshot.previous);
+        assert_eq!(pluck.cached, snapshot.cached);
+        assert_eq!(
+            pluck.sample(440.0, 3.0, 0.5, 1.0).unwrap().to_bits(),
+            first.to_bits()
+        );
+    }
+
+    #[test]
+    fn preview_parameter_change_does_not_mutate_cache_or_ring() {
+        let mut previewed = Pluck::new(1).unwrap();
+        let mut expected = Pluck::new(1).unwrap();
+        previewed.sample(440.0, 3.0, 0.5, 1.0).unwrap();
+        expected.sample(440.0, 3.0, 0.5, 1.0).unwrap();
+        let snapshot = previewed.clone();
+        let params = (880.0, 0.8, 1.0, 0.25);
+
+        let preview = previewed
+            .preview(params.0, params.1, params.2, params.3)
+            .unwrap();
+        assert_eq!(previewed.ring, snapshot.ring);
+        assert_eq!(previewed.write, snapshot.write);
+        assert_eq!(previewed.previous, snapshot.previous);
+        assert_eq!(previewed.cached, snapshot.cached);
+        let actual = previewed
+            .sample(params.0, params.1, params.2, params.3)
+            .unwrap();
+        let expected_first = expected
+            .sample(params.0, params.1, params.2, params.3)
+            .unwrap();
+        assert_eq!(actual.to_bits(), preview.to_bits());
+        assert_eq!(actual.to_bits(), expected_first.to_bits());
+        assert_eq!(previewed.ring, expected.ring);
+        assert_eq!(previewed.write, expected.write);
+        assert_eq!(previewed.previous, expected.previous);
+        assert_eq!(previewed.cached, expected.cached);
+        assert_eq!(
+            previewed
+                .sample(params.0, params.1, params.2, params.3)
+                .unwrap()
+                .to_bits(),
+            expected
+                .sample(params.0, params.1, params.2, params.3)
+                .unwrap()
+                .to_bits()
+        );
+    }
+
+    #[test]
+    fn failed_preview_preserves_ring_scalars_and_cache() {
+        let mut pluck = Pluck::new(1).unwrap();
+        pluck.sample(440.0, 3.0, 0.5, 1.0).unwrap();
+        let snapshot = pluck.clone();
+        for args in [
+            [19.999, 3.0, 0.5, 1.0],
+            [4000.001, 3.0, 0.5, 1.0],
+            [f64::NAN, 3.0, 0.5, 0.0],
+            [440.0, 0.049, 0.5, 1.0],
+            [440.0, 30.001, 0.5, 1.0],
+            [440.0, 3.0, -0.01, 1.0],
+            [440.0, 3.0, 1.01, 1.0],
+            [440.0, 3.0, 0.5, -0.1],
+            [440.0, 3.0, 0.5, 16.001],
+        ] {
+            assert_eq!(
+                pluck
+                    .preview(args[0], args[1], args[2], args[3])
+                    .unwrap_err()
+                    .code(),
+                "E_NONFINITE"
+            );
+            assert_eq!(pluck.ring, snapshot.ring);
+            assert_eq!(pluck.write, snapshot.write);
+            assert_eq!(pluck.previous, snapshot.previous);
+            assert_eq!(pluck.cached, snapshot.cached);
+        }
+    }
+
+    #[test]
     fn synthetic_ring_proves_fractional_indices_and_read_before_write() {
         let mut pluck = Pluck::new(1).unwrap();
         pluck.ring.fill(0.0);
@@ -218,7 +346,17 @@ mod tests {
             gain: 0.5,
         };
         // Read = .75*.75 + .25*(-.25) = .5; filtered = .75*.5-.25*.5 = .25.
-        assert_eq!(pluck.advance(coefficients, 2.0).unwrap(), 1.0);
+        let (value, next, output) = pluck.read(coefficients, 2.0).unwrap();
+        assert_eq!(
+            pluck.commit(PreparedSample {
+                key: [0; 3],
+                coefficients,
+                value,
+                next,
+                output,
+            }),
+            1.0
+        );
         assert_eq!(pluck.ring[DELAY_CELLS - 1], 0.125);
         assert_eq!(pluck.previous, 0.5);
         assert_eq!(pluck.write, 0);

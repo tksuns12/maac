@@ -29,7 +29,11 @@ dependency keeps platform-specific containment logic in a maintained library.
 
 Public controls inherit their target's units, range, and automation rate.
 Note-on and note-off controls support global automation through event-time
-capture. Graph modulation is sample-rate only. Voice instances share immutable
+capture. Graph modulation supports sample-rate parameters and
+[voice ADSR event parameters](internal-event-modulation.md). Internal release
+capture uses a non-advancing pre-release snapshot; normal audio uses post-event
+state and advances each processor once. Internal event sums are checked only
+when captured, unlike top-level modulation's per-frame validation. Voice instances share immutable
 compiled programs and table banks while retaining their own mutable DSP state.
 Shared effects continue through the declared tail. These rules preserve the
 foundation's event schedules and explicit rendering endpoint.

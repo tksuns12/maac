@@ -4898,6 +4898,8 @@ impl<'a> PlanView<'a> {
                         "amplitude node does not exist",
                     )
                 })?;
+            let mut internal_note_on = false;
+            let mut internal_note_off = false;
             let mut release = amplitude_node
                 .params
                 .get("release")
@@ -4943,6 +4945,51 @@ impl<'a> PlanView<'a> {
                     release = spec.max;
                 }
             }
+            for (edge_index, modulation) in program.voice.modulations.iter().enumerate() {
+                let target = program
+                    .voice
+                    .nodes
+                    .iter()
+                    .find(|candidate| candidate.id == modulation.to.node)
+                    .ok_or_else(|| {
+                        err(
+                            "E_REFERENCE",
+                            format!(
+                                "instruments.programs.{}.voice.modulations[{edge_index}].to.node",
+                                program.id
+                            ),
+                            "instrument graph modulation target node does not exist",
+                        )
+                    })?;
+                let spec = crate::graph::parameter_descriptor_for_stage(
+                    &target.processor,
+                    &modulation.to.parameter,
+                    crate::graph::GraphStage::Voice,
+                )
+                .ok_or_else(|| {
+                    err(
+                        "E_REFERENCE",
+                        format!(
+                            "instruments.programs.{}.voice.modulations[{edge_index}].to.parameter",
+                            program.id
+                        ),
+                        "instrument graph modulation target has no parameter descriptor",
+                    )
+                })?;
+                match spec.rate {
+                    ParameterRate::NoteOn => internal_note_on = true,
+                    ParameterRate::NoteOff => internal_note_off = true,
+                    ParameterRate::Sample | ParameterRate::Reset => {}
+                }
+                if modulation.to.node == amplitude && modulation.to.parameter == "release" {
+                    // Any internal edge makes the designated amplitude release
+                    // signal-dependent. Use its descriptor maximum even when
+                    // the edge has zero depth or no public release control.
+                    if spec.max > release {
+                        release = spec.max;
+                    }
+                }
+            }
             let release_frames =
                 rational_ceil_nonnegative(&(release * BigInt::from(self.output.sample_rate_hz)))
                     .ok_or_else(|| {
@@ -4955,6 +5002,16 @@ impl<'a> PlanView<'a> {
             let voice_cost = graph_cost(&program.voice);
             let initialization_cost = (program.pluck_node_count() as u64)
                 .saturating_mul(crate::graph::PLUCK_DELAY_CELLS as u64);
+            let capture_cost = voice_cost
+                .checked_add(program.voice.nodes.len() as u64)
+                .and_then(|cost| cost.checked_add(program.voice.modulations.len() as u64))
+                .ok_or_else(|| {
+                    err(
+                        "E_RESOURCE_LIMIT",
+                        format!("instruments.programs.{}.voice", program.id),
+                        "instrument event capture work overflow",
+                    )
+                })?;
             for event in self.events().filter(|event| {
                 event.target.node == *node.id && matches!(event.kind, EventKind::Note { .. })
             }) {
@@ -4997,6 +5054,53 @@ impl<'a> PlanView<'a> {
                                         format!("{kind} expression work overflow"),
                                     )
                                 })?;
+                        }
+                    }
+                }
+                if let EventKind::Note {
+                    pitch_expression,
+                    timbre_expression,
+                    pressure_expression,
+                    ..
+                } = &event.kind
+                {
+                    // Internal event-rate edges perform one bounded graph
+                    // preview at each note boundary they use. The preview
+                    // reads the pitch, timbre, and pressure expression values;
+                    // gain is applied by the voice path and is not previewed.
+                    for (performed, boundary) in [
+                        (internal_note_on, "note-on"),
+                        (internal_note_off, "note-off"),
+                    ] {
+                        if !performed {
+                            continue;
+                        }
+                        work = work.checked_add(capture_cost).ok_or_else(|| {
+                            err(
+                                "E_RESOURCE_LIMIT",
+                                format!("nodes.{}.events", node.id),
+                                format!("instrument {boundary} capture work overflow"),
+                            )
+                        })?;
+                        for (kind, points) in [
+                            ("pitch", pitch_expression.as_ref().map(|e| e.points.len())),
+                            ("timbre", timbre_expression.as_ref().map(|e| e.points.len())),
+                            (
+                                "pressure",
+                                pressure_expression.as_ref().map(|e| e.points.len()),
+                            ),
+                        ] {
+                            if let Some(points) = points {
+                                let lookup = usize::BITS - (points - 1).leading_zeros();
+                                let cost = 17 + u64::from(lookup);
+                                work = work.checked_add(cost).ok_or_else(|| {
+                                    err(
+                                        "E_RESOURCE_LIMIT",
+                                        "instruments",
+                                        format!("{kind} expression preview work overflow"),
+                                    )
+                                })?;
+                            }
                         }
                     }
                 }

@@ -317,6 +317,134 @@ fn modulation_requires_mono_source_sample_target_and_bounded_depth() {
 }
 
 #[test]
+fn voice_adsr_event_rate_modulations_allow_signed_depths_only() {
+    let mut graph = voice_graph();
+    graph.nodes.push(node("source", GraphProcessor::Sine));
+    graph.modulations = vec![
+        Modulation {
+            id: "attack_zero".into(),
+            from: port("source", "out"),
+            to: ParameterTarget {
+                node: "amp".into(),
+                parameter: "attack".into(),
+            },
+            depth: rat(0, 1),
+        },
+        Modulation {
+            id: "decay_signed".into(),
+            from: port("source", "out"),
+            to: ParameterTarget {
+                node: "amp".into(),
+                parameter: "decay".into(),
+            },
+            depth: rat(-1, 2),
+        },
+        Modulation {
+            id: "sustain_zero".into(),
+            from: port("source", "out"),
+            to: ParameterTarget {
+                node: "amp".into(),
+                parameter: "sustain".into(),
+            },
+            depth: rat(0, 1),
+        },
+        Modulation {
+            id: "release_signed".into(),
+            from: port("source", "out"),
+            to: ParameterTarget {
+                node: "amp".into(),
+                parameter: "release".into(),
+            },
+            depth: rat(-1, 2),
+        },
+    ];
+    validate_graph(&graph, true, None).unwrap();
+
+    let mut phase = graph.clone();
+    phase.modulations = vec![Modulation {
+        id: "phase".into(),
+        from: port("source", "out"),
+        to: ParameterTarget {
+            node: "osc".into(),
+            parameter: "phase".into(),
+        },
+        depth: rat(0, 1),
+    }];
+    assert_eq!(
+        validate_graph(&phase, true, None).unwrap_err().code,
+        "E_PORT_TYPE"
+    );
+
+    let mut wrong_port = graph.clone();
+    wrong_port.modulations[0].from = port("source", "in");
+    assert_eq!(
+        validate_graph(&wrong_port, true, None).unwrap_err().code,
+        "E_PORT_TYPE"
+    );
+
+    let mut missing_source = graph.clone();
+    missing_source.modulations[0].from = port("missing", "out");
+    assert_eq!(
+        validate_graph(&missing_source, true, None)
+            .unwrap_err()
+            .code,
+        "E_REFERENCE"
+    );
+
+    let mut cycle = graph.clone();
+    cycle.modulations = vec![
+        Modulation {
+            id: "source_amp".into(),
+            from: port("source", "out"),
+            to: ParameterTarget {
+                node: "amp".into(),
+                parameter: "attack".into(),
+            },
+            depth: rat(0, 1),
+        },
+        Modulation {
+            id: "amp_source".into(),
+            from: port("amp", "out"),
+            to: ParameterTarget {
+                node: "source".into(),
+                parameter: "frequency".into(),
+            },
+            depth: rat(1, 1),
+        },
+    ];
+    assert_eq!(
+        validate_graph(&cycle, true, None).unwrap_err().code,
+        "E_ALGEBRAIC_LOOP"
+    );
+
+    let mut shared = GraphProgram {
+        channels: 1,
+        nodes: vec![
+            node("lfo", GraphProcessor::Lfo),
+            node("gain", GraphProcessor::Gain { channels: 1 }),
+        ],
+        connections: vec![connection("input_gain", ("input", "out"), ("gain", "in"))],
+        modulations: vec![Modulation {
+            id: "reset".into(),
+            from: port("input", "out"),
+            to: ParameterTarget {
+                node: "lfo".into(),
+                parameter: "phase".into(),
+            },
+            depth: rat(0, 1),
+        }],
+        output: port("gain", "out"),
+        amplitude: None,
+    };
+    assert_eq!(
+        validate_graph(&shared, false, Some(1)).unwrap_err().code,
+        "E_PORT_TYPE"
+    );
+    shared.modulations.clear();
+    validate_graph(&shared, false, Some(1)).unwrap();
+}
+
+#[test]
 fn shared_graph_restrictions_and_reserved_input_are_enforced() {
     let shared = GraphProgram {
         channels: 1,
