@@ -2070,7 +2070,7 @@ impl Voice {
         if self.attack <= 0.0 {
             1.0
         } else {
-            ((frame.saturating_sub(self.on_frame) as f64) / (self.attack * rate)).min(1.0)
+            envelope_progress(frame.saturating_sub(self.on_frame), self.attack, rate).min(1.0)
         }
     }
 
@@ -2078,12 +2078,31 @@ impl Voice {
         if !self.released {
             return self.attack_amplitude(frame, rate);
         }
-        let elapsed = frame.saturating_sub(self.release_frame) as f64;
         if self.release <= 0.0 {
             0.0
         } else {
-            self.release_amplitude * (1.0 - elapsed / (self.release * rate)).max(0.0)
+            self.release_amplitude
+                * (1.0
+                    - envelope_progress(
+                        frame.saturating_sub(self.release_frame),
+                        self.release,
+                        rate,
+                    ))
+                .max(0.0)
         }
+    }
+}
+
+fn envelope_progress(elapsed_frames: u64, seconds: f64, rate: f64) -> f64 {
+    let elapsed = elapsed_frames as f64;
+    let duration_frames = seconds * rate;
+    if duration_frames.is_finite() {
+        // Keep this operation order unchanged for ordinary durations so their
+        // envelope samples remain bitwise stable. Split the division only when
+        // the frame-duration product overflows.
+        elapsed / duration_frames
+    } else {
+        (elapsed / rate) / seconds
     }
 }
 

@@ -6,8 +6,9 @@ Audit date: 2026-09-10. Implementation baseline:
 ## Conclusion
 
 The implementation has a path for every reference processor identifier in
-MaaC/1 §18 within its declared capability and resource limits. A confirmed
-Sine arithmetic mismatch remains. Processor coverage does **not** establish
+MaaC/1 §18 within its declared capability and resource limits. The audit
+confirmed a Sine arithmetic mismatch; the A1 follow-up below records its fix.
+Other findings remain open. Processor coverage does **not** establish
 the full Core Audio profile. Under [§1.2](../MaaC-1-Specification.md#12-conformance-profiles),
 Core Audio additionally inherits Document and Performance requirements and
 includes the core asset/transport profile.
@@ -157,12 +158,21 @@ rendered graph with cancellation-sensitive values and reordered connection
 declarations would check that integration boundary directly. No wrong sum
 output was observed in this audit; this is an evidence gap.
 
-## Recommended next implementation slice
+## A1 follow-up: Sine envelope arithmetic
 
-Address **A1, silent Sine envelope overflow**, before broadening capabilities.
-Keep the change within envelope arithmetic and its meaningful render boundary.
+The follow-up keeps the ordinary envelope calculation
+`elapsed_frames / (duration_seconds * rate)` when the denominator is finite.
+Only when that product overflows does it evaluate
+`(elapsed_frames / rate) / duration_seconds`. This preserves ordinary binary64
+evaluation while recovering the representable envelope for very large finite
+durations. Attack and release share the same progress calculation; note-off
+capture and voice-retirement checks continue to use those envelope methods.
 
-Acceptance criteria:
+No authored range, clipping, or implicit duration limit is added. Zero-length
+attack/release behavior is unchanged. The fix chooses a finite-output path for
+the reproduced case rather than a new render error.
+
+The original acceptance criteria were:
 
 1. Add a regression for the admitted finite attack/level case that fails on the
    audited baseline.
@@ -174,9 +184,16 @@ Acceptance criteria:
 4. Verify CLI failure preserves an existing output if an explicit-error path
    is chosen. Do not impose an unrelated arbitrary authored envelope range.
 
-After A1, address A2 with omitted/empty/valid configuration cases across all
-required reference-processor configs. A3 and A4 are separate, bounded follow-ups.
-This audit does not implement those fixes or change processor behavior.
+The regressions are [sine_envelope_numeric](../tests/sine_envelope_numeric.rs)
+and [sine_envelope_cli](../tests/sine_envelope_cli.rs). They check the reproduced
+case at the engine and final WAV boundaries, together with ordinary envelope
+arithmetic and retained replay.
+
+## Recommended next implementation slice
+
+Address **A2**, with omitted/empty/valid configuration cases across all required
+reference-processor configs. A3 and A4 are separate, bounded follow-ups. The A1
+fix does not change those validation or evidence findings.
 
 ## Verification record
 
@@ -207,6 +224,20 @@ regressions do not invalidate either finding.
 
 The baseline had previously passed the optimized full suite with 960 passed,
 zero failed, and three existing ignored audits. That full suite was **not**
-rerun for this documentation-only audit. No new production implementation or
-tracked regression test was added. The proposed fixes still require their own
-Red → Green evidence and appropriate regression checks.
+rerun for the original documentation-only audit. That audit added no production
+implementation or tracked regression test. The A1 follow-up is a separate
+implementation change with its own Red → Green and regression verification.
+
+For the A1 follow-up, the executor observed the engine regression fail before
+the fix (two passed, one failed) and the CLI regression fail with four zero
+samples. After the fix, the strengthened engine target passed all three tests
+and the CLI target passed its one test. The CLI checks expected float32 samples
+with an absolute tolerance of `1e-10` and requires identical retained WAV bytes.
+
+Final executor validation passed formatting, whitespace checks, and Clippy
+across all targets with warnings denied. The optimized full suite passed with
+964 tests, zero failures, and three existing ignored EBU/ITU audits, including
+one passing doctest in that total. It ran with `--locked --offline`, LTO disabled,
+and 16 codegen units. The orchestrator independently checked the saved logs and
+all four zero exit statuses in `target/sine-envelope-validation/`. The ignored
+audits were not run; this fix does not establish full Core Audio conformance.
