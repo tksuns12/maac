@@ -659,6 +659,10 @@ pub enum Processor {
     Fader {
         channels: u8,
     },
+    Noise {
+        channels: u8,
+        seed: u64,
+    },
     Delay {
         channels: u8,
         frames: u64,
@@ -715,6 +719,10 @@ impl Processor {
         Self::Fader { channels }
     }
 
+    pub fn noise(channels: u8, seed: u64) -> Self {
+        Self::Noise { channels, seed }
+    }
+
     pub fn delay(channels: u8, frames: u64) -> Self {
         Self::Delay { channels, frames }
     }
@@ -751,6 +759,7 @@ impl Processor {
             Self::OnePole { .. } => "onepole",
             Self::Gain { .. } => "gain",
             Self::Fader { .. } => "fader",
+            Self::Noise { .. } => "noise",
             Self::Delay { .. } => "delay",
             Self::Matrix { .. } => "matrix",
             Self::Eq { .. } => "fx.eq/1",
@@ -772,6 +781,7 @@ impl Processor {
             Self::OnePole { .. } => parameter == "cutoff",
             Self::Gain { .. } => parameter == "gain",
             Self::Fader { .. } => parameter == "level",
+            Self::Noise { .. } => false,
             Self::Delay { .. } => false,
             Self::Matrix { .. } => false,
             Self::Eq { mode, .. } => {
@@ -3700,6 +3710,29 @@ impl<'a> PlanView<'a> {
                         ));
                     }
                 }
+                Processor::Noise { channels, .. } => {
+                    if *channels == 0 {
+                        return Err(err(
+                            "E_RANGE",
+                            format!("nodes.{}.processor.channels", node.id),
+                            "noise channels must be positive",
+                        ));
+                    }
+                    if *channels > 2 {
+                        return Err(err(
+                            "E_CAPABILITY",
+                            format!("nodes.{}.processor.channels", node.id),
+                            "core.noise/1 supports only mono or stereo",
+                        ));
+                    }
+                    if *channels > limits.max_channels {
+                        return Err(err(
+                            "E_RANGE",
+                            format!("nodes.{}.processor.channels", node.id),
+                            "channels exceed the caller channel limit",
+                        ));
+                    }
+                }
                 Processor::Delay { channels, frames } => {
                     if *channels == 0 {
                         return Err(err(
@@ -5123,6 +5156,9 @@ impl<'a> PlanView<'a> {
             let cost = match node.processor.core()? {
                 Processor::Eq { channels, .. } => 32 + 10 * u64::from(*channels),
                 Processor::Fader { channels } => 128 + u64::from(*channels),
+                Processor::Noise { channels, .. } => {
+                    256 * u64::from(*channels) * ((node.id.len() + 106) / 64) as u64
+                }
                 Processor::Matrix {
                     inputs, outputs, ..
                 } => 2 * u64::from(*inputs) * u64::from(*outputs),
@@ -5787,6 +5823,11 @@ fn port_descriptor(node: NodeView<'_>, port: &str, input: bool) -> Option<PortDe
         (Processor::Sine { .. }, false, "out") => Some(PortDescriptor {
             kind: PortKind::Audio,
             channels: 1,
+            summing: false,
+        }),
+        (Processor::Noise { channels, .. }, false, "out") => Some(PortDescriptor {
+            kind: PortKind::Audio,
+            channels: *channels,
             summing: false,
         }),
         (Processor::OnePole { channels }, true, "in")

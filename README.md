@@ -58,6 +58,9 @@ duplication, and downmixing. Try `maac build examples/core-matrix.maac -o core-m
 [Core delay](docs/core-delay.md) provides exact frame delays and causal feedback.
 Try `maac build examples/core-delay.maac -o core-delay.wav`.
 
+[Core reference noise](docs/core-noise.md) provides reproducible seeded mono/stereo
+noise. Try `maac build examples/core-noise.maac -o core-noise.wav`.
+
 [Core modulation](docs/core-modulation.md) connects score- or seconds-clock LFOs
 and automated constants to continuous sample-rate controls such as cutoff, pan,
 and gain, plus event-rate attack/release and instrument public controls.

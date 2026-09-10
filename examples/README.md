@@ -131,6 +131,14 @@ maac compile examples/core-delay.maac -o core-delay.plan.json
 maac render core-delay.plan.json -o core-delay-from-plan.wav
 ```
 
+[`core-noise.maac`](core-noise.maac) renders seeded stereo reference noise.
+
+```sh
+maac build examples/core-noise.maac -o core-noise.wav
+maac compile examples/core-noise.maac -o core-noise.plan.json
+maac render core-noise.plan.json -o core-noise-from-plan.wav
+```
+
 [`pressure-expression.maac`](pressure-expression.maac) defines an inline stereo
 instrument whose pressure source raises oscillator level and filter cutoff.
 Independent timbre also controls cutoff; one note combines all four expression

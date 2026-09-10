@@ -26,6 +26,7 @@ use crate::wavetable::TableBank;
 use num_bigint::BigInt;
 use num_integer::Integer;
 use num_traits::{Signed, ToPrimitive, Zero};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 use std::sync::Arc;
@@ -1177,6 +1178,16 @@ impl<'a> DspEngine<'a> {
                     self.nodes[node_index].output[channel] = sum;
                 }
             }
+            Processor::Noise { channels, .. } => {
+                let node = &mut self.nodes[node_index];
+                let noise = node
+                    .noise
+                    .as_ref()
+                    .ok_or_else(|| RenderError::RenderState("noise state missing".into()))?;
+                for channel in 0..usize::from(channels) {
+                    node.output[channel] = noise.sample(frame, channel as u32);
+                }
+            }
             Processor::Matrix { .. } => unreachable!("matrix uses its prepared runtime"),
             Processor::Delay { .. } => unreachable!("delay uses the frame scheduler"),
             Processor::Instrument { .. } => {
@@ -1548,6 +1559,33 @@ fn delay_resource_error(message: &str) -> RenderError {
     crate::plan::err("E_RESOURCE_LIMIT", "nodes.delay", message).into()
 }
 
+#[derive(Clone, Debug)]
+struct NoiseRuntime {
+    prefix: Sha256,
+}
+
+impl NoiseRuntime {
+    fn new(node: &str, seed: u64) -> Self {
+        let mut prefix = Sha256::new();
+        prefix.update(b"maac-noise-1\0");
+        prefix.update(seed.to_le_bytes());
+        prefix.update(node.as_bytes());
+        prefix.update([0]);
+        Self { prefix }
+    }
+
+    fn sample(&self, frame: u64, channel: u32) -> f64 {
+        let mut hasher = self.prefix.clone();
+        hasher.update(frame.to_le_bytes());
+        hasher.update(channel.to_le_bytes());
+        let digest = hasher.finalize();
+        let mut first = [0; 8];
+        first.copy_from_slice(&digest[..8]);
+        let random = u64::from_le_bytes(first) >> 11;
+        2.0 * (random as f64 / 9_007_199_254_740_992.0) - 1.0
+    }
+}
+
 #[derive(Debug)]
 struct NodeState {
     id: String,
@@ -1566,6 +1604,7 @@ struct NodeState {
     eq: Option<Eq>,
     compressor: Option<Compressor>,
     reverb: Option<Reverb>,
+    noise: Option<NoiseRuntime>,
     matrix: Option<MatrixRuntime>,
     delay: Option<DelayRuntime>,
     native_bounds: BTreeMap<String, (f64, f64, bool)>,
@@ -1586,7 +1625,8 @@ impl NodeState {
             | Processor::Eq { channels, .. }
             | Processor::Compressor { channels, .. }
             | Processor::Reverb { channels, .. }
-            | Processor::Sum { channels } => usize::from(channels),
+            | Processor::Sum { channels }
+            | Processor::Noise { channels, .. } => usize::from(channels),
             Processor::Delay { channels, .. } => usize::from(channels),
             Processor::Matrix { outputs, .. } => usize::from(outputs),
             Processor::Pan => 2,
@@ -1611,7 +1651,10 @@ impl NodeState {
             Processor::Pan => {
                 base_params.insert("pan".into(), 0.0);
             }
-            Processor::Sum { .. } | Processor::Matrix { .. } | Processor::Delay { .. } => {}
+            Processor::Sum { .. }
+            | Processor::Noise { .. }
+            | Processor::Matrix { .. }
+            | Processor::Delay { .. } => {}
             Processor::Eq { .. } | Processor::Compressor { .. } | Processor::Reverb { .. } => {
                 for (name, value) in crate::plan::production_defaults(&processor) {
                     base_params.insert(name, rational_f64(&value, "native default")?);
@@ -1663,6 +1706,11 @@ impl NodeState {
         } else {
             None
         };
+        let noise = if let Processor::Noise { seed, .. } = processor {
+            Some(NoiseRuntime::new(&id, seed))
+        } else {
+            None
+        };
         let delay = if let Processor::Delay { channels, frames } = processor {
             Some(DelayRuntime::new(channels, frames)?)
         } else {
@@ -1700,6 +1748,7 @@ impl NodeState {
             eq,
             compressor,
             reverb,
+            noise,
             matrix,
             delay,
             native_bounds,
@@ -1727,6 +1776,7 @@ impl NodeState {
             eq: None,
             compressor: None,
             reverb: None,
+            noise: None,
             matrix: None,
             delay: None,
             native_bounds: BTreeMap::new(),
@@ -1752,6 +1802,7 @@ impl NodeState {
             eq: None,
             compressor: None,
             reverb: None,
+            noise: None,
             matrix: None,
             delay: None,
             native_bounds: BTreeMap::new(),
@@ -1781,6 +1832,7 @@ impl NodeState {
             eq: None,
             compressor: None,
             reverb: None,
+            noise: None,
             matrix: None,
             delay: None,
             native_bounds: BTreeMap::new(),

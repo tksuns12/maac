@@ -265,6 +265,31 @@ fn bigint_u64(value: &Rational, span: Option<Span>) -> CResult<u64> {
     })
 }
 
+fn bigint_u64_full(value: &Rational, span: Option<Span>) -> CResult<u64> {
+    ensure_rational(value, span)?;
+    if !value.denom().is_one() {
+        return Err(diagnostics(
+            DiagnosticCode::Range,
+            "expected an integer",
+            span,
+        ));
+    }
+    if value.is_negative() {
+        return Err(diagnostics(
+            DiagnosticCode::Range,
+            "expected a nonnegative integer",
+            span,
+        ));
+    }
+    value.to_integer().to_u64().ok_or_else(|| {
+        diagnostics(
+            DiagnosticCode::ResourceLimit,
+            "integer exceeds the unsigned 64-bit bound",
+            span,
+        )
+    })
+}
+
 #[derive(Clone, Debug)]
 struct LeafDef {
     id: String,
@@ -413,6 +438,7 @@ struct Compiler<'a> {
     score_start: Rational,
     score_end: Rational,
     sample_rate: u32,
+    project_seed: u64,
     tail_seconds: Rational,
     output: PortRef,
     exact_tempo: ExactTempoMap,
@@ -460,6 +486,7 @@ impl<'a> Compiler<'a> {
             score_start: zero.clone(),
             score_end: Rational::one(),
             sample_rate: 48_000,
+            project_seed: 0,
             tail_seconds: zero,
             output: PortRef {
                 node: "_missing".to_owned(),
@@ -1189,6 +1216,16 @@ impl<'a> Compiler<'a> {
                 project.field("rate"),
             )
         })?;
+        self.project_seed = self
+            .optional(project, "seed")
+            .map(|value| {
+                bigint_u64_full(
+                    &self.rational_value(value, project, project.field("seed"))?,
+                    Some(value.span),
+                )
+            })
+            .transpose()?
+            .unwrap_or(0);
         self.tail_seconds = self
             .optional(project, "tail")
             .map(|value| self.seconds_value(value, project, project.field("tail")))
@@ -1372,6 +1409,44 @@ impl<'a> Compiler<'a> {
                         )
                     })?)
                 }
+                "core.noise/1" => {
+                    let channels_field = config
+                        .and_then(|fields| fields.get("channels"))
+                        .ok_or_else(|| {
+                            path_diagnostic(
+                                DiagnosticCode::Range,
+                                "core.noise/1 requires config.channels",
+                                object,
+                                object.field("config"),
+                            )
+                        })?;
+                    let channels = bigint_u64(
+                        &self.rational_value(
+                            &channels_field.value,
+                            object,
+                            Some(channels_field),
+                        )?,
+                        Some(channels_field.value.span),
+                    )?;
+                    let channels = u8::try_from(channels).map_err(|_| {
+                        diagnostics(
+                            DiagnosticCode::Range,
+                            "noise channels is out of range",
+                            Some(type_field.value.span),
+                        )
+                    })?;
+                    let seed = config
+                        .and_then(|fields| fields.get("seed"))
+                        .map(|field| {
+                            bigint_u64_full(
+                                &self.rational_value(&field.value, object, Some(field))?,
+                                Some(field.value.span),
+                            )
+                        })
+                        .transpose()?
+                        .unwrap_or(self.project_seed);
+                    Processor::noise(channels, seed)
+                }
                 "core.delay/1" => {
                     let field_value = |name: &str| -> CResult<u64> {
                         let field =
@@ -1541,6 +1616,7 @@ impl<'a> Compiler<'a> {
                 Processor::Fader { .. } => {
                     node.params.insert("level".into(), Rational::zero());
                 }
+                Processor::Noise { .. } => {}
                 Processor::Delay { .. } => {}
                 Processor::Matrix { .. } => {}
                 Processor::Pan => {
@@ -1578,6 +1654,14 @@ impl<'a> Compiler<'a> {
                         }
                         Processor::Fader { .. } if name == "level" => {
                             self.quantity(&field.value, Unit::Db, object, Some(field))?
+                        }
+                        Processor::Noise { .. } => {
+                            return Err(path_diagnostic(
+                                DiagnosticCode::UnknownField,
+                                format!("noise has no parameter `{name}`"),
+                                object,
+                                Some(field),
+                            ))
                         }
                         Processor::Delay { .. } => {
                             return Err(path_diagnostic(
@@ -4334,6 +4418,7 @@ impl<'a> Compiler<'a> {
             Processor::OnePole { channels }
             | Processor::Gain { channels }
             | Processor::Fader { channels }
+            | Processor::Noise { channels, .. }
             | Processor::Delay { channels, .. }
             | Processor::Matrix {
                 outputs: channels, ..

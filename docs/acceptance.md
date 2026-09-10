@@ -23,6 +23,7 @@ unchanged.
 | Core fader | Mono/stereo 0dB unity and signed levels, step/linear dB automation, additive dB modulation without smoothing, finite-output enforcement, strict source/retained contracts, identity and CLI replay |
 | Core matrix | Explicit input/output channel counts, ordered weighted rows, signed/fractional mapping, duplication/downmixing, strict coefficient shape and units, finite arithmetic, work limits and retained CLI replay |
 | Core delay | Exact mono/stereo frame shifts, zero/reset history, tails, read-before-write across delays, causal feedback and residual loop rejection, bounded aggregate history and work, latency reporting and retained CLI replay |
+| Core noise | Independent SHA-256 known-answer vectors, full-width seed inheritance, node/channel/frame separation, tail/reset behavior, unrelated-node independence, strict retained contracts, hash-work boundaries and CLI replay |
 | Voices | Note-offs precede note-ons; release tails retain allocation; zero velocity retains allocation; overflow fails without stealing |
 | Internal ADSR modulation | Initial per-note and pre-release source snapshots, ID-ordered capture, held event values, no double advancement, conservative preview/release work, source-free replay; stage restrictions and cycles reject |
 | Internal phase modulation | Voice oscillator/wavetable/LFO onset capture, inclusive cycle endpoints, ordered phase/ADSR chains, held phase initialization, independent voices, reset replay, preview work bounds, source-free replay |

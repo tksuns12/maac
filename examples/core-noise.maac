@@ -1,0 +1,26 @@
+maac 1;
+
+// A deterministic stereo noise source uses the project seed and is attenuated
+// before delivery. The noise node has no input or audio parameters.
+project noise_demo {
+  score = [0q, 1/2q];
+  tail = 0ms;
+  rate = 48000Hz;
+  seed = 7;
+  tempo = &clock;
+  meter = &metre;
+  output = &attenuate:out;
+}
+tempo clock { points = [(0q, 120bpm, step)]; }
+meter metre { points = [(0q, 4, 4)]; }
+
+node noise {
+  type = "core.noise/1";
+  config = { channels = 2; };
+}
+node attenuate {
+  type = "core.gain/1";
+  config = { channels = 2; };
+  params = { gain = 1/4; };
+}
+connect noise_to_gain { from = &noise:out; to = &attenuate:in; }

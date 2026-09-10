@@ -37,6 +37,7 @@ pub enum ProcessorKind {
     Fader,
     Matrix,
     Delay,
+    Noise,
     Eq(EqMode),
     Compressor(Option<u8>),
     Reverb,
@@ -54,6 +55,7 @@ impl ProcessorKind {
             Self::Fader => "core.fader/1",
             Self::Matrix => "core.matrix/1",
             Self::Delay => "core.delay/1",
+            Self::Noise => "core.noise/1",
             Self::Eq(_) => "fx.eq/1",
             Self::Compressor(_) => "fx.compressor/1",
             Self::Reverb => "fx.reverb/1",
@@ -71,6 +73,7 @@ impl ProcessorKind {
             "core.fader/1" => Self::Fader,
             "core.matrix/1" => Self::Matrix,
             "core.delay/1" => Self::Delay,
+            "core.noise/1" => Self::Noise,
             "core.pan/1" => Self::Pan,
             "core.sum/1" => Self::Sum,
             _ => return None,
@@ -2138,6 +2141,14 @@ impl<'a> Validator<'a> {
                 path.to_vec(),
                 vec!["config".into()],
             );
+        } else if processor == ProcessorKind::Noise && object.field("config").is_none() {
+            self.push(
+                DiagnosticCode::Range,
+                "core.noise/1 requires config.channels",
+                Some(object.span),
+                path.to_vec(),
+                vec!["config".into()],
+            );
         }
         let config_map = config
             .as_ref()
@@ -2526,6 +2537,7 @@ impl<'a> Validator<'a> {
             ProcessorKind::OnePole | ProcessorKind::Gain | ProcessorKind::Fader => &["channels"],
             ProcessorKind::Matrix => &["inputs", "outputs", "coefficients"],
             ProcessorKind::Delay => &["channels", "frames"],
+            ProcessorKind::Noise => &["channels", "seed"],
             ProcessorKind::Pan => &[],
             ProcessorKind::Sum => &["channels"],
             ProcessorKind::Instrument
@@ -2546,6 +2558,12 @@ impl<'a> Validator<'a> {
                 continue;
             }
             if processor == ProcessorKind::Matrix && name == "coefficients" {
+                continue;
+            }
+            if processor == ProcessorKind::Noise && name == "seed" {
+                if let Some(seed) = self.bounded_integer(field, path, name, 0, u64::MAX) {
+                    result.insert(name.clone(), BigRational::from_integer(seed.into()));
+                }
                 continue;
             }
             let Some(value) = self.number_value(&field.value, path, name) else {
@@ -2600,6 +2618,17 @@ impl<'a> Validator<'a> {
                     path.to_vec(),
                     vec!["config".into(), name.clone()],
                 );
+            } else if processor == ProcessorKind::Noise
+                && name == "channels"
+                && value > BigRational::from_integer(2.into())
+            {
+                self.push(
+                    DiagnosticCode::Capability,
+                    "core.noise/1 supports only 1 or 2 channels",
+                    Some(field.value.span),
+                    path.to_vec(),
+                    vec!["config".into(), name.clone()],
+                );
             } else {
                 result.insert(name.clone(), value);
             }
@@ -2646,6 +2675,13 @@ impl<'a> Validator<'a> {
                     }
                 }
             }
+            ProcessorKind::Noise if !fields.contains_key("channels") => self.push(
+                DiagnosticCode::Range,
+                "processor config requires channels",
+                None,
+                path.to_vec(),
+                vec!["config".into(), "channels".into()],
+            ),
             _ => {}
         }
         if processor == ProcessorKind::Matrix {
@@ -2727,6 +2763,7 @@ impl<'a> Validator<'a> {
             ProcessorKind::Fader => &["level"],
             ProcessorKind::Matrix => &[],
             ProcessorKind::Delay => &[],
+            ProcessorKind::Noise => &[],
             ProcessorKind::Pan => &["pan"],
             ProcessorKind::Sum => &[],
             ProcessorKind::Instrument
@@ -5001,6 +5038,20 @@ fn ports_for(
                 },
             ]
         }
+        ProcessorKind::Noise => {
+            let channels = config
+                .get("channels")
+                .and_then(|value| value.to_u32())
+                .unwrap_or(1);
+            vec![PortDescriptor {
+                name: "out",
+                direction: PortDirection::Output,
+                kind: PortKind::Audio,
+                channels,
+                accepts_multiple: false,
+                zero_default: true,
+            }]
+        }
         ProcessorKind::Pan => vec![
             PortDescriptor {
                 name: "in",
@@ -5144,6 +5195,7 @@ fn parameters_for(processor: ProcessorKind) -> Vec<ParameterDescriptor> {
         }],
         ProcessorKind::Matrix => Vec::new(),
         ProcessorKind::Delay => Vec::new(),
+        ProcessorKind::Noise => Vec::new(),
         ProcessorKind::Pan => vec![ParameterDescriptor {
             name: "pan",
             unit: ParameterUnit::Dimensionless,

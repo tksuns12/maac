@@ -3,6 +3,7 @@
 
 use std::{collections::BTreeMap, fmt};
 
+use num_bigint::BigInt;
 use num_rational::BigRational;
 use num_traits::ToPrimitive;
 use serde::{Deserialize, Serialize};
@@ -584,6 +585,11 @@ impl Normalizer<'_> {
                                 .or_insert_with(|| quantity(0, 1, Unit::S));
                             config.entry("damping").or_insert_with(|| {
                                 rational(&BigRational::new(1.into(), 2.into()), None)
+                            });
+                        }
+                        Processor::Noise { seed, .. } => {
+                            config.entry("seed").or_insert_with(|| {
+                                rational(&BigRational::from_integer(BigInt::from(*seed)), None)
                             });
                         }
                         _ => {}
