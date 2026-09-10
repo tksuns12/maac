@@ -1,0 +1,35 @@
+maac 1;
+
+// An explicit mono-to-stereo matrix maps one sine voice into two weighted
+// output channels. Matrix rows are ordered by output, then input.
+project matrix_demo {
+  score = [0q, 1q];
+  tail = 40ms;
+  rate = 48000Hz;
+  tempo = &clock;
+  meter = &metre;
+  output = &matrix:out;
+}
+tempo clock { points = [(0q, 120bpm, step)]; }
+meter metre { points = [(0q, 4, 4)]; }
+
+node tone {
+  type = "core.sine/1";
+  params = { attack = 8ms; release = 30ms; level = 1/4; };
+}
+node matrix {
+  type = "core.matrix/1";
+  config = {
+    inputs = 1;
+    outputs = 2;
+    coefficients = [[3/4], [1/2]];
+  };
+}
+connect tone_to_matrix { from = &tone:out; to = &matrix:in; }
+
+pattern phrase {
+  length = 1q;
+  note note { at = 0q; dur = 1q; pitch = A4; velocity = 1/2; }
+}
+track notes { target = &tone:events; }
+place play { pattern = &phrase; track = &notes; at = 0q; }

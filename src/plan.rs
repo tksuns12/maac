@@ -515,6 +515,42 @@ pub mod rational_map_serde {
     }
 }
 
+pub mod rational_matrix_serde {
+    use super::*;
+
+    pub fn serialize<S>(value: &[Vec<Rational>], serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let wire: Vec<Vec<String>> = value
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .map(|value| {
+                        let (n, d) = rational_parts(value);
+                        format!("{n}/{d}")
+                    })
+                    .collect()
+            })
+            .collect();
+        wire.serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<Vec<Rational>>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wire = Vec::<Vec<String>>::deserialize(deserializer)?;
+        wire.into_iter()
+            .map(|row| {
+                row.into_iter()
+                    .map(|text| parse_wire_rational(&text).map_err(de::Error::custom))
+                    .collect()
+            })
+            .collect()
+    }
+}
+
 fn zero() -> Rational {
     Rational::from_integer(BigInt::zero())
 }
@@ -623,6 +659,12 @@ pub enum Processor {
     Fader {
         channels: u8,
     },
+    Matrix {
+        inputs: u8,
+        outputs: u8,
+        #[serde(with = "rational_matrix_serde")]
+        coefficients: Vec<Vec<Rational>>,
+    },
     #[serde(rename = "fx.eq/1")]
     Eq {
         channels: u8,
@@ -669,6 +711,14 @@ impl Processor {
         Self::Fader { channels }
     }
 
+    pub fn matrix(inputs: u8, outputs: u8, coefficients: Vec<Vec<Rational>>) -> Self {
+        Self::Matrix {
+            inputs,
+            outputs,
+            coefficients,
+        }
+    }
+
     pub fn pan() -> Self {
         Self::Pan
     }
@@ -683,6 +733,7 @@ impl Processor {
             Self::OnePole { .. } => "onepole",
             Self::Gain { .. } => "gain",
             Self::Fader { .. } => "fader",
+            Self::Matrix { .. } => "matrix",
             Self::Eq { .. } => "fx.eq/1",
             Self::Compressor { .. } => "fx.compressor/1",
             Self::Reverb { .. } => "fx.reverb/1",
@@ -702,6 +753,7 @@ impl Processor {
             Self::OnePole { .. } => parameter == "cutoff",
             Self::Gain { .. } => parameter == "gain",
             Self::Fader { .. } => parameter == "level",
+            Self::Matrix { .. } => false,
             Self::Eq { mode, .. } => {
                 parameter == "frequency"
                     || (parameter == "q"
@@ -3628,6 +3680,68 @@ impl<'a> PlanView<'a> {
                         ));
                     }
                 }
+                Processor::Matrix {
+                    inputs,
+                    outputs,
+                    coefficients,
+                } => {
+                    for (name, dimension) in [("inputs", inputs), ("outputs", outputs)] {
+                        if *dimension == 0 {
+                            return Err(err(
+                                "E_RANGE",
+                                format!("nodes.{}.processor.{name}", node.id),
+                                "matrix dimensions must be positive",
+                            ));
+                        }
+                        if *dimension > 2 {
+                            return Err(err(
+                                "E_CAPABILITY",
+                                format!("nodes.{}.processor.{name}", node.id),
+                                "core.matrix/1 supports only mono or stereo dimensions",
+                            ));
+                        }
+                        if *dimension > limits.max_channels {
+                            return Err(err(
+                                "E_RANGE",
+                                format!("nodes.{}.processor.{name}", node.id),
+                                "matrix dimension exceeds the caller channel limit",
+                            ));
+                        }
+                    }
+                    if coefficients.len() != usize::from(*outputs)
+                        || coefficients
+                            .iter()
+                            .any(|row| row.len() != usize::from(*inputs))
+                    {
+                        return Err(err(
+                            "E_RANGE",
+                            format!("nodes.{}.processor.coefficients", node.id),
+                            "matrix coefficients must be outputs by inputs",
+                        ));
+                    }
+                    for (row_index, row) in coefficients.iter().enumerate() {
+                        for (column_index, coefficient) in row.iter().enumerate() {
+                            rational_bit_limit(
+                                coefficient,
+                                limits,
+                                format!(
+                                    "nodes.{}.processor.coefficients[{row_index}][{column_index}]",
+                                    node.id
+                                ),
+                            )?;
+                            if coefficient.to_f64().is_none_or(|value| !value.is_finite()) {
+                                return Err(err(
+                                    "E_NONFINITE",
+                                    format!(
+                                        "nodes.{}.processor.coefficients[{row_index}][{column_index}]",
+                                        node.id
+                                    ),
+                                    "matrix coefficient is not finite",
+                                ));
+                            }
+                        }
+                    }
+                }
                 Processor::Pan => {}
                 Processor::Instrument {
                     program,
@@ -3860,6 +3974,7 @@ impl<'a> PlanView<'a> {
                     Processor::OnePole { .. }
                         | Processor::Gain { .. }
                         | Processor::Fader { .. }
+                        | Processor::Matrix { .. }
                         | Processor::Eq { .. }
                         | Processor::Compressor { .. }
                         | Processor::Reverb { .. }
@@ -4952,6 +5067,9 @@ impl<'a> PlanView<'a> {
             let cost = match node.processor.core()? {
                 Processor::Eq { channels, .. } => 32 + 10 * u64::from(*channels),
                 Processor::Fader { channels } => 128 + u64::from(*channels),
+                Processor::Matrix {
+                    inputs, outputs, ..
+                } => 2 * u64::from(*inputs) * u64::from(*outputs),
                 Processor::Compressor {
                     channels,
                     sidechain_channels,
@@ -5616,6 +5734,16 @@ fn port_descriptor(node: NodeView<'_>, port: &str, input: bool) -> Option<PortDe
         | (Processor::Reverb { channels, .. }, false, "out") => Some(PortDescriptor {
             kind: PortKind::Audio,
             channels: *channels,
+            summing: false,
+        }),
+        (Processor::Matrix { inputs, .. }, true, "in") => Some(PortDescriptor {
+            kind: PortKind::Audio,
+            channels: *inputs,
+            summing: false,
+        }),
+        (Processor::Matrix { outputs, .. }, false, "out") => Some(PortDescriptor {
+            kind: PortKind::Audio,
+            channels: *outputs,
             summing: false,
         }),
         (

@@ -52,6 +52,9 @@ Try `maac build examples/warp-rate.maac --project-root . -o warp-rate.wav`.
 [Core fader](docs/core-fader.md) provides explicit dB gain with sample-rate
 automation and modulation. Try `maac build examples/core-fader.maac -o core-fader.wav`.
 
+[Core matrix](docs/core-matrix.md) provides explicit mono/stereo channel mapping,
+duplication, and downmixing. Try `maac build examples/core-matrix.maac -o core-matrix.wav`.
+
 [Core modulation](docs/core-modulation.md) connects score- or seconds-clock LFOs
 and automated constants to continuous sample-rate controls such as cutoff, pan,
 and gain, plus event-rate attack/release and instrument public controls.

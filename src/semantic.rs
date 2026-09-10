@@ -35,6 +35,7 @@ pub enum ProcessorKind {
     OnePole,
     Gain,
     Fader,
+    Matrix,
     Eq(EqMode),
     Compressor(Option<u8>),
     Reverb,
@@ -50,6 +51,7 @@ impl ProcessorKind {
             Self::OnePole => "core.onepole/1",
             Self::Gain => "core.gain/1",
             Self::Fader => "core.fader/1",
+            Self::Matrix => "core.matrix/1",
             Self::Eq(_) => "fx.eq/1",
             Self::Compressor(_) => "fx.compressor/1",
             Self::Reverb => "fx.reverb/1",
@@ -65,6 +67,7 @@ impl ProcessorKind {
             "core.onepole/1" => Self::OnePole,
             "core.gain/1" => Self::Gain,
             "core.fader/1" => Self::Fader,
+            "core.matrix/1" => Self::Matrix,
             "core.pan/1" => Self::Pan,
             "core.sum/1" => Self::Sum,
             _ => return None,
@@ -2116,6 +2119,14 @@ impl<'a> Validator<'a> {
                 path.to_vec(),
                 vec!["config".into(), "channels".into()],
             );
+        } else if processor == ProcessorKind::Matrix && object.field("config").is_none() {
+            self.push(
+                DiagnosticCode::Range,
+                "core.matrix/1 requires config.inputs, config.outputs, and config.coefficients",
+                Some(object.span),
+                path.to_vec(),
+                vec!["config".into()],
+            );
         }
         let config_map = config
             .as_ref()
@@ -2502,6 +2513,7 @@ impl<'a> Validator<'a> {
         let allowed: &[&str] = match processor {
             ProcessorKind::Sine => &["voices"],
             ProcessorKind::OnePole | ProcessorKind::Gain | ProcessorKind::Fader => &["channels"],
+            ProcessorKind::Matrix => &["inputs", "outputs", "coefficients"],
             ProcessorKind::Pan => &[],
             ProcessorKind::Sum => &["channels"],
             ProcessorKind::Instrument
@@ -2519,6 +2531,9 @@ impl<'a> Validator<'a> {
                     path.to_vec(),
                     vec!["config".into(), name.clone()],
                 );
+                continue;
+            }
+            if processor == ProcessorKind::Matrix && name == "coefficients" {
                 continue;
             }
             let Some(value) = self.number_value(&field.value, path, name) else {
@@ -2552,6 +2567,16 @@ impl<'a> Validator<'a> {
                     path.to_vec(),
                     vec!["config".into(), name.clone()],
                 );
+            } else if processor == ProcessorKind::Matrix
+                && value > BigRational::from_integer(2.into())
+            {
+                self.push(
+                    DiagnosticCode::Capability,
+                    "core.matrix/1 supports only mono or stereo dimensions",
+                    Some(field.value.span),
+                    path.to_vec(),
+                    vec!["config".into(), name.clone()],
+                );
             } else {
                 result.insert(name.clone(), value);
             }
@@ -2572,9 +2597,85 @@ impl<'a> Validator<'a> {
                     vec!["config".into(), "channels".into()],
                 )
             }
+            ProcessorKind::Matrix => {
+                for name in ["inputs", "outputs", "coefficients"] {
+                    if !fields.contains_key(name) {
+                        self.push(
+                            DiagnosticCode::Range,
+                            format!("processor config requires {name}"),
+                            None,
+                            path.to_vec(),
+                            vec!["config".into(), name.into()],
+                        );
+                    }
+                }
+            }
             _ => {}
         }
+        if processor == ProcessorKind::Matrix {
+            let inputs = result.get("inputs").and_then(|value| value.to_usize());
+            let outputs = result.get("outputs").and_then(|value| value.to_usize());
+            if let Some(field) = fields.get("coefficients") {
+                self.validate_matrix_coefficients(field, path, inputs, outputs);
+            }
+        }
         result
+    }
+
+    fn validate_matrix_coefficients(
+        &mut self,
+        field: &Field,
+        path: &[String],
+        inputs: Option<usize>,
+        outputs: Option<usize>,
+    ) {
+        let ValueKind::List(rows) = &field.value.kind else {
+            self.push_type(field, path, "coefficients", "an outputs-by-inputs matrix");
+            return;
+        };
+        if let Some(outputs) = outputs {
+            if rows.len() != outputs {
+                self.push(
+                    DiagnosticCode::Range,
+                    "config.coefficients must have one row per output channel",
+                    Some(field.value.span),
+                    path.to_vec(),
+                    vec!["config".into(), "coefficients".into()],
+                );
+            }
+        }
+        for row in rows {
+            let ValueKind::List(coefficients) = &row.kind else {
+                self.push_type_value(row, path, "a matrix row list");
+                continue;
+            };
+            if let Some(inputs) = inputs {
+                if coefficients.len() != inputs {
+                    self.push(
+                        DiagnosticCode::Range,
+                        "config.coefficients rows must have one value per input channel",
+                        Some(row.span),
+                        path.to_vec(),
+                        vec!["config".into(), "coefficients".into()],
+                    );
+                }
+            }
+            for coefficient in coefficients {
+                let ValueKind::Number(value) = &coefficient.kind else {
+                    self.push_type_value(coefficient, path, "a finite dimensionless number");
+                    continue;
+                };
+                if !value.to_f64().is_some_and(f64::is_finite) {
+                    self.push(
+                        DiagnosticCode::Nonfinite,
+                        "matrix coefficients must be finite",
+                        Some(coefficient.span),
+                        path.to_vec(),
+                        vec!["config".into(), "coefficients".into()],
+                    );
+                }
+            }
+        }
     }
 
     fn validate_processor_params(
@@ -2588,6 +2689,7 @@ impl<'a> Validator<'a> {
             ProcessorKind::OnePole => &["cutoff"],
             ProcessorKind::Gain => &["gain"],
             ProcessorKind::Fader => &["level"],
+            ProcessorKind::Matrix => &[],
             ProcessorKind::Pan => &["pan"],
             ProcessorKind::Sum => &[],
             ProcessorKind::Instrument
@@ -4831,6 +4933,34 @@ fn ports_for(
                 },
             ]
         }
+        ProcessorKind::Matrix => {
+            let inputs = config
+                .get("inputs")
+                .and_then(|value| value.to_u32())
+                .unwrap_or(1);
+            let outputs = config
+                .get("outputs")
+                .and_then(|value| value.to_u32())
+                .unwrap_or(1);
+            vec![
+                PortDescriptor {
+                    name: "in",
+                    direction: PortDirection::Input,
+                    kind: PortKind::Audio,
+                    channels: inputs,
+                    accepts_multiple: false,
+                    zero_default: false,
+                },
+                PortDescriptor {
+                    name: "out",
+                    direction: PortDirection::Output,
+                    kind: PortKind::Audio,
+                    channels: outputs,
+                    accepts_multiple: false,
+                    zero_default: true,
+                },
+            ]
+        }
         ProcessorKind::Pan => vec![
             PortDescriptor {
                 name: "in",
@@ -4972,6 +5102,7 @@ fn parameters_for(processor: ProcessorKind) -> Vec<ParameterDescriptor> {
             range: RangePolicy::Error,
             rate: ParameterRate::Sample,
         }],
+        ProcessorKind::Matrix => Vec::new(),
         ProcessorKind::Pan => vec![ParameterDescriptor {
             name: "pan",
             unit: ParameterUnit::Dimensionless,

@@ -1372,6 +1372,58 @@ impl<'a> Compiler<'a> {
                         )
                     })?)
                 }
+                "core.matrix/1" => {
+                    let dimension = |name: &str| -> CResult<u8> {
+                        let field =
+                            config.and_then(|fields| fields.get(name)).ok_or_else(|| {
+                                path_diagnostic(
+                                    DiagnosticCode::Range,
+                                    format!("core.matrix/1 requires config.{name}"),
+                                    object,
+                                    object.field("config"),
+                                )
+                            })?;
+                        let value = bigint_u64(
+                            &self.rational_value(&field.value, object, Some(field))?,
+                            Some(field.value.span),
+                        )?;
+                        u8::try_from(value).map_err(|_| {
+                            diagnostics(
+                                DiagnosticCode::Range,
+                                format!("matrix {name} is out of range"),
+                                Some(field.value.span),
+                            )
+                        })
+                    };
+                    let coefficients_field = config
+                        .and_then(|fields| fields.get("coefficients"))
+                        .ok_or_else(|| {
+                        path_diagnostic(
+                            DiagnosticCode::Range,
+                            "core.matrix/1 requires config.coefficients",
+                            object,
+                            object.field("config"),
+                        )
+                    })?;
+                    let rows =
+                        self.list(&coefficients_field.value, object, Some(coefficients_field))?;
+                    let coefficients = rows
+                        .iter()
+                        .map(|row| {
+                            self.list(row, object, Some(coefficients_field))?
+                                .iter()
+                                .map(|coefficient| {
+                                    self.rational_value(
+                                        coefficient,
+                                        object,
+                                        Some(coefficients_field),
+                                    )
+                                })
+                                .collect::<CResult<Vec<_>>>()
+                        })
+                        .collect::<CResult<Vec<_>>>()?;
+                    Processor::matrix(dimension("inputs")?, dimension("outputs")?, coefficients)
+                }
                 "core.onepole/1" | "core.gain/1" | "core.fader/1" => {
                     let channels_field = config
                         .and_then(|fields| fields.get("channels"))
@@ -1463,6 +1515,7 @@ impl<'a> Compiler<'a> {
                 Processor::Fader { .. } => {
                     node.params.insert("level".into(), Rational::zero());
                 }
+                Processor::Matrix { .. } => {}
                 Processor::Pan => {
                     node.params.insert("pan".into(), Rational::zero());
                 }
@@ -1498,6 +1551,14 @@ impl<'a> Compiler<'a> {
                         }
                         Processor::Fader { .. } if name == "level" => {
                             self.quantity(&field.value, Unit::Db, object, Some(field))?
+                        }
+                        Processor::Matrix { .. } => {
+                            return Err(path_diagnostic(
+                                DiagnosticCode::UnknownField,
+                                format!("matrix has no parameter `{name}`"),
+                                object,
+                                Some(field),
+                            ))
                         }
                         Processor::Pan if name == "pan" => {
                             self.rational_value(&field.value, object, Some(field))?
@@ -4238,6 +4299,9 @@ impl<'a> Compiler<'a> {
             Processor::OnePole { channels }
             | Processor::Gain { channels }
             | Processor::Fader { channels }
+            | Processor::Matrix {
+                outputs: channels, ..
+            }
             | Processor::Eq { channels, .. }
             | Processor::Compressor { channels, .. }
             | Processor::Reverb { channels, .. } => Ok(channels),

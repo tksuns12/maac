@@ -912,6 +912,38 @@ impl<'a> DspEngine<'a> {
     }
 
     fn process_node(&mut self, node_index: usize, frame: u64) -> Result<()> {
+        if let Some(matrix) = self.nodes[node_index].matrix {
+            let connection = &self.connections[self.incoming[node_index][0]];
+            let mut input = [0.0; 2];
+            input[..matrix.inputs]
+                .copy_from_slice(&self.nodes[connection.from].output[..matrix.inputs]);
+            let mut output = [0.0; 2];
+            for (output_channel, sample) in output.iter_mut().enumerate().take(matrix.outputs) {
+                let mut sum = 0.0;
+                for (input_channel, input) in input.iter().copied().enumerate().take(matrix.inputs)
+                {
+                    let product = matrix.coefficients[output_channel][input_channel] * input;
+                    if !product.is_finite() {
+                        return Err(RenderError::Nonfinite(format!(
+                            "matrix node {} produced a nonfinite product",
+                            self.nodes[node_index].id
+                        )));
+                    }
+                    sum += product;
+                    if !sum.is_finite() {
+                        return Err(RenderError::Nonfinite(format!(
+                            "matrix node {} produced a nonfinite sum",
+                            self.nodes[node_index].id
+                        )));
+                    }
+                }
+                *sample = sum;
+            }
+            self.nodes[node_index]
+                .output
+                .copy_from_slice(&output[..matrix.outputs]);
+            return Ok(());
+        }
         let processor = match self.nodes[node_index].processor.clone() {
             RuntimeProcessor::Control => {
                 return Err(RenderError::RenderState(
@@ -1111,6 +1143,7 @@ impl<'a> DspEngine<'a> {
                     self.nodes[node_index].output[channel] = sum;
                 }
             }
+            Processor::Matrix { .. } => unreachable!("matrix uses its prepared runtime"),
             Processor::Instrument { .. } => {
                 let node = &mut self.nodes[node_index];
                 let node_id = node.id.clone();
@@ -1380,6 +1413,39 @@ struct ResetTargetBounds {
     max_open: bool,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct MatrixRuntime {
+    inputs: usize,
+    outputs: usize,
+    coefficients: [[f64; 2]; 2],
+}
+
+impl MatrixRuntime {
+    fn new(inputs: u8, outputs: u8, coefficients: &[Vec<Rational>]) -> Result<Self> {
+        let inputs = usize::from(inputs);
+        let outputs = usize::from(outputs);
+        let mut prepared = [[0.0; 2]; 2];
+        for (output, row) in prepared.iter_mut().enumerate().take(outputs) {
+            let source = coefficients.get(output).ok_or_else(|| {
+                RenderError::RenderState("matrix coefficient row is missing".into())
+            })?;
+            for (input, coefficient) in row.iter_mut().enumerate().take(inputs) {
+                *coefficient = rational_f64(
+                    source.get(input).ok_or_else(|| {
+                        RenderError::RenderState("matrix coefficient is missing".into())
+                    })?,
+                    "matrix coefficient",
+                )?;
+            }
+        }
+        Ok(Self {
+            inputs,
+            outputs,
+            coefficients: prepared,
+        })
+    }
+}
+
 #[derive(Debug)]
 struct NodeState {
     id: String,
@@ -1398,6 +1464,7 @@ struct NodeState {
     eq: Option<Eq>,
     compressor: Option<Compressor>,
     reverb: Option<Reverb>,
+    matrix: Option<MatrixRuntime>,
     native_bounds: BTreeMap<String, (f64, f64, bool)>,
 }
 
@@ -1417,6 +1484,7 @@ impl NodeState {
             | Processor::Compressor { channels, .. }
             | Processor::Reverb { channels, .. }
             | Processor::Sum { channels } => usize::from(channels),
+            Processor::Matrix { outputs, .. } => usize::from(outputs),
             Processor::Pan => 2,
             Processor::Instrument { channels, .. } => usize::from(channels),
         };
@@ -1439,7 +1507,7 @@ impl NodeState {
             Processor::Pan => {
                 base_params.insert("pan".into(), 0.0);
             }
-            Processor::Sum { .. } => {}
+            Processor::Sum { .. } | Processor::Matrix { .. } => {}
             Processor::Eq { .. } | Processor::Compressor { .. } | Processor::Reverb { .. } => {
                 for (name, value) in crate::plan::production_defaults(&processor) {
                     base_params.insert(name, rational_f64(&value, "native default")?);
@@ -1481,6 +1549,16 @@ impl NodeState {
         } else {
             None
         };
+        let matrix = if let Processor::Matrix {
+            inputs,
+            outputs,
+            ref coefficients,
+        } = processor
+        {
+            Some(MatrixRuntime::new(inputs, outputs, coefficients)?)
+        } else {
+            None
+        };
         let mut native_bounds = BTreeMap::new();
         for name in base_params.keys() {
             if let Some((min, max, open)) =
@@ -1513,6 +1591,7 @@ impl NodeState {
             eq,
             compressor,
             reverb,
+            matrix,
             native_bounds,
         };
         state.validate_current_parameters(rate)?;
@@ -1538,6 +1617,7 @@ impl NodeState {
             eq: None,
             compressor: None,
             reverb: None,
+            matrix: None,
             native_bounds: BTreeMap::new(),
         })
     }
@@ -1561,6 +1641,7 @@ impl NodeState {
             eq: None,
             compressor: None,
             reverb: None,
+            matrix: None,
             native_bounds: BTreeMap::new(),
         }
     }
@@ -1588,6 +1669,7 @@ impl NodeState {
             eq: None,
             compressor: None,
             reverb: None,
+            matrix: None,
             native_bounds: BTreeMap::new(),
         }
     }

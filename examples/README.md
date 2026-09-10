@@ -115,6 +115,14 @@ maac compile examples/core-fader.maac -o core-fader.plan.json
 maac render core-fader.plan.json -o core-fader-from-plan.wav
 ```
 
+[`core-matrix.maac`](core-matrix.maac) maps channels with explicit coefficient rows.
+
+```sh
+maac build examples/core-matrix.maac -o core-matrix.wav
+maac compile examples/core-matrix.maac -o core-matrix.plan.json
+maac render core-matrix.plan.json -o core-matrix-from-plan.wav
+```
+
 [`pressure-expression.maac`](pressure-expression.maac) defines an inline stereo
 instrument whose pressure source raises oscillator level and filter cutoff.
 Independent timbre also controls cutoff; one note combines all four expression
