@@ -924,14 +924,23 @@ fn validate_graph_inner(
                         "modulation target parameter does not exist",
                     )
                 })?;
-        let voice_adsr_event_rate = stage == GraphStage::Voice
-            && matches!(target.processor, GraphProcessor::Adsr)
+        let voice_event_rate = stage == GraphStage::Voice
+            && matches!(
+                target.processor,
+                GraphProcessor::Adsr
+                    | GraphProcessor::Sine
+                    | GraphProcessor::Saw
+                    | GraphProcessor::Square
+                    | GraphProcessor::Triangle
+                    | GraphProcessor::Wavetable { .. }
+                    | GraphProcessor::Lfo
+            )
             && matches!(spec.rate, ParameterRate::NoteOn | ParameterRate::NoteOff);
-        if spec.rate != ParameterRate::Sample && !voice_adsr_event_rate {
+        if spec.rate != ParameterRate::Sample && !voice_event_rate {
             return Err(error(
                 "E_PORT_TYPE",
                 format!("{edge_path}.to.parameter"),
-                "modulation requires a sample-rate parameter or voice ADSR event-rate parameter",
+                "modulation requires a sample-rate parameter or voice event-rate parameter",
             ));
         }
         validate_modulation_depth(&modulation.depth, spec.unit, format!("{edge_path}.depth"))?;

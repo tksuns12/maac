@@ -61,6 +61,7 @@ struct CompiledNode {
     specs: Vec<CompiledBounds>,
     incoming: Vec<Source>,
     modulations: Vec<ModulationBinding>,
+    has_note_on_modulations: bool,
     controls: Vec<ControlBinding>,
 }
 
@@ -770,7 +771,10 @@ impl GraphState {
                 continue;
             }
             let compiled = &graph.nodes[node_index];
-            if initialize_note_on && matches!(compiled.processor, ProcessorCode::Adsr) {
+            if initialize_note_on
+                && (matches!(compiled.processor, ProcessorCode::Adsr)
+                    || compiled.has_note_on_modulations)
+            {
                 let mut event_params = parameter_scratch(compiled);
                 apply_controls(
                     compiled,
@@ -785,15 +789,37 @@ impl GraphState {
                     [0.0; 2],
                     &mut event_params,
                 )?;
-                for (parameter, &value) in event_params.iter().enumerate().take(3) {
-                    validate_event_parameter(compiled, parameter, value)?;
+                match (&compiled.processor, &mut self.nodes[node_index].state) {
+                    (ProcessorCode::Adsr, state) => {
+                        for (parameter, &value) in event_params.iter().enumerate().take(3) {
+                            validate_event_parameter(compiled, parameter, value)?;
+                        }
+                        *state = ProcessorState::Adsr(Adsr::new(
+                            frame,
+                            event_params[0],
+                            event_params[1],
+                            event_params[2],
+                        )?);
+                    }
+                    (ProcessorCode::Oscillator(_), ProcessorState::Oscillator(oscillator)) => {
+                        validate_event_parameter(compiled, 2, event_params[2])?;
+                        oscillator.reset(event_params[2])?;
+                    }
+                    (ProcessorCode::Wavetable(_), ProcessorState::Wavetable { phase }) => {
+                        validate_event_parameter(compiled, 2, event_params[2])?;
+                        *phase = canonical_event_phase(event_params[2]);
+                    }
+                    (ProcessorCode::Lfo, ProcessorState::Lfo(oscillator)) => {
+                        validate_event_parameter(compiled, 1, event_params[1])?;
+                        oscillator.reset(event_params[1])?;
+                    }
+                    _ => {
+                        return Err(RenderError::RenderState(format!(
+                            "instrument graph node {} has mismatched note-on state",
+                            compiled.id
+                        )))
+                    }
                 }
-                self.nodes[node_index].state = ProcessorState::Adsr(Adsr::new(
-                    frame,
-                    event_params[0],
-                    event_params[1],
-                    event_params[2],
-                )?);
             }
 
             let mut params = parameter_scratch(compiled);
@@ -926,6 +952,9 @@ fn capture_dependency_masks(
                 }
             }
         }
+        if node.has_note_on_modulations {
+            note_on[index] = true;
+        }
     }
     expand_capture_dependencies(nodes, order, &mut note_on, true);
     expand_capture_dependencies(nodes, order, &mut note_off, false);
@@ -948,9 +977,7 @@ fn expand_capture_dependencies(
         }
         for binding in &node.modulations {
             if binding.rate == ParameterRate::Sample
-                || (include_note_on
-                    && binding.rate == ParameterRate::NoteOn
-                    && matches!(node.processor, ProcessorCode::Adsr))
+                || (include_note_on && binding.rate == ParameterRate::NoteOn)
             {
                 mark_source(required, binding.source);
             }
@@ -968,6 +995,14 @@ fn parameter_scratch(node: &CompiledNode) -> [f64; MAX_PARAMETER_SLOTS] {
     let mut params = [0.0; MAX_PARAMETER_SLOTS];
     params[..node.base_params.len()].copy_from_slice(&node.base_params);
     params
+}
+
+fn canonical_event_phase(phase: f64) -> f64 {
+    if phase == 1.0 {
+        0.0
+    } else {
+        phase
+    }
 }
 
 fn apply_sample_modulations(
@@ -1222,6 +1257,7 @@ fn compile_graph(
             specs,
             incoming: Vec::new(),
             modulations: Vec::new(),
+            has_note_on_modulations: false,
             controls: Vec::new(),
         });
     }
@@ -1265,6 +1301,9 @@ fn compile_graph(
             depth: rational_f64(&modulation.depth, "modulation depth")?,
             rate,
         });
+        if rate == ParameterRate::NoteOn {
+            nodes[target].has_note_on_modulations = true;
+        }
     }
 
     let order = topological_order(graph).map_err(RenderError::Plan)?;
@@ -1726,6 +1765,143 @@ mod tests {
         assert_eq!(render(&program).to_bits(), expected.to_bits());
         program.voice.modulations.reverse();
         assert_eq!(render(&program).to_bits(), expected.to_bits());
+    }
+
+    fn phase_program(modulations: Vec<crate::graph::Modulation>) -> InstrumentProgram {
+        use crate::graph::{GraphNode, ProgramSource};
+        let adsr = |id: &str, sustain: i64| GraphNode {
+            id: id.into(),
+            processor: GraphProcessor::Adsr,
+            params: BTreeMap::from([("sustain".into(), rat(sustain))]),
+        };
+        InstrumentProgram {
+            id: "phase_capture".into(),
+            voice: GraphProgram {
+                channels: 1,
+                nodes: vec![
+                    adsr("amp", 1),
+                    adsr("driver", 1),
+                    GraphNode {
+                        id: "tone".into(),
+                        processor: GraphProcessor::Sine,
+                        params: BTreeMap::from([
+                            ("ratio".into(), rat(0)),
+                            ("frequency".into(), rat(0)),
+                            ("phase".into(), rat(0)),
+                            ("level".into(), rat(1)),
+                        ]),
+                    },
+                ],
+                connections: Vec::new(),
+                modulations,
+                output: crate::plan::PortRef::new("tone", "out").unwrap(),
+                amplitude: Some("amp".into()),
+            },
+            shared: None,
+            controls: BTreeMap::new(),
+            source: ProgramSource {
+                file: "test.maac".into(),
+                object: "phase_capture".into(),
+                span: None,
+            },
+        }
+    }
+
+    fn phase_modulation(
+        id: &str,
+        from: &str,
+        to: &str,
+        parameter: &str,
+        depth: crate::plan::Rational,
+    ) -> crate::graph::Modulation {
+        crate::graph::Modulation {
+            id: id.into(),
+            from: crate::plan::PortRef::new(from, "out").unwrap(),
+            to: crate::graph::ParameterTarget {
+                node: to.into(),
+                parameter: parameter.into(),
+            },
+            depth,
+        }
+    }
+
+    fn render_phase_program(program: &InstrumentProgram) -> Result<f64> {
+        let compiled = Arc::new(CompiledInstrument::compile(program, &BTreeMap::new())?);
+        let mut runtime = InstrumentRuntime::new(compiled, 1, 48_000.0, &BTreeMap::new())?;
+        runtime.note_on("voice", 440.0, 1.0, 0)?;
+        Ok(runtime.render(0)?[0])
+    }
+
+    #[test]
+    fn note_on_phase_initializes_before_downstream_adsr_capture() {
+        let mut program = phase_program(vec![
+            phase_modulation(
+                "a_phase",
+                "driver",
+                "tone",
+                "phase",
+                crate::plan::Rational::new(1.into(), 4.into()),
+            ),
+            phase_modulation("b_sustain", "tone", "amp", "sustain", rat(1)),
+        ]);
+        program
+            .voice
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == "amp")
+            .unwrap()
+            .params
+            .insert("sustain".into(), rat(0));
+
+        assert_eq!(render_phase_program(&program).unwrap(), 1.0);
+    }
+
+    #[test]
+    fn phase_capture_uses_id_order_and_rejects_final_range() {
+        let source = "driver";
+        let mut ordered = phase_program(vec![
+            phase_modulation(
+                "c_small",
+                source,
+                "tone",
+                "phase",
+                crate::plan::Rational::new(1.into(), 1_152_921_504_606_846_976_i64.into()),
+            ),
+            phase_modulation("b_negative", source, "tone", "phase", rat(-128)),
+            phase_modulation("a_positive", source, "tone", "phase", rat(128)),
+        ]);
+        let first = render_phase_program(&ordered).unwrap();
+        assert!(first > 0.0);
+        ordered.voice.modulations.reverse();
+        assert_eq!(
+            render_phase_program(&ordered).unwrap().to_bits(),
+            first.to_bits()
+        );
+
+        let mut invalid = phase_program(vec![phase_modulation(
+            "phase",
+            source,
+            "tone",
+            "phase",
+            crate::plan::Rational::new(1.into(), 2.into()),
+        )]);
+        invalid
+            .voice
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == "tone")
+            .unwrap()
+            .params
+            .insert(
+                "phase".into(),
+                crate::plan::Rational::new(3.into(), 4.into()),
+            );
+        let compiled = Arc::new(CompiledInstrument::compile(&invalid, &BTreeMap::new()).unwrap());
+        let mut runtime = InstrumentRuntime::new(compiled, 1, 48_000.0, &BTreeMap::new()).unwrap();
+        assert_eq!(
+            runtime.note_on("voice", 440.0, 1.0, 0).unwrap_err().code(),
+            "E_RANGE"
+        );
     }
 }
 

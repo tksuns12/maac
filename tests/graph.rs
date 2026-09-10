@@ -292,24 +292,17 @@ fn validates_every_node_and_rejects_mixed_audio_modulation_cycles() {
 }
 
 #[test]
-fn modulation_requires_mono_source_sample_target_and_bounded_depth() {
+fn modulation_rejects_out_of_range_depths_for_sample_targets() {
     let mut graph = voice_graph();
     graph.modulations.push(Modulation {
-        id: "phase_mod".into(),
+        id: "frequency_mod".into(),
         from: port("amp", "out"),
         to: ParameterTarget {
             node: "osc".into(),
-            parameter: "phase".into(),
+            parameter: "frequency".into(),
         },
-        depth: rat(1, 1),
+        depth: rat(48_001, 1),
     });
-    assert_eq!(
-        validate_graph(&graph, true, None).unwrap_err().code,
-        "E_PORT_TYPE"
-    );
-
-    graph.modulations[0].to.parameter = "frequency".into();
-    graph.modulations[0].depth = rat(48_001, 1);
     assert_eq!(
         validate_graph(&graph, true, None).unwrap_err().code,
         "E_RANGE"
@@ -317,9 +310,21 @@ fn modulation_requires_mono_source_sample_target_and_bounded_depth() {
 }
 
 #[test]
-fn voice_adsr_event_rate_modulations_allow_signed_depths_only() {
+fn voice_adsr_and_phase_event_rate_modulations_allow_signed_depths_only() {
     let mut graph = voice_graph();
-    graph.nodes.push(node("source", GraphProcessor::Sine));
+    graph.nodes.extend([
+        node("saw", GraphProcessor::Saw),
+        node("square", GraphProcessor::Square),
+        node("triangle", GraphProcessor::Triangle),
+        node(
+            "wavetable",
+            GraphProcessor::Wavetable {
+                table: "cycle".into(),
+            },
+        ),
+        node("lfo", GraphProcessor::Lfo),
+        node("source", GraphProcessor::Sine),
+    ]);
     graph.modulations = vec![
         Modulation {
             id: "attack_zero".into(),
@@ -360,20 +365,26 @@ fn voice_adsr_event_rate_modulations_allow_signed_depths_only() {
     ];
     validate_graph(&graph, true, None).unwrap();
 
-    let mut phase = graph.clone();
-    phase.modulations = vec![Modulation {
-        id: "phase".into(),
-        from: port("source", "out"),
-        to: ParameterTarget {
-            node: "osc".into(),
-            parameter: "phase".into(),
-        },
-        depth: rat(0, 1),
-    }];
-    assert_eq!(
-        validate_graph(&phase, true, None).unwrap_err().code,
-        "E_PORT_TYPE"
-    );
+    for (id, node_id, depth) in [
+        ("sine_phase", "osc", rat(-1, 2)),
+        ("saw_phase", "saw", rat(0, 1)),
+        ("square_phase", "square", rat(0, 1)),
+        ("triangle_phase", "triangle", rat(0, 1)),
+        ("wavetable_phase", "wavetable", rat(0, 1)),
+        ("lfo_phase", "lfo", rat(0, 1)),
+    ] {
+        let mut phase = graph.clone();
+        phase.modulations = vec![Modulation {
+            id: id.into(),
+            from: port("source", "out"),
+            to: ParameterTarget {
+                node: node_id.into(),
+                parameter: "phase".into(),
+            },
+            depth,
+        }];
+        validate_graph(&phase, true, None).unwrap();
+    }
 
     let mut wrong_port = graph.clone();
     wrong_port.modulations[0].from = port("source", "in");

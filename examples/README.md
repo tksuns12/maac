@@ -79,6 +79,15 @@ maac compile examples/internal-event-modulation.maac -o internal-event.plan.json
 maac render internal-event.plan.json -o internal-event-from-plan.wav
 ```
 
+[`internal-phase-modulation.maac`](internal-phase-modulation.maac) captures per-note
+expression into voice oscillator and LFO phase at note-on.
+
+```sh
+maac build examples/internal-phase-modulation.maac -o internal-phase.wav
+maac compile examples/internal-phase-modulation.maac -o internal-phase.plan.json
+maac render internal-phase.plan.json -o internal-phase-from-plan.wav
+```
+
 [`pressure-expression.maac`](pressure-expression.maac) defines an inline stereo
 instrument whose pressure source raises oscillator level and filter cutoff.
 Independent timbre also controls cutoff; one note combines all four expression

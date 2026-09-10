@@ -57,9 +57,10 @@ add their contributions to base automation;
 version 7 plans retain the control graph for standalone replay.
 Try `maac build examples/core-modulation.maac --project-root . -o core-modulation.wav`.
 
-[Internal ADSR modulation](docs/internal-event-modulation.md) captures per-voice
+[Internal event modulation](docs/internal-event-modulation.md) captures per-voice
 signals at note-on and note-off without advancing their audio state twice.
-Try `maac build examples/internal-event-modulation.maac -o internal-event.wav`.
+Try `maac build examples/internal-event-modulation.maac -o internal-event.wav`
+or `maac build examples/internal-phase-modulation.maac -o internal-phase.wav`.
 
 The [project-entrypoint guide](docs/project-entrypoint.md) specifies conventional
 `main.maac` discovery and the explicit finite `--profile song` allowance for

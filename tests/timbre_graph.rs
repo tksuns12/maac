@@ -119,10 +119,7 @@ fn default_zero_mapping_preserves_audio_and_program_roundtrip() {
         );
     }
     mapped.voice.modulations[0].to.parameter = "phase".into();
-    assert!(
-        mapped.validate().is_err(),
-        "event-rate targets are forbidden"
-    );
+    mapped.validate().unwrap();
     mapped.voice.modulations.clear();
     mapped.voice.output = PortRef::new("color", "out").unwrap();
     mapped.validate().unwrap();

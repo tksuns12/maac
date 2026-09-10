@@ -157,14 +157,15 @@ at note-off. Other parameters are sampled each frame. Shared LFO phase controls
 accept defaults, presets, and instance values at render reset; they cannot be
 automated. ADSRs are voice-only.
 
-`modulate` connects a mono signal to a sample-rate parameter or a voice ADSR's
-event-rate parameter. Its required
+`modulate` connects a mono signal to a sample-rate parameter, a voice ADSR's
+event-rate parameter, or voice oscillator/wavetable/LFO phase. Its required
 `depth` has the target parameter's unit, may be signed, and multiplies the
 source signal; the result is added to the current parameter value. Multiple
 modulations sum in ID order. ADSR attack/decay/sustain capture at note-on and
 release captures at note-off from a non-advancing pre-release snapshot.
-Internal event-rate sums are checked only when captured; phase and reset-rate
-modulation remain unsupported. See [internal event modulation](internal-event-modulation.md)
+Voice phase captures at note-on before supplying downstream capture sources.
+Internal event-rate sums are checked only when captured; reset-rate modulation
+remains unsupported. See [internal event modulation](internal-event-modulation.md)
 for ordering, source previews, and conservative release-work bounds. Final evaluated
 values must satisfy the processor range; no depth adjustment or clipping occurs.
 ADSR, LFO, timbre, and pressure signals may also feed mono audio inputs; stereo signals cannot

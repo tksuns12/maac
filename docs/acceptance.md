@@ -20,7 +20,8 @@ unchanged.
 | Plan import | Unknown versions/fields, inconsistent time/frame values, duplicates, missing references, invalid parameter ranges, cycles, oversized input and collections |
 | DSP | Sine/envelope samples, one-pole impulse, equal-power pan, connection-ID sum order, right-continuous automation knots, event-rate attack/release capture |
 | Voices | Note-offs precede note-ons; release tails retain allocation; zero velocity retains allocation; overflow fails without stealing |
-| Internal ADSR modulation | Initial per-note and pre-release source snapshots, ID-ordered capture, held event values, no double advancement, conservative preview/release work, source-free replay; phase/reset targets and cycles reject |
+| Internal ADSR modulation | Initial per-note and pre-release source snapshots, ID-ordered capture, held event values, no double advancement, conservative preview/release work, source-free replay; reset targets and cycles reject |
+| Internal phase modulation | Voice oscillator/wavetable/LFO onset capture, inclusive cycle endpoints, ordered phase/ADSR chains, held phase initialization, independent voices, reset replay, preview work bounds, source-free replay |
 | WAV/CLI | All five documented invocation forms; float32 and PCM16 headers; overload rejection; overwrite protection; destination survives all failures |
 | Examples | 48 / 182 notes; 816,000 / 1,968,000 stereo frames; finite and non-silent samples; unchanged musical content |
 | Repeatability | Repeat renders produce identical PCM in the tested executable/environment |

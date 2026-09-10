@@ -1,10 +1,11 @@
-# Instrument-internal ADSR modulation
+# Instrument-internal event modulation
 
 Instrument voice graphs can modulate the event-rate parameters of `synth.adsr/1`:
 `attack`, `decay`, and `sustain` are captured at note-on; `release` is captured at
 note-off. This extends the existing internal `modulate { from; to; depth; }`
-syntax. Oscillator, wavetable, and LFO phase targets, and reset-rate targets,
-remain unsupported in this slice. Shared graphs still cannot contain ADSRs.
+syntax. Voice sine, saw, square, triangle, wavetable, and LFO `phase` parameters
+also capture at note-on. Reset-rate targets remain unsupported, including shared
+LFO phase. Shared graphs still cannot contain ADSRs.
 
 ```maac
 node touch { type = "synth.pressure/1"; }
@@ -22,6 +23,17 @@ pressure with an internal LFO. No new plan schema or language syntax is required
 the existing instrument program retains the modulation recipe for source-free
 replay.
 
+The [phase example](../examples/internal-phase-modulation.maac) captures initial
+per-note expression into oscillator phase. Phase contributions are dimensionless
+cycles. The final value must lie in the inclusive range `0..=1`; one cycle is
+equivalent to zero. Values outside that range fail with `E_RANGE` rather than
+wrapping. After capture, phase advances normally with oscillator frequency;
+later source changes do not reset it.
+Captured phase exactly equal to one is canonicalized to zero before advancement.
+Legacy wavetable initialization without a phase modulation edge remains unchanged;
+its raw authored phase of one can accumulate slightly different floating-point
+rounding than the newly canonicalized capture path.
+
 ## Capture and evaluation
 
 For each captured parameter, start with its authored base value or current public
@@ -32,15 +44,16 @@ there is no clipping or smoothing. Authored bases, controls, and depths retain
 their independent validation.
 
 Internal event-rate contributions are evaluated and range-checked only at their
-capture event. Later signal changes do not change the captured envelope or cause
+capture event. Later signal changes do not change the captured onset values or cause
 an unused event-rate sum to fail between events. Sample-rate modulation and its
 sources continue to run and validate each audio frame, including at zero gain or
 velocity. Top-level modulation retains its separate per-frame evaluation and
 range-checking contract.
 
 At note-on, a read-only preview visits the required source dependencies in the
-graph's stable topological order. An ADSR captures its onset parameters before
-its initial output supplies another capture. Initial pitch, timbre, and pressure
+graph's stable topological order. Each ADSR or phase target captures and initializes
+its onset state before its initial output supplies another capture. This also
+applies to chains mixing phase and ADSR targets. Initial pitch, timbre, and pressure
 expression belong to the new note and are available during this preview.
 
 At note-off, all release captures use the current frame's **pre-release** state.
@@ -87,6 +100,8 @@ existing top-level release-modulation policy. Each voice's bound is clipped at
 the render endpoint. Other ADSRs' releases and onset parameters do not extend
 voice allocation. This conservative policy can reject a dense arrangement even
 when its actual modulation is small; it does not extend the authored render tail.
+Phase targets use the same single onset-preview charge, including when combined
+with ADSR onset targets; they do not extend release duration or voice storage.
 
 Preview scratch space is bounded by the existing 64-node graph limit and the
 fixed native parameter counts. Previews allocate no extra voice history or pluck
@@ -96,8 +111,11 @@ accounting.
 
 ## Acceptance
 
-- Source and retained programs agree on ADSR admission, units, mono sources,
-  unsupported phase/reset targets, and cycles.
+- Source and retained programs agree on ADSR and voice phase admission, units,
+  mono sources, unsupported reset targets, and cycles.
+- Phase capture uses initial expression and public controls, supports both cycle
+  endpoints, holds across later expression changes, and initializes downstream
+  capture sources in graph order.
 - Analytical audio proves onset capture, the all-envelope pre-release snapshot,
   capture holding, expression endpoints, independent voices, and same-frame
   capacity reuse.
