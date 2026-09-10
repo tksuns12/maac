@@ -3110,10 +3110,10 @@ impl<'a> Validator<'a> {
         else {
             return;
         };
-        if rate != ParameterRate::Sample {
+        if rate == ParameterRate::Reset {
             self.push(
                 DiagnosticCode::Capability,
-                "only sample-rate parameters can receive core modulation",
+                "reset-rate parameters cannot receive core modulation",
                 Some(object.span),
                 path.to_vec(),
                 vec!["target".into()],

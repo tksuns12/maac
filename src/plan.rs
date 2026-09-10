@@ -3745,25 +3745,16 @@ impl<'a> PlanView<'a> {
                     .instrument_program(program)
                     .and_then(|p| p.control_spec(name))
                     .ok_or_else(missing)?;
-                if spec.rate != ParameterRate::Sample {
+                if spec.rate == ParameterRate::Reset {
                     return Err(err(
                         "E_CAPABILITY",
                         "modulations.target",
-                        "modulation requires a sample-rate parameter",
+                        "reset-rate parameters cannot receive modulation",
                     ));
                 }
                 Ok(())
             }
             ProcessorView::Core(processor) if processor.parameter_allowed(name) => {
-                if matches!(processor, Processor::Sine { .. })
-                    && matches!(name, "attack" | "release")
-                {
-                    return Err(err(
-                        "E_CAPABILITY",
-                        "modulations.target",
-                        "modulation requires a sample-rate parameter",
-                    ));
-                }
                 Ok(())
             }
             _ => Err(missing()),
