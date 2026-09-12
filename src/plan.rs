@@ -619,6 +619,33 @@ fn finite_engine_rational(value: &Rational, path: impl Into<String>) -> Result<(
     Ok(())
 }
 
+fn validate_channel_count(
+    channels: u8,
+    limits: &PlanLimits,
+    path: impl Into<String>,
+    subject: &str,
+) -> Result<(), PlanError> {
+    let path = path.into();
+    if channels == 0 {
+        return Err(err("E_RANGE", path, format!("{subject} must be positive")));
+    }
+    if channels > PlanLimits::MAX_CHANNELS {
+        return Err(err(
+            "E_CAPABILITY",
+            path,
+            format!("{subject} exceeds the mono/stereo engine capability"),
+        ));
+    }
+    if channels > limits.max_channels {
+        return Err(err(
+            "E_RESOURCE_LIMIT",
+            path,
+            format!("{subject} exceeds the caller channel limit"),
+        ));
+    }
+    Ok(())
+}
+
 /// A node/port address.  Port names are kept separate from object paths so a
 /// parameter target cannot be confused with an audio connection.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
@@ -3284,13 +3311,12 @@ impl<'a> PlanView<'a> {
                 "standalone plans require the 48 kHz foundation profile",
             ));
         }
-        if output.channels == 0 || output.channels > limits.max_channels {
-            return Err(err(
-                "E_RANGE",
-                "output.channels",
-                "only mono and stereo output are supported",
-            ));
-        }
+        validate_channel_count(
+            output.channels,
+            limits,
+            "output.channels",
+            "output channels",
+        )?;
         validate_identifier_limit(
             &output.output.node,
             "output.output.node",
@@ -3533,13 +3559,12 @@ impl<'a> PlanView<'a> {
                         "audio clips have no parameters",
                     ));
                 }
-                if clip.channels == 0 || clip.channels > limits.max_channels {
-                    return Err(err(
-                        "E_RANGE",
-                        "nodes.audio.channels",
-                        "clip channels must be mono or stereo",
-                    ));
-                }
+                validate_channel_count(
+                    clip.channels,
+                    limits,
+                    "nodes.audio.channels",
+                    "clip channels",
+                )?;
                 let asset = self
                     .audio_assets
                     .unwrap_or(&[])
@@ -3587,13 +3612,12 @@ impl<'a> PlanView<'a> {
                 samples,
             } = node.processor
             {
-                if channels == 0 || channels > limits.max_channels {
-                    return Err(err(
-                        "E_RANGE",
-                        format!("nodes.{}.processor.channels", node.id),
-                        "kit channels must be mono or stereo",
-                    ));
-                }
+                validate_channel_count(
+                    channels,
+                    limits,
+                    format!("nodes.{}.processor.channels", node.id),
+                    "kit channels",
+                )?;
                 if voices == 0 {
                     return Err(err(
                         "E_RANGE",
@@ -3679,82 +3703,36 @@ impl<'a> PlanView<'a> {
                 | Processor::Compressor { channels, .. }
                 | Processor::Reverb { channels, .. }
                 | Processor::Sum { channels } => {
-                    if *channels == 0 || *channels > limits.max_channels {
-                        return Err(err(
-                            "E_RANGE",
-                            format!("nodes.{}.processor", node.id),
-                            "channels must be mono or stereo",
-                        ));
-                    }
+                    validate_channel_count(
+                        *channels,
+                        limits,
+                        format!("nodes.{}.processor", node.id),
+                        "processor channels",
+                    )?;
                 }
                 Processor::Fader { channels } => {
-                    if *channels == 0 {
-                        return Err(err(
-                            "E_RANGE",
-                            format!("nodes.{}.processor.channels", node.id),
-                            "fader channels must be positive",
-                        ));
-                    }
-                    if *channels > 2 {
-                        return Err(err(
-                            "E_CAPABILITY",
-                            format!("nodes.{}.processor.channels", node.id),
-                            "core.fader/1 supports only mono or stereo",
-                        ));
-                    }
-                    if *channels > limits.max_channels {
-                        return Err(err(
-                            "E_RANGE",
-                            format!("nodes.{}.processor.channels", node.id),
-                            "channels exceed the caller channel limit",
-                        ));
-                    }
+                    validate_channel_count(
+                        *channels,
+                        limits,
+                        format!("nodes.{}.processor.channels", node.id),
+                        "fader channels",
+                    )?;
                 }
                 Processor::Noise { channels, .. } => {
-                    if *channels == 0 {
-                        return Err(err(
-                            "E_RANGE",
-                            format!("nodes.{}.processor.channels", node.id),
-                            "noise channels must be positive",
-                        ));
-                    }
-                    if *channels > 2 {
-                        return Err(err(
-                            "E_CAPABILITY",
-                            format!("nodes.{}.processor.channels", node.id),
-                            "core.noise/1 supports only mono or stereo",
-                        ));
-                    }
-                    if *channels > limits.max_channels {
-                        return Err(err(
-                            "E_RANGE",
-                            format!("nodes.{}.processor.channels", node.id),
-                            "channels exceed the caller channel limit",
-                        ));
-                    }
+                    validate_channel_count(
+                        *channels,
+                        limits,
+                        format!("nodes.{}.processor.channels", node.id),
+                        "noise channels",
+                    )?;
                 }
                 Processor::Delay { channels, frames } => {
-                    if *channels == 0 {
-                        return Err(err(
-                            "E_RANGE",
-                            format!("nodes.{}.processor.channels", node.id),
-                            "delay channels must be positive",
-                        ));
-                    }
-                    if *channels > 2 {
-                        return Err(err(
-                            "E_CAPABILITY",
-                            format!("nodes.{}.processor.channels", node.id),
-                            "core.delay/1 supports only mono or stereo",
-                        ));
-                    }
-                    if *channels > limits.max_channels {
-                        return Err(err(
-                            "E_RANGE",
-                            format!("nodes.{}.processor.channels", node.id),
-                            "channels exceed the caller channel limit",
-                        ));
-                    }
+                    validate_channel_count(
+                        *channels,
+                        limits,
+                        format!("nodes.{}.processor.channels", node.id),
+                        "delay channels",
+                    )?;
                     if *frames == 0 {
                         return Err(err(
                             "E_RANGE",
@@ -3769,27 +3747,12 @@ impl<'a> PlanView<'a> {
                     coefficients,
                 } => {
                     for (name, dimension) in [("inputs", inputs), ("outputs", outputs)] {
-                        if *dimension == 0 {
-                            return Err(err(
-                                "E_RANGE",
-                                format!("nodes.{}.processor.{name}", node.id),
-                                "matrix dimensions must be positive",
-                            ));
-                        }
-                        if *dimension > 2 {
-                            return Err(err(
-                                "E_CAPABILITY",
-                                format!("nodes.{}.processor.{name}", node.id),
-                                "core.matrix/1 supports only mono or stereo dimensions",
-                            ));
-                        }
-                        if *dimension > limits.max_channels {
-                            return Err(err(
-                                "E_RANGE",
-                                format!("nodes.{}.processor.{name}", node.id),
-                                "matrix dimension exceeds the caller channel limit",
-                            ));
-                        }
+                        validate_channel_count(
+                            *dimension,
+                            limits,
+                            format!("nodes.{}.processor.{name}", node.id),
+                            &format!("matrix {name}"),
+                        )?;
                     }
                     if coefficients.len() != usize::from(*outputs)
                         || coefficients
@@ -3850,13 +3813,12 @@ impl<'a> PlanView<'a> {
                             "instrument voice capacity exceeds the published limit",
                         ));
                     }
-                    if *channels == 0 || *channels > limits.max_channels {
-                        return Err(err(
-                            "E_RANGE",
-                            format!("nodes.{}.processor.channels", node.id),
-                            "instrument channels must be mono or stereo",
-                        ));
-                    }
+                    validate_channel_count(
+                        *channels,
+                        limits,
+                        format!("nodes.{}.processor.channels", node.id),
+                        "instrument channels",
+                    )?;
                     let program = self.instrument_program(program).ok_or_else(|| {
                         err(
                             "E_REFERENCE",
@@ -3877,13 +3839,12 @@ impl<'a> PlanView<'a> {
                 Processor::Compressor {
                     sidechain_channels: Some(channels),
                     ..
-                } if *channels == 0 || *channels > limits.max_channels => {
-                    return Err(err(
-                        "E_RANGE",
-                        format!("nodes.{}.processor.sidechain_channels", node.id),
-                        "sidechain must be mono or stereo",
-                    ))
-                }
+                } => validate_channel_count(
+                    *channels,
+                    limits,
+                    format!("nodes.{}.processor.sidechain_channels", node.id),
+                    "sidechain channels",
+                )?,
                 Processor::Reverb {
                     predelay_frames,
                     damping,

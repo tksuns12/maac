@@ -410,7 +410,7 @@ fn song_preserves_custom_structural_memory_and_rate_limits() {
                 max_channels: 0,
                 ..song
             },
-            "E_RANGE",
+            "E_RESOURCE_LIMIT",
         ),
     ] {
         assert_eq!(plan.validate_with_limits(&limits).unwrap_err().code, code);

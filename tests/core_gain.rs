@@ -217,10 +217,10 @@ fn strict_wire_rejects_malformed_gain_fields_and_typed_parameter_errors() {
         json["nodes"][i]["processor"] = processor;
         assert!(Plan::from_json(&serde_json::to_vec(&json).unwrap()).is_err());
     }
-    for channels in [0, 3, 255] {
+    for (channels, code) in [(0, "E_RANGE"), (3, "E_CAPABILITY"), (255, "E_CAPABILITY")] {
         let mut bad = p.clone();
         bad.nodes[i].processor = maac::plan::Processor::gain(channels);
-        assert_eq!(bad.validate().unwrap_err().code, "E_RANGE");
+        assert_eq!(bad.validate().unwrap_err().code, code);
     }
     for value in [
         serde_json::json!(-1),

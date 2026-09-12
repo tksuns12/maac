@@ -27,8 +27,17 @@ UTF-8 byte ranges; they refer to the original authored source.
 | `E_OUTPUT_EXISTS` | Choose a new destination or pass `--force` to replace an existing file |
 | `E_IO`, `E_WAV`, `E_FORMAT` | Correct the destination, permissions, WAV writer state or requested encoding |
 | `E_RENDER_STATE`, `E_RENDER_CALLBACK` | Correct an invalid execution graph or renderer/export boundary failure |
-| `E_RESOURCE_LIMIT` | Reduce input size, expansion, nesting, arithmetic size or render work |
+| `E_RESOURCE_LIMIT` | Reduce input size, expansion, nesting, arithmetic size, render work or channel width within the caller budget |
 | `E_VERSION` | Use a supported source or performance-plan version |
+
+Plan channel validation uses the foundation's mono/stereo capability.
+`PlanLimits::default()` allows at most two channels, and a caller may tighten
+`max_channels` without expanding supported channels. For each channel
+dimension, zero remains `E_RANGE`, a positive width above two is `E_CAPABILITY`,
+and supported width 1 or 2 above the caller's budget is `E_RESOURCE_LIMIT`.
+Capability is classified before the caller resource limit. Existing object and
+field paths remain stable, with Matrix dimensions traversed in `inputs` then
+`outputs` order.
 
 The engine never treats an unavailable processor as an oscillator substitute,
 steals a voice, extends a collapsed gate, or ignores an unknown field. A plan is

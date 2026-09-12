@@ -8,8 +8,9 @@ Audit date: 2026-09-10. Implementation baseline:
 The implementation has a path for every reference processor identifier in
 MaaC/1 §18 within its declared capability and resource limits. The audit
 confirmed a Sine arithmetic mismatch and a required-configuration validation
-gap; the A1 and A2 follow-ups below record their fixes. Other findings remain
-open. Processor coverage does **not** establish
+gap; the A1 and A2 follow-ups below record their fixes. The A3 caller
+channel-limit diagnostic discrepancy has been fixed, with targeted evidence
+recorded below. Other findings remain open. Processor coverage does **not** establish
 the full Core Audio profile. Under [§1.2](../MaaC-1-Specification.md#12-conformance-profiles),
 Core Audio additionally inherits Document and Performance requirements and
 includes the core asset/transport profile.
@@ -91,7 +92,7 @@ missing reference processor.
 | Seeking with prehistory (§28 vector 17) | Full-implementation evidence absent | [dsp.rs](../src/dsp.rs) renders from reset through the full interval. No public seek/window API or seek-versus-full-render-crop test was found. Spool seeking during delivery is not DSP-state restoration. A future seek interface must retain the required prehistory; this audit does not invent a new seek wire format. |
 | Full dependency locks (§22) | Separate Locked Render work | Production execution/render identity and pinned assets are not a complete generic `maac.lock.json` verifier. This is not a missing §18 processor. |
 | External processors and adapters (§§17, 25) | Deferred/unadvertised interfaces | No general external ABI host or MIDI/notation/DAW adapter was found. Do not advertise fidelity or loss-report guarantees for nonexistent adapters. Unsupported extension execution is explicitly rejected. |
-| Diagnostics/resources/package boundaries (§§23–24) | Existing bounded evidence; not exhaustively audited | [diagnostic.rs](../src/diagnostic.rs), [bundle.rs](../src/bundle.rs), [bundle_fs.rs](../src/bundle_fs.rs), and [bundle tests](../tests/bundle.rs) cover relevant validation and containment paths. Finding A3 records one diagnostic inconsistency. |
+| Diagnostics/resources/package boundaries (§§23–24) | A3 implemented with targeted evidence; not exhaustively audited | [diagnostic.rs](../src/diagnostic.rs), [bundle.rs](../src/bundle.rs), [bundle_fs.rs](../src/bundle_fs.rs), and [bundle tests](../tests/bundle.rs) cover relevant validation and containment paths. The A3 follow-up records the bounded caller channel-limit classification and evidence. |
 
 ## Findings
 
@@ -143,13 +144,14 @@ The affected boundary is the public source-schema validation promise in
 around lines 2112–2156 and 2638–2650. This is separate from cardinality and
 causality, which SourceGraph intentionally defers to lowering.
 
-### A3 — caller channel-limit diagnostics need consistency
+### A3 — implemented: caller channel-limit diagnostics are consistent
 
-Several [plan.rs](../src/plan.rs) checks report `E_RANGE` when a channel count
-exceeds the caller's `max_channels` limit. §23 specifies `E_RESOURCE_LIMIT`
-for a declared host limit. Keep this distinct from invalid authored dimensions
-and from unavailable processor capabilities. This finding is based on code
-inspection; a diagnostic-matrix regression should accompany a future fix.
+Several [plan.rs](../src/plan.rs) checks reported `E_RANGE` when a supported
+channel count exceeded the caller's `max_channels` limit. §23 specifies
+`E_RESOURCE_LIMIT` for a declared host limit. The shared validation now keeps
+that resource classification distinct from invalid authored dimensions and
+unavailable processor capabilities; the targeted matrix evidence is recorded
+below.
 
 ### A4 — rendered sum-order evidence can be stronger
 
@@ -207,12 +209,35 @@ exercise omitted, empty, and valid mono/stereo configuration through source
 validation and compilation for Sum, OnePole, Gain, Fader, Matrix, Delay, and
 Noise. They also retain positive controls for omitted Sine/Pan configuration.
 
+## A3 follow-up: caller channel-limit diagnostics
+
+The shared `PlanView::validate_channel_count` in [plan.rs](../src/plan.rs) now
+uses one channel-count classification. Zero remains `E_RANGE`. A positive dimension
+above the foundation's mono/stereo capability is `E_CAPABILITY`, including the
+legacy cases that previously surfaced as `E_RANGE`. A supported mono or stereo
+dimension above the bounded caller `max_channels` is `E_RESOURCE_LIMIT`.
+Capability is checked before the caller resource limit for each dimension.
+
+The existing diagnostic paths and dimension traversal order remain in place;
+Matrix dimensions are checked in `inputs` then `outputs` order. The checks cover
+output settings, audio clips, Kit, common OnePole/Gain/EQ/Compressor/Reverb/Sum,
+Fader/Noise/Delay, Matrix input and output dimensions, Instrument, and
+Compressor sidechain channels. Caller values such as 0, 1, 2, and 4 continue to
+be bounded by the published `PlanLimits` ceiling. Accepted plans and audio,
+published resource bounds, wire versions, and DSP behavior are unchanged.
+
+The [channel-limit regression](../tests/channel_limit_diagnostics.rs) covers
+valid-at-limit controls, caller limits 0/1/2/4, supported, invalid, and
+unavailable widths, both Matrix directions, and propagation through source
+compilation and retained-plan loading. The original RED reproduced the actual
+classification failure; the recovery executor's expanded matrix then passed
+the targeted GREEN gate.
+
 ## Recommended next implementation slice
 
-Address **A3**, distinguishing caller resource-limit diagnostics from invalid
-authored ranges and unsupported capabilities. Add a diagnostic-matrix
-regression before changing the affected channel-limit checks. A4 remains a
-separate rendered-graph evidence follow-up.
+Address **A4**, the rendered sum-order evidence gap. A3's caller channel-limit
+diagnostics are implemented and covered by the targeted matrix; A4 remains a
+separate rendered-graph follow-up.
 
 ## Verification record
 
@@ -270,3 +295,39 @@ audits; the total includes one doctest. The run used `--locked --offline`, LTO
 disabled, and 16 codegen units. The orchestrator independently checked the
 aggregate results and four zero exit statuses saved under
 `target/required-config-validation/`. No external corpus audit was run for A2.
+
+For A3, the original `a3_executor` added the initial regression and observed the
+actual baseline failure in `target/channel-limit-validation/red.log`: one test
+failed with exit 101 because `E_RANGE` was returned where `E_RESOURCE_LIMIT` was
+expected. The `a3_recovery_executor` owns the implementation, expanded
+regression matrix, and targeted checks. Its
+`target/channel-limit-validation/matrix-red-final.log` records 10 test groups
+failing with exit 101; some groups stopped at their first failing variant, so
+that log does not claim that every row was independently observed RED. Its
+`target/channel-limit-validation/focused-green-final.log` records all 10 groups
+passing with zero failures and zero ignored tests, exit 0, including the
+remaining variants. Python specification checks, including byte-identical
+generated fixtures, are recorded in
+`target/channel-limit-validation/spec-checks/summary.json` and passed. The
+original `a3_executor` owns the initial regression, Python checks, and this
+documentation update. Independent `a3_review` code/test review completed with
+no blocking findings, and the root completed its integration inspection of the
+slice. The final optimized test command was
+`CARGO_PROFILE_RELEASE_LTO=false CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 cargo
+test --release --locked --offline`; it exited 0 with 129 result groups, 978
+passed tests (977 unit/integration tests and one doctest), zero failures, three
+ignored tests, and no filtered or measured tests. The ignored tests are the
+full-duration EBU prescribed tones, external EBU corpus, and private ITU corpus
+audits; none was run. Final formatting, diff checks, and Clippy also passed
+after test-only corrections. The independent reviewer approved the final
+`core_gain` expectations for zero (`E_RANGE`) and 3/255 (`E_CAPABILITY`), as
+well as the `ProcessorFactory` type alias. Build and fresh installed basic and
+production acceptance also passed: the optimized release build exited 0, the
+fresh offline basic installation passed 38/38 checks with `ok: true` in
+`target/acceptance/results.json`, and the fresh offline production `song` run
+passed 148/148 checks with `status: pass` in
+`target/production-acceptance/run-6xrleokz/results.json`. Root independently
+confirmed the 12 specification input hashes remained unchanged. No new human
+listening test was run; these are local validations rather than hosted CI. The
+three ignored audits remain skipped, and full Core Audio conformance remains
+unclaimed.
