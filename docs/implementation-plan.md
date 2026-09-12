@@ -5,6 +5,11 @@ playable foundation. The [MaaC-1 specification](../MaaC-1-Specification.md)
 remains the normative language document. The foundation is an intentionally
 bounded implementation subset, not a full conformance profile.
 
+Specification completeness and interoperability priorities are tracked in the
+[language specification and conformance plan](language-specification-plan.md).
+This implementation plan remains focused on the existing playable foundation
+and its implementation acceptance boundary.
+
 ## Product boundary
 
 The foundation provides a Rust library and MaaC's `maac` CLI that parse and

@@ -132,9 +132,13 @@ implemented contract's integrated checks and native source-free render evidence.
 
 ### 3.1 Exact values
 
-All source numbers are exact rationals, reduced to numerator/denominator form during normalization. A denominator of zero is a syntax or type error. This applies to decimals too: `0.1` is exactly `1/10` before DSP conversion.
+All source numbers are exact rationals. The canonical authored graph reduces
+each rational to numerator/denominator form without changing authored field
+presence or the spelling of a typed unit. A denominator of zero is a syntax or
+type error. This applies to decimals too: `0.1` is exactly `1/10` before DSP
+conversion.
 
-| Type | Surface form | Canonical unit / rule |
+| Type | Surface form | Semantic / execution rule |
 |---|---|---|
 | Dimensionless number | `0.8`, `3/2` | Reduced rational |
 | Musical duration or position | `4q`, `1/3q` | Quarter-note units |
@@ -149,6 +153,10 @@ All source numbers are exact rationals, reduced to numerator/denominator form du
 
 `q` never changes meaning with the meter. In 6/8, one bar is `3q`, not `6q`. The language has no context-dependent naked “beat” unit and no `bar` duration unit.
 
+The authored graph preserves explicit unit tags such as `ms`, `s`, `q`, and
+`Hz`, including when their rational values are equivalent. A normalized
+execution view may convert those quantities to common units.
+
 Clock positions and durations are distinct semantic types even where their literals look the same. Adding a position to a position is not an implicit operation. Units are not inferred from a field name. `at = 4;` is invalid where musical or physical time is required.
 
 ### 3.2 Constructors
@@ -160,7 +168,7 @@ The only core value constructors are:
 - `ratio(r, f)`: positive dimensionless frequency ratio times a positive frequency literal.
 - `bar(b, u)`: musical position from a one-based bar number and a one-based, possibly fractional, denominator-note position within that bar, using the project's meter map.
 
-For `bar`, `b` is any integer, `u` is rational, and `1 <= u < numerator+1`. Bar 1 begins at `0q`; bar 0 is the preceding bar. The next bar is addressed as `bar(b+1, 1)`, not by an out-of-range beat. `bar(...)` is allowed only in global score-position fields, not pattern-local positions or durations. It is lowered to exact `q` at normalization. Editing the meter and re-resolving this shorthand changes the source's addressed musical location intentionally; canonical source may instead store the resolved `q` address.
+For `bar`, `b` is any integer, `u` is rational, and `1 <= u < numerator+1`. Bar 1 begins at `0q`; bar 0 is the preceding bar. The next bar is addressed as `bar(b+1, 1)`, not by an out-of-range beat. `bar(...)` is allowed only in global score-position fields, not pattern-local positions or durations. Semantic normalization lowers it to exact `q` in the separate execution view. Lowering it into the authored source is an explicit edit that adopts the current meter resolution; it is never silent, and a later meter edit does not re-resolve the resulting `q` address.
 
 No other function name is executable core syntax. In particular, `random()`, `humanize()`, and `generate()` do not resolve inside a core document.
 
@@ -711,13 +719,53 @@ Lists and tuples remain distinct tagged values with ordered `items`. Records use
 
 ### 20.2 Semantic normalization
 
-A normalizer must resolve all references, validate field types, reduce numbers, expand specified defaults, and canonicalize units (`ms` to s, kHz to Hz). Pitch letter tokens lower to `key(k)`; `ratio` lowers to an exact Hz quantity; `bar` lowers to q. Explicit named tuning degree references remain because their source identity is meaningful. Display labels and comments may be retained but are excluded from the execution hash.
+For revision and editing, the source has a canonical authored typed graph
+**A**. It preserves authored object and child IDs, reference paths, labels,
+field maps (including absent fields and explicitly empty maps), typed unit tags,
+symbols, and constructor forms. Rational values in **A** use reduced
+numerator/denominator form. Text comments, insignificant whitespace, and other
+surface formatting are outside the canonical trees and excluded from canonical
+bytes, but no semantic authored distinction is silently removed.
+
+Semantic normalization computes a separate execution view **N(A)**. It must
+resolve references, validate field types, expand specified defaults, and
+canonicalize execution units (`ms` to s, kHz to Hz) without mutating **A** or
+silently materializing those defaults or lowering constructors into **A**.
+Pitch letter tokens lower to `key(k)`; `ratio` lowers to an exact Hz quantity;
+`bar` lowers to q. Explicit named tuning degree references remain because their
+source identity is meaningful. Comments and other surface formatting may be
+retained outside the canonical trees but are excluded from the execution hash.
 
 The source graph remains compact: uses and placements are not flattened for canonical source storage. A separate performance digest may describe an expanded performance. These are different hashes and must not be confused.
 
-Canonical JSON uses UTF-8, no insignificant whitespace, no BOM, no final newline, object keys sorted by Unicode code-point order, and shortest unescaped Unicode strings except that double quote, backslash, and U+0000–U+001F require JSON escaping. Control characters use lowercase `\u00xx` rather than optional short escapes. Slash is not escaped. Numbers with semantic precision are encoded in the tagged rational forms, never as JSON floating-point numbers. Version is the literal JSON integer 1. Surrogate code points are forbidden.
+Canonical JSON for **A** uses UTF-8, no insignificant whitespace, no BOM, no
+final newline, object keys sorted by Unicode code-point order, and shortest
+unescaped Unicode strings except that double quote, backslash, and U+0000–U+001F
+require JSON escaping. Control characters use lowercase `\u00xx` rather than
+optional short escapes. Slash is not escaped. Numbers with semantic precision
+are encoded in the tagged rational forms, never as JSON floating-point
+numbers. The typed syntax-tree root `version` is the literal JSON integer 1.
+Surrogate code points are
+forbidden. The **revision hash** is SHA-256 of these canonical authored **A**
+JSON bytes, including authored labels and declared external asset hashes but
+excluding non-source UI sidecars and the revision hash itself. Protocol 2
+describes this algorithm context as `maac.revision.authored.sha256/1`; that
+identifier is metadata only. The digest has no extra prefix bytes and
+incorporates no hidden schema or normalization state.
 
-The **revision hash** is SHA-256 of canonical normalized source JSON including labels and declared external asset hashes, but excluding non-source UI sidecars and the revision hash itself. The **execution hash** uses the same graph minus every `label` field and nonexecuting extension data identified by an understood schema. Renaming an ID may change these hashes because identity can affect randomness and deterministic reduction order. A hash is not a claim that two different source graphs cannot happen to sound the same.
+The **execution hash** is SHA-256 of canonical JSON bytes for the normalized
+execution graph **N(A)** after removing the optional `label` entry in an actual
+source object's `fields` map and excluding nonexecuting extension data
+identified by an understood explicit schema. It uses the same canonical JSON
+encoding defined above for **A**, with no extra prefix bytes. While traversing
+source objects and their actual children, this label exclusion preserves
+`label` fields nested in params, config, or other records (including
+`extension.data`), object IDs named `label`, and `override.set.label`. There is
+no name-based recursion through record values; any additional omission requires
+an understood schema's explicit nonexecuting-data rule. Renaming an ID may
+change these hashes because identity can affect randomness and deterministic
+reduction order. A hash is not a claim that two different source graphs cannot
+happen to sound the same.
 
 The **render key** additionally covers the execution hash, all transitive dependencies, processor/adapter versions, state hashes, sample rate, numerical mode, render window, tail policy, block schedule where applicable, and output-encoding settings. There are no self-referential project hashes embedded in the object graph.
 
@@ -727,7 +775,7 @@ Text is one view of the document; editing actions operate on typed object addres
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "base_revision": "sha256:<actual source revision>",
   "operations": [
     {
@@ -741,7 +789,19 @@ Text is one view of the document; editing actions operate on typed object addres
 }
 ```
 
-This example uses source-value strings for readability. The wire representation of `expect` and `value` is the tagged syntax-value representation, with normalized semantic comparison. A production transaction must supply real hashes. The transport encoding is JSON and never executes an `op` string as code.
+This example uses source-value strings for readability. The wire representation
+of `expect` and `value` is the tagged syntax-value representation. Protocol 2
+is versioned independently of the `maac 1` language and syntax-tree version 1.
+A receiver that requires protocol 2 rejects a version-1 transaction with
+`E_CAPABILITY` before checking its base revision or mutating the document; it
+must not guess or convert a base revision computed under another revision
+authority. A production transaction must
+supply a real hash. The transport encoding is JSON and never executes an
+`op` string as code. Expectations use semantic equality in the fixed base
+context, including labels; they do not use audible equivalence. Defined
+normalization compares `C4` and `key(60)` equal in a pitch context, and `20ms`
+and `1/50s` equal in a duration context. Distinct pitches that happen to
+produce the same frequency do not collapse.
 
 Core operations are:
 
@@ -749,11 +809,35 @@ Core operations are:
 - `unset`: remove an optional field, restoring its specified default; removing a required field fails validation.
 - `insert_object`: add a complete typed object at an explicitly named parent and unused ID.
 - `delete_object`: remove a named object; dangling references fail validation unless handled elsewhere in the same transaction.
-- `rename_id`: change an object's ID and rewrite all internal references, instance override addresses, and structural mappings in the transaction. Changes to randomness/hash identity must be reported.
+- `rename_id`: change an object's ID and rewrite all source references,
+  instance override addresses, and declared structural mappings in the
+  candidate. It MUST NOT rewrite any remaining operation target paths or
+  payloads (`expect`, `expect_object`, `value`, or `object_value`). Changes to
+  randomness/hash identity must be reported.
 
 Ordered lists are replaced as fields in core patches. A UI may implement fine-grained breakpoint edits internally, but it must check the expected old list or revision rather than blindly rely on a stale list index. Core has no query-text execution, wildcard mutation, or implicit last-writer-wins merge.
 
-All operations apply atomically to an immutable candidate revision. Preconditions are checked against the base revision; operations then apply in listed order; the complete result must pass semantic validation before commit. Failure changes nothing. A patch result includes the new revision, inverse patch, affected source IDs, affected expanded event addresses or a bounded summary, render-invalidated regions/dependencies, and diagnostics. Inverse patches include removed values and full removed objects.
+Before operation evaluation, the supplied `base_revision` must equal
+`SHA-256(canonical A0)` for the immutable original authored graph **A0**;
+otherwise the receiver reports `E_CONFLICT` and does not mutate. All operations
+are then processed in listed order on a private candidate derived from **A0**.
+For each operation, the receiver resolves its target against the current
+candidate, evaluates its preconditions against **A0** through the surviving
+identity correspondence, and then applies the operation privately. A rename
+therefore does not implicitly rewrite any remaining operation's target or
+payload: a later operation must spell the candidate path it intends to address.
+An existing object retains its base correspondence through renames and through
+field or record replacement. Deleting an object breaks the base correspondence
+for it and all descendants; reinserting the same ID creates a new identity. A
+base precondition cannot target a newly inserted object or a descendant without
+base correspondence. Candidate mutation requires every intermediate record to
+exist and never synthesizes missing records. Only after every operation and
+final semantic validation succeeds is the private candidate committed
+atomically. Failure discards the private candidate and changes nothing. A patch
+result includes the new revision, inverse patch, affected source IDs, affected
+expanded event addresses or a bounded summary, render-invalidated
+regions/dependencies, and diagnostics. Inverse patches include removed values
+and full removed objects.
 
 Query and transform commands such as “halve density” are tooling, not execution semantics. They must resolve to explicit targets and changes before commit. A source edit and an occurrence override are different actions. Tools must expose that choice, especially when a source note has many instances.
 
@@ -761,7 +845,13 @@ Optimistic concurrency uses the base revision plus optional field expectations. 
 
 ### 21.1 Wire operation shapes
 
-All operation objects reject unknown fields. Object and field paths are nonempty arrays of source identifier strings. The empty `parent` path denotes the document root. The base revision is a string matching `sha256:` followed by exactly 64 lowercase hexadecimal digits. `version` is the integer 1, and `operations` is an ordered nonempty array.
+The transaction object has exactly `version`, `base_revision`, and
+`operations`; unknown fields are rejected. Each operation object also rejects
+unknown fields. Object and field paths are nonempty arrays of source identifier
+strings. The empty `parent` path denotes the document root. The base revision
+is a string matching `sha256:` followed by exactly 64 lowercase hexadecimal
+digits. `version` is the integer 2, and `operations` is an ordered nonempty
+array.
 
 The exact operation fields are:
 
@@ -773,11 +863,74 @@ The exact operation fields are:
 | `delete_object` | `object` | `expect_object` |
 | `rename_id` | `object`, `new_id` | None |
 
-`value` and `expect` are tagged syntax values. `expect_absent`, when present, must be true and cannot coexist with `expect`. `object_value` and `expect_object` have the typed object shape from section 20, excluding an ID because the containing dictionary owns that ID. `field` descends through named records, not through lists or child objects; child objects are addressed in `object`. A `set` can add an optional field but must not synthesize missing intermediate records. `unset` requires the field to exist in the authored graph. Explicit-versus-default presence is checked against authored source state; effective-value comparisons use semantic normalization.
+`value` and `expect` are tagged syntax values. `set` and `insert_object` store
+the supplied authored forms in **A**, after rational scalar canonicalization;
+they do not expand defaults, convert units, or lower constructors during the
+write. `expect_absent`, when present,
+must be true and cannot coexist with `expect`; it checks authored field
+presence, so a field supplied only by a default is still absent. `object_value`
+and `expect_object` have the typed object shape from section 20, excluding an
+ID because the containing dictionary owns that ID. `field` descends through
+named records, not through lists or child objects; child objects are addressed
+in `object`. A `set` can add an optional field but must not synthesize missing
+intermediate records. `unset` requires the field to exist in the authored
+candidate. If a base record on an expected descendant is missing,
+`expect_absent` sees that descendant as absent; a non-record intermediate is an
+invalid path. Candidate mutation still requires every intermediate record. A
+base `expect`, `expect_absent`, or `expect_object` on a newly inserted object,
+including an object deleted and reinserted under the same ID, fails with
+`E_CONFLICT`. An absent optional field with a specified base default is
+compared to that default for `expect`; an absent field without a specified
+default fails with `E_CONFLICT`. Effective-value comparisons use **N(A)** in
+the fixed base type, meter, name, dependency, and label context, not audible
+equivalence; **N(A)** retains labels and only the execution-hash projection
+removes the scoped labels. A failed base or field precondition is `E_CONFLICT`;
+a missing target object or missing/non-record intermediate candidate record is
+`E_REFERENCE`, as is `unset` of an absent authored leaf field; a negative
+`tail` remains an ordinary semantic `E_RANGE`.
 
 A delete-object expectation compares the complete normalized object subtree. It is not an arbitrary expression or partial pattern. A rename requires an unused sibling ID. Core operations cannot directly change a processor's opaque internal state: changing `node.state` explicitly selects a different identified state asset and is validated through that processor's adapter.
 
-For inverse generation, each operation records the authored prior state and identity mapping. The transaction preconditions refer to the base revision, while operation target paths refer to the progressively edited candidate. Therefore a transaction that renames an object and then changes its pitch uses the new path in the second operation. A precondition on a newly inserted candidate object is invalid; insertion's unused-ID check is sufficient.
+For inverse generation, the transaction records the original canonical
+authored tree and its identity mapping. The inverse restores that tree,
+including field omissions, typed units, and constructor forms; it does not
+promise to restore source comments or formatting. Its `base_revision` is the
+new final revision. Optional guards in an inverse are either omitted or are
+evaluated against that final base, never copied from intermediate prior
+values. A transaction that renames an object and then changes its pitch must
+spell the renamed candidate path in the second operation; the rename does not
+rewrite that operation's target or expectation.
+
+### 21.2 Normative examples
+
+- `core.constant/1` defines optional `params.value` with default `0`. In a
+  base with no authored `params` record, `expect_absent: true` for
+  `params.value` succeeds because the descendant is absent, while `expect: 0`
+  uses the specified default. A candidate `set` or `unset` cannot synthesize
+  the missing `params` record and therefore fails with `E_REFERENCE`. After an
+  explicit `params = {}` record is authored, a later `set` may add the absent
+  `params.value` leaf, while `unset` still requires that leaf itself to be
+  authored. `expect_absent: true` always checks authored presence.
+- Authored `20ms` and `1/50s` are equal in **N(A)** after defined duration
+  normalization while remaining distinct in **A** and therefore in the
+  revision. The authored unit requested by a `set` is preserved.
+- A project with omitted `tail` and an otherwise identical project with
+  authored `tail = 0s` MUST have different revisions and MUST have equal
+  execution hashes when all other source and dependency data are equal.
+- In a 4/4 meter, an explicit edit may replace `bar(2, 1)` with `4q` in **A**.
+  A later meter change does not move that explicit `4q`; an unedited `bar`
+  remains meter-relative in **N(A)**.
+- A transaction can rename `bass_riff` to `lead_riff` and then target
+  `lead_riff` only if the second operation spells that candidate path. The
+  engine does not rewrite the later path or its `expect` payload. The renamed
+  existing object retains its base correspondence.
+- If a patch changes an absent `tail` to authored `0s`, its inverse uses the
+  resulting revision as `base_revision` and restores the absent field from the
+  original canonical **A**. It does not guard on an intermediate prior value.
+- Protocol 2 names the revision algorithm context
+  `maac.revision.authored.sha256/1`; this descriptive identifier adds no bytes
+  to the SHA-256 input. A v2-only receiver rejects a version-1 transaction with
+  `E_CAPABILITY` before checking its base or mutating the document.
 
 ## 22. Dependency locks, execution, and reproducibility
 
@@ -865,6 +1018,14 @@ Rendered audio preserves a particular result, not the editable note/graph struct
 ## 26. Versioning and extensions
 
 `maac 1;` selects this language's core semantics. A future change that alters the interpretation of valid source requires a new major language version or a distinct explicitly required capability. New named core processor versions never replace old processor behavior silently: `core.onepole/2` is a different type from `/1`.
+
+The exact editing protocol is versioned independently of both `maac 1` and the
+typed syntax-tree version 1. Protocol 2 uses the authored revision algorithm
+context `maac.revision.authored.sha256/1`; it does not alter retained-plan
+formats or current production/import identities. A receiver requiring protocol
+2 rejects a version-1 transaction with `E_CAPABILITY` before checking its base
+or mutating the document and must not silently reinterpret or convert its base
+hash.
 
 An `extension` requires `namespace`, an exact versioned identifier string; `schema`, a descriptor-asset reference; `render_affecting`, boolean; and `data`, a record. Its namespace must appear in `project.requires`. A host that does not understand a required extension may preserve it for Document-only inspection but must not claim semantic normalization or faithful rendering of that document. In particular, it must not trust an unknown schema's assertion that arbitrary data is non-rendering merely to omit it from a hash.
 

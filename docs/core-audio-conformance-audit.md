@@ -254,11 +254,11 @@ sort-disabled isolated copy; the latter is a regression proof rather than an
 observed product fault. A4 adds no production renderer behavior. Counts,
 statuses, hashes, and ownership are recorded in the Verification record.
 
-## Recommended next implementation slice
+## Recommended next specification slice
 
-A1–A4 are addressed by their recorded fixes or evidence improvements. The next
-full-profile slice should select and specify one deferred obligation from the
-existing profile-obligations table before implementation begins.
+Continue with the [language specification and conformance plan](language-specification-plan.md),
+beginning with L2 timing coordinates. L1 identity and edit consistency is
+addressed; the A1–A4 fixes and evidence remain recorded above.
 
 ## Verification record
 

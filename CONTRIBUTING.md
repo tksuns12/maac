@@ -78,6 +78,19 @@ cp check_spec.py grammar.lark syntax-tree.schema.json example.maac "$smoke_dir/"
 python3 "$smoke_dir/check_spec.py"
 ```
 
+For portable L1 identity/corpus evidence, run these read-only checks from the
+repository root:
+
+```sh
+python3 scripts/check_identity_edit.py --corpus conformance/l1
+python3 -m unittest discover -s scripts -p 'test_check_identity_edit.py'
+```
+
+They check the [L1 identity corpus](conformance/l1/manifest.json) and checker
+behavior against its fixed expected contract data. They do not establish
+execution by a production normalizer or editor, nor do they claim full runtime
+revision, patch, or inverse conformance.
+
 Run `python3 check_production.py` from the repository root after installing the
 pinned checker dependencies above. This separate checker does not regenerate
 tracked files. It validates the [production specification](docs/production.md)

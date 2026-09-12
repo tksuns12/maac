@@ -1,0 +1,1023 @@
+{
+  "authority": {
+    "language_version": 1,
+    "patch_protocol": 2,
+    "revision_algorithm": "maac.revision.authored.sha256/1",
+    "revision_preimage": "canonical authored typed-document bytes with no prefix bytes",
+    "syntax_tree_version": 1
+  },
+  "evidence_boundary": {
+    "editor_conformance": false,
+    "establishes": [
+      "fixed canonical bytes and SHA-256 digests",
+      "supplied expected normalization-vector relationships",
+      "protocol-2 request shapes and declared patch outcomes",
+      "metadata-role projection for execution identity"
+    ],
+    "normalizer_conformance": false,
+    "scope": "portable corpus self-consistency plus independently reviewed static outcome vectors"
+  },
+  "files": {
+    "authored/bar-meter-after.typed.json": {
+      "bytes": 1214,
+      "coverage": "full_typed_document",
+      "role": "canonical_authored_snapshot",
+      "sha256": "36e9657bb0e1959cd92c9ab58dd72849f8c873d85661a69ef3e4bef1b03ba6c8",
+      "shape": "document"
+    },
+    "authored/bar-meter-base.typed.json": {
+      "bytes": 1214,
+      "coverage": "full_typed_document",
+      "role": "canonical_authored_snapshot",
+      "sha256": "33d57944c6f5753357de685e708b368d1e355b91e5654f1251b3fab7b1db54ca",
+      "shape": "document"
+    },
+    "authored/constant-empty-records.typed.json": {
+      "bytes": 932,
+      "coverage": "full_typed_document",
+      "role": "canonical_authored_snapshot",
+      "sha256": "6dd96afcf6bcebd000da26d7ecb1ac913b868ec8607e25966862d5ac429e3ff6",
+      "shape": "document"
+    },
+    "authored/constant-explicit-zero.typed.json": {
+      "bytes": 970,
+      "coverage": "full_typed_document",
+      "role": "canonical_authored_snapshot",
+      "sha256": "7aa3118713a29724bca89176260a82401d0bdca1badc135059510b19a3778c12",
+      "shape": "document"
+    },
+    "authored/constant-labelled.typed.json": {
+      "bytes": 908,
+      "coverage": "full_typed_document",
+      "role": "canonical_authored_snapshot",
+      "sha256": "1bc046b8d193923646ccdd1aa2a2678f4772e9d4f93831a054b9c83f882fb35e",
+      "shape": "document"
+    },
+    "authored/constant-omitted.typed.json": {
+      "bytes": 860,
+      "coverage": "full_typed_document",
+      "role": "canonical_authored_snapshot",
+      "sha256": "a31d57197bd11b84321165a78a26a3bf2cea4cef7812617b4fc9b1b55220fd92",
+      "shape": "document"
+    },
+    "authored/constant-params-zero.typed.json": {
+      "bytes": 934,
+      "coverage": "full_typed_document",
+      "role": "canonical_authored_snapshot",
+      "sha256": "7b1e32f617804ed72e9cbf0fb8f8f13b7e5dcc5f11e3fa50b00cf24843f0c4b3",
+      "shape": "document"
+    },
+    "authored/minimal-label-a.typed.json": {
+      "bytes": 849,
+      "coverage": "full_typed_document",
+      "role": "canonical_authored_snapshot",
+      "sha256": "4230260e2d3794d0c2d001af4a3659831b5e9b9a08eb9dd81d385c9d9ba28da8",
+      "shape": "document"
+    },
+    "authored/minimal-label-b.typed.json": {
+      "bytes": 849,
+      "coverage": "full_typed_document",
+      "role": "canonical_authored_snapshot",
+      "sha256": "8c2f379045bada9a5e417731ba7c5a21da912a38bb0102086805d90e769829de",
+      "shape": "document"
+    },
+    "authored/minimal-tail-1-50s.typed.json": {
+      "bytes": 813,
+      "coverage": "full_typed_document",
+      "role": "canonical_authored_snapshot",
+      "sha256": "7730ea0e28e764b4a8106766f03b9cf3ec50770f0b1dae9c3b5713eb48cdd54d",
+      "shape": "document"
+    },
+    "authored/minimal-tail-20ms.typed.json": {
+      "bytes": 814,
+      "coverage": "full_typed_document",
+      "role": "canonical_authored_snapshot",
+      "sha256": "d079720d88e8f2b9c5f85a57e82d351973e7201b2f18ee757d88d176fbb5e4d5",
+      "shape": "document"
+    },
+    "authored/minimal-tail-omitted.typed.json": {
+      "bytes": 764,
+      "coverage": "full_typed_document",
+      "role": "canonical_authored_snapshot",
+      "sha256": "c9a913bee5beaf294485da1ebafe9b3c03e5a95f7fc466341b9bdb2472514ef3",
+      "shape": "document"
+    },
+    "authored/minimal-tail-one.typed.json": {
+      "bytes": 812,
+      "coverage": "full_typed_document",
+      "role": "canonical_authored_snapshot",
+      "sha256": "397630c4fa5cf6a53698a67e0d0a754121db1cd272d508bab6f7395c098187e2",
+      "shape": "document"
+    },
+    "authored/minimal-tail-two.typed.json": {
+      "bytes": 812,
+      "coverage": "full_typed_document",
+      "role": "canonical_authored_snapshot",
+      "sha256": "1a8329e29cbbdd8628e1454c03392d3b2067911a19afd29c675b5442e0805a8e",
+      "shape": "document"
+    },
+    "authored/minimal-tail-zero.typed.json": {
+      "bytes": 812,
+      "coverage": "full_typed_document",
+      "role": "canonical_authored_snapshot",
+      "sha256": "96913f0b5f650c5872f643578c06010b5fdbd8687ae88c9a049c77b107948676",
+      "shape": "document"
+    },
+    "authored/pitch-key-60.typed.json": {
+      "bytes": 1075,
+      "coverage": "full_typed_document",
+      "role": "canonical_authored_snapshot",
+      "sha256": "59987935b1e83926574da4cc422c586734e0814289e650e8f48e7a76d421197f",
+      "shape": "document"
+    },
+    "authored/pitch-symbol.typed.json": {
+      "bytes": 1034,
+      "coverage": "full_typed_document",
+      "role": "canonical_authored_snapshot",
+      "sha256": "8e0f8023b1bf6d5bad65472f90b7ac8089a1d29bc2b2a3c12c24d360999bb500",
+      "shape": "document"
+    },
+    "authored/tempo-renamed-90.typed.json": {
+      "bytes": 761,
+      "coverage": "full_typed_document",
+      "role": "canonical_authored_snapshot",
+      "sha256": "2b1db292084cd05d3e7fcda3266f4ce7969f9bd8921090c65d9c4a202e00e6f6",
+      "shape": "document"
+    },
+    "canonical/escape-order-rational.json": {
+      "bytes": 126,
+      "coverage": "UTF-8, control escaping, Unicode key ordering, slash, and tagged rational bytes",
+      "role": "canonical_byte_vector",
+      "sha256": "aa5e2a3c526583d6aa52d119d23bb3e9135a7702676488c3ff781cc4b1ae425c",
+      "shape": "canonical_value"
+    },
+    "fragments/metadata-role-expected.typed-object.json": {
+      "bytes": 778,
+      "coverage": "typed_object_fragment_context",
+      "role": "metadata_projection_expected",
+      "sha256": "f5b0e238b708cf9c06b67f1f7c0c92ccc8a611e771f5b905af65c78d7eed267b",
+      "shape": "object_fragment"
+    },
+    "fragments/metadata-role-input.typed-object.json": {
+      "bytes": 883,
+      "coverage": "typed_object_fragment_context",
+      "role": "metadata_projection_input",
+      "sha256": "4d4f49966a5b34f5517d27935eb2bc59c66bc23f2980758b3af49896fcacbdc0",
+      "shape": "object_fragment"
+    },
+    "normalized/bar-meter-after.execution.json": {
+      "bytes": 1227,
+      "coverage": "full_typed_document",
+      "role": "supplied_expected_normalized_vector",
+      "sha256": "9d88928ccb3fa7411ea46d0f30571e4f262e6d8723b2fa2e6c0031995e1c15f3",
+      "shape": "document"
+    },
+    "normalized/bar-meter-base.execution.json": {
+      "bytes": 1227,
+      "coverage": "full_typed_document",
+      "role": "supplied_expected_normalized_vector",
+      "sha256": "201c4f1098ed03fae6fa04ea71f823987da40cb03ec9f32630dbf4ce8ecdda56",
+      "shape": "document"
+    },
+    "normalized/constant-default.execution.json": {
+      "bytes": 1091,
+      "coverage": "full_typed_document",
+      "role": "supplied_expected_normalized_vector",
+      "sha256": "370f08d0193f6bf19cf1be46f242501d9d34dd1ddea35f3fa203ea6069863268",
+      "shape": "document"
+    },
+    "normalized/minimal-default.execution.json": {
+      "bytes": 885,
+      "coverage": "full_typed_document",
+      "role": "supplied_expected_normalized_vector",
+      "sha256": "fbb0146d262c6d02a4c6bba402251f51440e6ad61cc51d55a38262d6dd8b76c6",
+      "shape": "document"
+    },
+    "normalized/minimal-label-a.normalized.json": {
+      "bytes": 970,
+      "coverage": "full_typed_document",
+      "role": "supplied_expected_normalized_vector",
+      "sha256": "bc2431e1189e2d4e2ecbf4ba978d630acd604b5fd7140801cba84df41a4c3b06",
+      "shape": "document"
+    },
+    "normalized/minimal-label-b.normalized.json": {
+      "bytes": 970,
+      "coverage": "full_typed_document",
+      "role": "supplied_expected_normalized_vector",
+      "sha256": "9362ae042e3d089a86993f7c79577e719f182fd2c886de8c1802250f47f6b3ae",
+      "shape": "document"
+    },
+    "normalized/minimal-tail-1-50.execution.json": {
+      "bytes": 886,
+      "coverage": "full_typed_document",
+      "role": "supplied_expected_normalized_vector",
+      "sha256": "60b3b25a55d82f0de54e3cc0a16d66dc8ef5d7791671a6d2eca3dbdf6e298760",
+      "shape": "document"
+    },
+    "patches/create-params-record.request.json": {
+      "bytes": 350,
+      "coverage": "protocol_2_wire_request",
+      "role": "patch_request",
+      "sha256": "6e0e2dd104566bab6965f9e9c3742e7631ee5731bb99d8f7f757e12ae7c99251",
+      "shape": "patch_request"
+    },
+    "patches/delete-labelled-constant-label-conflict.request.json": {
+      "bytes": 417,
+      "coverage": "protocol_2_wire_request",
+      "role": "patch_request",
+      "sha256": "3d3b130e3c60fb6e0c52b376ec12b8130169da92bb3b71fed6900dbf050d293b",
+      "shape": "patch_request"
+    },
+    "patches/delete-labelled-constant.request.json": {
+      "bytes": 422,
+      "coverage": "protocol_2_wire_request",
+      "role": "patch_request",
+      "sha256": "61e9727b26322be3d7afee2fec4b7b55ee166017655a0fc0177f17bbf68b5a1b",
+      "shape": "patch_request"
+    },
+    "patches/delete-reinsert-tempo-precondition.request.json": {
+      "bytes": 818,
+      "coverage": "protocol_2_wire_request",
+      "role": "patch_request",
+      "sha256": "f7a2754d3dd62e88d3d564ab5fe3e774cb71e5c8a2f419182ed7a437d1bd84aa",
+      "shape": "patch_request"
+    },
+    "patches/edit-meter-preserve-bar.request.json": {
+      "bytes": 486,
+      "coverage": "protocol_2_wire_request",
+      "role": "patch_request",
+      "sha256": "2c6adca3955d6d689b65cfb10941da420d43efbaac793c7f4f53abe737b3b93c",
+      "shape": "patch_request"
+    },
+    "patches/expect-absent-conflict.request.json": {
+      "bytes": 233,
+      "coverage": "protocol_2_wire_request",
+      "role": "patch_request",
+      "sha256": "c2056f757123e507488a5b55ab34543be993c8a4cbdcabdab60caeb905d48898",
+      "shape": "patch_request"
+    },
+    "patches/expect-default-tail.request.json": {
+      "bytes": 262,
+      "coverage": "protocol_2_wire_request",
+      "role": "patch_request",
+      "sha256": "41305c8afd0da46353cdcce0d6cf76f31229988c1eed3c6974677179d9f8a099",
+      "shape": "patch_request"
+    },
+    "patches/expect-missing-no-default-label.request.json": {
+      "bytes": 239,
+      "coverage": "protocol_2_wire_request",
+      "role": "patch_request",
+      "sha256": "a84807d250d772993e3f92e82e8e08063140e78581062d57bf8c30c69c9126df",
+      "shape": "patch_request"
+    },
+    "patches/fixed-base-successive-tail.request.json": {
+      "bytes": 377,
+      "coverage": "protocol_2_wire_request",
+      "role": "patch_request",
+      "sha256": "398e9c0af65463be06c4c0033bbcb0a7ef03a455300a833c5c2b50a17df065e2",
+      "shape": "patch_request"
+    },
+    "patches/insert-new-object-precondition.request.json": {
+      "bytes": 776,
+      "coverage": "protocol_2_wire_request",
+      "role": "patch_request",
+      "sha256": "b6016d680c57951a325348cab9810c6f61355ec58672fca830d888b583c03056",
+      "shape": "patch_request"
+    },
+    "patches/negative-tail-atomic.request.json": {
+      "bytes": 234,
+      "coverage": "protocol_2_wire_request",
+      "role": "patch_request",
+      "sha256": "0a259e2dc23918d8bbf620f7153aae391552f51a155e3a18215306dd4a400162",
+      "shape": "patch_request"
+    },
+    "patches/rename-tempo-and-set.request.json": {
+      "bytes": 700,
+      "coverage": "protocol_2_wire_request",
+      "role": "patch_request",
+      "sha256": "5e4b6f9814beb60fe2df78807d2f0275f4db626ebffbf668c249bf0d520968a3",
+      "shape": "patch_request"
+    },
+    "patches/restore-labelled-constant.inverse.request.json": {
+      "bytes": 317,
+      "coverage": "protocol_2_wire_request",
+      "role": "expected_inverse_patch_request",
+      "sha256": "59d88fc0beded68245dacf10f209c9d67e3ccae55bb08886b2d0ebc85fb1b83b",
+      "shape": "patch_request"
+    },
+    "patches/restore-meter.inverse.request.json": {
+      "bytes": 327,
+      "coverage": "protocol_2_wire_request",
+      "role": "expected_inverse_patch_request",
+      "sha256": "645de51cd13f35da68dc1f7532ab6c47054f27decd0ae14a26aa7a04dfca2f4d",
+      "shape": "patch_request"
+    },
+    "patches/restore-pitch-symbol.inverse.request.json": {
+      "bytes": 203,
+      "coverage": "protocol_2_wire_request",
+      "role": "expected_inverse_patch_request",
+      "sha256": "74fad49660576a8ed56bfe8c27da16384770bf38a65c57b382eebcb163f10a28",
+      "shape": "patch_request"
+    },
+    "patches/restore-renamed-tempo.inverse.request.json": {
+      "bytes": 389,
+      "coverage": "protocol_2_wire_request",
+      "role": "expected_inverse_patch_request",
+      "sha256": "02b8e596bf49a00d9fcd9b12afaea071ad2433e7115d13c8b6a005900e2b97e5",
+      "shape": "patch_request"
+    },
+    "patches/restore-tail-20ms.inverse.request.json": {
+      "bytes": 214,
+      "coverage": "protocol_2_wire_request",
+      "role": "expected_inverse_patch_request",
+      "sha256": "75c329ac70c1e34fa7d0cba437079eb3f72eb6fb912d77f70e091bef7be1bc3e",
+      "shape": "patch_request"
+    },
+    "patches/set-missing-params-descendant.request.json": {
+      "bytes": 240,
+      "coverage": "protocol_2_wire_request",
+      "role": "patch_request",
+      "sha256": "d75d4d2a75d66dbb583a1fe5070b245a22dedd83bfc1c5d8ba0d73976eb7617f",
+      "shape": "patch_request"
+    },
+    "patches/set-nonrecord-intermediate.request.json": {
+      "bytes": 231,
+      "coverage": "protocol_2_wire_request",
+      "role": "patch_request",
+      "sha256": "4088c5cff47e274f5cb76efc6825b8ecd1a1f64dc48d415b14185a971c5110c5",
+      "shape": "patch_request"
+    },
+    "patches/set-pitch-key-60.request.json": {
+      "bytes": 318,
+      "coverage": "protocol_2_wire_request",
+      "role": "patch_request",
+      "sha256": "e40c9e77d26ae09b8ccb6d35acc0c0a376cb5b503b3662f7731feba3100cb027",
+      "shape": "patch_request"
+    },
+    "patches/set-tail-zero.request.json": {
+      "bytes": 233,
+      "coverage": "protocol_2_wire_request",
+      "role": "patch_request",
+      "sha256": "f02be244504062b32bb1bee19ad1c6aee3a421f0d1db9ab114b912c8cfe4cbe6",
+      "shape": "patch_request"
+    },
+    "patches/stale-base-equal-execution.request.json": {
+      "bytes": 212,
+      "coverage": "protocol_2_wire_request",
+      "role": "patch_request",
+      "sha256": "3e170afb426d880a9c120fa3871285d1e1022a0b6cd335c8b2b3334711849505",
+      "shape": "patch_request"
+    },
+    "patches/unit-equivalent-expect.request.json": {
+      "bytes": 263,
+      "coverage": "protocol_2_wire_request",
+      "role": "patch_request",
+      "sha256": "2f0d33f0fdc08c74e113780610963c6ab6192e888a9d7ff4ce7912cad1d9746e",
+      "shape": "patch_request"
+    },
+    "patches/unset-missing-tail.request.json": {
+      "bytes": 165,
+      "coverage": "protocol_2_wire_request",
+      "role": "patch_request",
+      "sha256": "c94a10227c5f6863aa548ddda0f779ff39d60dd966b2ef78c51cac1614f24fec",
+      "shape": "patch_request"
+    },
+    "patches/unset-params-record.inverse.request.json": {
+      "bytes": 174,
+      "coverage": "protocol_2_wire_request",
+      "role": "expected_inverse_patch_request",
+      "sha256": "2fae3a83cded557ab317a2f39cd3524473c7d09d0d87e3d70888bcfb64bafe15",
+      "shape": "patch_request"
+    },
+    "patches/unset-tail-one.inverse.request.json": {
+      "bytes": 165,
+      "coverage": "protocol_2_wire_request",
+      "role": "expected_inverse_patch_request",
+      "sha256": "cbd26c1051501ebc00868196a9cd28c64e02c92e63a9644f509581f73ea3f7e9",
+      "shape": "patch_request"
+    },
+    "patches/unset-tail-two.inverse.request.json": {
+      "bytes": 165,
+      "coverage": "protocol_2_wire_request",
+      "role": "expected_inverse_patch_request",
+      "sha256": "3aaeea53300a2f28b3e13c404d49043f944024e9e87c5c293eafb92933f2ac29",
+      "shape": "patch_request"
+    },
+    "patches/unset-tail-zero.inverse.request.json": {
+      "bytes": 165,
+      "coverage": "protocol_2_wire_request",
+      "role": "expected_inverse_patch_request",
+      "sha256": "f24e557a684913499cd9d9f35b5e4513b475814da2f5e307cbca030f417d6212",
+      "shape": "patch_request"
+    },
+    "patches/unsupported-v1.request.json": {
+      "bytes": 233,
+      "coverage": "intentional_protocol_1_rejection_request",
+      "role": "patch_request",
+      "sha256": "1b0bccc273c0b2036c22c876cbb5a8706e4216c974c81f3a45d6707cc5e79f66",
+      "shape": "patch_request"
+    }
+  },
+  "fragment_context": {
+    "claim": "abstract typed-object role fixture, not a standalone MaaC source or external processor ABI",
+    "display_metadata": "only each typed Object.fields.label",
+    "execution_data_to_preserve": [
+      "the child object dictionary key named label",
+      "params record entry named label",
+      "understood extension-data record entries named label",
+      "nested record entries named label",
+      "an object-lookalike record with children, fields, kind, and label entries"
+    ]
+  },
+  "normalization_vectors": [
+    {
+      "claim": "supplied expected vectors, not output from this checker",
+      "expected_execution": "normalized/minimal-default.execution.json",
+      "id": "tail_default_presence",
+      "members": [
+        {
+          "authored": "authored/minimal-tail-omitted.typed.json",
+          "expected_normalized": "normalized/minimal-default.execution.json"
+        },
+        {
+          "authored": "authored/minimal-tail-zero.typed.json",
+          "expected_normalized": "normalized/minimal-default.execution.json"
+        }
+      ],
+      "revision_relation": "all_distinct"
+    },
+    {
+      "claim": "supplied expected vectors, not output from this checker",
+      "expected_execution": "normalized/minimal-default.execution.json",
+      "id": "display_labels",
+      "members": [
+        {
+          "authored": "authored/minimal-label-a.typed.json",
+          "expected_normalized": "normalized/minimal-label-a.normalized.json"
+        },
+        {
+          "authored": "authored/minimal-label-b.typed.json",
+          "expected_normalized": "normalized/minimal-label-b.normalized.json"
+        }
+      ],
+      "revision_relation": "all_distinct"
+    },
+    {
+      "claim": "supplied expected vectors, not output from this checker",
+      "expected_execution": "normalized/minimal-tail-1-50.execution.json",
+      "id": "equivalent_time_units",
+      "members": [
+        {
+          "authored": "authored/minimal-tail-20ms.typed.json",
+          "expected_normalized": "normalized/minimal-tail-1-50.execution.json"
+        },
+        {
+          "authored": "authored/minimal-tail-1-50s.typed.json",
+          "expected_normalized": "normalized/minimal-tail-1-50.execution.json"
+        }
+      ],
+      "revision_relation": "all_distinct"
+    },
+    {
+      "claim": "supplied expected vectors, not output from this checker",
+      "expected_execution": "normalized/constant-default.execution.json",
+      "id": "constant_defaults_and_record_presence",
+      "members": [
+        {
+          "authored": "authored/constant-omitted.typed.json",
+          "expected_normalized": "normalized/constant-default.execution.json"
+        },
+        {
+          "authored": "authored/constant-empty-records.typed.json",
+          "expected_normalized": "normalized/constant-default.execution.json"
+        },
+        {
+          "authored": "authored/constant-explicit-zero.typed.json",
+          "expected_normalized": "normalized/constant-default.execution.json"
+        },
+        {
+          "authored": "authored/constant-params-zero.typed.json",
+          "expected_normalized": "normalized/constant-default.execution.json"
+        }
+      ],
+      "revision_relation": "all_distinct"
+    }
+  ],
+  "patch_cases": [
+    {
+      "atomic": true,
+      "base": "authored/minimal-tail-omitted.typed.json",
+      "base_revision_relation": "matches_base",
+      "checks": [
+        "authored_presence",
+        "inverse_exact"
+      ],
+      "current": "authored/minimal-tail-omitted.typed.json",
+      "error": null,
+      "expected_after": "authored/minimal-tail-zero.typed.json",
+      "expected_committed_revision": "sha256:96913f0b5f650c5872f643578c06010b5fdbd8687ae88c9a049c77b107948676",
+      "expected_new_revision": "sha256:96913f0b5f650c5872f643578c06010b5fdbd8687ae88c9a049c77b107948676",
+      "expected_restored": "authored/minimal-tail-omitted.typed.json",
+      "expected_restored_revision": "sha256:c9a913bee5beaf294485da1ebafe9b3c03e5a95f7fc466341b9bdb2472514ef3",
+      "expected_unchanged": null,
+      "id": "set_tail_zero_and_inverse",
+      "inverse": "patches/unset-tail-zero.inverse.request.json",
+      "request": "patches/set-tail-zero.request.json",
+      "status": "success"
+    },
+    {
+      "atomic": true,
+      "base": "authored/minimal-tail-zero.typed.json",
+      "base_revision_relation": "matches_base",
+      "checks": [
+        "authored_presence",
+        "atomic_failure"
+      ],
+      "current": "authored/minimal-tail-zero.typed.json",
+      "error": "E_CONFLICT",
+      "expected_after": null,
+      "expected_committed_revision": "sha256:96913f0b5f650c5872f643578c06010b5fdbd8687ae88c9a049c77b107948676",
+      "expected_new_revision": null,
+      "expected_restored": null,
+      "expected_restored_revision": null,
+      "expected_unchanged": "authored/minimal-tail-zero.typed.json",
+      "id": "expect_absent_conflicts_with_authored_zero",
+      "inverse": null,
+      "request": "patches/expect-absent-conflict.request.json",
+      "status": "failure"
+    },
+    {
+      "atomic": true,
+      "base": "authored/minimal-tail-omitted.typed.json",
+      "base_revision_relation": "stale_against_current",
+      "checks": [
+        "equal_execution_distinct_revision",
+        "atomic_failure"
+      ],
+      "current": "authored/minimal-tail-zero.typed.json",
+      "error": "E_CONFLICT",
+      "expected_after": null,
+      "expected_committed_revision": "sha256:96913f0b5f650c5872f643578c06010b5fdbd8687ae88c9a049c77b107948676",
+      "expected_new_revision": null,
+      "expected_restored": null,
+      "expected_restored_revision": null,
+      "expected_unchanged": "authored/minimal-tail-zero.typed.json",
+      "id": "stale_revision_conflicts_despite_equal_execution",
+      "inverse": null,
+      "request": "patches/stale-base-equal-execution.request.json",
+      "status": "failure"
+    },
+    {
+      "atomic": true,
+      "base": "authored/minimal-tail-omitted.typed.json",
+      "base_revision_relation": "matches_base",
+      "checks": [
+        "effective_default_expect",
+        "inverse_exact"
+      ],
+      "current": "authored/minimal-tail-omitted.typed.json",
+      "error": null,
+      "expected_after": "authored/minimal-tail-one.typed.json",
+      "expected_committed_revision": "sha256:397630c4fa5cf6a53698a67e0d0a754121db1cd272d508bab6f7395c098187e2",
+      "expected_new_revision": "sha256:397630c4fa5cf6a53698a67e0d0a754121db1cd272d508bab6f7395c098187e2",
+      "expected_restored": "authored/minimal-tail-omitted.typed.json",
+      "expected_restored_revision": "sha256:c9a913bee5beaf294485da1ebafe9b3c03e5a95f7fc466341b9bdb2472514ef3",
+      "expected_unchanged": null,
+      "id": "expect_effective_default_on_omitted_tail",
+      "inverse": "patches/unset-tail-one.inverse.request.json",
+      "request": "patches/expect-default-tail.request.json",
+      "status": "success"
+    },
+    {
+      "atomic": true,
+      "base": "authored/minimal-tail-omitted.typed.json",
+      "base_revision_relation": "matches_base",
+      "checks": [
+        "absent_without_default",
+        "atomic_failure"
+      ],
+      "current": "authored/minimal-tail-omitted.typed.json",
+      "error": "E_CONFLICT",
+      "expected_after": null,
+      "expected_committed_revision": "sha256:c9a913bee5beaf294485da1ebafe9b3c03e5a95f7fc466341b9bdb2472514ef3",
+      "expected_new_revision": null,
+      "expected_restored": null,
+      "expected_restored_revision": null,
+      "expected_unchanged": "authored/minimal-tail-omitted.typed.json",
+      "id": "expect_absent_field_without_default_conflicts",
+      "inverse": null,
+      "request": "patches/expect-missing-no-default-label.request.json",
+      "status": "failure"
+    },
+    {
+      "atomic": true,
+      "base": "authored/minimal-tail-omitted.typed.json",
+      "base_revision_relation": "matches_base",
+      "checks": [
+        "unset_requires_authored_field",
+        "atomic_failure"
+      ],
+      "current": "authored/minimal-tail-omitted.typed.json",
+      "error": "E_REFERENCE",
+      "expected_after": null,
+      "expected_committed_revision": "sha256:c9a913bee5beaf294485da1ebafe9b3c03e5a95f7fc466341b9bdb2472514ef3",
+      "expected_new_revision": null,
+      "expected_restored": null,
+      "expected_restored_revision": null,
+      "expected_unchanged": "authored/minimal-tail-omitted.typed.json",
+      "id": "unset_missing_authored_tail_references_nothing",
+      "inverse": null,
+      "request": "patches/unset-missing-tail.request.json",
+      "status": "failure"
+    },
+    {
+      "atomic": true,
+      "base": "authored/minimal-tail-omitted.typed.json",
+      "base_revision_relation": "matches_base",
+      "checks": [
+        "fixed_base_expectations",
+        "inverse_exact"
+      ],
+      "current": "authored/minimal-tail-omitted.typed.json",
+      "error": null,
+      "expected_after": "authored/minimal-tail-two.typed.json",
+      "expected_committed_revision": "sha256:1a8329e29cbbdd8628e1454c03392d3b2067911a19afd29c675b5442e0805a8e",
+      "expected_new_revision": "sha256:1a8329e29cbbdd8628e1454c03392d3b2067911a19afd29c675b5442e0805a8e",
+      "expected_restored": "authored/minimal-tail-omitted.typed.json",
+      "expected_restored_revision": "sha256:c9a913bee5beaf294485da1ebafe9b3c03e5a95f7fc466341b9bdb2472514ef3",
+      "expected_unchanged": null,
+      "id": "successive_writes_compare_against_fixed_base",
+      "inverse": "patches/unset-tail-two.inverse.request.json",
+      "request": "patches/fixed-base-successive-tail.request.json",
+      "status": "success"
+    },
+    {
+      "atomic": true,
+      "base": "authored/minimal-tail-20ms.typed.json",
+      "base_revision_relation": "matches_base",
+      "checks": [
+        "semantic_unit_expect",
+        "inverse_exact_unit"
+      ],
+      "current": "authored/minimal-tail-20ms.typed.json",
+      "error": null,
+      "expected_after": "authored/minimal-tail-one.typed.json",
+      "expected_committed_revision": "sha256:397630c4fa5cf6a53698a67e0d0a754121db1cd272d508bab6f7395c098187e2",
+      "expected_new_revision": "sha256:397630c4fa5cf6a53698a67e0d0a754121db1cd272d508bab6f7395c098187e2",
+      "expected_restored": "authored/minimal-tail-20ms.typed.json",
+      "expected_restored_revision": "sha256:d079720d88e8f2b9c5f85a57e82d351973e7201b2f18ee757d88d176fbb5e4d5",
+      "expected_unchanged": null,
+      "id": "equivalent_unit_expect_preserves_authored_unit",
+      "inverse": "patches/restore-tail-20ms.inverse.request.json",
+      "request": "patches/unit-equivalent-expect.request.json",
+      "status": "success"
+    },
+    {
+      "atomic": true,
+      "base": "authored/minimal-tail-omitted.typed.json",
+      "base_revision_relation": "matches_base",
+      "checks": [
+        "rename_reference_rewrite",
+        "fixed_base_expectations",
+        "candidate_target_paths",
+        "inverse_exact"
+      ],
+      "current": "authored/minimal-tail-omitted.typed.json",
+      "error": null,
+      "expected_after": "authored/tempo-renamed-90.typed.json",
+      "expected_committed_revision": "sha256:2b1db292084cd05d3e7fcda3266f4ce7969f9bd8921090c65d9c4a202e00e6f6",
+      "expected_new_revision": "sha256:2b1db292084cd05d3e7fcda3266f4ce7969f9bd8921090c65d9c4a202e00e6f6",
+      "expected_restored": "authored/minimal-tail-omitted.typed.json",
+      "expected_restored_revision": "sha256:c9a913bee5beaf294485da1ebafe9b3c03e5a95f7fc466341b9bdb2472514ef3",
+      "expected_unchanged": null,
+      "id": "rename_then_edit_uses_base_expect_and_candidate_path",
+      "inverse": "patches/restore-renamed-tempo.inverse.request.json",
+      "request": "patches/rename-tempo-and-set.request.json",
+      "status": "success"
+    },
+    {
+      "atomic": true,
+      "base": "authored/minimal-tail-omitted.typed.json",
+      "base_revision_relation": "matches_base",
+      "checks": [
+        "insert_loses_base_correspondence",
+        "atomic_failure"
+      ],
+      "current": "authored/minimal-tail-omitted.typed.json",
+      "error": "E_CONFLICT",
+      "expected_after": null,
+      "expected_committed_revision": "sha256:c9a913bee5beaf294485da1ebafe9b3c03e5a95f7fc466341b9bdb2472514ef3",
+      "expected_new_revision": null,
+      "expected_restored": null,
+      "expected_restored_revision": null,
+      "expected_unchanged": "authored/minimal-tail-omitted.typed.json",
+      "id": "inserted_object_has_no_base_correspondence",
+      "inverse": null,
+      "request": "patches/insert-new-object-precondition.request.json",
+      "status": "failure"
+    },
+    {
+      "atomic": true,
+      "base": "authored/minimal-tail-omitted.typed.json",
+      "base_revision_relation": "matches_base",
+      "checks": [
+        "reinsert_loses_base_correspondence",
+        "atomic_failure"
+      ],
+      "current": "authored/minimal-tail-omitted.typed.json",
+      "error": "E_CONFLICT",
+      "expected_after": null,
+      "expected_committed_revision": "sha256:c9a913bee5beaf294485da1ebafe9b3c03e5a95f7fc466341b9bdb2472514ef3",
+      "expected_new_revision": null,
+      "expected_restored": null,
+      "expected_restored_revision": null,
+      "expected_unchanged": "authored/minimal-tail-omitted.typed.json",
+      "id": "delete_reinsert_same_id_loses_base_correspondence",
+      "inverse": null,
+      "request": "patches/delete-reinsert-tempo-precondition.request.json",
+      "status": "failure"
+    },
+    {
+      "atomic": true,
+      "base": "authored/constant-omitted.typed.json",
+      "base_revision_relation": "matches_base",
+      "checks": [
+        "missing_candidate_intermediate",
+        "atomic_failure"
+      ],
+      "current": "authored/constant-omitted.typed.json",
+      "error": "E_REFERENCE",
+      "expected_after": null,
+      "expected_committed_revision": "sha256:a31d57197bd11b84321165a78a26a3bf2cea4cef7812617b4fc9b1b55220fd92",
+      "expected_new_revision": null,
+      "expected_restored": null,
+      "expected_restored_revision": null,
+      "expected_unchanged": "authored/constant-omitted.typed.json",
+      "id": "missing_record_descendant_write_does_not_synthesize",
+      "inverse": null,
+      "request": "patches/set-missing-params-descendant.request.json",
+      "status": "failure"
+    },
+    {
+      "atomic": true,
+      "base": "authored/minimal-tail-omitted.typed.json",
+      "base_revision_relation": "matches_base",
+      "checks": [
+        "nonrecord_candidate_intermediate",
+        "atomic_failure"
+      ],
+      "current": "authored/minimal-tail-omitted.typed.json",
+      "error": "E_REFERENCE",
+      "expected_after": null,
+      "expected_committed_revision": "sha256:c9a913bee5beaf294485da1ebafe9b3c03e5a95f7fc466341b9bdb2472514ef3",
+      "expected_new_revision": null,
+      "expected_restored": null,
+      "expected_restored_revision": null,
+      "expected_unchanged": "authored/minimal-tail-omitted.typed.json",
+      "id": "nonrecord_intermediate_is_invalid_path",
+      "inverse": null,
+      "request": "patches/set-nonrecord-intermediate.request.json",
+      "status": "failure"
+    },
+    {
+      "atomic": true,
+      "base": "authored/constant-omitted.typed.json",
+      "base_revision_relation": "matches_base",
+      "checks": [
+        "explicit_record_creation",
+        "fixed_base_expectations",
+        "inverse_exact"
+      ],
+      "current": "authored/constant-omitted.typed.json",
+      "error": null,
+      "expected_after": "authored/constant-params-zero.typed.json",
+      "expected_committed_revision": "sha256:7b1e32f617804ed72e9cbf0fb8f8f13b7e5dcc5f11e3fa50b00cf24843f0c4b3",
+      "expected_new_revision": "sha256:7b1e32f617804ed72e9cbf0fb8f8f13b7e5dcc5f11e3fa50b00cf24843f0c4b3",
+      "expected_restored": "authored/constant-omitted.typed.json",
+      "expected_restored_revision": "sha256:a31d57197bd11b84321165a78a26a3bf2cea4cef7812617b4fc9b1b55220fd92",
+      "expected_unchanged": null,
+      "id": "explicit_record_creation_allows_descendant_write",
+      "inverse": "patches/unset-params-record.inverse.request.json",
+      "request": "patches/create-params-record.request.json",
+      "status": "success"
+    },
+    {
+      "atomic": true,
+      "base": "authored/bar-meter-base.typed.json",
+      "base_revision_relation": "matches_base",
+      "checks": [
+        "bar_constructor_preserved",
+        "explicit_q_preserved",
+        "inverse_exact"
+      ],
+      "current": "authored/bar-meter-base.typed.json",
+      "error": null,
+      "expected_after": "authored/bar-meter-after.typed.json",
+      "expected_committed_revision": "sha256:36e9657bb0e1959cd92c9ab58dd72849f8c873d85661a69ef3e4bef1b03ba6c8",
+      "expected_new_revision": "sha256:36e9657bb0e1959cd92c9ab58dd72849f8c873d85661a69ef3e4bef1b03ba6c8",
+      "expected_restored": "authored/bar-meter-base.typed.json",
+      "expected_restored_revision": "sha256:33d57944c6f5753357de685e708b368d1e355b91e5654f1251b3fab7b1db54ca",
+      "expected_unchanged": null,
+      "id": "meter_edit_preserves_bar_constructor_and_explicit_q",
+      "inverse": "patches/restore-meter.inverse.request.json",
+      "request": "patches/edit-meter-preserve-bar.request.json",
+      "status": "success"
+    },
+    {
+      "atomic": true,
+      "base": "authored/minimal-tail-omitted.typed.json",
+      "base_revision_relation": "matches_base",
+      "checks": [
+        "semantic_validation",
+        "atomic_failure"
+      ],
+      "current": "authored/minimal-tail-omitted.typed.json",
+      "error": "E_RANGE",
+      "expected_after": null,
+      "expected_committed_revision": "sha256:c9a913bee5beaf294485da1ebafe9b3c03e5a95f7fc466341b9bdb2472514ef3",
+      "expected_new_revision": null,
+      "expected_restored": null,
+      "expected_restored_revision": null,
+      "expected_unchanged": "authored/minimal-tail-omitted.typed.json",
+      "id": "negative_tail_semantic_failure_is_atomic",
+      "inverse": null,
+      "request": "patches/negative-tail-atomic.request.json",
+      "status": "failure"
+    },
+    {
+      "atomic": true,
+      "base": "authored/minimal-tail-omitted.typed.json",
+      "base_revision_relation": "invalid_for_capability_precedence",
+      "checks": [
+        "version_precedes_base",
+        "atomic_failure"
+      ],
+      "current": "authored/minimal-tail-omitted.typed.json",
+      "error": "E_CAPABILITY",
+      "expected_after": null,
+      "expected_committed_revision": "sha256:c9a913bee5beaf294485da1ebafe9b3c03e5a95f7fc466341b9bdb2472514ef3",
+      "expected_new_revision": null,
+      "expected_restored": null,
+      "expected_restored_revision": null,
+      "expected_unchanged": "authored/minimal-tail-omitted.typed.json",
+      "id": "unsupported_v1_precedes_stale_base",
+      "inverse": null,
+      "request": "patches/unsupported-v1.request.json",
+      "status": "failure"
+    },
+    {
+      "atomic": true,
+      "base": "authored/constant-labelled.typed.json",
+      "base_revision_relation": "matches_base",
+      "checks": [
+        "expect_object_normalized_subtree_includes_label",
+        "inverse_exact_authored_object"
+      ],
+      "current": "authored/constant-labelled.typed.json",
+      "error": null,
+      "expected_after": "authored/minimal-tail-omitted.typed.json",
+      "expected_committed_revision": "sha256:c9a913bee5beaf294485da1ebafe9b3c03e5a95f7fc466341b9bdb2472514ef3",
+      "expected_new_revision": "sha256:c9a913bee5beaf294485da1ebafe9b3c03e5a95f7fc466341b9bdb2472514ef3",
+      "expected_restored": "authored/constant-labelled.typed.json",
+      "expected_restored_revision": "sha256:1bc046b8d193923646ccdd1aa2a2678f4772e9d4f93831a054b9c83f882fb35e",
+      "expected_unchanged": null,
+      "id": "delete_unreferenced_labelled_constant_with_normalized_expect_object",
+      "inverse": "patches/restore-labelled-constant.inverse.request.json",
+      "request": "patches/delete-labelled-constant.request.json",
+      "status": "success"
+    },
+    {
+      "atomic": true,
+      "base": "authored/constant-labelled.typed.json",
+      "base_revision_relation": "matches_base",
+      "checks": [
+        "expect_object_includes_label",
+        "atomic_failure"
+      ],
+      "current": "authored/constant-labelled.typed.json",
+      "error": "E_CONFLICT",
+      "expected_after": null,
+      "expected_committed_revision": "sha256:1bc046b8d193923646ccdd1aa2a2678f4772e9d4f93831a054b9c83f882fb35e",
+      "expected_new_revision": null,
+      "expected_restored": null,
+      "expected_restored_revision": null,
+      "expected_unchanged": "authored/constant-labelled.typed.json",
+      "id": "delete_expect_object_label_mismatch_conflicts",
+      "inverse": null,
+      "request": "patches/delete-labelled-constant-label-conflict.request.json",
+      "status": "failure"
+    },
+    {
+      "atomic": true,
+      "base": "authored/pitch-symbol.typed.json",
+      "base_revision_relation": "matches_base",
+      "checks": [
+        "semantic_pitch_expect",
+        "authored_constructor_preserved",
+        "inverse_exact"
+      ],
+      "current": "authored/pitch-symbol.typed.json",
+      "error": null,
+      "expected_after": "authored/pitch-key-60.typed.json",
+      "expected_committed_revision": "sha256:59987935b1e83926574da4cc422c586734e0814289e650e8f48e7a76d421197f",
+      "expected_new_revision": "sha256:59987935b1e83926574da4cc422c586734e0814289e650e8f48e7a76d421197f",
+      "expected_restored": "authored/pitch-symbol.typed.json",
+      "expected_restored_revision": "sha256:8e0f8023b1bf6d5bad65472f90b7ac8089a1d29bc2b2a3c12c24d360999bb500",
+      "expected_unchanged": null,
+      "id": "pitch_semantic_expect_writes_key_constructor",
+      "inverse": "patches/restore-pitch-symbol.inverse.request.json",
+      "request": "patches/set-pitch-key-60.request.json",
+      "status": "success"
+    }
+  ],
+  "projection_relationships": [
+    {
+      "expected": "fragments/metadata-role-expected.typed-object.json",
+      "id": "metadata_roles_preserve_record_labels",
+      "source": "fragments/metadata-role-input.typed-object.json"
+    }
+  ],
+  "schema": "maac.conformance.identity-edit/2",
+  "position_resolution_vectors": [
+    {
+      "authored": "authored/bar-meter-base.typed.json",
+      "claim": "supplied expected full N(A), not output from this checker",
+      "expected_normalized": "normalized/bar-meter-base.execution.json",
+      "id": "bar_positions_in_4_4",
+      "resolved_bar_span": {
+        "items": [
+          {
+            "d": "1",
+            "n": "4",
+            "t": "quantity",
+            "u": "q"
+          },
+          {
+            "d": "1",
+            "n": "8",
+            "t": "quantity",
+            "u": "q"
+          }
+        ],
+        "t": "list"
+      },
+      "resolved_explicit_span": {
+        "items": [
+          {
+            "d": "1",
+            "n": "4",
+            "t": "quantity",
+            "u": "q"
+          },
+          {
+            "d": "1",
+            "n": "8",
+            "t": "quantity",
+            "u": "q"
+          }
+        ],
+        "t": "list"
+      }
+    },
+    {
+      "authored": "authored/bar-meter-after.typed.json",
+      "claim": "supplied expected full N(A), not output from this checker",
+      "expected_normalized": "normalized/bar-meter-after.execution.json",
+      "id": "bar_positions_in_3_4",
+      "resolved_bar_span": {
+        "items": [
+          {
+            "d": "1",
+            "n": "3",
+            "t": "quantity",
+            "u": "q"
+          },
+          {
+            "d": "1",
+            "n": "6",
+            "t": "quantity",
+            "u": "q"
+          }
+        ],
+        "t": "list"
+      },
+      "resolved_explicit_span": {
+        "items": [
+          {
+            "d": "1",
+            "n": "4",
+            "t": "quantity",
+            "u": "q"
+          },
+          {
+            "d": "1",
+            "n": "8",
+            "t": "quantity",
+            "u": "q"
+          }
+        ],
+        "t": "list"
+      }
+    }
+  ]
+}

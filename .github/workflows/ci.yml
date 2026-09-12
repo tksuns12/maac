@@ -69,6 +69,12 @@ jobs:
             fi
           done
 
+      - name: Check portable L1 identity corpus
+        run: python scripts/check_identity_edit.py --corpus conformance/l1
+
+      - name: Run read-only L1 identity checker tests
+        run: python -m unittest discover -s scripts -p 'test_check_identity_edit.py'
+
       - name: Check production specification and bounded fixtures
         run: python check_production.py
 

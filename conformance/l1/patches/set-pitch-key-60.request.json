@@ -1,0 +1,1 @@
+{"base_revision":"sha256:8e0f8023b1bf6d5bad65472f90b7ac8089a1d29bc2b2a3c12c24d360999bb500","operations":[{"expect":{"args":[{"d":"1","n":"60","t":"number"}],"fn":"key","t":"call"},"field":["pitch"],"object":["riff","n"],"op":"set","value":{"args":[{"d":"1","n":"60","t":"number"}],"fn":"key","t":"call"}}],"version":2}
