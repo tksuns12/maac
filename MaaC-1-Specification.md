@@ -232,9 +232,15 @@ Source event durations may extend past score end, but effective note-offs are tr
 
 `tempo.points` is a nonempty list `(q_position, positive_bpm, shape)`, strictly increasing in score position. Shape is `step` or `linear`; the last shape must be `step`. Shape describes the outgoing interval. Before the first and after the last point, the nearest endpoint tempo is held.
 
-Let `B(q)` be the resulting positive quarter-notes-per-minute function. Absolute physical time is:
+Let `B(q)` be the resulting positive quarter-notes-per-minute function. The
+absolute physical-time origin is `T(0) = 0`. Absolute physical time is:
 
 `T(q) = integral from 0 to q of 60/B(x) dx`.
+
+For a project, define the reset origin `O = T(score.start)` and the project
+end `E = T(score.end)`. At sample rate `rate`, engine frame `n` represents the
+physical instant `O + n/rate`. The map and any absolute seconds anchors use
+`T(0) = 0` independently of a project's reset origin `O`.
 
 For a step segment of length `d`, elapsed seconds are `60*d/B`. For a linear-in-score-time segment starting at `a` with tempo `Ba` and slope `k` bpm per q:
 
@@ -252,21 +258,25 @@ A bar occupies `numerator * 4/denominator` q. Meter is a coordinate and display 
 
 Score event intervals are half-open `[on, off)`. Positive note duration is mandatory. Simultaneous notes need not have distinct pitches. Their identities remain distinct even when they share a receiver and key.
 
-A note has independent physical `onset_offset` and `release_offset`, both default `0s`. After all pattern transforms, if its score start is `q` and score duration is `d`:
+A note has independent physical `onset_offset` and `release_offset`, both default `0s`. After all existing pattern transforms, pattern/use/placement cuts, and occurrence edits, let `q_on` and `q_off` be the final musical coordinates before project-end clamping. Inherited cuts occur before occurrence edits; an occurrence override's final duration is not recut.
 
-`on_seconds = T(q) + onset_offset`
+`on_seconds = T(q_on) + onset_offset`
 
-`off_seconds = T(q+d) + release_offset`.
+`raw_off_seconds = T(q_off) + release_offset`
 
-These must satisfy `off_seconds > on_seconds`, after project-end truncation. To delay an entire note by 20 ms without changing its physical gate length, set both offsets to `20ms`. Changing only onset offset changes the gate length. A hit or message has only onset offset.
+`off_seconds = min(raw_off_seconds, E)`.
+
+These effective-time checks are additional to source-coordinate and placement validation. A valid event must satisfy `O <= on_seconds < E` and `off_seconds > on_seconds` before the existing frame-ceiling and subsample validation; otherwise it is `E_INTERVAL`. Project-end truncation happens in physical time after applying `release_offset`: preserve `q_off` until this calculation, and do not first clamp it to `score.end`. To delay an entire note by 20 ms without changing its physical gate length, set both offsets to `20ms`. Changing only onset offset changes the gate length. A hit or message has only onset offset.
+
+For example, at 120 bpm a score ending at `1q` has `E = 0.5s`. A valid event whose raw `q_off` is `2q` and whose `release_offset` is `-250ms` has `raw_off_seconds = 0.75s` and therefore `off_seconds = 0.5s`. If a pattern/use/placement cut changes `q_off` to `1q`, the cut is applied in score time before the release offset, so `off_seconds = 0.25s`.
 
 Physical offsets are not multiplied by a pattern's musical stretch. They are not fractions of a beat. Moving a note across a tempo change recomputes `T` before offsets are applied.
 
 ### 6.1 Sample scheduling
 
-For event physical time `t`, engine frame relative to the reset origin is:
+For event physical time `t`, the engine frame relative to the reset origin is:
 
-`frame(t) = ceil(rate * (t - T(score.start)))`.
+`frame(t) = ceil(rate * (t - O))`.
 
 An event is never scheduled earlier than its specified physical time. The quantization error is less than one sample period. Core events are processed at the start of their scheduled frame, before that frame's output sample is calculated. A positive physical gate that collapses to zero frames is `E_SUBSAMPLE_NOTE`; a renderer must not silently lengthen it.
 
@@ -435,7 +445,7 @@ automation filter_open {
 }
 ```
 
-A `curve` requires `clock` and a nonempty ordered list of `(position, value, outgoing_shape)` points. Clock is `score`, `seconds`, or `normalized`. Positions respectively use q, seconds, or dimensionless rationals. The first position must be zero, and positions strictly increase. A normalized curve's final position must be 1; values must match the target's dimension. The last point's shape must be `step`.
+A `curve` requires `clock` and a nonempty ordered list of `(position, value, outgoing_shape)` points. Clock is `score`, `seconds`, or `normalized`. Point positions are curve-local, using q, seconds, or dimensionless rationals respectively; the consuming feature defines their time origin. The first position must be zero, and positions strictly increase. A normalized curve's final position must be 1; values must match the target's dimension. The last point's shape must be `step`.
 
 Shapes are `step`, `linear`, and `exponential`. At a knot the new point's value applies; the function is right-continuous. With `u = (x-x0)/(x1-x0)`:
 
@@ -445,7 +455,13 @@ Shapes are `step`, `linear`, and `exponential`. At a knot the new point's value 
 
 Interpolation takes place in the explicitly declared value unit. Linear interpolation from -12dB to 0dB is linear in decibels, not amplitude. Exponential interpolation is forbidden for logarithmic dB and cents targets and for enumerations. Enumerations, booleans, and discrete parameters permit step only. There is no inferred smoothing; a processor that smooths parameters must declare its exact smoothing behavior.
 
-An `automation` targets a node parameter and references a score- or seconds-clock curve. Normalized curves are not global automation. `at` is required: q for a score curve; q or seconds for a seconds curve. A q anchor for a seconds curve converts once through T, after which the curve runs in physical seconds. Before the anchor, the node's base parameter applies. After the last point, the final point value holds.
+An `automation` targets a node parameter and references a score- or seconds-clock curve. Normalized curves are not global automation. `at` is required: an absolute q coordinate (`at_q`) for a score-clock curve; either an absolute q coordinate (`at_q`) or absolute physical seconds (`at_s`) under `T(0)=0` for a seconds-clock curve. Omitting required `at` is `E_RANGE`; an anchor unit incompatible with the curve clock is `E_UNIT`. For global automation, curve-local positions are relative to the physical anchor instant: `T(at_q)` for a q anchor or `at_s` for a seconds anchor. A q anchor for a seconds curve converts once through `T`, after which the curve runs in physical seconds. At physical time `t`, global automation uses `t* = min(t, E)` during the tail and computes its relative curve position as follows:
+
+- score clock: `x = T^-1(t*) - at_q`;
+- seconds clock with a q anchor: `x = t* - T(at_q)`;
+- seconds clock with a seconds anchor: `x = t* - at_s`.
+
+For `x < 0`, the node's base parameter applies. At `x = 0`, point zero applies by right continuity; after the last point, the final point value holds. The `t*` clamp is only for global automation: audio transports and seconds-clock LFOs continue on physical time and retain their existing contracts. There is no additional anchor bound; an anchor may precede the reset origin. If the physical anchor instant—`T(at_q)` for a q anchor or `at_s` for a seconds anchor—is after `E`, global automation remains at its base value throughout the tail; if that physical anchor instant equals `E`, point zero applies there by right continuity.
 
 There is at most one global replacement automation per parameter. No “last writer wins,” track-order priority, or overlapping-lane blend is implied. Multiple desired segments are represented as one curve. Missing endpoints and undeclared crossfades must not be invented by a host.
 
@@ -517,15 +533,17 @@ audio vocal_clip {
 }
 ```
 
-Required fields are `asset`, `at`, `source`, and `mode`. `at` may be global q or physical seconds. The source is a half-open pair of integer asset frames `[a,b]` with `0 <= a < b <= asset.frames`. `gain` is a nonnegative amplitude multiplier, default 1. Fades are nonnegative seconds, default 0s; `fade_shape` is `linear` or `equal_power`, default linear. The signal is zero outside the transport interval.
+Required fields are `asset`, `at`, `source`, and `mode`. `at` may be a global q coordinate (`at_q`) or absolute physical seconds (`at_s`) under `T(0)=0`; seconds are not render-relative. Define the transport start `S` as `T(at_q)` or `at_s`, respectively. Both forms require `O <= S < E`. At engine frame `n`, physical time is `t_n = O + n/rate` and elapsed transport time is `tau = O + n/rate - S`; use this elapsed time for transport position, including its fractional playback phase at the first scheduled frame, rather than resetting `tau` to zero. Existing tail behavior is retained. The source is a half-open pair of integer asset frames `[a,b]` with `0 <= a < b <= asset.frames`. `gain` is a nonnegative amplitude multiplier, default 1. Fades are nonnegative seconds, default 0s; `fade_shape` is `linear` or `equal_power`, default linear. The signal is zero outside the transport interval.
 
-In `rate` mode, `speed` is positive dimensionless rational, default 1, and `reverse` is boolean, default false. Let `N=b-a`. Define a sliced discrete buffer `z[j]=asset[a+j]`, or `asset[b-1-j]` for reverse, for `0 <= j < N`. Its values outside that range are zero. At physical time `t` from the clip start, the source coordinate is `u = t * asset.rate * speed`, and output is the linear interpolation of z at u. Duration is `N/(asset.rate*speed)` seconds. Rate changes intentionally change both duration and pitch.
+For example, at 120 bpm a score `[4q, 8q]` has `O = 2s` and `E = 4s`: `at = 2.5s` is valid and begins at frame `24000` at 48000 Hz, while `at = 0.5s` is invalid because it precedes `O`. With score `[-1q, 1q]`, the reset origin is `O = -0.5s`, so `at = 0s` is a valid absolute physical start.
+
+In `rate` mode, `speed` is positive dimensionless rational, default 1, and `reverse` is boolean, default false. Let `N=b-a`. Define a sliced discrete buffer `z[j]=asset[a+j]`, or `asset[b-1-j]` for reverse, for `0 <= j < N`. Its values outside that range are zero. At elapsed physical time `tau` from the clip start, the source coordinate is `u = tau * asset.rate * speed`, and output is the linear interpolation of z at u. Duration is `N/(asset.rate*speed)` seconds. Rate changes intentionally change both duration and pitch.
 
 Core interpolation uses `j=floor(u)`, `f=u-j`, and `(1-f)*z[j]+f*z[j+1]`. It is a fully specified reference resampler, not a claim of high-end anti-aliasing quality. A different resampler must be an explicitly identified audio-transport extension.
 
-For output-relative time `t` and duration `D`, a linear fade-in is `clamp(t/fade_in,0,1)` and fade-out is `clamp((D-t)/fade_out,0,1)`. A zero fade length means multiplier 1. Equal-power shapes replace each nonzero fade factor x by `sin(pi*x/2)`. The two envelopes multiply, including when their intervals overlap. They multiply `gain` and the reconstructed signal. Crossfades are expressed by overlapping clips and explicit fades; no automatic fade is added to an edit.
+For elapsed clip time `tau` and duration `D`, a linear fade-in is `clamp(tau/fade_in,0,1)` and fade-out is `clamp((D-tau)/fade_out,0,1)`. A zero fade length means multiplier 1. Equal-power shapes replace each nonzero fade factor x by `sin(pi*x/2)`. The two envelopes multiply, including when their intervals overlap. They multiply `gain` and the reconstructed signal. Crossfades are expressed by overlapping clips and explicit fades; no automatic fade is added to an edit.
 
-An audio transport may extend beyond score end. It continues through the declared tail, because it has already started, but output is always truncated at render end. It may not begin before the reset origin or at/after score end. A crop that would require earlier playback must extend the project's reset origin explicitly.
+An audio transport may extend beyond score end. It continues through the declared tail, because it has already started, but output is always truncated at render end. A crop that would require earlier playback must extend the project's reset origin explicitly.
 
 ### 14.3 Warp modes
 

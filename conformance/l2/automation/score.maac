@@ -1,0 +1,19 @@
+maac 1;
+project p { score = [4q, 7q]; tail = 1/2s; rate = 48000Hz; tempo = &clock; meter = &metre; output = &mix:out; }
+tempo clock { points = [(0q, 120bpm, step), (6q, 60bpm, step)]; }
+meter metre { points = [(0q, 4, 4)]; }
+node tone { type = "core.sine/1"; config = { voices = 1; }; params = { attack = 0s; release = 1s; level = 1; }; }
+node gain { type = "core.gain/1"; config = { channels = 1; }; params = { gain = 3; }; }
+node observed { type = "core.matrix/1"; config = { inputs = 1; outputs = 2; coefficients = [[1], [0]]; }; }
+node reference { type = "core.matrix/1"; config = { inputs = 1; outputs = 2; coefficients = [[0], [1]]; }; }
+node mix { type = "core.sum/1"; config = { channels = 2; }; }
+connect tone_gain { from = &tone:out; to = &gain:in; }
+connect gain_observed { from = &gain:out; to = &observed:in; }
+connect tone_reference { from = &tone:out; to = &reference:in; }
+connect observed_mix { from = &observed:out; to = &mix:in; }
+connect reference_mix { from = &reference:out; to = &mix:in; }
+track notes { target = &tone:events; }
+pattern held { length = 3q; note n { at = 0q; dur = 3q; pitch = 12000Hz; velocity = 1; } }
+place play { pattern = &held; track = &notes; at = 4q; }
+curve lane { clock = score; points = [(0q, 0, linear), (2q, 1, step)]; }
+automation move { target = &gain.params.gain; curve = &lane; at = 5q; }

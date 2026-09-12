@@ -1,0 +1,160 @@
+{
+  "schema": "maac.l2.timing-corpus/1",
+  "rate_hz": 48000,
+  "asset": {
+    "path": "audio/assets/two-frame.pcm",
+    "bytes": 8,
+    "sha256": "a47077a19cd711eed33ac9521628adc95b9fbae3f98b8a29810cc96dbc1065af"
+  },
+  "cases": [
+    {
+      "id": "automation-score",
+      "kind": "automation",
+      "source": "automation/score.maac",
+      "status": "ok",
+      "total_frames": 120000,
+      "observations": [
+        { "frame": 23999, "ratio": "3/1" },
+        { "frame": 72001, "ratio": "72001/96000" },
+        { "frame": 96001, "ratio": "1/1" }
+      ]
+    },
+    {
+      "id": "automation-seconds-q-anchor",
+      "kind": "automation",
+      "source": "automation/seconds-q-anchor.maac",
+      "status": "ok",
+      "total_frames": 120000,
+      "observations": [
+        { "frame": 23999, "ratio": "3/1" },
+        { "frame": 72001, "ratio": "48001/96000" },
+        { "frame": 96001, "ratio": "3/4" }
+      ]
+    },
+    {
+      "id": "automation-seconds-absolute-anchor",
+      "kind": "automation",
+      "source": "automation/seconds-absolute-anchor.maac",
+      "status": "ok",
+      "total_frames": 120000,
+      "observations": [
+        { "frame": 23999, "ratio": "3/1" },
+        { "frame": 72001, "ratio": "48001/96000" },
+        { "frame": 96001, "ratio": "3/4" }
+      ]
+    },
+    {
+      "id": "automation-anchor-at-end",
+      "kind": "automation",
+      "source": "automation/anchor-at-end.maac",
+      "status": "ok",
+      "total_frames": 120000,
+      "observations": [
+        { "frame": 95999, "ratio": "3/1" },
+        { "frame": 96001, "ratio": "0/1" }
+      ]
+    },
+    {
+      "id": "automation-anchor-after-end",
+      "kind": "automation",
+      "source": "automation/anchor-after-end.maac",
+      "status": "ok",
+      "total_frames": 120000,
+      "observations": [
+        { "frame": 95999, "ratio": "3/1" },
+        { "frame": 96001, "ratio": "3/1" },
+        { "frame": 108001, "ratio": "3/1" }
+      ]
+    },
+    {
+      "id": "automation-missing-at",
+      "kind": "automation",
+      "source": "automation/missing-at.maac",
+      "status": "error",
+      "diagnostic": "E_RANGE"
+    },
+    {
+      "id": "automation-score-with-seconds-anchor",
+      "kind": "automation",
+      "source": "automation/score-with-seconds-anchor.maac",
+      "status": "error",
+      "diagnostic": "E_UNIT"
+    },
+    {
+      "id": "audio-fractional-positive-reset",
+      "kind": "audio",
+      "source": "audio/fractional-positive-reset.maac",
+      "status": "ok",
+      "total_frames": 96000,
+      "clip_frames": [1, 3],
+      "samples": [
+        { "frame": 0, "value": "0/1" },
+        { "frame": 1, "value": "2/1" }
+      ]
+    },
+    {
+      "id": "audio-negative-reset",
+      "kind": "audio",
+      "source": "audio/negative-reset.maac",
+      "status": "ok",
+      "total_frames": 96000,
+      "clip_frames": [48000, 48002],
+      "samples": [
+        { "frame": 47999, "value": "0/1" },
+        { "frame": 48000, "value": "1/1" },
+        { "frame": 48001, "value": "3/1" }
+      ]
+    },
+    {
+      "id": "audio-pre-reset",
+      "kind": "audio",
+      "source": "audio/pre-reset.maac",
+      "status": "error",
+      "diagnostic": "E_INTERVAL"
+    },
+    {
+      "id": "audio-at-end",
+      "kind": "audio",
+      "source": "audio/at-end.maac",
+      "status": "error",
+      "diagnostic": "E_INTERVAL"
+    },
+    {
+      "id": "note-spill",
+      "kind": "note",
+      "source": "notes/spill.maac",
+      "status": "ok",
+      "total_frames": 24000,
+      "event_frames": [0, 24000]
+    },
+    {
+      "id": "note-cut",
+      "kind": "note",
+      "source": "notes/cut.maac",
+      "status": "ok",
+      "total_frames": 24000,
+      "event_frames": [0, 12000]
+    },
+    {
+      "id": "note-onset-at-end",
+      "kind": "note",
+      "source": "notes/onset-at-end.maac",
+      "status": "error",
+      "diagnostic": "E_INTERVAL"
+    },
+    {
+      "id": "note-nonpositive-gate",
+      "kind": "note",
+      "source": "notes/nonpositive-gate.maac",
+      "status": "error",
+      "diagnostic": "E_INTERVAL"
+    },
+    {
+      "id": "note-positive-subsample-gate",
+      "kind": "note",
+      "source": "notes/positive-subsample-gate.maac",
+      "status": "error",
+      "diagnostic": "E_SUBSAMPLE_NOTE"
+    }
+  ]
+}

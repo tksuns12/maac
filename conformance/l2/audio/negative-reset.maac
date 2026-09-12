@@ -1,0 +1,6 @@
+maac 1;
+project p { score = [-2q, 2q]; tail = 0s; rate = 48000Hz; tempo = &clock; meter = &metre; output = &clip:out; }
+tempo clock { points = [(0q, 120bpm, step)]; }
+meter metre { points = [(0q, 4, 4)]; }
+asset sample { kind = audio; path = "assets/two-frame.pcm"; hash = "sha256:a47077a19cd711eed33ac9521628adc95b9fbae3f98b8a29810cc96dbc1065af"; format = "pcm_f32le_interleaved/1"; rate = 48000Hz; channels = 1; frames = 2; }
+audio clip { asset = &sample; at = 0s; source = [0frame, 2frame]; mode = rate; }

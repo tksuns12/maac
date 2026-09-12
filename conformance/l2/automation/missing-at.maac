@@ -1,0 +1,7 @@
+maac 1;
+project p { score = [4q, 7q]; rate = 48000Hz; tempo = &clock; meter = &metre; output = &gain:out; }
+tempo clock { points = [(0q, 120bpm, step), (6q, 60bpm, step)]; }
+meter metre { points = [(0q, 4, 4)]; }
+node gain { type = "core.gain/1"; config = { channels = 1; }; params = { gain = 3; }; }
+curve lane { clock = seconds; points = [(0s, 0, linear), (2s, 1, step)]; }
+automation move { target = &gain.params.gain; curve = &lane; }

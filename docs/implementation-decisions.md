@@ -67,8 +67,8 @@ effective-time formula and then truncates the effective release:
 The plan retains `final_score_off` before this project-end truncation. For a
 120-bpm score ending at `1q`, a note with musical end `2q` and release offset
 `-250ms` therefore releases at 0.5 seconds. Clamping its score coordinate first
-would incorrectly release it at 0.25 seconds. The specification should state this
-distinction between repetition cuts and project-end effective truncation directly.
+would incorrectly release it at 0.25 seconds. [MaaC-1 §6](../MaaC-1-Specification.md#6-time-offsets-and-scheduling)
+states this distinction directly; the existing foundation behavior is unchanged.
 
 ## Pan range policy
 

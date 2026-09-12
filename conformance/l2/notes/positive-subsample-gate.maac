@@ -1,0 +1,8 @@
+maac 1;
+project p { score = [0q, 1q]; tail = 0s; rate = 48000Hz; tempo = &clock; meter = &metre; output = &tone:out; }
+tempo clock { points = [(0q, 120bpm, step)]; }
+meter metre { points = [(0q, 4, 4)]; }
+node tone { type = "core.sine/1"; config = { voices = 1; }; params = { attack = 0s; release = 0s; level = 1; }; }
+track notes { target = &tone:events; }
+pattern riff { length = 1q; note n { at = 0q; dur = 1/192000q; onset_offset = 1/96000s; release_offset = 1/96000s; pitch = 12000Hz; velocity = 1; } }
+place play { pattern = &riff; track = &notes; at = 0q; }

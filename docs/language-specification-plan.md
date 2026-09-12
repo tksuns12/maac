@@ -1,7 +1,8 @@
 # MaaC language specification and conformance plan
 
-Status: L1 addressed 2026-09-13; authority is **RESOLVED**. L2 is the next
-specification slice; L3–L5 remain planned. Baseline: A1–A4 are addressed at
+Status: L1 addressed 2026-09-13; authority is **RESOLVED**. L2 addressed
+2026-09-13; L3 is the next specification slice and L4–L5 remain planned.
+Baseline: A1–A4 are addressed at
 `b19ae2884fbfad2dbf5efb1526a1eff8f5452d9d`. This plan records specification
 priorities. The adopted authored-state decision and the scoped L1 semantic
 vectors are complete. Runtime normalizer/editor conformance is tracked
@@ -92,8 +93,27 @@ the normative language.
 
 **Acceptance, dependencies, status.** Paired valid/invalid examples and timing
 vectors must expose each origin and ordering rule, including offsets and cuts.
-L2 is the next specification slice and depends on the existing tempo, offset,
-and cut rules; it is a planned clarification slice.
+L2 is addressed 2026-09-13 as a bounded normative clarification with no DSP or
+playback-feature expansion. The [L2 timing corpus](../conformance/l2/README.md)
+contains 16 fixed source cases and one PCM asset. The [timing regression](../tests/l2_timing.rs)
+exercises the existing public `SourceBundle`, `compile_bundle_artifact`, and
+`render_artifact` APIs: three tests pass across all 16 cases (9 accepted and 7
+rejected), and successful JSON-retained artifacts replay with the same sample
+bits. Expected arithmetic is independent literal data; the test-local `1e-12`
+observation bound applies only to its ratio/PCM checks and is not a universal L5
+tolerance. The L2 specification and fixed outcomes have independent semantic
+and harness clearance at specification hash
+`03fc433593cea4b451e36f818762a087445d3f606d989ef41096c8431bce8b5b`, manifest
+hash `45f44982c2302a2df71319ca56f5983e8c5d644c2963fd4ca62d11b5a953b154`, and
+the [local evidence summary](../target/l2-timing-validation/summary.json).
+Nine selected existing regression tests, formatting, targeted Clippy, and the
+asset digest gate passed. Luna owns the specification/docs, Sol owns the
+corpus/harness/validation, independent readers cleared semantics and harness
+behavior, and root owns integration. Production source, Cargo, grammar, and
+schema are unchanged; no language or plan version was added. The full Rust
+suite, release build, installed acceptance, and remote CI were skipped. L3 is
+the next specification slice; L2 follows the existing tempo, offset, and cut
+rules and remains bounded to this timing corpus.
 
 ## L3 — complete field and processor contracts
 
