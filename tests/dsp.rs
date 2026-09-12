@@ -123,6 +123,73 @@ fn collect(plan: &Plan) -> maac::dsp::Result<Vec<Vec<f64>>> {
     Ok(frames)
 }
 
+fn cancellation_plan(
+    channels: u8,
+    connection_order: [usize; 3],
+    fan_in_ids: [&str; 3],
+    reverse_node_declarations: bool,
+) -> Plan {
+    const LARGE: i64 = 18_014_398_509_481_984;
+    const PRODUCER_IDS: [&str; 3] = ["a_large", "m_small", "z_negative"];
+
+    let mut plan = sine_plan(
+        2,
+        0,
+        1,
+        &[
+            ("attack", r(0, 1)),
+            ("release", r(0, 1)),
+            ("level", r(1, 1)),
+        ],
+        vec![event("n", "sine", 0, 2, 12_000.0, r(1, 1))],
+    );
+    let coefficients = match channels {
+        1 => [
+            vec![vec![r(LARGE, 1)]],
+            vec![vec![r(1, 1)]],
+            vec![vec![r(-LARGE, 1)]],
+        ],
+        2 => [
+            vec![vec![r(LARGE, 1)], vec![r(-LARGE, 1)]],
+            vec![vec![r(1, 1)], vec![r(-1, 1)]],
+            vec![vec![r(-LARGE, 1)], vec![r(LARGE, 1)]],
+        ],
+        _ => unreachable!("the fixture only covers mono and stereo"),
+    };
+    for (producer_id, coefficients) in PRODUCER_IDS.iter().zip(coefficients) {
+        plan.nodes.push(node(
+            producer_id,
+            Processor::matrix(1, channels, coefficients),
+            &[],
+        ));
+        plan.connections.push(
+            Connection::new(
+                format!("source_to_{producer_id}"),
+                PortRef::new("sine", "out").unwrap(),
+                PortRef::new(*producer_id, "in").unwrap(),
+            )
+            .unwrap(),
+        );
+    }
+    plan.nodes.push(node("sum", Processor::sum(channels), &[]));
+    for producer_index in connection_order {
+        plan.connections.push(
+            Connection::new(
+                fan_in_ids[producer_index],
+                PortRef::new(PRODUCER_IDS[producer_index], "out").unwrap(),
+                PortRef::new("sum", "in").unwrap(),
+            )
+            .unwrap(),
+        );
+    }
+    if reverse_node_declarations {
+        plan.nodes.reverse();
+    }
+    plan.output.channels = channels;
+    plan.output.output = PortRef::new("sum", "out").unwrap();
+    plan
+}
+
 #[test]
 fn sine_starts_at_zero_and_matches_binary64_phase_and_level() {
     let plan = sine_plan(
@@ -173,6 +240,60 @@ fn pan_is_equal_power_and_sum_preserves_supplied_reduction_order() {
     let reordered = sum_samples(&[1.0e16, 1.0, -1.0e16]).unwrap();
     assert_eq!(ordered, 1.0);
     assert_eq!(reordered, 0.0);
+}
+
+#[test]
+fn renderer_sums_fan_in_by_connection_id_across_declaration_orders() {
+    const CONNECTION_IDS: [&str; 3] = ["fanin_a_large", "fanin_c_small", "fanin_b_negative"];
+    const DECLARATION_ORDERS: [[usize; 3]; 6] = [
+        [0, 1, 2],
+        [0, 2, 1],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+    ];
+    let bits = |frames: &[Vec<f64>]| {
+        frames
+            .iter()
+            .map(|frame| frame.iter().map(|sample| sample.to_bits()).collect())
+            .collect::<Vec<Vec<u64>>>()
+    };
+
+    for channels in [1, 2] {
+        let expected = match channels {
+            1 => vec![vec![0.0], vec![1.0]],
+            2 => vec![vec![0.0, 0.0], vec![1.0, -1.0]],
+            _ => unreachable!(),
+        };
+        let expected_bits = bits(&expected);
+        for order in DECLARATION_ORDERS {
+            for reverse_nodes in [false, true] {
+                let plan = cancellation_plan(channels, order, CONNECTION_IDS, reverse_nodes);
+                plan.validate().unwrap();
+                let output = collect(&plan).unwrap();
+                assert_eq!(output.len(), 2, "channels={channels}, order={order:?}");
+                assert_eq!(
+                    bits(&output),
+                    expected_bits,
+                    "channels={channels}, order={order:?}, reverse_nodes={reverse_nodes}"
+                );
+
+                if channels == 2 && order == DECLARATION_ORDERS[0] && !reverse_nodes {
+                    let retained = Plan::from_json(&plan.to_json().unwrap()).unwrap();
+                    assert_eq!(bits(&collect(&retained).unwrap()), expected_bits);
+                }
+            }
+        }
+
+        let reassigned_ids = ["fanin_a_large", "fanin_b_small", "fanin_c_negative"];
+        let control = cancellation_plan(channels, [2, 0, 1], reassigned_ids, true);
+        control.validate().unwrap();
+        let control_output = collect(&control).unwrap();
+        let zero_output = vec![vec![0.0; channels as usize]; 2];
+        assert_eq!(bits(&control_output), bits(&zero_output));
+        assert_ne!(bits(&control_output), expected_bits);
+    }
 }
 
 #[test]

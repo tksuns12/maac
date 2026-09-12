@@ -10,7 +10,9 @@ MaaC/1 §18 within its declared capability and resource limits. The audit
 confirmed a Sine arithmetic mismatch and a required-configuration validation
 gap; the A1 and A2 follow-ups below record their fixes. The A3 caller
 channel-limit diagnostic discrepancy has been fixed, with targeted evidence
-recorded below. Other findings remain open. Processor coverage does **not** establish
+recorded below. The A4 rendered sum-order evidence gap is addressed by a
+test-only regression and targeted validation recorded below. Broader profile
+obligations remain open. Processor coverage does **not** establish
 the full Core Audio profile. Under [§1.2](../MaaC-1-Specification.md#12-conformance-profiles),
 Core Audio additionally inherits Document and Performance requirements and
 includes the core asset/transport profile.
@@ -153,13 +155,15 @@ that resource classification distinct from invalid authored dimensions and
 unavailable processor capabilities; the targeted matrix evidence is recorded
 below.
 
-### A4 — rendered sum-order evidence can be stronger
+### A4 — addressed: rendered sum-order evidence strengthened
 
-The cancellation-sensitive sum test exercises the `sum_samples` helper.
-Connection-ID sorting is separately implemented in the renderer. A complete
-rendered graph with cancellation-sensitive values and reordered connection
-declarations would check that integration boundary directly. No wrong sum
-output was observed in this audit; this is an evidence gap.
+No incorrect sum output was observed in the original audit. The
+cancellation-sensitive sum test exercised the `sum_samples` helper, while
+connection-ID sorting is implemented separately in the renderer. The new
+test-only rendered-graph regression exercises that boundary directly. Its
+baseline, deliberate isolated-fault proof, and focused target validation are
+recorded in the A4 follow-up below. A4 does not change production renderer
+behavior.
 
 ## A1 follow-up: Sine envelope arithmetic
 
@@ -233,11 +237,28 @@ compilation and retained-plan loading. The original RED reproduced the actual
 classification failure; the recovery executor's expanded matrix then passed
 the targeted GREEN gate.
 
+## A4 follow-up: rendered sum-order evidence
+
+The test-only regression in [dsp.rs](../tests/dsp.rs) renders a two-frame,
+12 kHz Sine through three Matrix branches into Sum. The fan-in values use
+`+2^54`, `-2^54`, and `+1`; the stereo branch supplies the opposite second
+component. It covers mono and stereo widths, all six fan-in declaration
+permutations, both node declaration orders, bitwise frame output, stereo
+retained replay, and a reassigned-connection-ID control that still follows
+connection-ID order while changing the required reduction from
+`[+large, -large, small]` to `[+large, small, -large]`. Its expected sample
+therefore changes from `1.0` (stereo `[1, -1]`) to zero.
+
+The evidence separates the unchanged-renderer baseline from a deliberately
+sort-disabled isolated copy; the latter is a regression proof rather than an
+observed product fault. A4 adds no production renderer behavior. Counts,
+statuses, hashes, and ownership are recorded in the Verification record.
+
 ## Recommended next implementation slice
 
-Address **A4**, the rendered sum-order evidence gap. A3's caller channel-limit
-diagnostics are implemented and covered by the targeted matrix; A4 remains a
-separate rendered-graph follow-up.
+A1–A4 are addressed by their recorded fixes or evidence improvements. The next
+full-profile slice should select and specify one deferred obligation from the
+existing profile-obligations table before implementation begins.
 
 ## Verification record
 
@@ -331,3 +352,21 @@ confirmed the 12 specification input hashes remained unchanged. No new human
 listening test was run; these are local validations rather than hosted CI. The
 three ignored audits remain skipped, and full Core Audio conformance remains
 unclaimed.
+
+For A4, the recovery executor owns the test-only rendered-graph regression and
+the evidence under `target/a4-sum-order-validation/`. The unchanged renderer's
+focused baseline passed one test with 14 filtered and exit 0. The deliberate
+sort-disabled isolated copy compiled and failed the first mono permutation with
+actual frame bits `[[0], [0]]` versus expected
+`[[0], [4607182418800017408]]`; zero tests passed, one failed, 14 were
+filtered, exit 101. The full `dsp` target passed 15 tests with zero failures,
+ignored, or filtered tests, exit 0. Formatting, diff checks, and Clippy each
+exited 0, and the restored-source comparison exited 0. Stable candidate and
+source hashes are recorded in the evidence files; `tests/dsp.rs` is
+`74ec54dc6d6ce5d2cfe68518eda95f2cc80b78daede9aaceac4162ed0a67e2db`, while
+the production `src/dsp.rs`, `src/plan.rs`, and `Cargo.lock` remained unchanged.
+A4 did not rerun the full suite, release build, installed basic or production
+acceptance, Python specification checks, external corpus checks, or human
+listening; no hosted-CI validation is claimed. Acceptance is complete for code
+and evidence: independent `a3_review` code/test review found no blockers, and
+root verified the final logs and candidate/source hashes.
