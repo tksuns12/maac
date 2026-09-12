@@ -1,0 +1,74 @@
+{
+  "schema": "maac.l3.pan-contract-corpus/1",
+  "rate_hz": 48000,
+  "cases": [
+    {
+      "id": "default-center",
+      "source": "cases/default-center.maac",
+      "status": "ok",
+      "total_frames": 4,
+      "raw_pan": "0/1",
+      "sample": { "frame": 1, "channels": [0.7071067811865476, 0.7071067811865476] }
+    },
+    {
+      "id": "raw-positive",
+      "source": "cases/raw-positive.maac",
+      "status": "ok",
+      "total_frames": 4,
+      "raw_pan": "2/1",
+      "sample": { "frame": 1, "channels": [0.0, 1.0] }
+    },
+    {
+      "id": "raw-negative",
+      "source": "cases/raw-negative.maac",
+      "status": "ok",
+      "total_frames": 4,
+      "raw_pan": "-2/1",
+      "sample": { "frame": 1, "channels": [1.0, 0.0] }
+    },
+    {
+      "id": "base-plus-modulation",
+      "source": "cases/base-plus-modulation.maac",
+      "status": "ok",
+      "total_frames": 4,
+      "raw_pan": "2/1",
+      "modulations": [
+        { "id": "subtract", "amount": "-2/1" }
+      ],
+      "sample": { "frame": 1, "channels": [0.7071067811865476, 0.7071067811865476] }
+    },
+    {
+      "id": "ordered-modulations",
+      "source": "cases/ordered-modulations.maac",
+      "status": "ok",
+      "total_frames": 4,
+      "raw_pan": "0/1",
+      "modulations": [
+        { "id": "a_positive", "amount": "2/1" },
+        { "id": "b_negative", "amount": "-2/1" }
+      ],
+      "sample": { "frame": 1, "channels": [0.7071067811865476, 0.7071067811865476] }
+    },
+    {
+      "id": "raw-linear-automation",
+      "source": "cases/raw-linear-automation.maac",
+      "status": "ok",
+      "total_frames": 48000,
+      "raw_pan": "0/1",
+      "automation_values": ["-2/1", "2/1"],
+      "sample": { "frame": 36000, "channels": [0.0, -1.0] }
+    },
+    {
+      "id": "wrong-unit",
+      "source": "cases/wrong-unit.maac",
+      "status": "error",
+      "diagnostic": "E_UNIT"
+    },
+    {
+      "id": "nonfinite",
+      "source": "cases/nonfinite.maac",
+      "status": "error",
+      "diagnostic": "E_NONFINITE"
+    }
+  ]
+}

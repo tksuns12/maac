@@ -1,0 +1,9 @@
+maac 1;
+project p { score = [0q, 1/12000q]; tail = 0s; rate = 48000Hz; tempo = &clock; meter = &metre; output = &subject:out; }
+tempo clock { points = [(0q, 60bpm, step)]; }
+meter metre { points = [(0q, 4, 4)]; }
+node subject { type = "core.pan/1"; params = { pan = 0; }; }
+node source_a { type = "core.sine/1"; }
+node source_b { type = "core.sine/1"; }
+connect a_first { from = &source_a:out; to = &subject:in; }
+connect b_second { from = &source_b:out; to = &subject:in; }

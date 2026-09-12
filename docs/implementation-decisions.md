@@ -72,11 +72,12 @@ states this distinction directly; the existing foundation behavior is unchanged.
 
 ## Pan range policy
 
-Section 18.3 declares both a pan range of `[-1,1]` and a clamp policy. The
-foundation preserves finite raw numeric pan values and clamps the evaluated
-parameter to that range. It uses the declared error policies for sine parameters
-and one-pole cutoff. A future descriptor schema should distinguish accepted raw
-values from the post-policy range explicitly.
+[MaaC-1 §18.3](../MaaC-1-Specification.md#183-corepan1) defines finite raw pan
+inputs, retention of those values and automation endpoints, and one clamp after
+base, replacement, and modulation values are combined. `synth.pan/1` retains
+its separate strict extension contract. Generic descriptor representation of
+raw versus effective ranges remains L4 work; the existing foundation behavior
+is unchanged.
 
 ## Derived plan and numeric fidelity
 
@@ -96,7 +97,24 @@ APIs. [Tempo ramps](tempo-ramps.md) records the numerical and compatibility rule
 
 ## Single-input ports
 
-Only `core.sum/1` explicitly permits empty audio input. The foundation requires a
-connection to `core.pan/1` and `core.onepole/1` single audio inputs. The specification
-should spell out `zero_default` for each reference processor descriptor rather
-than leaving it implicit in prose.
+[MaaC-1 §15](../MaaC-1-Specification.md#15-nodes-ports-and-connections) and its
+core input table define single versus summing cardinality, explicit
+`zero_default` behavior, and the `E_PORT_TYPE` result for missing or incompatible
+inputs. Event empty-stream behavior is separate from audio/control zero defaults.
+The §17 descriptor contract carries the same fields for external processors;
+generic descriptor schema and ABI details remain L4 work.
+
+## Tuning reference contract
+
+[MaaC-1 §7](../MaaC-1-Specification.md#7-pitch-and-tuning) defines all four
+tuning fields as required, with no defaults. `reference_index` is any
+dimensionless mathematical integer; a declared signed-64 host limit is a
+resource limit rather than an array or MIDI bound. `reference_frequency` is
+finite and strictly positive, with Hz and equivalent kHz units accepted.
+Missing, nonintegral, and nonpositive values use `E_RANGE`; wrong units use
+`E_UNIT`; an exact value that cannot become a finite host frequency uses
+`E_NONFINITE`; and a declared integer representation limit uses
+`E_RESOURCE_LIMIT`. The tuning slice in
+[`tests/l3_tuning.rs`](../tests/l3_tuning.rs) and
+[`conformance/l3/tuning/`](../conformance/l3/tuning/expected.json) records the
+public compile, retained pitch, render-replay, and diagnostic-path evidence.

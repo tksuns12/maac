@@ -1,0 +1,7 @@
+maac 1;
+project p { score = [0q, 1/12000q]; tail = 0s; rate = 48000Hz; tempo = &clock; meter = &metre; output = &sink:out; }
+tempo clock { points = [(0q, 60bpm, step)]; }
+meter metre { points = [(0q, 4, 4)]; }
+node sink { type = "core.sum/1"; config = { channels = 1; }; }
+node subject { type = "core.noise/1"; config = { channels = 1; seed = 0; }; }
+connect bad { from = &subject:out; to = &subject:in; }

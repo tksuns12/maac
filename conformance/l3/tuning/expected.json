@@ -1,0 +1,181 @@
+{
+  "schema": "maac.l3.tuning-contract-corpus/1",
+  "rate_hz": 48000,
+  "cases": [
+    {
+      "id": "ordinary-reference",
+      "source": "cases/ordinary-reference.maac",
+      "status": "ok",
+      "expected_pitch_hz": [
+        440.0,
+        880.0,
+        1760.0
+      ]
+    },
+    {
+      "id": "negative-reference",
+      "source": "cases/negative-reference.maac",
+      "status": "ok",
+      "expected_pitch_hz": [
+        220.0,
+        440.0,
+        880.0
+      ]
+    },
+    {
+      "id": "later-period-reference",
+      "source": "cases/later-period-reference.maac",
+      "status": "ok",
+      "expected_pitch_hz": [
+        220.0,
+        440.0,
+        880.0
+      ]
+    },
+    {
+      "id": "equivalent-khz-reference",
+      "source": "cases/equivalent-khz-reference.maac",
+      "status": "ok",
+      "expected_pitch_hz": [
+        440.0
+      ]
+    },
+    {
+      "id": "signed64-min-reference",
+      "source": "cases/signed64-min-reference.maac",
+      "status": "ok",
+      "expected_pitch_hz": [
+        440.0
+      ]
+    },
+    {
+      "id": "signed64-max-reference",
+      "source": "cases/signed64-max-reference.maac",
+      "status": "ok",
+      "expected_pitch_hz": [
+        440.0
+      ]
+    },
+    {
+      "id": "missing-reference-index",
+      "source": "cases/missing-reference-index.maac",
+      "status": "error",
+      "diagnostic": "E_RANGE",
+      "object_path": [
+        "t"
+      ],
+      "field_path": [
+        "reference_index"
+      ]
+    },
+    {
+      "id": "missing-reference-frequency",
+      "source": "cases/missing-reference-frequency.maac",
+      "status": "error",
+      "diagnostic": "E_RANGE",
+      "object_path": [
+        "t"
+      ],
+      "field_path": [
+        "reference_frequency"
+      ]
+    },
+    {
+      "id": "fractional-reference-index",
+      "source": "cases/fractional-reference-index.maac",
+      "status": "error",
+      "diagnostic": "E_RANGE",
+      "object_path": [
+        "t"
+      ],
+      "field_path": [
+        "reference_index"
+      ]
+    },
+    {
+      "id": "unit-reference-index",
+      "source": "cases/unit-reference-index.maac",
+      "status": "error",
+      "diagnostic": "E_UNIT",
+      "object_path": [
+        "t"
+      ],
+      "field_path": [
+        "reference_index"
+      ]
+    },
+    {
+      "id": "zero-reference-frequency",
+      "source": "cases/zero-reference-frequency.maac",
+      "status": "error",
+      "diagnostic": "E_RANGE",
+      "object_path": [
+        "t"
+      ],
+      "field_path": [
+        "reference_frequency"
+      ]
+    },
+    {
+      "id": "negative-reference-frequency",
+      "source": "cases/negative-reference-frequency.maac",
+      "status": "error",
+      "diagnostic": "E_RANGE",
+      "object_path": [
+        "t"
+      ],
+      "field_path": [
+        "reference_frequency"
+      ]
+    },
+    {
+      "id": "wrong-unit-reference-frequency",
+      "source": "cases/wrong-unit-reference-frequency.maac",
+      "status": "error",
+      "diagnostic": "E_UNIT",
+      "object_path": [
+        "t"
+      ],
+      "field_path": [
+        "reference_frequency"
+      ]
+    },
+    {
+      "id": "positive-reference-overflow",
+      "source": "cases/positive-reference-overflow.maac",
+      "status": "error",
+      "diagnostic": "E_RESOURCE_LIMIT",
+      "object_path": [
+        "t"
+      ],
+      "field_path": [
+        "reference_index"
+      ]
+    },
+    {
+      "id": "negative-reference-overflow",
+      "source": "cases/negative-reference-overflow.maac",
+      "status": "error",
+      "diagnostic": "E_RESOURCE_LIMIT",
+      "object_path": [
+        "t"
+      ],
+      "field_path": [
+        "reference_index"
+      ]
+    },
+    {
+      "id": "finite-host-overflow-frequency",
+      "source": "cases/finite-host-overflow-frequency.maac",
+      "status": "error",
+      "diagnostic": "E_NONFINITE",
+      "object_path": [
+        "pat",
+        "n"
+      ],
+      "field_path": [
+        "pitch"
+      ]
+    }
+  ]
+}

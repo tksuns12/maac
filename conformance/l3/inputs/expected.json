@@ -1,0 +1,298 @@
+{
+  "schema": "maac.l3.input-contract-corpus/1",
+  "rate_hz": 48000,
+  "asset": {
+    "file": "assets/kit.pcm",
+    "bundle_path": "assets/kit.pcm",
+    "sha256": "e00e5eb9444182f352323374ef4e08ebcb784725fdd4fd612d7730540b3e0c8c",
+    "bytes": 4
+  },
+  "cases": [
+    {
+      "id": "required-one-chain",
+      "source": "cases/required-one-chain.maac",
+      "status": "ok",
+      "total_frames": 4,
+      "incoming": {
+        "onepole": 1,
+        "gain": 1,
+        "fader": 1,
+        "matrix": 1,
+        "delay": 1,
+        "pan": 1
+      },
+      "connection_ids": [
+        "delay_pan",
+        "fader_matrix",
+        "gain_fader",
+        "matrix_delay",
+        "onepole_gain",
+        "sine_onepole"
+      ],
+      "sample": {
+        "frame": 2,
+        "channels": [
+          0.08675792268302782,
+          0.08675792268302782
+        ]
+      }
+    },
+    {
+      "id": "onepole-zero",
+      "source": "cases/onepole-zero.maac",
+      "status": "error",
+      "diagnostic": {
+        "code": "E_PORT_TYPE",
+        "object_path": [
+          "nodes",
+          "subject"
+        ],
+        "field_path": [
+          "in"
+        ]
+      }
+    },
+    {
+      "id": "onepole-two",
+      "source": "cases/onepole-two.maac",
+      "status": "error",
+      "diagnostic": {
+        "code": "E_PORT_TYPE",
+        "object_path": [
+          "connections",
+          "b_second"
+        ],
+        "field_path": [
+          "to"
+        ]
+      }
+    },
+    {
+      "id": "gain-zero",
+      "source": "cases/gain-zero.maac",
+      "status": "error",
+      "diagnostic": {
+        "code": "E_PORT_TYPE",
+        "object_path": [
+          "nodes",
+          "subject"
+        ],
+        "field_path": [
+          "in"
+        ]
+      }
+    },
+    {
+      "id": "gain-two",
+      "source": "cases/gain-two.maac",
+      "status": "error",
+      "diagnostic": {
+        "code": "E_PORT_TYPE",
+        "object_path": [
+          "connections",
+          "b_second"
+        ],
+        "field_path": [
+          "to"
+        ]
+      }
+    },
+    {
+      "id": "fader-zero",
+      "source": "cases/fader-zero.maac",
+      "status": "error",
+      "diagnostic": {
+        "code": "E_PORT_TYPE",
+        "object_path": [
+          "nodes",
+          "subject"
+        ],
+        "field_path": [
+          "in"
+        ]
+      }
+    },
+    {
+      "id": "fader-two",
+      "source": "cases/fader-two.maac",
+      "status": "error",
+      "diagnostic": {
+        "code": "E_PORT_TYPE",
+        "object_path": [
+          "connections",
+          "b_second"
+        ],
+        "field_path": [
+          "to"
+        ]
+      }
+    },
+    {
+      "id": "matrix-zero",
+      "source": "cases/matrix-zero.maac",
+      "status": "error",
+      "diagnostic": {
+        "code": "E_PORT_TYPE",
+        "object_path": [
+          "nodes",
+          "subject"
+        ],
+        "field_path": [
+          "in"
+        ]
+      }
+    },
+    {
+      "id": "matrix-two",
+      "source": "cases/matrix-two.maac",
+      "status": "error",
+      "diagnostic": {
+        "code": "E_PORT_TYPE",
+        "object_path": [
+          "connections",
+          "b_second"
+        ],
+        "field_path": [
+          "to"
+        ]
+      }
+    },
+    {
+      "id": "delay-zero",
+      "source": "cases/delay-zero.maac",
+      "status": "error",
+      "diagnostic": {
+        "code": "E_PORT_TYPE",
+        "object_path": [
+          "nodes",
+          "subject"
+        ],
+        "field_path": [
+          "in"
+        ]
+      }
+    },
+    {
+      "id": "delay-two",
+      "source": "cases/delay-two.maac",
+      "status": "error",
+      "diagnostic": {
+        "code": "E_PORT_TYPE",
+        "object_path": [
+          "connections",
+          "b_second"
+        ],
+        "field_path": [
+          "to"
+        ]
+      }
+    },
+    {
+      "id": "pan-zero",
+      "source": "cases/pan-zero.maac",
+      "status": "error",
+      "diagnostic": {
+        "code": "E_PORT_TYPE",
+        "object_path": [
+          "nodes",
+          "subject"
+        ],
+        "field_path": [
+          "in"
+        ]
+      }
+    },
+    {
+      "id": "pan-two",
+      "source": "cases/pan-two.maac",
+      "status": "error",
+      "diagnostic": {
+        "code": "E_PORT_TYPE",
+        "object_path": [
+          "connections",
+          "b_second"
+        ],
+        "field_path": [
+          "to"
+        ]
+      }
+    },
+    {
+      "id": "summing-and-empty-events",
+      "source": "cases/summing-and-empty-events.maac",
+      "status": "ok",
+      "uses_asset": true,
+      "total_frames": 4,
+      "incoming": {
+        "empty": 0,
+        "one": 1,
+        "many": 2,
+        "constant": 0,
+        "lfo": 0,
+        "noise": 0
+      },
+      "connection_ids": [
+        "source_a_many",
+        "source_a_one",
+        "source_b_many"
+      ],
+      "empty_event_targets": [
+        "empty_sine",
+        "kit"
+      ],
+      "no_input_nodes": [
+        "constant",
+        "lfo",
+        "noise"
+      ],
+      "sample": {
+        "frame": 1,
+        "channels": [
+          2.0
+        ]
+      }
+    },
+    {
+      "id": "constant-rejects-input",
+      "source": "cases/constant-rejects-input.maac",
+      "status": "error",
+      "diagnostic": {
+        "code": "E_REFERENCE",
+        "object_path": [
+          "bad"
+        ],
+        "field_path": [
+          "to"
+        ]
+      }
+    },
+    {
+      "id": "lfo-rejects-input",
+      "source": "cases/lfo-rejects-input.maac",
+      "status": "error",
+      "diagnostic": {
+        "code": "E_REFERENCE",
+        "object_path": [
+          "bad"
+        ],
+        "field_path": [
+          "to"
+        ]
+      }
+    },
+    {
+      "id": "noise-rejects-input",
+      "source": "cases/noise-rejects-input.maac",
+      "status": "error",
+      "diagnostic": {
+        "code": "E_REFERENCE",
+        "object_path": [
+          "bad"
+        ],
+        "field_path": [
+          "to"
+        ]
+      }
+    }
+  ]
+}

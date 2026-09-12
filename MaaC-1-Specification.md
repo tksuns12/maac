@@ -309,6 +309,22 @@ tuning nineteen {
 }
 ```
 
+All four tuning fields—`period`, `steps`, `reference_index`, and
+`reference_frequency`—are required; none has a default. `reference_index` is
+any dimensionless mathematical integer, including negative values and values
+beyond one period; its `c(k)` value uses the same floor division as every other
+degree. A host may impose a declared representational or resource limit, such
+as signed 64-bit storage, but that is not a language array or MIDI range and
+must be reported as `E_RESOURCE_LIMIT`. `reference_frequency` is a finite,
+strictly positive frequency quantity; Hz and equivalent kHz quantities are
+accepted and normalized as frequency units. Missing required fields,
+nonintegral indices, and nonpositive period or frequency values are `E_RANGE`;
+dimensioned indices and other wrong-unit values are `E_UNIT`; a mathematically
+finite value that cannot become a finite host frequency is `E_NONFINITE`; and a
+declared host representation or resource bound is `E_RESOURCE_LIMIT`. Other
+invalid values use the applicable existing section 23 diagnostic with the
+offending field path; this section adds no diagnostic code.
+
 `period` is positive cents. `steps` is nonempty, strictly increasing, begins at `0ct`, and remains below period. With `N` steps, use floor division for negative indices: `k = N*m + r`, `0 <= r < N`. Define `c(k) = m*period + steps[r]`. Then `degree(k, tuning)` is `reference_frequency * 2^((c(k)-c(reference_index))/1200)`.
 
 A transposition in cents multiplies frequency by `2^(cents/1200)`; it does not round to a tuning degree. Source spelling may be retained separately as inert notation data. Arithmetic must not assume that all music is a sequence of MIDI integers.
@@ -581,7 +597,29 @@ A core `node` requires `type`, an exact versioned processor identifier string. T
 
 `connect` requires `from` and `to` port references. Source and destination port kinds, dimensions, and channel counts must match exactly. Port kinds are audio with fixed channel count, scalar dimensionless control, or events with a declared event/protocol capability set. There is no implicit MIDI-to-audio conversion, channel duplication, mono/stereo conversion, gain change, or sample-rate conversion between engine nodes. Audio assets may have their own rate because their transport explicitly resamples them.
 
-A single-input port accepts one connection. A summing input accepts multiple connections and declares the addition rule. A disconnected audio/control input is zero only if its descriptor marks it `zero_default`; otherwise it is an error. Event inputs merge incoming events under the section 6 schedule. Track event targets act as additional event-source connections for this purpose.
+A single-input port permits at most one incoming connection. A second
+connection, an incompatible kind or channel count, or a missing required input
+is `E_PORT_TYPE`. A summing input permits multiple incoming connections and
+declares the addition rule. For an audio or scalar-control input, a descriptor's
+`zero_default` policy is explicit: if the input has no connection and the policy
+is `true`, it supplies the zero signal; if the policy is `false`, a connection is
+required (at least one for a summing input, exactly one for a single input). A
+zero default supplies only that processor input; it does not synthesize an edge
+or imply zero output. Reset-zero histories do not make a missing connection
+valid. `zero_default` applies only to audio and scalar-control input ports.
+Event inputs have a separate policy: each descriptor declares whether its empty
+event stream is permitted, and incoming events merge under the section 6
+schedule. Track event targets act as additional event-source connections for
+this purpose.
+
+The core input contracts are:
+
+| Processor | Input | Cardinality and missing-input policy |
+|---|---|---|
+| `core.sum/1` | audio `in` | Summing, `zero_default = true`; zero or more connections |
+| `core.gain/1`, `core.fader/1`, `core.pan/1`, `core.matrix/1`, `core.delay/1`, `core.onepole/1` | audio `in` | Single, `zero_default = false`; exactly one connection |
+| `core.sine/1`, `core.kit/1` | events | Merging event input; an empty event stream is permitted |
+| `core.lfo/1`, `core.constant/1`, `core.noise/1` | none | No inputs |
 
 An output may feed several inputs. This fan-out does not copy a node's state. Two node instances referring to the same implementation always have independent state unless that implementation explicitly declares a prohibited shared-state dependency; such a dependency prevents closed-render conformance.
 
@@ -629,6 +667,19 @@ An external module is identified by a hashed `module` asset. Its executable form
 | `determinism` | `declared_deterministic` or `nondeterministic`, plus documented dependencies |
 | `permissions` | Files/assets, network, device access, process execution, shared memory |
 
+For every external audio or scalar-control input, the `ports` descriptor
+declares whether it is single or summing and whether `zero_default` applies.
+Single inputs accept at most one connection; summing inputs accept multiple.
+When an audio/control input has no connection, `zero_default = true` supplies
+the zero signal and `false` requires a connection. This policy applies only to
+audio/control input ports. Event-input descriptors separately declare whether
+an empty event stream is permitted; incoming event streams otherwise merge
+according to the declared event contract. Missing required connections or
+incompatible connections to existing ports use `E_PORT_TYPE` with the relevant
+port path; an unresolved port reference remains `E_REFERENCE`. These are
+semantics of the existing descriptor contract and do not add serialization,
+schema, or ABI fields.
+
 A descriptor is not executable by itself. The ABI capability must have its own published contract. A host must not guess an ABI from a filename or start a native binary merely because a document refers to it.
 
 On load, the host verifies hashes, instantiates the exact implementation, restores its complete state if supplied, applies source config according to the ABI initialization contract, then applies explicit source parameter values as deliberate overrides. The adapter must detect incompatible state/config combinations. A plug-in adapter cannot assume that exposed parameters reconstruct non-parameter state.
@@ -653,7 +704,16 @@ Config: `channels`, required positive integer. Ports: single audio in/out. Gain 
 
 ### 18.3 `core.pan/1`
 
-No config. Mono single `in`, stereo `out`. Parameter `pan` in [-1,1], default 0, sample-rate, range policy clamp. Set `theta=(pan+1)*pi/4`; `left=x*cos(theta)`, `right=x*sin(theta)`. Center is an equal-power mono-to-stereo pan, not a stereo-balance control. Feedthrough: in and pan to out.
+No config. Mono single `in`, stereo `out`. Parameter `pan` accepts any finite
+dimensionless raw value, defaults to 0, and is sample-rate. The raw value is
+preserved in authored **A** and retained normalized execution inputs **N(A)**,
+including automation endpoints. Nonfinite source or computed values are
+`E_NONFINITE`. At each sample, §13 first forms the base or replacement value
+plus all modulation contributions, then applies one clamp to the effective
+range `[-1,1]`; no base value, automation endpoint, or individual modulation
+term is clamped earlier. Set `theta=(pan+1)*pi/4` from that effective value;
+`left=x*cos(theta)`, `right=x*sin(theta)`. Center is an equal-power mono-to-
+stereo pan, not a stereo-balance control. Feedthrough: in and pan to out.
 
 ### 18.4 `core.matrix/1`
 

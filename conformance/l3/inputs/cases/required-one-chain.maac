@@ -1,0 +1,20 @@
+maac 1;
+project p { score = [0q, 1/12000q]; tail = 0s; rate = 48000Hz; tempo = &clock; meter = &metre; output = &pan:out; }
+tempo clock { points = [(0q, 60bpm, step)]; }
+meter metre { points = [(0q, 4, 4)]; }
+node sine { type = "core.sine/1"; params = { attack = 0s; release = 0s; level = 1; }; }
+node onepole { type = "core.onepole/1"; config = { channels = 1; }; params = { cutoff = 1000Hz; }; }
+node gain { type = "core.gain/1"; config = { channels = 1; }; params = { gain = 1; }; }
+node fader { type = "core.fader/1"; config = { channels = 1; }; params = { level = 0dB; }; }
+node matrix { type = "core.matrix/1"; config = { inputs = 1; outputs = 1; coefficients = [[1]]; }; }
+node delay { type = "core.delay/1"; config = { channels = 1; frames = 1; }; }
+node pan { type = "core.pan/1"; params = { pan = 0; }; }
+connect sine_onepole { from = &sine:out; to = &onepole:in; }
+connect onepole_gain { from = &onepole:out; to = &gain:in; }
+connect gain_fader { from = &gain:out; to = &fader:in; }
+connect fader_matrix { from = &fader:out; to = &matrix:in; }
+connect matrix_delay { from = &matrix:out; to = &delay:in; }
+connect delay_pan { from = &delay:out; to = &pan:in; }
+pattern phrase { length = 1/12000q; note n { at = 0q; dur = 1/12000q; pitch = 12000Hz; velocity = 1; } }
+track notes { target = &sine:events; }
+place play { pattern = &phrase; track = &notes; at = 0q; }

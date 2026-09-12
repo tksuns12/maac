@@ -257,9 +257,9 @@ statuses, hashes, and ownership are recorded in the Verification record.
 ## Recommended next specification slice
 
 Continue with the [language specification and conformance plan](language-specification-plan.md),
-beginning with L3 complete field and processor contracts. L1 identity and edit
-consistency and L2 timing coordinates are addressed; the A1–A4 fixes and
-evidence remain recorded above.
+beginning with L4 portable interchange. L1 identity and edit consistency, L2
+timing coordinates, and the bounded L3 field and processor contracts are
+addressed; the A1–A4 fixes and evidence remain recorded above.
 
 ## Verification record
 

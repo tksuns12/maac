@@ -1,0 +1,23 @@
+maac 1;
+project p { score = [0q, 1/12000q]; tail = 0s; rate = 48000Hz; tempo = &clock; meter = &metre; output = &many:out; }
+tempo clock { points = [(0q, 60bpm, step)]; }
+meter metre { points = [(0q, 4, 4)]; }
+asset sample { kind = audio; path = "assets/kit.pcm"; hash = "sha256:e00e5eb9444182f352323374ef4e08ebcb784725fdd4fd612d7730540b3e0c8c"; format = "pcm_f32le_interleaved/1"; rate = 48000Hz; channels = 1; frames = 1; }
+node source_a { type = "core.sine/1"; params = { attack = 0s; release = 0s; level = 1; }; }
+node source_b { type = "core.sine/1"; params = { attack = 0s; release = 0s; level = 1; }; }
+node empty_sine { type = "core.sine/1"; }
+node kit { type = "core.kit/1"; config = { channels = 1; samples = [{ key = "unused"; asset = &sample; }]; }; }
+node constant { type = "core.constant/1"; }
+node lfo { type = "core.lfo/1"; config = { period = 1s; }; }
+node noise { type = "core.noise/1"; config = { channels = 1; seed = 0; }; }
+node empty { type = "core.sum/1"; config = { channels = 1; }; }
+node one { type = "core.sum/1"; config = { channels = 1; }; }
+node many { type = "core.sum/1"; config = { channels = 1; }; }
+connect source_a_one { from = &source_a:out; to = &one:in; }
+connect source_a_many { from = &source_a:out; to = &many:in; }
+connect source_b_many { from = &source_b:out; to = &many:in; }
+pattern phrase { length = 1/12000q; note n { at = 0q; dur = 1/12000q; pitch = 12000Hz; velocity = 1; } }
+track notes_a { target = &source_a:events; }
+track notes_b { target = &source_b:events; }
+place play_a { pattern = &phrase; track = &notes_a; at = 0q; }
+place play_b { pattern = &phrase; track = &notes_b; at = 0q; }

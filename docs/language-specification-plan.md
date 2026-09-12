@@ -1,7 +1,8 @@
 # MaaC language specification and conformance plan
 
-Status: L1 addressed 2026-09-13; authority is **RESOLVED**. L2 addressed
-2026-09-13; L3 is the next specification slice and L4–L5 remain planned.
+Status: L1 addressed 2026-09-13; authority is **RESOLVED**. L2 and L3
+addressed 2026-09-13; L4 is the next specification slice and L5 remains
+planned.
 Baseline: A1–A4 are addressed at
 `b19ae2884fbfad2dbf5efb1526a1eff8f5452d9d`. This plan records specification
 priorities. The adopted authored-state decision and the scoped L1 semantic
@@ -111,9 +112,9 @@ asset digest gate passed. Luna owns the specification/docs, Sol owns the
 corpus/harness/validation, independent readers cleared semantics and harness
 behavior, and root owns integration. Production source, Cargo, grammar, and
 schema are unchanged; no language or plan version was added. The full Rust
-suite, release build, installed acceptance, and remote CI were skipped. L3 is
-the next specification slice; L2 follows the existing tempo, offset, and cut
-rules and remains bounded to this timing corpus.
+suite, release build, installed acceptance, and remote CI were skipped. L3
+follows L2; L2 follows the existing tempo, offset, and cut rules and remains
+bounded to this timing corpus.
 
 ## L3 — complete field and processor contracts
 
@@ -125,10 +126,38 @@ descriptors, and processor semantics.
 from effective output range; and define processor-descriptor input cardinality
 and `zero_default` behavior.
 
-**Acceptance, dependencies, status.** Every affected field and descriptor gets
-normative prose plus independent valid/invalid vectors that agree across source,
-plan, and diagnostics. L3 follows L2 and depends on the processor inventory
-and its existing compatibility evidence. Status is planned clarification.
+**Scoped L3 deliverable (addressed 2026-09-13).** The normative contract now
+covers raw versus effective `core.pan/1` values, core input cardinality and
+`zero_default`, event empty-stream policy, and tuning requiredness, units,
+diagnostics, and the user-accepted `reference_index` domain of any
+dimensionless mathematical integer subject only to declared host limits. The
+[bounded corpus](../conformance/l3/README.md) has 41 source cases: pan 8 (6
+accepted, 2 rejected), inputs 17 (2 accepted, 15 rejected), and tuning 16 (6
+accepted, 10 rejected). Ten L3 tests exercise public source compilation,
+retained plan inspection, and render
+replay; the tuning target also pins resolved `pitch_hz` bits and diagnostic
+object/field paths. Two implementation regressions were demonstrated with
+actual RED → GREEN evidence: the old in-steps reference-index restriction and
+the missing tuning object/field context on signed-64 overflow. Forty-one
+selected existing compiler, foundation, music, and semantic regression tests,
+formatting, and targeted Clippy passed. The [L3 tuning evidence](../target/l3-tuning-validation/)
+contains the focused logs and exits. The combined pan/input/tuning gate passed
+10/10 in the [final integration log](../target/l3-contract-validation/final/combined-l3-tests.log);
+the corresponding integrated summary is maintained at
+`target/l3-contract-validation/integrated-final.json`.
+
+Luna owns the specification/docs and tuning source, corpus, and harness;
+Sol owns the pan/input corpus and harness. Independent semantic and harness
+readers cleared the bounded changes, and root owns integration. The full Rust
+suite, release build, installed acceptance, and remote CI were skipped. Full
+profile obligations and runtime normalizer/editor behavior tracked by L1 remain
+outside this slice. No language or plan version, schema/grammar, dependency, or
+wire-format change was made.
+
+**Acceptance, dependencies, status.** L3 follows L2 and depends on the
+processor inventory and its existing compatibility evidence. Status is
+addressed 2026-09-13 for this bounded field and processor-contract slice; the
+broader L4 interchange and L5 quantitative-conformance work remains planned.
 
 ## L4 — portable interchange
 

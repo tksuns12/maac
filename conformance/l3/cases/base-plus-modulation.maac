@@ -1,0 +1,12 @@
+maac 1;
+project p { score = [0q, 1/12000q]; tail = 0s; rate = 48000Hz; tempo = &clock; meter = &metre; output = &pan:out; }
+tempo clock { points = [(0q, 60bpm, step)]; }
+meter metre { points = [(0q, 4, 4)]; }
+node tone { type = "core.sine/1"; config = { voices = 1; }; params = { attack = 0s; release = 0s; level = 1; }; }
+node pan { type = "core.pan/1"; params = { pan = 2; }; }
+node negative { type = "core.constant/1"; params = { value = 1; }; }
+connect route { from = &tone:out; to = &pan:in; }
+modulate subtract { from = &negative:out; target = &pan.params.pan; amount = -2; }
+track notes { target = &tone:events; }
+pattern pulse { length = 1/12000q; note n { at = 0q; dur = 1/12000q; pitch = 12000Hz; velocity = 1; } }
+place play { pattern = &pulse; track = &notes; at = 0q; }

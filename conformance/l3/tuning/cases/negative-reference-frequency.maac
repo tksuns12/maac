@@ -1,0 +1,17 @@
+maac 1;
+project p { score = [0q, 1/60q]; rate = 48000Hz; tempo = &clock; meter = &metre; output = &sine:out; tail = 0s; }
+tempo clock { points = [(0q, 120bpm, step)]; }
+meter metre { points = [(0q, 4, 4)]; }
+tuning t {
+  period = 1200ct;
+  steps = [0ct, 700ct];
+  reference_index = 0;
+  reference_frequency = -1Hz;
+}
+node sine { type = "core.sine/1"; config = { voices = 4; }; }
+track tr { target = &sine:events; }
+pattern pat {
+  length = 1/60q;
+  note n0 { at = 0q; dur = 1/120q; pitch = degree(0, &t); velocity = 1; }
+}
+place pl { pattern = &pat; track = &tr; at = 0q; }

@@ -1122,10 +1122,18 @@ impl<'a> Compiler<'a> {
             let reference_index = self
                 .optional(object, "reference_index")
                 .map(|value| {
-                    bigint_i64(
-                        &self.rational_value(value, object, object.field("reference_index"))?,
-                        Some(value.span),
-                    )
+                    let span = value.span;
+                    let rational =
+                        self.rational_value(value, object, object.field("reference_index"))?;
+                    bigint_i64(&rational, Some(span)).map_err(|diagnostics| {
+                        let mut contextual = Diagnostics::new();
+                        for mut diagnostic in diagnostics {
+                            diagnostic.object_path = vec![object.id.clone()];
+                            diagnostic.field_path = vec!["reference_index".into()];
+                            contextual.push(diagnostic);
+                        }
+                        contextual
+                    })
                 })
                 .transpose()?
                 .unwrap_or(0);

@@ -1285,26 +1285,7 @@ impl<'a> Validator<'a> {
             }
         }
         if let Some(field) = object.field("reference_index") {
-            if let Some(index) = self.integer(field, path, "reference_index") {
-                let step_count = object
-                    .field("steps")
-                    .and_then(|steps| match &steps.value.kind {
-                        ValueKind::List(items) => Some(items.len()),
-                        _ => None,
-                    });
-                if index < BigRational::zero()
-                    || step_count
-                        .is_some_and(|count| index.to_usize().is_none_or(|index| index >= count))
-                {
-                    self.push(
-                        DiagnosticCode::Range,
-                        "tuning.reference_index must address an entry in tuning.steps",
-                        Some(field.value.span),
-                        path.to_vec(),
-                        vec!["reference_index".into()],
-                    );
-                }
-            }
+            self.integer(field, path, "reference_index");
         }
         if let Some(field) = object.field("reference_frequency") {
             if let Some(value) =

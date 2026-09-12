@@ -1,0 +1,5 @@
+maac 1;
+project p { score = [0q, 1/12000q]; tail = 0s; rate = 48000Hz; tempo = &clock; meter = &metre; output = &subject:out; }
+tempo clock { points = [(0q, 60bpm, step)]; }
+meter metre { points = [(0q, 4, 4)]; }
+node subject { type = "core.matrix/1"; config = { inputs = 1; outputs = 1; coefficients = [[1]]; }; }
