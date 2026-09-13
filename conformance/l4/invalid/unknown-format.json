@@ -1,0 +1,13 @@
+{
+  "base": "canonical/minimal-lock.json",
+  "expected": "E_SCHEMA",
+  "operations": [
+    {
+      "op": "replace",
+      "path": [
+        "format"
+      ],
+      "value": "maac.generic-unknown"
+    }
+  ]
+}

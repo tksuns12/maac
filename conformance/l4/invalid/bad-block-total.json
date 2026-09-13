@@ -1,0 +1,15 @@
+{
+  "base": "canonical/external-ramp-lock.json",
+  "expected": "E_TIMING",
+  "operations": [
+    {
+      "op": "replace",
+      "path": [
+        "engine",
+        "block_schedule",
+        1
+      ],
+      "value": "16301"
+    }
+  ]
+}

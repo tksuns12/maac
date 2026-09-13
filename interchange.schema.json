@@ -1,0 +1,518 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MaaC generic config, render-input, and lock interchange",
+  "description": "Closed structural schema. Cross-entry identity, ordering, closure, digest-preimage, timing, capability, and PCM evidence rules require semantic verification.",
+  "oneOf": [
+    { "$ref": "#/$defs/config" },
+    { "$ref": "#/$defs/renderInput" },
+    { "$ref": "#/$defs/lock" }
+  ],
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "minLength": 71,
+      "maxLength": 71
+    },
+    "unsigned": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)$",
+      "not": { "pattern": "[\\r\\n]" }
+    },
+    "positiveUnsigned": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*$",
+      "not": { "pattern": "[\\r\\n]" }
+    },
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+      "maxLength": 128,
+      "not": { "pattern": "[\\r\\n]" }
+    },
+    "path": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/identifier" },
+      "minItems": 1
+    },
+    "nonemptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "typedRecord": {
+      "type": "object",
+      "properties": {
+        "t": { "const": "record" },
+        "fields": {
+          "type": "object",
+          "propertyNames": { "$ref": "#/$defs/identifier" },
+          "additionalProperties": {
+            "$ref": "syntax-tree.schema.json#/$defs/value"
+          }
+        }
+      },
+      "required": ["t", "fields"],
+      "additionalProperties": false
+    },
+    "portRef": {
+      "type": "object",
+      "properties": {
+        "t": { "const": "ref" },
+        "path": { "$ref": "#/$defs/path" },
+        "port": { "$ref": "#/$defs/identifier" }
+      },
+      "required": ["t", "path", "port"],
+      "additionalProperties": false
+    },
+    "qQuantity": {
+      "type": "object",
+      "properties": {
+        "t": { "const": "quantity" },
+        "n": {
+          "type": "string",
+          "pattern": "^(0|-?[1-9][0-9]*)$",
+          "not": { "pattern": "[\\r\\n]" }
+        },
+        "d": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*$",
+          "not": { "pattern": "[\\r\\n]" }
+        },
+        "u": { "const": "q" }
+      },
+      "required": ["t", "n", "d", "u"],
+      "additionalProperties": false
+    },
+    "tailQuantity": {
+      "type": "object",
+      "properties": {
+        "t": { "const": "quantity" },
+        "n": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)$",
+          "not": { "pattern": "[\\r\\n]" }
+        },
+        "d": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*$",
+          "not": { "pattern": "[\\r\\n]" }
+        },
+        "u": { "const": "s" }
+      },
+      "required": ["t", "n", "d", "u"],
+      "additionalProperties": false
+    },
+    "config": {
+      "type": "object",
+      "properties": {
+        "format": { "const": "maac.generic-config" },
+        "version": { "type": "integer", "const": 1 },
+        "processor_type": { "$ref": "#/$defs/nonemptyString" },
+        "descriptor_hash": {
+          "oneOf": [
+            { "$ref": "#/$defs/digest" },
+            { "type": "null" }
+          ]
+        },
+        "config": { "$ref": "#/$defs/typedRecord" }
+      },
+      "required": [
+        "format",
+        "version",
+        "processor_type",
+        "descriptor_hash",
+        "config"
+      ],
+      "additionalProperties": false
+    },
+    "asset": {
+      "type": "object",
+      "properties": {
+        "source": { "$ref": "#/$defs/path" },
+        "kind": {
+          "enum": ["audio", "blob", "descriptor", "module"]
+        },
+        "sha256": { "$ref": "#/$defs/digest" },
+        "bytes": { "$ref": "#/$defs/unsigned" }
+      },
+      "required": ["source", "kind", "sha256", "bytes"],
+      "additionalProperties": false
+    },
+    "dependency": {
+      "type": "object",
+      "properties": {
+        "owner": {
+          "oneOf": [
+            { "$ref": "#/$defs/path" },
+            { "type": "null" }
+          ]
+        },
+        "role": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/nonemptyString" },
+          "minItems": 2,
+          "maxItems": 3
+        },
+        "sha256": { "$ref": "#/$defs/digest" },
+        "bytes": { "$ref": "#/$defs/unsigned" }
+      },
+      "required": ["owner", "role", "sha256", "bytes"],
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "owner": { "type": "null" },
+            "role": {
+              "prefixItems": [
+                { "const": "engine" },
+                { "const": "implementation" }
+              ],
+              "minItems": 2,
+              "maxItems": 2
+            }
+          }
+        },
+        {
+          "properties": {
+            "owner": { "$ref": "#/$defs/path" },
+            "role": {
+              "prefixItems": [
+                { "const": "processor" },
+                {
+                  "enum": [
+                    "implementation",
+                    "descriptor",
+                    "adapter",
+                    "state"
+                  ]
+                }
+              ],
+              "minItems": 2,
+              "maxItems": 2
+            }
+          }
+        },
+        {
+          "properties": {
+            "owner": {
+              "oneOf": [
+                { "$ref": "#/$defs/path" },
+                { "type": "null" }
+              ]
+            },
+            "role": {
+              "prefixItems": [
+                { "const": "imported-source" },
+                { "$ref": "#/$defs/nonemptyString" },
+                { "$ref": "#/$defs/nonemptyString" }
+              ],
+              "minItems": 3,
+              "maxItems": 3
+            }
+          }
+        },
+        {
+          "properties": {
+            "owner": {
+              "oneOf": [
+                { "$ref": "#/$defs/path" },
+                { "type": "null" }
+              ]
+            },
+            "role": {
+              "prefixItems": [
+                { "const": "auxiliary" },
+                { "$ref": "#/$defs/nonemptyString" },
+                { "$ref": "#/$defs/nonemptyString" }
+              ],
+              "minItems": 3,
+              "maxItems": 3
+            }
+          }
+        }
+      ]
+    },
+    "processor": {
+      "type": "object",
+      "properties": {
+        "node": { "$ref": "#/$defs/path" },
+        "processor_type": { "$ref": "#/$defs/nonemptyString" },
+        "implementation_hash": {
+          "oneOf": [
+            { "$ref": "#/$defs/digest" },
+            { "type": "null" }
+          ]
+        },
+        "descriptor_hash": {
+          "oneOf": [
+            { "$ref": "#/$defs/digest" },
+            { "type": "null" }
+          ]
+        },
+        "adapter_id": {
+          "oneOf": [
+            { "type": "string" },
+            { "type": "null" }
+          ]
+        },
+        "state_hash": {
+          "oneOf": [
+            { "$ref": "#/$defs/digest" },
+            { "type": "null" }
+          ]
+        },
+        "config": { "$ref": "#/$defs/config" },
+        "config_digest": { "$ref": "#/$defs/digest" },
+        "latency_frames": { "$ref": "#/$defs/unsigned" },
+        "determinism": {
+          "enum": ["declared_deterministic", "nondeterministic"]
+        }
+      },
+      "required": [
+        "node",
+        "processor_type",
+        "implementation_hash",
+        "descriptor_hash",
+        "adapter_id",
+        "state_hash",
+        "config",
+        "config_digest",
+        "latency_frames",
+        "determinism"
+      ],
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "implementation_hash": { "type": "null" },
+            "descriptor_hash": { "type": "null" },
+            "adapter_id": { "type": "null" }
+          }
+        },
+        {
+          "properties": {
+            "implementation_hash": { "$ref": "#/$defs/digest" },
+            "descriptor_hash": { "$ref": "#/$defs/digest" },
+            "adapter_id": { "$ref": "#/$defs/nonemptyString" }
+          }
+        }
+      ]
+    },
+    "engine": {
+      "type": "object",
+      "properties": {
+        "implementation_id": { "$ref": "#/$defs/nonemptyString" },
+        "build_id": { "$ref": "#/$defs/nonemptyString" },
+        "platform_id": { "$ref": "#/$defs/nonemptyString" },
+        "architecture_id": { "$ref": "#/$defs/nonemptyString" },
+        "numerical_mode_id": { "$ref": "#/$defs/nonemptyString" },
+        "sample_rate": { "$ref": "#/$defs/positiveUnsigned" },
+        "block_schedule": {
+          "oneOf": [
+            {
+              "type": "array",
+              "items": { "$ref": "#/$defs/positiveUnsigned" },
+              "minItems": 1
+            },
+            { "type": "null" }
+          ]
+        }
+      },
+      "required": [
+        "implementation_id",
+        "build_id",
+        "platform_id",
+        "architecture_id",
+        "numerical_mode_id",
+        "sample_rate",
+        "block_schedule"
+      ],
+      "additionalProperties": false
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "port": { "$ref": "#/$defs/portRef" },
+        "score": {
+          "type": "array",
+          "prefixItems": [
+            { "$ref": "#/$defs/qQuantity" },
+            { "$ref": "#/$defs/qQuantity" }
+          ],
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "tail": { "$ref": "#/$defs/tailQuantity" },
+        "render_frames": { "$ref": "#/$defs/unsigned" },
+        "crop": {
+          "type": "array",
+          "prefixItems": [
+            { "$ref": "#/$defs/unsigned" },
+            { "$ref": "#/$defs/unsigned" }
+          ],
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "channel_order": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/unsigned" },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "encoding_id": { "const": "pcm_f32le_interleaved/1" },
+        "clipping_id": { "const": "none" },
+        "dither_id": { "const": "none" }
+      },
+      "required": [
+        "port",
+        "score",
+        "tail",
+        "render_frames",
+        "crop",
+        "channel_order",
+        "encoding_id",
+        "clipping_id",
+        "dither_id"
+      ],
+      "additionalProperties": false
+    },
+    "evidence": {
+      "type": "object",
+      "properties": {
+        "pcm_sha256": { "$ref": "#/$defs/digest" },
+        "pcm_bytes": { "$ref": "#/$defs/unsigned" },
+        "file": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "sha256": { "$ref": "#/$defs/digest" },
+                "bytes": { "$ref": "#/$defs/unsigned" }
+              },
+              "required": ["sha256", "bytes"],
+              "additionalProperties": false
+            },
+            { "type": "null" }
+          ]
+        }
+      },
+      "required": ["pcm_sha256", "pcm_bytes", "file"],
+      "additionalProperties": false
+    },
+    "renderInput": {
+      "type": "object",
+      "properties": {
+        "format": { "const": "maac.generic-render-input" },
+        "version": { "type": "integer", "const": 1 },
+        "execution_hash": { "$ref": "#/$defs/digest" },
+        "assets": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/asset" },
+          "uniqueItems": true
+        },
+        "dependencies": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/dependency" },
+          "uniqueItems": true,
+          "contains": {
+            "type": "object",
+            "properties": {
+              "owner": { "type": "null" },
+              "role": {
+                "prefixItems": [
+                  { "const": "engine" },
+                  { "const": "implementation" }
+                ],
+                "minItems": 2,
+                "maxItems": 2
+              }
+            },
+            "required": ["owner", "role"]
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        "processors": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/processor" },
+          "uniqueItems": true
+        },
+        "engine": { "$ref": "#/$defs/engine" },
+        "output": { "$ref": "#/$defs/output" }
+      },
+      "required": [
+        "format",
+        "version",
+        "execution_hash",
+        "assets",
+        "dependencies",
+        "processors",
+        "engine",
+        "output"
+      ],
+      "additionalProperties": false
+    },
+    "lock": {
+      "type": "object",
+      "properties": {
+        "format": { "const": "maac.generic-lock" },
+        "version": { "type": "integer", "const": 1 },
+        "execution_hash": { "$ref": "#/$defs/digest" },
+        "assets": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/asset" },
+          "uniqueItems": true
+        },
+        "dependencies": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/dependency" },
+          "uniqueItems": true,
+          "contains": {
+            "type": "object",
+            "properties": {
+              "owner": { "type": "null" },
+              "role": {
+                "prefixItems": [
+                  { "const": "engine" },
+                  { "const": "implementation" }
+                ],
+                "minItems": 2,
+                "maxItems": 2
+              }
+            },
+            "required": ["owner", "role"]
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        "processors": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/processor" },
+          "uniqueItems": true
+        },
+        "engine": { "$ref": "#/$defs/engine" },
+        "output": { "$ref": "#/$defs/output" },
+        "render_key": { "$ref": "#/$defs/digest" },
+        "evidence": {
+          "oneOf": [
+            { "$ref": "#/$defs/evidence" },
+            { "type": "null" }
+          ]
+        }
+      },
+      "required": [
+        "format",
+        "version",
+        "execution_hash",
+        "assets",
+        "dependencies",
+        "processors",
+        "engine",
+        "output",
+        "render_key",
+        "evidence"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

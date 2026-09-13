@@ -1,0 +1,12 @@
+{
+  "base": "canonical/minimal-lock.json",
+  "expected": "E_SCHEMA",
+  "operations": [
+    {
+      "op": "delete",
+      "path": [
+        "version"
+      ]
+    }
+  ]
+}

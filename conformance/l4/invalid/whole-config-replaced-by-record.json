@@ -1,0 +1,24 @@
+{
+  "base": "canonical/minimal-lock.json",
+  "expected": "E_SCHEMA",
+  "operations": [
+    {
+      "op": "replace",
+      "path": [
+        "processors",
+        0,
+        "config"
+      ],
+      "value": {
+        "t": "record",
+        "fields": {
+          "voices": {
+            "t": "number",
+            "n": "64",
+            "d": "1"
+          }
+        }
+      }
+    }
+  ]
+}

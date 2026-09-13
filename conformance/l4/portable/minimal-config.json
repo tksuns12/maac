@@ -1,0 +1,16 @@
+{
+  "format": "maac.generic-config",
+  "version": 1,
+  "processor_type": "core.sine/1",
+  "descriptor_hash": null,
+  "config": {
+    "t": "record",
+    "fields": {
+      "voices": {
+        "t": "number",
+        "n": "64",
+        "d": "1"
+      }
+    }
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "base": "canonical/minimal-lock.json",
+  "expected": "E_SCHEMA",
+  "operations": [
+    {
+      "op": "append",
+      "path": [
+        "dependencies"
+      ],
+      "value": {
+        "owner": null,
+        "role": [
+          "engine",
+          "implementation"
+        ],
+        "sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "bytes": "393"
+      }
+    }
+  ]
+}

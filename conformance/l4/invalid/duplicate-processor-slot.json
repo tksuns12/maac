@@ -1,0 +1,23 @@
+{
+  "base": "canonical/external-ramp-lock.json",
+  "expected": "E_CLOSURE",
+  "operations": [
+    {
+      "op": "append",
+      "path": [
+        "dependencies"
+      ],
+      "value": {
+        "owner": [
+          "fx"
+        ],
+        "role": [
+          "processor",
+          "implementation"
+        ],
+        "sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "bytes": "42"
+      }
+    }
+  ]
+}

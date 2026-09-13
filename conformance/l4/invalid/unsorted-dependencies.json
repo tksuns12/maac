@@ -1,0 +1,16 @@
+{
+  "base": "canonical/external-ramp-lock.json",
+  "expected": "E_ORDER",
+  "operations": [
+    {
+      "op": "swap",
+      "path": [
+        "dependencies"
+      ],
+      "indices": [
+        0,
+        1
+      ]
+    }
+  ]
+}

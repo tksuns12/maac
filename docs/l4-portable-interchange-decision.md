@@ -1,0 +1,88 @@
+# L4 portable interchange decision
+
+**Status: Accepted material direction and bounded L4 slice — 2026-09-13.** The user approved the
+additive generic version-1 direction, preservation of existing production and
+instrument formats, the pre-render render-key boundary, and separate PCM/file
+hash evidence. The [Generic interchange v1](generic-interchange.md) document
+records the frozen field shapes and semantic wire rules. This document does
+not claim runtime implementation, and runtime lock verification, normalization,
+dependency discovery, and rendering remain deferred.
+
+## Purpose and fixed context
+
+MaaC-1 §20 defines canonical authored data **A**, the separate normalized
+execution view **N(A)**, revision and execution hashes, and a render key. §22
+defines dependency-lock and reproducibility requirements while separating
+source, performance, and audio equivalence. L1 fixed SHA-256 for the relevant
+canonical hashes and fixed the canonical JSON encoding plus the authored
+presence rules for **A** and **N(A)**. L4 must build on those rules rather than
+introducing a second identity authority. Existing production and instrument
+identity records retain their current identities and compatibility contracts.
+
+## Accepted direction and wire contract
+
+The accepted direction is an additive generic version-1 family with independent
+discriminators for three related artifact roles:
+
+- a **lock** artifact that records the dependency and execution conditions
+  needed to reproduce a declared result;
+- a **configuration** artifact that identifies the relevant configuration
+  capture and its declared implementation context; and
+- a **render-input** artifact that identifies the inputs presented before a
+  render, including the applicable source/execution identity and other
+  declared dependencies required by §22.
+
+The generic family version is not a new language, syntax-tree, retained-plan,
+production, or instrument version. The three roles must remain independently
+recognizable when transported or rejected. A generic artifact must not be
+accepted as an existing production or instrument identity merely because it
+has similar data.
+
+The [Generic interchange v1](generic-interchange.md) document records the
+exact envelope fields, dependency-role registry, canonical byte boundaries,
+ordering rules, and semantic verification boundary for this direction.
+
+The accepted render-key boundary covers the pre-render inputs and conditions.
+Expected PCM bytes and container/file bytes are output evidence of the
+resulting render; their hashes are separate from the render key and do not
+affect it. A matching render-input key therefore does not by itself claim
+audio equivalence; §22's declared numerical bound or byte-identical PCM
+evidence still governs that claim.
+
+## Compatibility and scope boundary
+
+The accepted direction is additive and preserves current
+production/instrument identities, existing source and retained-plan formats,
+and the L1 revision and execution-hash rules. A receiver that does not
+understand the generic family must distinguish it from known identities and
+reject or preserve it according to the existing extension and capability
+rules; it must not silently reinterpret it as a different artifact role.
+Version transitions and rejection follow the strict version, capability, and
+migration contract in [Generic interchange v1](generic-interchange.md).
+
+The field contract now provides the portable normative shape and byte
+boundaries. The accepted local executor evidence covers 54 corpus files, 2
+configurations, 4 render-inputs, 6 locks, 28 invalid artifacts, 3 portable
+pairs, 3 timing vectors, 15 schema documents, 23 focused L4 tests, and 54
+shasum/OpenSSL-verified file hashes. Its checker passed the fixed inventory,
+structure, canonical bytes, digests, relationships, and rejection vectors;
+the symlink and capability-ordering RED controls now fail as intended. The
+semantic/specification review passed. The independent harness findings on
+strict manifest canonical-flag typing and confinement/symlink checks before
+reading fixed manifest/hash inputs were corrected, and four focused regression
+tests then passed; both independent reviews are complete. Descriptor wire
+schema/ABI and loss-report schemas are separate
+follow-ups, as are runtime lock hosting or normalization, dependency
+discovery, rendering, and the L5 numerical metric and bound. This slice does
+not add a processor, alter DSP behavior, or claim hosted-CI or cross-platform
+audio conformance.
+
+## Evidence boundary and next bounded slice
+
+SHA-256 and the L1 **A**/**N(A)** canonicalization rules are fixed, as are the
+accepted render-key boundary and the separation of output evidence. The
+executor evidence is recorded in the local
+[validation record](../target/l4-interchange-validation/executor-summary.json).
+All evidence must continue to distinguish schema structure, semantic host
+verification, and actual runtime or repeated-render claims. Runtime lock
+hosting and normalization remain deferred.

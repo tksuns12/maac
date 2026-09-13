@@ -1,0 +1,26 @@
+{
+  "base": "canonical/equal-config-negative-lock.json",
+  "expected": "E_CLOSURE",
+  "operations": [
+    {
+      "op": "replace",
+      "path": [
+        "processors",
+        1,
+        "node"
+      ],
+      "value": [
+        "a"
+      ]
+    },
+    {
+      "op": "replace",
+      "path": [
+        "processors",
+        1,
+        "latency_frames"
+      ],
+      "value": "1"
+    }
+  ]
+}

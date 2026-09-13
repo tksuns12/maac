@@ -1,0 +1,17 @@
+{
+  "base": "canonical/minimal-lock.json",
+  "expected": "E_TIMING",
+  "operations": [
+    {
+      "op": "replace",
+      "path": [
+        "output",
+        "crop"
+      ],
+      "value": [
+        "0",
+        "24001"
+      ]
+    }
+  ]
+}

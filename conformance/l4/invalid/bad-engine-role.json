@@ -1,0 +1,18 @@
+{
+  "base": "canonical/minimal-lock.json",
+  "expected": "E_SCHEMA",
+  "operations": [
+    {
+      "op": "replace",
+      "path": [
+        "dependencies",
+        0,
+        "role"
+      ],
+      "value": [
+        "engine",
+        "binary"
+      ]
+    }
+  ]
+}

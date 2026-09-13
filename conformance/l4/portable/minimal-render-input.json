@@ -1,0 +1,97 @@
+{
+  "format": "maac.generic-render-input",
+  "version": 1,
+  "execution_hash": "sha256:29265c6c57cd879b9bbd93a77e4f8c7783cd6cc729320e2ed2b78d27b85d8fe2",
+  "assets": [],
+  "dependencies": [
+    {
+      "owner": null,
+      "role": [
+        "engine",
+        "implementation"
+      ],
+      "sha256": "sha256:485c98fa9adc6b59a3753a4a18e6ad02e0e34ee411a0a029e6f9c41614411d2c",
+      "bytes": "393"
+    }
+  ],
+  "processors": [
+    {
+      "node": [
+        "sine"
+      ],
+      "processor_type": "core.sine/1",
+      "implementation_hash": null,
+      "descriptor_hash": null,
+      "adapter_id": null,
+      "state_hash": null,
+      "config": {
+        "format": "maac.generic-config",
+        "version": 1,
+        "processor_type": "core.sine/1",
+        "descriptor_hash": null,
+        "config": {
+          "t": "record",
+          "fields": {
+            "voices": {
+              "t": "number",
+              "n": "64",
+              "d": "1"
+            }
+          }
+        }
+      },
+      "config_digest": "sha256:3f4862d2390bfec8c6a742b0e8bca7a093e948b0e59ddb00f3728bb52a80f9d4",
+      "latency_frames": "0",
+      "determinism": "declared_deterministic"
+    }
+  ],
+  "engine": {
+    "implementation_id": "maac.fixture.engine/1",
+    "build_id": "maac.fixture.build/1",
+    "platform_id": "maac.fixture.portable/1",
+    "architecture_id": "maac.fixture.generic/1",
+    "numerical_mode_id": "maac.fixture.exact/1",
+    "sample_rate": "48000",
+    "block_schedule": null
+  },
+  "output": {
+    "port": {
+      "t": "ref",
+      "path": [
+        "sine"
+      ],
+      "port": "out"
+    },
+    "score": [
+      {
+        "t": "quantity",
+        "n": "0",
+        "d": "1",
+        "u": "q"
+      },
+      {
+        "t": "quantity",
+        "n": "1",
+        "d": "1",
+        "u": "q"
+      }
+    ],
+    "tail": {
+      "t": "quantity",
+      "n": "0",
+      "d": "1",
+      "u": "s"
+    },
+    "render_frames": "24000",
+    "crop": [
+      "0",
+      "4"
+    ],
+    "channel_order": [
+      "0"
+    ],
+    "encoding_id": "pcm_f32le_interleaved/1",
+    "clipping_id": "none",
+    "dither_id": "none"
+  }
+}

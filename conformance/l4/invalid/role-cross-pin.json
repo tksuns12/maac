@@ -1,0 +1,36 @@
+{
+  "base": "canonical/external-ramp-lock.json",
+  "expected": "E_CLOSURE",
+  "operations": [
+    {
+      "op": "swap_fields",
+      "paths": [
+        [
+          "dependencies",
+          4,
+          "sha256"
+        ],
+        [
+          "dependencies",
+          5,
+          "sha256"
+        ]
+      ]
+    },
+    {
+      "op": "swap_fields",
+      "paths": [
+        [
+          "dependencies",
+          4,
+          "bytes"
+        ],
+        [
+          "dependencies",
+          5,
+          "bytes"
+        ]
+      ]
+    }
+  ]
+}

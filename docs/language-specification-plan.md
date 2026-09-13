@@ -1,8 +1,7 @@
 # MaaC language specification and conformance plan
 
-Status: L1 addressed 2026-09-13; authority is **RESOLVED**. L2 and L3
-addressed 2026-09-13; L4 is the next specification slice and L5 remains
-planned.
+Status: L1 addressed 2026-09-13; authority is **RESOLVED**. L2, L3, and L4
+addressed 2026-09-13; L5 is the next specification slice.
 Baseline: A1–A4 are addressed at
 `b19ae2884fbfad2dbf5efb1526a1eff8f5452d9d`. This plan records specification
 priorities. The adopted authored-state decision and the scoped L1 semantic
@@ -157,21 +156,56 @@ wire-format change was made.
 **Acceptance, dependencies, status.** L3 follows L2 and depends on the
 processor inventory and its existing compatibility evidence. Status is
 addressed 2026-09-13 for this bounded field and processor-contract slice; the
-broader L4 interchange and L5 quantitative-conformance work remains planned.
+broader L5 quantitative-conformance work remains planned.
 
 ## L4 — portable interchange
 
-**Problem.** Generic locks, render digests, and configuration digests need a
-portable byte contract.
+**Problem.** The requirements in MaaC-1 §§20 and 22 need a portable generic
+lock, configuration, and render-input family that is independently
+distinguishable from existing production and instrument identities.
 
-**Scope.** Specify versioned exact keys, types, serialization, and hash-input
-bytes for generic locks, render digests, and configuration digests. Track
-descriptors and loss reports as bounded follow-ups with explicit scope.
+**Scope.** Define an independently discriminated additive generic version-1
+family for locks, configuration captures, and render-input identity while
+preserving the current production and instrument contracts. The accepted
+material direction (2026-09-13) is that the render key covers pre-render
+inputs; expected PCM and file hashes are separate output evidence and do not
+affect the render key. SHA-256 and the L1 canonical authored **A** /
+normalized execution **N(A)** rules are fixed. Descriptors, loss reports, and
+quantitative tolerances remain separate slices.
 
 **Acceptance, dependencies, status.** Canonical JSON/byte examples, hashes,
-version transitions, and rejection vectors must be independently reproducible.
-L4 depends on L1 identity and L3 field contracts. Status is planned; no wire
-version or hash policy is chosen here.
+version transitions, and rejection vectors must be independently reproducible
+through portable contract text, schemas, and a checker corpus. L4 depends on
+the addressed L1–L3 contracts and the existing §20/§22 requirements. The
+[generic interchange v1 field contract](generic-interchange.md) records the
+exact artifact shapes and semantic wire rules. The accepted local executor evidence has
+passed its fixed schema/corpus checks: 54 corpus files (2 configurations, 4
+render-inputs, 6 locks, 28 invalid artifacts, 3 portable pairs, and 3 timing
+vectors), 15 schema documents, 23 focused L4 tests, and 54 file hashes checked
+by both shasum and OpenSSL. The checker also passed the L1 regression checks
+(20 corpus cases and 18 focused tests); the symlink and capability-ordering
+controls provide the meaningful RED/GREEN evidence, while the initial missing-
+checker failures were setup-only. The reviewed [generic schema](../interchange.schema.json)
+and [L4 manifest](../conformance/l4/manifest.json) are recorded in the local
+[L4 validation summary](../target/l4-interchange-validation/executor-summary.json),
+SHA-256 `afc4ad795f4ec63498ade5469520d0e7e3d9af35a34d4e33b5933fa5ec1a1a81`.
+The independent harness findings on strict boolean typing for manifest
+canonical flags and confinement and symlink checks before reading the fixed
+manifest or `SHA256SUMS` were corrected by Sol; four focused regression tests
+then passed. Independent semantic/specification and harness reviews both
+passed for this bounded slice.
+
+Ownership is split between the luna executor for specification/docs and the
+Sol recovery executor for schema, corpus, checker, and tests; independent
+semantic/specification and harness review passed, and root owns integration.
+Production Rust, grammar, existing schemas, and
+runtime lock verification/normalization/discovery/rendering remain unchanged
+or deferred; full Rust/build and remote-CI gates are not claimed here. Status
+is **addressed 2026-09-13** for this bounded contract/schema/corpus/checker
+slice. Descriptor wire schema/ABI and loss-report schemas are separate L4
+follow-ups. See the
+[L4 portable-interchange decision](l4-portable-interchange-decision.md) for
+the accepted direction and scope boundary.
 
 ## L5 — quantitative and machine-readable conformance
 
@@ -184,11 +218,14 @@ Build machine-readable vectors for valid/invalid source, canonical bytes and
 hashes, patch/conflict/inverse outcomes, event timing, and reference audio
 fixtures. The existing conformance checker remains selected smoke evidence.
 
-**Acceptance, dependencies, status.** Publish the metric, bound, provenance,
-and expected outcomes with independent vectors and compatibility review. L5
-depends on L1–L4 and consolidates or extends every slice's conformance corpus.
-Status is planned; no tolerance, corpus, or cross-platform identity policy is
-chosen here.
+**Acceptance, dependencies, status.** L5 is the next quantitative slice after
+L4. Publish one named Core Audio metric and its acceptance bound together with
+the numerical profile, reference conditions, measurement window, provenance,
+and independent expected vectors. The bound must remain distinct from
+portable identity: it does not imply a universal tolerance or cross-platform
+bit identity. L5 depends on L1–L4 and consolidates or extends every slice's
+conformance corpus. Status is planned; no metric, bound, or cross-platform
+identity policy is chosen here.
 
 ## Optional candidate
 

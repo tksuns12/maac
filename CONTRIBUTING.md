@@ -91,6 +91,24 @@ behavior against its fixed expected contract data. They do not establish
 execution by a production normalizer or editor, nor do they claim full runtime
 revision, patch, or inverse conformance.
 
+For the L4 generic interchange contract, read the [field
+contract](docs/generic-interchange.md), [schema](interchange.schema.json), and
+[corpus](conformance/l4/). The additive generic family does not change existing
+production or instrument identities. From the repository root, run the
+standard-library checker and focused tests with:
+
+```sh
+python3 scripts/check_interchange_lock.py --corpus conformance/l4
+python3 -m unittest discover -s scripts -p 'test_check_interchange_lock.py'
+```
+
+These commands check the fixed schema/corpus contract and checker behavior;
+they do not execute a production lock verifier or normalizer. The static
+schema/corpus evidence and independent semantic and harness reviews are
+complete for this bounded slice; descriptor wire schemas and loss reports are
+separate deferred work, so this result remains specification evidence rather
+than a runtime-support claim.
+
 Run `python3 check_production.py` from the repository root after installing the
 pinned checker dependencies above. This separate checker does not regenerate
 tracked files. It validates the [production specification](docs/production.md)

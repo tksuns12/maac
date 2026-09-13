@@ -1,0 +1,19 @@
+{
+  "base": "canonical/external-ramp-lock.json",
+  "expected": "E_DIGEST",
+  "operations": [
+    {
+      "op": "replace",
+      "path": [
+        "processors",
+        0,
+        "config",
+        "config",
+        "fields",
+        "amount",
+        "n"
+      ],
+      "value": "2"
+    }
+  ]
+}

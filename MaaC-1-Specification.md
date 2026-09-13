@@ -845,7 +845,18 @@ change these hashes because identity can affect randomness and deterministic
 reduction order. A hash is not a claim that two different source graphs cannot
 happen to sound the same.
 
+This execution hash is the §20.2 N(A) algorithm context
+maac.execution.sha256/1. An additive generic interchange envelope may carry
+this hash, but does not add a second execution-hash algorithm or identity
+field.
+
 The **render key** additionally covers the execution hash, all transitive dependencies, processor/adapter versions, state hashes, sample rate, numerical mode, render window, tail policy, block schedule where applicable, and output-encoding settings. There are no self-referential project hashes embedded in the object graph.
+
+The additive generic version-1 lock, configuration, and render-input field
+contract is specified in [Generic interchange v1](docs/generic-interchange.md).
+Its render key is the SHA-256 of the exact canonical render-input envelope,
+which identifies pre-render inputs and conditions. Expected PCM and file
+hashes are separate output evidence and do not affect that render key.
 
 ## 21. Exact editing protocol
 
@@ -1023,7 +1034,16 @@ ui.json
 renders/<artifacts and manifests>
 ```
 
-The lock manifest has `version`, `execution_hash`, `assets`, `processors`, `engine`, and `output` objects. Each asset entry records source ID, exact SHA-256, and verified byte length. Each processor entry records node ID, type, implementation and descriptor hashes when external, adapter identity, state hash, config digest, declared latency, and determinism status. Engine records implementation/build identity, platform/architecture, numerical mode, sample rate, and any relevant block schedule. Output records encoding, channel order, crop, tail, clipping/dither policy, and expected PCM hash when asserting exact reproducibility.
+For the additive generic version-1 format, the exact lock, configuration, and
+render-input fields are defined in [Generic interchange v1](docs/generic-interchange.md).
+Its asset entries record source identity, exact SHA-256, and verified byte
+length; processor entries record node, type, implementation/descriptor and
+adapter context, state, configuration digest, latency, and determinism. Engine
+entries record implementation/build identity, platform and architecture,
+numerical mode, sample rate, and any declared block schedule. Output records
+encoding, channel order, crop, tail, and clipping/dither settings. Expected PCM
+and file hashes are separate Evidence fields, not fields in Output or inputs
+that affect the render key.
 
 Three claims must be kept separate:
 

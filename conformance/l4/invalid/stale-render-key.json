@@ -1,0 +1,13 @@
+{
+  "base": "canonical/minimal-lock.json",
+  "expected": "E_DIGEST",
+  "operations": [
+    {
+      "op": "replace",
+      "path": [
+        "render_key"
+      ],
+      "value": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  ]
+}

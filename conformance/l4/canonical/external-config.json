@@ -1,0 +1,1 @@
+{"config":{"fields":{"amount":{"d":"3","n":"1","t":"number"},"label":{"t":"string","v":"雪\u000aline\u0001"}},"t":"record"},"descriptor_hash":"sha256:b4f59d1c177e5db2786aa9228926153adf2de3457446e6ba8e0cf27d2ef242bf","format":"maac.generic-config","processor_type":"fixture.external/1","version":1}

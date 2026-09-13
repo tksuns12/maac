@@ -1,0 +1,17 @@
+{
+  "base": "canonical/external-ramp-lock.json",
+  "expected": "E_SCHEMA",
+  "operations": [
+    {
+      "op": "replace",
+      "path": [
+        "output",
+        "channel_order"
+      ],
+      "value": [
+        "0",
+        "0"
+      ]
+    }
+  ]
+}

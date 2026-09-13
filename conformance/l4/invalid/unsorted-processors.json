@@ -1,0 +1,16 @@
+{
+  "base": "canonical/equal-config-negative-lock.json",
+  "expected": "E_ORDER",
+  "operations": [
+    {
+      "op": "swap",
+      "path": [
+        "processors"
+      ],
+      "indices": [
+        0,
+        1
+      ]
+    }
+  ]
+}

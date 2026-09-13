@@ -1,0 +1,14 @@
+{
+  "base": "canonical/minimal-evidence-file-lock.json",
+  "expected": "E_EVIDENCE",
+  "operations": [
+    {
+      "op": "replace",
+      "path": [
+        "evidence",
+        "pcm_bytes"
+      ],
+      "value": "12"
+    }
+  ]
+}

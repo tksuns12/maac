@@ -37,6 +37,16 @@ Coverage of every reference processor identifier is not a full-profile claim.
 | Named deliveries | Complete-graph master/stem capture; 44.1/48/96 kHz conversion; final-artifact loudness/sample-peak/experimental true-peak analysis |
 | Interchange | Independently validated standalone plans: version 1 legacy, version 2 embedded graph/data/provenance, version 3 exact ramp timing recipes, version 4 embedded audio assets and kit nodes, version 5 rate clips, version 6 warp-rate clips, version 7 core control modulation |
 
+The normative [generic interchange v1 field contract](generic-interchange.md),
+[generic schema](../interchange.schema.json), and [L4 corpus](../conformance/l4/)
+define an additive lock/configuration/render-input family. The existing
+production and instrument identity formats remain unchanged. The static
+checker and focused tests cover the fixed schema/corpus relationships, and
+independent semantic and harness reviews are complete for this bounded slice.
+No generic runtime lock verifier or normalizer is exposed by the foundation;
+descriptor wire schemas and loss reports remain separate deferred work, so
+this evidence is not a runtime-support claim.
+
 Recognized deferred features fail with `E_CAPABILITY`: messages,
 other processors, pitched sample instruments,
 preserve-pitch audio warping, external plug-ins and other extensions. Transactional editing, full render locks,

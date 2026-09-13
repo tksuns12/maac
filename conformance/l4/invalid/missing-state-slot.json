@@ -1,0 +1,13 @@
+{
+  "base": "canonical/external-ramp-lock.json",
+  "expected": "E_CLOSURE",
+  "operations": [
+    {
+      "op": "delete_index",
+      "path": [
+        "dependencies"
+      ],
+      "index": 7
+    }
+  ]
+}
