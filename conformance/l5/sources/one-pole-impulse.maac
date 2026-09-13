@@ -1,0 +1,8 @@
+maac 1;
+project p { score = [0q, 1/3000q]; tail = 0s; rate = 48000Hz; tempo = &clock; meter = &metre; output = &filter:out; }
+tempo clock { points = [(0q, 120bpm, step)]; }
+meter metre { points = [(0q, 4, 4)]; }
+asset impulse { kind = audio; path = "impulse.pcm"; hash = "sha256:66b7057e198043f4acfb86f84717e34610811559714e63c9484bde10fb7cbe06"; format = "pcm_f32le_interleaved/1"; rate = 48000Hz; channels = 1; frames = 8; }
+audio input { asset = &impulse; at = 0q; source = [0frame, 8frame]; mode = rate; }
+node filter { type = "core.onepole/1"; config = { channels = 1; }; params = { cutoff = 6000Hz; }; }
+connect input_filter { from = &input:out; to = &filter:in; }

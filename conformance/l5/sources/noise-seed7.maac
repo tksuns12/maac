@@ -1,0 +1,5 @@
+maac 1;
+project p { score = [0q, 1/3000q]; tail = 0s; rate = 48000Hz; tempo = &clock; meter = &metre; output = &noise:out; seed = 0; }
+tempo clock { points = [(0q, 120bpm, step)]; }
+meter metre { points = [(0q, 4, 4)]; }
+node noise { type = "core.noise/1"; config = { channels = 1; seed = 7; }; }

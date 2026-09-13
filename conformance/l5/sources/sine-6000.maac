@@ -1,0 +1,8 @@
+maac 1;
+project p { score = [0q, 1/3000q]; tail = 0s; rate = 48000Hz; tempo = &clock; meter = &metre; output = &sine:out; }
+tempo clock { points = [(0q, 120bpm, step)]; }
+meter metre { points = [(0q, 4, 4)]; }
+node sine { type = "core.sine/1"; params = { attack = 1/24000s; release = 0s; level = 1; }; }
+track notes { target = &sine:events; }
+pattern phrase { length = 1/3000q; note n { at = 0q; dur = 1/3000q; pitch = 6000Hz; velocity = 1; } }
+place play { pattern = &phrase; track = &notes; at = 0q; }

@@ -75,6 +75,24 @@ jobs:
       - name: Run read-only L1 identity checker tests
         run: python -m unittest discover -s scripts -p 'test_check_identity_edit.py'
 
+      - name: Check conformance evidence index
+        run: python scripts/check_conformance_index.py --repo-root . --index conformance/index.json
+
+      - name: Run conformance evidence index tests
+        run: python -m unittest discover -s scripts -p 'test_check_conformance_index.py'
+
+      - name: Check L4 generic interchange corpus
+        run: python scripts/check_interchange_lock.py --corpus conformance/l4
+
+      - name: Run L4 generic interchange checker tests
+        run: python -m unittest discover -s scripts -p 'test_check_interchange_lock.py'
+
+      - name: Check L5 reference corpus
+        run: python scripts/check_l5_reference.py --corpus conformance/l5 --verify
+
+      - name: Run L5 reference checker tests
+        run: python -m unittest discover -s scripts -p 'test_check_l5_reference.py'
+
       - name: Check production specification and bounded fixtures
         run: python check_production.py
 

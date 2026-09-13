@@ -1,0 +1,275 @@
+{
+  "format": "maac.l5.core-audio-reference",
+  "version": 1,
+  "policy": {
+    "id": "maac.core-audio.reference-f64/1",
+    "sample_rate_hz": "48000",
+    "reset_frame": "0",
+    "frame_window": [
+      "0",
+      "8"
+    ],
+    "observed_samples": "finite pre-encoding binary64 decoded exactly as dyadic rationals",
+    "reference_samples": "real values enclosed by reduced rational endpoints",
+    "metric": "maximum absolute sample error",
+    "error_upper": "max_samples(max(abs(actual-lo),abs(actual-hi)))",
+    "certification": "pass only when error_upper <= epsilon",
+    "epsilon": {
+      "numerator": "1",
+      "denominator": "100000000000000"
+    },
+    "maximum_interval_width": {
+      "numerator": "1",
+      "denominator": "100000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    }
+  },
+  "provenance": {
+    "derivation": {
+      "author": {
+        "identity": "/root/a3_recovery_executor",
+        "role": "challenging executor responsible for independent reference derivation and corpus implementation"
+      },
+      "generation_environment": {
+        "python_implementation": "CPython",
+        "python_version": "3.14.4",
+        "platform": "macOS 26.6.2 arm64",
+        "standard_library_only": true
+      },
+      "script": {
+        "path": "scripts/check_l5_reference.py",
+        "sha256": "sha256:d428e2354be6c2c500b4344864e47d65b70f7595698158a27b675cd3a49edae0"
+      },
+      "reviewed_scratch_basis": {
+        "path": "target/l5-quantitative-validation/calibration/derive_and_compare.py",
+        "sha256": "sha256:e25339e6a6f465d9fc7072746c53c3d57abaab1f4e24931ff1c6e0420a02b65a",
+        "role": "reviewed calibration derivation adapted into the fixed corpus verifier"
+      },
+      "arithmetic": "Python stdlib Fraction and hashlib.sha256; no production DSP or libm oracle",
+      "square_root": "integer-square inequalities on a 10^-90 rational grid",
+      "pi": "Machin 16*atan(1/5)-4*atan(1/239), exact alternating-series remainder brackets through terms 120/121, outward rounded to 100 decimal places",
+      "exponential": "exp(-x) exact alternating-series brackets through terms 120/121 at both pi interval endpoints, outward rounded to 80 decimal places",
+      "noise": "SHA-256 maac-noise-1 byte preimage mapped to an exact dyadic rational"
+    },
+    "calibration": {
+      "role": "local bound-selection provenance; observed samples are not expected oracles",
+      "summary": {
+        "path": "target/l5-quantitative-validation/calibration/summary.json",
+        "sha256": "sha256:40f2c14088f6be43e134a5e5d25bda2067df3df2fdb674ea83134de1c72cdb27"
+      },
+      "environment": "macOS 26.6.2 arm64; rustc 1.95.0; CPython 3.14.4",
+      "case_count": "6",
+      "channel_sample_count": "64",
+      "observed_maximum_error_upper_approx": "1.5935876903e-16",
+      "observed_maximum_interval_width": "1/100000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "debug_release_local_sample_bits_equal": true,
+      "adoption_rationale": "1/10^14 is above the local enclosure-aware maximum and remains distinct from portable identity or a universal cross-platform claim"
+    }
+  },
+  "reference": {
+    "path": "references/sample-intervals.json",
+    "sha256": "sha256:cb7f8a71da9aa08529e2bcf93a53d791f2e0902123783dfa023e06c9cebd2b1d",
+    "bytes": "36376"
+  },
+  "assets": [
+    {
+      "path": "assets/impulse.pcm",
+      "sha256": "sha256:66b7057e198043f4acfb86f84717e34610811559714e63c9484bde10fb7cbe06",
+      "bytes": "32",
+      "format": "pcm_f32le_interleaved/1",
+      "sample_rate_hz": "48000",
+      "channels": "1",
+      "frames": "8"
+    }
+  ],
+  "cases": [
+    {
+      "id": "sine-6000",
+      "source": {
+        "path": "sources/sine-6000.maac",
+        "sha256": "sha256:3bd58a04c431e726649a78b62cd08cdafe32bb10fb8a324bdcca4f4a9228d588",
+        "bytes": "504"
+      },
+      "assets": [],
+      "render": {
+        "sample_rate_hz": "48000",
+        "reset_frame": "0",
+        "frame_start": "0",
+        "frame_end": "8",
+        "score_frames": "8",
+        "tail_frames": "0",
+        "output_port": [
+          "sine",
+          "out"
+        ],
+        "channels": "1",
+        "channel_order": [
+          "0"
+        ]
+      },
+      "timing": {
+        "kind": "note_gate",
+        "on_frame": "0",
+        "off_frame": "8"
+      }
+    },
+    {
+      "id": "pan-center",
+      "source": {
+        "path": "sources/pan-center.maac",
+        "sha256": "sha256:2db6f8c9d37e6b2376246914d25672282653324de79179af09fc7ca5d4245279",
+        "bytes": "604"
+      },
+      "assets": [],
+      "render": {
+        "sample_rate_hz": "48000",
+        "reset_frame": "0",
+        "frame_start": "0",
+        "frame_end": "8",
+        "score_frames": "8",
+        "tail_frames": "0",
+        "output_port": [
+          "pan",
+          "out"
+        ],
+        "channels": "2",
+        "channel_order": [
+          "0",
+          "1"
+        ]
+      },
+      "timing": {
+        "kind": "note_gate",
+        "on_frame": "0",
+        "off_frame": "8"
+      }
+    },
+    {
+      "id": "pan-half",
+      "source": {
+        "path": "sources/pan-half.maac",
+        "sha256": "sha256:451e4170ece06acf224c76a50f503de91e992b9a9ec30aa4f6347fd600cd5575",
+        "bytes": "606"
+      },
+      "assets": [],
+      "render": {
+        "sample_rate_hz": "48000",
+        "reset_frame": "0",
+        "frame_start": "0",
+        "frame_end": "8",
+        "score_frames": "8",
+        "tail_frames": "0",
+        "output_port": [
+          "pan",
+          "out"
+        ],
+        "channels": "2",
+        "channel_order": [
+          "0",
+          "1"
+        ]
+      },
+      "timing": {
+        "kind": "note_gate",
+        "on_frame": "0",
+        "off_frame": "8"
+      }
+    },
+    {
+      "id": "one-pole-impulse",
+      "source": {
+        "path": "sources/one-pole-impulse.maac",
+        "sha256": "sha256:dfc9d491ba2595b215d3cf81d8e7ea65ba96b9effb2e4a0243555bcfa17887a3",
+        "bytes": "670"
+      },
+      "assets": [
+        "assets/impulse.pcm"
+      ],
+      "render": {
+        "sample_rate_hz": "48000",
+        "reset_frame": "0",
+        "frame_start": "0",
+        "frame_end": "8",
+        "score_frames": "8",
+        "tail_frames": "0",
+        "output_port": [
+          "filter",
+          "out"
+        ],
+        "channels": "1",
+        "channel_order": [
+          "0"
+        ]
+      },
+      "timing": {
+        "kind": "audio_transport",
+        "start_frame": "0",
+        "end_frame": "8"
+      }
+    },
+    {
+      "id": "delay-feedback",
+      "source": {
+        "path": "sources/delay-feedback.maac",
+        "sha256": "sha256:c8709cc5d62ff6453e150afd7194aae27687912e55ab47b37fe6aca7ddfcb98b",
+        "bytes": "953"
+      },
+      "assets": [],
+      "render": {
+        "sample_rate_hz": "48000",
+        "reset_frame": "0",
+        "frame_start": "0",
+        "frame_end": "8",
+        "score_frames": "4",
+        "tail_frames": "4",
+        "output_port": [
+          "sum",
+          "out"
+        ],
+        "channels": "1",
+        "channel_order": [
+          "0"
+        ]
+      },
+      "timing": {
+        "kind": "note_gate",
+        "on_frame": "0",
+        "off_frame": "4"
+      }
+    },
+    {
+      "id": "noise-seed7",
+      "source": {
+        "path": "sources/noise-seed7.maac",
+        "sha256": "sha256:ac2c6bc0765ddd004af74c427b7f9ffaa36c67f5ca8361916bd190b8a3c5776f",
+        "bytes": "297"
+      },
+      "assets": [],
+      "render": {
+        "sample_rate_hz": "48000",
+        "reset_frame": "0",
+        "frame_start": "0",
+        "frame_end": "8",
+        "score_frames": "8",
+        "tail_frames": "0",
+        "output_port": [
+          "noise",
+          "out"
+        ],
+        "channels": "1",
+        "channel_order": [
+          "0"
+        ]
+      },
+      "timing": {
+        "kind": "empty_events",
+        "events": []
+      }
+    }
+  ],
+  "claims": {
+    "static_reference_verified": true,
+    "runtime_render_executed_by_this_checker": false,
+    "cross_platform_bound_proven": false,
+    "full_core_audio_profile_covered": false
+  }
+}

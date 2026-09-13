@@ -694,6 +694,16 @@ The following processors belong to Core Audio. All accept finite binary64 intern
 
 All config and parameter keys not named here are invalid. All parameter defaults are explicit below. None of the processors automatically normalizes, limits, or dithers its output.
 
+The auxiliary bounded quantitative policy
+`maac.core-audio.reference-f64/1` measures these processors at the finite
+pre-encoding binary64 boundary. It decodes each observation as an exact dyadic
+rational and compares it with independently specified real references under
+the exact interval metric and inclusive bound in
+[bounded quantitative conformance](docs/quantitative-conformance.md). This
+policy is evidence within Core Audio, not a fifth conformance profile, and it
+does not alter any processor algorithm, source numeric rounding rule, or the
+separate binary32 PCM format.
+
 ### 18.1 `core.sum/1`
 
 Config: `channels`, required positive integer. Ports: summing audio `in`, audio `out`, both that channel count. No parameters. Output is the componentwise sum in connection-ID order. Empty input produces zero. Feedthrough: in to out.
@@ -1053,6 +1063,15 @@ Three claims must be kept separate:
 
 **Audio equivalence:** either a declared numerical error bound against reference samples, or byte-identical PCM under an identified execution environment. Container bytes may additionally differ because of headers or metadata; a PCM hash and a file hash are distinct.
 
+For the bounded Core Audio numerical claim, the declared policy is
+`maac.core-audio.reference-f64/1`: finite pre-encoding binary64 observations,
+exact dyadic decoding, independently specified reduced-rational reference
+intervals, and inclusive `E_upper <= 1/100000000000000`, as defined in
+[bounded quantitative conformance](docs/quantitative-conformance.md). This
+bound applies only to its named six-fixture suite. It does not replace the
+real-valued processor semantics, imply a universal tolerance, or change the
+separate L4 PCM/file evidence and render-key rules.
+
 A seed alone does not establish audio equivalence. A native plug-in might depend on internal random state, thread scheduling, CPU math, block size, device inputs, or unavailable assets. A declared deterministic descriptor is a contract, not empirical proof; a locked render should include repeated-render tests. Bitwise claims require verified matching PCM, not just matching version strings.
 
 When a processor cannot be reproduced, a freeze operation records its output as an immutable audio asset at an explicit graph boundary, preserves its original source graph, and marks which path is active. Freeze manifests include the exact input-event/automation/dependency hash, engine configuration, start state, time interval, latency, and tail. Editing an upstream dependency invalidates the freeze. A bounced stem is not automatically equivalent to a live node when downstream sidechains, sends, nonlinear summing, or a different render range change the context.
@@ -1170,6 +1189,29 @@ Required cases for a full implementation include:
 18. A byte-identical source with an altered processor binary fails lock verification.
 19. Noise samples are invariant to adding an unrelated node because random addressing is node-local.
 20. A sub-sample positive gate that maps both endpoints to one frame fails rather than being arbitrarily lengthened.
+
+### 28.1 Auxiliary `reference-f64` suite
+
+The bounded quantitative evidence suite uses policy identifier
+`maac.core-audio.reference-f64/1`. It has six fixed 48 kHz fixtures, each
+measured over reset-relative half-open frames `[0,8)`, for 64 channel samples
+in total: a 6000 Hz Sine with a two-frame attack; equal-power Pan at center;
+Pan at `1/2`; a 6000 Hz OnePole impulse; a one-frame Delay with half-gain
+feedback across four score and four tail frames; and Noise with seed 7. The
+complete metric, reference conditions, and provenance requirements are in
+[bounded quantitative conformance](docs/quantitative-conformance.md).
+
+For each finite pre-encoding binary64 observation, exact dyadic decoding gives
+`actual`. Each independently derived reference is an exact real value or a
+reduced rational interval `[reference_lo, reference_hi]` of width at most
+`1/10^80`. The harness computes
+`E_upper = max_samples(max(abs(actual - reference_lo), abs(actual - reference_hi)))`
+with exact rational arithmetic and certifies the suite only when
+`E_upper <= 1/100000000000000`. Shape, channel order, reset/window, event and
+timing, and finite-value prerequisites are exact and are reported separately
+when they fail. No alignment, rescaling, transient removal, or binary32
+substitution is permitted. The bound is not a universal tolerance; it makes no
+full-profile, listening, or cross-platform bit-identity claim.
 
 ## 29. Design rationale and relationship to existing work — informative
 

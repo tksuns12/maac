@@ -1,7 +1,7 @@
 # MaaC language specification and conformance plan
 
-Status: L1 addressed 2026-09-13; authority is **RESOLVED**. L2, L3, and L4
-addressed 2026-09-13; L5 is the next specification slice.
+Status: L1, L2, L3, L4, and L5 are addressed 2026-09-13. L1 authority and the
+L5 metric and bound are **RESOLVED**. L4 is committed at `e948ce7`.
 Baseline: A1–A4 are addressed at
 `b19ae2884fbfad2dbf5efb1526a1eff8f5452d9d`. This plan records specification
 priorities. The adopted authored-state decision and the scoped L1 semantic
@@ -20,10 +20,10 @@ implementation status distinct.
 Arbitrary programming facilities and implicit behavior are intentionally
 excluded from this backlog.
 
-The ordered priorities are L1 first, followed by the bounded L2 and L3
-clarification slices, then L4 interchange work, and L5 corpus consolidation.
-Conformance vectors accompany every slice; L5 consolidates and extends the
-overall corpus.
+The ordered priorities were L1 first, followed by the bounded L2 and L3
+clarification slices, L4 interchange work, and L5 corpus consolidation.
+Conformance vectors accompany every slice. The bounded L1–L5 work is addressed;
+future obligations remain separate from these completed slices.
 
 ## L1 — identity and edit consistency
 
@@ -156,7 +156,8 @@ wire-format change was made.
 **Acceptance, dependencies, status.** L3 follows L2 and depends on the
 processor inventory and its existing compatibility evidence. Status is
 addressed 2026-09-13 for this bounded field and processor-contract slice; the
-broader L5 quantitative-conformance work remains planned.
+addressed L5 quantitative-conformance section records its separate numerical
+evidence.
 
 ## L4 — portable interchange
 
@@ -212,20 +213,59 @@ the accepted direction and scope boundary.
 **Problem.** Conformance needs measurable criteria without implying universal
 tolerances or cross-platform bit identity.
 
-**Scope.** Decide a numerical metric and acceptance bound for Core Audio while
-preserving the distinction between numerical tolerance and portable identity.
-Build machine-readable vectors for valid/invalid source, canonical bytes and
-hashes, patch/conflict/inverse outcomes, event timing, and reference audio
-fixtures. The existing conformance checker remains selected smoke evidence.
+**Scope.** Apply the accepted numerical metric and acceptance bound for the
+bounded Core Audio suite while preserving the distinction between numerical
+tolerance and portable identity. Build machine-readable vectors for
+valid/invalid source, canonical bytes and hashes, patch/conflict/inverse
+outcomes, event timing, and reference audio fixtures. The existing conformance
+checker remains selected smoke evidence. The final [conformance evidence
+index](../conformance/index.json) binds seven native suite manifests and 179
+fixture pins. Its checker passed 22 focused tests and intentionally does not
+execute the runtime recipes recorded in the index.
 
-**Acceptance, dependencies, status.** L5 is the next quantitative slice after
-L4. Publish one named Core Audio metric and its acceptance bound together with
-the numerical profile, reference conditions, measurement window, provenance,
-and independent expected vectors. The bound must remain distinct from
-portable identity: it does not imply a universal tolerance or cross-platform
-bit identity. L5 depends on L1–L4 and consolidates or extends every slice's
-conformance corpus. Status is planned; no metric, bound, or cross-platform
-identity policy is chosen here.
+**Bounded L5 deliverable (addressed 2026-09-13).** The user accepted the
+`maac.core-audio.reference-f64/1` policy: one bounded 48 kHz suite, six
+`[0,8)` reset-relative fixtures, 64 channel samples, exact dyadic binary64
+observations, reduced-rational reference intervals, and inclusive
+`E_upper <= 1/10^14`. The [quantitative-conformance decision](l5-quantitative-conformance-decision.md)
+records that choice, and the [accepted quantitative contract](quantitative-conformance.md)
+defines its portable logical conditions.
+
+The final public compile/retained-plan/replay/f64-render gate passed 7 Rust
+tests across 6 cases, 48 frame rows, and 64 channel samples. The maximum
+observed `E_upper` was approximately `1.5935876903e-16`; all retained replays
+were bit-identical. The ignored [runtime summary](../target/l5-quantitative-validation/runtime/summary.json)
+records the actual logs and the observation-file SHA-256
+`c4f58b7e0a6ac261fde8214fe694c1aefc29a043e9a510b5ab155a01483d930f`.
+The static L5 verifier passed its 13-test regression suite. The targeted L2/L3
+cross-slice gate passed 13 tests (3 L2 and 10 L3). Legacy L1 checker/tests
+passed 18 tests, L4 checker/tests passed 23 tests, and the disposable
+syntax/semantics smoke run matched `check-results.json`, `conformance.json`,
+and `example.syntax.json` byte-for-byte.
+
+The root-owned [integrated L5 record](../target/l5-quantitative-validation/integrated-final.json)
+binds the final summary hashes, 22 reviewed/candidate file hashes, seven
+manifest pins, and all 179 fixture pins. Luna owns the specification, index,
+and CI documentation; Sol owns the reference corpus, static verifier, and
+runtime harness; the L5 reference-test executor owns the verifier tests. Sol
+ran the runtime/reference and L2/L3 gates; Luna ran the index, legacy Python,
+and smoke gates; the reference-test executor ran its focused regression suite.
+Independent read-only semantic and code/harness reviews passed, and root
+performed integration acceptance.
+
+Production Rust, Cargo, grammar, and schema files remain unchanged. Full Rust
+suite, release build, installed acceptance, remote CI, cross-platform runtime,
+and listening checks were omitted. Runtime normalizer/editor behavior,
+generic lock verification/discovery/rendering, descriptor wire schemas, and
+loss-report schemas remain separate deferred work. L5 is addressed for this
+bounded contract, corpus, checker, index, and runtime-evidence slice; it makes
+no full-profile, universal-tolerance, or cross-platform bit-identity claim.
+
+**Acceptance, dependencies, status.** L5 follows L4 and consolidates or
+extends every slice's conformance corpus. The accepted metric, fixed corpus,
+public boundary, static checks, runtime observations, and independent reviews
+are complete for this bounded slice. Status is addressed 2026-09-13; the
+omitted work above remains outside its acceptance boundary.
 
 ## Optional candidate
 
