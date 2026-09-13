@@ -177,3 +177,119 @@ fn library_only_check_validates_every_export_but_compile_remains_a_conflict() {
         DiagnosticCode::Reference
     );
 }
+
+#[test]
+fn missing_library_local_references_cannot_capture_entry_declarations() {
+    let cases = [
+        (
+            r#"pattern exported { length = 1q; use nested { pattern = &shared_pattern; at = 0q; } }"#,
+            r#"pattern shared_pattern { length = 1q; note tone { at = 0q; dur = 1/2q; pitch = C4; } }"#,
+        ),
+        (
+            r#"pattern exported { length = 1q; note tone { at = 0q; dur = 1/2q; pitch = degree(0, &shared_tuning); } }"#,
+            r#"tuning shared_tuning { period = 1200ct; steps = [0ct]; reference_frequency = 440Hz; }"#,
+        ),
+        (
+            r#"pattern exported { length = 1q; note tone { at = 0q; dur = 1/2q; pitch = C4; expression bend { kind = pitch; curve = &shared_curve; } } }"#,
+            r#"curve shared_curve { clock = normalized; points = [(0, 0ct, linear), (1, 100ct, step)]; }"#,
+        ),
+    ];
+
+    for (library_export, entry_declaration) in cases {
+        let library = format!("maac 1; library isolated {{ version = \"1\"; }} {library_export}");
+        let pin = sha256_digest(library.as_bytes());
+        let entry = format!(
+            r#"maac 1;
+project song {{ score = [0q, 1q]; rate = 48000Hz; tempo = &clock; meter = &metre; output = &synth:out; }}
+tempo clock {{ points = [(0q, 120bpm, step)]; }}
+meter metre {{ points = [(0q, 4, 4)]; }}
+import isolated {{ path = "isolated.maac"; hash = "{pin}"; }}
+node synth {{ type = "core.sine/1"; }}
+track notes {{ target = &synth:events; }}
+{entry_declaration}
+place play {{ pattern = &isolated.exported; track = &notes; at = 0q; }}
+"#
+        );
+        let bundle = SourceBundle {
+            entry: "main.maac".into(),
+            sources: BTreeMap::from([
+                ("main.maac".into(), entry),
+                ("isolated.maac".into(), library),
+            ]),
+            assets: BTreeMap::new(),
+        };
+        assert_eq!(
+            first_code(
+                &check_bundle(&bundle)
+                    .expect_err("an unresolved library-local reference must not capture the entry")
+            ),
+            DiagnosticCode::Reference
+        );
+    }
+}
+
+#[test]
+fn shared_import_dag_without_musical_exports_is_resolved_once_per_source() {
+    const LAYERS: usize = 28;
+    let mut sources = BTreeMap::new();
+    let leaf = format!("maac 1; library layer_{LAYERS} {{ version = \"1\"; }}");
+    sources.insert(format!("layer_{LAYERS}.maac"), leaf.clone());
+    let mut next = leaf;
+    for layer in (0..LAYERS).rev() {
+        let next_path = format!("layer_{}.maac", layer + 1);
+        let pin = sha256_digest(next.as_bytes());
+        let source = format!(
+            "maac 1; library layer_{layer} {{ version = \"1\"; }} import left {{ path = \"{next_path}\"; hash = \"{pin}\"; }} import right {{ path = \"{next_path}\"; hash = \"{pin}\"; }}"
+        );
+        sources.insert(format!("layer_{layer}.maac"), source.clone());
+        next = source;
+    }
+    let bundle = SourceBundle {
+        entry: "layer_0.maac".into(),
+        sources,
+        assets: BTreeMap::new(),
+    };
+
+    check_bundle(&bundle).expect("a shared non-musical dependency suffix should be memoized");
+}
+
+#[test]
+fn library_only_check_runs_compiler_level_pitch_validation() {
+    for pitch in ["key(1/2)", "ratio(0, 440Hz)", "ratio(-1, 440Hz)"] {
+        let source = format!(
+            "maac 1; library invalid {{ version = \"1\"; }} pattern phrase {{ length = 1q; note tone {{ at = 0q; dur = 1/2q; pitch = {pitch}; }} }}"
+        );
+        assert_eq!(
+            first_code(
+                &check_bundle(&SourceBundle::new("invalid.maac", source))
+                    .expect_err("invalid exported pitch must fail library-only check")
+            ),
+            DiagnosticCode::Range,
+            "pitch form {pitch}"
+        );
+    }
+}
+
+#[test]
+fn public_entry_document_never_exposes_spans_owned_by_imported_sources() {
+    let pin = sha256_digest(MUSICAL_LIBRARY.as_bytes());
+    let source = project_source(&pin, 120, 0, 0);
+    let bundle = project_bundle(source.clone()).resolve().unwrap();
+    let libraries = maac::library::LibrarySet::resolve(&bundle).unwrap();
+    let entry = libraries.entry_document();
+
+    assert!(entry.object("music.phrase").is_none());
+    let place = entry
+        .object("play")
+        .expect("entry placement remains visible");
+    assert!(entry.slice(place.span).starts_with("place play"));
+    assert_eq!(
+        place
+            .field("pattern")
+            .and_then(|field| field.value.reference())
+            .expect("authored pattern reference")
+            .path,
+        vec!["music", "phrase"]
+    );
+    assert_eq!(entry.source(), source);
+}

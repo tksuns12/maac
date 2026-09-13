@@ -2407,67 +2407,8 @@ impl<'a> Compiler<'a> {
     }
 
     fn read_curves_and_automation(&mut self, limits: &PlanLimits) -> CResult<()> {
+        self.read_curves()?;
         let mut automation_points = 0usize;
-        for object in self
-            .document
-            .objects
-            .values()
-            .filter(|object| object.kind == "curve")
-        {
-            let clock = self.symbol_value(
-                &self.field(object, "clock")?.value,
-                object,
-                object.field("clock"),
-            )?;
-            if !matches!(clock.as_str(), "score" | "seconds" | "normalized") {
-                return Err(path_diagnostic(
-                    DiagnosticCode::Capability,
-                    "unsupported curve clock",
-                    object,
-                    None,
-                ));
-            }
-            let field = self.field(object, "points")?;
-            let values = self.list(&field.value, object, Some(field))?;
-            if values.is_empty() {
-                return Err(path_diagnostic(
-                    DiagnosticCode::Range,
-                    "curve requires points",
-                    object,
-                    Some(field),
-                ));
-            }
-            let mut points = Vec::new();
-            for value in values {
-                let tuple = self.tuple(value, object, Some(field), 3)?;
-                let position = match clock.as_str() {
-                    "score" => self.q_value(&tuple[0], object, Some(field), false)?,
-                    "normalized" => self.rational_value(&tuple[0], object, Some(field))?,
-                    _ => self.seconds_value(&tuple[0], object, Some(field))?,
-                };
-                let value = if matches!(tuple[1].kind, ValueKind::Quantity { unit: Unit::Ct, .. }) {
-                    self.cents_value(&tuple[1], object, Some(field))?
-                } else {
-                    self.numeric_parameter_value(&tuple[1], object, Some(field))?
-                };
-                let shape = match self.symbol_value(&tuple[2], object, Some(field))?.as_str() {
-                    "step" => Interpolation::Step,
-                    "linear" => Interpolation::Linear,
-                    "exponential" => Interpolation::Exponential,
-                    _ => {
-                        return Err(path_diagnostic(
-                            DiagnosticCode::Range,
-                            "unknown curve interpolation",
-                            object,
-                            Some(field),
-                        ))
-                    }
-                };
-                points.push((position, value, shape));
-            }
-            self.curves
-                .insert(object.id.clone(), CurveDef { clock, points });
-        }
         for object in self
             .document
             .objects
@@ -2566,6 +2507,70 @@ impl<'a> Compiler<'a> {
                 at,
                 points,
             });
+        }
+        Ok(())
+    }
+
+    fn read_curves(&mut self) -> CResult<()> {
+        for object in self
+            .document
+            .objects
+            .values()
+            .filter(|object| object.kind == "curve")
+        {
+            let clock = self.symbol_value(
+                &self.field(object, "clock")?.value,
+                object,
+                object.field("clock"),
+            )?;
+            if !matches!(clock.as_str(), "score" | "seconds" | "normalized") {
+                return Err(path_diagnostic(
+                    DiagnosticCode::Capability,
+                    "unsupported curve clock",
+                    object,
+                    None,
+                ));
+            }
+            let field = self.field(object, "points")?;
+            let values = self.list(&field.value, object, Some(field))?;
+            if values.is_empty() {
+                return Err(path_diagnostic(
+                    DiagnosticCode::Range,
+                    "curve requires points",
+                    object,
+                    Some(field),
+                ));
+            }
+            let mut points = Vec::new();
+            for value in values {
+                let tuple = self.tuple(value, object, Some(field), 3)?;
+                let position = match clock.as_str() {
+                    "score" => self.q_value(&tuple[0], object, Some(field), false)?,
+                    "normalized" => self.rational_value(&tuple[0], object, Some(field))?,
+                    _ => self.seconds_value(&tuple[0], object, Some(field))?,
+                };
+                let value = if matches!(tuple[1].kind, ValueKind::Quantity { unit: Unit::Ct, .. }) {
+                    self.cents_value(&tuple[1], object, Some(field))?
+                } else {
+                    self.numeric_parameter_value(&tuple[1], object, Some(field))?
+                };
+                let shape = match self.symbol_value(&tuple[2], object, Some(field))?.as_str() {
+                    "step" => Interpolation::Step,
+                    "linear" => Interpolation::Linear,
+                    "exponential" => Interpolation::Exponential,
+                    _ => {
+                        return Err(path_diagnostic(
+                            DiagnosticCode::Range,
+                            "unknown curve interpolation",
+                            object,
+                            Some(field),
+                        ))
+                    }
+                };
+                points.push((position, value, shape));
+            }
+            self.curves
+                .insert(object.id.clone(), CurveDef { clock, points });
         }
         Ok(())
     }
@@ -4456,6 +4461,15 @@ fn value_span(value: &Rational, field: Option<&Field>) -> Span {
     })
 }
 
+pub(crate) fn validate_musical_catalog(document: &Document) -> CResult<()> {
+    let mut compiler = Compiler::new(document);
+    compiler.allow_hits = true;
+    compiler.read_tunings()?;
+    compiler.read_patterns()?;
+    compiler.validate_pattern_graph()?;
+    compiler.read_curves()
+}
+
 fn prepare_instrument_compiler<'a>(
     resolved: &ResolvedBundle,
     libraries: LibrarySet,
@@ -4526,7 +4540,7 @@ fn compile_resolved(
     libraries: LibrarySet,
     limits: &PlanLimits,
 ) -> CResult<Plan> {
-    let document = libraries.entry_document();
+    let document = libraries.resolved_document();
     if !document
         .objects
         .values()
@@ -4591,7 +4605,7 @@ pub fn check_bundle_with_limits(
     resolved.documents.insert(resolved.entry.clone(), document);
     let libraries = LibrarySet::resolve(&resolved)?;
     if libraries
-        .entry_document()
+        .resolved_document()
         .objects
         .values()
         .any(|object| object.kind == "project")
@@ -4681,7 +4695,7 @@ pub fn check_with_limits(document: &Document, limits: &PlanLimits) -> Result<(),
         let resolved = local_resolved(document);
         let libraries = LibrarySet::resolve(&resolved)?;
         if libraries
-            .entry_document()
+            .resolved_document()
             .objects
             .values()
             .any(|object| object.kind == "project")
@@ -4736,7 +4750,7 @@ fn compile_resolved_versioned(
     production: Option<crate::production_data::ProductionSettings>,
     original: &Document,
 ) -> CResult<VersionedPlan> {
-    let document = libraries.entry_document();
+    let document = libraries.resolved_document();
     if !document
         .objects
         .values()
@@ -4812,7 +4826,7 @@ fn compile_resolved_artifact(
     production: Option<crate::production_data::ProductionSettings>,
     original: &Document,
 ) -> CResult<PlanArtifact> {
-    let document = libraries.entry_document();
+    let document = libraries.resolved_document();
     if !uses_kit_profile(&document)
         && !uses_audio_profile(&document)
         && !uses_control_profile(&document)
@@ -4858,7 +4872,7 @@ pub fn check_bundle_artifact_with_limits(
 ) -> Result<(), Diagnostics> {
     let (resolved, libraries, production, original) = prepare_artifact_bundle(bundle)?;
     if libraries
-        .entry_document()
+        .resolved_document()
         .objects
         .values()
         .any(|object| object.kind == "project")
@@ -4914,7 +4928,7 @@ pub fn check_bundle_versioned_with_limits(
     resolved.documents.insert(resolved.entry.clone(), document);
     let libraries = LibrarySet::resolve(&resolved)?;
     if libraries
-        .entry_document()
+        .resolved_document()
         .objects
         .values()
         .any(|object| object.kind == "project")

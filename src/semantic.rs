@@ -401,6 +401,54 @@ pub fn validate(document: &Document) -> Result<SourceGraph, Diagnostics> {
     validate_source(document)
 }
 
+/// Validate reusable musical declarations without inventing a project clock,
+/// routing graph, or other caller-owned composition context.
+pub(crate) fn validate_musical_catalog(document: &Document) -> Result<(), Diagnostics> {
+    let instruments = BTreeMap::new();
+    let mut validator = Validator::new(document, &instruments);
+    validator.allow_ramps = true;
+    validator.allow_kits = true;
+    if document.version != 1 {
+        validator.push(
+            DiagnosticCode::Version,
+            format!("unsupported MaaC version {}", document.version),
+            None,
+            Vec::new(),
+            Vec::new(),
+        );
+    }
+    validator.total_objects = document
+        .objects()
+        .filter(|(_, object)| matches!(object.kind.as_str(), "pattern" | "curve" | "tuning"))
+        .map(|(_, object)| 1 + count_children(object))
+        .sum();
+    if validator.total_objects > MAX_SOURCE_OBJECTS {
+        validator.push(
+            DiagnosticCode::ResourceLimit,
+            format!(
+                "musical catalog contains {} objects; the foundation limit is {}",
+                validator.total_objects, MAX_SOURCE_OBJECTS
+            ),
+            None,
+            Vec::new(),
+            Vec::new(),
+        );
+    }
+    for object in document
+        .objects
+        .values()
+        .filter(|object| matches!(object.kind.as_str(), "pattern" | "curve" | "tuning"))
+    {
+        validator.validate_top_level_object(object);
+    }
+    validator.validate_pattern_cycles();
+    if validator.diagnostics.has_errors() {
+        Err(validator.diagnostics)
+    } else {
+        Ok(())
+    }
+}
+
 struct Validator<'a> {
     allow_warp: bool,
     allow_controls: bool,

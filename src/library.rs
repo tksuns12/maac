@@ -67,6 +67,7 @@ pub struct LibrarySet {
     pub wavetable_sources: Vec<WavetableSource>,
     pub metadata: Vec<LibraryMetadata>,
     entry_document: Document,
+    resolved_document: Document,
     pattern_source_paths: BTreeMap<String, Vec<String>>,
     program_exports: BTreeMap<ExportKey, usize>,
     presets: BTreeMap<ExportKey, Preset>,
@@ -143,14 +144,16 @@ impl LibrarySet {
             );
         }
 
-        let (entry_document, pattern_source_paths) = resolve_entry_document(bundle)?;
-        validate_musical_exports(&entry_document)?;
+        let (entry_document, resolved_document, pattern_source_paths) =
+            resolve_entry_document(bundle)?;
+        validate_musical_exports(&resolved_document)?;
         Ok(Self {
             programs,
             wavetables,
             wavetable_sources,
             metadata,
             entry_document,
+            resolved_document,
             pattern_source_paths,
             program_exports,
             presets,
@@ -236,6 +239,10 @@ impl LibrarySet {
         self.entry_document.clone()
     }
 
+    pub(crate) fn resolved_document(&self) -> Document {
+        self.resolved_document.clone()
+    }
+
     pub(crate) fn pattern_source_paths(&self) -> &BTreeMap<String, Vec<String>> {
         &self.pattern_source_paths
     }
@@ -249,8 +256,8 @@ fn is_musical_export(object: &Object) -> bool {
 
 fn resolve_entry_document(
     bundle: &ResolvedBundle,
-) -> Result<(Document, BTreeMap<String, Vec<String>>), Diagnostics> {
-    let mut document = bundle
+) -> Result<(Document, Document, BTreeMap<String, Vec<String>>), Diagnostics> {
+    let mut entry_document = bundle
         .documents
         .get(&bundle.entry)
         .cloned()
@@ -260,42 +267,82 @@ fn resolve_entry_document(
                 format!("entry source `{}` is missing", bundle.entry),
             )
         })?;
-    document.objects.retain(|_, object| {
+    entry_document.objects.retain(|_, object| {
         !matches!(
             object.kind.as_str(),
             "library" | "import" | "instrument" | "preset" | "wavetable"
         )
     });
 
-    for object in document.objects.values_mut() {
+    let mut resolved_document = entry_document.clone();
+    for object in resolved_document.objects.values_mut() {
         rewrite_object_references(bundle, &bundle.entry, &[], object);
     }
 
-    let mut pattern_source_paths = document
+    let mut pattern_source_paths = resolved_document
         .objects
         .values()
         .filter(|object| object.kind == "pattern")
         .map(|object| (object.id.clone(), vec![object.id.clone()]))
         .collect::<BTreeMap<_, _>>();
-    let mut object_count = document.objects.values().map(count_object).sum::<usize>();
+    let mut object_count = resolved_document
+        .objects
+        .values()
+        .map(count_object)
+        .sum::<usize>();
+    let mut musical_subtrees = BTreeMap::new();
+    index_musical_subtrees(bundle, &bundle.entry, &mut musical_subtrees)?;
+    let mut route_work = 0usize;
     add_imported_musical_exports(
         bundle,
         &bundle.entry,
         &[],
-        &mut document,
+        &musical_subtrees,
+        &mut resolved_document,
         &mut pattern_source_paths,
         &mut object_count,
+        &mut route_work,
     )?;
-    Ok((document, pattern_source_paths))
+    Ok((entry_document, resolved_document, pattern_source_paths))
+}
+
+fn index_musical_subtrees(
+    bundle: &ResolvedBundle,
+    file: &str,
+    memo: &mut BTreeMap<String, bool>,
+) -> Result<bool, Diagnostics> {
+    if let Some(has_musical) = memo.get(file) {
+        return Ok(*has_musical);
+    }
+    let document = bundle.documents.get(file).ok_or_else(|| {
+        simple_error(
+            DiagnosticCode::Reference,
+            format!("resolved source `{file}` is missing"),
+        )
+    })?;
+    let imports = bundle.imports.get(file).ok_or_else(|| {
+        simple_error(
+            DiagnosticCode::Reference,
+            format!("resolved imports for `{file}` are missing"),
+        )
+    })?;
+    let mut has_musical = document.objects.values().any(is_musical_export);
+    for target in imports.values() {
+        has_musical |= index_musical_subtrees(bundle, target, memo)?;
+    }
+    memo.insert(file.to_owned(), has_musical);
+    Ok(has_musical)
 }
 
 fn add_imported_musical_exports(
     bundle: &ResolvedBundle,
     declaring_file: &str,
     route: &[String],
+    musical_subtrees: &BTreeMap<String, bool>,
     document: &mut Document,
     pattern_source_paths: &mut BTreeMap<String, Vec<String>>,
     object_count: &mut usize,
+    route_work: &mut usize,
 ) -> Result<(), Diagnostics> {
     let imports = bundle.imports.get(declaring_file).ok_or_else(|| {
         simple_error(
@@ -304,6 +351,24 @@ fn add_imported_musical_exports(
         )
     })?;
     for (alias, target_file) in imports {
+        if !musical_subtrees.get(target_file).copied().unwrap_or(false) {
+            continue;
+        }
+        *route_work = route_work.checked_add(1).ok_or_else(|| {
+            simple_error(
+                DiagnosticCode::ResourceLimit,
+                "resolved musical import route count overflowed",
+            )
+        })?;
+        if *route_work > crate::bundle::MAX_SYNTAX_OBJECTS {
+            return Err(simple_error(
+                DiagnosticCode::ResourceLimit,
+                format!(
+                    "resolved musical import routes exceed {}",
+                    crate::bundle::MAX_SYNTAX_OBJECTS
+                ),
+            ));
+        }
         let mut target_route = route.to_vec();
         target_route.push(alias.clone());
         let target = bundle.documents.get(target_file).ok_or_else(|| {
@@ -349,9 +414,11 @@ fn add_imported_musical_exports(
             bundle,
             target_file,
             &target_route,
+            musical_subtrees,
             document,
             pattern_source_paths,
             object_count,
+            route_work,
         )?;
     }
     Ok(())
@@ -384,16 +451,11 @@ fn rewrite_value_references(
     match &mut value.kind {
         ValueKind::Reference(reference) if reference.port.is_none() => {
             let resolved = match reference.path.as_slice() {
-                [id] => bundle
-                    .documents
-                    .get(declaring_file)
-                    .and_then(|document| document.objects.get(id))
-                    .filter(|object| is_musical_export(object))
-                    .map(|_| {
-                        let mut path = route.to_vec();
-                        path.push(id.clone());
-                        path
-                    }),
+                [id] => {
+                    let mut path = route.to_vec();
+                    path.push(id.clone());
+                    Some(path)
+                }
                 [alias, id] => bundle
                     .imports
                     .get(declaring_file)
@@ -436,32 +498,8 @@ fn validate_musical_exports(document: &Document) -> Result<(), Diagnostics> {
     if !document.objects.values().any(is_musical_export) {
         return Ok(());
     }
-    let mut suffix = 0usize;
-    let (project_id, tempo_id, meter_id) = loop {
-        let project_id = format!("__library_validation_project_{suffix}");
-        let tempo_id = format!("__library_validation_tempo_{suffix}");
-        let meter_id = format!("__library_validation_meter_{suffix}");
-        if [&project_id, &tempo_id, &meter_id]
-            .iter()
-            .all(|id| !document.objects.contains_key(id.as_str()))
-        {
-            break (project_id, tempo_id, meter_id);
-        }
-        suffix = suffix.saturating_add(1);
-    };
-    let source = format!(
-        "maac 1; project {project_id} {{ score = [0q, 1q]; rate = 48000Hz; tempo = &{tempo_id}; meter = &{meter_id}; }} tempo {tempo_id} {{ points = [(0q, 120bpm, step)]; }} meter {meter_id} {{ points = [(0q, 4, 4)]; }}"
-    );
-    let mut validation = crate::syntax::parse(&source)?;
-    validation.objects.extend(
-        document
-            .objects
-            .iter()
-            .filter(|(_, object)| is_musical_export(object))
-            .map(|(id, object)| (id.clone(), object.clone())),
-    );
-    crate::semantic::validate_source_with_kit_profile(&validation, &BTreeMap::new(), true)
-        .map(|_| ())
+    crate::semantic::validate_musical_catalog(document)?;
+    crate::compiler::validate_musical_catalog(document)
 }
 
 fn validate_documents(bundle: &ResolvedBundle) -> Result<Vec<LibraryMetadata>, Diagnostics> {

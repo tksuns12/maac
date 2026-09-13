@@ -539,7 +539,10 @@ fn execute_impl(
                     .objects
                     .values()
                     .filter(|object| {
-                        matches!(object.kind.as_str(), "instrument" | "preset" | "wavetable")
+                        matches!(
+                            object.kind.as_str(),
+                            "instrument" | "preset" | "wavetable" | "pattern" | "curve" | "tuning"
+                        )
                     })
                     .count();
                 Ok(CommandResult::library_check(&input, exports))

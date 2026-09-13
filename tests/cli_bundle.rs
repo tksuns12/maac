@@ -154,6 +154,9 @@ instrument lead {
     node osc { type = "synth.sine/1"; }
   }
 }
+tuning fifths { period = 1200ct; steps = [0ct, 700ct]; reference_index = 0; reference_frequency = 440Hz; }
+curve bend { clock = normalized; points = [(0, 0ct, linear), (1, 100ct, step)]; }
+pattern phrase { length = 1q; note tone { at = 0q; dur = 1/2q; pitch = degree(1, &fifths); expression pitch_bend { kind = pitch; curve = &bend; } } }
 "#;
     fs::write(&library, valid).unwrap();
 
@@ -168,7 +171,7 @@ instrument lead {
     assert!(check.status.success(), "library check failed: {:?}", check);
     let result = json_stdout(&check);
     assert_eq!(result["ok"], true);
-    assert_eq!(result["exports"], 1);
+    assert_eq!(result["exports"], 4);
     assert!(result.get("notes").is_none());
     assert!(result.get("frames").is_none());
 
