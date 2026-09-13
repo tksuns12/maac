@@ -9,7 +9,7 @@ language.
 | --- | --- |
 | `maac check [INPUT] [--project-root ROOT] [--profile default\|song]` | Resolve and budget-check a composition, or validate every library export |
 | `maac compile [INPUT] -o PLAN [--project-root ROOT] [--profile default\|song]` | Resolve a composition bundle and write an independently loadable versioned JSON plan |
-| `maac render PLAN -o WAV [--profile default\|song]` | Validate an explicit plan file under the caller's profile, then render it |
+| `maac render PLAN -o WAV [--start-frame N --end-frame M] [--profile default\|song]` | Validate an explicit plan file under the caller's profile, then render it; an optional pair exports a reset-origin half-open frame excerpt |
 | `maac build [INPUT] -o WAV [--project-root ROOT] [--profile default\|song]` | Resolve, compile and render a composition bundle through the same selected limits |
 | `maac deliver INPUT --delivery ID --output-dir DIR [--target ID] [--profile default\|song]` | Render selected named targets from source or retained JSON, analyze final WAVs, and publish a manifest |
 | `maac instruments [NAME]` | List the built-in catalog, or show one instrument with controls, musical guidance and runnable usage |
@@ -21,6 +21,14 @@ language.
 replacing an existing output. Render/build accept `--format float32` (default)
 or `--format pcm16`. Exit status is zero for success and nonzero for failure.
 Use the executable's `--help` for argument syntax.
+
+`render` accepts `--start-frame N` and `--end-frame M` only as a pair. They
+select `[N, M)` in reset-origin engine frames, including the plan's declared
+tail, with `0 <= N <= M <= plan.output.total_frames`; an empty interval is a
+valid zero-frame WAV. The full plan is still validated and executed through
+its complete end, so stateful effects and diagnostics retain their preceding
+and trailing context. Only the selected frames are written. See the
+[reset-correct range contract](render-range.md).
 
 Optional/directory entry and execution-profile forms above implement the
 [project-entrypoint extension](project-entrypoint.md); see its
@@ -175,6 +183,7 @@ It does not dither or change the gain of the rendered signal.
 | `export::write_wav` | Stream WAV samples to a caller-provided `Write + Seek` sink |
 | `export::render_wav_to_path` | Render and atomically publish a WAV destination |
 | `export::WavFormat` | Select `Float32` or `Pcm16` conversion |
+| `export::FrameRange` | Describe a reset-origin half-open engine-frame interval |
 
 These `Plan` APIs retain their version 1/2, step-tempo contracts. For both step
 maps and [tempo ramps](tempo-ramps.md), use the additive versioned boundaries:
@@ -204,6 +213,7 @@ use the additive artifact APIs. They also accept older plans and retain their be
 | `maac::render_artifact` / `DspEngine::new_artifact` | Render or prepare versions 1–7 |
 | `dsp::render_ports_artifact_with_limits` | Capture selected ports from the complete graph |
 | `export::write_wav_artifact` / `export::render_wav_to_path_artifact` | Export with existing encoding and atomic publication rules |
+| `export::write_wav_artifact_range` / `export::render_wav_to_path_artifact_range` | Export an explicit reset-origin frame range while retaining complete-plan execution and validation |
 | `production_delivery::deliver_artifact` | Execute named deliveries; versions 4–7 use manifest version 2 |
 
 Compiler, load/encode, renderer and WAV helpers provide `_with_limits` variants.

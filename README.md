@@ -183,6 +183,11 @@ the declarative musical core, reusable libraries, engine extensions, and tools.
 
 Read the [quick start](docs/quickstart.md), [authoring tutorial](docs/tutorial.md),
 [CLI and library reference](docs/reference.md), and [capability matrix](docs/capabilities.md).
+The [end-to-end production plan](docs/end-to-end-production-plan.md) records the
+accepted direction for completing production with MaaC and an open ecosystem.
+The accepted initial surface is CLI-first with playback and recording tools;
+visual GUI work is deferred beyond the initial workflow. Its proposed
+milestones remain subject to separate contracts and evidence.
 The [pitch guide](docs/pitch-expression.md) and [gain guide](docs/gain-expression.md)
 demonstrate independent bends, swells, and fades on overlapping `core.sine/1` voices.
 The [instrument pitch guide](docs/instrument-pitch.md) applies independent bends

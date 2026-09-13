@@ -273,6 +273,23 @@ omitted work above remains outside its acceptance boundary.
 exploratory candidate outside L1–L5 completion. Scope, compatibility, and
 acceptance need definition before promoting it.
 
+## Professional-production research
+
+The non-normative [professional production language review](professional-production-language-review.md)
+records possible language improvements and adoption prerequisites for
+professional music production. It does not create L6, alter L1–L5 status, or
+promote F1 to an accepted implementation scope.
+
+## End-to-end production direction
+
+The latest accepted product direction is for MaaC and an open ecosystem to
+support complete production from composition through archive and reopen. The
+non-normative [end-to-end production plan](end-to-end-production-plan.md)
+records the proposed capability boundaries and dependency-ranked roadmap. It
+does not change L1–L5 status or approve new language, runtime, processor, or
+editor scope. The accepted initial surface is CLI-first with playback and
+recording tools; visual GUI work is deferred beyond the initial workflow.
+
 ## Completion rule
 
 A slice moves from planned to addressed only after normative prose is accepted,

@@ -31,8 +31,8 @@ Coverage of every reference processor identifier is not a full-profile claim.
 | Local dependencies | Explicit namespace aliases, transitive declaring-file resolution, SHA-256 source/WAV pins, project containment |
 | Wavetables | Explicit mono WAV cycles, cyclic interpolation, adjacent-frame morphing and harmonic-limited banks |
 | Regions | Named score intervals retained as non-rendering metadata |
-| Render | Reset-state offline rendering at 48 kHz, score-end releases, explicit tail |
-| Export | Legacy build/render: Float32 WAV or overload-rejecting PCM16; production delivery also adds PCM24 and explicit seeded TPDF |
+| Render | Reset-state offline rendering at 48 kHz, score-end releases, explicit tail, and reset-correct WAV excerpts that still execute through the complete plan |
+| Export | Legacy build/render: Float32 WAV or overload-rejecting PCM16; `render` accepts paired reset-origin frame bounds for exact payload slices; production delivery also adds PCM24 and explicit seeded TPDF |
 | Native production | Project-level EQ, linked peak compression with external sidechains, eight-delay reverb; required `maac.production/1` |
 | Named deliveries | Complete-graph master/stem capture; 44.1/48/96 kHz conversion; final-artifact loudness/sample-peak/experimental true-peak analysis |
 | Interchange | Independently validated standalone plans: version 1 legacy, version 2 embedded graph/data/provenance, version 3 exact ramp timing recipes, version 4 embedded audio assets and kit nodes, version 5 rate clips, version 6 warp-rate clips, version 7 core control modulation |

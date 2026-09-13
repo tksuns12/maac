@@ -13,7 +13,7 @@ use hound::{SampleFormat, WavSpec, WavWriter};
 use tempfile::NamedTempFile;
 
 use crate::dsp::{self, RenderError};
-use crate::plan::{Plan, PlanLimits, PlanView};
+use crate::plan::{Plan, PlanError, PlanLimits, PlanView};
 use crate::plan_v3::VersionedPlan;
 use crate::PlanArtifact;
 
@@ -73,6 +73,25 @@ pub struct WavStats {
     pub frames: u64,
     pub channels: u8,
     pub format: WavFormat,
+}
+
+/// A reset-origin, half-open engine-frame interval for an offline excerpt.
+///
+/// The range is checked against the plan's complete frame count at the export
+/// boundary. It never changes the plan or the renderer's reset origin.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FrameRange {
+    pub start_frame: u64,
+    pub end_frame: u64,
+}
+
+impl FrameRange {
+    pub const fn new(start_frame: u64, end_frame: u64) -> Self {
+        Self {
+            start_frame,
+            end_frame,
+        }
+    }
 }
 
 /// Export failures have stable codes for CLI and library callers.
@@ -194,7 +213,7 @@ pub fn write_wav_with_limits<W>(
 where
     W: Write + Seek,
 {
-    write_wav_for_view(sink, plan.view(), format, limits)
+    write_wav_for_view(sink, plan.view(), format, limits, None)
 }
 
 /// Stream either plan version using the same WAV encoding and validation rules.
@@ -213,7 +232,7 @@ pub fn write_wav_versioned_with_limits<W: Write + Seek>(
     format: WavFormat,
     limits: &PlanLimits,
 ) -> Result<WavStats, ExportError> {
-    write_wav_for_view(sink, versioned_view(plan), format, limits)
+    write_wav_for_view(sink, versioned_view(plan), format, limits, None)
 }
 
 /// Stream a standalone artifact after preparing the engine before the WAV header.
@@ -231,7 +250,31 @@ pub fn write_wav_artifact_with_limits<W: Write + Seek>(
     format: WavFormat,
     limits: &PlanLimits,
 ) -> Result<WavStats, ExportError> {
-    write_wav_for_view(sink, plan.view(), format, limits)
+    write_wav_for_view(sink, plan.view(), format, limits, None)
+}
+
+/// Stream one reset-origin frame range from a standalone artifact under the
+/// default caller limits. All frames execute and validate; selected frames
+/// stream to the caller's sink as they are rendered.
+pub fn write_wav_artifact_range<W: Write + Seek>(
+    sink: W,
+    plan: &PlanArtifact,
+    format: WavFormat,
+    range: FrameRange,
+) -> Result<WavStats, ExportError> {
+    write_wav_artifact_range_with_limits(sink, plan, format, range, &PlanLimits::default())
+}
+
+/// Stream one reset-origin frame range from a standalone artifact under an
+/// explicit caller allowance.
+pub fn write_wav_artifact_range_with_limits<W: Write + Seek>(
+    sink: W,
+    plan: &PlanArtifact,
+    format: WavFormat,
+    range: FrameRange,
+    limits: &PlanLimits,
+) -> Result<WavStats, ExportError> {
+    write_wav_for_view(sink, plan.view(), format, limits, Some(range))
 }
 
 fn versioned_view(plan: &VersionedPlan) -> PlanView<'_> {
@@ -246,7 +289,12 @@ fn write_wav_for_view<W: Write + Seek>(
     plan: PlanView<'_>,
     format: WavFormat,
     limits: &PlanLimits,
+    range: Option<FrameRange>,
 ) -> Result<WavStats, ExportError> {
+    let range = range
+        .map(|range| validate_frame_range(range, plan.output.total_frames))
+        .transpose()?
+        .unwrap_or_else(|| FrameRange::new(0, plan.output.total_frames));
     // Prepare once before Hound writes its RIFF header. This keeps the generic
     // writer boundary transactional for callers that supply their own sink,
     // and shares the timing allowance across validation and runtime setup.
@@ -266,6 +314,7 @@ fn write_wav_for_view<W: Write + Seek>(
     // `finalize` flushes this buffer before it returns.
     let mut writer = WavWriter::new(BufWriter::new(sink), spec).map_err(ExportError::from_hound)?;
     let mut frames = 0u64;
+    let mut render_frame = 0u64;
     let mut write_error: Option<ExportError> = None;
     let render_result = engine.render(|frame| {
         if frame.len() != usize::from(channels) {
@@ -278,15 +327,20 @@ fn write_wav_for_view<W: Write + Seek>(
                 "WAV frame channel count mismatch".into(),
             ));
         }
+        let selected = (range.start_frame..range.end_frame).contains(&render_frame);
         for (channel, sample) in frame.iter().copied().enumerate() {
             let result = match format {
                 WavFormat::Float32 => {
                     let value = sample as f32;
                     if sample.is_finite() && value.is_finite() {
-                        writer.write_sample(value).map_err(ExportError::from_hound)
+                        if selected {
+                            writer.write_sample(value).map_err(ExportError::from_hound)
+                        } else {
+                            Ok(())
+                        }
                     } else {
                         Err(ExportError::Nonfinite {
-                            frame: frames,
+                            frame: render_frame,
                             channel,
                         })
                     }
@@ -294,18 +348,22 @@ fn write_wav_for_view<W: Write + Seek>(
                 WavFormat::Pcm16 => {
                     if !sample.is_finite() {
                         Err(ExportError::Nonfinite {
-                            frame: frames,
+                            frame: render_frame,
                             channel,
                         })
                     } else if !(-1.0..=1.0).contains(&sample) {
                         Err(ExportError::Pcm16Overload {
-                            frame: frames,
+                            frame: render_frame,
                             channel,
                             sample,
                         })
                     } else {
                         let value = quantize_pcm16(sample);
-                        writer.write_sample(value).map_err(ExportError::from_hound)
+                        if selected {
+                            writer.write_sample(value).map_err(ExportError::from_hound)
+                        } else {
+                            Ok(())
+                        }
                     }
                 }
             };
@@ -314,7 +372,10 @@ fn write_wav_for_view<W: Write + Seek>(
                 return Err(RenderError::Callback("WAV sample write failed".into()));
             }
         }
-        frames += 1;
+        if selected {
+            frames += 1;
+        }
+        render_frame += 1;
         Ok(())
     });
     if let Some(error) = write_error {
@@ -327,6 +388,21 @@ fn write_wav_for_view<W: Write + Seek>(
         channels,
         format,
     })
+}
+
+fn validate_frame_range(range: FrameRange, total_frames: u64) -> Result<FrameRange, ExportError> {
+    if range.start_frame > range.end_frame || range.end_frame > total_frames {
+        return Err(ExportError::Render(RenderError::Plan(PlanError {
+            code: "E_RANGE".into(),
+            path: "render.frame_range".into(),
+            message: format!(
+                "frame range [{}, {}) must satisfy 0 <= start <= end <= {}",
+                range.start_frame, range.end_frame, total_frames
+            ),
+            span: None,
+        })));
+    }
+    Ok(range)
 }
 
 /// Quantize a validated PCM16 sample without clipping or dithering.  The
@@ -356,7 +432,7 @@ pub fn render_wav_to_path_with_limits(
     force: bool,
     limits: &PlanLimits,
 ) -> Result<WavStats, ExportError> {
-    render_wav_for_view(plan.view(), path.as_ref(), format, force, limits)
+    render_wav_for_view(plan.view(), path.as_ref(), format, force, limits, None)
 }
 
 /// Render either plan version and atomically publish a completed WAV.
@@ -377,7 +453,14 @@ pub fn render_wav_to_path_versioned_with_limits(
     force: bool,
     limits: &PlanLimits,
 ) -> Result<WavStats, ExportError> {
-    render_wav_for_view(versioned_view(plan), path.as_ref(), format, force, limits)
+    render_wav_for_view(
+        versioned_view(plan),
+        path.as_ref(),
+        format,
+        force,
+        limits,
+        None,
+    )
 }
 
 /// Atomically publish a completed artifact render.
@@ -397,7 +480,46 @@ pub fn render_wav_to_path_artifact_with_limits(
     force: bool,
     limits: &PlanLimits,
 ) -> Result<WavStats, ExportError> {
-    render_wav_for_view(plan.view(), path.as_ref(), format, force, limits)
+    render_wav_for_view(plan.view(), path.as_ref(), format, force, limits, None)
+}
+
+/// Render and atomically publish one reset-origin frame range from a
+/// standalone artifact using default caller limits.
+pub fn render_wav_to_path_artifact_range(
+    plan: &PlanArtifact,
+    path: impl AsRef<Path>,
+    format: WavFormat,
+    force: bool,
+    range: FrameRange,
+) -> Result<WavStats, ExportError> {
+    render_wav_to_path_artifact_range_with_limits(
+        plan,
+        path,
+        format,
+        force,
+        range,
+        &PlanLimits::default(),
+    )
+}
+
+/// Render and atomically publish one reset-origin frame range from a
+/// standalone artifact under caller limits.
+pub fn render_wav_to_path_artifact_range_with_limits(
+    plan: &PlanArtifact,
+    path: impl AsRef<Path>,
+    format: WavFormat,
+    force: bool,
+    range: FrameRange,
+    limits: &PlanLimits,
+) -> Result<WavStats, ExportError> {
+    render_wav_for_view(
+        plan.view(),
+        path.as_ref(),
+        format,
+        force,
+        limits,
+        Some(range),
+    )
 }
 
 fn render_wav_for_view(
@@ -406,6 +528,7 @@ fn render_wav_for_view(
     format: WavFormat,
     force: bool,
     limits: &PlanLimits,
+    range: Option<FrameRange>,
 ) -> Result<WavStats, ExportError> {
     if !force && path_exists(path)? {
         return Err(ExportError::OutputExists {
@@ -417,7 +540,7 @@ fn render_wav_for_view(
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
     let mut temporary = NamedTempFile::new_in(parent).map_err(ExportError::from)?;
-    let stats = write_wav_for_view(temporary.as_file_mut(), plan, format, limits)?;
+    let stats = write_wav_for_view(temporary.as_file_mut(), plan, format, limits, range)?;
     temporary
         .as_file_mut()
         .sync_all()

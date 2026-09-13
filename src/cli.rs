@@ -6,7 +6,7 @@ use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use clap::{error::ErrorKind, Parser, Subcommand, ValueEnum};
+use clap::{error::ErrorKind, Arg, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 
 use crate::bundle::sha256_digest;
@@ -15,7 +15,7 @@ use crate::bundle_fs;
 use crate::compiler;
 use crate::diagnostic::{Diagnostic, Diagnostics, Span};
 use crate::dsp::RenderError;
-use crate::export::{self, ExportError, WavFormat, WavStats, MAX_INPUT_BYTES};
+use crate::export::{self, ExportError, FrameRange, WavFormat, WavStats, MAX_INPUT_BYTES};
 use crate::plan::{Plan, PlanError, PlanLimits};
 use crate::plan_v3::VersionedPlan;
 use crate::syntax::{parse, Document};
@@ -193,6 +193,10 @@ pub struct ArtifactCommandResult {
     hits: usize,
     #[serde(skip_serializing_if = "is_zero")]
     audio_clips: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    start_frame: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    end_frame: Option<u64>,
 }
 impl ArtifactCommandResult {
     pub fn base(&self) -> &CommandResult {
@@ -203,6 +207,12 @@ impl ArtifactCommandResult {
     }
     pub fn audio_clips(&self) -> usize {
         self.audio_clips
+    }
+    pub fn start_frame(&self) -> Option<u64> {
+        self.start_frame
+    }
+    pub fn end_frame(&self) -> Option<u64> {
+        self.end_frame
     }
 }
 fn is_zero(value: &usize) -> bool {
@@ -414,12 +424,33 @@ impl std::error::Error for CliError {}
 /// Execute one parsed CLI request without printing. This is convenient for
 /// embedding and gives the binary a single output policy for human/JSON modes.
 pub fn execute(command: &Command) -> Result<CommandResult, CliError> {
-    execute_impl(command, PlanCapability::Legacy, &mut EventCounts::default())
+    execute_impl(
+        command,
+        PlanCapability::Legacy,
+        &mut EventCounts::default(),
+        None,
+    )
 }
 /// Execute the same commands with standalone artifact support, including hits and audio clips.
 pub fn execute_artifact(command: &Command) -> Result<ArtifactCommandResult, CliError> {
+    execute_artifact_with_range(command, None)
+}
+
+/// Execute an artifact-aware command with an optional offline render range.
+/// The range is additive to the existing command API so callers that do not
+/// need excerpts retain the original `Command` and result contracts.
+pub fn execute_artifact_with_range(
+    command: &Command,
+    range: Option<FrameRange>,
+) -> Result<ArtifactCommandResult, CliError> {
+    if range.is_some() && !matches!(command, Command::Render { .. }) {
+        return Err(CliError::new(
+            "E_USAGE",
+            "a frame range is supported only by the render command",
+        ));
+    }
     let mut counts = EventCounts::default();
-    let mut base = execute_impl(command, PlanCapability::Artifact, &mut counts)?;
+    let mut base = execute_impl(command, PlanCapability::Artifact, &mut counts, range)?;
     if counts.hits > 0 || counts.audio_clips > 0 {
         base.notes = Some(counts.notes);
     }
@@ -427,6 +458,8 @@ pub fn execute_artifact(command: &Command) -> Result<ArtifactCommandResult, CliE
         base,
         hits: counts.hits,
         audio_clips: counts.audio_clips,
+        start_frame: range.map(|range| range.start_frame),
+        end_frame: range.map(|range| range.end_frame),
     })
 }
 #[derive(Default)]
@@ -484,6 +517,7 @@ fn execute_impl(
     command: &Command,
     capability: PlanCapability,
     counts: &mut EventCounts,
+    range: Option<FrameRange>,
 ) -> Result<CommandResult, CliError> {
     match command {
         Command::Check {
@@ -553,9 +587,14 @@ fn execute_impl(
             let plan = capability.decode(&read_bounded(input)?, &limits)?;
             counts.record(&plan);
             let wav_format = (*format).into();
-            let stats = export::render_wav_to_path_artifact_with_limits(
-                &plan, output, wav_format, *force, &limits,
-            )
+            let stats = match range {
+                Some(range) => export::render_wav_to_path_artifact_range_with_limits(
+                    &plan, output, wav_format, *force, range, &limits,
+                ),
+                None => export::render_wav_to_path_artifact_with_limits(
+                    &plan, output, wav_format, *force, &limits,
+                ),
+            }
             .map_err(CliError::from_export)?;
             Ok(CommandResult::render(
                 "render", input, output, wav_format, stats,
@@ -959,6 +998,60 @@ fn format_instrument(instrument: &crate::stdlib::InstrumentInfo) -> String {
     message
 }
 
+enum ParsedArgsError {
+    Clap(clap::Error),
+    Usage(CliError),
+}
+
+/// Parse the existing public CLI schema while adding range flags only to the
+/// process-facing `render` command. Keeping the flags outside `Command`
+/// preserves Rust callers that construct the established command enum.
+fn parse_cli_with_render_range(
+    args: Vec<std::ffi::OsString>,
+) -> Result<(Cli, Option<FrameRange>), ParsedArgsError> {
+    let mut command = Cli::command();
+    let render = command
+        .find_subcommand_mut("render")
+        .expect("render command is declared");
+    *render = render
+        .clone()
+        .arg(
+            Arg::new("start-frame")
+                .long("start-frame")
+                .value_name("N")
+                .value_parser(clap::value_parser!(u64))
+                .help("reset-origin engine frame at which an excerpt starts"),
+        )
+        .arg(
+            Arg::new("end-frame")
+                .long("end-frame")
+                .value_name("M")
+                .value_parser(clap::value_parser!(u64))
+                .help("exclusive reset-origin engine frame at which an excerpt ends"),
+        );
+    let matches = command
+        .try_get_matches_from(args)
+        .map_err(ParsedArgsError::Clap)?;
+    let range = match matches.subcommand_matches("render") {
+        Some(render) => match (
+            render.get_one::<u64>("start-frame"),
+            render.get_one::<u64>("end-frame"),
+        ) {
+            (None, None) => None,
+            (Some(start), Some(end)) => Some(FrameRange::new(*start, *end)),
+            _ => {
+                return Err(ParsedArgsError::Usage(CliError::new(
+                    "E_USAGE",
+                    "--start-frame and --end-frame must be provided together",
+                )))
+            }
+        },
+        None => None,
+    };
+    let cli = Cli::from_arg_matches(&matches).map_err(ParsedArgsError::Clap)?;
+    Ok((cli, range))
+}
+
 pub fn run_from_args<I, T>(args: I) -> i32
 where
     I: IntoIterator<Item = T>,
@@ -966,9 +1059,9 @@ where
 {
     let args: Vec<std::ffi::OsString> = args.into_iter().map(Into::into).collect();
     let json_requested = args.iter().any(|arg| arg == "--json");
-    let cli = match Cli::try_parse_from(args) {
-        Ok(cli) => cli,
-        Err(error) => {
+    let (cli, range) = match parse_cli_with_render_range(args) {
+        Ok(parsed) => parsed,
+        Err(ParsedArgsError::Clap(error)) => {
             let result = CliError::new("E_USAGE", error.to_string());
             let informational = matches!(
                 error.kind(),
@@ -986,9 +1079,20 @@ where
             }
             return error.exit_code();
         }
+        Err(ParsedArgsError::Usage(error)) => {
+            if json_requested {
+                println!(
+                    "{}",
+                    serde_json::to_string(&error).expect("CLI error is serializable")
+                );
+            } else {
+                eprintln!("{error}");
+            }
+            return 1;
+        }
     };
     let json = cli.json;
-    match execute_artifact(&cli.command) {
+    match execute_artifact_with_range(&cli.command, range) {
         Ok(result) => {
             if json {
                 println!(
