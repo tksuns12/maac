@@ -6,7 +6,7 @@ use num_bigint::BigInt;
 use num_traits::{One, ToPrimitive};
 use serde::{Deserialize, Serialize};
 
-use crate::bundle::{normalize_file_reference, ResolvedBundle};
+use crate::bundle::{normalize_file_reference, ResolvedBundle, MAX_BUNDLE_SOURCE_BYTES};
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Diagnostics, Span};
 use crate::exact::Rational;
 use crate::graph::{
@@ -144,17 +144,16 @@ impl LibrarySet {
             );
         }
 
-        let (entry_document, resolved_document, pattern_source_paths) =
-            resolve_entry_document(bundle)?;
-        validate_musical_exports(&resolved_document)?;
+        let documents = resolve_entry_document(bundle)?;
+        validate_musical_exports(&documents.musical)?;
         Ok(Self {
             programs,
             wavetables,
             wavetable_sources,
             metadata,
-            entry_document,
-            resolved_document,
-            pattern_source_paths,
+            entry_document: documents.entry,
+            resolved_document: documents.musical,
+            pattern_source_paths: documents.pattern_source_paths,
             program_exports,
             presets,
             imports: bundle.imports.clone(),
@@ -254,9 +253,22 @@ fn is_musical_export(object: &Object) -> bool {
     MUSICAL_EXPORT_KINDS.contains(&object.kind.as_str())
 }
 
-fn resolve_entry_document(
-    bundle: &ResolvedBundle,
-) -> Result<(Document, Document, BTreeMap<String, Vec<String>>), Diagnostics> {
+struct ResolvedEntryDocuments {
+    entry: Document,
+    musical: Document,
+    pattern_source_paths: BTreeMap<String, Vec<String>>,
+}
+
+struct MusicalExportState<'a> {
+    musical_subtrees: &'a BTreeMap<String, bool>,
+    document: &'a mut Document,
+    pattern_source_paths: &'a mut BTreeMap<String, Vec<String>>,
+    object_count: usize,
+    route_work: usize,
+    expanded_bytes: usize,
+}
+
+fn resolve_entry_document(bundle: &ResolvedBundle) -> Result<ResolvedEntryDocuments, Diagnostics> {
     let mut entry_document = bundle
         .documents
         .get(&bundle.entry)
@@ -274,6 +286,15 @@ fn resolve_entry_document(
         )
     });
 
+    let mut expanded_bytes = 0usize;
+    for object in entry_document
+        .objects
+        .values()
+        .filter(|object| is_musical_export(object))
+    {
+        charge_expanded_musical_bytes(bundle, &bundle.entry, &[], object, &mut expanded_bytes)?;
+    }
+
     let mut resolved_document = entry_document.clone();
     for object in resolved_document.objects.values_mut() {
         rewrite_object_references(bundle, &bundle.entry, &[], object);
@@ -285,25 +306,27 @@ fn resolve_entry_document(
         .filter(|object| object.kind == "pattern")
         .map(|object| (object.id.clone(), vec![object.id.clone()]))
         .collect::<BTreeMap<_, _>>();
-    let mut object_count = resolved_document
+    let object_count = resolved_document
         .objects
         .values()
         .map(count_object)
         .sum::<usize>();
     let mut musical_subtrees = BTreeMap::new();
     index_musical_subtrees(bundle, &bundle.entry, &mut musical_subtrees)?;
-    let mut route_work = 0usize;
-    add_imported_musical_exports(
-        bundle,
-        &bundle.entry,
-        &[],
-        &musical_subtrees,
-        &mut resolved_document,
-        &mut pattern_source_paths,
-        &mut object_count,
-        &mut route_work,
-    )?;
-    Ok((entry_document, resolved_document, pattern_source_paths))
+    let mut state = MusicalExportState {
+        musical_subtrees: &musical_subtrees,
+        document: &mut resolved_document,
+        pattern_source_paths: &mut pattern_source_paths,
+        object_count,
+        route_work: 0,
+        expanded_bytes,
+    };
+    add_imported_musical_exports(bundle, &bundle.entry, &[], &mut state)?;
+    Ok(ResolvedEntryDocuments {
+        entry: entry_document,
+        musical: resolved_document,
+        pattern_source_paths,
+    })
 }
 
 fn index_musical_subtrees(
@@ -338,11 +361,7 @@ fn add_imported_musical_exports(
     bundle: &ResolvedBundle,
     declaring_file: &str,
     route: &[String],
-    musical_subtrees: &BTreeMap<String, bool>,
-    document: &mut Document,
-    pattern_source_paths: &mut BTreeMap<String, Vec<String>>,
-    object_count: &mut usize,
-    route_work: &mut usize,
+    state: &mut MusicalExportState<'_>,
 ) -> Result<(), Diagnostics> {
     let imports = bundle.imports.get(declaring_file).ok_or_else(|| {
         simple_error(
@@ -351,16 +370,21 @@ fn add_imported_musical_exports(
         )
     })?;
     for (alias, target_file) in imports {
-        if !musical_subtrees.get(target_file).copied().unwrap_or(false) {
+        if !state
+            .musical_subtrees
+            .get(target_file)
+            .copied()
+            .unwrap_or(false)
+        {
             continue;
         }
-        *route_work = route_work.checked_add(1).ok_or_else(|| {
+        state.route_work = state.route_work.checked_add(1).ok_or_else(|| {
             simple_error(
                 DiagnosticCode::ResourceLimit,
                 "resolved musical import route count overflowed",
             )
         })?;
-        if *route_work > crate::bundle::MAX_SYNTAX_OBJECTS {
+        if state.route_work > crate::bundle::MAX_SYNTAX_OBJECTS {
             return Err(simple_error(
                 DiagnosticCode::ResourceLimit,
                 format!(
@@ -382,13 +406,21 @@ fn add_imported_musical_exports(
             .values()
             .filter(|object| is_musical_export(object))
         {
+            charge_expanded_musical_bytes(
+                bundle,
+                target_file,
+                &target_route,
+                authored,
+                &mut state.expanded_bytes,
+            )?;
             let mut object = authored.clone();
             let mut source_path = target_route.clone();
             source_path.push(authored.id.clone());
             let resolved_id = source_path.join(".");
             object.id = resolved_id.clone();
             rewrite_object_references(bundle, target_file, &target_route, &mut object);
-            *object_count = object_count
+            state.object_count = state
+                .object_count
                 .checked_add(count_object(&object))
                 .ok_or_else(|| {
                     simple_error(
@@ -396,7 +428,7 @@ fn add_imported_musical_exports(
                         "resolved musical export object count overflowed",
                     )
                 })?;
-            if *object_count > crate::bundle::MAX_SYNTAX_OBJECTS {
+            if state.object_count > crate::bundle::MAX_SYNTAX_OBJECTS {
                 return Err(simple_error(
                     DiagnosticCode::ResourceLimit,
                     format!(
@@ -406,22 +438,135 @@ fn add_imported_musical_exports(
                 ));
             }
             if object.kind == "pattern" {
-                pattern_source_paths.insert(resolved_id.clone(), source_path);
+                state
+                    .pattern_source_paths
+                    .insert(resolved_id.clone(), source_path);
             }
-            document.objects.insert(resolved_id, object);
+            state.document.objects.insert(resolved_id, object);
         }
-        add_imported_musical_exports(
-            bundle,
-            target_file,
-            &target_route,
-            musical_subtrees,
-            document,
-            pattern_source_paths,
-            object_count,
-            route_work,
-        )?;
+        add_imported_musical_exports(bundle, target_file, &target_route, state)?;
     }
     Ok(())
+}
+
+fn charge_expanded_musical_bytes(
+    bundle: &ResolvedBundle,
+    declaring_file: &str,
+    route: &[String],
+    object: &Object,
+    expanded_bytes: &mut usize,
+) -> Result<(), Diagnostics> {
+    add_expanded_bytes(expanded_bytes, object.span.len())?;
+
+    if !route.is_empty() {
+        let resolved_id_bytes = route
+            .iter()
+            .try_fold(object.id.len(), |total, component| {
+                total
+                    .checked_add(component.len())
+                    .and_then(|total| total.checked_add(1))
+            })
+            .ok_or_else(expanded_musical_bytes_overflow)?;
+        add_expanded_bytes(expanded_bytes, resolved_id_bytes)?;
+    }
+    if object.kind == "pattern" {
+        let source_path_bytes = route
+            .iter()
+            .try_fold(object.id.len(), |total, component| {
+                total.checked_add(component.len())
+            })
+            .ok_or_else(expanded_musical_bytes_overflow)?;
+        add_expanded_bytes(expanded_bytes, source_path_bytes)?;
+    }
+    charge_object_reference_bytes(bundle, declaring_file, route, object, expanded_bytes)
+}
+
+fn charge_object_reference_bytes(
+    bundle: &ResolvedBundle,
+    declaring_file: &str,
+    route: &[String],
+    object: &Object,
+    expanded_bytes: &mut usize,
+) -> Result<(), Diagnostics> {
+    for field in object.fields.values() {
+        charge_value_reference_bytes(bundle, declaring_file, route, &field.value, expanded_bytes)?;
+    }
+    for child in object.children.values() {
+        charge_object_reference_bytes(bundle, declaring_file, route, child, expanded_bytes)?;
+    }
+    Ok(())
+}
+
+fn charge_value_reference_bytes(
+    bundle: &ResolvedBundle,
+    declaring_file: &str,
+    route: &[String],
+    value: &Value,
+    expanded_bytes: &mut usize,
+) -> Result<(), Diagnostics> {
+    match &value.kind {
+        ValueKind::Reference(reference) if reference.port.is_none() => {
+            let path = match reference.path.as_slice() {
+                [id] => Some((route, None, id)),
+                [alias, id] => bundle
+                    .imports
+                    .get(declaring_file)
+                    .and_then(|imports| imports.get(alias))
+                    .and_then(|target_file| bundle.documents.get(target_file))
+                    .and_then(|document| document.objects.get(id))
+                    .filter(|target| is_musical_export(target))
+                    .map(|_| (route, Some(alias), id)),
+                _ => None,
+            };
+            if let Some((route, alias, id)) = path {
+                for component in route {
+                    add_expanded_bytes(expanded_bytes, component.len())?;
+                }
+                if let Some(alias) = alias {
+                    add_expanded_bytes(expanded_bytes, alias.len())?;
+                }
+                add_expanded_bytes(expanded_bytes, id.len())?;
+            }
+        }
+        ValueKind::Call { args, .. } | ValueKind::List(args) | ValueKind::Tuple(args) => {
+            for value in args {
+                charge_value_reference_bytes(bundle, declaring_file, route, value, expanded_bytes)?;
+            }
+        }
+        ValueKind::Record(fields) => {
+            for field in fields.values() {
+                charge_value_reference_bytes(
+                    bundle,
+                    declaring_file,
+                    route,
+                    &field.value,
+                    expanded_bytes,
+                )?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn add_expanded_bytes(total: &mut usize, bytes: usize) -> Result<(), Diagnostics> {
+    *total = total
+        .checked_add(bytes)
+        .ok_or_else(expanded_musical_bytes_overflow)?;
+    if *total > MAX_BUNDLE_SOURCE_BYTES {
+        return Err(simple_error(
+            DiagnosticCode::ResourceLimit,
+            format!("expanded musical catalog exceeds {MAX_BUNDLE_SOURCE_BYTES} source bytes"),
+        ));
+    }
+    Ok(())
+}
+
+fn expanded_musical_bytes_overflow() -> Diagnostics {
+    simple_error(
+        DiagnosticCode::ResourceLimit,
+        "expanded musical catalog byte count overflowed",
+    )
 }
 
 fn count_object(object: &Object) -> usize {

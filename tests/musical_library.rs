@@ -254,6 +254,32 @@ fn shared_import_dag_without_musical_exports_is_resolved_once_per_source() {
 }
 
 #[test]
+fn repeated_aliases_cannot_amplify_a_large_curve_past_the_bundle_byte_budget() {
+    let padding = " ".repeat(1_000_000);
+    let curve = format!(
+        "maac 1; library curves {{ version = \"1\"; }} curve sweep {{{padding} clock = normalized; points = [(0, 0, linear), (1, 1, step)]; }}"
+    );
+    let pin = sha256_digest(curve.as_bytes());
+    let imports = (0..17)
+        .map(|index| format!("import route_{index} {{ path = \"curve.maac\"; hash = \"{pin}\"; }}"))
+        .collect::<String>();
+    let entry = format!("maac 1; library aggregate {{ version = \"1\"; }} {imports}");
+    let bundle = SourceBundle {
+        entry: "main.maac".into(),
+        sources: BTreeMap::from([("main.maac".into(), entry), ("curve.maac".into(), curve)]),
+        assets: BTreeMap::new(),
+    };
+
+    assert_eq!(
+        first_code(
+            &check_bundle(&bundle)
+                .expect_err("expanded musical exports must retain the bundle source byte bound")
+        ),
+        DiagnosticCode::ResourceLimit
+    );
+}
+
+#[test]
 fn library_only_check_runs_compiler_level_pitch_validation() {
     for pitch in ["key(1/2)", "ratio(0, 440Hz)", "ratio(-1, 440Hz)"] {
         let source = format!(
