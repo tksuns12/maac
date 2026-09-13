@@ -67,6 +67,7 @@ pub struct LibrarySet {
     pub wavetable_sources: Vec<WavetableSource>,
     pub metadata: Vec<LibraryMetadata>,
     entry_document: Document,
+    pattern_source_paths: BTreeMap<String, Vec<String>>,
     program_exports: BTreeMap<ExportKey, usize>,
     presets: BTreeMap<ExportKey, Preset>,
     imports: BTreeMap<String, BTreeMap<String, String>>,
@@ -142,28 +143,15 @@ impl LibrarySet {
             );
         }
 
-        let mut entry_document = bundle
-            .documents
-            .get(&bundle.entry)
-            .cloned()
-            .ok_or_else(|| {
-                simple_error(
-                    DiagnosticCode::Reference,
-                    format!("entry source `{}` is missing", bundle.entry),
-                )
-            })?;
-        entry_document.objects.retain(|_, object| {
-            !matches!(
-                object.kind.as_str(),
-                "library" | "import" | "instrument" | "preset" | "wavetable"
-            )
-        });
+        let (entry_document, pattern_source_paths) = resolve_entry_document(bundle)?;
+        validate_musical_exports(&entry_document)?;
         Ok(Self {
             programs,
             wavetables,
             wavetable_sources,
             metadata,
             entry_document,
+            pattern_source_paths,
             program_exports,
             presets,
             imports: bundle.imports.clone(),
@@ -247,6 +235,233 @@ impl LibrarySet {
     pub fn entry_document(&self) -> Document {
         self.entry_document.clone()
     }
+
+    pub(crate) fn pattern_source_paths(&self) -> &BTreeMap<String, Vec<String>> {
+        &self.pattern_source_paths
+    }
+}
+
+const MUSICAL_EXPORT_KINDS: &[&str] = &["curve", "pattern", "tuning"];
+
+fn is_musical_export(object: &Object) -> bool {
+    MUSICAL_EXPORT_KINDS.contains(&object.kind.as_str())
+}
+
+fn resolve_entry_document(
+    bundle: &ResolvedBundle,
+) -> Result<(Document, BTreeMap<String, Vec<String>>), Diagnostics> {
+    let mut document = bundle
+        .documents
+        .get(&bundle.entry)
+        .cloned()
+        .ok_or_else(|| {
+            simple_error(
+                DiagnosticCode::Reference,
+                format!("entry source `{}` is missing", bundle.entry),
+            )
+        })?;
+    document.objects.retain(|_, object| {
+        !matches!(
+            object.kind.as_str(),
+            "library" | "import" | "instrument" | "preset" | "wavetable"
+        )
+    });
+
+    for object in document.objects.values_mut() {
+        rewrite_object_references(bundle, &bundle.entry, &[], object);
+    }
+
+    let mut pattern_source_paths = document
+        .objects
+        .values()
+        .filter(|object| object.kind == "pattern")
+        .map(|object| (object.id.clone(), vec![object.id.clone()]))
+        .collect::<BTreeMap<_, _>>();
+    let mut object_count = document.objects.values().map(count_object).sum::<usize>();
+    add_imported_musical_exports(
+        bundle,
+        &bundle.entry,
+        &[],
+        &mut document,
+        &mut pattern_source_paths,
+        &mut object_count,
+    )?;
+    Ok((document, pattern_source_paths))
+}
+
+fn add_imported_musical_exports(
+    bundle: &ResolvedBundle,
+    declaring_file: &str,
+    route: &[String],
+    document: &mut Document,
+    pattern_source_paths: &mut BTreeMap<String, Vec<String>>,
+    object_count: &mut usize,
+) -> Result<(), Diagnostics> {
+    let imports = bundle.imports.get(declaring_file).ok_or_else(|| {
+        simple_error(
+            DiagnosticCode::Reference,
+            format!("resolved imports for `{declaring_file}` are missing"),
+        )
+    })?;
+    for (alias, target_file) in imports {
+        let mut target_route = route.to_vec();
+        target_route.push(alias.clone());
+        let target = bundle.documents.get(target_file).ok_or_else(|| {
+            simple_error(
+                DiagnosticCode::Reference,
+                format!("resolved source `{target_file}` is missing"),
+            )
+        })?;
+        for authored in target
+            .objects
+            .values()
+            .filter(|object| is_musical_export(object))
+        {
+            let mut object = authored.clone();
+            let mut source_path = target_route.clone();
+            source_path.push(authored.id.clone());
+            let resolved_id = source_path.join(".");
+            object.id = resolved_id.clone();
+            rewrite_object_references(bundle, target_file, &target_route, &mut object);
+            *object_count = object_count
+                .checked_add(count_object(&object))
+                .ok_or_else(|| {
+                    simple_error(
+                        DiagnosticCode::ResourceLimit,
+                        "resolved musical export object count overflowed",
+                    )
+                })?;
+            if *object_count > crate::bundle::MAX_SYNTAX_OBJECTS {
+                return Err(simple_error(
+                    DiagnosticCode::ResourceLimit,
+                    format!(
+                        "resolved musical exports exceed {} syntax objects",
+                        crate::bundle::MAX_SYNTAX_OBJECTS
+                    ),
+                ));
+            }
+            if object.kind == "pattern" {
+                pattern_source_paths.insert(resolved_id.clone(), source_path);
+            }
+            document.objects.insert(resolved_id, object);
+        }
+        add_imported_musical_exports(
+            bundle,
+            target_file,
+            &target_route,
+            document,
+            pattern_source_paths,
+            object_count,
+        )?;
+    }
+    Ok(())
+}
+
+fn count_object(object: &Object) -> usize {
+    1 + object.children.values().map(count_object).sum::<usize>()
+}
+
+fn rewrite_object_references(
+    bundle: &ResolvedBundle,
+    declaring_file: &str,
+    route: &[String],
+    object: &mut Object,
+) {
+    for field in object.fields.values_mut() {
+        rewrite_value_references(bundle, declaring_file, route, &mut field.value);
+    }
+    for child in object.children.values_mut() {
+        rewrite_object_references(bundle, declaring_file, route, child);
+    }
+}
+
+fn rewrite_value_references(
+    bundle: &ResolvedBundle,
+    declaring_file: &str,
+    route: &[String],
+    value: &mut Value,
+) {
+    match &mut value.kind {
+        ValueKind::Reference(reference) if reference.port.is_none() => {
+            let resolved = match reference.path.as_slice() {
+                [id] => bundle
+                    .documents
+                    .get(declaring_file)
+                    .and_then(|document| document.objects.get(id))
+                    .filter(|object| is_musical_export(object))
+                    .map(|_| {
+                        let mut path = route.to_vec();
+                        path.push(id.clone());
+                        path
+                    }),
+                [alias, id] => bundle
+                    .imports
+                    .get(declaring_file)
+                    .and_then(|imports| imports.get(alias))
+                    .and_then(|file| bundle.documents.get(file))
+                    .and_then(|document| document.objects.get(id))
+                    .filter(|object| is_musical_export(object))
+                    .map(|_| {
+                        let mut path = route.to_vec();
+                        path.push(alias.clone());
+                        path.push(id.clone());
+                        path
+                    }),
+                _ => None,
+            };
+            if let Some(resolved) = resolved {
+                reference.path = vec![resolved.join(".")];
+            }
+        }
+        ValueKind::Call { args, .. } | ValueKind::List(args) | ValueKind::Tuple(args) => {
+            for item in args {
+                rewrite_value_references(bundle, declaring_file, route, item);
+            }
+        }
+        ValueKind::Record(fields) => {
+            for field in fields.values_mut() {
+                rewrite_value_references(bundle, declaring_file, route, &mut field.value);
+            }
+        }
+        ValueKind::Number(_)
+        | ValueKind::Quantity { .. }
+        | ValueKind::String(_)
+        | ValueKind::Symbol(_)
+        | ValueKind::Boolean(_)
+        | ValueKind::Reference(_) => {}
+    }
+}
+
+fn validate_musical_exports(document: &Document) -> Result<(), Diagnostics> {
+    if !document.objects.values().any(is_musical_export) {
+        return Ok(());
+    }
+    let mut suffix = 0usize;
+    let (project_id, tempo_id, meter_id) = loop {
+        let project_id = format!("__library_validation_project_{suffix}");
+        let tempo_id = format!("__library_validation_tempo_{suffix}");
+        let meter_id = format!("__library_validation_meter_{suffix}");
+        if [&project_id, &tempo_id, &meter_id]
+            .iter()
+            .all(|id| !document.objects.contains_key(id.as_str()))
+        {
+            break (project_id, tempo_id, meter_id);
+        }
+        suffix = suffix.saturating_add(1);
+    };
+    let source = format!(
+        "maac 1; project {project_id} {{ score = [0q, 1q]; rate = 48000Hz; tempo = &{tempo_id}; meter = &{meter_id}; }} tempo {tempo_id} {{ points = [(0q, 120bpm, step)]; }} meter {meter_id} {{ points = [(0q, 4, 4)]; }}"
+    );
+    let mut validation = crate::syntax::parse(&source)?;
+    validation.objects.extend(
+        document
+            .objects
+            .iter()
+            .filter(|(_, object)| is_musical_export(object))
+            .map(|(id, object)| (id.clone(), object.clone())),
+    );
+    crate::semantic::validate_source_with_kit_profile(&validation, &BTreeMap::new(), true)
+        .map(|_| ())
 }
 
 fn validate_documents(bundle: &ResolvedBundle) -> Result<Vec<LibraryMetadata>, Diagnostics> {
@@ -310,7 +525,14 @@ fn validate_documents(bundle: &ResolvedBundle) -> Result<Vec<LibraryMetadata>, D
             for object in document.objects.values() {
                 if !matches!(
                     object.kind.as_str(),
-                    "library" | "import" | "instrument" | "preset" | "wavetable"
+                    "library"
+                        | "import"
+                        | "instrument"
+                        | "preset"
+                        | "wavetable"
+                        | "pattern"
+                        | "curve"
+                        | "tuning"
                 ) {
                     return Err(object_error(
                         DiagnosticCode::UnknownKind,

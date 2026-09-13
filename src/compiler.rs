@@ -337,7 +337,7 @@ enum PatternChild {
 
 #[derive(Clone, Debug)]
 struct PatternDef {
-    id: String,
+    source_path: Vec<String>,
     span: Span,
     length: Rational,
     children: Vec<PatternChild>,
@@ -446,6 +446,7 @@ struct Compiler<'a> {
     meter: MeterMap,
     tunings: HashMap<String, Arc<Tuning>>,
     patterns: BTreeMap<String, PatternDef>,
+    pattern_source_paths: BTreeMap<String, Vec<String>>,
     tracks: BTreeMap<String, EventTarget>,
     places: Vec<PlaceDef>,
     nodes: Vec<Node>,
@@ -497,6 +498,7 @@ impl<'a> Compiler<'a> {
             meter: default_meter,
             tunings: HashMap::new(),
             patterns: BTreeMap::new(),
+            pattern_source_paths: BTreeMap::new(),
             tracks: BTreeMap::new(),
             places: Vec::new(),
             nodes: Vec::new(),
@@ -524,11 +526,13 @@ impl<'a> Compiler<'a> {
         instances: BTreeMap<String, ResolvedInstance>,
         descriptors: BTreeMap<String, InstrumentNodeDescriptor>,
         resources: InstrumentResources,
+        pattern_source_paths: BTreeMap<String, Vec<String>>,
     ) -> Self {
         Self {
             instrument_instances: instances,
             instrument_descriptors: descriptors,
             instrument_resources: Some(resources),
+            pattern_source_paths,
             ..Self::new(document)
         }
     }
@@ -2124,7 +2128,11 @@ impl<'a> Compiler<'a> {
             self.patterns.insert(
                 object.id.clone(),
                 PatternDef {
-                    id: object.id.clone(),
+                    source_path: self
+                        .pattern_source_paths
+                        .get(&object.id)
+                        .cloned()
+                        .unwrap_or_else(|| vec![object.id.clone()]),
                     span: object.span,
                     length,
                     children,
@@ -2877,7 +2885,8 @@ impl<'a> Compiler<'a> {
             match child {
                 PatternChild::Leaf(leaf) => {
                     state.address.push(leaf.id.clone());
-                    let source_path = vec![pattern.id.clone(), leaf.id.clone()];
+                    let mut source_path = pattern.source_path.clone();
+                    source_path.push(leaf.id.clone());
                     let event = Self::expand_leaf(&leaf, state, source_path)?;
                     if self.events.len() >= MAX_EXPANDED_NOTES {
                         return Err(diagnostics(
@@ -4452,6 +4461,7 @@ fn prepare_instrument_compiler<'a>(
     libraries: LibrarySet,
     document: &'a Document,
 ) -> CResult<Compiler<'a>> {
+    let pattern_source_paths = libraries.pattern_source_paths().clone();
     let mut instances = BTreeMap::new();
     let mut descriptors = BTreeMap::new();
     for node in document
@@ -4507,6 +4517,7 @@ fn prepare_instrument_compiler<'a>(
         instances,
         descriptors,
         resources,
+        pattern_source_paths,
     ))
 }
 

@@ -75,10 +75,7 @@ fn two_projects_reuse_one_pinned_musical_library_without_capturing_context() {
     assert_eq!(fast.events[0].address, "play/0/nested/0/tone");
     assert_eq!(slow.events[0].address, "play/0/nested/0/tone");
     assert_eq!(fast.events[0].source.object, "tone");
-    assert_eq!(
-        fast.events[0].source.path,
-        vec!["music", "leaf", "tone"]
-    );
+    assert_eq!(fast.events[0].source.path, vec!["music", "leaf", "tone"]);
     assert_eq!(slow.events[0].source.path, fast.events[0].source.path);
     assert_eq!(fast.events[0].score_on_q, Rational::from_integer(0.into()));
     assert_eq!(slow.events[0].score_on_q, Rational::from_integer(2.into()));
@@ -147,10 +144,7 @@ place b {{ pattern = &right.phrase; track = &notes; at = 1q; }}
     assert_eq!(plan.events[0].address, "a/0/nested/0/tone");
     assert_eq!(plan.events[0].source.path, vec!["left", "leaf", "tone"]);
     assert_eq!(plan.events[1].address, "b/0/nested/0/tone");
-    assert_eq!(
-        plan.events[1].source.path,
-        vec!["right", "leaf", "tone"]
-    );
+    assert_eq!(plan.events[1].source.path, vec!["right", "leaf", "tone"]);
 }
 
 #[test]
@@ -167,8 +161,19 @@ fn library_only_check_validates_every_export_but_compile_remains_a_conflict() {
         "curve motion { clock = score; points = [(0q, 1/4, linear), (1q, 3/4, linear)]; }",
     );
     assert_eq!(
-        first_code(&check_bundle(&SourceBundle::new("phrases.maac", invalid))
-            .expect_err("an unused malformed export must still fail")),
+        first_code(
+            &check_bundle(&SourceBundle::new("phrases.maac", invalid))
+                .expect_err("an unused malformed export must still fail")
+        ),
         DiagnosticCode::Range
+    );
+
+    let missing_tuning = MUSICAL_LIBRARY.replace("&open_fifths", "&missing_tuning");
+    assert_eq!(
+        first_code(
+            &check_bundle(&SourceBundle::new("phrases.maac", missing_tuning))
+                .expect_err("an unused unresolved tuning must still fail")
+        ),
+        DiagnosticCode::Reference
     );
 }

@@ -4560,6 +4560,35 @@ impl<'a> Validator<'a> {
                         path.to_vec(),
                         vec!["pitch".into()],
                     );
+                } else {
+                    if let ValueKind::Number(index) = &args[0].kind {
+                        if !index.denom().is_one() {
+                            self.push(
+                                DiagnosticCode::Range,
+                                "degree() index must be an integer",
+                                Some(args[0].span),
+                                path.to_vec(),
+                                vec!["pitch".into()],
+                            );
+                        }
+                    }
+                    let tuning_resolves = args[1].reference().is_some_and(|reference| {
+                        reference.port.is_none()
+                            && reference.path.len() == 1
+                            && self
+                                .document
+                                .object(&reference.path[0])
+                                .is_some_and(|object| object.kind == "tuning")
+                    });
+                    if !tuning_resolves {
+                        self.push(
+                            DiagnosticCode::Reference,
+                            "degree() tuning reference must resolve to a tuning",
+                            Some(args[1].span),
+                            path.to_vec(),
+                            vec!["pitch".into()],
+                        );
+                    }
                 }
             }
             _ => self.push(
