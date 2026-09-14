@@ -19,7 +19,7 @@ use crate::export::{self, ExportError, FrameRange, WavFormat, WavStats, MAX_INPU
 use crate::plan::{Plan, PlanError, PlanLimits};
 use crate::plan_v3::VersionedPlan;
 use crate::syntax::{parse, Document};
-use crate::PlanArtifact;
+use crate::{ModuleArtifact, PlanArtifact, MAX_MODULE_ARTIFACT_JSON_BYTES};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -122,6 +122,39 @@ pub enum Command {
         /// List all embedded library identities.
         #[arg(long, conflicts_with_all = ["name", "library"])]
         libraries: bool,
+    },
+    /// Export, validate, or unpack a reusable musical source module.
+    Module {
+        #[command(subcommand)]
+        command: ModuleCommand,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ModuleCommand {
+    /// Package one library and its complete pinned dependency closure.
+    Export {
+        library: PathBuf,
+        #[arg(short = 'o', long)]
+        output: PathBuf,
+        #[arg(long)]
+        project_root: Option<PathBuf>,
+        #[arg(long)]
+        force: bool,
+    },
+    /// Validate a retained musical module artifact.
+    Check {
+        module: PathBuf,
+        #[arg(long)]
+        expect_hash: Option<String>,
+    },
+    /// Restore local sources and assets into a new directory.
+    Unpack {
+        module: PathBuf,
+        #[arg(long)]
+        output_dir: PathBuf,
+        #[arg(long)]
+        expect_hash: Option<String>,
     },
 }
 
@@ -312,6 +345,31 @@ impl CommandResult {
             notes: None,
             frames: None,
             digest: None,
+            exports: Some(exports),
+            catalog: None,
+            instrument: None,
+            library: None,
+            libraries: None,
+            delivery: None,
+        }
+    }
+
+    fn module(
+        command: &'static str,
+        input: &Path,
+        output: Option<&Path>,
+        digest: String,
+        exports: usize,
+    ) -> Self {
+        Self {
+            ok: true,
+            command: command.into(),
+            input: input.display().to_string(),
+            output: output.map(|path| path.display().to_string()),
+            format: Some(crate::MODULE_ARTIFACT_FORMAT.into()),
+            notes: None,
+            frames: None,
+            digest: Some(digest),
             exports: Some(exports),
             catalog: None,
             instrument: None,
@@ -749,6 +807,67 @@ fn execute_impl(
             let bytes = read_bounded(input)?;
             Ok(CommandResult::hash(input, sha256_digest(&bytes)))
         }
+        Command::Module { command } => match command {
+            ModuleCommand::Export {
+                library,
+                output,
+                project_root,
+                force,
+            } => {
+                let (input, root) = resolve_source_input(Some(library), project_root.as_deref());
+                let bundle = load_source_bundle(&input, root.as_deref())?;
+                let module = ModuleArtifact::from_source_bundle(&bundle)
+                    .map_err(|error| CliError::from_diagnostics(&error))?;
+                let bytes = module
+                    .to_json()
+                    .map_err(|error| CliError::from_diagnostics(&error))?;
+                let digest = sha256_digest(&bytes);
+                export::atomic_write(output, &bytes, *force).map_err(CliError::from_export)?;
+                Ok(CommandResult::module(
+                    "module export",
+                    &input,
+                    Some(output),
+                    digest,
+                    module.exports().len(),
+                ))
+            }
+            ModuleCommand::Check {
+                module,
+                expect_hash,
+            } => {
+                let artifact = read_module_artifact(module)?;
+                let digest = artifact
+                    .digest()
+                    .map_err(|error| CliError::from_diagnostics(&error))?;
+                verify_expected_module_hash(expect_hash.as_deref(), &digest)?;
+                Ok(CommandResult::module(
+                    "module check",
+                    module,
+                    None,
+                    digest,
+                    artifact.exports().len(),
+                ))
+            }
+            ModuleCommand::Unpack {
+                module,
+                output_dir,
+                expect_hash,
+            } => {
+                let artifact = read_module_artifact(module)?;
+                let digest = artifact
+                    .digest()
+                    .map_err(|error| CliError::from_diagnostics(&error))?;
+                verify_expected_module_hash(expect_hash.as_deref(), &digest)?;
+                unpack_module(&artifact, output_dir)?;
+                Ok(CommandResult::module(
+                    "module unpack",
+                    module,
+                    Some(output_dir),
+                    digest,
+                    artifact.exports().len(),
+                ))
+            }
+        },
     }
 }
 
@@ -868,6 +987,98 @@ pub fn read_bounded(path: &Path) -> Result<Vec<u8>, CliError> {
         ));
     }
     Ok(bytes)
+}
+
+fn read_module_artifact(path: &Path) -> Result<ModuleArtifact, CliError> {
+    let mut file = File::open(path).map_err(|error| {
+        CliError::new("E_IO", format!("cannot read {}: {error}", path.display()))
+    })?;
+    let mut bytes = Vec::new();
+    file.by_ref()
+        .take(MAX_MODULE_ARTIFACT_JSON_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| {
+            CliError::new("E_IO", format!("cannot read {}: {error}", path.display()))
+        })?;
+    if bytes.len() > MAX_MODULE_ARTIFACT_JSON_BYTES {
+        return Err(CliError::new(
+            "E_RESOURCE_LIMIT",
+            format!(
+                "module input exceeds {MAX_MODULE_ARTIFACT_JSON_BYTES} bytes: {}",
+                path.display()
+            ),
+        ));
+    }
+    ModuleArtifact::from_json(&bytes).map_err(|error| CliError::from_diagnostics(&error))
+}
+
+fn verify_expected_module_hash(expected: Option<&str>, actual: &str) -> Result<(), CliError> {
+    let Some(expected) = expected else {
+        return Ok(());
+    };
+    crate::bundle::validate_hash_pin(expected, "expected module hash")
+        .map_err(|error| CliError::from_diagnostics(&error))?;
+    if expected != actual {
+        return Err(CliError::new(
+            "E_HASH",
+            format!("expected module hash `{expected}`, but artifact has `{actual}`"),
+        ));
+    }
+    Ok(())
+}
+
+fn unpack_module(artifact: &ModuleArtifact, output_dir: &Path) -> Result<(), CliError> {
+    if export::path_exists(output_dir).map_err(CliError::from_export)? {
+        return Err(CliError::from_export(ExportError::OutputExists {
+            path: output_dir.to_owned(),
+        }));
+    }
+    let bundle = artifact
+        .to_source_bundle()
+        .map_err(|error| CliError::from_diagnostics(&error))?;
+    let parent = output_dir
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let staging = tempfile::tempdir_in(parent).map_err(|error| {
+        CliError::new(
+            "E_IO",
+            format!(
+                "cannot stage module unpack in {}: {error}",
+                parent.display()
+            ),
+        )
+    })?;
+    for (path, source) in &bundle.sources {
+        write_module_member(staging.path(), path, source.as_bytes())?;
+    }
+    for (path, bytes) in &bundle.assets {
+        write_module_member(staging.path(), path, bytes)?;
+    }
+    fs::rename(staging.path(), output_dir).map_err(|error| {
+        CliError::new(
+            "E_IO",
+            format!(
+                "cannot publish module directory {}: {error}",
+                output_dir.display()
+            ),
+        )
+    })?;
+    Ok(())
+}
+
+fn write_module_member(root: &Path, logical_path: &str, bytes: &[u8]) -> Result<(), CliError> {
+    let path = root.join(logical_path);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            CliError::new(
+                "E_IO",
+                format!("cannot create {}: {error}", parent.display()),
+            )
+        })?;
+    }
+    fs::write(&path, bytes)
+        .map_err(|error| CliError::new("E_IO", format!("cannot write {}: {error}", path.display())))
 }
 
 pub fn format_human(result: &CommandResult) -> String {

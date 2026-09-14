@@ -208,6 +208,50 @@ impl SourceBundle {
         }
         Ok(())
     }
+
+    pub(crate) fn snapshot_resolved_sources(
+        &self,
+        resolved: &ResolvedBundle,
+    ) -> Result<BTreeMap<String, ResolvedSourceSnapshot>, Diagnostics> {
+        let mut snapshot = BTreeMap::new();
+        for identity in &resolved.source_files {
+            let (source, builtin) = match self.sources.get(&identity.path) {
+                Some(source) => (source.clone(), false),
+                None => {
+                    let builtin = stdlib::lookup_path(&identity.path).ok_or_else(|| {
+                        reference_error(format!(
+                            "resolved source `{}` has no source snapshot",
+                            identity.path
+                        ))
+                    })?;
+                    (builtin.source.to_owned(), true)
+                }
+            };
+            let actual = sha256_digest(source.as_bytes());
+            if actual != identity.hash {
+                return Err(hash_error(format!(
+                    "resolved source `{}` expected `{}`, but its snapshot has `{actual}`",
+                    identity.path, identity.hash
+                )));
+            }
+            snapshot.insert(
+                identity.path.clone(),
+                ResolvedSourceSnapshot {
+                    hash: identity.hash.clone(),
+                    source,
+                    builtin,
+                },
+            );
+        }
+        Ok(snapshot)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ResolvedSourceSnapshot {
+    pub hash: String,
+    pub source: String,
+    pub builtin: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

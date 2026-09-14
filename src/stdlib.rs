@@ -61,6 +61,13 @@ pub fn lookup(id: &str) -> Option<BuiltinSource> {
     definition(id).map(|definition| definition.source)
 }
 
+pub(crate) fn lookup_path(path: &str) -> Option<BuiltinSource> {
+    DEFINITIONS
+        .iter()
+        .find(|definition| definition.source.path == path)
+        .map(|definition| definition.source)
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct LibraryInfo {
     pub library: String,

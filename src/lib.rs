@@ -14,7 +14,12 @@ pub mod graph;
 pub mod instrument_plan;
 mod kit;
 pub mod library;
+mod module_artifact;
 pub mod music;
+pub use module_artifact::{
+    ModuleArtifact, ModuleArtifactLimits, ModuleExport, MAX_MODULE_ARTIFACT_JSON_BYTES,
+    MODULE_ARTIFACT_FORMAT, MODULE_ARTIFACT_VERSION,
+};
 pub mod plan;
 mod plan_artifact;
 mod warp_clip;
