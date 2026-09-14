@@ -1335,3 +1335,23 @@ where
         }
     }
 }
+
+#[cfg(test)]
+mod module_unpack_tests {
+    use super::*;
+
+    #[test]
+    fn staged_directory_publication_never_replaces_a_concurrent_destination() {
+        let root = tempfile::tempdir().unwrap();
+        let staging = tempfile::tempdir_in(root.path()).unwrap();
+        fs::write(staging.path().join("module.maac"), b"module").unwrap();
+        let destination = root.path().join("destination");
+        fs::create_dir(&destination).unwrap();
+        fs::write(destination.join("owner"), b"concurrent").unwrap();
+
+        let error = publish_staged_module_noclobber(staging.path(), &destination).unwrap_err();
+        assert_eq!(error.code, "E_OUTPUT_EXISTS");
+        assert_eq!(fs::read(destination.join("owner")).unwrap(), b"concurrent");
+        assert!(!destination.join("module.maac").exists());
+    }
+}

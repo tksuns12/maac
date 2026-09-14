@@ -189,3 +189,89 @@ fn module_reader_is_separate_from_the_four_megabyte_plan_reader() {
     );
     assert!(check.status.success(), "large check failed: {check:?}");
 }
+
+#[test]
+fn unpack_rejects_distinct_logical_members_that_collide_on_the_host_filesystem() {
+    let directory = tempdir().unwrap();
+    let root = directory.path();
+    fs::write(root.join("CaseProbe"), b"probe").unwrap();
+    let case_insensitive = root.join("caseprobe").exists();
+    fs::remove_file(root.join("CaseProbe")).unwrap();
+
+    fs::create_dir(root.join("library")).unwrap();
+    let upper = "maac 1; library upper { version = \"1\"; }";
+    let lower = "maac 1; library lower { version = \"1\"; }";
+    fs::write(root.join("library/A.maac"), upper).unwrap();
+    fs::write(root.join("library/a.maac"), lower).unwrap();
+    fs::write(
+        root.join("library/root.maac"),
+        format!(
+            "maac 1; library root {{ version = \"1\"; }} pattern p {{ length = 1q; }} import upper {{ path = \"A.maac\"; hash = \"{}\"; }} import lower {{ path = \"a.maac\"; hash = \"{}\"; }}",
+            maac::bundle::sha256_digest(upper.as_bytes()),
+            maac::bundle::sha256_digest(lower.as_bytes()),
+        ),
+    )
+    .unwrap();
+    if case_insensitive {
+        // The host cannot create this fixture directly with distinct bytes, so
+        // construct the already-validated logical bundle through the public API.
+        let source = fs::read_to_string(root.join("library/root.maac")).unwrap();
+        let artifact = maac::ModuleArtifact::from_source_bundle(&maac::SourceBundle {
+            entry: "library/root.maac".into(),
+            sources: std::collections::BTreeMap::from([
+                ("library/root.maac".into(), source),
+                ("library/A.maac".into(), upper.into()),
+                ("library/a.maac".into(), lower.into()),
+            ]),
+            assets: std::collections::BTreeMap::new(),
+        })
+        .unwrap();
+        fs::write(
+            root.join("collision.module.json"),
+            artifact.to_json().unwrap(),
+        )
+        .unwrap();
+    } else {
+        let export = invoke_in(
+            root,
+            &[
+                "--json",
+                "module",
+                "export",
+                "library/root.maac",
+                "-o",
+                "collision.module.json",
+                "--project-root",
+                ".",
+            ],
+        );
+        assert!(export.status.success(), "export failed: {export:?}");
+    }
+
+    let unpack = invoke_in(
+        root,
+        &[
+            "--json",
+            "module",
+            "unpack",
+            "collision.module.json",
+            "--output-dir",
+            "restored",
+        ],
+    );
+    if case_insensitive {
+        assert!(!unpack.status.success());
+        assert_eq!(json_stdout(&unpack)["code"], "E_CONFLICT");
+        assert!(!root.join("restored").exists());
+    } else {
+        assert!(unpack.status.success(), "unpack failed: {unpack:?}");
+        assert_eq!(
+            fs::read(root.join("restored/library/A.maac")).unwrap(),
+            upper.as_bytes()
+        );
+        assert_eq!(
+            fs::read(root.join("restored/library/a.maac")).unwrap(),
+            lower.as_bytes()
+        );
+    }
+}
