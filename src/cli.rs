@@ -1,8 +1,9 @@
 //! Public command-line orchestration. Filesystem reads and publication live
 //! here; compiler and DSP modules receive parsed source/plans only.
 
+use std::collections::BTreeSet;
 use std::fmt;
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
@@ -1049,36 +1050,213 @@ fn unpack_module(artifact: &ModuleArtifact, output_dir: &Path) -> Result<(), Cli
             ),
         )
     })?;
-    for (path, source) in &bundle.sources {
-        write_module_member(staging.path(), path, source.as_bytes())?;
-    }
-    for (path, bytes) in &bundle.assets {
-        write_module_member(staging.path(), path, bytes)?;
-    }
-    fs::rename(staging.path(), output_dir).map_err(|error| {
-        CliError::new(
-            "E_IO",
-            format!(
-                "cannot publish module directory {}: {error}",
-                output_dir.display()
-            ),
-        )
-    })?;
+    stage_module_members(staging.path(), &bundle)?;
+    publish_staged_module_noclobber(staging.path(), output_dir)?;
     Ok(())
 }
 
-fn write_module_member(root: &Path, logical_path: &str, bytes: &[u8]) -> Result<(), CliError> {
-    let path = root.join(logical_path);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|error| {
-            CliError::new(
-                "E_IO",
-                format!("cannot create {}: {error}", parent.display()),
-            )
-        })?;
+fn stage_module_members(root: &Path, bundle: &SourceBundle) -> Result<(), CliError> {
+    // Probe the real destination filesystem semantics in the staging directory
+    // before copying content. This catches case-folding, Unicode-normalization,
+    // and file/directory aliases that are distinct logical bundle paths.
+    let mut directories = BTreeSet::new();
+    for logical_path in bundle.sources.keys().chain(bundle.assets.keys()) {
+        preflight_module_member(root, logical_path, &mut directories)?;
     }
+    for (path, source) in &bundle.sources {
+        write_staged_module_member(root, path, source.as_bytes())?;
+    }
+    for (path, bytes) in &bundle.assets {
+        write_staged_module_member(root, path, bytes)?;
+    }
+    Ok(())
+}
+
+fn preflight_module_member(
+    root: &Path,
+    logical_path: &str,
+    directories: &mut BTreeSet<String>,
+) -> Result<(), CliError> {
+    let components = logical_path.split('/').collect::<Vec<_>>();
+    let mut physical = root.to_owned();
+    let mut logical_directory = String::new();
+    for component in &components[..components.len() - 1] {
+        physical.push(component);
+        if !logical_directory.is_empty() {
+            logical_directory.push('/');
+        }
+        logical_directory.push_str(component);
+        if directories.insert(logical_directory.clone()) {
+            match fs::create_dir(&physical) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    return Err(module_path_collision(logical_path, &physical));
+                }
+                Err(error) => {
+                    return Err(CliError::new(
+                        "E_IO",
+                        format!("cannot create {}: {error}", physical.display()),
+                    ));
+                }
+            }
+        }
+    }
+
+    let path = root.join(logical_path);
+    match OpenOptions::new().write(true).create_new(true).open(&path) {
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            Err(module_path_collision(logical_path, &path))
+        }
+        Err(error) => Err(CliError::new(
+            "E_IO",
+            format!("cannot stage {}: {error}", path.display()),
+        )),
+    }
+}
+
+fn module_path_collision(logical_path: &str, physical_path: &Path) -> CliError {
+    CliError::new(
+        "E_CONFLICT",
+        format!(
+            "module member `{logical_path}` collides on the destination filesystem at {}",
+            physical_path.display()
+        ),
+    )
+}
+
+fn write_staged_module_member(
+    root: &Path,
+    logical_path: &str,
+    bytes: &[u8],
+) -> Result<(), CliError> {
+    let path = root.join(logical_path);
     fs::write(&path, bytes)
         .map_err(|error| CliError::new("E_IO", format!("cannot write {}: {error}", path.display())))
+}
+
+#[cfg(any(target_vendor = "apple", target_os = "linux", target_os = "android"))]
+fn native_path(path: &Path) -> Result<std::ffi::CString, CliError> {
+    use std::os::unix::ffi::OsStrExt;
+
+    std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(|_| {
+        CliError::new(
+            "E_REFERENCE",
+            format!("path contains a null byte: {}", path.display()),
+        )
+    })
+}
+
+#[cfg(target_vendor = "apple")]
+fn publish_staged_module_noclobber(staging: &Path, destination: &Path) -> Result<(), CliError> {
+    let staging_native = native_path(staging)?;
+    let destination_native = native_path(destination)?;
+    // SAFETY: both arguments are owned, NUL-terminated C strings that remain
+    // alive for the call. RENAME_EXCL makes publication atomically no-replace.
+    let result = unsafe {
+        libc::renameatx_np(
+            libc::AT_FDCWD,
+            staging_native.as_ptr(),
+            libc::AT_FDCWD,
+            destination_native.as_ptr(),
+            libc::RENAME_EXCL,
+        )
+    };
+    finish_module_publish(result, destination)
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn publish_staged_module_noclobber(staging: &Path, destination: &Path) -> Result<(), CliError> {
+    let staging_native = native_path(staging)?;
+    let destination_native = native_path(destination)?;
+    // SAFETY: both arguments are owned, NUL-terminated C strings that remain
+    // alive for the call. RENAME_NOREPLACE makes publication atomically no-replace.
+    let result = unsafe {
+        libc::renameat2(
+            libc::AT_FDCWD,
+            staging_native.as_ptr(),
+            libc::AT_FDCWD,
+            destination_native.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+    finish_module_publish(result, destination)
+}
+
+#[cfg(any(target_vendor = "apple", target_os = "linux", target_os = "android"))]
+fn finish_module_publish(result: libc::c_int, destination: &Path) -> Result<(), CliError> {
+    if result == 0 {
+        return Ok(());
+    }
+    let error = std::io::Error::last_os_error();
+    if matches!(error.raw_os_error(), Some(libc::EEXIST | libc::ENOTEMPTY)) {
+        return Err(CliError::from_export(ExportError::OutputExists {
+            path: destination.to_owned(),
+        }));
+    }
+    Err(CliError::new(
+        "E_IO",
+        format!(
+            "cannot publish module directory {}: {error}",
+            destination.display()
+        ),
+    ))
+}
+
+#[cfg(target_os = "windows")]
+fn publish_staged_module_noclobber(staging: &Path, destination: &Path) -> Result<(), CliError> {
+    use std::os::windows::ffi::OsStrExt;
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn MoveFileExW(existing: *const u16, new: *const u16, flags: u32) -> i32;
+    }
+
+    let staging_native = staging
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let destination_native = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    // SAFETY: both pointers reference NUL-terminated buffers alive for the
+    // call. Flags zero deliberately omits MOVEFILE_REPLACE_EXISTING.
+    let result = unsafe { MoveFileExW(staging_native.as_ptr(), destination_native.as_ptr(), 0) };
+    if result != 0 {
+        return Ok(());
+    }
+    let error = std::io::Error::last_os_error();
+    if matches!(error.raw_os_error(), Some(80 | 183)) {
+        return Err(CliError::from_export(ExportError::OutputExists {
+            path: destination.to_owned(),
+        }));
+    }
+    Err(CliError::new(
+        "E_IO",
+        format!(
+            "cannot publish module directory {}: {error}",
+            destination.display()
+        ),
+    ))
+}
+
+#[cfg(not(any(
+    target_vendor = "apple",
+    target_os = "linux",
+    target_os = "android",
+    target_os = "windows"
+)))]
+fn publish_staged_module_noclobber(_staging: &Path, destination: &Path) -> Result<(), CliError> {
+    Err(CliError::new(
+        "E_CAPABILITY",
+        format!(
+            "atomic no-replace directory publication is unavailable for {}",
+            destination.display()
+        ),
+    ))
 }
 
 pub fn format_human(result: &CommandResult) -> String {

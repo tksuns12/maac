@@ -38,6 +38,13 @@ Result: artifact API 5 passed; CLI 2 passed. The GREEN checkpoint is commit
 After boundary cases were added, the same target passed with artifact API 7
 tests and CLI 2 tests.
 
+Independent unpack review added a second RED checkpoint in commit `74fcc73`
+(`test: add red module unpack collision coverage`). The focused unit test did
+not compile because the required no-replace publication primitive was absent.
+After implementing host-filesystem member preflight and atomic no-replace
+directory publication, both focused regressions passed. The correction GREEN
+checkpoint is `fix: make module unpack collision safe`.
+
 ## Test specification
 
 | Guarantee | Evidence | Type | Result |
@@ -51,6 +58,8 @@ tests and CLI 2 tests.
 | Cycle, depth, syntax-object, file-byte, and explicit JSON limits remain enforced | `module_decode_reuses_cycle_depth_object_and_source_byte_limits`; `composition_roots_and_explicit_json_byte_limits_are_rejected` | Integration | PASS |
 | Export/check/unpack preserve output on expected failures | `module_export_check_and_unpack_are_atomic_and_restore_exact_sources` | CLI integration | PASS |
 | Module check accepts a valid artifact larger than the ordinary 4 MiB reader | `module_reader_is_separate_from_the_four_megabyte_plan_reader` | CLI integration | PASS |
+| Distinct logical members cannot overwrite each other when the host filesystem aliases their paths | `unpack_rejects_distinct_logical_members_that_collide_on_the_host_filesystem` | CLI integration | PASS |
+| A destination appearing at publication time is preserved | `staged_directory_publication_never_replaces_a_concurrent_destination` | Unit | PASS |
 
 ## Coverage and known gaps
 

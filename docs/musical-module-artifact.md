@@ -66,8 +66,12 @@ maac module unpack MODULE --output-dir NEW_DIR [--expect-hash SHA256]
 Module reads use their own bounded reader rather than changing the existing
 4 MiB plan/source command reader. Export publishes the completed JSON through
 the existing atomic file writer. Unpack validates the complete artifact and
-optional expected digest before staging output, rejects an existing destination,
-and publishes the staged directory without overwriting user data.
+optional expected digest before staging output. Before copying member bytes, it
+probes every logical path in a staging directory on the destination filesystem;
+paths that alias under that filesystem's case-folding, Unicode normalization,
+or file/directory rules are rejected. The completed staging directory is
+published with the host's atomic no-replace primitive, so a destination created
+concurrently is preserved and reported as `E_OUTPUT_EXISTS`.
 
 After unpack, compositions continue to use ordinary `{ path, hash }` imports.
 The caller still owns tempo, meter, routing, tracks, placement, and automation.
