@@ -1,7 +1,10 @@
 use std::collections::BTreeMap;
+use std::fmt::Write;
 use std::io::Cursor;
 
-use maac::bundle::{sha256_digest, SourceBundle};
+use maac::bundle::{
+    sha256_digest, SourceBundle, MAX_BUNDLE_FILE_BYTES, MAX_IMPORT_DEPTH, MAX_SYNTAX_OBJECTS,
+};
 use maac::plan::EventKind;
 use maac::{compile_bundle, DiagnosticCode, ModuleArtifact, ModuleArtifactLimits, Rational};
 
@@ -81,6 +84,36 @@ fn mono_wav(samples: &[i16]) -> Vec<u8> {
         writer.finalize().unwrap();
     }
     bytes.into_inner()
+}
+
+fn source_record(path: &str, text: &str) -> serde_json::Value {
+    serde_json::json!({
+        "path": path,
+        "hash": sha256_digest(text.as_bytes()),
+        "builtin": false,
+        "text": text,
+    })
+}
+
+fn asset_bundle() -> (SourceBundle, Vec<u8>) {
+    let wav = mono_wav(&[0, 100, 200, 300, 0, -100, -200, -300]);
+    let wav_pin = sha256_digest(&wav);
+    let source = format!(
+        r#"maac 1;
+library complete {{ version = "1"; }}
+import basic {{ builtin = "std/basic/1.0.0"; }}
+wavetable wave {{ path = "assets/wave.wav"; hash = "{wav_pin}"; cycle_length = 8; }}
+pattern phrase {{ length = 1q; note n {{ at = 0q; dur = 1/2q; pitch = C4; }} }}
+"#
+    );
+    (
+        SourceBundle {
+            entry: "root.maac".into(),
+            sources: BTreeMap::from([("root.maac".into(), source)]),
+            assets: BTreeMap::from([("assets/wave.wav".into(), wav.clone())]),
+        },
+        wav,
+    )
 }
 
 #[test]
@@ -173,6 +206,9 @@ fn strict_wire_rejects_tampering_missing_extra_and_malformed_members() {
     let mut bad_version = original.clone();
     bad_version["version"] = 2.into();
     cases.push((bad_version, DiagnosticCode::Version));
+    let mut bad_format = original.clone();
+    bad_format["format"] = "maac.plan".into();
+    cases.push((bad_format, DiagnosticCode::Version));
     let mut bad_path = original.clone();
     bad_path["sources"][0]["path"] = "../escape.maac".into();
     cases.push((bad_path, DiagnosticCode::Reference));
@@ -212,25 +248,20 @@ fn strict_wire_rejects_tampering_missing_extra_and_malformed_members() {
         first_code(&ModuleArtifact::from_json(duplicate.as_bytes()).unwrap_err()),
         DiagnosticCode::DuplicateField
     );
+    assert_eq!(
+        first_code(
+            &ModuleArtifact::from_json(
+                br#"{"format":"maac.module-source","version":1,"entry":"\ud800","sources":[],"assets":[]}"#
+            )
+            .unwrap_err()
+        ),
+        DiagnosticCode::Syntax
+    );
 }
 
 #[test]
 fn builtin_and_asset_closure_roundtrip_exactly_without_unpacking_builtin_files() {
-    let wav = mono_wav(&[0, 100, 200, 300, 0, -100, -200, -300]);
-    let wav_pin = sha256_digest(&wav);
-    let source = format!(
-        r#"maac 1;
-library complete {{ version = "1"; }}
-import basic {{ builtin = "std/basic/1.0.0"; }}
-wavetable wave {{ path = "assets/wave.wav"; hash = "{wav_pin}"; cycle_length = 8; }}
-pattern phrase {{ length = 1q; note n {{ at = 0q; dur = 1/2q; pitch = C4; }} }}
-"#
-    );
-    let bundle = SourceBundle {
-        entry: "root.maac".into(),
-        sources: BTreeMap::from([("root.maac".into(), source)]),
-        assets: BTreeMap::from([("assets/wave.wav".into(), wav.clone())]),
-    };
+    let (bundle, wav) = asset_bundle();
     let artifact = ModuleArtifact::from_source_bundle(&bundle).unwrap();
     let json: serde_json::Value = serde_json::from_slice(&artifact.to_json().unwrap()).unwrap();
     assert!(json["sources"].as_array().unwrap().iter().any(|source| {
@@ -245,6 +276,116 @@ pattern phrase {{ length = 1q; note n {{ at = 0q; dur = 1/2q; pitch = C4; }} }}
         .keys()
         .any(|path| path.starts_with("@builtin/")));
     assert_eq!(restored.assets["assets/wave.wav"], wav);
+}
+
+#[test]
+fn missing_extra_and_altered_assets_are_rejected() {
+    let (bundle, _) = asset_bundle();
+    let artifact = ModuleArtifact::from_source_bundle(&bundle).unwrap();
+    let original: serde_json::Value = serde_json::from_slice(&artifact.to_json().unwrap()).unwrap();
+
+    let mut missing = original.clone();
+    missing["assets"].as_array_mut().unwrap().clear();
+    assert_eq!(
+        first_code(&ModuleArtifact::from_json(&serde_json::to_vec(&missing).unwrap()).unwrap_err()),
+        DiagnosticCode::Asset
+    );
+
+    let mut extra = original.clone();
+    extra["assets"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({
+            "path": "assets/extra.bin", "hash": sha256_digest(&[0]), "bytes": "00"
+        }));
+    assert_eq!(
+        first_code(&ModuleArtifact::from_json(&serde_json::to_vec(&extra).unwrap()).unwrap_err()),
+        DiagnosticCode::Asset
+    );
+
+    let mut altered = original;
+    altered["assets"][0]["bytes"] = "00".into();
+    assert_eq!(
+        first_code(&ModuleArtifact::from_json(&serde_json::to_vec(&altered).unwrap()).unwrap_err()),
+        DiagnosticCode::Hash
+    );
+}
+
+#[test]
+fn module_decode_reuses_cycle_depth_object_and_source_byte_limits() {
+    let template: serde_json::Value = serde_json::from_slice(
+        &ModuleArtifact::from_source_bundle(&library_bundle())
+            .unwrap()
+            .to_json()
+            .unwrap(),
+    )
+    .unwrap();
+    let zero_pin = format!("sha256:{}", "0".repeat(64));
+
+    let a = format!(
+        "maac 1; library a {{ version = \"1\"; }} pattern p {{ length = 1q; }} import b {{ path = \"b.maac\"; hash = \"{zero_pin}\"; }}"
+    );
+    let b = format!(
+        "maac 1; library b {{ version = \"1\"; }} import a {{ path = \"a.maac\"; hash = \"{zero_pin}\"; }}"
+    );
+    let mut cycle = template.clone();
+    cycle["entry"] = "a.maac".into();
+    cycle["sources"] = vec![source_record("a.maac", &a), source_record("b.maac", &b)].into();
+    assert_eq!(
+        first_code(&ModuleArtifact::from_json(&serde_json::to_vec(&cycle).unwrap()).unwrap_err()),
+        DiagnosticCode::Reference
+    );
+
+    let mut depth_sources = Vec::new();
+    for index in 0..=MAX_IMPORT_DEPTH + 1 {
+        let import = if index <= MAX_IMPORT_DEPTH {
+            format!(
+                " import next {{ path = \"s{}.maac\"; hash = \"{zero_pin}\"; }}",
+                index + 1
+            )
+        } else {
+            String::new()
+        };
+        let musical = if index == 0 {
+            " pattern p { length = 1q; }"
+        } else {
+            ""
+        };
+        let source = format!("maac 1; library l{index} {{ version = \"1\"; }}{musical}{import}");
+        depth_sources.push(source_record(&format!("s{index}.maac"), &source));
+    }
+    let mut depth = template.clone();
+    depth["entry"] = "s0.maac".into();
+    depth["sources"] = depth_sources.into();
+    assert_eq!(
+        first_code(&ModuleArtifact::from_json(&serde_json::to_vec(&depth).unwrap()).unwrap_err()),
+        DiagnosticCode::ResourceLimit
+    );
+
+    let oversized = format!("maac 1;{}", " ".repeat(MAX_BUNDLE_FILE_BYTES));
+    let mut bytes = template.clone();
+    bytes["entry"] = "large.maac".into();
+    bytes["sources"] = vec![source_record("large.maac", &oversized)].into();
+    assert_eq!(
+        first_code(&ModuleArtifact::from_json(&serde_json::to_vec(&bytes).unwrap()).unwrap_err()),
+        DiagnosticCode::ResourceLimit
+    );
+
+    let mut objects =
+        String::from("maac 1; library many { version = \"1\"; } pattern p { length = 1q; }");
+    for index in 0..MAX_SYNTAX_OBJECTS {
+        write!(&mut objects, " node n{index} {{}}").unwrap();
+    }
+    assert!(objects.len() < MAX_BUNDLE_FILE_BYTES);
+    let mut object_limit = template;
+    object_limit["entry"] = "objects.maac".into();
+    object_limit["sources"] = vec![source_record("objects.maac", &objects)].into();
+    assert_eq!(
+        first_code(
+            &ModuleArtifact::from_json(&serde_json::to_vec(&object_limit).unwrap()).unwrap_err()
+        ),
+        DiagnosticCode::ResourceLimit
+    );
 }
 
 #[test]

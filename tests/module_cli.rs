@@ -76,6 +76,21 @@ fn module_export_check_and_unpack_are_atomic_and_restore_exact_sources() {
     assert!(check.status.success(), "check failed: {check:?}");
     assert_eq!(json_stdout(&check)["exports"], 2);
 
+    let wrong = format!("sha256:{}", "0".repeat(64));
+    let wrong_hash = invoke_in(
+        root,
+        &[
+            "--json",
+            "module",
+            "check",
+            module.to_str().unwrap(),
+            "--expect-hash",
+            &wrong,
+        ],
+    );
+    assert!(!wrong_hash.status.success());
+    assert_eq!(json_stdout(&wrong_hash)["code"], "E_HASH");
+
     let root_source = fs::read(root.join("library/root.maac")).unwrap();
     let leaf_source = fs::read(root.join("library/deps/leaf.maac")).unwrap();
     fs::remove_dir_all(root.join("library")).unwrap();

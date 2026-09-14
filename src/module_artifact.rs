@@ -6,13 +6,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::bundle::{
     sha256_digest, validate_hash_pin, ResolvedBundle, ResolvedSourceSnapshot, SourceBundle,
+    MAX_BUNDLE_ASSETS, MAX_BUNDLE_SOURCES,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Diagnostics};
 use crate::library::LibrarySet;
 
 pub const MODULE_ARTIFACT_FORMAT: &str = "maac.module-source";
 pub const MODULE_ARTIFACT_VERSION: u32 = 1;
-pub const MAX_MODULE_ARTIFACT_JSON_BYTES: usize = 64 * 1024 * 1024;
+pub const MAX_MODULE_ARTIFACT_JSON_BYTES: usize = 72 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ModuleArtifactLimits {
@@ -145,6 +146,9 @@ impl ModuleArtifact {
             .sort_by(|left, right| left.path.cmp(&right.path));
         wire.assets
             .sort_by(|left, right| left.path.cmp(&right.path));
+        for asset in &mut wire.assets {
+            asset.bytes.make_ascii_lowercase();
+        }
         let artifact = Self { wire };
         artifact.validate()?;
         Ok(artifact)
@@ -212,6 +216,18 @@ fn validate_wire(wire: &ModuleWire) -> Result<SourceBundle, Diagnostics> {
         return Err(error(
             DiagnosticCode::Version,
             format!("unsupported module artifact version {}", wire.version),
+        ));
+    }
+    if wire.sources.len() > MAX_BUNDLE_SOURCES {
+        return Err(error(
+            DiagnosticCode::ResourceLimit,
+            format!("module contains more than {MAX_BUNDLE_SOURCES} sources"),
+        ));
+    }
+    if wire.assets.len() > MAX_BUNDLE_ASSETS {
+        return Err(error(
+            DiagnosticCode::ResourceLimit,
+            format!("module contains more than {MAX_BUNDLE_ASSETS} assets"),
         ));
     }
 
@@ -371,7 +387,7 @@ fn encode_hex(bytes: &[u8]) -> String {
 }
 
 fn decode_hex(value: &str) -> Result<Vec<u8>, Diagnostics> {
-    if value.len() % 2 != 0 {
+    if !value.len().is_multiple_of(2) {
         return Err(error(
             DiagnosticCode::Syntax,
             "module asset bytes must contain hexadecimal byte pairs",
