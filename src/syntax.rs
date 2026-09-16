@@ -81,6 +81,209 @@ impl Document {
     }
 }
 
+/// Reconstruct a spanless parsed document from the closed typed syntax-tree
+/// representation. This is an internal editing/identity bridge: source spans and
+/// formatting are unavailable because the typed tree intentionally excludes them.
+pub(crate) fn document_from_syntax_json_value(value: &JsonValue) -> Result<Document, String> {
+    fn string<'a>(value: &'a JsonValue, name: &str) -> Result<&'a str, String> {
+        value
+            .as_str()
+            .ok_or_else(|| format!("{name} must be a string"))
+    }
+
+    fn rational(value: &JsonValue) -> Result<Rational, String> {
+        let numerator = string(
+            value
+                .get("n")
+                .ok_or_else(|| "rational numerator is missing".to_owned())?,
+            "rational numerator",
+        )?;
+        let denominator = string(
+            value
+                .get("d")
+                .ok_or_else(|| "rational denominator is missing".to_owned())?,
+            "rational denominator",
+        )?;
+        parse_rational_with_limit(&format!("{numerator}/{denominator}"), MAX_RATIONAL_BITS)
+            .map_err(|error| error.to_string())
+    }
+
+    fn syntax_value(value: &JsonValue) -> Result<Value, String> {
+        let span = Span::new(0, 0);
+        let tag = value
+            .get("t")
+            .and_then(JsonValue::as_str)
+            .ok_or_else(|| "typed value tag is missing".to_owned())?;
+        let kind = match tag {
+            "number" => ValueKind::Number(rational(value)?),
+            "quantity" => {
+                let unit = string(
+                    value
+                        .get("u")
+                        .ok_or_else(|| "quantity unit is missing".to_owned())?,
+                    "quantity unit",
+                )?;
+                ValueKind::Quantity {
+                    value: rational(value)?,
+                    unit: Unit::parse(unit)
+                        .ok_or_else(|| format!("unknown quantity unit `{unit}`"))?,
+                }
+            }
+            "string" => ValueKind::String(
+                string(
+                    value
+                        .get("v")
+                        .ok_or_else(|| "string payload is missing".to_owned())?,
+                    "string payload",
+                )?
+                .to_owned(),
+            ),
+            "symbol" => ValueKind::Symbol(
+                string(
+                    value
+                        .get("v")
+                        .ok_or_else(|| "symbol payload is missing".to_owned())?,
+                    "symbol payload",
+                )?
+                .to_owned(),
+            ),
+            "boolean" => ValueKind::Boolean(
+                value
+                    .get("v")
+                    .and_then(JsonValue::as_bool)
+                    .ok_or_else(|| "boolean payload is missing".to_owned())?,
+            ),
+            "ref" => {
+                let path = value
+                    .get("path")
+                    .and_then(JsonValue::as_array)
+                    .ok_or_else(|| "reference path is missing".to_owned())?
+                    .iter()
+                    .map(|item| string(item, "reference path component").map(str::to_owned))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let port = match value.get("port") {
+                    Some(JsonValue::Null) | None => None,
+                    Some(port) => Some(string(port, "reference port")?.to_owned()),
+                };
+                ValueKind::Reference(Reference { path, port })
+            }
+            "call" => {
+                let function = string(
+                    value
+                        .get("fn")
+                        .ok_or_else(|| "constructor name is missing".to_owned())?,
+                    "constructor name",
+                )?
+                .to_owned();
+                let args = value
+                    .get("args")
+                    .and_then(JsonValue::as_array)
+                    .ok_or_else(|| "constructor args are missing".to_owned())?
+                    .iter()
+                    .map(syntax_value)
+                    .collect::<Result<Vec<_>, _>>()?;
+                ValueKind::Call { function, args }
+            }
+            "list" | "tuple" => {
+                let items = value
+                    .get("items")
+                    .and_then(JsonValue::as_array)
+                    .ok_or_else(|| "sequence items are missing".to_owned())?
+                    .iter()
+                    .map(syntax_value)
+                    .collect::<Result<Vec<_>, _>>()?;
+                if tag == "list" {
+                    ValueKind::List(items)
+                } else {
+                    ValueKind::Tuple(items)
+                }
+            }
+            "record" => {
+                let values = value
+                    .get("fields")
+                    .and_then(JsonValue::as_object)
+                    .ok_or_else(|| "record fields are missing".to_owned())?;
+                let mut fields = BTreeMap::new();
+                for (name, child) in values {
+                    fields.insert(
+                        name.clone(),
+                        Field {
+                            name: name.clone(),
+                            span,
+                            name_span: span,
+                            value: syntax_value(child)?,
+                        },
+                    );
+                }
+                ValueKind::Record(fields)
+            }
+            other => return Err(format!("unknown typed value tag `{other}`")),
+        };
+        Ok(Value::new(kind, span))
+    }
+
+    fn object(id: &str, value: &JsonValue) -> Result<Object, String> {
+        let span = Span::new(0, 0);
+        let kind = value
+            .get("kind")
+            .and_then(JsonValue::as_str)
+            .ok_or_else(|| "object kind is missing".to_owned())?
+            .to_owned();
+        let values = value
+            .get("fields")
+            .and_then(JsonValue::as_object)
+            .ok_or_else(|| "object fields are missing".to_owned())?;
+        let mut fields = BTreeMap::new();
+        for (name, child) in values {
+            fields.insert(
+                name.clone(),
+                Field {
+                    name: name.clone(),
+                    span,
+                    name_span: span,
+                    value: syntax_value(child)?,
+                },
+            );
+        }
+        let values = value
+            .get("children")
+            .and_then(JsonValue::as_object)
+            .ok_or_else(|| "object children are missing".to_owned())?;
+        let mut children = BTreeMap::new();
+        for (child_id, child) in values {
+            children.insert(child_id.clone(), object(child_id, child)?);
+        }
+        Ok(Object {
+            id: id.to_owned(),
+            kind,
+            span,
+            kind_span: span,
+            id_span: span,
+            fields,
+            children,
+        })
+    }
+
+    let version = value
+        .get("version")
+        .and_then(JsonValue::as_u64)
+        .and_then(|version| u32::try_from(version).ok())
+        .ok_or_else(|| "typed document version is missing or out of range".to_owned())?;
+    let values = value
+        .get("objects")
+        .and_then(JsonValue::as_object)
+        .ok_or_else(|| "typed document objects are missing".to_owned())?;
+    let mut objects = BTreeMap::new();
+    for (id, value) in values {
+        objects.insert(id.clone(), object(id, value)?);
+    }
+    Ok(Document {
+        version,
+        objects,
+        source: String::new(),
+    })
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Object {
     pub id: String,

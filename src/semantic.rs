@@ -306,6 +306,16 @@ pub(crate) fn validate_source_with_instruments(
     validate_source_with_tempo_profile(document, instruments, false)
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct SourceProfile {
+    ramps: bool,
+    kits: bool,
+    audio: bool,
+    warp: bool,
+    controls: bool,
+    messages: bool,
+}
+
 pub(crate) fn validate_source_with_tempo_profile(
     document: &Document,
     instruments: &BTreeMap<String, InstrumentNodeDescriptor>,
@@ -314,11 +324,10 @@ pub(crate) fn validate_source_with_tempo_profile(
     validate_source_profile(
         document,
         instruments,
-        allow_ramps,
-        false,
-        false,
-        false,
-        false,
+        SourceProfile {
+            ramps: allow_ramps,
+            ..SourceProfile::default()
+        },
     )
 }
 
@@ -330,11 +339,11 @@ pub(crate) fn validate_source_with_kit_profile(
     validate_source_profile(
         document,
         instruments,
-        allow_ramps,
-        true,
-        false,
-        false,
-        false,
+        SourceProfile {
+            ramps: allow_ramps,
+            kits: true,
+            ..SourceProfile::default()
+        },
     )
 }
 
@@ -343,7 +352,16 @@ pub(crate) fn validate_source_with_audio_profile(
     instruments: &BTreeMap<String, InstrumentNodeDescriptor>,
     allow_ramps: bool,
 ) -> Result<SourceGraph, Diagnostics> {
-    validate_source_profile(document, instruments, allow_ramps, true, true, false, false)
+    validate_source_profile(
+        document,
+        instruments,
+        SourceProfile {
+            ramps: allow_ramps,
+            kits: true,
+            audio: true,
+            ..SourceProfile::default()
+        },
+    )
 }
 
 pub(crate) fn validate_source_with_warp_profile(
@@ -351,7 +369,17 @@ pub(crate) fn validate_source_with_warp_profile(
     instruments: &BTreeMap<String, InstrumentNodeDescriptor>,
     allow_ramps: bool,
 ) -> Result<SourceGraph, Diagnostics> {
-    validate_source_profile(document, instruments, allow_ramps, true, true, true, false)
+    validate_source_profile(
+        document,
+        instruments,
+        SourceProfile {
+            ramps: allow_ramps,
+            kits: true,
+            audio: true,
+            warp: true,
+            ..SourceProfile::default()
+        },
+    )
 }
 
 pub(crate) fn validate_source_with_control_profile(
@@ -359,24 +387,53 @@ pub(crate) fn validate_source_with_control_profile(
     instruments: &BTreeMap<String, InstrumentNodeDescriptor>,
     allow_ramps: bool,
 ) -> Result<SourceGraph, Diagnostics> {
-    validate_source_profile(document, instruments, allow_ramps, true, true, true, true)
+    validate_source_profile(
+        document,
+        instruments,
+        SourceProfile {
+            ramps: allow_ramps,
+            kits: true,
+            audio: true,
+            warp: true,
+            controls: true,
+            ..SourceProfile::default()
+        },
+    )
+}
+
+/// Validate every currently understood core source shape for Document editing.
+/// Message declarations are admitted and validated here without claiming that
+/// the performance compiler or renderer can execute their receiver protocol.
+pub(crate) fn validate_source_document_profile(
+    document: &Document,
+    instruments: &BTreeMap<String, InstrumentNodeDescriptor>,
+) -> Result<SourceGraph, Diagnostics> {
+    validate_source_profile(
+        document,
+        instruments,
+        SourceProfile {
+            ramps: true,
+            kits: true,
+            audio: true,
+            warp: true,
+            controls: true,
+            messages: true,
+        },
+    )
 }
 
 fn validate_source_profile(
     document: &Document,
     instruments: &BTreeMap<String, InstrumentNodeDescriptor>,
-    allow_ramps: bool,
-    allow_kits: bool,
-    allow_audio: bool,
-    allow_warp: bool,
-    allow_controls: bool,
+    profile: SourceProfile,
 ) -> Result<SourceGraph, Diagnostics> {
     let mut validator = Validator::new(document, instruments);
-    validator.allow_ramps = allow_ramps;
-    validator.allow_kits = allow_kits;
-    validator.allow_audio = allow_audio;
-    validator.allow_warp = allow_warp;
-    validator.allow_controls = allow_controls;
+    validator.allow_ramps = profile.ramps;
+    validator.allow_kits = profile.kits;
+    validator.allow_audio = profile.audio;
+    validator.allow_warp = profile.warp;
+    validator.allow_controls = profile.controls;
+    validator.allow_messages = profile.messages;
     validator.validate();
     if validator.diagnostics.has_errors() {
         return Err(validator.diagnostics);
@@ -452,6 +509,7 @@ pub(crate) fn validate_musical_catalog(document: &Document) -> Result<(), Diagno
 struct Validator<'a> {
     allow_warp: bool,
     allow_controls: bool,
+    allow_messages: bool,
     allow_audio: bool,
     allow_ramps: bool,
     allow_kits: bool,
@@ -487,6 +545,7 @@ impl<'a> Validator<'a> {
             allow_audio: false,
             allow_warp: false,
             allow_controls: false,
+            allow_messages: false,
             diagnostics: Diagnostics::new(),
             project_id: None,
             project_score: None,
@@ -841,6 +900,9 @@ impl<'a> Validator<'a> {
         }
         if self.allow_audio && object.kind == "audio" && path.len() == 1 {
             self.validate_audio_transport(object, path);
+            return;
+        }
+        if self.allow_messages && object.kind == "message" && path.len() > 1 {
             return;
         }
         if self.allow_kits {
@@ -3187,7 +3249,7 @@ impl<'a> Validator<'a> {
             if lfo {
                 &["type", "config", "label"]
             } else {
-                &["type", "params", "label"]
+                &["type", "config", "params", "label"]
             },
             &[],
         );
@@ -3287,6 +3349,17 @@ impl<'a> Validator<'a> {
                 },
             }
         } else {
+            if let Some(config) = self.record_field(object, "config", path).cloned() {
+                for (name, field) in config {
+                    self.push(
+                        DiagnosticCode::UnknownField,
+                        format!("constant config has no field `{name}`"),
+                        Some(field.value.span),
+                        path.to_vec(),
+                        vec!["config".into(), name],
+                    );
+                }
+            }
             if let Some(fields) = self.record_field(object, "params", path).cloned() {
                 for (name, field) in fields {
                     if name != "value" {

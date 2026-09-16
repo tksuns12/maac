@@ -542,7 +542,6 @@ impl Normalizer<'_> {
                     config.entry("phase").or_insert_with(|| number(0));
                 }
                 if matches!(node.processor, ProcessorView::Constant) {
-                    accepts_config = false;
                     params.entry("value").or_insert_with(|| number(0));
                 }
                 if let ProcessorView::Kit {
@@ -1047,6 +1046,30 @@ node s {instrument=&sound;}
         let changed = source.replace("max = -1;", "max = -2;");
         assert_ne!(changed, source, "example must contain the chosen limit");
         assert_ne!(first.execution_hash, production(&changed).execution_hash);
+    }
+
+    #[test]
+    fn core_constant_normalization_retains_explicit_empty_config_record() {
+        let source = r#"maac 1;
+project p {score=[0q,1q];rate=48000Hz;tempo=&t;meter=&m;output=&s:out;}
+tempo t {points=[(0q,120bpm,step)];}
+meter m {points=[(0q,4,4)];}
+node s {type="core.sine/1";}
+node c {type="core.constant/1";config={};}
+"#;
+        let document = crate::syntax::parse(source).unwrap();
+        let bundle = crate::bundle::SourceBundle::new("score.maac", source);
+        let artifact = crate::compiler::compile_bundle_artifact(&bundle).unwrap();
+        let identity = execution_identity_for_view(&document, &artifact.view()).unwrap();
+        let normalized: JsonValue = serde_json::from_str(&identity.normalized_source_json).unwrap();
+        assert_eq!(
+            normalized["objects"]["c"]["fields"]["config"],
+            record(Map::new())
+        );
+        assert_eq!(
+            normalized["objects"]["c"]["fields"]["params"]["fields"]["value"],
+            number(0)
+        );
     }
 
     #[test]

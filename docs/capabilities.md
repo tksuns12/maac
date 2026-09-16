@@ -47,10 +47,13 @@ No generic runtime lock verifier or normalizer is exposed by the foundation;
 descriptor wire schemas and loss reports remain separate deferred work, so
 this evidence is not a runtime-support claim.
 
-Recognized deferred features fail with `E_CAPABILITY`: messages,
+Recognized deferred execution features fail with `E_CAPABILITY`: message performance,
 other processors, pitched sample instruments,
-preserve-pitch audio warping, external plug-ins and other extensions. Transactional editing, full render locks,
+preserve-pitch audio warping, external plug-ins and other extensions. Full render locks,
 MIDI transport, GUI and real-time playback are outside this release's interfaces.
+Protocol 2 transactional editing is implemented for the bounded source-only foundation through
+`maac::editing` and `maac patch`; unsupported extension/library contexts still fail explicitly, so
+this is not a full Document-profile claim.
 No deferred feature is approximated silently.
 
 The [kit contract](core-kit.md) defines native hit scheduling, raw sample assets,

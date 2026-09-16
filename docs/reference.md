@@ -15,7 +15,19 @@ language.
 | `maac instruments [NAME]` | List the built-in catalog, or show one instrument with controls, musical guidance and runnable usage |
 | `maac instruments [NAME] --library ID` | Select an exact built-in version for catalog listing or named detail |
 | `maac instruments --libraries` | List embedded library identities, reserved source paths and hashes |
+| `maac patch SOURCE PATCH.json -o OUTPUT [--force]` | Apply one Protocol 2 transaction with source-preserving projection; structured results include the new revision, inverse patch, impact, and diagnostics |
 | `maac hash FILE` | Print the `sha256:` pin for the file's exact bytes without writing a file |
+
+
+`patch` accepts a MaaC source file and an exact Protocol 2 transaction. The transaction
+base revision is checked against the authored typed graph before mutation. The complete
+candidate is semantically validated before an output is published, and publication uses
+the same same-directory atomic-write policy as other artifacts. `-o` is required; an
+existing destination is preserved unless `--force` is explicit. The source projector
+uses parser spans, so unrelated comments and formatting are copied byte-for-byte. The
+current `FoundationEditContext` deliberately refuses imports, reusable-library syntax,
+production-extension objects, external processors, and other contexts whose full editing
+normalization contract is not implemented.
 
 `--json` selects structured command results and diagnostics. `--force` permits
 replacing an existing output. Render/build accept `--format float32` (default)

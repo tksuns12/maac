@@ -7,6 +7,7 @@ pub mod cli;
 pub mod compiler;
 pub mod diagnostic;
 pub mod dsp;
+pub mod editing;
 pub mod exact;
 pub mod export;
 mod expression;

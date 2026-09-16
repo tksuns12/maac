@@ -135,8 +135,23 @@ fn units_phase_automation_and_legacy_entrypoint_contracts() {
 }
 #[test]
 fn invalid_declarations_and_references_fail_even_unused() {
+    let omitted = compile_bundle_artifact(&bundle(r#"node c {type="core.constant/1";}"#)).unwrap();
+    let explicit =
+        compile_bundle_artifact(&bundle(r#"node c {type="core.constant/1";config={};}"#)).unwrap();
+    let node = |artifact: &maac::PlanArtifact| {
+        let value: serde_json::Value =
+            serde_json::from_slice(&artifact.to_json().unwrap()).unwrap();
+        value["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|node| node["id"] == "c")
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(node(&omitted), node(&explicit));
+
     for body in [
-        r#"node c {type="core.constant/1";config={};}"#,
         r#"node c {type="core.constant/1";params={value=1Hz;};}"#,
         r#"node c {type="core.constant/1";params={unknown=1;};}"#,
         r#"node c {type="core.lfo/1";}"#,

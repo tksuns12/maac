@@ -112,6 +112,15 @@ pub enum Command {
         #[arg(long, value_enum, default_value_t = ProfileArg::Default)]
         profile: ProfileArg,
     },
+    /// Apply one Protocol 2 transaction to source-preserving MaaC text.
+    Patch {
+        input: PathBuf,
+        patch: PathBuf,
+        #[arg(short = 'o', long)]
+        output: PathBuf,
+        #[arg(long)]
+        force: bool,
+    },
     /// Compute the canonical SHA-256 pin for a bounded local file.
     Hash { input: PathBuf },
     /// List embedded instruments, or describe one export with a runnable example.
@@ -231,6 +240,8 @@ pub struct ArtifactCommandResult {
     start_frame: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     end_frame: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    edit: Option<crate::editing::AppliedTransaction>,
 }
 impl ArtifactCommandResult {
     pub fn base(&self) -> &CommandResult {
@@ -247,6 +258,9 @@ impl ArtifactCommandResult {
     }
     pub fn end_frame(&self) -> Option<u64> {
         self.end_frame
+    }
+    pub fn edit(&self) -> Option<&crate::editing::AppliedTransaction> {
+        self.edit.as_ref()
     }
 }
 fn is_zero(value: &usize) -> bool {
@@ -450,6 +464,21 @@ impl CliError {
         Self::new(code, error.to_string())
     }
 
+    pub fn from_edit(error: crate::editing::EditError) -> Self {
+        let mut result = Self::new(error.code, error.message);
+        let mut path = error.object_path.join(".");
+        if !error.field_path.is_empty() {
+            if !path.is_empty() {
+                path.push('.');
+            }
+            path.push_str(&error.field_path.join("."));
+        }
+        if !path.is_empty() {
+            result.path = Some(path);
+        }
+        result
+    }
+
     pub fn from_export(error: ExportError) -> Self {
         if let ExportError::Render(render_error) = &error {
             return Self::from_render(render_error.clone());
@@ -519,6 +548,7 @@ pub fn execute_artifact_with_range(
         audio_clips: counts.audio_clips,
         start_frame: range.map(|range| range.start_frame),
         end_frame: range.map(|range| range.end_frame),
+        edit: counts.edit,
     })
 }
 #[derive(Default)]
@@ -526,6 +556,7 @@ struct EventCounts {
     notes: usize,
     hits: usize,
     audio_clips: usize,
+    edit: Option<crate::editing::AppliedTransaction>,
 }
 impl EventCounts {
     fn record(&mut self, plan: &PlanArtifact) {
@@ -800,6 +831,43 @@ fn execute_impl(
                 catalog,
                 instrument,
                 library: library.clone(),
+                libraries: None,
+                delivery: None,
+            })
+        }
+        Command::Patch {
+            input,
+            patch,
+            output,
+            force,
+        } => {
+            let bytes = read_bounded(input)?;
+            let source = String::from_utf8(bytes).map_err(|error| {
+                CliError::new("E_SYNTAX", format!("source is not UTF-8: {error}"))
+            })?;
+            let mut document =
+                crate::editing::SourceDocument::parse(source).map_err(CliError::from_edit)?;
+            let transaction = crate::editing::Transaction::from_json(&read_bounded(patch)?)
+                .map_err(CliError::from_edit)?;
+            let applied = document
+                .apply(&transaction, &crate::editing::FoundationEditContext)
+                .map_err(CliError::from_edit)?;
+            export::atomic_write(output, document.source().as_bytes(), *force)
+                .map_err(CliError::from_export)?;
+            counts.edit = Some(applied.clone());
+            Ok(CommandResult {
+                ok: true,
+                command: "patch".into(),
+                input: input.display().to_string(),
+                output: Some(output.display().to_string()),
+                format: Some("maac.edit/2".into()),
+                notes: None,
+                frames: None,
+                digest: Some(applied.new_revision),
+                exports: None,
+                catalog: None,
+                instrument: None,
+                library: None,
                 libraries: None,
                 delivery: None,
             })
