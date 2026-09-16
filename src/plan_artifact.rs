@@ -1,9 +1,10 @@
 //! Opaque, independently validated standalone plan artifacts.
 
-use crate::plan::{err, OutputSettings, PlanError, PlanLimits, PlanView};
+use crate::plan::{err, EventKind, OutputSettings, PlanError, PlanLimits, PlanView, PortRef};
 use crate::plan_v3::VersionedPlan;
 use crate::plan_v4::PlanV4;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet};
 
 /// A self-contained plan with an opaque versioned representation.
 /// Public loading and encoding independently validate the artifact.
@@ -15,6 +16,30 @@ use serde::Deserialize;
 ///     let _ = serde_json::to_vec(artifact);
 /// }
 /// ```
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MessageAdapterCapability {
+    pub target: PortRef,
+    pub protocols: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PerformanceDispatchKind {
+    Message { protocol: String, bytes: Vec<u8> },
+    NoteOff,
+    NoteOn { event: EventKind },
+    Hit { event: EventKind },
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct PerformanceDispatch {
+    pub frame: u64,
+    pub order: i32,
+    pub address: String,
+    pub target: PortRef,
+    pub dispatch: PerformanceDispatchKind,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlanArtifact {
     inner: ArtifactVersion,
@@ -45,22 +70,22 @@ impl PlanArtifact {
             }
             7 => {
                 let plan = crate::plan_v7::PlanV7::decode_wire(bytes).map_err(json_error)?;
-                plan.validate_with_limits(&limits)?;
+                plan.view().validate_performance_with_limits(&limits)?;
                 ArtifactVersion::V7(plan)
             }
             6 => {
                 let plan = crate::plan_v6::PlanV6::decode_wire(bytes).map_err(json_error)?;
-                plan.validate_with_limits(&limits)?;
+                plan.view().validate_performance_with_limits(&limits)?;
                 ArtifactVersion::V6(plan)
             }
             5 => {
                 let plan = crate::plan_v5::PlanV5::decode_wire(bytes).map_err(json_error)?;
-                plan.validate_with_limits(&limits)?;
+                plan.view().validate_performance_with_limits(&limits)?;
                 ArtifactVersion::V5(plan)
             }
             4 => {
                 let plan = PlanV4::decode_wire(bytes).map_err(json_error)?;
-                plan.validate_with_limits(&limits)?;
+                plan.view().validate_performance_with_limits(&limits)?;
                 ArtifactVersion::V4(plan)
             }
             _ => {
@@ -81,28 +106,28 @@ impl PlanArtifact {
             ArtifactVersion::Existing(plan) => plan.to_json_with_limits(limits),
             ArtifactVersion::V4(plan) => {
                 let limits = limits.bounded();
-                self.validate_with_limits(&limits)?;
+                self.view().validate_performance_with_limits(&limits)?;
                 let bytes = serde_json::to_vec(plan).map_err(json_error)?;
                 check_bytes(&bytes, &limits)?;
                 Ok(bytes)
             }
             ArtifactVersion::V7(plan) => {
                 let limits = limits.bounded();
-                self.validate_with_limits(&limits)?;
+                self.view().validate_performance_with_limits(&limits)?;
                 let bytes = serde_json::to_vec(plan).map_err(json_error)?;
                 check_bytes(&bytes, &limits)?;
                 Ok(bytes)
             }
             ArtifactVersion::V6(plan) => {
                 let limits = limits.bounded();
-                self.validate_with_limits(&limits)?;
+                self.view().validate_performance_with_limits(&limits)?;
                 let bytes = serde_json::to_vec(plan).map_err(json_error)?;
                 check_bytes(&bytes, &limits)?;
                 Ok(bytes)
             }
             ArtifactVersion::V5(plan) => {
                 let limits = limits.bounded();
-                self.validate_with_limits(&limits)?;
+                self.view().validate_performance_with_limits(&limits)?;
                 let bytes = serde_json::to_vec(plan).map_err(json_error)?;
                 check_bytes(&bytes, &limits)?;
                 Ok(bytes)
@@ -118,12 +143,109 @@ impl PlanArtifact {
                 plan.validate_with_limits(limits)
             }
             ArtifactVersion::Existing(VersionedPlan::V3(plan)) => plan.validate_with_limits(limits),
-            ArtifactVersion::V4(plan) => plan.validate_with_limits(limits),
-            ArtifactVersion::V5(plan) => plan.validate_with_limits(limits),
-            ArtifactVersion::V6(plan) => plan.validate_with_limits(limits),
-            ArtifactVersion::V7(plan) => plan.validate_with_limits(limits),
+            ArtifactVersion::V4(plan) => plan.view().validate_performance_with_limits(limits),
+            ArtifactVersion::V5(plan) => plan.view().validate_performance_with_limits(limits),
+            ArtifactVersion::V6(plan) => plan.view().validate_performance_with_limits(limits),
+            ArtifactVersion::V7(plan) => plan.view().validate_performance_with_limits(limits),
         }
     }
+    /// Resolve the finite Performance event timeline for an explicitly advertised
+    /// set of message adapters. Message dispatch occurs after parameter evaluation
+    /// and before note-offs at the same frame, per MaaC/1 §6.1.
+    pub fn performance_dispatches(
+        &self,
+        adapters: &[MessageAdapterCapability],
+    ) -> Result<Vec<PerformanceDispatch>, PlanError> {
+        self.view()
+            .validate_performance_with_limits(&PlanLimits::default())?;
+        let mut advertised: BTreeMap<&PortRef, BTreeSet<&str>> = BTreeMap::new();
+        for adapter in adapters {
+            let protocols = advertised.entry(&adapter.target).or_default();
+            for protocol in &adapter.protocols {
+                protocols.insert(protocol.as_str());
+            }
+        }
+        let mut dispatches = Vec::new();
+        for (index, event) in self.view().events().enumerate() {
+            match event.kind {
+                EventKind::Message { protocol, bytes } => {
+                    let supported = advertised
+                        .get(event.target)
+                        .is_some_and(|protocols| protocols.contains(protocol.as_str()));
+                    if !supported {
+                        return Err(err(
+                            "E_CAPABILITY",
+                            format!("events[{index}].kind.protocol"),
+                            format!(
+                                "target {}:{} does not advertise message protocol `{protocol}`",
+                                event.target.node, event.target.port
+                            ),
+                        ));
+                    }
+                    dispatches.push(PerformanceDispatch {
+                        frame: event.on_frame,
+                        order: event.order,
+                        address: event.address.clone(),
+                        target: event.target.clone(),
+                        dispatch: PerformanceDispatchKind::Message {
+                            protocol: protocol.clone(),
+                            bytes: bytes.clone(),
+                        },
+                    });
+                }
+                EventKind::Note { .. } => {
+                    let off_frame = event.off_frame.ok_or_else(|| {
+                        err(
+                            "E_INTERVAL",
+                            format!("events[{index}].off_frame"),
+                            "note dispatch requires a certified note-off frame",
+                        )
+                    })?;
+                    dispatches.push(PerformanceDispatch {
+                        frame: off_frame,
+                        order: event.order,
+                        address: event.address.clone(),
+                        target: event.target.clone(),
+                        dispatch: PerformanceDispatchKind::NoteOff,
+                    });
+                    dispatches.push(PerformanceDispatch {
+                        frame: event.on_frame,
+                        order: event.order,
+                        address: event.address.clone(),
+                        target: event.target.clone(),
+                        dispatch: PerformanceDispatchKind::NoteOn {
+                            event: event.kind.clone(),
+                        },
+                    });
+                }
+                EventKind::Hit { .. } => dispatches.push(PerformanceDispatch {
+                    frame: event.on_frame,
+                    order: event.order,
+                    address: event.address.clone(),
+                    target: event.target.clone(),
+                    dispatch: PerformanceDispatchKind::Hit {
+                        event: event.kind.clone(),
+                    },
+                }),
+            }
+        }
+        fn phase(dispatch: &PerformanceDispatchKind) -> u8 {
+            match dispatch {
+                PerformanceDispatchKind::Message { .. } => 0,
+                PerformanceDispatchKind::NoteOff => 1,
+                PerformanceDispatchKind::NoteOn { .. } | PerformanceDispatchKind::Hit { .. } => 2,
+            }
+        }
+        dispatches.sort_by(|left, right| {
+            left.frame
+                .cmp(&right.frame)
+                .then_with(|| phase(&left.dispatch).cmp(&phase(&right.dispatch)))
+                .then_with(|| left.order.cmp(&right.order))
+                .then_with(|| left.address.as_bytes().cmp(right.address.as_bytes()))
+        });
+        Ok(dispatches)
+    }
+
     pub fn version(&self) -> u32 {
         self.view().version
     }

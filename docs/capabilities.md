@@ -47,7 +47,7 @@ No generic runtime lock verifier or normalizer is exposed by the foundation;
 descriptor wire schemas and loss reports remain separate deferred work, so
 this evidence is not a runtime-support claim.
 
-Recognized deferred execution features fail with `E_CAPABILITY`: message performance,
+Message performance is resolved into retained transport events, including exact protocol/bytes, certified frames, and §6.1 dispatch ordering. Hosts must explicitly advertise a matching protocol for each target through `PlanArtifact::performance_dispatches`; the built-in Core Audio renderer has no raw-message adapter and therefore still returns `E_CAPABILITY`. Other recognized deferred execution features fail with `E_CAPABILITY`:
 other processors, pitched sample instruments,
 preserve-pitch audio warping, external plug-ins and other extensions. Full render locks,
 MIDI transport, GUI and real-time playback are outside this release's interfaces.

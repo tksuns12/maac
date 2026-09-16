@@ -304,6 +304,7 @@ struct LeafDef {
 enum LeafKind {
     Note(Box<NoteDef>),
     Hit { key: String },
+    Message { protocol: String, bytes: Vec<u8> },
 }
 #[derive(Clone, Debug)]
 struct NoteDef {
@@ -389,6 +390,7 @@ struct ExpandedEvent {
 enum ExpandedKind {
     Note(Box<ExpandedNote>),
     Hit { key: String },
+    Message { protocol: String, bytes: Vec<u8> },
 }
 #[derive(Clone, Debug)]
 struct ExpandedNote {
@@ -407,7 +409,7 @@ impl ExpandedEvent {
     fn note(&self) -> CResult<&ExpandedNote> {
         match &self.kind {
             ExpandedKind::Note(note) => Ok(note),
-            ExpandedKind::Hit { .. } => Err(event_diagnostic(
+            ExpandedKind::Hit { .. } | ExpandedKind::Message { .. } => Err(event_diagnostic(
                 DiagnosticCode::Capability,
                 "native hits require the sample-kit execution profile",
                 self,
@@ -460,6 +462,7 @@ struct Compiler<'a> {
     automations: Vec<AutomationV3>,
     allow_ramps: bool,
     allow_hits: bool,
+    allow_messages: bool,
     regions: Vec<Region>,
     events: Vec<ExpandedEvent>,
     expansion_work: u64,
@@ -512,6 +515,7 @@ impl<'a> Compiler<'a> {
             automations: Vec::new(),
             allow_ramps: false,
             allow_hits: false,
+            allow_messages: false,
             regions: Vec::new(),
             events: Vec::new(),
             expansion_work: 0,
@@ -618,6 +622,7 @@ impl<'a> Compiler<'a> {
     ) -> CResult<PlanArtifact> {
         self.allow_ramps = true;
         self.allow_hits = true;
+        self.allow_messages = true;
         let has_controls = uses_control_profile(self.document);
         if has_controls {
             let nodes = self
@@ -648,31 +653,10 @@ impl<'a> Compiler<'a> {
                     .and_then(|field| field.value.as_symbol())
                     == Some("warp_rate")
         });
-        let graph = if has_controls {
-            crate::semantic::validate_source_with_control_profile(
-                self.document,
-                &self.instrument_descriptors,
-                true,
-            )?
-        } else if has_warp {
-            crate::semantic::validate_source_with_warp_profile(
-                self.document,
-                &self.instrument_descriptors,
-                true,
-            )?
-        } else if has_audio {
-            crate::semantic::validate_source_with_audio_profile(
-                self.document,
-                &self.instrument_descriptors,
-                true,
-            )?
-        } else {
-            crate::semantic::validate_source_with_kit_profile(
-                self.document,
-                &self.instrument_descriptors,
-                true,
-            )?
-        };
+        let graph = crate::semantic::validate_source_document_profile(
+            self.document,
+            &self.instrument_descriptors,
+        )?;
         self.control_nodes = graph.control_nodes().clone();
         self.modulations = graph.modulations().to_vec();
         self.audio_clips = graph.audio_clips().clone();
@@ -1978,6 +1962,86 @@ impl<'a> Compiler<'a> {
         })
     }
 
+    fn parse_message(&self, object: &Object) -> CResult<LeafDef> {
+        self.check_fields(
+            object,
+            &["at", "protocol", "bytes", "onset_offset", "order"],
+        )?;
+        if !object.children.is_empty() {
+            return Err(path_diagnostic(
+                DiagnosticCode::UnknownKind,
+                "message cannot have children",
+                object,
+                None,
+            ));
+        }
+        let at_field = self.field(object, "at")?;
+        let at = self.q_value(&at_field.value, object, Some(at_field), false)?;
+        if at.is_negative() {
+            return Err(path_diagnostic(
+                DiagnosticCode::Range,
+                "message onset must be nonnegative",
+                object,
+                Some(at_field),
+            ));
+        }
+        let protocol_field = self.field(object, "protocol")?;
+        let protocol = self.string_value(
+            &protocol_field.value,
+            object,
+            Some(protocol_field),
+            "protocol",
+        )?;
+        let bytes_field = self.field(object, "bytes")?;
+        let mut bytes = Vec::new();
+        for value in self.list(&bytes_field.value, object, Some(bytes_field))? {
+            let n = bigint_i64(
+                &self.rational_value(value, object, Some(bytes_field))?,
+                Some(value.span),
+            )?;
+            let byte = u8::try_from(n).map_err(|_| {
+                path_diagnostic(
+                    DiagnosticCode::Range,
+                    "message bytes must be in 0..255",
+                    object,
+                    Some(bytes_field),
+                )
+            })?;
+            bytes.push(byte);
+        }
+        let onset_offset = self
+            .optional(object, "onset_offset")
+            .map(|value| self.seconds_value(value, object, object.field("onset_offset")))
+            .transpose()?
+            .unwrap_or_else(Rational::zero);
+        let order = self
+            .optional(object, "order")
+            .map(|value| {
+                bigint_i64(
+                    &self.rational_value(value, object, object.field("order"))?,
+                    Some(value.span),
+                )
+            })
+            .transpose()?
+            .unwrap_or(0);
+        let order = i32::try_from(order).map_err(|_| {
+            diagnostics(
+                DiagnosticCode::ResourceLimit,
+                "event order exceeds signed 32-bit range",
+                Some(object.span),
+            )
+        })?;
+        Ok(LeafDef {
+            id: object.id.clone(),
+            span: object.span,
+            at,
+            velocity: Rational::one(),
+            onset_offset,
+            order,
+            kind: LeafKind::Message { protocol, bytes },
+        })
+    }
+
     fn parse_use(&self, object: &Object) -> CResult<UseDef> {
         self.check_fields(
             object,
@@ -2075,6 +2139,9 @@ impl<'a> Compiler<'a> {
                     "use" => PatternChild::Use(Box::new(self.parse_use(child)?)),
                     "hit" if self.allow_hits => {
                         PatternChild::Leaf(Box::new(self.parse_hit(child)?))
+                    }
+                    "message" if self.allow_messages => {
+                        PatternChild::Leaf(Box::new(self.parse_message(child)?))
                     }
                     "hit" | "message" => {
                         return Err(path_diagnostic(
@@ -2361,7 +2428,10 @@ impl<'a> Compiler<'a> {
                             ));
                         }
                         let leaf = child.children.values().next().unwrap();
-                        if leaf.kind != "note" && !(self.allow_hits && leaf.kind == "hit") {
+                        if leaf.kind != "note"
+                            && !(self.allow_hits && leaf.kind == "hit")
+                            && !(self.allow_messages && leaf.kind == "message")
+                        {
                             return Err(path_diagnostic(
                                 DiagnosticCode::Capability,
                                 "only note inserts are supported by the standalone sine plan",
@@ -2374,6 +2444,8 @@ impl<'a> Compiler<'a> {
                             span: child.span,
                             leaf: if leaf.kind == "hit" {
                                 self.parse_hit(leaf)?
+                            } else if leaf.kind == "message" {
+                                self.parse_message(leaf)?
                             } else {
                                 self.parse_note(leaf)?
                             },
@@ -2810,6 +2882,10 @@ impl<'a> Compiler<'a> {
         )?;
         let kind = match &leaf.kind {
             LeafKind::Hit { key } => ExpandedKind::Hit { key: key.clone() },
+            LeafKind::Message { protocol, bytes } => ExpandedKind::Message {
+                protocol: protocol.clone(),
+                bytes: bytes.clone(),
+            },
             LeafKind::Note(note) => {
                 let dur = checked_mul(&state.scale, &note.dur, Some(leaf.span))?;
                 let end = checked_add(&score_on_q, &dur, Some(leaf.span))?;
@@ -3060,6 +3136,18 @@ impl<'a> Compiler<'a> {
             .object(&place.id)
             .unwrap_or_else(|| self.document.objects.values().next().unwrap());
         for (name, value) in set {
+            if matches!(self.events[index].kind, ExpandedKind::Message { .. })
+                && !matches!(
+                    name.as_str(),
+                    "at" | "protocol" | "bytes" | "onset_offset" | "order" | "label"
+                )
+            {
+                return Err(diagnostics(
+                    DiagnosticCode::UnknownField,
+                    format!("field `{name}` is not valid for a message override"),
+                    Some(value.span),
+                ));
+            }
             if matches!(self.events[index].kind, ExpandedKind::Hit { .. })
                 && !matches!(
                     name.as_str(),
@@ -3081,6 +3169,47 @@ impl<'a> Compiler<'a> {
                     let dur = self.q_value(value, object, None, false)?;
                     if let ExpandedKind::Note(note) = &mut self.events[index].kind {
                         note.dur_q = dur;
+                    }
+                }
+                "protocol" => {
+                    let protocol = self.string_value(value, object, None, "protocol")?;
+                    if let ExpandedKind::Message {
+                        protocol: existing, ..
+                    } = &mut self.events[index].kind
+                    {
+                        *existing = protocol;
+                    } else {
+                        return Err(diagnostics(
+                            DiagnosticCode::UnknownField,
+                            "protocol is only valid for a message override",
+                            Some(value.span),
+                        ));
+                    }
+                }
+                "bytes" => {
+                    let mut bytes = Vec::new();
+                    for item in self.list(value, object, None)? {
+                        let n =
+                            bigint_i64(&self.rational_value(item, object, None)?, Some(item.span))?;
+                        bytes.push(u8::try_from(n).map_err(|_| {
+                            diagnostics(
+                                DiagnosticCode::Range,
+                                "message bytes must be in 0..255",
+                                Some(item.span),
+                            )
+                        })?);
+                    }
+                    if let ExpandedKind::Message {
+                        bytes: existing, ..
+                    } = &mut self.events[index].kind
+                    {
+                        *existing = bytes;
+                    } else {
+                        return Err(diagnostics(
+                            DiagnosticCode::UnknownField,
+                            "bytes is only valid for a message override",
+                            Some(value.span),
+                        ));
                     }
                 }
                 "key" => {
@@ -3155,7 +3284,7 @@ impl<'a> Compiler<'a> {
             ExpandedKind::Note(note) => {
                 note.dur_q <= Rational::zero() || !(0.0..=1.0).contains(&note.release_velocity)
             }
-            ExpandedKind::Hit { .. } => false,
+            ExpandedKind::Hit { .. } | ExpandedKind::Message { .. } => false,
         };
         if invalid_note
             || self.events[index].velocity.is_negative()
@@ -3181,6 +3310,12 @@ impl<'a> Compiler<'a> {
                 return Ok(EventKind::Hit {
                     key: key.clone(),
                     velocity: expanded.velocity.clone(),
+                })
+            }
+            ExpandedKind::Message { protocol, bytes } => {
+                return Ok(EventKind::Message {
+                    protocol: protocol.clone(),
+                    bytes: bytes.clone(),
                 })
             }
         };
@@ -3369,7 +3504,7 @@ impl<'a> Compiler<'a> {
                     .iter()
                     .filter_map(|e| match &e.kind {
                         ExpandedKind::Note(note) => Some(note),
-                        ExpandedKind::Hit { .. } => None,
+                        ExpandedKind::Hit { .. } | ExpandedKind::Message { .. } => None,
                     })
                     .flat_map(|e| {
                         [
@@ -3411,7 +3546,7 @@ impl<'a> Compiler<'a> {
         self.events
             .iter()
             .map(|expanded| {
-                if !self.allow_hits {
+                if !self.allow_hits && !self.allow_messages {
                     expanded.note()?;
                 }
                 let (score_off_q, release_offset_seconds, release_velocity) = match &expanded.kind {
@@ -3424,7 +3559,9 @@ impl<'a> Compiler<'a> {
                         note.release_offset_seconds.clone(),
                         note.release_velocity,
                     ),
-                    ExpandedKind::Hit { .. } => (None, Rational::zero(), 0.0),
+                    ExpandedKind::Hit { .. } | ExpandedKind::Message { .. } => {
+                        (None, Rational::zero(), 0.0)
+                    }
                 };
                 Ok(ResolvedEventV3 {
                     address: expanded.address.clone(),
@@ -3902,7 +4039,7 @@ impl<'a> Compiler<'a> {
             }
         }
         plan.view()
-            .validate_with_timing(&limits, &timing)
+            .validate_performance_with_timing(&limits, &timing)
             .map_err(plan_error)?;
         struct ByteBudget(usize);
         impl std::io::Write for ByteBudget {
@@ -4024,7 +4161,7 @@ impl<'a> Compiler<'a> {
             }
         }
         plan.view()
-            .validate_with_timing(&limits, &timing)
+            .validate_performance_with_timing(&limits, &timing)
             .map_err(plan_error)?;
         struct ByteBudget(usize);
         impl std::io::Write for ByteBudget {
@@ -4125,7 +4262,7 @@ impl<'a> Compiler<'a> {
             }
         }
         plan.view()
-            .validate_with_timing(&limits, &timing)
+            .validate_performance_with_timing(&limits, &timing)
             .map_err(plan_error)?;
         struct ByteBudget(usize);
         impl std::io::Write for ByteBudget {
@@ -4206,7 +4343,7 @@ impl<'a> Compiler<'a> {
             .map_err(plan_error)?;
         Self::schedule_score_events(&mut plan.output, &mut plan.events, &timing, &limits)?;
         plan.view()
-            .validate_with_timing(&limits, &timing)
+            .validate_performance_with_timing(&limits, &timing)
             .map_err(plan_error)?;
         // Bound the encoded artifact without constructing another timing context or retaining JSON.
         struct ByteBudget(usize);
@@ -4464,6 +4601,7 @@ fn value_span(value: &Rational, field: Option<&Field>) -> Span {
 pub(crate) fn validate_musical_catalog(document: &Document) -> CResult<()> {
     let mut compiler = Compiler::new(document);
     compiler.allow_hits = true;
+    compiler.allow_messages = true;
     compiler.read_tunings()?;
     compiler.read_patterns()?;
     compiler.validate_pattern_graph()?;
@@ -4833,6 +4971,12 @@ fn uses_control_profile(document: &Document) -> bool {
     })
 }
 
+fn uses_message_profile(document: &Document) -> bool {
+    fn has_message(object: &Object) -> bool {
+        object.kind == "message" || object.children.values().any(has_message)
+    }
+    document.objects.values().any(has_message)
+}
 fn uses_kit_profile(document: &Document) -> bool {
     fn visit(object: &Object) -> bool {
         object.kind == "hit"
@@ -4877,6 +5021,7 @@ fn compile_resolved_artifact(
     if !uses_kit_profile(&document)
         && !uses_audio_profile(&document)
         && !uses_control_profile(&document)
+        && !uses_message_profile(&document)
     {
         return compile_resolved_versioned(resolved, libraries, limits, production, original)
             .map(PlanArtifact::from);

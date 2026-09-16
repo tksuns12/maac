@@ -39,6 +39,7 @@ pub(crate) struct PlanV5 {
 use crate::plan_v4::{KitSampleRef, NodeV4, ProcessorV4};
 
 impl PlanV5 {
+    #[allow(dead_code)]
     pub(crate) fn validate_with_limits(
         &self,
         limits: &crate::plan::PlanLimits,

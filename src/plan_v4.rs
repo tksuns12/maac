@@ -37,6 +37,7 @@ pub(crate) struct PlanV4 {
 }
 
 impl PlanV4 {
+    #[allow(dead_code)]
     pub(crate) fn validate_with_limits(
         &self,
         limits: &crate::plan::PlanLimits,

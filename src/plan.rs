@@ -1469,6 +1469,7 @@ pub enum EventKind {
         velocity: Rational,
     },
     Message {
+        protocol: String,
         bytes: Vec<u8>,
     },
 }
@@ -2139,12 +2140,35 @@ impl<'a> PlanView<'a> {
         self.validate_and_timing(limits).map(|_| ())
     }
 
+    /// Validate the retained finite performance without requiring Core Audio
+    /// receiver support for raw transport messages. Rendering still uses
+    /// `validate_and_timing`, which rejects unsupported message receivers.
+    pub fn validate_performance_with_limits(&self, limits: &PlanLimits) -> Result<(), PlanError> {
+        self.validate_performance_and_timing(limits).map(|_| ())
+    }
+
+    pub(crate) fn validate_performance_and_timing(
+        &self,
+        limits: &PlanLimits,
+    ) -> Result<Option<crate::plan_v3::TimingContext>, PlanError> {
+        if !matches!(self.version, 3..=7) {
+            self.validate_with_optional_timing(limits, None, true)?;
+            return Ok(None);
+        }
+        let limits = limits.bounded();
+        self.preflight_timing(&limits)?;
+        let timing =
+            crate::plan_v3::TimingContext::new_with_limits(self.tempo, self.output, &limits)?;
+        self.validate_with_optional_timing(&limits, Some(&timing), true)?;
+        Ok(Some(timing))
+    }
+
     pub(crate) fn validate_and_timing(
         &self,
         limits: &PlanLimits,
     ) -> Result<Option<crate::plan_v3::TimingContext>, PlanError> {
         if !matches!(self.version, 3..=7) {
-            self.validate_with_optional_timing(limits, None)?;
+            self.validate_with_optional_timing(limits, None, false)?;
             return Ok(None);
         }
         let limits = limits.bounded();
@@ -2167,13 +2191,29 @@ impl<'a> PlanView<'a> {
                 "a certified timing context requires plan version 3, 4, 5 or 6",
             ));
         }
-        self.validate_with_optional_timing(limits, Some(timing))
+        self.validate_with_optional_timing(limits, Some(timing), false)
+    }
+
+    pub(crate) fn validate_performance_with_timing(
+        &self,
+        limits: &PlanLimits,
+        timing: &crate::plan_v3::TimingContext,
+    ) -> Result<(), PlanError> {
+        if !matches!(self.version, 3..=7) {
+            return Err(err(
+                "E_VERSION",
+                "version",
+                "a certified timing context requires plan version 3 through 7",
+            ));
+        }
+        self.validate_with_optional_timing(limits, Some(timing), true)
     }
 
     fn validate_with_optional_timing(
         &self,
         limits: &PlanLimits,
         timing: Option<&crate::plan_v3::TimingContext>,
+        allow_transport_messages: bool,
     ) -> Result<(), PlanError> {
         if !matches!(
             (&self.events, &self.automation, self.version),
@@ -2326,7 +2366,7 @@ impl<'a> PlanView<'a> {
         }
         self.validate_automation(&limits, timing)?;
         self.validate_connections(&limits)?;
-        self.validate_events(&limits, timing)?;
+        self.validate_events(&limits, timing, allow_transport_messages)?;
         self.validate_regions(&limits)?;
         self.validate_source_mappings(&limits)?;
         self.validate_instrument_work(&limits)?;
@@ -2675,7 +2715,7 @@ impl<'a> PlanView<'a> {
         let binary_payload_bytes = self
             .events()
             .filter_map(|event| match &event.kind {
-                EventKind::Message { bytes } => Some(bytes.len()),
+                EventKind::Message { bytes, .. } => Some(bytes.len()),
                 _ => None,
             })
             .fold(0usize, usize::saturating_add);
@@ -4092,6 +4132,7 @@ impl<'a> PlanView<'a> {
         &self,
         limits: &PlanLimits,
         timing: Option<&crate::plan_v3::TimingContext>,
+        allow_transport_messages: bool,
     ) -> Result<(), PlanError> {
         let node_by_id: HashMap<&str, NodeView<'_>> = self
             .nodes
@@ -4124,19 +4165,25 @@ impl<'a> PlanView<'a> {
                     "event target node does not exist",
                 )
             })?;
-            if !match target.processor {
-                ProcessorView::Core(processor) => processor.accepts_events(),
-                ProcessorView::Kit { .. } => matches!(event.kind, EventKind::Hit { .. }),
-                ProcessorView::Lfo(_)
-                | ProcessorView::Constant
-                | ProcessorView::Audio(_)
-                | ProcessorView::WarpRate(_) => false,
-            } || event.target.port != "events"
-            {
+            let target_accepts =
+                if allow_transport_messages && matches!(event.kind, EventKind::Message { .. }) {
+                    port_descriptor(*target, &event.target.port, true)
+                        .is_some_and(|port| port.kind == PortKind::Events)
+                } else {
+                    (match target.processor {
+                        ProcessorView::Core(processor) => processor.accepts_events(),
+                        ProcessorView::Kit { .. } => matches!(event.kind, EventKind::Hit { .. }),
+                        ProcessorView::Lfo(_)
+                        | ProcessorView::Constant
+                        | ProcessorView::Audio(_)
+                        | ProcessorView::WarpRate(_) => false,
+                    }) && event.target.port == "events"
+                };
+            if !target_accepts {
                 return Err(err(
                     "E_CAPABILITY",
                     format!("events[{index}].target"),
-                    "target does not accept native note events",
+                    "target does not accept this event transport",
                 ));
             }
             rational_bit_limit(
@@ -4485,19 +4532,33 @@ impl<'a> PlanView<'a> {
                     }
                     voice_work = voice_work.saturating_add(u64::from(voices));
                 }
-                EventKind::Message { .. } => {
-                    if event.score_off_q.is_some() || has_off_time {
+                EventKind::Message { protocol, bytes: _ } => {
+                    if protocol.is_empty() {
+                        return Err(err(
+                            "E_RANGE",
+                            format!("events[{index}].kind.protocol"),
+                            "message protocol identifier must be nonempty",
+                        ));
+                    }
+                    if event.score_off_q.is_some()
+                        || has_off_time
+                        || event.off_frame.is_some()
+                        || !event.release_offset_seconds.is_zero()
+                        || event.release_velocity.to_bits() != 0.0_f64.to_bits()
+                    {
                         return Err(err(
                             "E_INTERVAL",
                             format!("events[{index}]"),
-                            "hit and message events cannot carry note off times",
+                            "message events carry onset timing only",
                         ));
                     }
-                    return Err(err(
-                        "E_CAPABILITY",
-                        format!("events[{index}].kind"),
-                        "standalone core sine plans accept notes only",
-                    ));
+                    if !allow_transport_messages {
+                        return Err(err(
+                            "E_CAPABILITY",
+                            format!("events[{index}].kind"),
+                            "raw message transport requires an explicitly advertised adapter",
+                        ));
+                    }
                 }
             }
         }

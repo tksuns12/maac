@@ -40,6 +40,7 @@ use crate::plan_v4::KitSampleRef;
 use crate::plan_v5::{AudioClip, AudioFadeShape, NodeV5, ProcessorV5};
 
 impl PlanV6 {
+    #[allow(dead_code)]
     pub(crate) fn validate_with_limits(
         &self,
         limits: &crate::plan::PlanLimits,

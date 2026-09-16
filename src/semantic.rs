@@ -331,6 +331,7 @@ pub(crate) fn validate_source_with_tempo_profile(
     )
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn validate_source_with_kit_profile(
     document: &Document,
     instruments: &BTreeMap<String, InstrumentNodeDescriptor>,
@@ -347,6 +348,7 @@ pub(crate) fn validate_source_with_kit_profile(
     )
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn validate_source_with_audio_profile(
     document: &Document,
     instruments: &BTreeMap<String, InstrumentNodeDescriptor>,
@@ -364,6 +366,7 @@ pub(crate) fn validate_source_with_audio_profile(
     )
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn validate_source_with_warp_profile(
     document: &Document,
     instruments: &BTreeMap<String, InstrumentNodeDescriptor>,
@@ -382,6 +385,7 @@ pub(crate) fn validate_source_with_warp_profile(
     )
 }
 
+#[allow(dead_code)]
 pub(crate) fn validate_source_with_control_profile(
     document: &Document,
     instruments: &BTreeMap<String, InstrumentNodeDescriptor>,
@@ -465,6 +469,7 @@ pub(crate) fn validate_musical_catalog(document: &Document) -> Result<(), Diagno
     let mut validator = Validator::new(document, &instruments);
     validator.allow_ramps = true;
     validator.allow_kits = true;
+    validator.allow_messages = true;
     if document.version != 1 {
         validator.push(
             DiagnosticCode::Version,
@@ -1725,7 +1730,8 @@ impl<'a> Validator<'a> {
                     | "release_offset"
                     | "order"
                     | "label"
-            ) || (self.allow_kits && name == "key"))
+            ) || (self.allow_kits && name == "key")
+                || (self.allow_messages && matches!(name.as_str(), "protocol" | "bytes")))
             {
                 self.push(
                     DiagnosticCode::UnknownField,
@@ -1737,8 +1743,29 @@ impl<'a> Validator<'a> {
                 continue;
             }
             match name.as_str() {
-                "key" => {
-                    self.expect_string(replacement, path, "key");
+                "key" | "protocol" => {
+                    self.expect_string(replacement, path, name);
+                }
+                "bytes" => {
+                    let ValueKind::List(items) = &replacement.value.kind else {
+                        self.push_type_value(&replacement.value, path, "a list of byte integers");
+                        continue;
+                    };
+                    for item in items {
+                        if let Some(value) = self.integer_value(item, path, "message byte") {
+                            if value < BigRational::zero()
+                                || value > BigRational::from_integer(BigInt::from(255))
+                            {
+                                self.push(
+                                    DiagnosticCode::Range,
+                                    "message bytes must be in 0..255",
+                                    Some(item.span),
+                                    path.to_vec(),
+                                    vec!["set".into(), "bytes".into()],
+                                );
+                            }
+                        }
+                    }
                 }
                 "at" | "dur" => {
                     if let Some(value) =

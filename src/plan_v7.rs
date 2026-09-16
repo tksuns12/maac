@@ -42,6 +42,7 @@ use crate::plan_v5::AudioClip;
 use crate::plan_v6::{NodeV6, ProcessorV6};
 
 impl PlanV7 {
+    #[allow(dead_code)]
     pub(crate) fn validate_with_limits(
         &self,
         limits: &crate::plan::PlanLimits,

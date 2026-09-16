@@ -24,7 +24,9 @@ pub use module_artifact::{
 pub mod plan;
 mod plan_artifact;
 mod warp_clip;
-pub use plan_artifact::PlanArtifact;
+pub use plan_artifact::{
+    MessageAdapterCapability, PerformanceDispatch, PerformanceDispatchKind, PlanArtifact,
+};
 mod core_control;
 pub mod plan_v3;
 mod plan_v4;

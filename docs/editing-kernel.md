@@ -166,5 +166,4 @@ the explicit capability boundary. Extend bounded impact beyond pattern/place
 source dependencies to processor/asset/dependency-region analysis where the host can prove
 it, and add broader source-format preservation cases for complex inserted/deleted subtrees.
 
-Native message resolution is the other P0 from the implementation audit and is
-not changed by this patch.
+Native message Performance resolution is now implemented separately: retained artifacts preserve protocol/bytes and certified timing, and `PlanArtifact::performance_dispatches` requires explicit adapter protocol advertisement. The built-in Core Audio renderer intentionally remains without a raw-message receiver.
