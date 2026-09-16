@@ -192,6 +192,36 @@ impl Transaction {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct Rename {
+    pub from: Path,
+    pub to: Path,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RenderInvalidationScope {
+    None,
+    AffectedEventsAndDependents,
+    Full,
+}
+
+/// Conservative bounded impact, refined by contexts that can resolve source
+/// dependencies and expanded occurrence addresses.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct EditImpact {
+    pub affected_source_paths: Vec<Path>,
+    pub total_affected_source_paths: usize,
+    pub source_paths_truncated: bool,
+    pub affected_expanded_event_addresses: Vec<String>,
+    pub total_affected_expanded_event_addresses: usize,
+    pub event_addresses_truncated: bool,
+    pub all_expanded_events_may_be_affected: bool,
+    pub render_invalidation_scope: RenderInvalidationScope,
+    pub full_render_invalidated: bool,
+    pub renamed_identities: Vec<Rename>,
+}
+
 /// Required semantic services, provided by a trusted host implementation.
 ///
 /// Implementations MUST be pure with respect to externally visible state,
@@ -237,23 +267,18 @@ pub trait EditContext {
         old_path: &[String],
         new_path: &[String],
     ) -> EditResult<()>;
-}
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub struct Rename {
-    pub from: Path,
-    pub to: Path,
-}
-
-/// Conservative bounded impact, not a claim of minimal cache invalidation.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub struct EditImpact {
-    pub affected_source_paths: Vec<Path>,
-    pub total_affected_source_paths: usize,
-    pub source_paths_truncated: bool,
-    pub all_expanded_events_may_be_affected: bool,
-    pub full_render_invalidated: bool,
-    pub renamed_identities: Vec<Rename>,
+    /// Refine the kernel's conservative impact after semantic validation.
+    /// Implementations may narrow impact only when they can prove a bounded
+    /// dependency/occurrence result for both the base and candidate.
+    fn refine_impact(
+        &self,
+        _base: &Value,
+        _candidate: &Value,
+        _impact: &mut EditImpact,
+    ) -> EditResult<()> {
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -313,7 +338,8 @@ pub fn apply_transaction(
     context.validate_document(&candidate)?;
     let next = AuthoredDocument::from_value(candidate)?;
     let inverse = make_inverse(base, &next)?;
-    let impact = impact(base, &next.tree, renames);
+    let mut impact = impact(base, &next.tree, renames);
+    context.refine_impact(base, &next.tree, &mut impact)?;
     let diagnostics = if impact.renamed_identities.is_empty() {
         Vec::new()
     } else {
@@ -758,7 +784,15 @@ fn impact(base: &Value, candidate: &Value, renames: Vec<Rename>) -> EditImpact {
         source_paths_truncated: total > paths.len(),
         affected_source_paths: paths,
         total_affected_source_paths: total,
+        affected_expanded_event_addresses: Vec::new(),
+        total_affected_expanded_event_addresses: 0,
+        event_addresses_truncated: false,
         all_expanded_events_may_be_affected: base != candidate,
+        render_invalidation_scope: if base == candidate {
+            RenderInvalidationScope::None
+        } else {
+            RenderInvalidationScope::Full
+        },
         full_render_invalidated: base != candidate,
         renamed_identities: renames,
     }

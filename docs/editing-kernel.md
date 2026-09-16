@@ -100,10 +100,14 @@ commit. An otherwise valid large edit may therefore fail with `E_RESOURCE_LIMIT`
 when a valid bounded inverse cannot be returned.
 
 Impact reporting includes a bounded list of changed source paths, total count,
-truncation flag, and renamed identities. It conservatively marks the whole
-expanded performance and render as potentially invalidated whenever the authored
-tree changes. This is not a minimal dependency-region analysis. Renames return
-`W_IDENTITY_CHANGE` because IDs can affect randomness, summation order and hashes.
+truncation flag, renamed identities, and—when the semantic context can prove the
+source dependency closure—a bounded list of expanded event addresses. The
+`FoundationEditContext` now distinguishes three render scopes: `none` for
+non-executing label-only changes, `affected_events_and_dependents` for bounded
+pattern/place changes, and `full` for global or otherwise unbounded execution
+changes. Unknown impact remains conservative. This is still not a sample-accurate
+dependency-region analysis. Renames return `W_IDENTITY_CHANGE` because IDs can
+affect randomness, summation order and hashes.
 
 ## Bounds
 
@@ -116,8 +120,9 @@ parsed-but-programmatically-modified source ASTs are preflighted before
 recursive conversion/serialization. Callback implementations must independently
 bound their normalization, dependency and structural-rewrite work.
 
-At most 1,024 affected source paths are returned; the total and truncation flag
-prevent this bounded summary from being mistaken for a complete path listing.
+At most 1,024 affected source paths and 1,024 affected expanded event addresses
+are returned; separate total counts and truncation flags prevent either bounded
+summary from being mistaken for a complete listing.
 
 ## Tests and validation
 
@@ -153,9 +158,9 @@ explicit capability boundaries.
 
 Expand editing normalization beyond the source-only foundation to reusable libraries,
 imports, native production extensions, and future external processor descriptors without
-weakening the explicit capability boundary. Replace conservative whole-render impact with
-exact or explicitly bounded dependency-region analysis where needed, and add broader
-source-format preservation cases for complex inserted/deleted subtrees.
+weakening the explicit capability boundary. Extend bounded impact beyond pattern/place
+source dependencies to processor/asset/dependency-region analysis where the host can prove
+it, and add broader source-format preservation cases for complex inserted/deleted subtrees.
 
 Native message resolution is the other P0 from the implementation audit and is
 not changed by this patch.

@@ -1,7 +1,8 @@
 use std::fs;
 
 use maac::editing::{
-    apply_transaction, AuthoredDocument, EditContext, FoundationEditContext, Operation, Transaction,
+    apply_transaction, AuthoredDocument, EditContext, FoundationEditContext, Operation,
+    RenderInvalidationScope, Transaction,
 };
 use serde_json::{json, Value};
 
@@ -237,4 +238,83 @@ pattern pat {length=1q; message msg {at=0q;protocol="midi1";bytes=[144,60,127];}
     assert!(compile_error
         .iter()
         .any(|diagnostic| diagnostic.code == maac::DiagnosticCode::Capability));
+}
+
+#[test]
+fn label_only_edits_do_not_invalidate_execution_or_render() {
+    let context = FoundationEditContext;
+    let mut document = occurrence_source();
+    let transaction = Transaction::new(
+        document.revision().to_owned(),
+        vec![Operation::Set {
+            object: vec!["p".into()],
+            field: vec!["label".into()],
+            value: json!({"t":"string","v":"display only"}),
+            expect: None,
+            expect_absent: true,
+        }],
+    )
+    .unwrap();
+    let applied = apply_transaction(&mut document, &transaction, &context).unwrap();
+    assert!(!applied.impact.all_expanded_events_may_be_affected);
+    assert!(!applied.impact.full_render_invalidated);
+    assert_eq!(
+        applied.impact.render_invalidation_scope,
+        RenderInvalidationScope::None
+    );
+    assert!(applied.impact.affected_expanded_event_addresses.is_empty());
+}
+
+#[test]
+fn pattern_leaf_edits_report_bounded_occurrence_addresses() {
+    let context = FoundationEditContext;
+    let mut document = occurrence_source();
+    let transaction = Transaction::new(
+        document.revision().to_owned(),
+        vec![Operation::Set {
+            object: vec!["riff".into(), "n".into()],
+            field: vec!["pitch".into()],
+            value: json!({"t":"symbol","v":"E4"}),
+            expect: None,
+            expect_absent: false,
+        }],
+    )
+    .unwrap();
+    let applied = apply_transaction(&mut document, &transaction, &context).unwrap();
+    assert_eq!(
+        applied.impact.affected_expanded_event_addresses,
+        vec!["pl/0/n".to_owned()]
+    );
+    assert_eq!(applied.impact.total_affected_expanded_event_addresses, 1);
+    assert!(!applied.impact.event_addresses_truncated);
+    assert!(!applied.impact.all_expanded_events_may_be_affected);
+    assert!(!applied.impact.full_render_invalidated);
+    assert_eq!(
+        applied.impact.render_invalidation_scope,
+        RenderInvalidationScope::AffectedEventsAndDependents
+    );
+}
+
+#[test]
+fn global_execution_changes_keep_full_invalidation() {
+    let context = FoundationEditContext;
+    let mut document = occurrence_source();
+    let transaction = Transaction::new(
+        document.revision().to_owned(),
+        vec![Operation::Set {
+            object: vec!["p".into()],
+            field: vec!["seed".into()],
+            value: json!({"t":"number","n":"1","d":"1"}),
+            expect: None,
+            expect_absent: true,
+        }],
+    )
+    .unwrap();
+    let applied = apply_transaction(&mut document, &transaction, &context).unwrap();
+    assert!(applied.impact.all_expanded_events_may_be_affected);
+    assert!(applied.impact.full_render_invalidated);
+    assert_eq!(
+        applied.impact.render_invalidation_scope,
+        RenderInvalidationScope::Full
+    );
 }

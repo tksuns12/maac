@@ -16,7 +16,9 @@ use crate::diagnostic::Diagnostics;
 use crate::music::{MeterMap, MeterPoint, Pitch};
 use crate::syntax::{Document, Unit};
 
-use super::{AuthoredDocument, EditContext, EditError, EditResult, Path};
+use super::{
+    AuthoredDocument, EditContext, EditError, EditImpact, EditResult, Path, RenderInvalidationScope,
+};
 
 /// Semantic and normalization context for the implemented source-only core.
 ///
@@ -81,6 +83,15 @@ impl EditContext for FoundationEditContext {
         new_path: &[String],
     ) -> EditResult<()> {
         rewrite_occurrence_addresses(before, candidate, old_path, new_path)
+    }
+
+    fn refine_impact(
+        &self,
+        base: &Value,
+        candidate: &Value,
+        impact: &mut EditImpact,
+    ) -> EditResult<()> {
+        refine_foundation_impact(base, candidate, impact)
     }
 }
 
@@ -762,4 +773,252 @@ fn rewrite_occurrence_addresses(
         }
     }
     Ok(())
+}
+
+const MAX_REPORTED_EVENT_ADDRESSES: usize = 1024;
+
+#[derive(Clone, Debug)]
+struct EventOccurrence {
+    address: String,
+    dependencies: Vec<Path>,
+}
+
+fn refine_foundation_impact(
+    base: &Value,
+    candidate: &Value,
+    impact: &mut EditImpact,
+) -> EditResult<()> {
+    if execution_relevant_view(base) == execution_relevant_view(candidate) {
+        impact.affected_expanded_event_addresses.clear();
+        impact.total_affected_expanded_event_addresses = 0;
+        impact.event_addresses_truncated = false;
+        impact.all_expanded_events_may_be_affected = false;
+        impact.render_invalidation_scope = RenderInvalidationScope::None;
+        impact.full_render_invalidated = false;
+        return Ok(());
+    }
+
+    let changed = directly_changed_paths(base, candidate);
+    let Some(addresses) = bounded_event_impact(base, candidate, &changed) else {
+        return Ok(());
+    };
+    let total = addresses.len();
+    impact.affected_expanded_event_addresses = addresses
+        .into_iter()
+        .take(MAX_REPORTED_EVENT_ADDRESSES)
+        .collect();
+    impact.total_affected_expanded_event_addresses = total;
+    impact.event_addresses_truncated = total > impact.affected_expanded_event_addresses.len();
+    impact.all_expanded_events_may_be_affected = false;
+    impact.render_invalidation_scope = RenderInvalidationScope::AffectedEventsAndDependents;
+    impact.full_render_invalidated = false;
+    Ok(())
+}
+
+fn execution_relevant_view(tree: &Value) -> Value {
+    fn strip(objects: &mut Value) {
+        let Some(objects) = objects.as_object_mut() else {
+            return;
+        };
+        for object in objects.values_mut() {
+            if let Some(fields) = object.get_mut("fields").and_then(Value::as_object_mut) {
+                fields.remove("label");
+            }
+            if let Some(children) = object.get_mut("children") {
+                strip(children);
+            }
+        }
+    }
+    let mut copy = tree.clone();
+    strip(&mut copy["objects"]);
+    copy
+}
+
+fn directly_changed_paths(base: &Value, candidate: &Value) -> Vec<Path> {
+    fn own(value: &Value) -> Option<(&Value, &Value)> {
+        Some((value.get("kind")?, value.get("fields")?))
+    }
+    let before = foundation_object_paths(base);
+    let after = foundation_object_paths(candidate);
+    before
+        .keys()
+        .chain(after.keys())
+        .cloned()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .filter(|path| match (before.get(path), after.get(path)) {
+            (Some(left), Some(right)) => own(left) != own(right),
+            _ => true,
+        })
+        .collect()
+}
+
+fn foundation_object_paths(tree: &Value) -> BTreeMap<Path, &Value> {
+    fn visit<'a>(objects: &'a Value, path: &mut Path, out: &mut BTreeMap<Path, &'a Value>) {
+        let Some(objects) = objects.as_object() else {
+            return;
+        };
+        for (id, object) in objects {
+            path.push(id.clone());
+            out.insert(path.clone(), object);
+            visit(&object["children"], path, out);
+            path.pop();
+        }
+    }
+    let mut out = BTreeMap::new();
+    visit(&tree["objects"], &mut Vec::new(), &mut out);
+    out
+}
+
+fn bounded_event_impact(
+    base: &Value,
+    candidate: &Value,
+    changed: &[Path],
+) -> Option<BTreeSet<String>> {
+    if changed.is_empty() {
+        return Some(BTreeSet::new());
+    }
+    for path in changed {
+        let kind = top_level_kind(base, path).or_else(|| top_level_kind(candidate, path))?;
+        if !matches!(kind, "pattern" | "place") {
+            return None;
+        }
+    }
+
+    let mut affected = BTreeSet::new();
+    for tree in [base, candidate] {
+        for event in enumerate_event_occurrences(tree)? {
+            if changed.iter().any(|path| {
+                event
+                    .dependencies
+                    .iter()
+                    .any(|dependency| dependency == path)
+                    || path.first().is_some_and(|id| {
+                        event.dependencies.iter().any(|dependency| {
+                            dependency.first() == Some(id) && kind_is_place(tree, id)
+                        })
+                    })
+            }) {
+                affected.insert(event.address);
+            }
+        }
+    }
+    Some(affected)
+}
+
+fn top_level_kind<'a>(tree: &'a Value, path: &[String]) -> Option<&'a str> {
+    let id = path.first()?;
+    tree["objects"].get(id)?["kind"].as_str()
+}
+
+fn kind_is_place(tree: &Value, id: &str) -> bool {
+    tree["objects"]
+        .get(id)
+        .and_then(|object| object["kind"].as_str())
+        == Some("place")
+}
+
+fn enumerate_event_occurrences(tree: &Value) -> Option<Vec<EventOccurrence>> {
+    let objects = tree["objects"].as_object()?;
+    let mut out = Vec::new();
+    for (place_id, place) in objects {
+        if place["kind"] != "place" {
+            continue;
+        }
+        let pattern = source_object_id(place["fields"].get("pattern")?)?;
+        let count = positive_count(place)?;
+        for repetition in 0..count {
+            let mut address = vec![place_id.clone(), repetition.to_string()];
+            let dependencies = vec![vec![place_id.clone()]];
+            enumerate_pattern_occurrences(
+                objects,
+                pattern,
+                &mut address,
+                &dependencies,
+                &mut out,
+                0,
+            )?;
+        }
+        enumerate_insert_occurrences(place_id, place, &mut out)?;
+    }
+    Some(out)
+}
+
+fn enumerate_pattern_occurrences(
+    objects: &Map<String, Value>,
+    pattern_id: &str,
+    address: &mut Vec<String>,
+    inherited_dependencies: &[Path],
+    out: &mut Vec<EventOccurrence>,
+    depth: usize,
+) -> Option<()> {
+    if depth >= 64 {
+        return None;
+    }
+    let pattern = objects.get(pattern_id)?;
+    if pattern["kind"] != "pattern" {
+        return None;
+    }
+    let children = pattern["children"].as_object()?;
+    for (child_id, child) in children {
+        let mut dependencies = inherited_dependencies.to_vec();
+        dependencies.push(vec![pattern_id.to_owned()]);
+        dependencies.push(vec![pattern_id.to_owned(), child_id.clone()]);
+        match child["kind"].as_str()? {
+            "note" | "hit" | "message" => {
+                address.push(child_id.clone());
+                out.push(EventOccurrence {
+                    address: address.join("/"),
+                    dependencies,
+                });
+                address.pop();
+            }
+            "use" => {
+                let nested = source_object_id(child["fields"].get("pattern")?)?;
+                let count = positive_count(child)?;
+                for repetition in 0..count {
+                    address.push(child_id.clone());
+                    address.push(repetition.to_string());
+                    enumerate_pattern_occurrences(
+                        objects,
+                        nested,
+                        address,
+                        &dependencies,
+                        out,
+                        depth + 1,
+                    )?;
+                    address.pop();
+                    address.pop();
+                }
+            }
+            _ => {}
+        }
+    }
+    Some(())
+}
+
+fn enumerate_insert_occurrences(
+    place_id: &str,
+    place: &Value,
+    out: &mut Vec<EventOccurrence>,
+) -> Option<()> {
+    for (insert_id, insert) in place["children"].as_object()? {
+        if insert["kind"] != "insert" {
+            continue;
+        }
+        for (leaf_id, leaf) in insert["children"].as_object()? {
+            if !matches!(leaf["kind"].as_str(), Some("note" | "hit" | "message")) {
+                continue;
+            }
+            out.push(EventOccurrence {
+                address: format!("{place_id}/{insert_id}/{leaf_id}"),
+                dependencies: vec![
+                    vec![place_id.to_owned()],
+                    vec![place_id.to_owned(), insert_id.clone()],
+                    vec![place_id.to_owned(), insert_id.clone(), leaf_id.clone()],
+                ],
+            });
+        }
+    }
+    Some(())
 }
