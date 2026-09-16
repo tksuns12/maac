@@ -151,14 +151,18 @@ gates. Rust builds used `CARGO_BUILD_JOBS=2`; the full test run used
 These are local execution results, not a GitHub CI pass or full Document conformance.
 Subsequent work connected the complete existing L1 normalization/position/Protocol-2
 corpus to `FoundationEditContext`, added source-preserving projection, and added the
-`maac patch` API/CLI path. Unsupported library and extension editing contexts remain
-explicit capability boundaries.
+`maac patch` API/CLI path. `BundleEditContext` additionally reuses `SourceBundle` and
+`LibrarySet` to validate entry-document edits against a fixed, already-resolved import
+graph, including imported musical patterns and instrument descriptors. Editing import
+path/hash declarations themselves remains an explicit `E_CAPABILITY` boundary because
+that requires dependency re-resolution and new pin verification.
 
 ## Remaining work before closing the first P0
 
-Expand editing normalization beyond the source-only foundation to reusable libraries,
-imports, native production extensions, and future external processor descriptors without
-weakening the explicit capability boundary. Extend bounded impact beyond pattern/place
+Expand bundle-aware normalization from fixed imported dependencies to import mutation
+with dependency re-resolution/pin verification, plus reusable library source editing,
+native production extensions, and future external processor descriptors without weakening
+the explicit capability boundary. Extend bounded impact beyond pattern/place
 source dependencies to processor/asset/dependency-region analysis where the host can prove
 it, and add broader source-format preservation cases for complex inserted/deleted subtrees.
 

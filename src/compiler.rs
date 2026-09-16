@@ -4470,6 +4470,53 @@ pub(crate) fn validate_musical_catalog(document: &Document) -> CResult<()> {
     compiler.read_curves()
 }
 
+pub(crate) fn instrument_descriptors_for_editing(
+    resolved: &ResolvedBundle,
+    libraries: &LibrarySet,
+    document: &Document,
+) -> CResult<BTreeMap<String, InstrumentNodeDescriptor>> {
+    let mut descriptors = BTreeMap::new();
+    for node in document
+        .objects
+        .values()
+        .filter(|object| object.kind == "node" && object.field("instrument").is_some())
+    {
+        let instance = libraries.resolve_instance(&resolved.entry, node)?;
+        let program = libraries
+            .programs
+            .iter()
+            .find(|program| program.id == instance.program_id)
+            .ok_or_else(|| {
+                path_diagnostic(
+                    DiagnosticCode::Reference,
+                    "resolved instrument program is missing",
+                    node,
+                    node.field("instrument"),
+                )
+            })?;
+        let mut controls = BTreeMap::new();
+        for name in program.controls.keys() {
+            let spec = program.control_spec(name).ok_or_else(|| {
+                path_diagnostic(
+                    DiagnosticCode::Reference,
+                    format!("instrument control `{name}` has no parameter metadata"),
+                    node,
+                    node.field("instrument"),
+                )
+            })?;
+            controls.insert(name.clone(), spec);
+        }
+        descriptors.insert(
+            node.id.clone(),
+            InstrumentNodeDescriptor {
+                channels: instance.channels,
+                controls,
+            },
+        );
+    }
+    Ok(descriptors)
+}
+
 fn prepare_instrument_compiler<'a>(
     resolved: &ResolvedBundle,
     libraries: LibrarySet,

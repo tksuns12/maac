@@ -9,7 +9,7 @@ mod foundation;
 mod source;
 mod wire;
 
-pub use foundation::FoundationEditContext;
+pub use foundation::{BundleEditContext, FoundationEditContext};
 pub use source::SourceDocument;
 
 use std::collections::{BTreeMap, BTreeSet};

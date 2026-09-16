@@ -29,6 +29,123 @@ use super::{
 #[derive(Clone, Copy, Debug, Default)]
 pub struct FoundationEditContext;
 
+#[derive(Clone, Debug)]
+pub struct BundleEditContext {
+    resolved: crate::bundle::ResolvedBundle,
+    import_signature: BTreeMap<String, Value>,
+}
+
+impl BundleEditContext {
+    pub fn new(bundle: &crate::bundle::SourceBundle) -> EditResult<Self> {
+        let resolved = bundle.resolve().map_err(map_diagnostics)?;
+        let entry = resolved
+            .documents
+            .get(&resolved.entry)
+            .ok_or_else(|| EditError::new("E_REFERENCE", "resolved entry document is missing"))?;
+        Ok(Self {
+            import_signature: import_signature(entry),
+            resolved,
+        })
+    }
+
+    fn resolved_candidate(
+        &self,
+        authored: &Value,
+    ) -> EditResult<(crate::bundle::ResolvedBundle, crate::library::LibrarySet)> {
+        let document = crate::syntax::document_from_syntax_json_value(authored)
+            .map_err(|message| EditError::new("E_SYNTAX", message))?;
+        if import_signature(&document) != self.import_signature {
+            return Err(EditError::new(
+                "E_CAPABILITY",
+                "editing import declarations requires dependency re-resolution",
+            ));
+        }
+        let mut resolved = self.resolved.clone();
+        resolved.documents.insert(resolved.entry.clone(), document);
+        let libraries = crate::library::LibrarySet::resolve(&resolved).map_err(map_diagnostics)?;
+        Ok((resolved, libraries))
+    }
+}
+
+impl EditContext for BundleEditContext {
+    fn validate_document(&self, authored: &Value) -> EditResult<()> {
+        let (resolved, libraries) = self.resolved_candidate(authored)?;
+        let document = libraries.resolved_document();
+        let descriptors =
+            crate::compiler::instrument_descriptors_for_editing(&resolved, &libraries, &document)
+                .map_err(map_diagnostics)?;
+        crate::semantic::validate_source_document_profile(&document, &descriptors)
+            .map_err(map_diagnostics)?;
+        validate_occurrence_targets(&document.to_syntax_json_value())
+    }
+
+    fn normalize_object(
+        &self,
+        base: &Value,
+        base_path: &[String],
+        object: &Value,
+    ) -> EditResult<Value> {
+        if object["kind"] == "import"
+            || (object["kind"] == "node" && object["fields"].get("instrument").is_some())
+        {
+            return Err(EditError::new(
+                "E_CAPABILITY",
+                "bundle-specific object precondition normalization is not implemented",
+            )
+            .at(base_path, &[]));
+        }
+        FoundationEditContext.normalize_object(base, base_path, object)
+    }
+
+    fn normalize_value(
+        &self,
+        base: &Value,
+        base_path: &[String],
+        field: &[String],
+        value: &Value,
+    ) -> EditResult<Value> {
+        let object = object_at(base, base_path)?;
+        if object["kind"] == "import"
+            || (object["kind"] == "node" && object["fields"].get("instrument").is_some())
+        {
+            return Err(EditError::new(
+                "E_CAPABILITY",
+                "bundle-specific field precondition normalization is not implemented",
+            )
+            .at(base_path, field));
+        }
+        FoundationEditContext.normalize_value(base, base_path, field, value)
+    }
+
+    fn rewrite_structural_references(
+        &self,
+        before: &Value,
+        candidate: &mut Value,
+        old_path: &[String],
+        new_path: &[String],
+    ) -> EditResult<()> {
+        FoundationEditContext.rewrite_structural_references(before, candidate, old_path, new_path)
+    }
+
+    fn refine_impact(
+        &self,
+        base: &Value,
+        candidate: &Value,
+        impact: &mut EditImpact,
+    ) -> EditResult<()> {
+        FoundationEditContext.refine_impact(base, candidate, impact)
+    }
+}
+
+fn import_signature(document: &Document) -> BTreeMap<String, Value> {
+    document
+        .objects
+        .iter()
+        .filter(|(_, object)| object.kind == "import")
+        .map(|(id, object)| (id.clone(), object.to_syntax_json_value()))
+        .collect()
+}
+
 impl FoundationEditContext {
     /// Validate and compute the label-retaining N(A) view used by editing
     /// preconditions. This is not the execution-hash projection.
