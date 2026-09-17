@@ -165,8 +165,8 @@ this same bundle-aware path while retaining source-preserving projection.
 
 Further precision in impact reporting can extend beyond pattern/place dependencies to
 processor/asset/dependency-region analysis where a host can prove a smaller invalidation. External
-processor ABIs/descriptors that are not implemented by this runtime, generic dependency-lock
-verification, and interchange loss reports remain separate capability work; the editor preserves
+processor ABIs/descriptors that are not implemented by this runtime, generic lock generation and
+dependency discovery, and additional interchange adapters remain separate capability work; the editor preserves
 its explicit `E_CAPABILITY` boundary rather than inventing semantics for them. Broader formatting
 fixtures for unusually complex inserted/deleted subtrees are useful robustness coverage but are not
 required for Protocol 2 semantic correctness.

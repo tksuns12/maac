@@ -260,8 +260,9 @@ unchanged and omitted full Rust, release-build, installed, remote-CI,
 cross-platform, and listening gates. Runtime normalizer/editor behavior was later
 implemented for the bounded language contexts, and generic lock verification now
 exists through `maac::generic_lock`; generic lock discovery/rendering, descriptor wire
-schemas, and loss-report schemas remain separate deferred work. L5 is addressed for this
-bounded contract, corpus, checker, index, and runtime-evidence slice; it makes
+schemas remain separate deferred work. A later §25 slice added the versioned
+`maac.interchange-loss-report` contract and bounded MIDI 1.0 SMF adapter; notation and
+DAW-session adapters remain separate. L5 is addressed for this bounded contract, corpus, checker, index, and runtime-evidence slice; it makes
 no full-profile, universal-tolerance, or cross-platform bit-identity claim.
 
 **Acceptance, dependencies, status.** L5 follows L4 and consolidates or

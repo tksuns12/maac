@@ -14,6 +14,7 @@ mod expression;
 pub mod generic_lock;
 pub mod graph;
 pub mod instrument_plan;
+pub mod interchange;
 mod kit;
 pub mod library;
 mod module_artifact;
