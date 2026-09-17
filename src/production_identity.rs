@@ -159,7 +159,11 @@ pub(crate) fn execution_identity_for_view(
         return Err(error("execution identity supports MaaC/1 only"));
     }
     let meter = meter_map(document)?;
-    let normalizer = Normalizer { plan, meter };
+    let normalizer = Normalizer {
+        plan,
+        meter,
+        strip_object_labels: true,
+    };
     let mut objects = Map::new();
     for (id, object) in &document.objects {
         objects.insert(id.clone(), normalizer.object(object, Scope::Top)?);
@@ -172,6 +176,29 @@ pub(crate) fn execution_identity_for_view(
         source_input_hash: digest(&canonical_json_bytes(&document.to_syntax_json_value())?),
         normalized_source_json: String::from_utf8(bytes).map_err(|e| error(e.to_string()))?,
     })
+}
+
+/// Label-retaining N(A) for Protocol 2 preconditions. This shares the
+/// production execution normalizer but deliberately keeps actual source-object
+/// labels; only the execution-hash projection removes them.
+pub(crate) fn normalized_document_for_editing(
+    document: &Document,
+    plan: &crate::plan::PlanView<'_>,
+) -> Result<JsonValue, IdentityError> {
+    if document.version != 1 {
+        return Err(error("editing normalization supports MaaC/1 only"));
+    }
+    let meter = meter_map(document)?;
+    let normalizer = Normalizer {
+        plan,
+        meter,
+        strip_object_labels: false,
+    };
+    let mut objects = Map::new();
+    for (id, object) in &document.objects {
+        objects.insert(id.clone(), normalizer.object(object, Scope::Top)?);
+    }
+    Ok(json!({"version":1,"objects":objects}))
 }
 
 /// Hash a complete caller-supplied render context alongside normalized source
@@ -277,6 +304,7 @@ enum Scope<'a> {
 struct Normalizer<'a> {
     plan: &'a crate::plan::PlanView<'a>,
     meter: MeterMap,
+    strip_object_labels: bool,
 }
 
 impl Normalizer<'_> {
@@ -395,7 +423,7 @@ impl Normalizer<'_> {
         let constructors = object.kind != "extension";
         let mut fields = Map::new();
         for (name, field) in &object.fields {
-            if name == "label" {
+            if self.strip_object_labels && name == "label" {
                 continue;
             }
             let pitch = (object.kind == "note" && name == "pitch")

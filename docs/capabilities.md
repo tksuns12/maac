@@ -51,9 +51,12 @@ Message performance is resolved into retained transport events, including exact 
 other processors, pitched sample instruments,
 preserve-pitch audio warping, external plug-ins and other extensions. Full render locks,
 MIDI transport, GUI and real-time playback are outside this release's interfaces.
-Protocol 2 transactional editing is implemented for the bounded source-only foundation through
-`maac::editing` and `maac patch`; unsupported extension/library contexts still fail explicitly, so
-this is not a full Document-profile claim.
+Protocol 2 transactional editing is implemented through `maac::editing` and `maac patch` for
+core compositions, hash-pinned local/built-in imports, reusable library sources and the recognized
+production extension. Candidate import edits are re-resolved and repinned atomically, and editing
+preconditions use label-retaining N(A) with library/production descriptor defaults. Contracts for
+external processors that the runtime itself does not implement still fail explicitly rather than
+being approximated.
 No deferred feature is approximated silently.
 
 The [kit contract](core-kit.md) defines native hit scheduling, raw sample assets,

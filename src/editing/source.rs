@@ -491,6 +491,24 @@ fn line_indent(source: &str, offset: usize) -> String {
         .collect()
 }
 
+pub(crate) fn authored_source(tree: &JsonValue) -> EditResult<String> {
+    if tree["version"] != 1 {
+        return Err(EditError::new(
+            "E_VERSION",
+            "typed authored tree must use MaaC/1",
+        ));
+    }
+    let objects = tree["objects"]
+        .as_object()
+        .ok_or_else(|| EditError::new("E_SYNTAX", "typed document objects are malformed"))?;
+    let mut result = String::from("maac 1;\n");
+    for (id, object) in objects {
+        result.push_str(&source_object(id, object, 0)?);
+        result.push('\n');
+    }
+    Ok(result)
+}
+
 fn source_object(id: &str, object: &JsonValue, indent: usize) -> EditResult<String> {
     let kind = object["kind"]
         .as_str()

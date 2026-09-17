@@ -120,6 +120,8 @@ pub enum Command {
         output: PathBuf,
         #[arg(long)]
         force: bool,
+        #[arg(long)]
+        project_root: Option<PathBuf>,
     },
     /// Compute the canonical SHA-256 pin for a bounded local file.
     Hash { input: PathBuf },
@@ -840,17 +842,24 @@ fn execute_impl(
             patch,
             output,
             force,
+            project_root,
         } => {
-            let bytes = read_bounded(input)?;
-            let source = String::from_utf8(bytes).map_err(|error| {
-                CliError::new("E_SYNTAX", format!("source is not UTF-8: {error}"))
+            let (resolved_input, root) = resolve_source_input(Some(input), project_root.as_deref());
+            let bundle = load_source_bundle(&resolved_input, root.as_deref())?;
+            let source = bundle.sources.get(&bundle.entry).ok_or_else(|| {
+                CliError::new(
+                    "E_REFERENCE",
+                    "resolved patch source is missing from bundle",
+                )
             })?;
-            let mut document =
-                crate::editing::SourceDocument::parse(source).map_err(CliError::from_edit)?;
+            let mut document = crate::editing::SourceDocument::parse(source.clone())
+                .map_err(CliError::from_edit)?;
+            let context =
+                crate::editing::BundleEditContext::new(&bundle).map_err(CliError::from_edit)?;
             let transaction = crate::editing::Transaction::from_json(&read_bounded(patch)?)
                 .map_err(CliError::from_edit)?;
             let applied = document
-                .apply(&transaction, &crate::editing::FoundationEditContext)
+                .apply(&transaction, &context)
                 .map_err(CliError::from_edit)?;
             export::atomic_write(output, document.source().as_bytes(), *force)
                 .map_err(CliError::from_export)?;

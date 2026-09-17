@@ -13,6 +13,7 @@ use num_traits::{ToPrimitive, Zero};
 use serde_json::{json, Map, Value};
 
 use crate::diagnostic::Diagnostics;
+use crate::graph::GraphUnit;
 use crate::music::{MeterMap, MeterPoint, Pitch};
 use crate::syntax::{Document, Unit};
 
@@ -31,45 +32,164 @@ pub struct FoundationEditContext;
 
 #[derive(Clone, Debug)]
 pub struct BundleEditContext {
-    resolved: crate::bundle::ResolvedBundle,
-    import_signature: BTreeMap<String, Value>,
+    bundle: crate::bundle::SourceBundle,
+    source_path: String,
 }
 
 impl BundleEditContext {
+    /// Edit the bundle entry source and re-resolve its complete dependency graph
+    /// for every candidate. Import path/hash edits therefore use the same pin,
+    /// cycle, built-in, path, and resource checks as ordinary bundle loading.
     pub fn new(bundle: &crate::bundle::SourceBundle) -> EditResult<Self> {
-        let resolved = bundle.resolve().map_err(map_diagnostics)?;
-        let entry = resolved
-            .documents
-            .get(&resolved.entry)
-            .ok_or_else(|| EditError::new("E_REFERENCE", "resolved entry document is missing"))?;
+        Self::for_source(bundle, &bundle.entry)
+    }
+
+    /// Edit one caller-owned source in a bundle. Embedded `@builtin/` sources
+    /// are immutable and therefore cannot be selected as Protocol 2 targets.
+    pub fn for_source(
+        bundle: &crate::bundle::SourceBundle,
+        source_path: impl Into<String>,
+    ) -> EditResult<Self> {
+        let source_path = source_path.into();
+        if !bundle.sources.contains_key(&source_path) {
+            return Err(EditError::new(
+                "E_REFERENCE",
+                "editable source is not present in the caller-owned bundle",
+            ));
+        }
+        bundle.resolve().map_err(map_diagnostics)?;
         Ok(Self {
-            import_signature: import_signature(entry),
-            resolved,
+            bundle: bundle.clone(),
+            source_path,
         })
+    }
+
+    pub fn source_path(&self) -> &str {
+        &self.source_path
+    }
+
+    fn candidate_bundle(&self, authored: &Value) -> EditResult<crate::bundle::SourceBundle> {
+        let mut bundle = self.bundle.clone();
+        let source = super::source::authored_source(authored)?;
+        bundle.sources.insert(self.source_path.clone(), source);
+        Ok(bundle)
     }
 
     fn resolved_candidate(
         &self,
         authored: &Value,
     ) -> EditResult<(crate::bundle::ResolvedBundle, crate::library::LibrarySet)> {
-        let document = crate::syntax::document_from_syntax_json_value(authored)
-            .map_err(|message| EditError::new("E_SYNTAX", message))?;
-        if import_signature(&document) != self.import_signature {
-            return Err(EditError::new(
-                "E_CAPABILITY",
-                "editing import declarations requires dependency re-resolution",
-            ));
-        }
-        let mut resolved = self.resolved.clone();
-        resolved.documents.insert(resolved.entry.clone(), document);
+        let bundle = self.candidate_bundle(authored)?;
+        let resolved = bundle.resolve().map_err(map_diagnostics)?;
         let libraries = crate::library::LibrarySet::resolve(&resolved).map_err(map_diagnostics)?;
         Ok((resolved, libraries))
+    }
+
+    fn needs_artifact_normalization(&self, authored: &Value) -> bool {
+        self.source_path == self.bundle.entry
+            && authored["objects"].as_object().is_some_and(|objects| {
+                objects.values().any(|object| {
+                    object["kind"] == "extension"
+                        || (object["kind"] == "node"
+                            && object["fields"]["type"]["v"]
+                                .as_str()
+                                .is_some_and(|processor| processor.starts_with("fx.")))
+                })
+            })
+    }
+
+    fn normalized_composition(&self, authored: &Value) -> EditResult<Value> {
+        let bundle = self.candidate_bundle(authored)?;
+        let artifact =
+            crate::compiler::compile_bundle_artifact(&bundle).map_err(map_diagnostics)?;
+        let source = bundle.sources.get(&self.source_path).ok_or_else(|| {
+            EditError::new("E_REFERENCE", "editable composition source is missing")
+        })?;
+        let document = crate::syntax::parse(source).map_err(map_diagnostics)?;
+        crate::production_identity::normalized_document_for_editing(&document, &artifact.view())
+            .map_err(|error| EditError::new("E_RANGE", error.to_string()))
+    }
+}
+
+impl BundleEditContext {
+    fn normalize_instrument_instance(
+        &self,
+        base: &Value,
+        base_path: &[String],
+        object: &Value,
+    ) -> EditResult<Value> {
+        let (meter, seed) = bundle_normalization_context(base)?;
+        let mut synthetic = base.clone();
+        *super::object_at_mut(&mut synthetic, base_path)? = object.clone();
+        let (resolved, libraries) = self.resolved_candidate(&synthetic)?;
+        let document = resolved
+            .documents
+            .get(&self.source_path)
+            .ok_or_else(|| EditError::new("E_REFERENCE", "resolved editable source is missing"))?;
+        let syntax_object = syntax_object_at(document, base_path)?;
+        let instance = libraries
+            .resolve_instance(&self.source_path, syntax_object)
+            .map_err(map_diagnostics)?;
+        let program = libraries
+            .programs
+            .iter()
+            .find(|program| program.id == instance.program_id)
+            .ok_or_else(|| {
+                EditError::new("E_REFERENCE", "resolved instrument program is missing")
+            })?;
+
+        let mut normalized = normalize_plain_object(object, &meter, &seed)?;
+        let fields = normalized["fields"]
+            .as_object_mut()
+            .ok_or_else(|| EditError::new("E_SYNTAX", "normalized fields are malformed"))?;
+        fields.insert(
+            "config".into(),
+            record(Map::from_iter([(
+                "voices".into(),
+                number(i64::from(instance.voices), 1),
+            )])),
+        );
+        let mut params = Map::new();
+        for (name, value) in &instance.params {
+            let spec = program.control_spec(name).ok_or_else(|| {
+                EditError::new(
+                    "E_REFERENCE",
+                    format!("instrument control `{name}` has no metadata"),
+                )
+            })?;
+            params.insert(name.clone(), graph_value(value, spec.unit));
+        }
+        fields.insert("params".into(), record(params));
+        Ok(normalized)
     }
 }
 
 impl EditContext for BundleEditContext {
     fn validate_document(&self, authored: &Value) -> EditResult<()> {
+        let bundle = self.candidate_bundle(authored)?;
         let (resolved, libraries) = self.resolved_candidate(authored)?;
+        let target = resolved
+            .documents
+            .get(&self.source_path)
+            .ok_or_else(|| EditError::new("E_REFERENCE", "resolved editable source is missing"))?;
+        if target
+            .objects
+            .values()
+            .any(|object| object.kind == "library")
+        {
+            return Ok(());
+        }
+        let needs_artifact_validation = target.objects.values().any(|object| {
+            object.kind == "extension"
+                || (object.kind == "node"
+                    && object
+                        .field("type")
+                        .and_then(|field| field.value.as_string())
+                        .is_some_and(|processor| processor.starts_with("fx.")))
+        });
+        if needs_artifact_validation {
+            return crate::compiler::check_bundle_artifact(&bundle).map_err(map_diagnostics);
+        }
         let document = libraries.resolved_document();
         let descriptors =
             crate::compiler::instrument_descriptors_for_editing(&resolved, &libraries, &document)
@@ -85,16 +205,17 @@ impl EditContext for BundleEditContext {
         base_path: &[String],
         object: &Value,
     ) -> EditResult<Value> {
-        if object["kind"] == "import"
-            || (object["kind"] == "node" && object["fields"].get("instrument").is_some())
-        {
-            return Err(EditError::new(
-                "E_CAPABILITY",
-                "bundle-specific object precondition normalization is not implemented",
-            )
-            .at(base_path, &[]));
+        if self.needs_artifact_normalization(base) {
+            let mut synthetic = base.clone();
+            *super::object_at_mut(&mut synthetic, base_path)? = object.clone();
+            let normalized = self.normalized_composition(&synthetic)?;
+            return Ok(object_at(&normalized, base_path)?.clone());
         }
-        FoundationEditContext.normalize_object(base, base_path, object)
+        if object["kind"] == "node" && object["fields"].get("instrument").is_some() {
+            return self.normalize_instrument_instance(base, base_path, object);
+        }
+        let (meter, seed) = bundle_normalization_context(base)?;
+        normalize_object_inner(object, &meter, &seed)
     }
 
     fn normalize_value(
@@ -105,16 +226,11 @@ impl EditContext for BundleEditContext {
         value: &Value,
     ) -> EditResult<Value> {
         let object = object_at(base, base_path)?;
-        if object["kind"] == "import"
-            || (object["kind"] == "node" && object["fields"].get("instrument").is_some())
-        {
-            return Err(EditError::new(
-                "E_CAPABILITY",
-                "bundle-specific field precondition normalization is not implemented",
-            )
-            .at(base_path, field));
-        }
-        FoundationEditContext.normalize_value(base, base_path, field, value)
+        let (meter, _) = bundle_normalization_context(base)?;
+        let kind = object["kind"].as_str().unwrap_or_default();
+        let pitch = (kind == "note" && field.len() == 1 && field[0] == "pitch")
+            || (kind == "override" && field.len() == 2 && field[0] == "set" && field[1] == "pitch");
+        normalize_value_inner(value, pitch, true, &meter)
     }
 
     fn rewrite_structural_references(
@@ -135,15 +251,6 @@ impl EditContext for BundleEditContext {
     ) -> EditResult<()> {
         FoundationEditContext.refine_impact(base, candidate, impact)
     }
-}
-
-fn import_signature(document: &Document) -> BTreeMap<String, Value> {
-    document
-        .objects
-        .iter()
-        .filter(|(_, object)| object.kind == "import")
-        .map(|(id, object)| (id.clone(), object.to_syntax_json_value()))
-        .collect()
 }
 
 impl FoundationEditContext {
@@ -210,6 +317,68 @@ impl EditContext for FoundationEditContext {
     ) -> EditResult<()> {
         refine_foundation_impact(base, candidate, impact)
     }
+}
+
+fn syntax_object_at<'a>(
+    document: &'a Document,
+    path: &[String],
+) -> EditResult<&'a crate::syntax::Object> {
+    let mut objects = &document.objects;
+    let mut current = None;
+    for id in path {
+        let object = objects
+            .get(id)
+            .ok_or_else(|| EditError::new("E_REFERENCE", "resolved object path does not exist"))?;
+        current = Some(object);
+        objects = &object.children;
+    }
+    current.ok_or_else(|| EditError::new("E_REFERENCE", "object path is empty"))
+}
+
+fn bundle_normalization_context(tree: &Value) -> EditResult<(MeterMap, Value)> {
+    let has_project = tree["objects"]
+        .as_object()
+        .is_some_and(|objects| objects.values().any(|object| object["kind"] == "project"));
+    if has_project {
+        return Ok((meter_map(tree)?, project_seed(tree)?));
+    }
+    let meter = MeterMap::new(vec![MeterPoint::new(BigRational::zero(), 4, 4)])
+        .map_err(|error| EditError::new("E_METER_BOUNDARY", error.to_string()))?;
+    Ok((meter, number(0, 1)))
+}
+
+fn graph_value(value: &BigRational, unit: GraphUnit) -> Value {
+    match unit {
+        GraphUnit::Dimensionless => rational(value, None),
+        GraphUnit::Seconds => rational(value, Some(Unit::S)),
+        GraphUnit::Hertz => rational(value, Some(Unit::Hz)),
+    }
+}
+
+fn normalize_plain_object(object: &Value, meter: &MeterMap, seed: &Value) -> EditResult<Value> {
+    let kind = object["kind"]
+        .as_str()
+        .ok_or_else(|| EditError::new("E_SYNTAX", "object kind must be a string"))?;
+    let constructors = kind != "extension";
+    let mut fields = Map::new();
+    for (name, field) in object["fields"]
+        .as_object()
+        .ok_or_else(|| EditError::new("E_SYNTAX", "object fields must be a dictionary"))?
+    {
+        let pitch = (kind == "note" && name == "pitch") || (kind == "override" && name == "set");
+        fields.insert(
+            name.clone(),
+            normalize_value_inner(field, pitch, constructors, meter)?,
+        );
+    }
+    let mut children = Map::new();
+    for (id, child) in object["children"]
+        .as_object()
+        .ok_or_else(|| EditError::new("E_SYNTAX", "children must be a dictionary"))?
+    {
+        children.insert(id.clone(), normalize_object_inner(child, meter, seed)?);
+    }
+    Ok(json!({"kind":kind,"fields":fields,"children":children}))
 }
 
 fn map_diagnostics(diagnostics: Diagnostics) -> EditError {
@@ -602,8 +771,101 @@ fn normalize_node_fields(fields: &mut Map<String, Value>, project_seed: &Value) 
         ));
     }
 
+    let had_config = fields.contains_key("config");
+    let had_params = fields.contains_key("params");
     let mut config = record_fields(fields, "config")?;
     let mut params = record_fields(fields, "params")?;
+    if processor.starts_with("synth.") {
+        let mut config_defaults = false;
+        match processor.as_str() {
+            "synth.sine/1" | "synth.saw/1" | "synth.square/1" | "synth.triangle/1" => {
+                for (name, value) in [
+                    ("ratio", number(1, 1)),
+                    ("frequency", quantity(0, 1, Unit::Hz)),
+                    ("phase", number(0, 1)),
+                    ("level", number(1, 1)),
+                ] {
+                    params.entry(name).or_insert(value);
+                }
+            }
+            "synth.wavetable/1" => {
+                for (name, value) in [
+                    ("ratio", number(1, 1)),
+                    ("frequency", quantity(0, 1, Unit::Hz)),
+                    ("phase", number(0, 1)),
+                    ("level", number(1, 1)),
+                    ("position", number(0, 1)),
+                ] {
+                    params.entry(name).or_insert(value);
+                }
+            }
+            "synth.noise/1" => {
+                config
+                    .entry("seed")
+                    .or_insert_with(|| number(1_831_565_813, 1));
+                config_defaults = true;
+                params.entry("level").or_insert_with(|| number(1, 1));
+            }
+            "synth.pluck/1" => {
+                config
+                    .entry("seed")
+                    .or_insert_with(|| number(1_831_565_813, 1));
+                config_defaults = true;
+                for (name, value) in [
+                    ("ratio", number(1, 1)),
+                    ("decay", quantity(3, 1, Unit::S)),
+                    ("damping", number(1, 2)),
+                    ("level", number(1, 1)),
+                ] {
+                    params.entry(name).or_insert(value);
+                }
+            }
+            "synth.adsr/1" => {
+                for (name, value) in [
+                    ("attack", quantity(0, 1, Unit::S)),
+                    ("decay", quantity(0, 1, Unit::S)),
+                    ("sustain", number(1, 1)),
+                    ("release", quantity(0, 1, Unit::S)),
+                ] {
+                    params.entry(name).or_insert(value);
+                }
+            }
+            "synth.lfo/1" => {
+                for (name, value) in [
+                    ("frequency", quantity(1, 1, Unit::Hz)),
+                    ("phase", number(0, 1)),
+                    ("level", number(1, 1)),
+                ] {
+                    params.entry(name).or_insert(value);
+                }
+            }
+            "synth.gain/1" => {
+                params.entry("level").or_insert_with(|| number(1, 1));
+            }
+            "synth.onepole/1" | "synth.highpass/1" => {
+                params
+                    .entry("cutoff")
+                    .or_insert_with(|| quantity(1000, 1, Unit::Hz));
+            }
+            "synth.pan/1" => {
+                params.entry("pan").or_insert_with(|| number(0, 1));
+            }
+            "synth.mix/1" | "synth.timbre/1" | "synth.pressure/1" => {}
+            other => {
+                return Err(EditError::new(
+                    "E_CAPABILITY",
+                    format!("processor `{other}` is outside BundleEditContext"),
+                ))
+            }
+        }
+        if had_config || config_defaults || !config.is_empty() {
+            fields.insert("config".into(), record(config));
+        }
+        if had_params || !params.is_empty() {
+            fields.insert("params".into(), record(params));
+        }
+        return Ok(());
+    }
     match processor.as_str() {
         "core.sine/1" => {
             config.entry("voices").or_insert_with(|| number(64, 1));

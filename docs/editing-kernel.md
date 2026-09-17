@@ -152,18 +152,23 @@ These are local execution results, not a GitHub CI pass or full Document conform
 Subsequent work connected the complete existing L1 normalization/position/Protocol-2
 corpus to `FoundationEditContext`, added source-preserving projection, and added the
 `maac patch` API/CLI path. `BundleEditContext` additionally reuses `SourceBundle` and
-`LibrarySet` to validate entry-document edits against a fixed, already-resolved import
-graph, including imported musical patterns and instrument descriptors. Editing import
-path/hash declarations themselves remains an explicit `E_CAPABILITY` boundary because
-that requires dependency re-resolution and new pin verification.
+`LibrarySet` to validate bundle-aware edits. `BundleEditContext` now rebuilds the candidate
+source, reruns the complete bounded `SourceBundle` resolver for every candidate, and therefore
+rechecks edited import path/hash declarations, cycles, built-in identities, path containment and
+SHA-256 pins before atomic commit. `for_source` permits Protocol 2 editing of caller-owned reusable
+library sources. Composition preconditions reuse the label-retaining production N(A) normalizer
+when the recognized production extension or `fx.*` descriptors are present; local instrument and
+`synth.* /1` defaults are resolved in their library context. `maac patch --project-root` exposes
+this same bundle-aware path while retaining source-preserving projection.
 
-## Remaining work before closing the first P0
+## Work outside the first P0
 
-Expand bundle-aware normalization from fixed imported dependencies to import mutation
-with dependency re-resolution/pin verification, plus reusable library source editing,
-native production extensions, and future external processor descriptors without weakening
-the explicit capability boundary. Extend bounded impact beyond pattern/place
-source dependencies to processor/asset/dependency-region analysis where the host can prove
-it, and add broader source-format preservation cases for complex inserted/deleted subtrees.
+Further precision in impact reporting can extend beyond pattern/place dependencies to
+processor/asset/dependency-region analysis where a host can prove a smaller invalidation. External
+processor ABIs/descriptors that are not implemented by this runtime, generic dependency-lock
+verification, and interchange loss reports remain separate capability work; the editor preserves
+its explicit `E_CAPABILITY` boundary rather than inventing semantics for them. Broader formatting
+fixtures for unusually complex inserted/deleted subtrees are useful robustness coverage but are not
+required for Protocol 2 semantic correctness.
 
 Native message Performance resolution is now implemented separately: retained artifacts preserve protocol/bytes and certified timing, and `PlanArtifact::performance_dispatches` requires explicit adapter protocol advertisement. The built-in Core Audio renderer intentionally remains without a raw-message receiver.

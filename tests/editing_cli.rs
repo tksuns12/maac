@@ -46,6 +46,7 @@ fn patch_command_writes_source_and_returns_full_edit_result() {
         patch,
         output: output.clone(),
         force: false,
+        project_root: None,
     })
     .unwrap();
     let edited = fs::read_to_string(output).unwrap();
@@ -80,6 +81,7 @@ fn patch_command_preserves_existing_output_without_force() {
         patch,
         output: output.clone(),
         force: false,
+        project_root: None,
     })
     .unwrap_err();
     assert_eq!(error.code, "E_OUTPUT_EXISTS");
@@ -100,6 +102,7 @@ fn stale_patch_never_publishes_output() {
         patch,
         output: output.clone(),
         force: false,
+        project_root: None,
     })
     .unwrap_err();
     assert_eq!(error.code, "E_CONFLICT");
@@ -124,13 +127,65 @@ fn clap_parses_patch_subcommand_and_required_output() {
             patch,
             output,
             force,
+            project_root,
         } => {
             assert_eq!(input.to_string_lossy(), "song.maac");
             assert_eq!(patch.to_string_lossy(), "edit.json");
             assert_eq!(output.to_string_lossy(), "edited.maac");
             assert!(force);
+            assert!(project_root.is_none());
         }
         _ => panic!("expected patch command"),
     }
     assert!(Cli::try_parse_from(["maac", "patch", "song.maac", "edit.json"]).is_err());
+}
+
+#[test]
+fn patch_command_resolves_hash_pinned_imports_under_project_root() {
+    let root = tempfile::tempdir().unwrap();
+    let library = r#"maac 1;
+library sounds { version="1"; }
+pattern riff { length=1q; note n { at=0q; dur=1/2q; pitch=C4; } }
+"#;
+    let pin = maac::bundle::sha256_digest(library.as_bytes());
+    let source = format!(
+        r#"maac 1;
+project p {{ score=[0q,2q]; rate=48000Hz; tempo=&t; meter=&m; output=&s:out; }}
+tempo t {{ points=[(0q,120bpm,step)]; }}
+meter m {{ points=[(0q,4,4)]; }}
+import sounds {{ path="sounds.maac"; hash="{pin}"; }}
+node s {{ type="core.sine/1"; }}
+track notes {{ target=&s:events; }}
+place play {{ pattern=&sounds.riff; track=&notes; at=0q; }}
+"#
+    );
+    let input = root.path().join("main.maac");
+    let library_path = root.path().join("sounds.maac");
+    let patch = root.path().join("patch.json");
+    let output = root.path().join("edited.maac");
+    fs::write(&input, &source).unwrap();
+    fs::write(&library_path, library).unwrap();
+    let document = SourceDocument::parse(source.clone()).unwrap();
+    let tx = Transaction::new(
+        document.revision().to_owned(),
+        vec![Operation::Set {
+            object: path(&["play"]),
+            field: path(&["count"]),
+            value: json!({"t":"number","n":"2","d":"1"}),
+            expect: Some(json!({"t":"number","n":"1","d":"1"})),
+            expect_absent: false,
+        }],
+    )
+    .unwrap();
+    fs::write(&patch, tx.to_json().unwrap()).unwrap();
+
+    execute_artifact(&Command::Patch {
+        input,
+        patch,
+        output: output.clone(),
+        force: false,
+        project_root: Some(root.path().to_path_buf()),
+    })
+    .unwrap();
+    assert!(fs::read_to_string(output).unwrap().contains("count = 2;"));
 }
