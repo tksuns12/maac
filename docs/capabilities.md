@@ -43,14 +43,17 @@ define an additive lock/configuration/render-input family. The existing
 production and instrument identity formats remain unchanged. The static
 checker and focused tests cover the fixed schema/corpus relationships, and
 independent semantic and harness reviews are complete for this bounded slice.
-No generic runtime lock verifier or normalizer is exposed by the foundation;
-descriptor wire schemas and loss reports remain separate deferred work, so
-this evidence is not a runtime-support claim.
+Generic Locked Render verification is exposed through `maac::generic_lock` for the
+v1 lock family. It validates the complete lock envelope and verifies caller-resolved
+execution, dependency, processor, engine, output, and evidence bytes without guessing
+unknown contracts. Dependency discovery, generic descriptor schemas, and loss reports
+remain separate work.
 
 Message performance is resolved into retained transport events, including exact protocol/bytes, certified frames, and §6.1 dispatch ordering. Hosts must explicitly advertise a matching protocol for each target through `PlanArtifact::performance_dispatches`; the built-in Core Audio renderer has no raw-message adapter and therefore still returns `E_CAPABILITY`. Other recognized deferred execution features fail with `E_CAPABILITY`:
 other processors, pitched sample instruments,
-preserve-pitch audio warping, external plug-ins and other extensions. Full render locks,
-MIDI transport, GUI and real-time playback are outside this release's interfaces.
+preserve-pitch audio warping, external plug-ins and other extensions. Generic lock
+generation/dependency discovery, generic rendering, MIDI transport, GUI and real-time
+playback are outside this release's interfaces.
 Protocol 2 transactional editing is implemented through `maac::editing` and `maac patch` for
 core compositions, hash-pinned local/built-in imports, reusable library sources and the recognized
 production extension. Candidate import edits are re-resolved and repinned atomically, and editing

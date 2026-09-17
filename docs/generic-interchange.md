@@ -6,9 +6,11 @@ semantic and harness review.** This document defines the frozen field shapes
 and semantic wire rules for the additive generic lock, configuration, and
 render-input family. It preserves existing production and instrument
 identities and does not change the source syntax/tree, retained-plan formats,
-or DSP/rendering algorithms. A generic runtime lock verifier, normalizer,
-dependency discovery service, or renderer remains deferred; descriptor wire
-schemas and loss-report schemas are separate deferred follow-ups.
+or DSP/rendering algorithms. A generic runtime lock verifier is implemented by `maac::generic_lock`: it validates
+the closed v1 wire, ordering, digests, cross-pins, timing, evidence shape, and can
+verify the lock against caller-supplied resolved execution/dependency/processor/engine
+context and exact bytes. Dependency discovery, descriptor wire schemas, loss-report
+schemas, and a generic renderer remain separate follow-ups.
 
 ## Common wire rules
 
@@ -330,5 +332,8 @@ static schema, byte, digest, and rejection results. The independent harness
 findings on strict manifest canonical-flag typing and confinement and symlink
 checks before reading fixed manifest/hash inputs were corrected; four focused
 regression tests then passed. Independent semantic and harness reviews are
-complete for this bounded contract, while runtime lock, normalization,
-dependency-discovery, and rendering claims remain separate.
+complete for this bounded contract. The Rust `maac::generic_lock` verifier now adds
+runtime lock-envelope and caller-resolved-context verification, including exact
+block schedule, crop/channel order, closure bytes, and optional PCM/file evidence.
+Lock generation/normalization, dependency discovery, and generic rendering remain
+separate work.

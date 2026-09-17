@@ -11,6 +11,7 @@ pub mod editing;
 pub mod exact;
 pub mod export;
 mod expression;
+pub mod generic_lock;
 pub mod graph;
 pub mod instrument_plan;
 mod kit;

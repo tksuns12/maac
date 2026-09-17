@@ -199,9 +199,11 @@ passed for this bounded slice.
 Ownership is split between the luna executor for specification/docs and the
 Sol recovery executor for schema, corpus, checker, and tests; independent
 semantic/specification and harness review passed, and root owns integration.
-Production Rust, grammar, existing schemas, and
-runtime lock verification/normalization/discovery/rendering remain unchanged
-or deferred; full Rust/build and remote-CI gates are not claimed here. Status
+The original L4 slice left production Rust and runtime verification unchanged.
+Subsequent work added the `maac::generic_lock` runtime verifier for the frozen v1
+contract; lock generation/normalization, dependency discovery, and generic rendering
+remain deferred. The historical L4 slice itself did not claim full Rust/build or
+remote-CI gates. Status
 is **addressed 2026-09-13** for this bounded contract/schema/corpus/checker
 slice. Descriptor wire schema/ABI and loss-report schemas are separate L4
 follow-ups. See the
@@ -253,11 +255,12 @@ and smoke gates; the reference-test executor ran its focused regression suite.
 Independent read-only semantic and code/harness reviews passed, and root
 performed integration acceptance.
 
-Production Rust, Cargo, grammar, and schema files remain unchanged. Full Rust
-suite, release build, installed acceptance, remote CI, cross-platform runtime,
-and listening checks were omitted. Runtime normalizer/editor behavior,
-generic lock verification/discovery/rendering, descriptor wire schemas, and
-loss-report schemas remain separate deferred work. L5 is addressed for this
+The historical L5 slice left production Rust, Cargo, grammar, and schema files
+unchanged and omitted full Rust, release-build, installed, remote-CI,
+cross-platform, and listening gates. Runtime normalizer/editor behavior was later
+implemented for the bounded language contexts, and generic lock verification now
+exists through `maac::generic_lock`; generic lock discovery/rendering, descriptor wire
+schemas, and loss-report schemas remain separate deferred work. L5 is addressed for this
 bounded contract, corpus, checker, index, and runtime-evidence slice; it makes
 no full-profile, universal-tolerance, or cross-platform bit-identity claim.
 
