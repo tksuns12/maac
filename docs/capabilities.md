@@ -49,13 +49,13 @@ The generator constructs canonical Config, RenderInput, render-key, and Lock art
 from typed caller-resolved context and exact bytes; the verifier independently validates
 the complete lock envelope without guessing unknown contracts. External descriptor parsing
 and owner-scoped dependency discovery are implemented by `maac::external`.
+`maac::generic_render` can execute a verified lock against an already-resolved built-in/core `Plan`; it requires the renderer's concrete engine identity, rejects non-null block schedules and external/state-pinned processors with `E_CAPABILITY`, renders from reset through the full locked interval, then applies crop/channel order and returns raw `pcm_f32le_interleaved/1` evidence. This is not full Locked Render or native external ABI conformance.
 Section 25 loss reporting and the initial MIDI 1.0 SMF adapter are implemented through
 `maac::interchange`; notation and DAW-session adapters remain separate work.
 
 Message performance is resolved into retained transport events, including exact protocol/bytes, certified frames, and §6.1 dispatch ordering. Hosts must explicitly advertise a matching protocol for each target through `PlanArtifact::performance_dispatches`; the built-in Core Audio renderer has no raw-message adapter and therefore still returns `E_CAPABILITY`. Other recognized deferred execution features fail with `E_CAPABILITY`:
 other processors, pitched sample instruments,
-preserve-pitch audio warping, executable external plug-in hosting and other extensions. Generic
-rendering, notation/DAW adapters, GUI and real-time
+preserve-pitch audio warping, executable external plug-in hosting and other extensions. Generic execution of unknown/external processors, notation/DAW adapters, GUI and real-time
 playback are outside this release's interfaces. The bounded MIDI 1.0 SMF adapter is an
 offline interchange export and does not provide live MIDI device transport.
 Protocol 2 transactional editing is implemented through `maac::editing` and `maac patch` for

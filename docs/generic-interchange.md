@@ -14,7 +14,11 @@ external-processor descriptor wire, verifies the complete owner-scoped locked
 dependency closure, and exposes explicit host ABI/adapter/permission authorization.
 `maac::generic_lock_normalization` now deterministically constructs canonical Config,
 RenderInput, and Lock artifacts from caller-resolved semantic context and exact bytes.
-Executable ABI invocation and a generic renderer remain separate follow-ups.
+`maac::generic_render` adds a bounded renderer for an already-resolved `Plan`: it first
+verifies the lock inputs, requires the concrete host engine identity, accepts only the
+understood built-in/core processor set and the block-independent null-schedule contract,
+executes from reset through `render_frames`, then applies crop/channel order and emits raw
+`pcm_f32le_interleaved/1` plus evidence. Executable external ABI invocation remains deferred.
 
 ## Common wire rules
 
@@ -345,4 +349,4 @@ requires explicit host capability authorization without executing module bytes.
 The Rust `maac::generic_lock_normalization` boundary now generates canonical v1 Config,
 RenderInput, render-key, and Lock artifacts from typed resolved context, independently
 round-trips them through the validator/verifier, and keeps optional output evidence out
-of the render key. Executable ABI invocation and generic rendering remain separate work.
+of the render key. Bounded built-in/core rendering is provided by `maac::generic_render`; executable external ABI invocation remains separate work.

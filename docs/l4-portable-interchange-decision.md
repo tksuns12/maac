@@ -7,7 +7,7 @@ hash evidence. The [Generic interchange v1](generic-interchange.md) document
 records the frozen field shapes and semantic wire rules. The original contract slice did
 not claim runtime implementation. Subsequent bounded runtime slices now provide generic v1
 lock generation/normalization and independent verification, plus strict external descriptor
-discovery; generic rendering and executable external ABI hosting remain deferred.
+discovery. A later bounded runtime slice adds generic rendering for already-resolved built-in/core plans under the concrete host engine identity and null block schedule; executable external ABI hosting remains deferred.
 
 ## Purpose and fixed context
 
@@ -72,9 +72,8 @@ semantic/specification review passed. The independent harness findings on
 strict manifest canonical-flag typing and confinement/symlink checks before
 reading fixed manifest/hash inputs were corrected, and four focused regression
 tests then passed; both independent reviews are complete. Subsequent runtime slices added
-strict external descriptor/discovery support, explicit interchange loss reporting, and typed
-generic v1 lock generation/normalization plus verification. Executable external ABI hosting,
-generic rendering, and the L5 numerical metric and bound remain follow-ups. This slice does
+strict external descriptor/discovery support, explicit interchange loss reporting, typed
+generic v1 lock generation/normalization plus verification, and bounded built-in/core generic rendering. Executable external ABI hosting and the L5 numerical metric and bound remain follow-ups. This slice does
 not add a processor, alter DSP behavior, or claim hosted-CI or cross-platform
 audio conformance.
 
@@ -86,5 +85,4 @@ executor evidence is recorded in the local
 [validation record](../target/l4-interchange-validation/executor-summary.json).
 All evidence must continue to distinguish schema structure, semantic host
 verification, and actual runtime or repeated-render claims. Generic v1 lock
-construction and verification now exist, but they do not constitute a generic renderer or
-executable external ABI host.
+construction and verification now exist, and `maac::generic_render` supplies the bounded built-in/core execution bridge. This still does not constitute an executable external ABI host or full Locked Render coverage for unknown processors.
