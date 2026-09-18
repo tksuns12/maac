@@ -23,6 +23,7 @@ pub struct ExternalParameterOverride {
 #[derive(Clone, Debug)]
 pub struct ExternalLoadRequest<'a> {
     pub processor: &'a DiscoveredExternalProcessor,
+    pub sample_rate: u64,
     pub config: &'a Value,
     pub parameter_overrides: &'a [ExternalParameterOverride],
 }
@@ -44,10 +45,14 @@ pub trait ExternalProcessorInstance: Send {
 pub trait ExternalAbiAdapter: Send + Sync {
     fn abi_id(&self) -> &str;
     fn adapter_id(&self) -> &str;
+    fn block_independent(&self) -> bool {
+        false
+    }
 
     fn instantiate(
         &self,
         processor: &DiscoveredExternalProcessor,
+        sample_rate: u64,
     ) -> Result<Box<dyn ExternalProcessorInstance>, ExternalError>;
 }
 
@@ -100,11 +105,23 @@ impl ExternalHost {
         Ok(())
     }
 
+    pub fn is_block_independent(&self, processor: &DiscoveredExternalProcessor) -> bool {
+        self.adapters
+            .get(&(
+                processor.descriptor.abi.clone(),
+                processor.adapter_id.clone(),
+            ))
+            .is_some_and(|adapter| adapter.block_independent())
+    }
+
     pub fn load(
         &self,
         request: ExternalLoadRequest<'_>,
     ) -> Result<Box<dyn ExternalProcessorInstance>, ExternalError> {
         let processor = request.processor;
+        if request.sample_rate == 0 {
+            return Err(error("E_RANGE", "external sample rate must be positive"));
+        }
         let key = (
             processor.descriptor.abi.clone(),
             processor.adapter_id.clone(),
@@ -152,7 +169,7 @@ impl ExternalHost {
         };
         capabilities.authorize(processor)?;
 
-        let mut instance = adapter.instantiate(processor)?;
+        let mut instance = adapter.instantiate(processor, request.sample_rate)?;
         if let Some(state) = processor.dependencies.state.as_deref() {
             instance.restore_state(state)?;
         }

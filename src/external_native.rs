@@ -23,7 +23,7 @@ mod imp {
     pub const NATIVE_ABI_ID: &str = "maac.native-c-abi/1";
     pub const NATIVE_ADAPTER_ID: &str = "maac.native-dylib-adapter/1";
 
-    type CreateFn = unsafe extern "C" fn() -> *mut c_void;
+    type CreateFn = unsafe extern "C" fn(u64) -> *mut c_void;
     type DestroyFn = unsafe extern "C" fn(*mut c_void);
     type RestoreStateFn = unsafe extern "C" fn(*mut c_void, *const u8, usize) -> i32;
     type ApplyConfigFn = unsafe extern "C" fn(*mut c_void, *const u8, usize) -> i32;
@@ -58,9 +58,14 @@ mod imp {
             NATIVE_ADAPTER_ID
         }
 
+        fn block_independent(&self) -> bool {
+            true
+        }
+
         fn instantiate(
             &self,
             processor: &DiscoveredExternalProcessor,
+            sample_rate: u64,
         ) -> Result<Box<dyn ExternalProcessorInstance>, ExternalError> {
             let mut file = tempfile::Builder::new()
                 .prefix("maac-external-")
@@ -92,7 +97,7 @@ mod imp {
                 }
             };
 
-            let instance = unsafe { (symbols.create)() };
+            let instance = unsafe { (symbols.create)(sample_rate) };
             if instance.is_null() {
                 unsafe {
                     libc::dlclose(handle);

@@ -95,7 +95,10 @@ struct Instance {
 }
 
 #[no_mangle]
-pub extern "C" fn maac_external_v1_create() -> *mut c_void {
+pub extern "C" fn maac_external_v1_create(sample_rate: u64) -> *mut c_void {
+    if sample_rate != 48_000 {
+        return std::ptr::null_mut();
+    }
     Box::into_raw(Box::new(Instance { gain: 1.0 })).cast()
 }
 
@@ -206,6 +209,7 @@ fn exact_module_bytes_load_and_execute_published_native_abi() {
     let mut instance = host
         .load(ExternalLoadRequest {
             processor: &processor,
+            sample_rate: 48_000,
             config: &config,
             parameter_overrides: &overrides,
         })
@@ -231,7 +235,7 @@ fn missing_required_native_symbol_is_capability_failure() {
     let incomplete = compile_module(
         r#"
         #[no_mangle]
-        pub extern "C" fn maac_external_v1_create() -> *mut std::ffi::c_void {
+        pub extern "C" fn maac_external_v1_create(_sample_rate: u64) -> *mut std::ffi::c_void {
             std::ptr::null_mut()
         }
         "#,
@@ -244,6 +248,26 @@ fn missing_required_native_symbol_is_capability_failure() {
     let failure = host
         .load(ExternalLoadRequest {
             processor: &processor,
+            sample_rate: 48_000,
+            config: &config,
+            parameter_overrides: &[],
+        })
+        .err()
+        .unwrap();
+    assert_eq!(failure.code, "E_CAPABILITY");
+}
+
+#[test]
+fn native_module_can_reject_unsupported_sample_rate() {
+    let processor = discovered(compile_module(MODULE));
+    let mut host = ExternalHost::new(ExternalPermissions::default(), false);
+    host.register(Box::new(NativeDynamicLibraryAdapter))
+        .unwrap();
+    let config = json!({});
+    let failure = host
+        .load(ExternalLoadRequest {
+            processor: &processor,
+            sample_rate: 44_100,
             config: &config,
             parameter_overrides: &[],
         })
@@ -262,6 +286,7 @@ fn native_adapter_rejects_mismatched_channel_lengths_before_calling_module() {
     let mut instance = host
         .load(ExternalLoadRequest {
             processor: &processor,
+            sample_rate: 48_000,
             config: &config,
             parameter_overrides: &[],
         })

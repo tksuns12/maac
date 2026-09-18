@@ -79,8 +79,10 @@ impl ExternalAbiAdapter for TestAdapter {
     fn instantiate(
         &self,
         processor: &DiscoveredExternalProcessor,
+        sample_rate: u64,
     ) -> Result<Box<dyn ExternalProcessorInstance>, maac::external::ExternalError> {
         assert_eq!(processor.dependencies.implementation, b"impl/1");
+        assert_eq!(sample_rate, 48_000);
         assert_eq!(processor.dependencies.adapter, b"adapter/1");
         self.log.lock().unwrap().push("instantiate".into());
         Ok(Box::new(TestInstance {
@@ -162,6 +164,7 @@ fn exact_registration_authorization_and_load_order_precede_processing() {
     let mut instance = host
         .load(ExternalLoadRequest {
             processor: &processor,
+            sample_rate: 48_000,
             config: &config,
             parameter_overrides: &overrides,
         })
@@ -207,6 +210,7 @@ fn unregistered_or_permission_denied_processors_never_instantiate() {
     assert_eq!(
         host.load(ExternalLoadRequest {
             processor: &processor,
+            sample_rate: 48_000,
             config: &config,
             parameter_overrides: &empty,
         })
@@ -225,6 +229,7 @@ fn unregistered_or_permission_denied_processors_never_instantiate() {
         denied
             .load(ExternalLoadRequest {
                 processor: &processor,
+                sample_rate: 48_000,
                 config: &config,
                 parameter_overrides: &empty,
             })
@@ -257,6 +262,7 @@ fn unknown_parameter_override_is_rejected_before_instantiation() {
     let error = host
         .load(ExternalLoadRequest {
             processor: &processor,
+            sample_rate: 48_000,
             config: &config,
             parameter_overrides: &overrides,
         })

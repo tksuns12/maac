@@ -20,7 +20,7 @@ Loading is attempted only after host ABI, adapter, determinism, and permission a
 A conforming module exports these C ABI symbols:
 
 ```c
-void *maac_external_v1_create(void);
+void *maac_external_v1_create(uint64_t sample_rate_hz);
 void maac_external_v1_destroy(void *instance);
 
 int32_t maac_external_v1_restore_state(
@@ -49,7 +49,7 @@ int32_t maac_external_v1_process_f64_planar(
     double *const *outputs);
 ```
 
-`create` must return a non-null instance. Every successful instance is destroyed exactly once.
+`create` receives the exact locked engine sample rate in hertz and must return a non-null instance only when that rate is supported. Every successful instance is destroyed exactly once.
 
 ## Lifecycle
 
@@ -67,6 +67,10 @@ Configuration and parameter values are passed as §20 canonical JSON bytes. Para
 `process_f64_planar` operates on binary64 planar channel buffers. Every channel contains exactly `frames` samples. Input buffers are read-only. Output buffers are writable and pre-zeroed by the caller when zero initialization is required by the surrounding graph contract.
 
 The function must not retain buffer pointers after it returns.
+
+## Block partition semantics
+
+`maac.native-c-abi/1` is a block-independent calling contract. For the same reset state, configuration, parameter values, events, and sample stream, splitting a render into multiple consecutive `process_f64_planar` calls must produce the same samples and final processor state as one call covering the combined frame interval. A processor whose semantics depend on host block boundaries requires a different ABI/adapter contract and a locked non-null block schedule; it is not executable through this adapter.
 
 ## Status codes
 

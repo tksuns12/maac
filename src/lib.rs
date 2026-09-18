@@ -14,6 +14,7 @@ mod expression;
 pub mod external;
 pub mod external_host;
 pub mod external_native;
+pub mod generic_external_render;
 pub mod generic_lock;
 pub mod generic_lock_normalization;
 pub mod generic_render;
