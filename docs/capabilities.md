@@ -43,17 +43,19 @@ define an additive lock/configuration/render-input family. The existing
 production and instrument identity formats remain unchanged. The static
 checker and focused tests cover the fixed schema/corpus relationships, and
 independent semantic and harness reviews are complete for this bounded slice.
-Generic Locked Render verification is exposed through `maac::generic_lock` for the
-v1 lock family. It validates the complete lock envelope and verifies caller-resolved
-execution, dependency, processor, engine, output, and evidence bytes without guessing
-unknown contracts. Dependency discovery and generic descriptor schemas remain separate work.
+Generic Locked Render generation and verification are exposed through
+`maac::generic_lock_normalization` and `maac::generic_lock` for the v1 lock family.
+The generator constructs canonical Config, RenderInput, render-key, and Lock artifacts
+from typed caller-resolved context and exact bytes; the verifier independently validates
+the complete lock envelope without guessing unknown contracts. External descriptor parsing
+and owner-scoped dependency discovery are implemented by `maac::external`.
 Section 25 loss reporting and the initial MIDI 1.0 SMF adapter are implemented through
 `maac::interchange`; notation and DAW-session adapters remain separate work.
 
 Message performance is resolved into retained transport events, including exact protocol/bytes, certified frames, and §6.1 dispatch ordering. Hosts must explicitly advertise a matching protocol for each target through `PlanArtifact::performance_dispatches`; the built-in Core Audio renderer has no raw-message adapter and therefore still returns `E_CAPABILITY`. Other recognized deferred execution features fail with `E_CAPABILITY`:
 other processors, pitched sample instruments,
-preserve-pitch audio warping, external plug-ins and other extensions. Generic lock
-generation/dependency discovery, generic rendering, notation/DAW adapters, GUI and real-time
+preserve-pitch audio warping, executable external plug-in hosting and other extensions. Generic
+rendering, notation/DAW adapters, GUI and real-time
 playback are outside this release's interfaces. The bounded MIDI 1.0 SMF adapter is an
 offline interchange export and does not provide live MIDI device transport.
 Protocol 2 transactional editing is implemented through `maac::editing` and `maac patch` for

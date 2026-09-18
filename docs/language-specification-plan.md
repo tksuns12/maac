@@ -200,13 +200,15 @@ Ownership is split between the luna executor for specification/docs and the
 Sol recovery executor for schema, corpus, checker, and tests; independent
 semantic/specification and harness review passed, and root owns integration.
 The original L4 slice left production Rust and runtime verification unchanged.
-Subsequent work added the `maac::generic_lock` runtime verifier for the frozen v1
-contract; lock generation/normalization, dependency discovery, and generic rendering
-remain deferred. The historical L4 slice itself did not claim full Rust/build or
+Subsequent work added the `maac::generic_lock` runtime verifier and the
+`maac::generic_lock_normalization` typed generator/normalizer for the frozen v1
+contract. External owner-scoped dependency discovery is implemented by `maac::external`;
+generic rendering and executable external ABI hosting remain deferred. The historical L4 slice itself did not claim full Rust/build or
 remote-CI gates. Status
 is **addressed 2026-09-13** for this bounded contract/schema/corpus/checker
-slice. Descriptor wire schema/ABI and loss-report schemas are separate L4
-follow-ups. See the
+slice. Strict external descriptor/discovery support and bounded interchange loss reporting
+were added in later L4 runtime slices; executable ABI hosting and generic rendering remain
+separate follow-ups. See the
 [L4 portable-interchange decision](l4-portable-interchange-decision.md) for
 the accepted direction and scope boundary.
 

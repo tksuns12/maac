@@ -12,8 +12,9 @@ verify the lock against caller-supplied resolved execution/dependency/processor/
 context and exact bytes. `maac::external` now adds a strict MaaC/1 §17
 external-processor descriptor wire, verifies the complete owner-scoped locked
 dependency closure, and exposes explicit host ABI/adapter/permission authorization.
-Executable ABI invocation, lock generation/normalization, and a generic renderer
-remain separate follow-ups.
+`maac::generic_lock_normalization` now deterministically constructs canonical Config,
+RenderInput, and Lock artifacts from caller-resolved semantic context and exact bytes.
+Executable ABI invocation and a generic renderer remain separate follow-ups.
 
 ## Common wire rules
 
@@ -341,5 +342,7 @@ block schedule, crop/channel order, closure bytes, and optional PCM/file evidenc
 The Rust `maac::external` boundary now parses the strict §17 descriptor wire,
 discovers and verifies complete processor-owned locked dependency closures, and
 requires explicit host capability authorization without executing module bytes.
-Lock generation/normalization, executable ABI invocation, and generic rendering
-remain separate work.
+The Rust `maac::generic_lock_normalization` boundary now generates canonical v1 Config,
+RenderInput, render-key, and Lock artifacts from typed resolved context, independently
+round-trips them through the validator/verifier, and keeps optional output evidence out
+of the render key. Executable ABI invocation and generic rendering remain separate work.

@@ -13,6 +13,7 @@ pub mod export;
 mod expression;
 pub mod external;
 pub mod generic_lock;
+pub mod generic_lock_normalization;
 pub mod graph;
 pub mod instrument_plan;
 pub mod interchange;
