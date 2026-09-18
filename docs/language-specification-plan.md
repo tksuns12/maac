@@ -203,11 +203,11 @@ The original L4 slice left production Rust and runtime verification unchanged.
 Subsequent work added the `maac::generic_lock` runtime verifier and the
 `maac::generic_lock_normalization` typed generator/normalizer for the frozen v1
 contract. External owner-scoped dependency discovery is implemented by `maac::external`;
-`maac::generic_render` now renders already-resolved built-in/core `Plan` contexts after pre-render verification, with a concrete host identity and null block schedule. Executable external ABI hosting remains deferred. The historical L4 slice itself did not claim full Rust/build or
+`maac::generic_render` now renders already-resolved built-in/core `Plan` contexts after pre-render verification, with a concrete host identity and null block schedule. `maac::external_host` and `maac::external_native` subsequently add an explicit executable native ABI boundary; generic external-node graph integration remains deferred. The historical L4 slice itself did not claim full Rust/build or
 remote-CI gates. Status
 is **addressed 2026-09-13** for this bounded contract/schema/corpus/checker
 slice. Strict external descriptor/discovery support and bounded interchange loss reporting
-were added in later L4 runtime slices; bounded built-in/core generic rendering was added subsequently, while executable external ABI hosting remains a separate follow-up. See the
+were added in later L4 runtime slices; bounded built-in/core generic rendering and an explicit native ABI host boundary were added subsequently, while generic external-node graph integration remains a separate follow-up. See the
 [L4 portable-interchange decision](l4-portable-interchange-decision.md) for
 the accepted direction and scope boundary.
 
