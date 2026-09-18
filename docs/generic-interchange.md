@@ -9,8 +9,11 @@ identities and does not change the source syntax/tree, retained-plan formats,
 or DSP/rendering algorithms. A generic runtime lock verifier is implemented by `maac::generic_lock`: it validates
 the closed v1 wire, ordering, digests, cross-pins, timing, evidence shape, and can
 verify the lock against caller-supplied resolved execution/dependency/processor/engine
-context and exact bytes. Dependency discovery, descriptor wire schemas, loss-report
-schemas, and a generic renderer remain separate follow-ups.
+context and exact bytes. `maac::external` now adds a strict MaaC/1 §17
+external-processor descriptor wire, verifies the complete owner-scoped locked
+dependency closure, and exposes explicit host ABI/adapter/permission authorization.
+Executable ABI invocation, lock generation/normalization, and a generic renderer
+remain separate follow-ups.
 
 ## Common wire rules
 
@@ -335,5 +338,8 @@ regression tests then passed. Independent semantic and harness reviews are
 complete for this bounded contract. The Rust `maac::generic_lock` verifier now adds
 runtime lock-envelope and caller-resolved-context verification, including exact
 block schedule, crop/channel order, closure bytes, and optional PCM/file evidence.
-Lock generation/normalization, dependency discovery, and generic rendering remain
-separate work.
+The Rust `maac::external` boundary now parses the strict §17 descriptor wire,
+discovers and verifies complete processor-owned locked dependency closures, and
+requires explicit host capability authorization without executing module bytes.
+Lock generation/normalization, executable ABI invocation, and generic rendering
+remain separate work.

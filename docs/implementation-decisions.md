@@ -101,8 +101,12 @@ APIs. [Tempo ramps](tempo-ramps.md) records the numerical and compatibility rule
 core input table define single versus summing cardinality, explicit
 `zero_default` behavior, and the `E_PORT_TYPE` result for missing or incompatible
 inputs. Event empty-stream behavior is separate from audio/control zero defaults.
-The §17 descriptor contract carries the same fields for external processors;
-generic descriptor schema and ABI details remain L4 work.
+The §17 descriptor contract carries the same fields for external processors.
+The bounded L4 `maac::external` boundary now defines a strict descriptor wire,
+verifies complete processor-owned locked dependency closure bytes, and requires
+explicit host ABI, adapter, permission, and determinism authorization. It does
+not define or execute a native calling ABI; executable hosting remains separate
+work.
 
 ## Tuning reference contract
 
