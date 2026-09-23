@@ -24,7 +24,7 @@ pub(crate) const MANIFEST_PATH: &str = "maac-archive.json";
 const FORMAT: &str = "maac.editable-archive";
 const VERSION: u32 = 1;
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
-const MAX_TREE_ENTRIES: usize =
+pub(crate) const MAX_TREE_ENTRIES: usize =
     (MAX_BUNDLE_SOURCES + MAX_BUNDLE_ASSETS) * MAX_BUNDLE_PATH_BYTES + 1;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -63,6 +63,7 @@ struct Builtin {
     sha256: String,
 }
 
+#[derive(Clone)]
 enum MemberData {
     Bytes(Vec<u8>),
     Pcm(Arc<DiskAsset>),
@@ -72,10 +73,27 @@ enum MemberData {
 ///
 /// All unpack writes come from these captured bytes and private PCM handles.
 /// The archive format does not include editing history, freezes, or sidecars.
+#[derive(Clone)]
 pub(crate) struct ArchiveSnapshot {
     manifest: Manifest,
     manifest_json: Vec<u8>,
     data: BTreeMap<String, MemberData>,
+}
+
+/// Strict v1 metadata checked before any checkpoint media is loaded.
+pub(crate) struct ArchivePreflight {
+    manifest: Manifest,
+    json: Vec<u8>,
+}
+
+impl ArchivePreflight {
+    pub(crate) fn digest(&self) -> String {
+        sha256_digest(&self.json)
+    }
+
+    pub(crate) fn resource_bytes(&self) -> (u64, u64, u64) {
+        resource_bytes(&self.manifest)
+    }
 }
 
 impl ArchiveSnapshot {
@@ -165,6 +183,7 @@ impl ArchiveSnapshot {
 
     /// Verify a directory as exactly one current-closure archive, then retain
     /// its own snapshots for later unpack without reopening archive members.
+    #[cfg(test)]
     pub(crate) fn verify(dir: &Path) -> Result<Self, Diagnostics> {
         let root_meta = fs::symlink_metadata(dir).map_err(|e| {
             fail(
@@ -182,10 +201,16 @@ impl ArchiveSnapshot {
         Self::verify_in_root(&root, || {})
     }
 
+    #[cfg(test)]
     fn verify_in_root(
         root: &ProjectRoot,
         before_capture: impl FnOnce(),
     ) -> Result<Self, Diagnostics> {
+        let preflight = Self::preflight_in_root(root)?;
+        Self::verify_preflighted_in_root(root, &preflight, before_capture)
+    }
+
+    pub(crate) fn preflight_in_root(root: &ProjectRoot) -> Result<ArchivePreflight, Diagnostics> {
         let bytes = bounded_manifest(root)?;
         let manifest: Manifest = serde_json::from_slice(&bytes).map_err(|e| {
             fail(
@@ -200,10 +225,25 @@ impl ArchiveSnapshot {
                 "archive manifest is not canonical JSON",
             ));
         }
-        check_tree(root, &manifest)?;
+        Ok(ArchivePreflight {
+            manifest,
+            json: bytes,
+        })
+    }
+
+    pub(crate) fn verify_preflighted_in_root(
+        root: &ProjectRoot,
+        preflight: &ArchivePreflight,
+        before_capture: impl FnOnce(),
+    ) -> Result<Self, Diagnostics> {
+        check_tree(root, &preflight.manifest)?;
         before_capture();
-        let captured = Self::capture_in_root(Path::new(&manifest.entry), root, &manifest.profile)?;
-        if captured.manifest != manifest {
+        let captured = Self::capture_in_root(
+            Path::new(&preflight.manifest.entry),
+            root,
+            &preflight.manifest.profile,
+        )?;
+        if captured.manifest != preflight.manifest || bounded_manifest(root)? != preflight.json {
             return Err(fail(
                 DiagnosticCode::Hash,
                 "archive members differ from the complete composition closure",
@@ -212,8 +252,32 @@ impl ArchiveSnapshot {
         Ok(captured)
     }
 
+    pub(crate) fn tree_entries_in_root(
+        root: &ProjectRoot,
+        preflight: &ArchivePreflight,
+    ) -> Result<usize, Diagnostics> {
+        check_tree(root, &preflight.manifest)
+    }
+
     pub(crate) fn digest(&self) -> String {
         sha256_digest(&self.manifest_json)
+    }
+
+    pub(crate) fn resource_bytes(&self) -> (u64, u64, u64) {
+        resource_bytes(&self.manifest)
+    }
+
+    /// Exact file and directory count produced by staging this v1 snapshot.
+    pub(crate) fn projected_tree_entries(&self) -> usize {
+        let mut directories = BTreeSet::new();
+        for member in &self.manifest.members {
+            for (index, byte) in member.path.bytes().enumerate() {
+                if byte == b'/' {
+                    directories.insert(&member.path[..index]);
+                }
+            }
+        }
+        1 + self.manifest.members.len() + directories.len() // manifest + files + directories
     }
 
     /// Write only local closure members into an existing output directory.
@@ -436,6 +500,20 @@ fn validate_manifest(manifest: &Manifest) -> Result<(), Diagnostics> {
     Ok(())
 }
 
+fn resource_bytes(manifest: &Manifest) -> (u64, u64, u64) {
+    let mut source = 0;
+    let mut asset = 0;
+    let mut pcm = 0;
+    for member in &manifest.members {
+        match member.kind {
+            MemberKind::Source => source += member.bytes,
+            MemberKind::Asset => asset += member.bytes,
+            MemberKind::Pcm => pcm += member.bytes,
+        }
+    }
+    (source, asset, pcm)
+}
+
 fn check_path(path: &str) -> Result<(), Diagnostics> {
     let mut parts = path.split('/');
     let first = parts.next().unwrap_or_default();
@@ -463,7 +541,7 @@ fn check_path(path: &str) -> Result<(), Diagnostics> {
     }
 }
 
-fn bounded_manifest(root: &ProjectRoot) -> Result<Vec<u8>, Diagnostics> {
+pub(crate) fn bounded_manifest(root: &ProjectRoot) -> Result<Vec<u8>, Diagnostics> {
     let metadata = root.dir().symlink_metadata(MANIFEST_PATH).map_err(|e| {
         fail(
             DiagnosticCode::Reference,
@@ -526,7 +604,7 @@ fn bounded_manifest(root: &ProjectRoot) -> Result<Vec<u8>, Diagnostics> {
     Ok(bytes)
 }
 
-fn check_tree(root: &ProjectRoot, manifest: &Manifest) -> Result<(), Diagnostics> {
+fn check_tree(root: &ProjectRoot, manifest: &Manifest) -> Result<usize, Diagnostics> {
     let expected: BTreeSet<&str> = manifest
         .members
         .iter()
@@ -618,7 +696,7 @@ fn check_tree(root: &ProjectRoot, manifest: &Manifest) -> Result<(), Diagnostics
             "archive is missing a declared member",
         ));
     }
-    Ok(())
+    Ok(count)
 }
 
 fn prepare_parent(root: &Path, logical: &str) -> Result<PathBuf, Diagnostics> {

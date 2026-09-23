@@ -132,6 +132,32 @@ preservation. A deterministic regression proves manifest, tree, and closure
 verification stay on one pinned root when the selected path changes. The
 post-fix independent review found no material issue in this bounded slice.
 
+## Immutable native archive checkpoints (2026-09-23)
+
+Version 2 adds an explicit linear history of complete version 1 snapshots.
+The fixed version 1 fixture was produced by the prior release binary and
+retains digest `sha256:15d422b07aeb803b3f488c42a9b07d307f0cfdb78f09bd1173c4face9bb9842a`.
+No complete Rust integration-suite pass is claimed for this slice.
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Focused Rust tests | `cargo test --lib --test archive_cli --test disk_media_cli --test module_cli --test media_import_cli --test bundle` | Passed: 268 library tests, 3 existing ignored; 5 archive CLI, 3 disk-media CLI, 3 module CLI, 6 media-import CLI, and 17 bundle tests |
+| Formatting and whitespace | `cargo fmt --all -- --check`; `git diff --check` | Passed |
+| Clippy | `cargo clippy --all-targets -- -D warnings` | Passed |
+| Release build | `cargo build --release` | Passed |
+| Installed CLI acceptance | `python3 scripts/acceptance.py` | Passed: 38 of 38 checks |
+| Release CLI smoke | Upgrade fixed v1 fixture with `examples/audio-clips.maac`, select both checkpoints, compare current reopened and original Float32 WAV bytes | Passed |
+
+The history tests cover v1 verification and upgrade without changing its
+snapshot manifest; a two-checkpoint archive whose later source removes a 5 MiB
+PCM dependency; independent reopen of both revisions after deleting the
+worktree and predecessor; no-op append; non-head tampering; wrong predecessor
+hash; unknown revision; and output paths inside the input archive, including a
+symlink alias. Core tests cover A→B→A parent identity, pinned child handles,
+and the shared tree-entry limit. Independent review found and prompted a fix
+for a create/verify tree-entry budget mismatch; the revised code enforces the
+same limit before publication and during verification.
+
 ## Historical naming cleanup
 
 The current tree uses MaaC consistently in the specification, grammar, schema,

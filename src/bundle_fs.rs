@@ -415,6 +415,47 @@ impl ProjectRoot {
     pub(crate) fn dir(&self) -> &Dir {
         &self.dir
     }
+
+    /// Pin one real child directory relative to this handle, even if the
+    /// ambient pathname of the parent is later renamed or replaced.
+    pub(crate) fn open_child_pinned(&self, name: &str) -> Result<Self, Diagnostics> {
+        if name.is_empty()
+            || name == "."
+            || name == ".."
+            || name.contains('/')
+            || name.contains('\\')
+            || name.contains('\0')
+        {
+            return Err(error(
+                DiagnosticCode::Reference,
+                format!("invalid child directory `{name}`"),
+            ));
+        }
+        let metadata = self.dir.symlink_metadata(name).map_err(|failure| {
+            error(
+                DiagnosticCode::Reference,
+                format!("cannot inspect child directory `{name}`: {failure}"),
+            )
+        })?;
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            return Err(error(
+                DiagnosticCode::Reference,
+                format!("child `{name}` is not a real directory"),
+            ));
+        }
+        let dir = self.dir.open_dir(name).map_err(|failure| {
+            error(
+                DiagnosticCode::Reference,
+                format!("cannot open child directory `{name}`: {failure}"),
+            )
+        })?;
+        Ok(Self {
+            canonical: self.canonical.join(name),
+            selected: self.selected.join(name),
+            dir,
+            pinned_resolution: true,
+        })
+    }
 }
 
 fn contained_file(

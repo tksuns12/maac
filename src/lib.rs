@@ -1,4 +1,5 @@
 pub(crate) mod archive;
+pub(crate) mod archive_history;
 mod audio_asset;
 mod audio_buffer;
 mod audio_clip;

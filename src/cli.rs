@@ -13,6 +13,7 @@ use clap::{
 use serde::Serialize;
 
 use crate::archive::ArchiveSnapshot;
+use crate::archive_history::ArchiveHistory;
 use crate::bundle::sha256_digest;
 use crate::bundle::SourceBundle;
 use crate::bundle_fs;
@@ -209,6 +210,12 @@ pub enum ArchiveCommand {
         project_root: Option<PathBuf>,
         #[arg(long, value_enum, default_value_t = ProfileArg::Default)]
         profile: ProfileArg,
+        /// Fully verified archive whose checkpoints become this archive's history.
+        #[arg(long)]
+        previous: Option<PathBuf>,
+        /// Expected manifest hash of --previous.
+        #[arg(long, requires = "previous")]
+        expect_previous_hash: Option<String>,
     },
     /// Verify a captured archive and its current reopenable composition.
     Verify {
@@ -223,6 +230,9 @@ pub enum ArchiveCommand {
         output_dir: PathBuf,
         #[arg(long)]
         expect_hash: Option<String>,
+        /// Select an exact historical checkpoint ID (default: head).
+        #[arg(long)]
+        revision: Option<String>,
     },
 }
 
@@ -452,13 +462,19 @@ impl CommandResult {
         }
     }
 
-    fn archive(command: &'static str, input: &Path, output: Option<&Path>, digest: String) -> Self {
+    fn archive(
+        command: &'static str,
+        input: &Path,
+        output: Option<&Path>,
+        digest: String,
+        version: u32,
+    ) -> Self {
         Self {
             ok: true,
             command: command.into(),
             input: input.display().to_string(),
             output: output.map(|path| path.display().to_string()),
-            format: Some("maac.editable-archive/1".into()),
+            format: Some(format!("maac.editable-archive/{version}")),
             notes: None,
             frames: None,
             digest: Some(digest),
@@ -1156,6 +1172,8 @@ fn execute_archive(command: &ArchiveCommand) -> Result<CommandResult, CliError> 
             output_dir,
             project_root,
             profile,
+            previous,
+            expect_previous_hash,
         } => {
             let (entry, implicit_root) = resolve_source_input(Some(input), project_root.as_deref());
             let root = implicit_root.unwrap_or_else(|| {
@@ -1178,47 +1196,100 @@ fn execute_archive(command: &ArchiveCommand) -> Result<CommandResult, CliError> 
                 ProfileArg::Default => "default",
                 ProfileArg::Song => "song",
             };
-            let snapshot = ArchiveSnapshot::capture(&absolute_entry, &root, profile)
-                .map_err(|error| CliError::from_diagnostics(&error))?;
-            stage_archive_directory(output_dir, |staging| snapshot.stage(staging))?;
+            let mut history = if let Some(previous) = previous {
+                ensure_output_outside_archive(output_dir, previous)?;
+                let prior = ArchiveHistory::verify(previous)
+                    .map_err(|error| CliError::from_diagnostics(&error))?;
+                verify_expected_archive_hash(expect_previous_hash.as_deref(), &prior.digest())?;
+                prior
+            } else {
+                ArchiveHistory::capture(&absolute_entry, &root, profile)
+                    .map_err(|error| CliError::from_diagnostics(&error))?
+            };
+            if previous.is_some() {
+                let snapshot = ArchiveSnapshot::capture(&absolute_entry, &root, profile)
+                    .map_err(|error| CliError::from_diagnostics(&error))?;
+                history
+                    .append(snapshot)
+                    .map_err(|error| CliError::from_diagnostics(&error))?;
+            }
+            stage_archive_directory(output_dir, |staging| history.stage(staging))?;
             Ok(CommandResult::archive(
                 "archive create",
                 &entry,
                 Some(output_dir),
-                snapshot.digest(),
+                history.digest(),
+                history.version(),
             ))
         }
         ArchiveCommand::Verify {
             archive,
             expect_hash,
         } => {
-            let snapshot = ArchiveSnapshot::verify(archive)
+            let history = ArchiveHistory::verify(archive)
                 .map_err(|error| CliError::from_diagnostics(&error))?;
-            verify_expected_archive_hash(expect_hash.as_deref(), &snapshot.digest())?;
+            verify_expected_archive_hash(expect_hash.as_deref(), &history.digest())?;
             Ok(CommandResult::archive(
                 "archive verify",
                 archive,
                 None,
-                snapshot.digest(),
+                history.digest(),
+                history.version(),
             ))
         }
         ArchiveCommand::Unpack {
             archive,
             output_dir,
             expect_hash,
+            revision,
         } => {
-            let snapshot = ArchiveSnapshot::verify(archive)
+            ensure_output_outside_archive(output_dir, archive)?;
+            let history = ArchiveHistory::verify(archive)
                 .map_err(|error| CliError::from_diagnostics(&error))?;
-            verify_expected_archive_hash(expect_hash.as_deref(), &snapshot.digest())?;
+            verify_expected_archive_hash(expect_hash.as_deref(), &history.digest())?;
+            let snapshot = history
+                .select(revision.as_deref())
+                .map_err(|error| CliError::from_diagnostics(&error))?;
             stage_archive_directory(output_dir, |staging| snapshot.stage_members(staging))?;
             Ok(CommandResult::archive(
                 "archive unpack",
                 archive,
                 Some(output_dir),
-                snapshot.digest(),
+                history.digest(),
+                history.version(),
             ))
         }
     }
+}
+
+fn ensure_output_outside_archive(output: &Path, archive: &Path) -> Result<(), CliError> {
+    let archive = fs::canonicalize(archive).map_err(|error| {
+        CliError::new(
+            "E_REFERENCE",
+            format!("cannot resolve archive {}: {error}", archive.display()),
+        )
+    })?;
+    let parent = output
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let parent = fs::canonicalize(parent).map_err(|error| {
+        CliError::new(
+            "E_REFERENCE",
+            format!("cannot resolve output parent {}: {error}", parent.display()),
+        )
+    })?;
+    if parent.starts_with(&archive) {
+        return Err(CliError::new(
+            "E_REFERENCE",
+            format!(
+                "output {} is inside input archive {}",
+                output.display(),
+                archive.display()
+            ),
+        ));
+    }
+    Ok(())
 }
 
 fn stage_archive_directory(

@@ -69,6 +69,24 @@ fn project(root: &Path) {
     fs::write(root.join("main.maac"), source).unwrap();
 }
 
+fn checkpoint_ids(archive: &Path) -> Vec<String> {
+    let manifest: Value =
+        serde_json::from_slice(&fs::read(archive.join("maac-archive.json")).unwrap()).unwrap();
+    assert_eq!(manifest["version"], 2);
+    manifest["checkpoints"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["id"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+fn checkpoint_dir(archive: &Path, id: &str) -> std::path::PathBuf {
+    archive
+        .join("checkpoints")
+        .join(id.strip_prefix("sha256:").unwrap())
+}
+
 #[test]
 fn large_media_archive_relocates_verifies_and_unpacks_exact_sources() {
     let directory = tempdir().unwrap();
@@ -163,9 +181,10 @@ fn corrupt_archive_and_existing_destination_fail_without_publication() {
     assert_eq!(refused["code"], "E_OUTPUT_EXISTS");
     assert_eq!(fs::read(destination.join("keep")).unwrap(), b"existing");
 
+    let head = checkpoint_ids(&archive).pop().unwrap();
     let mut pcm = OpenOptions::new()
         .write(true)
-        .open(archive.join("large.pcm"))
+        .open(checkpoint_dir(&archive, &head).join("large.pcm"))
         .unwrap();
     pcm.seek(SeekFrom::Start(PCM_BYTES - 4)).unwrap();
     pcm.write_all(&0.25f32.to_le_bytes()).unwrap();
@@ -229,4 +248,245 @@ fn native_production_descriptor_and_builtin_import_reopen_offline() {
             Path::new(profile),
         ]));
     }
+}
+
+#[test]
+fn history_retains_removed_media_and_reopens_both_revisions() {
+    let directory = tempdir().unwrap();
+    let project_dir = directory.path().join("project");
+    let first = directory.path().join("first");
+    let second = directory.path().join("second");
+    let no_op = directory.path().join("no-op");
+    let old = directory.path().join("old");
+    let current = directory.path().join("current");
+    project(&project_dir);
+    let old_source = fs::read(project_dir.join("main.maac")).unwrap();
+    let old_pcm_hash = hash_file(&project_dir.join("large.pcm"));
+
+    let first_result = success(invoke(&[
+        Path::new("--json"),
+        Path::new("archive"),
+        Path::new("create"),
+        &project_dir,
+        Path::new("--output-dir"),
+        &first,
+    ]));
+    let first_hash = first_result["digest"].as_str().unwrap();
+    let first_id = checkpoint_ids(&first)[0].clone();
+    let nested_output = first.join("nested-output");
+    assert_eq!(
+        rejected(invoke(&[
+            Path::new("--json"),
+            Path::new("archive"),
+            Path::new("create"),
+            &project_dir,
+            Path::new("--previous"),
+            &first,
+            Path::new("--output-dir"),
+            &nested_output,
+        ]))["code"],
+        "E_REFERENCE"
+    );
+    assert!(!nested_output.exists());
+    #[cfg(unix)]
+    {
+        let alias = directory.path().join("prior-alias");
+        std::os::unix::fs::symlink(&first, &alias).unwrap();
+        let aliased_output = alias.join("nested-output");
+        assert_eq!(
+            rejected(invoke(&[
+                Path::new("--json"),
+                Path::new("archive"),
+                Path::new("create"),
+                &project_dir,
+                Path::new("--previous"),
+                &first,
+                Path::new("--output-dir"),
+                &aliased_output,
+            ]))["code"],
+            "E_REFERENCE"
+        );
+        assert!(!first.join("nested-output").exists());
+    }
+    let wrong_pin_output = directory.path().join("wrong-pin");
+    assert_eq!(
+        rejected(invoke(&[
+            Path::new("--json"),
+            Path::new("archive"),
+            Path::new("create"),
+            &project_dir,
+            Path::new("--previous"),
+            &first,
+            Path::new("--expect-previous-hash"),
+            Path::new("sha256:0000000000000000000000000000000000000000000000000000000000000000"),
+            Path::new("--output-dir"),
+            &wrong_pin_output,
+        ]))["code"],
+        "E_HASH"
+    );
+    assert!(!wrong_pin_output.exists());
+
+    let new_source =
+        fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/archive_v1/main.maac"))
+            .unwrap();
+    fs::write(project_dir.join("main.maac"), &new_source).unwrap();
+    fs::remove_file(project_dir.join("large.pcm")).unwrap();
+    success(invoke(&[
+        Path::new("--json"),
+        Path::new("archive"),
+        Path::new("create"),
+        &project_dir,
+        Path::new("--previous"),
+        &first,
+        Path::new("--expect-previous-hash"),
+        Path::new(first_hash),
+        Path::new("--output-dir"),
+        &second,
+    ]));
+    let ids = checkpoint_ids(&second);
+    assert_eq!(ids.len(), 2);
+    assert_eq!(ids[0], first_id);
+    assert_ne!(ids[0], ids[1]);
+
+    success(invoke(&[
+        Path::new("--json"),
+        Path::new("archive"),
+        Path::new("create"),
+        &project_dir,
+        Path::new("--previous"),
+        &second,
+        Path::new("--output-dir"),
+        &no_op,
+    ]));
+    assert_eq!(checkpoint_ids(&no_op), ids);
+    fs::remove_dir_all(&project_dir).unwrap();
+    fs::remove_dir_all(&first).unwrap();
+    fs::remove_dir_all(&second).unwrap();
+    success(invoke(&[
+        Path::new("--json"),
+        Path::new("archive"),
+        Path::new("verify"),
+        &no_op,
+    ]));
+    let nested_restore = no_op.join("nested-restore");
+    assert_eq!(
+        rejected(invoke(&[
+            Path::new("--json"),
+            Path::new("archive"),
+            Path::new("unpack"),
+            &no_op,
+            Path::new("--output-dir"),
+            &nested_restore,
+        ]))["code"],
+        "E_REFERENCE"
+    );
+    assert!(!nested_restore.exists());
+    let unknown_output = directory.path().join("unknown-output");
+    rejected(invoke(&[
+        Path::new("--json"),
+        Path::new("archive"),
+        Path::new("unpack"),
+        &no_op,
+        Path::new("--revision"),
+        Path::new("sha256:0000000000000000000000000000000000000000000000000000000000000000"),
+        Path::new("--output-dir"),
+        &unknown_output,
+    ]));
+    assert!(!unknown_output.exists());
+    success(invoke(&[
+        Path::new("--json"),
+        Path::new("archive"),
+        Path::new("unpack"),
+        &no_op,
+        Path::new("--revision"),
+        Path::new(&first_id),
+        Path::new("--output-dir"),
+        &old,
+    ]));
+    success(invoke(&[
+        Path::new("--json"),
+        Path::new("archive"),
+        Path::new("unpack"),
+        &no_op,
+        Path::new("--output-dir"),
+        &current,
+    ]));
+    assert_eq!(fs::read(old.join("main.maac")).unwrap(), old_source);
+    assert_eq!(hash_file(&old.join("large.pcm")), old_pcm_hash);
+    assert_eq!(fs::read(current.join("main.maac")).unwrap(), new_source);
+    assert!(!current.join("large.pcm").exists());
+    success(invoke(&[
+        Path::new("--json"),
+        Path::new("check"),
+        &old,
+        Path::new("--disk-media"),
+    ]));
+    success(invoke(&[Path::new("--json"), Path::new("check"), &current]));
+
+    let mut pcm = OpenOptions::new()
+        .write(true)
+        .open(checkpoint_dir(&no_op, &first_id).join("large.pcm"))
+        .unwrap();
+    pcm.seek(SeekFrom::Start(PCM_BYTES - 4)).unwrap();
+    pcm.write_all(&0.25f32.to_le_bytes()).unwrap();
+    assert_eq!(
+        rejected(invoke(&[
+            Path::new("--json"),
+            Path::new("archive"),
+            Path::new("verify"),
+            &no_op,
+        ]))["code"],
+        "E_HASH"
+    );
+}
+
+#[test]
+fn version_one_fixture_keeps_digest_and_upgrades_without_changing_its_snapshot() {
+    const V1_DIGEST: &str =
+        "sha256:15d422b07aeb803b3f488c42a9b07d307f0cfdb78f09bd1173c4face9bb9842a";
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let legacy = root.join("tests/fixtures/archive_v1");
+    let directory = tempdir().unwrap();
+    let upgraded = directory.path().join("upgraded");
+    let unpacked = directory.path().join("unpacked");
+    let checked = success(invoke(&[
+        Path::new("--json"),
+        Path::new("archive"),
+        Path::new("verify"),
+        &legacy,
+        Path::new("--expect-hash"),
+        Path::new(V1_DIGEST),
+    ]));
+    assert_eq!(checked["digest"], V1_DIGEST);
+    assert_eq!(checked["format"], "maac.editable-archive/1");
+    success(invoke(&[
+        Path::new("--json"),
+        Path::new("archive"),
+        Path::new("create"),
+        legacy.join("main.maac").as_path(),
+        Path::new("--previous"),
+        &legacy,
+        Path::new("--output-dir"),
+        &upgraded,
+    ]));
+    let ids = checkpoint_ids(&upgraded);
+    assert_eq!(ids.len(), 1);
+    assert_eq!(
+        fs::read(legacy.join("maac-archive.json")).unwrap(),
+        fs::read(checkpoint_dir(&upgraded, &ids[0]).join("maac-archive.json")).unwrap()
+    );
+    success(invoke(&[
+        Path::new("--json"),
+        Path::new("archive"),
+        Path::new("unpack"),
+        &upgraded,
+        Path::new("--revision"),
+        Path::new(&ids[0]),
+        Path::new("--output-dir"),
+        &unpacked,
+    ]));
+    assert_eq!(
+        fs::read(legacy.join("main.maac")).unwrap(),
+        fs::read(unpacked.join("main.maac")).unwrap()
+    );
 }
