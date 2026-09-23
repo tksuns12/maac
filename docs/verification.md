@@ -158,6 +158,32 @@ and the shared tree-entry limit. Independent review found and prompted a fix
 for a create/verify tree-entry budget mismatch; the revised code enforces the
 same limit before publication and during verification.
 
+## Retained-original WAV archive checkpoints (2026-09-24)
+
+Version 3 stores the exact retained `import.json` and original WAV in eligible
+checkpoints. A fixed version 2 fixture made with the prior release binary keeps
+digest `sha256:4d6247bdd8dee4587fdabe1f580c2d637ae56f187381918ee8a4415c46fa9f40`;
+the fixed version 1 digest above also remains unchanged. No complete Rust
+integration-suite pass is claimed for this slice.
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Focused Rust tests | `cargo test --lib --test archive_cli --test archive_retained_cli --test archive_v2_compat_cli --test media_import_cli --test disk_media_cli --test module_cli --test bundle`; affected tests rerun after the verifier diagnostic fix | Passed: 273 library tests, 3 existing ignored; 5 archive CLI, 6 retained archive CLI, 1 fixed v2 compatibility, 17 bundle, 3 disk-media CLI, 6 media-import CLI, and 3 module CLI tests |
+| Formatting and whitespace | `cargo fmt --all -- --check`; `git diff --check` | Passed |
+| Clippy | `cargo clippy --all-targets -- -D warnings` | Passed |
+| Release build | `cargo build --release` | Passed |
+| Installed CLI acceptance | `python3 scripts/acceptance.py` | Passed: 38 of 38 checks |
+| Release CLI smoke | Retain WAV import, archive, delete input and project, relocate, verify pinned digest, unpack, verify import, and compare all four project files and rendered WAV bytes | Passed |
+| Independent review | Read-only Astra review of uncommitted changes | No actionable findings |
+
+The retained tests cover an original WAV larger than 4 MiB with a small crop,
+exact record bytes, no-op and changed-record checkpoints, two distinct
+historical originals, tampering outside the crop in a non-head checkpoint,
+v2-to-v3 promotion without changing the old checkpoint ID, malformed or
+orphan sidecars, nested-root guidance, and combined PCM/original budget checks.
+The preflight checks metadata and aggregate bytes across every checkpoint
+before loading original WAVs.
+
 ## Historical naming cleanup
 
 The current tree uses MaaC consistently in the specification, grammar, schema,

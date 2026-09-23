@@ -1,4 +1,4 @@
-//! Immutable, linear archive checkpoints. Each checkpoint remains a complete v1 archive.
+//! Immutable, linear archive checkpoints with v1 and retained-import leaves.
 
 use std::collections::BTreeSet;
 use std::fs::{self, OpenOptions};
@@ -17,6 +17,7 @@ use crate::diagnostic::{Diagnostic, DiagnosticCode, Diagnostics};
 const FORMAT: &str = "maac.editable-archive";
 const CHECKPOINT_FORMAT: &str = "maac.archive-checkpoint";
 const VERSION: u32 = 2;
+const RETAINED_VERSION: u32 = 3;
 const MAX_CHECKPOINTS: usize = 32;
 const MAX_SOURCE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_ASSET_BYTES: u64 = 64 * 1024 * 1024;
@@ -50,10 +51,10 @@ struct CheckpointIdentity<'a> {
 
 enum HistoryState {
     Legacy {
-        snapshot: ArchiveSnapshot,
+        snapshot: Box<ArchiveSnapshot>,
         genesis_id: String,
     },
-    Version2 {
+    Versioned {
         manifest: HistoryManifest,
         json: Vec<u8>,
         snapshots: Vec<ArchiveSnapshot>,
@@ -66,7 +67,7 @@ pub(crate) struct ArchiveHistory {
 }
 
 impl ArchiveHistory {
-    /// Capture one current composition as a v2 archive with a genesis checkpoint.
+    /// Capture one current composition as v2 or retained-import v3 history.
     pub(crate) fn capture(entry: &Path, root: &Path, profile: &str) -> Result<Self, Diagnostics> {
         let snapshot = ArchiveSnapshot::capture(entry, root, profile)?;
         Self::from_genesis(snapshot)
@@ -76,9 +77,14 @@ impl ArchiveHistory {
         check_aggregate(std::iter::once(snapshot.resource_bytes()))?;
         check_staged_tree(std::iter::once(&snapshot))?;
         let record = checkpoint(None, &snapshot.digest())?;
-        let (manifest, json) = encode_history(vec![record])?;
+        let version = if snapshot.is_retained() {
+            RETAINED_VERSION
+        } else {
+            VERSION
+        };
+        let (manifest, json) = encode_history(vec![record], version)?;
         Ok(Self {
-            state: HistoryState::Version2 {
+            state: HistoryState::Versioned {
                 manifest,
                 json,
                 snapshots: vec![snapshot],
@@ -121,12 +127,12 @@ impl ArchiveHistory {
                 let genesis_id = checkpoint(None, &snapshot.digest())?.id;
                 Ok(Self {
                     state: HistoryState::Legacy {
-                        snapshot,
+                        snapshot: Box::new(snapshot),
                         genesis_id,
                     },
                 })
             }
-            Some(2) => Self::verify_v2(root, json),
+            Some(2 | 3) => Self::verify_versioned(root, json),
             _ => Err(fail(
                 DiagnosticCode::Version,
                 "unsupported editable archive version",
@@ -134,11 +140,11 @@ impl ArchiveHistory {
         }
     }
 
-    fn verify_v2(root: &ProjectRoot, json: Vec<u8>) -> Result<Self, Diagnostics> {
-        Self::verify_v2_with_hook(root, json, || {})
+    fn verify_versioned(root: &ProjectRoot, json: Vec<u8>) -> Result<Self, Diagnostics> {
+        Self::verify_versioned_with_hook(root, json, || {})
     }
 
-    fn verify_v2_with_hook(
+    fn verify_versioned_with_hook(
         root: &ProjectRoot,
         json: Vec<u8>,
         before_capture: impl FnOnce(),
@@ -173,6 +179,12 @@ impl ArchiveHistory {
                     format!("checkpoint `{}` snapshot digest differs", record.id),
                 ));
             }
+            if manifest.version == VERSION && preflight.is_retained() {
+                return Err(fail(
+                    DiagnosticCode::Version,
+                    "v2 history cannot contain a retained-import leaf",
+                ));
+            }
             let child_entries = ArchiveSnapshot::tree_entries_in_root(&child, &preflight)?;
             tree_entries = tree_entries.checked_add(child_entries).ok_or_else(|| {
                 fail(
@@ -188,6 +200,14 @@ impl ArchiveHistory {
             }
             children.push(child);
             preflights.push(preflight);
+        }
+        if manifest.version == RETAINED_VERSION
+            && !preflights.iter().any(ArchivePreflight::is_retained)
+        {
+            return Err(fail(
+                DiagnosticCode::Version,
+                "v3 history has no retained-import checkpoint",
+            ));
         }
         check_aggregate(preflights.iter().map(ArchivePreflight::resource_bytes))?;
 
@@ -205,7 +225,7 @@ impl ArchiveHistory {
         }
         check_root_tree(root, &manifest)?;
         Ok(Self {
-            state: HistoryState::Version2 {
+            state: HistoryState::Versioned {
                 manifest,
                 json,
                 snapshots,
@@ -229,21 +249,26 @@ impl ArchiveHistory {
                     records.push(checkpoint(Some(&records[0].id), &snapshot.digest())?);
                 }
                 let snapshots = if changed {
-                    vec![old.clone(), snapshot]
+                    vec![old.as_ref().clone(), snapshot]
                 } else {
-                    vec![old.clone()]
+                    vec![old.as_ref().clone()]
                 };
                 check_aggregate(snapshots.iter().map(ArchiveSnapshot::resource_bytes))?;
                 check_staged_tree(snapshots.iter())?;
-                let (manifest, json) = encode_history(records)?;
-                self.state = HistoryState::Version2 {
+                let version = if snapshots.iter().any(ArchiveSnapshot::is_retained) {
+                    RETAINED_VERSION
+                } else {
+                    VERSION
+                };
+                let (manifest, json) = encode_history(records, version)?;
+                self.state = HistoryState::Versioned {
                     manifest,
                     json,
                     snapshots,
                 };
                 Ok(changed)
             }
-            HistoryState::Version2 {
+            HistoryState::Versioned {
                 manifest,
                 json,
                 snapshots,
@@ -269,7 +294,12 @@ impl ArchiveHistory {
                 check_staged_tree(snapshots.iter().chain(std::iter::once(&snapshot)))?;
                 let mut records = manifest.checkpoints.clone();
                 records.push(checkpoint(Some(&manifest.head), &snapshot.digest())?);
-                let (new_manifest, new_json) = encode_history(records)?;
+                let version = if manifest.version == RETAINED_VERSION || snapshot.is_retained() {
+                    RETAINED_VERSION
+                } else {
+                    VERSION
+                };
+                let (new_manifest, new_json) = encode_history(records, version)?;
                 *manifest = new_manifest;
                 *json = new_json;
                 snapshots.push(snapshot);
@@ -281,14 +311,14 @@ impl ArchiveHistory {
     pub(crate) fn version(&self) -> u32 {
         match self.state {
             HistoryState::Legacy { .. } => 1,
-            HistoryState::Version2 { .. } => VERSION,
+            HistoryState::Versioned { ref manifest, .. } => manifest.version,
         }
     }
 
     pub(crate) fn digest(&self) -> String {
         match &self.state {
             HistoryState::Legacy { snapshot, .. } => snapshot.digest(),
-            HistoryState::Version2 { json, .. } => sha256_digest(json),
+            HistoryState::Versioned { json, .. } => sha256_digest(json),
         }
     }
 
@@ -296,7 +326,7 @@ impl ArchiveHistory {
     pub(crate) fn head_id(&self) -> &str {
         match &self.state {
             HistoryState::Legacy { genesis_id, .. } => genesis_id,
-            HistoryState::Version2 { manifest, .. } => &manifest.head,
+            HistoryState::Versioned { manifest, .. } => &manifest.head,
         }
     }
 
@@ -304,7 +334,7 @@ impl ArchiveHistory {
     pub(crate) fn checkpoint_ids(&self) -> Vec<String> {
         match &self.state {
             HistoryState::Legacy { genesis_id, .. } => vec![genesis_id.clone()],
-            HistoryState::Version2 { manifest, .. } => manifest
+            HistoryState::Versioned { manifest, .. } => manifest
                 .checkpoints
                 .iter()
                 .map(|record| record.id.clone())
@@ -330,7 +360,7 @@ impl ArchiveHistory {
                     ))
                 }
             }
-            HistoryState::Version2 {
+            HistoryState::Versioned {
                 manifest,
                 snapshots,
                 ..
@@ -355,7 +385,7 @@ impl ArchiveHistory {
     pub(crate) fn stage(&self, dir: &Path) -> Result<(), Diagnostics> {
         match &self.state {
             HistoryState::Legacy { snapshot, .. } => snapshot.stage(dir),
-            HistoryState::Version2 {
+            HistoryState::Versioned {
                 manifest,
                 json,
                 snapshots,
@@ -426,6 +456,7 @@ fn checkpoint(parent: Option<&str>, snapshot: &str) -> Result<CheckpointRecord, 
 
 fn encode_history(
     checkpoints: Vec<CheckpointRecord>,
+    version: u32,
 ) -> Result<(HistoryManifest, Vec<u8>), Diagnostics> {
     let head = checkpoints
         .last()
@@ -434,7 +465,7 @@ fn encode_history(
         .clone();
     let manifest = HistoryManifest {
         format: FORMAT.into(),
-        version: VERSION,
+        version,
         head,
         checkpoints,
     };
@@ -459,7 +490,7 @@ fn canonical_json(manifest: &HistoryManifest) -> Result<Vec<u8>, Diagnostics> {
 }
 
 fn validate_history(manifest: &HistoryManifest) -> Result<(), Diagnostics> {
-    if manifest.format != FORMAT || manifest.version != VERSION {
+    if manifest.format != FORMAT || !matches!(manifest.version, VERSION | RETAINED_VERSION) {
         return Err(fail(
             DiagnosticCode::Version,
             "unsupported archive history format or version",
@@ -501,9 +532,9 @@ fn validate_history(manifest: &HistoryManifest) -> Result<(), Diagnostics> {
     Ok(())
 }
 
-fn check_aggregate(budgets: impl Iterator<Item = (u64, u64, u64)>) -> Result<(), Diagnostics> {
+fn check_aggregate(budgets: impl Iterator<Item = (u64, u64, u64, u64)>) -> Result<(), Diagnostics> {
     let mut total = (0u64, 0u64, 0u64);
-    for (source, asset, pcm) in budgets {
+    for (source, asset, pcm, original) in budgets {
         total.0 = total
             .0
             .checked_add(source)
@@ -515,7 +546,13 @@ fn check_aggregate(budgets: impl Iterator<Item = (u64, u64, u64)>) -> Result<(),
         total.2 = total
             .2
             .checked_add(pcm)
-            .ok_or_else(|| fail(DiagnosticCode::ResourceLimit, "PCM total overflow"))?;
+            .and_then(|n| n.checked_add(original))
+            .ok_or_else(|| {
+                fail(
+                    DiagnosticCode::ResourceLimit,
+                    "PCM and original total overflow",
+                )
+            })?;
         if total.0 > MAX_SOURCE_BYTES || total.1 > MAX_ASSET_BYTES || total.2 > MAX_PCM_BYTES {
             return Err(fail(
                 DiagnosticCode::ResourceLimit,
@@ -675,6 +712,8 @@ fn fail(code: DiagnosticCode, message: impl Into<String>) -> Diagnostics {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::media_import::{import_wav_file_with_retention, WavImportRange};
+    use hound::{SampleFormat, WavSpec, WavWriter};
 
     const SOURCE: &str = include_str!("../tests/fixtures/archive_v1/main.maac");
     const V1_DIGEST: &str =
@@ -687,6 +726,40 @@ mod tests {
 
     fn capture(dir: &Path) -> ArchiveSnapshot {
         ArchiveSnapshot::capture(Path::new("main.maac"), dir, "default").unwrap()
+    }
+
+    fn retained_project(root: &Path) -> std::path::PathBuf {
+        let input = root.join("input.wav");
+        let mut writer = WavWriter::create(
+            &input,
+            WavSpec {
+                channels: 1,
+                sample_rate: 48_000,
+                bits_per_sample: 16,
+                sample_format: SampleFormat::Int,
+            },
+        )
+        .unwrap();
+        for sample in [1_000i16, 2_000, -3_000, 4_000] {
+            writer.write_sample(sample).unwrap();
+        }
+        writer.finalize().unwrap();
+        let imported =
+            import_wav_file_with_retention(&input, Some(WavImportRange::new(1, 3)), true).unwrap();
+        let project = root.join("project");
+        fs::create_dir(&project).unwrap();
+        let bundle = imported.source_bundle();
+        fs::write(project.join("main.maac"), &bundle.sources["main.maac"]).unwrap();
+        fs::write(project.join("media.pcm"), &bundle.assets["media.pcm"]).unwrap();
+        fs::write(
+            project.join("import.json"),
+            imported.manifest_json().unwrap(),
+        )
+        .unwrap();
+        imported
+            .copy_original_to(&project.join("original.wav"))
+            .unwrap();
+        project
     }
 
     #[test]
@@ -804,7 +877,7 @@ mod tests {
         second.stage(&replacement).unwrap();
         let pinned = ProjectRoot::open_pinned(&archive, cap_std::ambient_authority()).unwrap();
         let json = bounded_manifest(&pinned).unwrap();
-        let verified = ArchiveHistory::verify_v2_with_hook(&pinned, json, || {
+        let verified = ArchiveHistory::verify_versioned_with_hook(&pinned, json, || {
             fs::rename(&archive, &moved).unwrap();
             fs::rename(&replacement, &archive).unwrap();
         })
@@ -830,5 +903,69 @@ mod tests {
         assert!(check_staged_tree_with_limit(std::iter::once(&snapshot), 5).is_err());
         check_staged_tree_with_limit([&snapshot, &snapshot].into_iter(), 10).unwrap();
         assert!(check_staged_tree_with_limit([&snapshot, &snapshot].into_iter(), 9).is_err());
+    }
+
+    #[test]
+    fn aggregate_media_budget_combines_pcm_and_retained_original() {
+        check_aggregate([(0, 0, MAX_PCM_BYTES - 1, 1)].into_iter()).unwrap();
+        assert!(check_aggregate([(0, 0, MAX_PCM_BYTES, 1)].into_iter()).is_err());
+        assert!(check_aggregate(
+            [(0, 0, MAX_PCM_BYTES / 2, MAX_PCM_BYTES / 2), (0, 0, 1, 0)].into_iter()
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn retained_leaf_preserves_sidecars_and_v2_rejects_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = retained_project(temp.path());
+        let history = ArchiveHistory::capture(Path::new("main.maac"), &project, "default").unwrap();
+        assert_eq!(history.version(), 3);
+        let archive = temp.path().join("archive");
+        fs::create_dir(&archive).unwrap();
+        history.stage(&archive).unwrap();
+        let verified = ArchiveHistory::verify(&archive).unwrap();
+        assert_eq!(verified.digest(), history.digest());
+        let unpacked = temp.path().join("unpacked");
+        fs::create_dir(&unpacked).unwrap();
+        verified
+            .select(None)
+            .unwrap()
+            .stage_members(&unpacked)
+            .unwrap();
+        for name in ["main.maac", "media.pcm", "import.json", "original.wav"] {
+            assert_eq!(
+                fs::read(project.join(name)).unwrap(),
+                fs::read(unpacked.join(name)).unwrap()
+            );
+        }
+        let mut downgraded: HistoryManifest =
+            serde_json::from_slice(&fs::read(archive.join(MANIFEST_PATH)).unwrap()).unwrap();
+        downgraded.version = 2;
+        fs::write(
+            archive.join(MANIFEST_PATH),
+            canonical_json(&downgraded).unwrap(),
+        )
+        .unwrap();
+        assert!(ArchiveHistory::verify(&archive).is_err());
+    }
+
+    #[test]
+    fn retained_original_change_outside_crop_invalidates_checkpoint() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = retained_project(temp.path());
+        let history = ArchiveHistory::capture(Path::new("main.maac"), &project, "default").unwrap();
+        let archive = temp.path().join("archive");
+        fs::create_dir(&archive).unwrap();
+        history.stage(&archive).unwrap();
+        let checkpoint = &history.checkpoint_ids()[0][7..];
+        let original = archive
+            .join("checkpoints")
+            .join(checkpoint)
+            .join("original.wav");
+        let mut bytes = fs::read(&original).unwrap();
+        bytes[44] ^= 1; // first sample lies before the declared [1,3) crop.
+        fs::write(original, bytes).unwrap();
+        assert!(ArchiveHistory::verify(&archive).is_err());
     }
 }

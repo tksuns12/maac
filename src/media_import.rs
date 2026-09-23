@@ -204,6 +204,56 @@ impl ImportedWav {
         Ok(())
     }
 
+    /// Stage retained bytes without replacing an existing file, checking the
+    /// complete byte count and hash while copying from the private snapshot.
+    pub(crate) fn stage_retained_original_to(
+        &self,
+        destination: &Path,
+    ) -> Result<(), MediaImportError> {
+        let snapshot = self
+            .retained_snapshot
+            .as_ref()
+            .ok_or_else(|| import_error("E_INTERNAL", "import has no private original snapshot"))?;
+        let mut input = snapshot
+            .reopen()
+            .map_err(|e| import_error("E_IO", format!("cannot reopen original snapshot: {e}")))?;
+        let mut output = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(destination)
+            .map_err(|e| import_error("E_IO", format!("cannot create original.wav: {e}")))?;
+        let mut hasher = Sha256::new();
+        let mut total = 0u64;
+        let mut block = [0u8; SNAPSHOT_BUFFER_BYTES];
+        loop {
+            let n = input
+                .read(&mut block)
+                .map_err(|e| import_error("E_IO", format!("cannot read original snapshot: {e}")))?;
+            if n == 0 {
+                break;
+            }
+            total = total.checked_add(n as u64).ok_or_else(|| {
+                import_error("E_RESOURCE_LIMIT", "original snapshot size overflow")
+            })?;
+            if total > self.input_bytes || total > MAX_MEDIA_IMPORT_INPUT_BYTES {
+                return Err(import_error("E_IMPORT_MISMATCH", "original snapshot grew"));
+            }
+            output
+                .write_all(&block[..n])
+                .map_err(|e| import_error("E_IO", format!("cannot write original.wav: {e}")))?;
+            hasher.update(&block[..n]);
+        }
+        if total != self.input_bytes
+            || format!("sha256:{:x}", hasher.finalize()) != self.source_hash
+        {
+            return Err(import_error(
+                "E_IMPORT_MISMATCH",
+                "original snapshot changed",
+            ));
+        }
+        Ok(())
+    }
+
     /// Build the ordinary source bundle that is written by the CLI and can
     /// subsequently pass through the existing check/build/compile pipeline.
     pub fn source_bundle(&self) -> SourceBundle {
@@ -738,7 +788,8 @@ struct RetainedManifest {
     source: RetainedSource,
     selection: RetainedSelection,
     output: RetainedOutput,
-    original: RetainedOriginal,
+    #[serde(default)]
+    original: Option<RetainedOriginal>,
 }
 
 #[derive(Deserialize)]
@@ -780,38 +831,130 @@ struct RetainedOriginal {
     sha256: String,
 }
 
-/// Verify a retained import's original, declared crop, and exact native PCM.
-/// Source closure compilation is performed separately by the CLI so edits to
-/// the MaaC source do not invalidate this immutable import record.
-pub fn verify_retained_import(project: &Path) -> Result<ImportedWav, MediaImportError> {
-    let root = bundle_fs::ProjectRoot::open_pinned(project, cap_std::ambient_authority())
-        .map_err(|error| import_error("E_REFERENCE", format!("project root: {error}")))?;
-    verify_retained_import_in_root(&root)
+/// Strict, bounded import metadata retained before the potentially large WAV
+/// is decoded. The exact JSON bytes remain available for archive staging.
+pub(crate) struct RetainedImportPreflight {
+    json: Vec<u8>,
+    manifest: RetainedManifest,
 }
 
-pub(crate) fn verify_retained_import_in_root(
+impl RetainedImportPreflight {
+    pub(crate) fn json(&self) -> &[u8] {
+        &self.json
+    }
+
+    pub(crate) fn original_bytes(&self) -> u64 {
+        self.manifest.source.bytes
+    }
+
+    pub(crate) fn original_hash(&self) -> &str {
+        &self.manifest.source.sha256
+    }
+
+    pub(crate) fn output_hash(&self) -> &str {
+        &self.manifest.output.sha256
+    }
+}
+
+fn read_import_manifest(
     root: &bundle_fs::ProjectRoot,
-) -> Result<ImportedWav, MediaImportError> {
-    let manifest_bytes = read_member(root, "import.json", MAX_MEDIA_IMPORT_MANIFEST_BYTES)?;
-    let manifest: RetainedManifest = serde_json::from_slice(&manifest_bytes).map_err(|error| {
+) -> Result<(Vec<u8>, RetainedManifest), MediaImportError> {
+    let json = read_member(root, "import.json", MAX_MEDIA_IMPORT_MANIFEST_BYTES)?;
+    let manifest: RetainedManifest = serde_json::from_slice(&json).map_err(|error| {
         import_error("E_IMPORT_MANIFEST", format!("invalid import.json: {error}"))
     })?;
+    Ok((json, manifest))
+}
+
+fn validate_import_manifest(manifest: &RetainedManifest) -> Result<(), MediaImportError> {
+    let selected_frames = manifest
+        .selection
+        .end_frame
+        .checked_sub(manifest.selection.start_frame);
+    let output_bytes = selected_frames
+        .and_then(|frames| frames.checked_mul(u64::from(manifest.source.channels)))
+        .and_then(|samples| samples.checked_mul(4));
     if manifest.format != MEDIA_IMPORT_FORMAT
-        || manifest.version != MEDIA_IMPORT_RETAINED_VERSION
         || manifest.decoder != MEDIA_IMPORT_DECODER_ID
         || manifest.conversion != MEDIA_IMPORT_CONVERSION_ID
         || manifest.source.container != "riff_wave"
         || manifest.output.path != "media.pcm"
         || manifest.output.format != CORE_AUDIO_FORMAT
-        || manifest.original.path != "original.wav"
-        || manifest.original.bytes != manifest.source.bytes
-        || manifest.original.sha256 != manifest.source.sha256
+        || manifest.source.bytes > MAX_MEDIA_IMPORT_INPUT_BYTES
+        || manifest.source.bytes < 44
+        || manifest.source.rate_hz == 0
+        || !(1..=2).contains(&manifest.source.channels)
+        || !matches!(
+            manifest.source.encoding.as_str(),
+            "pcm_s16le" | "pcm_s24le" | "pcm_s32le" | "ieee_f32le"
+        )
+        || manifest.source.frames == 0
+        || manifest.selection.start_frame >= manifest.selection.end_frame
+        || manifest.selection.end_frame > u64::from(manifest.source.frames)
+        || output_bytes.is_none_or(|bytes| bytes > MAX_BUNDLE_FILE_BYTES as u64)
+        || !valid_hash_pin(&manifest.source.sha256)
+        || !valid_hash_pin(&manifest.output.sha256)
+    {
+        return Err(import_error(
+            "E_IMPORT_MANIFEST",
+            "unsupported or inconsistent import manifest",
+        ));
+    }
+    Ok(())
+}
+
+fn valid_hash_pin(pin: &str) -> bool {
+    pin.len() == 71
+        && pin.starts_with("sha256:")
+        && pin[7..]
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+pub(crate) fn preflight_legacy_import_in_root(
+    root: &bundle_fs::ProjectRoot,
+) -> Result<(), MediaImportError> {
+    let (_, manifest) = read_import_manifest(root)?;
+    validate_import_manifest(&manifest)?;
+    if manifest.version != MEDIA_IMPORT_VERSION || manifest.original.is_some() {
+        return Err(import_error(
+            "E_IMPORT_MANIFEST",
+            "import.json is not a v1 import without original",
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn preflight_retained_import_in_root(
+    root: &bundle_fs::ProjectRoot,
+) -> Result<RetainedImportPreflight, MediaImportError> {
+    let (json, manifest) = read_import_manifest(root)?;
+    validate_import_manifest(&manifest)?;
+    let original = manifest.original.as_ref().ok_or_else(|| {
+        import_error(
+            "E_IMPORT_MANIFEST",
+            "retained import has no original identity",
+        )
+    })?;
+    if manifest.version != MEDIA_IMPORT_RETAINED_VERSION
+        || original.path != "original.wav"
+        || original.bytes != manifest.source.bytes
+        || original.sha256 != manifest.source.sha256
+        || !valid_hash_pin(&original.sha256)
     {
         return Err(import_error(
             "E_IMPORT_MANIFEST",
             "unsupported or inconsistent retained import manifest",
         ));
     }
+    Ok(RetainedImportPreflight { json, manifest })
+}
+
+pub(crate) fn verify_retained_import_snapshot_in_root(
+    root: &bundle_fs::ProjectRoot,
+    preflight: &RetainedImportPreflight,
+) -> Result<ImportedWav, MediaImportError> {
+    let manifest = &preflight.manifest;
     let original = bundle_fs::open_contained_member(root, "original.wav")
         .map_err(|error| import_error("E_REFERENCE", format!("original.wav: {error}")))?;
     let imported = import_wav_open_file(
@@ -821,7 +964,7 @@ pub(crate) fn verify_retained_import_in_root(
             manifest.selection.start_frame,
             manifest.selection.end_frame,
         )),
-        false,
+        true,
     )?;
     if imported.input_bytes != manifest.source.bytes
         || imported.source_hash != manifest.source.sha256
@@ -839,6 +982,23 @@ pub(crate) fn verify_retained_import_in_root(
             "retained WAV or decoded crop differs from import.json",
         ));
     }
+    Ok(imported)
+}
+
+/// Verify a retained import's original, declared crop, and exact native PCM.
+/// Source closure compilation is performed separately by the CLI so edits to
+/// the MaaC source do not invalidate this immutable import record.
+pub fn verify_retained_import(project: &Path) -> Result<ImportedWav, MediaImportError> {
+    let root = bundle_fs::ProjectRoot::open_pinned(project, cap_std::ambient_authority())
+        .map_err(|error| import_error("E_REFERENCE", format!("project root: {error}")))?;
+    verify_retained_import_in_root(&root)
+}
+
+pub(crate) fn verify_retained_import_in_root(
+    root: &bundle_fs::ProjectRoot,
+) -> Result<ImportedWav, MediaImportError> {
+    let preflight = preflight_retained_import_in_root(root)?;
+    let imported = verify_retained_import_snapshot_in_root(root, &preflight)?;
     let pcm = read_member(root, "media.pcm", MAX_BUNDLE_FILE_BYTES as u64)?;
     if pcm != imported.pcm_bytes {
         return Err(import_error(
@@ -873,5 +1033,57 @@ fn import_error(code: &'static str, message: impl Into<String>) -> MediaImportEr
     MediaImportError {
         code,
         message: message.into(),
+    }
+}
+
+#[cfg(test)]
+mod retained_archive_tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn private_original_stages_exactly_once_and_preflight_is_strict() {
+        let temp = tempfile::tempdir().unwrap();
+        let input = temp.path().join("input.wav");
+        let mut writer = hound::WavWriter::create(
+            &input,
+            WavSpec {
+                channels: 1,
+                sample_rate: 48_000,
+                bits_per_sample: 16,
+                sample_format: SampleFormat::Int,
+            },
+        )
+        .unwrap();
+        for sample in [0i16, 1000, -2000] {
+            writer.write_sample(sample).unwrap();
+        }
+        writer.finalize().unwrap();
+        let imported =
+            import_wav_file_with_retention(&input, Some(WavImportRange::new(1, 3)), true).unwrap();
+        let original = temp.path().join("original.wav");
+        imported.stage_retained_original_to(&original).unwrap();
+        assert_eq!(fs::read(&input).unwrap(), fs::read(&original).unwrap());
+        assert!(imported.stage_retained_original_to(&original).is_err());
+
+        let manifest = temp.path().join("import.json");
+        fs::write(&manifest, imported.manifest_json().unwrap()).unwrap();
+        let root =
+            bundle_fs::ProjectRoot::open_pinned(temp.path(), cap_std::ambient_authority()).unwrap();
+        let preflight = preflight_retained_import_in_root(&root).unwrap();
+        assert_eq!(
+            preflight.original_bytes(),
+            fs::metadata(&original).unwrap().len()
+        );
+        assert_eq!(
+            verify_retained_import_snapshot_in_root(&root, &preflight)
+                .unwrap()
+                .pcm_bytes(),
+            imported.pcm_bytes()
+        );
+        let mut value: serde_json::Value = serde_json::from_slice(preflight.json()).unwrap();
+        value["extra"] = serde_json::json!(true);
+        fs::write(manifest, serde_json::to_vec(&value).unwrap()).unwrap();
+        assert!(preflight_retained_import_in_root(&root).is_err());
     }
 }

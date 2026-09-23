@@ -1,0 +1,6 @@
+maac 1;
+// Archive v1 compatibility fixture.
+project p { score=[0q,1/4q]; tail=0s; rate=48000Hz; tempo=&clock; meter=&metre; output=&tone:out; }
+tempo clock { points=[(0q,120bpm,step)]; }
+meter metre { points=[(0q,4,4)]; }
+node tone { type="core.sine/1"; config={ voices=2; }; params={ attack=0s; release=0s; level=0.2; }; }

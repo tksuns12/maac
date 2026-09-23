@@ -93,7 +93,8 @@ validated PCM that is still embedded in the artifact. This writes a private
 temporary snapshot and uses a two-page cache bounded to 32 KiB per asset; the
 artifact still retains its bytes. Existing per-asset, aggregate, and plan-size
 limits are unchanged. It avoids an additional full decoded-PCM allocation but
-does not support external-media or long-media streaming. Recording workflows,
-dependency-complete project archives,
+does not support external-media or long-media streaming. The
+[native archive](editable-archive.md) can preserve this verified original WAV
+and its import record in a version 3 checkpoint. Recording workflows,
 source-edit history, processor-state packaging, and freeze invalidation remain
 future Phase 3 work.
