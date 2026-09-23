@@ -25,21 +25,41 @@ use crate::diagnostic::{Diagnostic, DiagnosticCode, Diagnostics};
 /// file, and performs the bounded read from that same handle.
 pub fn load_bundle(entry_path: &Path, project_root: &Path) -> Result<SourceBundle, Diagnostics> {
     let root = ProjectRoot::open(project_root, ambient_authority())?;
+    load_bundle_in_root(entry_path, &root)
+}
 
-    let entry_candidate = if entry_path.is_absolute() {
-        entry_path.to_owned()
+/// Load through an already pinned project directory, including the entry.
+pub(crate) fn load_bundle_in_root(
+    entry_path: &Path,
+    root: &ProjectRoot,
+) -> Result<SourceBundle, Diagnostics> {
+    let entry = if entry_path.is_absolute() {
+        let entry_candidate = entry_path.to_owned();
+        let entry_canonical =
+            canonicalize(&entry_candidate, "entry source", DiagnosticCode::Reference)?;
+        ensure_contained(
+            &root.canonical,
+            &entry_canonical,
+            "entry source",
+            DiagnosticCode::Reference,
+        )?;
+        logical_entry_path(&root.canonical, &entry_candidate, &entry_canonical)?
     } else {
-        root.canonical.join(entry_path)
+        let entry = os_relative_to_posix(entry_path, "entry source")?;
+        if root.pinned_resolution {
+            resolve_contained_path(root, entry_path, "entry source", DiagnosticCode::Reference)?;
+        } else {
+            let candidate = root.canonical.join(entry_path);
+            let canonical = canonicalize(&candidate, "entry source", DiagnosticCode::Reference)?;
+            ensure_contained(
+                &root.canonical,
+                &canonical,
+                "entry source",
+                DiagnosticCode::Reference,
+            )?;
+        }
+        entry
     };
-    let entry_canonical =
-        canonicalize(&entry_candidate, "entry source", DiagnosticCode::Reference)?;
-    ensure_contained(
-        &root.canonical,
-        &entry_canonical,
-        "entry source",
-        DiagnosticCode::Reference,
-    )?;
-    let entry = logical_entry_path(&root.canonical, &entry_candidate, &entry_canonical)?;
 
     let mut sources = BTreeMap::new();
     let mut assets = BTreeMap::new();
@@ -57,7 +77,7 @@ pub fn load_bundle(entry_path: &Path, project_root: &Path) -> Result<SourceBundl
                 "bundle contains more than {MAX_BUNDLE_SOURCES} source files"
             )));
         }
-        let file = contained_file(&root, &logical_path, "source", DiagnosticCode::Reference)?;
+        let file = contained_file(root, &logical_path, "source", DiagnosticCode::Reference)?;
         let bytes = read_bounded(file, &logical_path, "source")?;
         source_bytes = checked_total(source_bytes, bytes.len(), MAX_BUNDLE_SOURCE_BYTES, "source")?;
         if let Some(expectations) = expected_source_hashes.get(&logical_path) {
@@ -134,7 +154,7 @@ pub fn load_bundle(entry_path: &Path, project_root: &Path) -> Result<SourceBundl
                     "bundle contains more than {MAX_BUNDLE_ASSETS} assets"
                 )));
             }
-            let file = contained_file(&root, &target, "asset", DiagnosticCode::Asset)?;
+            let file = contained_file(root, &target, "asset", DiagnosticCode::Asset)?;
             let bytes = read_bounded(file, &target, "asset")?;
             asset_bytes = checked_total(asset_bytes, bytes.len(), MAX_BUNDLE_ASSET_BYTES, "asset")?;
             let actual = sha256_digest(&bytes);
@@ -160,6 +180,16 @@ pub fn load_bundle(entry_path: &Path, project_root: &Path) -> Result<SourceBundl
     // aggregate syntax limits, and all path invariants.
     bundle.resolve()?;
     Ok(bundle)
+}
+
+/// Match the CLI's canonical-entry behavior without reopening the root path.
+pub(crate) fn load_bundle_from_resolved_entry(
+    entry_path: &Path,
+    root: &ProjectRoot,
+) -> Result<SourceBundle, Diagnostics> {
+    let resolved =
+        resolve_contained_path(root, entry_path, "entry source", DiagnosticCode::Reference)?;
+    load_bundle_in_root(&resolved, root)
 }
 
 fn verify_source_hash(
@@ -243,13 +273,21 @@ fn os_relative_to_posix(path: &Path, label: &str) -> Result<String, Diagnostics>
     Ok(parts.join("/"))
 }
 
-struct ProjectRoot {
+pub(crate) struct ProjectRoot {
     canonical: PathBuf,
+    selected: PathBuf,
     dir: Dir,
+    pinned_resolution: bool,
 }
 
 impl ProjectRoot {
-    fn open(path: &Path, authority: AmbientAuthority) -> Result<Self, Diagnostics> {
+    pub(crate) fn open(path: &Path, authority: AmbientAuthority) -> Result<Self, Diagnostics> {
+        let selected = std::path::absolute(path).map_err(|failure| {
+            error(
+                DiagnosticCode::Reference,
+                format!("cannot locate project root `{}`: {failure}", path.display()),
+            )
+        })?;
         let canonical = canonicalize(path, "project root", DiagnosticCode::Reference)?;
         let dir = Dir::open_ambient_dir(&canonical, authority).map_err(|failure| {
             error(
@@ -260,7 +298,21 @@ impl ProjectRoot {
                 ),
             )
         })?;
-        Ok(Self { canonical, dir })
+        Ok(Self {
+            canonical,
+            selected,
+            dir,
+            pinned_resolution: false,
+        })
+    }
+
+    pub(crate) fn open_pinned(
+        path: &Path,
+        authority: AmbientAuthority,
+    ) -> Result<Self, Diagnostics> {
+        let mut root = Self::open(path, authority)?;
+        root.pinned_resolution = true;
+        Ok(root)
     }
 }
 
@@ -273,6 +325,12 @@ fn contained_file(
     contained_file_with(root, logical_path, label, code, || {})
 }
 
+/// Open a fixed project member through the same containment and handle checks
+/// used for authored source and asset references.
+pub(crate) fn open_contained_member(root: &ProjectRoot, member: &str) -> Result<File, Diagnostics> {
+    contained_file(root, member, "project member", DiagnosticCode::Reference)
+}
+
 fn contained_file_with(
     root: &ProjectRoot,
     logical_path: &str,
@@ -280,24 +338,31 @@ fn contained_file_with(
     code: DiagnosticCode,
     before_open: impl FnOnce(),
 ) -> Result<File, Diagnostics> {
-    let candidate = logical_path
-        .split('/')
-        .fold(root.canonical.clone(), |path, component| {
-            path.join(component)
-        });
-    let canonical = canonicalize(&candidate, &format!("{label} `{logical_path}`"), code)?;
-    ensure_contained(
-        &root.canonical,
-        &canonical,
-        &format!("{label} `{logical_path}`"),
-        code,
-    )?;
-    let relative = canonical.strip_prefix(&root.canonical).map_err(|_| {
-        error(
+    let relative = if root.pinned_resolution {
+        resolve_contained_path(root, Path::new(logical_path), label, code)?
+    } else {
+        let candidate = logical_path
+            .split('/')
+            .fold(root.canonical.clone(), |path, component| {
+                path.join(component)
+            });
+        let canonical = canonicalize(&candidate, &format!("{label} `{logical_path}`"), code)?;
+        ensure_contained(
+            &root.canonical,
+            &canonical,
+            &format!("{label} `{logical_path}`"),
             code,
-            format!("{label} `{logical_path}` resolves outside the project root"),
-        )
-    })?;
+        )?;
+        canonical
+            .strip_prefix(&root.canonical)
+            .map_err(|_| {
+                error(
+                    code,
+                    format!("{label} `{logical_path}` resolves outside the project root"),
+                )
+            })?
+            .to_path_buf()
+    };
 
     before_open();
     let mut options = OpenOptions::new();
@@ -307,7 +372,7 @@ fn contained_file_with(
         use cap_std::fs::OpenOptionsExt;
         options.custom_flags(libc::O_NONBLOCK);
     }
-    let file = root.dir.open_with(relative, &options).map_err(|failure| {
+    let file = root.dir.open_with(&relative, &options).map_err(|failure| {
         error(
             code,
             format!("cannot open {label} `{logical_path}`: {failure}"),
@@ -326,6 +391,114 @@ fn contained_file_with(
         ));
     }
     Ok(file.into_std())
+}
+
+/// Resolve links against the pinned directory without opening the final node.
+/// An authored absolute link is accepted only when it names this project root.
+fn resolve_contained_path(
+    root: &ProjectRoot,
+    path: &Path,
+    label: &str,
+    code: DiagnosticCode,
+) -> Result<PathBuf, Diagnostics> {
+    const MAX_LINKS: usize = 40;
+    let mut pending = path_parts(path, label, code)?;
+    let mut resolved = PathBuf::new();
+    let mut links = 0usize;
+    while let Some(part) = pending.pop_front() {
+        match part {
+            PathPart::Parent => {
+                if !resolved.pop() {
+                    return Err(error(code, format!("{label} path escapes project root")));
+                }
+            }
+            PathPart::Normal(part) => {
+                let candidate = resolved.join(&part);
+                let metadata = root.dir.symlink_metadata(&candidate).map_err(|failure| {
+                    error(
+                        code,
+                        format!(
+                            "cannot resolve {label} `{}` within project root: {failure}",
+                            path.display()
+                        ),
+                    )
+                })?;
+                if !metadata.file_type().is_symlink() {
+                    if !pending.is_empty() && !metadata.is_dir() {
+                        return Err(error(
+                            code,
+                            format!("{label} `{}` is not a directory", candidate.display()),
+                        ));
+                    }
+                    resolved.push(part);
+                    continue;
+                }
+                links += 1;
+                if links > MAX_LINKS {
+                    return Err(error(
+                        code,
+                        format!("{label} has too many symlink resolutions"),
+                    ));
+                }
+                let target = root.dir.read_link_contents(&candidate).map_err(|failure| {
+                    error(
+                        code,
+                        format!(
+                            "cannot read {label} symlink `{}`: {failure}",
+                            candidate.display()
+                        ),
+                    )
+                })?;
+                let target = if target.is_absolute() {
+                    resolved.clear();
+                    target
+                        .strip_prefix(&root.canonical)
+                        .or_else(|_| target.strip_prefix(&root.selected))
+                        .map_err(|_| {
+                            error(
+                                code,
+                                format!(
+                                    "{label} symlink `{}` escapes project root",
+                                    candidate.display()
+                                ),
+                            )
+                        })?
+                        .to_path_buf()
+                } else {
+                    target
+                };
+                let mut expansion = path_parts(&target, label, code)?;
+                expansion.append(&mut pending);
+                pending = expansion;
+            }
+        }
+    }
+    if resolved.as_os_str().is_empty() {
+        return Err(error(code, format!("{label} path does not name a file")));
+    }
+    Ok(resolved)
+}
+
+enum PathPart {
+    Normal(std::ffi::OsString),
+    Parent,
+}
+
+fn path_parts(
+    path: &Path,
+    label: &str,
+    code: DiagnosticCode,
+) -> Result<VecDeque<PathPart>, Diagnostics> {
+    let mut parts = VecDeque::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(part) => parts.push_back(PathPart::Normal(part.to_os_string())),
+            Component::CurDir => {}
+            Component::ParentDir => parts.push_back(PathPart::Parent),
+            _ => return Err(error(code, format!("{label} path escapes project root"))),
+        }
+    }
+    Ok(parts)
 }
 
 fn canonicalize(path: &Path, label: &str, code: DiagnosticCode) -> Result<PathBuf, Diagnostics> {
@@ -518,5 +691,77 @@ mod tests {
         let diagnostic = diagnostics.first().unwrap();
         assert_eq!(diagnostic.code, DiagnosticCode::Reference);
         assert!(diagnostic.message.contains("not a regular file"));
+
+        let pinned = ProjectRoot::open_pinned(&project, ambient_authority()).unwrap();
+        let diagnostics =
+            contained_file(&pinned, "stream.maac", "source", DiagnosticCode::Reference)
+                .unwrap_err();
+        assert_eq!(diagnostics.first().unwrap().code, DiagnosticCode::Reference);
+    }
+
+    #[test]
+    fn symlink_parent_components_resolve_after_intervening_links() {
+        let directory = tempdir().unwrap();
+        let project = directory.path().join("project");
+        fs::create_dir_all(project.join("nested/deeper")).unwrap();
+        fs::write(project.join("leaf.maac"), b"wrong").unwrap();
+        fs::write(project.join("nested/leaf.maac"), b"right").unwrap();
+        symlink("nested/deeper", project.join("jump")).unwrap();
+        symlink("jump/../leaf.maac", project.join("alias.maac")).unwrap();
+        let root = ProjectRoot::open_pinned(&project, ambient_authority()).unwrap();
+        let file =
+            contained_file(&root, "alias.maac", "source", DiagnosticCode::Reference).unwrap();
+        assert_eq!(
+            read_bounded(file, "alias.maac", "source").unwrap(),
+            b"right"
+        );
+    }
+
+    #[test]
+    fn ordinary_file_parent_component_is_not_collapsed() {
+        let directory = tempdir().unwrap();
+        let project = directory.path().join("project");
+        fs::create_dir(&project).unwrap();
+        fs::write(project.join("file"), b"ordinary").unwrap();
+        fs::write(project.join("leaf.maac"), b"wrong").unwrap();
+        symlink("file/../leaf.maac", project.join("alias.maac")).unwrap();
+        let root = ProjectRoot::open_pinned(&project, ambient_authority()).unwrap();
+        let failure =
+            contained_file(&root, "alias.maac", "source", DiagnosticCode::Reference).unwrap_err();
+        assert_eq!(failure.first().unwrap().code, DiagnosticCode::Reference);
+    }
+
+    #[test]
+    fn pinned_root_accepts_absolute_link_using_selected_root_spelling() {
+        let directory = tempdir().unwrap();
+        let project = directory.path().join("project");
+        fs::create_dir_all(project.join("real")).unwrap();
+        fs::write(project.join("real/data.maac"), b"inside").unwrap();
+        symlink(project.join("real/data.maac"), project.join("alias.maac")).unwrap();
+        let root = ProjectRoot::open_pinned(&project, ambient_authority()).unwrap();
+        let file =
+            contained_file(&root, "alias.maac", "source", DiagnosticCode::Reference).unwrap();
+        assert_eq!(
+            read_bounded(file, "alias.maac", "source").unwrap(),
+            b"inside"
+        );
+    }
+
+    #[test]
+    fn ordinary_loader_keeps_absolute_links_through_another_root_alias() {
+        let directory = tempdir().unwrap();
+        let project = directory.path().join("project");
+        let alias = directory.path().join("project-alias");
+        fs::create_dir_all(project.join("real")).unwrap();
+        fs::write(project.join("real/data.maac"), b"inside").unwrap();
+        symlink(&project, &alias).unwrap();
+        symlink(alias.join("real/data.maac"), project.join("alias.maac")).unwrap();
+        let root = ProjectRoot::open(&project, ambient_authority()).unwrap();
+        let file =
+            contained_file(&root, "alias.maac", "source", DiagnosticCode::Reference).unwrap();
+        assert_eq!(
+            read_bounded(file, "alias.maac", "source").unwrap(),
+            b"inside"
+        );
     }
 }

@@ -9,6 +9,8 @@ not complete Phase 3 or define a project archive format.
 ```text
 maac import-wav INPUT.wav --output-dir NEW_PROJECT
 maac import-wav INPUT.wav --start-frame N --end-frame M --output-dir NEW_PROJECT
+maac import-wav INPUT.wav --retain-original --output-dir NEW_PROJECT
+maac verify-import NEW_PROJECT
 ```
 
 The optional crop is a nonempty half-open source-frame interval `[N, M)`;
@@ -16,6 +18,10 @@ The optional crop is a nonempty half-open source-frame interval `[N, M)`;
 imports the complete WAV. The output directory must not already exist. The
 command stages all files and publishes the directory atomically without
 replacing an existing destination.
+`--retain-original` opts into retaining the exact snapshotted input bytes in
+`original.wav`. `verify-import` accepts a project created with that option.
+Imports without the option keep the original three-file layout and version 1
+manifest.
 
 ## Supported input and conversion
 
@@ -52,6 +58,25 @@ The output directory contains:
   channels/frame count, selected interval, versioned decoder/conversion IDs,
   and output asset metadata/hash.
 
+With `--retain-original`, the project also contains `original.wav`, copied
+from the same bounded snapshot used for decoding. Its version 2 manifest
+declares the fixed path, byte count, and hash. This can retain a WAV larger
+than 4 MiB when the selected native PCM crop fits the existing asset limit.
+The original remains subject to the 1 GiB input limit.
+
+`verify-import` pins one project directory handle for the manifest, original,
+PCM, and current MaaC source closure. It checks version and decoder identity,
+re-decodes the declared crop, compares source and output metadata and hashes,
+compares native PCM byte for byte, and compiles the current editable source and
+local dependencies. The closure must still contain the verified `media.pcm`
+asset. It rejects missing or changed members and symlinks escaping the project
+root. Valid edits to MaaC sources do not invalidate the import record.
+Verification needs no access to the original input path after the project is
+moved. For absolute in-project symlinks, verification accepts targets under
+the selected or canonical project root spelling; another alias for that root
+may be rejected. Ordinary `check` and `compile` retain their existing symlink
+behavior.
+
 The importer enforces the existing 4 MiB per-asset limit and validates that
 the generated standalone plan fits the normal plan serialization limit before
 publishing. The provenance sidecar is not needed to check, compile, or build
@@ -61,13 +86,14 @@ the generated project.
 
 After import, the project can be moved and reopened with the ordinary `check`,
 `compile`, and `build` commands without access to the original WAV. This is a
-bounded crop-import and reopen result, not original-media archival. The original
-WAV is identified but not retained. The DSP artifact engine separately offers
-opt-in disk-backed sampling for validated PCM that is still embedded in the
-artifact. This writes a private temporary snapshot and uses a two-page cache
-bounded to 32 KiB per asset; the artifact still retains its bytes, and the
-existing per-asset, aggregate, and plan-size limits are unchanged. It avoids an
-additional full decoded-PCM allocation but is not external-media or long-media
-streaming. Original-media retention, recording workflows, dependency-complete
-project archives, source-edit history, processor-state packaging, and freeze
-invalidation remain future Phase 3 work.
+bounded crop-import and reopen result. The original WAV is retained only with
+the opt-in flag; this does not define a dependency-complete editable archive.
+The DSP artifact engine separately offers opt-in disk-backed sampling for
+validated PCM that is still embedded in the artifact. This writes a private
+temporary snapshot and uses a two-page cache bounded to 32 KiB per asset; the
+artifact still retains its bytes. Existing per-asset, aggregate, and plan-size
+limits are unchanged. It avoids an additional full decoded-PCM allocation but
+does not support external-media or long-media streaming. Recording workflows,
+dependency-complete project archives,
+source-edit history, processor-state packaging, and freeze invalidation remain
+future Phase 3 work.

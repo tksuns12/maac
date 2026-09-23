@@ -49,9 +49,9 @@ build, installed-CLI acceptance, or Python-checker evidence above.
 
 ## Post-RIFF-review verification (2026-09-23)
 
-The current tree includes the single-pass RIFF importer and duplicate-chunk
-regressions. The full `cargo test` run was interrupted after its completed
-targets passed; this section claims the focused gate only.
+The baseline committed at `2e08985` includes the single-pass RIFF importer and
+duplicate-chunk regressions. The full `cargo test` run was interrupted after
+its completed targets passed; this section claims the focused gate only.
 
 | Check | Command | Result |
 | --- | --- | --- |
@@ -62,6 +62,28 @@ targets passed; this section claims the focused gate only.
 | Installed CLI acceptance | `python3 scripts/acceptance.py` | 38 of 38 checks passed |
 | Production coefficient tables | `python3 scripts/production_src_coefficients.py --verify` | Passed |
 | Python production checker | `python3 check_production.py` | Unavailable: `lark` and `jsonschema` are not installed |
+
+## Retained-original import verification (2026-09-23)
+
+These checks cover the opt-in `--retain-original` package, `verify-import`, and
+the pinned project-root resolver. The complete Rust integration suite was not
+rerun for this slice.
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Library tests | `cargo test --lib` | Passed: 253 tests; 3 existing ignored |
+| Focused integration | `cargo test --test bundle --test cli_project_entrypoint --test media_import --test media_import_cli` | Passed: 17 bundle, 8 project-entrypoint, 12 importer, and 6 import-CLI tests |
+| Formatting and whitespace | `cargo fmt --all -- --check`; `git diff --check` | Passed |
+| Clippy | `cargo clippy --all-targets -- -D warnings` | Passed |
+| Release build | `cargo build --release` | Passed |
+| Installed CLI acceptance | `python3 scripts/acceptance.py` | 38 of 38 checks passed |
+| Release CLI smoke | Retained import, remove input, relocate project, `verify-import`, `check`, and `build` | Passed |
+
+An independent review reproduced a root-replacement false-success case before
+the pinned-root fix. After the fix, both root-replacement probes failed with
+`E_REFERENCE`; the deterministic regression and FIFO/symlink compatibility
+tests passed. The verifier's absolute-symlink alias limit is documented in
+[media import](media-import.md).
 
 ## Historical naming cleanup
 

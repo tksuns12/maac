@@ -144,6 +144,9 @@ pub enum Command {
     /// Import a WAV file or a frame crop into a new editable MaaC project.
     ImportWav {
         input: PathBuf,
+        /// Retain the exact snapshotted source bytes as original.wav.
+        #[arg(long)]
+        retain_original: bool,
         /// Inclusive source frame at which the crop begins.
         #[arg(long, requires = "end_frame")]
         start_frame: Option<u64>,
@@ -154,6 +157,8 @@ pub enum Command {
         #[arg(long)]
         output_dir: PathBuf,
     },
+    /// Verify a retained WAV import and compile its current project closure.
+    VerifyImport { project: PathBuf },
 }
 
 #[derive(Subcommand, Debug)]
@@ -962,6 +967,7 @@ fn execute_impl(
         },
         Command::ImportWav {
             input,
+            retain_original,
             start_frame,
             end_frame,
             output_dir,
@@ -981,8 +987,9 @@ fn execute_impl(
                     ))
                 }
             };
-            let imported = media_import::import_wav_file(input, range)
-                .map_err(|error| CliError::new(error.code(), error.message().to_owned()))?;
+            let imported =
+                media_import::import_wav_file_with_retention(input, range, *retain_original)
+                    .map_err(|error| CliError::new(error.code(), error.message().to_owned()))?;
             let bundle = imported.source_bundle();
             let plan = compiler::compile_bundle_artifact(&bundle)
                 .map_err(|error| CliError::from_diagnostics(&error))?;
@@ -996,7 +1003,7 @@ fn execute_impl(
                 format: Some(format!(
                     "{}/{}",
                     media_import::MEDIA_IMPORT_FORMAT,
-                    media_import::MEDIA_IMPORT_VERSION
+                    imported.manifest_version()
                 )),
                 notes: None,
                 frames: Some(imported.frames()),
@@ -1009,7 +1016,50 @@ fn execute_impl(
                 delivery: None,
             })
         }
+        Command::VerifyImport { project } => verify_import_project_with_hook(project, || {}),
     }
+}
+
+fn verify_import_project_with_hook(
+    project: &Path,
+    after_media: impl FnOnce(),
+) -> Result<CommandResult, CliError> {
+    let root = bundle_fs::ProjectRoot::open_pinned(project, cap_std::ambient_authority())
+        .map_err(|error| CliError::from_diagnostics(&error))?;
+    let imported = media_import::verify_retained_import_in_root(&root)
+        .map_err(|error| CliError::new(error.code(), error.message().to_owned()))?;
+    after_media();
+    let bundle = bundle_fs::load_bundle_from_resolved_entry(Path::new("main.maac"), &root)
+        .map_err(|error| CliError::from_diagnostics(&error))?;
+    if bundle.assets.get("media.pcm").map(Vec::as_slice) != Some(imported.pcm_bytes()) {
+        return Err(CliError::new(
+            "E_IMPORT_MISMATCH",
+            "current MaaC project does not depend on the verified media.pcm asset",
+        ));
+    }
+    let plan = compiler::compile_bundle_artifact(&bundle)
+        .map_err(|error| CliError::from_diagnostics(&error))?;
+    plan.to_json().map_err(CliError::from_plan)?;
+    Ok(CommandResult {
+        ok: true,
+        command: "verify-import".into(),
+        input: project.display().to_string(),
+        output: None,
+        format: Some(format!(
+            "{}/{}",
+            media_import::MEDIA_IMPORT_FORMAT,
+            media_import::MEDIA_IMPORT_RETAINED_VERSION
+        )),
+        notes: None,
+        frames: Some(imported.frames()),
+        digest: Some(imported.source_hash().into()),
+        exports: None,
+        catalog: None,
+        instrument: None,
+        library: None,
+        libraries: None,
+        delivery: None,
+    })
 }
 
 /// Select the entry spelling and containment root without following a main
@@ -1231,6 +1281,11 @@ fn write_media_import_project(
         .map_err(|error| CliError::new("E_IO", format!("cannot stage media.pcm: {error}")))?;
     fs::write(staging.path().join("import.json"), manifest)
         .map_err(|error| CliError::new("E_IO", format!("cannot stage import.json: {error}")))?;
+    if imported.manifest_version() == media_import::MEDIA_IMPORT_RETAINED_VERSION {
+        imported
+            .copy_original_to(&staging.path().join("original.wav"))
+            .map_err(|error| CliError::new(error.code(), error.message().to_owned()))?;
+    }
     publish_staged_directory_noclobber(staging.path(), output_dir, "media project")
 }
 
@@ -1734,5 +1789,52 @@ mod module_unpack_tests {
         assert_eq!(error.code, "E_OUTPUT_EXISTS");
         assert_eq!(fs::read(destination.join("owner")).unwrap(), b"concurrent");
         assert!(!destination.join("module.maac").exists());
+    }
+}
+
+#[cfg(test)]
+mod import_verification_tests {
+    use super::*;
+    use hound::{SampleFormat, WavSpec, WavWriter};
+
+    #[test]
+    fn root_replacement_cannot_combine_media_and_source_from_different_directories() {
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("input.wav");
+        let mut writer = WavWriter::create(
+            &input,
+            WavSpec {
+                channels: 1,
+                sample_rate: 48_000,
+                bits_per_sample: 16,
+                sample_format: SampleFormat::Int,
+            },
+        )
+        .unwrap();
+        writer.write_sample(100i16).unwrap();
+        writer.finalize().unwrap();
+        let project = directory.path().join("project");
+        execute(&Command::ImportWav {
+            input,
+            retain_original: true,
+            start_frame: None,
+            end_frame: None,
+            output_dir: project.clone(),
+        })
+        .unwrap();
+
+        let replacement = directory.path().join("replacement");
+        let archived = directory.path().join("archived");
+        fs::create_dir(&replacement).unwrap();
+        let failure = verify_import_project_with_hook(&project, || {
+            fs::rename(project.join("main.maac"), replacement.join("main.maac")).unwrap();
+            fs::rename(project.join("media.pcm"), replacement.join("media.pcm")).unwrap();
+            fs::rename(&project, &archived).unwrap();
+            fs::rename(&replacement, &project).unwrap();
+        })
+        .unwrap_err();
+        assert_eq!(failure.code, "E_REFERENCE");
+        assert!(!archived.join("main.maac").exists());
+        assert!(!project.join("import.json").exists());
     }
 }
