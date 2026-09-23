@@ -133,6 +133,22 @@ Named masters and stems retain the complete graph, effects and tails. Source
 and retained deliveries must match at 44.1, 48 and 96 kHz. Existing transactional
 WAV publication and failed-check audio retention behavior remain unchanged.
 
+### Runtime PCM storage
+
+`DspEngine` constructors remain memory-backed by default. Callers preparing an
+opaque `PlanArtifact` can opt into disk-backed runtime sampling with
+`DspEngine::new_artifact_with_storage_mode` and
+`AudioStorageMode::Disk` (or combine it with caller plan limits using
+`new_artifact_with_limits_and_storage_mode`). Disk mode validates and snapshots
+the already-embedded PCM into a private temporary file, then reads through two
+frame-aligned cache pages of at most 16 KiB each per asset. Read failures are
+reported as `E_IO`; they are never replaced with silence or a memory fallback.
+
+The artifact and source bundle still contain the complete PCM bytes, and all
+existing per-asset, aggregate, and plan-size limits remain in force. Disk mode
+avoids an additional full decoded-float buffer; it is not a total-memory bound,
+external-media reference, or support for assets larger than those limits.
+
 ## Acceptance
 
 Analytical tests cover sliced mono/stereo data, reverse channel order, unequal

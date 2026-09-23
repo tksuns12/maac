@@ -74,6 +74,7 @@ impl RenderError {
                 "E_ALGEBRAIC_LOOP" => "E_ALGEBRAIC_LOOP",
                 "E_VOICE_LIMIT" => "E_VOICE_LIMIT",
                 "E_NONFINITE" => "E_NONFINITE",
+                "E_IO" => "E_IO",
                 "E_RESOURCE_LIMIT" | "E_RATIONAL_LIMIT" => "E_RESOURCE_LIMIT",
                 _ => "E_RENDER_STATE",
             },
@@ -108,6 +109,20 @@ impl From<PlanError> for RenderError {
     fn from(value: PlanError) -> Self {
         Self::Plan(value)
     }
+}
+
+/// Runtime storage for validated embedded PCM samples.
+///
+/// Existing constructors use [`AudioStorageMode::Memory`]. Disk mode snapshots
+/// the same validated PCM into a private temporary file and samples it through
+/// a bounded page cache; it does not change artifact encoding or asset limits.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AudioStorageMode {
+    /// Decode all samples into memory when preparing the engine.
+    #[default]
+    Memory,
+    /// Keep decoded PCM out of memory and read it through a bounded cache.
+    Disk,
 }
 
 /// Render a validated plan to a frame callback.
@@ -201,7 +216,35 @@ impl<'a> DspEngine<'a> {
         Self::new_for_view(plan.view(), limits)
     }
 
+    /// Prepare an opaque artifact using caller-selected runtime PCM storage.
+    ///
+    /// This is opt-in; [`DspEngine::new_artifact`] and all other existing
+    /// constructors remain memory-backed.
+    pub fn new_artifact_with_storage_mode(
+        plan: &'a PlanArtifact,
+        storage_mode: AudioStorageMode,
+    ) -> Result<Self> {
+        Self::new_artifact_with_limits_and_storage_mode(plan, &PlanLimits::default(), storage_mode)
+    }
+
+    /// Prepare an opaque artifact under caller limits and selected PCM storage.
+    pub fn new_artifact_with_limits_and_storage_mode(
+        plan: &'a PlanArtifact,
+        limits: &PlanLimits,
+        storage_mode: AudioStorageMode,
+    ) -> Result<Self> {
+        Self::new_for_view_with_storage_mode(plan.view(), limits, storage_mode)
+    }
+
     pub(crate) fn new_for_view(plan: PlanView<'a>, limits: &PlanLimits) -> Result<Self> {
+        Self::new_for_view_with_storage_mode(plan, limits, AudioStorageMode::Memory)
+    }
+
+    fn new_for_view_with_storage_mode(
+        plan: PlanView<'a>,
+        limits: &PlanLimits,
+        storage_mode: AudioStorageMode,
+    ) -> Result<Self> {
         let timing = plan
             .validate_and_timing(limits)
             .map_err(RenderError::Plan)?;
@@ -232,7 +275,11 @@ impl<'a> DspEngine<'a> {
 
         let mut kit_samples = BTreeMap::new();
         for asset in plan.audio_assets.unwrap_or(&[]) {
-            kit_samples.insert(asset.id.clone(), Arc::new(KitSample::from_asset(asset)?));
+            let buffer = match storage_mode {
+                AudioStorageMode::Memory => KitSample::from_asset(asset)?,
+                AudioStorageMode::Disk => KitSample::from_asset_disk(asset)?,
+            };
+            kit_samples.insert(asset.id.clone(), Arc::new(buffer));
         }
         let node_indices: HashMap<String, usize> = plan
             .nodes
@@ -1413,7 +1460,7 @@ impl AudioRuntime {
                 .enumerate()
                 .take(usize::from(self.slice.channels()))
             {
-                *sample = self.slice.interpolate(index, fraction, channel) * gain;
+                *sample = self.slice.interpolate(index, fraction, channel)? * gain;
                 if !sample.is_finite() {
                     return Err(crate::plan::err(
                         "E_NONFINITE",

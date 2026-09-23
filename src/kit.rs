@@ -166,7 +166,8 @@ impl KitRuntime {
                 continue;
             };
             for (channel, sum) in output.iter_mut().enumerate().take(self.channels as usize) {
-                *sum += voice.sample.interpolate(index, fraction, channel) * voice.velocity * level;
+                *sum +=
+                    voice.sample.interpolate(index, fraction, channel)? * voice.velocity * level;
                 if !sum.is_finite() {
                     return Err(error("E_NONFINITE", "kit output is nonfinite"));
                 }
