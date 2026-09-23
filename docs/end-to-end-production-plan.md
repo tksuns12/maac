@@ -1,7 +1,41 @@
 # MaaC end-to-end production plan
 
 **Status:** accepted product direction; non-normative capability roadmap; dated
-2026-09-13
+2026-09-13. The current execution status below was reconciled on 2026-09-23.
+
+## Current execution status
+
+This table is the canonical progress view for the end-to-end roadmap. “Complete”
+always means complete within the stated bounded contract; it does not imply a
+complete professional-production product.
+
+| Area | Status | Next gate or boundary |
+| --- | --- | --- |
+| Playable foundation | Complete within the bounded implementation plan | Keep the automated foundation and release gates green. |
+| Language/conformance L1–L5 | Addressed for the bounded slices | Do not expand this into a full-profile or cross-platform identity claim. |
+| Phase 1: end-to-end inventory | Partial | Publish one lifecycle inventory covering media, recording, latency, crops, takes, routing, delivery, archive, and reopen. |
+| Phase 2: reset-correct excerpts | Complete for bounded final-WAV ranges | No claim of realtime seeking, speed-up, or arbitrary DSP-state restoration. |
+| Phase 3: media/import/packaging | In progress; bounded WAV crop import and opt-in disk-backed sampling for embedded PCM implemented | Extend media access beyond current inline limits and add a dependency-complete editable archive preserving original media, history, processor context, and freeze invalidation. |
+| Phase 4: capture/playback/comping | Partial foundations only | Add recording, takes, comp selection, playback, and revision workflows. |
+| Phase 5: open processors and hosting | Partial foundations only | Generic rendering and executable native external hosting remain deferred. |
+| Phase 6: mix/master/release/reopen | Not complete | Pass the representative production, invalidation, clean-reopen, listening, and producer gates. |
+
+The first bounded Phase 3 slice is `maac import-wav`: it snapshots and hashes a
+WAV input, imports a selected frame range as native PCM, writes a provenance
+sidecar, and produces a relocatable project that reopens without the original
+input. It does not retain the original WAV or complete dependency-complete
+archiving, history, or freeze invalidation. A separate opt-in artifact-engine
+mode snapshots validated embedded PCM to a private temporary file and samples
+through a bounded two-page cache. The plan still embeds and validates all PCM
+under existing limits, so this avoids an additional full decoded copy but is
+not external-media or oversized-media streaming. The generic-lock construction
+work remains a separate active slice; continue Phase 3 with media access beyond
+the inline limits and editable packaging rather than treating either bounded
+slice as phase completion.
+
+The [capability matrix](capabilities.md), [Core Audio audit](core-audio-conformance-audit.md),
+and [current verification record](verification.md) provide supporting evidence;
+this table owns the roadmap status and sequencing.
 
 ## Capability
 
@@ -147,8 +181,9 @@ made.
 
 ### 3. Usable media, import, streaming, and editable packaging
 
-Next, make long recordings and imported material practical. Add disk-backed or
-streaming asset access, explicit import/decoder identities, recording metadata,
+Next, make long recordings and imported material practical beyond current
+inline limits. Extend disk-backed or streaming asset access to external or
+oversized media; add explicit import/decoder identities, recording metadata,
 dropout/error recovery, and resource-safe crops. Define an editable package
 that includes original media, pinned dependencies, processor context, source
 history, and a normalizer or editor that can reopen it without losing authored
@@ -156,6 +191,17 @@ presence. A freeze must record its boundary, input/dependency hash, state,
 latency, interval, and tail; an upstream edit invalidates it. Source archive
 portability and exact same-environment PCM replay are separate acceptance
 claims.
+
+This phase is accepted only when all of the following are demonstrated:
+
+- imported and recorded media have explicit format, rate, channel, frame, and
+  provenance identities;
+- long media can use disk-backed or streaming access with bounded crop and
+  failure behavior;
+- the editable package preserves authored source, dependencies, processor
+  context, history, and freeze invalidation; and
+- a clean offline environment can verify the package and reopen it without
+  silently replacing or dropping render-affecting state.
 
 ### 4. Capture, playback, revision, comping, and arrangement
 
@@ -172,14 +218,16 @@ paths, reset origin, and crop prehistory.
 
 Expand the open ecosystem with pinned sampled instruments, articulation and
 pedal maps, sound libraries, and versioned native processors for the common
-production path. Finish descriptor wire schemas, loss reports, state handling,
-declared-latency validation, and permissions. Dynamic latency notifications, if
-needed by a host, belong to future host design. Then evaluate an open SDK and
-dynamic host contract. The host choice, ABI, sandbox, realtime guarantees, and
-external plugin standard remain open; opaque plugin state alone is not a usable
-host. Unsupported required processors must fail in faithful native production;
-approved loss reports apply only to explicit conversions or approximations, and
-no core node may be silently omitted.
+production path. Bounded descriptor wire, loss-report, dependency-discovery,
+and declared-latency/permission checks now exist; the remaining work is to make
+the open processor ecosystem useful in production, including pinned samplers,
+articulation maps, complete state handling, and receiver mappings. Dynamic
+latency notifications, if needed by a host, belong to future host design. Then
+evaluate an open SDK and dynamic host contract. The host choice, ABI, sandbox,
+realtime guarantees, and external plugin standard remain open; opaque plugin
+state alone is not a usable host. Unsupported required processors must fail in
+faithful native production; approved loss reports apply only to explicit
+conversions or approximations, and no core node may be silently omitted.
 
 ### 6. Mix, master, release workload, and clean reopen
 

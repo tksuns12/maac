@@ -151,9 +151,11 @@ reviews passed, and root performed integration acceptance.
 
 Production Rust, Cargo, grammar, and schema files remain unchanged. Full Rust
 suite, release build, installed acceptance, remote CI, cross-platform runtime,
-and listening checks were omitted. Runtime normalizer/editor behavior, generic
-lock verification/discovery/rendering, descriptor wire schemas, and loss-report
-schemas remain separate deferred work. The bounded result does not claim a
-full profile, universal tolerance, or cross-platform bit identity. Any change
+and listening checks were omitted from this historical decision. Runtime
+normalizer/editor behavior, generic lock verification/construction, strict
+descriptor/dependency discovery, and loss-report/MIDI contracts were later added
+as bounded slices; generic rendering and executable external hosting remain
+separate deferred work. The bounded result does not claim a full profile,
+universal tolerance, or cross-platform bit identity. Any change
 to the metric, reference interpretation, epsilon, scope, window, or required
 fixtures requires a new suite or policy version.

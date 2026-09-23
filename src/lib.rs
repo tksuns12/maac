@@ -13,11 +13,13 @@ pub mod export;
 mod expression;
 pub mod external;
 pub mod generic_lock;
+pub mod generic_lock_generation;
 pub mod graph;
 pub mod instrument_plan;
 pub mod interchange;
 mod kit;
 pub mod library;
+pub mod media_import;
 mod module_artifact;
 pub mod music;
 pub use module_artifact::{

@@ -1,7 +1,13 @@
 # MaaC language specification and conformance plan
 
-Status: L1, L2, L3, L4, and L5 are addressed 2026-09-13. L1 authority and the
-L5 metric and bound are **RESOLVED**. L4 is committed at `e948ce7`.
+Status: L1, L2, L3, L4, and L5 are addressed 2026-09-13 for their bounded
+contracts and evidence. L1 authority and the L5 metric and bound are
+**RESOLVED**. L4 is committed at `e948ce7`. Later bounded runtime slices add
+reusable source modules, generic lock verification/construction, strict external
+descriptor and dependency discovery, and MIDI loss reporting; generic rendering
+and executable native external hosting remain deferred. The [end-to-end
+production plan](end-to-end-production-plan.md#current-execution-status) owns
+the current product-roadmap status.
 Baseline: A1–A4 are addressed at
 `b19ae2884fbfad2dbf5efb1526a1eff8f5452d9d`. This plan records specification
 priorities. The adopted authored-state decision and the scoped L1 semantic
@@ -200,13 +206,18 @@ Ownership is split between the luna executor for specification/docs and the
 Sol recovery executor for schema, corpus, checker, and tests; independent
 semantic/specification and harness review passed, and root owns integration.
 The original L4 slice left production Rust and runtime verification unchanged.
-Subsequent work added the `maac::generic_lock` runtime verifier for the frozen v1
-contract; lock generation/normalization, dependency discovery, and generic rendering
-remain deferred. The historical L4 slice itself did not claim full Rust/build or
-remote-CI gates. Status
+Subsequent work added the `maac::generic_lock` runtime verifier, the
+`maac::external` strict external-descriptor/dependency-discovery boundary, and
+`maac::generic_lock_generation`, which deterministically constructs canonical v1
+Config, RenderInput, and Lock artifacts from already-resolved typed context and
+exact bytes. Generic rendering and executable native external ABI hosting remain
+deferred. These later runtime slices do not turn the historical L4 schema/corpus
+slice into a full Locked Render conformance claim. The historical L4 slice itself
+did not claim full Rust/build or remote-CI gates. Status
 is **addressed 2026-09-13** for this bounded contract/schema/corpus/checker
-slice. Descriptor wire schema/ABI and loss-report schemas are separate L4
-follow-ups. See the
+slice. Strict descriptor and loss-report contracts now have bounded runtime
+implementations; executable native ABI hosting and generic rendering remain
+separate follow-ups. See the
 [L4 portable-interchange decision](l4-portable-interchange-decision.md) for
 the accepted direction and scope boundary.
 
@@ -258,11 +269,11 @@ performed integration acceptance.
 The historical L5 slice left production Rust, Cargo, grammar, and schema files
 unchanged and omitted full Rust, release-build, installed, remote-CI,
 cross-platform, and listening gates. Runtime normalizer/editor behavior was later
-implemented for the bounded language contexts, and generic lock verification now
-exists through `maac::generic_lock`; generic lock discovery/rendering, descriptor wire
-schemas remain separate deferred work. A later §25 slice added the versioned
-`maac.interchange-loss-report` contract and bounded MIDI 1.0 SMF adapter; notation and
-DAW-session adapters remain separate. L5 is addressed for this bounded contract, corpus, checker, index, and runtime-evidence slice; it makes
+implemented for the bounded language contexts. Generic lock verification and
+construction, strict external descriptor/dependency discovery, and the versioned
+`maac.interchange-loss-report` contract with its bounded MIDI 1.0 SMF adapter now
+exist; generic rendering, executable native ABI hosting, notation, and DAW-session
+adapters remain separate work. L5 is addressed for this bounded contract, corpus, checker, index, and runtime-evidence slice; it makes
 no full-profile, universal-tolerance, or cross-platform bit-identity claim.
 
 **Acceptance, dependencies, status.** L5 follows L4 and consolidates or
@@ -273,16 +284,19 @@ omitted work above remains outside its acceptance boundary.
 
 ## Optional candidate
 
-**F1 — reusable musical modules.** Patterns and curve exports are an
-exploratory candidate outside L1–L5 completion. Scope, compatibility, and
-acceptance need definition before promoting it.
+**F1 — reusable musical modules.** The bounded source-module artifact slice is
+implemented and validated, including closure identity, exact source/assets, and
+check/export/unpack behavior. A broader package registry, binary module format,
+and direct artifact-import feature remain outside scope. See the [module artifact
+contract](musical-module-artifact.md).
 
 ## Professional-production research
 
 The non-normative [professional production language review](professional-production-language-review.md)
 records possible language improvements and adoption prerequisites for
-professional music production. It does not create L6, alter L1–L5 status, or
-promote F1 to an accepted implementation scope.
+professional music production. It does not create L6 or alter L1–L5 status;
+the bounded F1 artifact slice is implemented, while broader F1/package work
+remains outside the accepted L1–L5 scope.
 
 ## End-to-end production direction
 

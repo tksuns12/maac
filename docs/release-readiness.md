@@ -1,7 +1,9 @@
 # MaaC release readiness
 
 This document separates local MaaC source-only preparation from decisions that
-remain before release publication. MaaC is the project and `maac` is the CLI;
+remain before release publication. It is a publication-status record, not the
+feature roadmap; the [end-to-end production plan](end-to-end-production-plan.md#current-execution-status)
+owns current product progress. MaaC is the project and `maac` is the CLI;
 MaaC/1 is the source language, `.maac` is its file extension, and `maac 1;` is
 the canonical document header. Noncanonical language headers are rejected. The
 public [tksuns12/maac repository](https://github.com/tksuns12/maac)
@@ -9,6 +11,11 @@ has been created, the local `origin` is configured to its HTTPS URL, and private
 vulnerability reporting is enabled. A parentless initial publication snapshot
 is being prepared locally with GitHub no-reply metadata; no commit has been
 pushed, and no release tag or hosted deployment is asserted here.
+
+The initial-publication statements below describe the release-preparation
+snapshot and do not automatically absorb later development branches. As of the
+2026-09-21 reconciliation, no hosted CI result, release tag, human listening
+review, or producer acceptance is claimed.
 
 ## Prepared locally
 

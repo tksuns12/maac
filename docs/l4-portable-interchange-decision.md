@@ -4,9 +4,11 @@
 additive generic version-1 direction, preservation of existing production and
 instrument formats, the pre-render render-key boundary, and separate PCM/file
 hash evidence. The [Generic interchange v1](generic-interchange.md) document
-records the frozen field shapes and semantic wire rules. This document does
-not claim runtime implementation, and runtime lock verification, normalization,
-dependency discovery, and rendering remain deferred.
+records the frozen field shapes and semantic wire rules. The original L4
+decision did not claim runtime implementation. Subsequent P1 slices now provide
+generic lock verification, deterministic generation/normalization from an
+already-resolved context, and strict external descriptor/dependency discovery;
+generic rendering and executable native external ABI hosting remain deferred.
 
 ## Purpose and fixed context
 
@@ -71,11 +73,13 @@ semantic/specification review passed. The independent harness findings on
 strict manifest canonical-flag typing and confinement/symlink checks before
 reading fixed manifest/hash inputs were corrected, and four focused regression
 tests then passed; both independent reviews are complete. Descriptor wire
-schema/ABI and loss-report schemas are separate
-follow-ups, as are runtime lock hosting or normalization, dependency
-discovery, rendering, and the L5 numerical metric and bound. This slice does
-not add a processor, alter DSP behavior, or claim hosted-CI or cross-platform
-audio conformance.
+schema/ABI and loss-report schemas were separate follow-ups at the time of
+this decision. Subsequent runtime work added lock verification,
+generation/normalization, strict external descriptor discovery, and MIDI loss
+reporting. Generic rendering, executable native external ABI hosting, and the
+historical L5 numerical work remain separate capability/conformance concerns.
+This L4 decision itself does not add a processor, alter DSP behavior, or claim
+hosted-CI or cross-platform audio conformance.
 
 ## Evidence boundary and next bounded slice
 
@@ -83,6 +87,8 @@ SHA-256 and the L1 **A**/**N(A)** canonicalization rules are fixed, as are the
 accepted render-key boundary and the separation of output evidence. The
 executor evidence is recorded in the local
 [validation record](../target/l4-interchange-validation/executor-summary.json).
-All evidence must continue to distinguish schema structure, semantic host
-verification, and actual runtime or repeated-render claims. Runtime lock
-hosting and normalization remain deferred.
+All evidence must continue to distinguish schema structure, deterministic
+lock construction, semantic host verification, and actual runtime or
+repeated-render claims. Generic v1 construction and verification now exist as
+later runtime APIs; generic rendering and executable native external ABI
+hosting remain deferred.

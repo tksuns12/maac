@@ -24,6 +24,7 @@ Coverage of every reference processor identifier is not a full-profile claim.
 | Processors | `core.sine/1`, `core.kit/1`, `core.onepole/1`, `core.pan/1`, `core.sum/1`, `core.gain/1`, `core.fader/1`, `core.matrix/1`, `core.delay/1`, `core.noise/1` (mono/stereo); explicit delays permit causal feedback |
 | Sample kits | Pinned raw float32 mono/stereo assets, native-rate one-shot playback, linear interpolation, natural tails and sample-rate level automation |
 | Arranged audio | Top-level rate and warp-rate clips; source-frame slicing, musical warp anchors, rate-mode speed/reverse/physical placement, gain, linear/equal-power fades, explicit routing and tempo-aware tails |
+| WAV import | `maac import-wav` imports whole mono/stereo RIFF WAVs or nonempty frame crops from PCM16/24/32 and IEEE float32 into a relocatable source project with native float32 PCM and source/conversion provenance; original WAV retention remains deferred; the artifact DSP engine separately supports opt-in disk-backed sampling of already-embedded PCM without raising current media limits |
 | Reusable instruments | Named libraries, typed public controls, presets, independent polyphonic instances, voice and shared graphs |
 | Sound graphs | Versioned sine/saw/square/triangle/wavetable oscillators, deterministic noise and recirculating plucked strings, linear ADSR, sine LFO, gain, low/high-pass one-pole filtering, mixing and panning |
 | Modulation | Top-level typed control modulation of continuous sample-rate, note-on/note-off, and instrument reset parameters, score/seconds LFOs and automated constants; instrument feed-forward graph modulation, ADSR, voice phase, and shared-LFO reset capture, and sample-wise through-zero linear FM; no oversampling |
@@ -46,15 +47,22 @@ independent semantic and harness reviews are complete for this bounded slice.
 Generic Locked Render verification is exposed through `maac::generic_lock` for the
 v1 lock family. It validates the complete lock envelope and verifies caller-resolved
 execution, dependency, processor, engine, output, and evidence bytes without guessing
-unknown contracts. Dependency discovery and generic descriptor schemas remain separate work.
+unknown contracts. `maac::generic_lock_generation` deterministically constructs the
+canonical v1 Config, RenderInput, and Lock artifacts from an already-resolved typed
+context and exact bytes, including optional evidence while keeping evidence outside
+the render key. Strict external descriptor parsing and owner-scoped locked dependency
+discovery are exposed through `maac::external`; neither boundary loads or executes
+external module bytes.
 Section 25 loss reporting and the initial MIDI 1.0 SMF adapter are implemented through
 `maac::interchange`; notation and DAW-session adapters remain separate work.
 
 Message performance is resolved into retained transport events, including exact protocol/bytes, certified frames, and §6.1 dispatch ordering. Hosts must explicitly advertise a matching protocol for each target through `PlanArtifact::performance_dispatches`; the built-in Core Audio renderer has no raw-message adapter and therefore still returns `E_CAPABILITY`. Other recognized deferred execution features fail with `E_CAPABILITY`:
 other processors, pitched sample instruments,
-preserve-pitch audio warping, external plug-ins and other extensions. Generic lock
-generation/dependency discovery, generic rendering, notation/DAW adapters, GUI and real-time
-playback are outside this release's interfaces. The bounded MIDI 1.0 SMF adapter is an
+preserve-pitch audio warping, external plug-ins and other extensions. Generic rendering,
+executable native external ABI hosting, notation/DAW adapters, GUI and real-time playback
+are outside this release's interfaces. Generic lock construction/verification and strict
+external descriptor discovery are available only as the bounded offline/runtime APIs
+described above; they do not provide generic DSP execution. The bounded MIDI 1.0 SMF adapter is an
 offline interchange export and does not provide live MIDI device transport.
 Protocol 2 transactional editing is implemented through `maac::editing` and `maac patch` for
 core compositions, hash-pinned local/built-in imports, reusable library sources and the recognized
@@ -67,7 +75,8 @@ No deferred feature is approximated silently.
 The [kit contract](core-kit.md) defines native hit scheduling, raw sample assets,
 voice capacity, interpolation and standalone replay. The additive `*_artifact`
 Rust APIs support versions 1–7 through opaque `PlanArtifact`; existing APIs keep
-their supported versions. WAV importing and reusable sample-kit library exports
+their supported versions. The bounded [WAV importer](media-import.md) reuses
+ordinary audio-asset and clip contracts; reusable sample-kit library exports
 remain outside this slice.
 
 The [audio clip contract](audio-clips.md) defines rate-mode transport through

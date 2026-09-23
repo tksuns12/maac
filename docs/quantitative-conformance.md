@@ -141,7 +141,11 @@ reviews passed, and root performed integration acceptance.
 
 Production Rust, Cargo, grammar, and schema files remain unchanged. Full Rust
 suite, release build, installed acceptance, remote CI, cross-platform runtime,
-and listening checks were omitted. Runtime normalizer/editor behavior, generic
-lock verification/discovery/rendering, descriptor wire schemas, and loss-report
-schemas remain outside this bounded claim. It does not claim full-profile
-execution, a universal tolerance, or cross-platform bit identity.
+and listening checks were omitted from this historical bounded claim. At that
+time, runtime normalizer/editor behavior, generic lock verification/discovery/
+rendering, descriptor wire schemas, and loss-report schemas were also outside
+its scope. Later bounded slices added normalizer/editor behavior, generic lock
+verification/construction, strict descriptor and dependency discovery, and the
+loss-report/MIDI contract; generic rendering and executable external hosting
+remain outside scope. This document does not claim full-profile execution, a
+universal tolerance, or cross-platform bit identity.

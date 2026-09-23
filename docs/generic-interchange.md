@@ -9,11 +9,14 @@ identities and does not change the source syntax/tree, retained-plan formats,
 or DSP/rendering algorithms. A generic runtime lock verifier is implemented by `maac::generic_lock`: it validates
 the closed v1 wire, ordering, digests, cross-pins, timing, evidence shape, and can
 verify the lock against caller-supplied resolved execution/dependency/processor/engine
-context and exact bytes. `maac::external` now adds a strict MaaC/1 §17
-external-processor descriptor wire, verifies the complete owner-scoped locked
-dependency closure, and exposes explicit host ABI/adapter/permission authorization.
-Executable ABI invocation, lock generation/normalization, and a generic renderer
-remain separate follow-ups.
+context and exact bytes. `maac::generic_lock_generation` constructs canonical Config,
+RenderInput, and Lock artifacts from caller-resolved typed context and exact closure
+bytes, including deterministic ordering, all v1 cross-pins, `execution_hash`,
+`render_key`, and optional output evidence; the generated lock is independently parsed
+and verified. `maac::external` adds a strict MaaC/1 §17 external-processor descriptor
+wire, verifies the complete owner-scoped locked dependency closure, and exposes explicit
+host ABI/adapter/permission authorization. Executable ABI invocation and a generic
+renderer remain separate follow-ups.
 
 ## Common wire rules
 
@@ -306,8 +309,10 @@ maac.execution.sha256/1, validating normalized configuration and defaults,
 checking processor type/descriptor context, verifying state and latency
 contracts, resolving the output port and score/tail, and establishing the
 complete dependency closure. A static corpus can verify structure, exact
-preimages, digests, and rejection vectors; it does not discover dependencies,
-normalize a runtime lock, or prove an actual render.
+preimages, digests, and rejection vectors; it does not discover dependencies
+or prove an actual render. The Rust generator can normalize an already-resolved
+context into the frozen v1 artifacts, but it does not resolve missing closure
+members, fetch bytes, infer processor capabilities, or execute a render.
 
 The source and dependency identities, configuration digest, engine and
 processor context, block schedule, and output selection must agree
@@ -341,5 +346,9 @@ block schedule, crop/channel order, closure bytes, and optional PCM/file evidenc
 The Rust `maac::external` boundary now parses the strict §17 descriptor wire,
 discovers and verifies complete processor-owned locked dependency closures, and
 requires explicit host capability authorization without executing module bytes.
-Lock generation/normalization, executable ABI invocation, and generic rendering
-remain separate work.
+The Rust `maac::generic_lock_generation` boundary deterministically constructs
+canonical v1 Config, RenderInput, and Lock artifacts from a typed resolved context,
+checks dependency pins and strict external descriptor compatibility, and round-trips
+the result through the independent validator/verifier. Generic rendering and
+executable ABI invocation remain separate work; construction and verification alone
+do not establish full Locked Render conformance.

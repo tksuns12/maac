@@ -2,7 +2,8 @@
 
 The [instrument delivery evidence](instrument-delivery.md) records verification
 for the reusable sound-library milestone. The naming and release-preparation
-results below are historical snapshots and do not assert checks on later code.
+sections below are dated snapshots. Follow-up sections distinguish fresh Rust
+checks from older release-preparation evidence.
 
 This report records automated evidence for the MaaC (`maac`) source-only release
 preparation. MaaC/1 is the source language; MaaC source files use `.maac` and
@@ -11,6 +12,56 @@ noncanonical language headers.
 The separate
 [release-readiness review](release-readiness.md) records publication decisions,
 audit limits, and remaining release work.
+
+## Release-preparation snapshot (2026-09-21)
+
+The following checks were run against the working tree available on September
+21, 2026, including the bounded generic-lock construction slice. They are local
+evidence, not hosted-CI or human-listening evidence.
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Formatting | `cargo fmt --all -- --check` | Passed |
+| Clippy | `cargo clippy --all-targets -- -D warnings` | Passed |
+| Tests and doctests | `cargo test` | Passed: 243 library tests, all integration targets, and 1 doctest; 3 existing tests ignored |
+| Release build | `cargo build --release` | Passed |
+| Installed CLI acceptance | `python3 scripts/acceptance.py` | 38 of 38 checks passed |
+| Production coefficient tables | `python3 scripts/production_src_coefficients.py --verify` | Passed |
+| Python production checker | `python3 check_production.py` | Unavailable in this environment: `lark` and `jsonschema` are not installed |
+
+The Python production checker has historical passing evidence in the integration
+check table in [production-delivery evidence](production-delivery.md); its
+dependency absence here is an environment gap, not a product failure. The
+working tree recorded at that snapshot contained uncommitted implementation and
+documentation changes.
+
+## Follow-up Rust verification before RIFF review fixes (2026-09-23)
+
+These Rust checks were rerun after the initial bounded WAV import slice. They
+predate the later RIFF review fixes and do not refresh the September 21 release
+build, installed-CLI acceptance, or Python-checker evidence above.
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Formatting | `cargo fmt --all -- --check` | Passed |
+| Tests and doctests | `cargo test` | Passed: 243 library tests, all integration targets, and 1 doctest; 3 existing tests ignored |
+| Clippy | `cargo clippy --all-targets -- -D warnings` | Passed |
+
+## Post-RIFF-review verification (2026-09-23)
+
+The current tree includes the single-pass RIFF importer and duplicate-chunk
+regressions. The full `cargo test` run was interrupted after its completed
+targets passed; this section claims the focused gate only.
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Formatting | `cargo fmt --all -- --check` | Passed |
+| Focused Rust tests | `cargo test --lib --test media_import --test media_import_cli --test generic_lock_generation --test audio_storage` | Passed: 248 library tests, 3 existing ignored; 12 media-import, 1 import-CLI, 9 generic-lock-generation, and 1 audio-storage test |
+| Clippy | `cargo clippy --all-targets -- -D warnings` | Passed |
+| Release build | `cargo build --release` | Passed |
+| Installed CLI acceptance | `python3 scripts/acceptance.py` | 38 of 38 checks passed |
+| Production coefficient tables | `python3 scripts/production_src_coefficients.py --verify` | Passed |
+| Python production checker | `python3 check_production.py` | Unavailable: `lark` and `jsonschema` are not installed |
 
 ## Historical naming cleanup
 
@@ -33,7 +84,7 @@ matched the current tracked files byte-for-byte:
 | `conformance.json` | 3,621 | `94dc043060464dd6e4dbb1796009252bd343a06a4c9f5b5d096ea6c1cbeeddd4` |
 | `example.syntax.json` | 21,600 | `358e59e4a9352e4d25b1e1e99b6a3fc799a861e322d5510e8833104fad455ca8` |
 
-The current implementation checks also passed:
+The release-preparation snapshot checks also passed:
 
 | Check | Command | Result |
 | --- | --- | --- |

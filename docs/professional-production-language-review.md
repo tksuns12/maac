@@ -202,11 +202,11 @@ require source-addressed loss or refusal under [explicit loss reporting](../MaaC
 Full MaaC semantics remain in the source package. “Type 1” here means Standard
 MIDI File format 1, not MIDI 2.0.
 
-The existing descriptor contract already specifies stable parameter IDs, state,
-latency, and determinism. The first handoff proposal can finish the loss-report
-schema and MIDI/audio adapter before external processor descriptor wire schemas
-or host runtime exist. Those descriptor and host pieces are a separate later
-slice; state hashes remain
+The existing descriptor contract specifies stable parameter IDs, state, latency,
+and determinism. The bounded external descriptor wire, dependency-discovery,
+loss-report, and MIDI adapter slices now exist. A receiver mapping, executable
+host runtime, aligned-stem handoff, and DAW/session adapters remain separate
+later work; state hashes remain
 distinct from seek checkpoints. CLAP likewise separates stable parameter
 identity, per-note modulation, and latency/state change concerns ([CLAP parameter
 extension](https://github.com/free-audio/clap/blob/main/include/clap/ext/params.h)).

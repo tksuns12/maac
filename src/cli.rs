@@ -17,6 +17,7 @@ use crate::compiler;
 use crate::diagnostic::{Diagnostic, Diagnostics, Span};
 use crate::dsp::RenderError;
 use crate::export::{self, ExportError, FrameRange, WavFormat, WavStats, MAX_INPUT_BYTES};
+use crate::media_import::{self, ImportedWav, WavImportRange};
 use crate::plan::{Plan, PlanError, PlanLimits};
 use crate::plan_v3::VersionedPlan;
 use crate::syntax::{parse, Document};
@@ -139,6 +140,19 @@ pub enum Command {
     Module {
         #[command(subcommand)]
         command: ModuleCommand,
+    },
+    /// Import a WAV file or a frame crop into a new editable MaaC project.
+    ImportWav {
+        input: PathBuf,
+        /// Inclusive source frame at which the crop begins.
+        #[arg(long, requires = "end_frame")]
+        start_frame: Option<u64>,
+        /// Exclusive source frame at which the crop ends.
+        #[arg(long, requires = "start_frame")]
+        end_frame: Option<u64>,
+        /// New directory to receive main.maac, media.pcm, and import.json.
+        #[arg(long)]
+        output_dir: PathBuf,
     },
 }
 
@@ -946,6 +960,55 @@ fn execute_impl(
                 ))
             }
         },
+        Command::ImportWav {
+            input,
+            start_frame,
+            end_frame,
+            output_dir,
+        } => {
+            if export::path_exists(output_dir).map_err(CliError::from_export)? {
+                return Err(CliError::from_export(ExportError::OutputExists {
+                    path: output_dir.to_owned(),
+                }));
+            }
+            let range = match (start_frame, end_frame) {
+                (Some(start), Some(end)) => Some(WavImportRange::new(*start, *end)),
+                (None, None) => None,
+                _ => {
+                    return Err(CliError::new(
+                        "E_USAGE",
+                        "WAV crop requires both --start-frame and --end-frame",
+                    ))
+                }
+            };
+            let imported = media_import::import_wav_file(input, range)
+                .map_err(|error| CliError::new(error.code(), error.message().to_owned()))?;
+            let bundle = imported.source_bundle();
+            let plan = compiler::compile_bundle_artifact(&bundle)
+                .map_err(|error| CliError::from_diagnostics(&error))?;
+            plan.to_json().map_err(CliError::from_plan)?;
+            write_media_import_project(&imported, &bundle, output_dir)?;
+            Ok(CommandResult {
+                ok: true,
+                command: "import-wav".into(),
+                input: input.display().to_string(),
+                output: Some(output_dir.display().to_string()),
+                format: Some(format!(
+                    "{}/{}",
+                    media_import::MEDIA_IMPORT_FORMAT,
+                    media_import::MEDIA_IMPORT_VERSION
+                )),
+                notes: None,
+                frames: Some(imported.frames()),
+                digest: Some(imported.source_hash().into()),
+                exports: None,
+                catalog: None,
+                instrument: None,
+                library: None,
+                libraries: None,
+                delivery: None,
+            })
+        }
     }
 }
 
@@ -1132,6 +1195,45 @@ fn unpack_module(artifact: &ModuleArtifact, output_dir: &Path) -> Result<(), Cli
     Ok(())
 }
 
+fn write_media_import_project(
+    imported: &ImportedWav,
+    bundle: &SourceBundle,
+    output_dir: &Path,
+) -> Result<(), CliError> {
+    if export::path_exists(output_dir).map_err(CliError::from_export)? {
+        return Err(CliError::from_export(ExportError::OutputExists {
+            path: output_dir.to_owned(),
+        }));
+    }
+    let source = bundle
+        .sources
+        .get("main.maac")
+        .ok_or_else(|| CliError::new("E_INTERNAL", "generated media project has no main.maac"))?;
+    let manifest = imported
+        .manifest_json()
+        .map_err(|error| CliError::new(error.code(), error.message().to_owned()))?;
+    let parent = output_dir
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let staging = tempfile::tempdir_in(parent).map_err(|error| {
+        CliError::new(
+            "E_IO",
+            format!(
+                "cannot stage media project in {}: {error}",
+                parent.display()
+            ),
+        )
+    })?;
+    fs::write(staging.path().join("main.maac"), source.as_bytes())
+        .map_err(|error| CliError::new("E_IO", format!("cannot stage main.maac: {error}")))?;
+    fs::write(staging.path().join("media.pcm"), imported.pcm_bytes())
+        .map_err(|error| CliError::new("E_IO", format!("cannot stage media.pcm: {error}")))?;
+    fs::write(staging.path().join("import.json"), manifest)
+        .map_err(|error| CliError::new("E_IO", format!("cannot stage import.json: {error}")))?;
+    publish_staged_directory_noclobber(staging.path(), output_dir, "media project")
+}
+
 fn stage_module_members(root: &Path, bundle: &SourceBundle) -> Result<(), CliError> {
     // Probe the real destination filesystem semantics in the staging directory
     // before copying content. This catches case-folding, Unicode-normalization,
@@ -1224,8 +1326,16 @@ fn native_path(path: &Path) -> Result<std::ffi::CString, CliError> {
     })
 }
 
-#[cfg(target_vendor = "apple")]
 fn publish_staged_module_noclobber(staging: &Path, destination: &Path) -> Result<(), CliError> {
+    publish_staged_directory_noclobber(staging, destination, "module")
+}
+
+#[cfg(target_vendor = "apple")]
+fn publish_staged_directory_noclobber(
+    staging: &Path,
+    destination: &Path,
+    artifact: &str,
+) -> Result<(), CliError> {
     let staging_native = native_path(staging)?;
     let destination_native = native_path(destination)?;
     // SAFETY: both arguments are owned, NUL-terminated C strings that remain
@@ -1239,11 +1349,15 @@ fn publish_staged_module_noclobber(staging: &Path, destination: &Path) -> Result
             libc::RENAME_EXCL,
         )
     };
-    finish_module_publish(result, destination)
+    finish_staged_directory_publish(result, destination, artifact)
 }
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
-fn publish_staged_module_noclobber(staging: &Path, destination: &Path) -> Result<(), CliError> {
+fn publish_staged_directory_noclobber(
+    staging: &Path,
+    destination: &Path,
+    artifact: &str,
+) -> Result<(), CliError> {
     let staging_native = native_path(staging)?;
     let destination_native = native_path(destination)?;
     // SAFETY: both arguments are owned, NUL-terminated C strings that remain
@@ -1257,11 +1371,15 @@ fn publish_staged_module_noclobber(staging: &Path, destination: &Path) -> Result
             libc::RENAME_NOREPLACE,
         )
     };
-    finish_module_publish(result, destination)
+    finish_staged_directory_publish(result, destination, artifact)
 }
 
 #[cfg(any(target_vendor = "apple", target_os = "linux", target_os = "android"))]
-fn finish_module_publish(result: libc::c_int, destination: &Path) -> Result<(), CliError> {
+fn finish_staged_directory_publish(
+    result: libc::c_int,
+    destination: &Path,
+    artifact: &str,
+) -> Result<(), CliError> {
     if result == 0 {
         return Ok(());
     }
@@ -1274,14 +1392,18 @@ fn finish_module_publish(result: libc::c_int, destination: &Path) -> Result<(), 
     Err(CliError::new(
         "E_IO",
         format!(
-            "cannot publish module directory {}: {error}",
+            "cannot publish {artifact} directory {}: {error}",
             destination.display()
         ),
     ))
 }
 
 #[cfg(target_os = "windows")]
-fn publish_staged_module_noclobber(staging: &Path, destination: &Path) -> Result<(), CliError> {
+fn publish_staged_directory_noclobber(
+    staging: &Path,
+    destination: &Path,
+    artifact: &str,
+) -> Result<(), CliError> {
     use std::os::windows::ffi::OsStrExt;
 
     #[link(name = "kernel32")]
@@ -1314,7 +1436,7 @@ fn publish_staged_module_noclobber(staging: &Path, destination: &Path) -> Result
     Err(CliError::new(
         "E_IO",
         format!(
-            "cannot publish module directory {}: {error}",
+            "cannot publish {artifact} directory {}: {error}",
             destination.display()
         ),
     ))
@@ -1326,7 +1448,11 @@ fn publish_staged_module_noclobber(staging: &Path, destination: &Path) -> Result
     target_os = "android",
     target_os = "windows"
 )))]
-fn publish_staged_module_noclobber(_staging: &Path, destination: &Path) -> Result<(), CliError> {
+fn publish_staged_directory_noclobber(
+    _staging: &Path,
+    destination: &Path,
+    _artifact: &str,
+) -> Result<(), CliError> {
     Err(CliError::new(
         "E_CAPABILITY",
         format!(
