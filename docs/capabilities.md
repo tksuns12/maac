@@ -37,6 +37,7 @@ Coverage of every reference processor identifier is not a full-profile claim.
 | Native production | Project-level EQ, linked peak compression with external sidechains, eight-delay reverb; required `maac.production/1` |
 | Named deliveries | Complete-graph master/stem capture; 44.1/48/96 kHz conversion; final-artifact loudness/sample-peak/experimental true-peak analysis |
 | Interchange | Independently validated standalone plans: version 1 legacy, version 2 embedded graph/data/provenance, version 3 exact ramp timing recipes, version 4 embedded audio assets and kit nodes, version 5 rate clips, version 6 warp-rate clips, version 7 core control modulation |
+| Native archive | `maac archive create/verify/unpack` captures one current composition and its pinned source/media closure as exact files plus a versioned manifest; history and freeze records remain separate Phase 3 work |
 
 The normative [generic interchange v1 field contract](generic-interchange.md),
 [generic schema](../interchange.schema.json), and [L4 corpus](../conformance/l4/)
@@ -86,6 +87,10 @@ Tracks may group clips without an event target; grouping creates no routing.
 The [warp-rate contract](warp-rate.md) adds ordered musical source-frame anchors
 through the full tempo map, including the tail. Preserve-pitch warping and
 placement inside patterns remain unsupported.
+The [native archive contract](editable-archive.md) defines portable source
+closure capture and verification for one current composition. It preserves
+authored text and local dependencies, including large native PCM, while
+requiring a matching built-in registry for built-in imports.
 
 The [core modulation contract](core-modulation.md) implements explicit control
 edges, `core.lfo/1`, and `core.constant/1`. Score LFOs follow tempo and hold at

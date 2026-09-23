@@ -109,6 +109,29 @@ probed PCM16 overload and unsupported-command behavior. The full `cargo test`
 run was stopped after its library tests and integration targets through
 `core_delay_plan` passed; later targets are not claimed here.
 
+## Native composition archive version 1 (2026-09-23)
+
+This gate covers `archive create`, `verify`, and `unpack` for one current native
+composition and its pinned source/media closure. The first archive version has
+no edit history, freeze record, or original WAV sidecar. The complete Rust
+integration suite was not rerun for this slice.
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Focused Rust tests | `cargo test --lib --test archive_cli --test disk_media_cli --test module_cli --test media_import_cli --test bundle` | Passed: 263 library tests, 3 existing ignored; 3 archive CLI, 3 disk-media CLI, 3 module CLI, 6 media-import CLI, and 17 bundle tests |
+| Formatting and whitespace | `cargo fmt --all -- --check`; `git diff --check` | Passed |
+| Clippy | `cargo clippy --all-targets -- -D warnings` | Passed |
+| Release build | `cargo build --release` | Passed |
+| Installed CLI acceptance | `python3 scripts/acceptance.py` | Passed: 38 of 38 checks |
+| Release CLI smoke | Archive and unpack `examples/audio-clips.maac`, then compare original and reopened Float32 WAV bytes | Passed |
+
+The archive tests cover native PCM above 4 MiB, relocation after deleting the
+original project, exact authored source bytes, native production descriptor
+and built-in imports, tampering, extra members, symlinks, and existing output
+preservation. A deterministic regression proves manifest, tree, and closure
+verification stay on one pinned root when the selected path changes. The
+post-fix independent review found no material issue in this bounded slice.
+
 ## Historical naming cleanup
 
 The current tree uses MaaC consistently in the specification, grammar, schema,

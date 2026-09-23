@@ -15,7 +15,7 @@ complete professional-production product.
 | Language/conformance L1–L5 | Addressed for the bounded slices | Do not expand this into a full-profile or cross-platform identity claim. |
 | Phase 1: end-to-end inventory | Partial | Publish one lifecycle inventory covering media, recording, latency, crops, takes, routing, delivery, archive, and reopen. |
 | Phase 2: reset-correct excerpts | Complete for bounded final-WAV ranges | No claim of realtime seeking, speed-up, or arbitrary DSP-state restoration. |
-| Phase 3: media/import/packaging | In progress; bounded WAV crop import, opt-in retained-original verification, and opt-in native PCM disk media beyond inline limits implemented | Add a dependency-complete editable archive preserving history, processor context, and freeze invalidation. |
+| Phase 3: media/import/packaging | In progress; bounded WAV crop import, opt-in retained-original verification, native PCM disk media, and one-checkpoint native source archives implemented | Extend archive coverage to original media, history, processor context, and freeze invalidation. |
 | Phase 4: capture/playback/comping | Partial foundations only | Add recording, takes, comp selection, playback, and revision workflows. |
 | Phase 5: open processors and hosting | Partial foundations only | Generic rendering and executable native external hosting remain deferred. |
 | Phase 6: mix/master/release/reopen | Not complete | Pass the representative production, invalidation, clean-reopen, listening, and producer gates. |
@@ -36,6 +36,11 @@ generic-lock construction is a separate bounded slice. Another opt-in slice,
 native PCM beyond the inline limits using private snapshots and bounded cache
 pages. It does not produce a source-free saved plan. Continue Phase 3 with
 editable packaging; these bounded slices do not complete the phase.
+The [version 1 native archive](editable-archive.md) then packages one current
+composition with exact source bytes and its pinned native dependency closure.
+It verifies and unpacks after relocation. It does not preserve previous edits,
+original import WAVs, or freeze records, so the editable archive milestone
+remains open.
 
 The [capability matrix](capabilities.md), [Core Audio audit](core-audio-conformance-audit.md),
 and [current verification record](verification.md) provide supporting evidence;

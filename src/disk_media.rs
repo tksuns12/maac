@@ -152,7 +152,14 @@ impl DiskMediaProject {
     pub(crate) fn load(entry: &Path, project_root: &Path) -> Result<Self, Diagnostics> {
         let root =
             crate::bundle_fs::ProjectRoot::open_pinned(project_root, cap_std::ambient_authority())?;
-        let (bundle, assets) = crate::bundle_fs::load_disk_media_bundle_in_root(entry, &root)?;
+        Self::load_in_root(entry, &root)
+    }
+
+    pub(crate) fn load_in_root(
+        entry: &Path,
+        root: &crate::bundle_fs::ProjectRoot,
+    ) -> Result<Self, Diagnostics> {
+        let (bundle, assets) = crate::bundle_fs::load_disk_media_bundle_in_root(entry, root)?;
         Ok(Self { bundle, assets })
     }
 
@@ -166,6 +173,14 @@ impl DiskMediaProject {
             artifact,
             limits: *limits,
         })
+    }
+
+    pub(crate) fn bundle(&self) -> &SourceBundle {
+        &self.bundle
+    }
+
+    pub(crate) fn disk_assets(&self) -> &BTreeMap<String, Arc<DiskAsset>> {
+        &self.assets
     }
 }
 

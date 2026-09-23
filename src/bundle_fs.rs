@@ -411,6 +411,10 @@ impl ProjectRoot {
         root.pinned_resolution = true;
         Ok(root)
     }
+
+    pub(crate) fn dir(&self) -> &Dir {
+        &self.dir
+    }
 }
 
 fn contained_file(

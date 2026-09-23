@@ -12,6 +12,7 @@ use clap::{
 };
 use serde::Serialize;
 
+use crate::archive::ArchiveSnapshot;
 use crate::bundle::sha256_digest;
 use crate::bundle::SourceBundle;
 use crate::bundle_fs;
@@ -162,6 +163,11 @@ pub enum Command {
     },
     /// Verify a retained WAV import and compile its current project closure.
     VerifyImport { project: PathBuf },
+    /// Create, verify, or unpack a native composition archive.
+    Archive {
+        #[command(subcommand)]
+        command: ArchiveCommand,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -185,6 +191,34 @@ pub enum ModuleCommand {
     /// Restore local sources and assets into a new directory.
     Unpack {
         module: PathBuf,
+        #[arg(long)]
+        output_dir: PathBuf,
+        #[arg(long)]
+        expect_hash: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ArchiveCommand {
+    /// Capture a verified composition closure in a new portable directory.
+    Create {
+        input: PathBuf,
+        #[arg(long)]
+        output_dir: PathBuf,
+        #[arg(long)]
+        project_root: Option<PathBuf>,
+        #[arg(long, value_enum, default_value_t = ProfileArg::Default)]
+        profile: ProfileArg,
+    },
+    /// Verify a captured archive and its current reopenable composition.
+    Verify {
+        archive: PathBuf,
+        #[arg(long)]
+        expect_hash: Option<String>,
+    },
+    /// Restore verified source and dependency files into a new directory.
+    Unpack {
+        archive: PathBuf,
         #[arg(long)]
         output_dir: PathBuf,
         #[arg(long)]
@@ -410,6 +444,25 @@ impl CommandResult {
             frames: None,
             digest: Some(digest),
             exports: Some(exports),
+            catalog: None,
+            instrument: None,
+            library: None,
+            libraries: None,
+            delivery: None,
+        }
+    }
+
+    fn archive(command: &'static str, input: &Path, output: Option<&Path>, digest: String) -> Self {
+        Self {
+            ok: true,
+            command: command.into(),
+            input: input.display().to_string(),
+            output: output.map(|path| path.display().to_string()),
+            format: Some("maac.editable-archive/1".into()),
+            notes: None,
+            frames: None,
+            digest: Some(digest),
+            exports: None,
             catalog: None,
             instrument: None,
             library: None,
@@ -1092,7 +1145,118 @@ fn execute_impl(
             })
         }
         Command::VerifyImport { project } => verify_import_project_with_hook(project, || {}),
+        Command::Archive { command } => execute_archive(command),
     }
+}
+
+fn execute_archive(command: &ArchiveCommand) -> Result<CommandResult, CliError> {
+    match command {
+        ArchiveCommand::Create {
+            input,
+            output_dir,
+            project_root,
+            profile,
+        } => {
+            let (entry, implicit_root) = resolve_source_input(Some(input), project_root.as_deref());
+            let root = implicit_root.unwrap_or_else(|| {
+                entry
+                    .parent()
+                    .filter(|parent| !parent.as_os_str().is_empty())
+                    .unwrap_or_else(|| Path::new("."))
+                    .to_path_buf()
+            });
+            let absolute_entry = if entry.is_absolute() {
+                entry.clone()
+            } else {
+                std::env::current_dir()
+                    .map_err(|error| {
+                        CliError::new("E_IO", format!("cannot get working directory: {error}"))
+                    })?
+                    .join(&entry)
+            };
+            let profile = match profile {
+                ProfileArg::Default => "default",
+                ProfileArg::Song => "song",
+            };
+            let snapshot = ArchiveSnapshot::capture(&absolute_entry, &root, profile)
+                .map_err(|error| CliError::from_diagnostics(&error))?;
+            stage_archive_directory(output_dir, |staging| snapshot.stage(staging))?;
+            Ok(CommandResult::archive(
+                "archive create",
+                &entry,
+                Some(output_dir),
+                snapshot.digest(),
+            ))
+        }
+        ArchiveCommand::Verify {
+            archive,
+            expect_hash,
+        } => {
+            let snapshot = ArchiveSnapshot::verify(archive)
+                .map_err(|error| CliError::from_diagnostics(&error))?;
+            verify_expected_archive_hash(expect_hash.as_deref(), &snapshot.digest())?;
+            Ok(CommandResult::archive(
+                "archive verify",
+                archive,
+                None,
+                snapshot.digest(),
+            ))
+        }
+        ArchiveCommand::Unpack {
+            archive,
+            output_dir,
+            expect_hash,
+        } => {
+            let snapshot = ArchiveSnapshot::verify(archive)
+                .map_err(|error| CliError::from_diagnostics(&error))?;
+            verify_expected_archive_hash(expect_hash.as_deref(), &snapshot.digest())?;
+            stage_archive_directory(output_dir, |staging| snapshot.stage_members(staging))?;
+            Ok(CommandResult::archive(
+                "archive unpack",
+                archive,
+                Some(output_dir),
+                snapshot.digest(),
+            ))
+        }
+    }
+}
+
+fn stage_archive_directory(
+    output_dir: &Path,
+    stage: impl FnOnce(&Path) -> Result<(), Diagnostics>,
+) -> Result<(), CliError> {
+    if export::path_exists(output_dir).map_err(CliError::from_export)? {
+        return Err(CliError::from_export(ExportError::OutputExists {
+            path: output_dir.to_owned(),
+        }));
+    }
+    let parent = output_dir
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let staging = tempfile::tempdir_in(parent).map_err(|error| {
+        CliError::new(
+            "E_IO",
+            format!("cannot stage archive in {}: {error}", parent.display()),
+        )
+    })?;
+    stage(staging.path()).map_err(|error| CliError::from_diagnostics(&error))?;
+    publish_staged_directory_noclobber(staging.path(), output_dir, "archive")
+}
+
+fn verify_expected_archive_hash(expected: Option<&str>, actual: &str) -> Result<(), CliError> {
+    let Some(expected) = expected else {
+        return Ok(());
+    };
+    crate::bundle::validate_hash_pin(expected, "expected archive hash")
+        .map_err(|error| CliError::from_diagnostics(&error))?;
+    if expected != actual {
+        return Err(CliError::new(
+            "E_HASH",
+            format!("expected archive hash `{expected}`, but archive has `{actual}`"),
+        ));
+    }
+    Ok(())
 }
 
 fn verify_import_project_with_hook(
