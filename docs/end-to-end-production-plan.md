@@ -15,7 +15,7 @@ complete professional-production product.
 | Language/conformance L1–L5 | Addressed for the bounded slices | Do not expand this into a full-profile or cross-platform identity claim. |
 | Phase 1: end-to-end inventory | Partial | Publish one lifecycle inventory covering media, recording, latency, crops, takes, routing, delivery, archive, and reopen. |
 | Phase 2: reset-correct excerpts | Complete for bounded final-WAV ranges | No claim of realtime seeking, speed-up, or arbitrary DSP-state restoration. |
-| Phase 3: media/import/packaging | In progress; bounded WAV crop import, opt-in retained-original verification, and opt-in disk-backed sampling for embedded PCM implemented | Extend media access beyond current inline limits and add a dependency-complete editable archive preserving history, processor context, and freeze invalidation. |
+| Phase 3: media/import/packaging | In progress; bounded WAV crop import, opt-in retained-original verification, and opt-in native PCM disk media beyond inline limits implemented | Add a dependency-complete editable archive preserving history, processor context, and freeze invalidation. |
 | Phase 4: capture/playback/comping | Partial foundations only | Add recording, takes, comp selection, playback, and revision workflows. |
 | Phase 5: open processors and hosting | Partial foundations only | Generic rendering and executable native external hosting remain deferred. |
 | Phase 6: mix/master/release/reopen | Not complete | Pass the representative production, invalidation, clean-reopen, listening, and producer gates. |
@@ -31,9 +31,11 @@ opt-in artifact-engine mode snapshots validated embedded PCM to a private
 temporary file and samples through a bounded two-page cache. The plan still
 embeds and validates all PCM under existing limits, so this avoids an additional
 full decoded copy. It does not stream external or oversized media. The
-generic-lock construction is a separate bounded slice. Continue Phase 3 with
-media access beyond the inline limits and editable packaging; these bounded
-slices do not complete the phase.
+generic-lock construction is a separate bounded slice. Another opt-in slice,
+[`--disk-media`](disk-media.md), checks and builds compositions with hash-pinned
+native PCM beyond the inline limits using private snapshots and bounded cache
+pages. It does not produce a source-free saved plan. Continue Phase 3 with
+editable packaging; these bounded slices do not complete the phase.
 
 The [capability matrix](capabilities.md), [Core Audio audit](core-audio-conformance-audit.md),
 and [current verification record](verification.md) provide supporting evidence;

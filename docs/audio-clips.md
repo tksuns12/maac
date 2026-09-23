@@ -148,6 +148,8 @@ The artifact and source bundle still contain the complete PCM bytes, and all
 existing per-asset, aggregate, and plan-size limits remain in force. Disk mode
 avoids an additional full decoded-float buffer; it is not a total-memory bound,
 external-media reference, or support for assets larger than those limits.
+Source `check` and `build` separately support the [opt-in disk-media profile](disk-media.md)
+for larger native PCM with source hash pins and a separate byte budget.
 
 ## Acceptance
 

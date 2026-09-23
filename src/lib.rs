@@ -6,6 +6,7 @@ pub mod bundle_fs;
 pub mod cli;
 pub mod compiler;
 pub mod diagnostic;
+pub(crate) mod disk_media;
 pub mod dsp;
 pub mod editing;
 pub mod exact;

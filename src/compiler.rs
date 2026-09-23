@@ -663,13 +663,15 @@ impl<'a> Compiler<'a> {
         self.kit_nodes = graph.kit_nodes().clone();
         for (id, source) in graph.audio_sources() {
             let path = crate::bundle::normalize_file_reference("package.maac", &source.path)?;
-            let bytes = resolved.assets.get(&path).ok_or_else(|| {
-                diagnostics(
+            let bytes = resolved.assets.get(&path);
+            let disk = resolved.disk_assets.get(&path);
+            if bytes.is_none() && disk.is_none() {
+                return Err(diagnostics(
                     DiagnosticCode::Asset,
                     format!("resolved audio asset `{id}` is missing `{path}`"),
                     None,
-                )
-            })?;
+                ));
+            }
             self.audio_assets.push(AudioAsset {
                 id: id.clone(),
                 format: source.format.clone(),
@@ -677,7 +679,8 @@ impl<'a> Compiler<'a> {
                 channels: source.channels,
                 frames: source.frames,
                 hash: source.hash.clone(),
-                bytes: bytes.clone(),
+                bytes: bytes.cloned().unwrap_or_default(),
+                disk: disk.cloned(),
             });
         }
         self.read_composition(limits)?;
@@ -4814,6 +4817,7 @@ fn local_resolved(document: &Document) -> ResolvedBundle {
         documents: BTreeMap::from([(entry.clone(), document.clone())]),
         imports: BTreeMap::from([(entry.clone(), BTreeMap::new())]),
         assets: BTreeMap::new(),
+        disk_assets: BTreeMap::new(),
         dependencies: Vec::new(),
         source_files: vec![SourceIdentity {
             path: entry,
@@ -5051,6 +5055,47 @@ pub fn compile_bundle_artifact_with_limits(
     limits: &PlanLimits,
 ) -> Result<PlanArtifact, Diagnostics> {
     let (resolved, libraries, production, original) = prepare_artifact_bundle(bundle)?;
+    compile_resolved_artifact(&resolved, libraries, limits, production, &original)
+}
+
+pub(crate) fn compile_disk_media_artifact(
+    bundle: &SourceBundle,
+    disk_assets: &BTreeMap<String, std::sync::Arc<crate::disk_media::DiskAsset>>,
+    limits: &PlanLimits,
+) -> Result<PlanArtifact, Diagnostics> {
+    let mut resolved = bundle.resolve_with_disk_assets(disk_assets)?;
+    let original = resolved
+        .documents
+        .get(&resolved.entry)
+        .expect("resolved entry exists")
+        .clone();
+    if !original
+        .objects
+        .values()
+        .any(|object| object.kind == "project")
+    {
+        return Err(diagnostics(
+            DiagnosticCode::Capability,
+            "disk media mode requires a composition entrypoint",
+            None,
+        ));
+    }
+    let (document, production) =
+        crate::production_data::prepare_document(&original, &bundle.assets)?;
+    resolved.documents.insert(resolved.entry.clone(), document);
+    let libraries = LibrarySet::resolve(&resolved)?;
+    if !libraries
+        .resolved_document()
+        .objects
+        .values()
+        .any(|object| object.kind == "project")
+    {
+        return Err(diagnostics(
+            DiagnosticCode::Capability,
+            "disk media mode requires a composition entrypoint",
+            None,
+        ));
+    }
     compile_resolved_artifact(&resolved, libraries, limits, production, &original)
 }
 /// Check a composition through artifact compilation or validate all library exports.

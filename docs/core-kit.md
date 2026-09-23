@@ -27,6 +27,9 @@ package root, including when the entry source is nested. Absolute paths,
 package escapes, missing assets, mismatched hashes, malformed data, and resource
 exhaustion fail explicitly. Existing 4 MiB per-file, 16 MiB aggregate asset,
 64-asset, and 4 MiB serialized-plan bounds remain in force.
+Source `check` and `build` can instead select the [opt-in disk-media profile](disk-media.md)
+to verify and play larger hash-pinned native PCM through private snapshots.
+It does not create a saved plan with external media references.
 
 Saved plans retain exact source bytes and metadata and validate them again.
 Playback must work after source files and external assets are removed. The plan

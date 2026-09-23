@@ -85,6 +85,30 @@ the pinned-root fix. After the fix, both root-replacement probes failed with
 tests passed. The verifier's absolute-symlink alias limit is documented in
 [media import](media-import.md).
 
+## Opt-in native PCM disk media (2026-09-23)
+
+This gate covers source `check` and `build --disk-media` with hash-pinned native
+PCM snapshots beyond the embedded 4 MiB asset limit. It does not claim a new
+standalone plan format or full Phase 3 completion.
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Focused Rust tests | `cargo test --lib --test disk_media_cli --test audio_storage --test bundle` | Passed: 257 library tests, 3 existing ignored; 3 disk-media CLI, 1 audio-storage, and 17 bundle tests |
+| Formatting and whitespace | `cargo fmt --all -- --check`; `git diff --check` | Passed |
+| Clippy | `cargo clippy --all-targets -- -D warnings` | Passed |
+| Release build | `cargo build --release` | Passed |
+| Installed CLI acceptance | `python3 scripts/acceptance.py` | Passed: 38 of 38 checks |
+| Release CLI smoke | Build `examples/audio-clips.maac` as PCM16 through embedded and `--disk-media` paths, compare WAV bytes | Passed |
+
+The disk-media CLI tests cover a 20,000,004-byte native PCM asset, relocation,
+hash rejection with `--force` preserving an existing WAV, and byte-identical
+Float32/PCM16 builds for compact clips, kits, notes, and routing. Core tests
+cover private snapshot isolation, duplicate path pins, nonfinite samples, and
+bounded page reads. Independent review found no actionable issue and also
+probed PCM16 overload and unsupported-command behavior. The full `cargo test`
+run was stopped after its library tests and integration targets through
+`core_delay_plan` passed; later targets are not claimed here.
+
 ## Historical naming cleanup
 
 The current tree uses MaaC consistently in the specification, grammar, schema,

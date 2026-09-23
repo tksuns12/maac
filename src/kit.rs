@@ -65,6 +65,7 @@ impl KitRuntime {
             return Err(error("E_REFERENCE", "kit requires samples"));
         }
         let mut bytes = 0usize;
+        let mut disk_bytes = 0usize;
         let mut unique = BTreeSet::new();
         let mut key_bytes = 0usize;
         for (key, sample) in &samples {
@@ -78,7 +79,12 @@ impl KitRuntime {
                 .checked_add(key.len())
                 .ok_or_else(|| error("E_RESOURCE_LIMIT", "key storage overflow"))?;
             if unique.insert(Arc::as_ptr(sample)) {
-                bytes = bytes
+                let total = if sample.is_external_disk() {
+                    &mut disk_bytes
+                } else {
+                    &mut bytes
+                };
+                *total = total
                     .checked_add(sample.byte_len())
                     .ok_or_else(|| error("E_RESOURCE_LIMIT", "sample storage overflow"))?;
             }
@@ -87,6 +93,7 @@ impl KitRuntime {
             || key_bytes > PlanLimits::MAX_TOTAL_STRING_BYTES
             || samples.len() > PlanLimits::MAX_EVENTS
             || bytes > crate::bundle::MAX_BUNDLE_ASSET_BYTES
+            || disk_bytes > crate::disk_media::MAX_DISK_MEDIA_TOTAL_BYTES as usize
         {
             return Err(error(
                 "E_RESOURCE_LIMIT",
@@ -205,6 +212,7 @@ mod tests {
                 frames: (values.len() / channels as usize) as u64,
                 hash: sha256_digest(&bytes),
                 bytes,
+                disk: None,
             })
             .unwrap(),
         )

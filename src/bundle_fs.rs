@@ -33,6 +33,48 @@ pub(crate) fn load_bundle_in_root(
     entry_path: &Path,
     root: &ProjectRoot,
 ) -> Result<SourceBundle, Diagnostics> {
+    load_bundle_in_root_mode(entry_path, root, false).map(|(bundle, _)| bundle)
+}
+
+pub(crate) fn load_disk_media_bundle_in_root(
+    entry_path: &Path,
+    root: &ProjectRoot,
+) -> Result<
+    (
+        SourceBundle,
+        BTreeMap<String, std::sync::Arc<crate::disk_media::DiskAsset>>,
+    ),
+    Diagnostics,
+> {
+    let relative = if entry_path.is_absolute() {
+        entry_path
+            .strip_prefix(&root.selected)
+            .or_else(|_| entry_path.strip_prefix(&root.canonical))
+            .map_err(|_| {
+                error(
+                    DiagnosticCode::Reference,
+                    "entry source is outside the project root",
+                )
+            })?
+    } else {
+        entry_path
+    };
+    let resolved =
+        resolve_contained_path(root, relative, "entry source", DiagnosticCode::Reference)?;
+    load_bundle_in_root_mode(&resolved, root, true)
+}
+
+fn load_bundle_in_root_mode(
+    entry_path: &Path,
+    root: &ProjectRoot,
+    disk_media: bool,
+) -> Result<
+    (
+        SourceBundle,
+        BTreeMap<String, std::sync::Arc<crate::disk_media::DiskAsset>>,
+    ),
+    Diagnostics,
+> {
     let entry = if entry_path.is_absolute() {
         let entry_candidate = entry_path.to_owned();
         let entry_canonical =
@@ -62,7 +104,9 @@ pub(crate) fn load_bundle_in_root(
     };
 
     let mut sources = BTreeMap::new();
-    let mut assets = BTreeMap::new();
+    let mut assets: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+    let mut disk_assets: BTreeMap<String, std::sync::Arc<crate::disk_media::DiskAsset>> =
+        BTreeMap::new();
     let mut source_bytes = 0usize;
     let mut asset_bytes = 0usize;
     let mut syntax_objects = 0usize;
@@ -146,15 +190,68 @@ pub(crate) fn load_bundle_in_root(
         for asset in references.assets {
             validate_hash_pin(&asset.hash, "asset hash")?;
             let target = asset.target_path(&logical_path)?;
-            if assets.contains_key(&target) {
+            if let Some(snapshot) = disk_assets.get(&target) {
+                if snapshot.hash != asset.hash {
+                    return Err(error(
+                        DiagnosticCode::Hash,
+                        format!(
+                            "asset `{}` in `{logical_path}` expected `{}`, but `{target}` has `{}`",
+                            asset.alias, asset.hash, snapshot.hash
+                        ),
+                    ));
+                }
                 continue;
             }
-            if assets.len() >= MAX_BUNDLE_ASSETS {
+            if let Some(bytes) = assets.get(&target) {
+                let actual = sha256_digest(bytes);
+                if actual != asset.hash {
+                    return Err(error(
+                        DiagnosticCode::Hash,
+                        format!(
+                            "asset `{}` in `{logical_path}` expected `{}`, but `{target}` has `{actual}`",
+                            asset.alias, asset.hash
+                        ),
+                    ));
+                }
+                continue;
+            }
+            if assets.len() + disk_assets.len() >= MAX_BUNDLE_ASSETS {
                 return Err(resource_error(format!(
                     "bundle contains more than {MAX_BUNDLE_ASSETS} assets"
                 )));
             }
             let file = contained_file(root, &target, "asset", DiagnosticCode::Asset)?;
+            let is_native_pcm = disk_media
+                && asset
+                    .alias
+                    .strip_prefix("asset:")
+                    .and_then(|id| document.objects.get(id))
+                    .is_some_and(|object| {
+                        object
+                            .field("kind")
+                            .and_then(|field| field.value.as_symbol())
+                            == Some("audio")
+                            && object
+                                .field("format")
+                                .and_then(|field| field.value.as_string())
+                                == Some(crate::audio_asset::CORE_AUDIO_FORMAT)
+                    });
+            if is_native_pcm {
+                let snapshot = crate::disk_media::DiskAsset::snapshot(file, &target, &asset.hash)?;
+                let total = disk_assets.values().fold(
+                    0u64,
+                    |n: u64, asset: &std::sync::Arc<crate::disk_media::DiskAsset>| {
+                        n.saturating_add(asset.bytes)
+                    },
+                );
+                if total.saturating_add(snapshot.bytes)
+                    > crate::disk_media::MAX_DISK_MEDIA_TOTAL_BYTES
+                {
+                    return Err(resource_error("disk media aggregate exceeds 1 GiB"));
+                }
+                disk_assets.insert(target, std::sync::Arc::new(snapshot));
+                continue;
+            }
             let bytes = read_bounded(file, &target, "asset")?;
             asset_bytes = checked_total(asset_bytes, bytes.len(), MAX_BUNDLE_ASSET_BYTES, "asset")?;
             let actual = sha256_digest(&bytes);
@@ -178,8 +275,8 @@ pub(crate) fn load_bundle_in_root(
     };
     // Reuse the in-memory boundary for hash pins, cycles, exact import schema,
     // aggregate syntax limits, and all path invariants.
-    bundle.resolve()?;
-    Ok(bundle)
+    bundle.resolve_with_disk_assets(&disk_assets)?;
+    Ok((bundle, disk_assets))
 }
 
 /// Match the CLI's canonical-entry behavior without reopening the root path.

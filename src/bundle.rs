@@ -36,6 +36,13 @@ impl SourceBundle {
     }
 
     pub fn resolve(&self) -> Result<ResolvedBundle, Diagnostics> {
+        self.resolve_with_disk_assets(&BTreeMap::new())
+    }
+
+    pub(crate) fn resolve_with_disk_assets(
+        &self,
+        disk_assets: &BTreeMap<String, std::sync::Arc<crate::disk_media::DiskAsset>>,
+    ) -> Result<ResolvedBundle, Diagnostics> {
         self.preflight()?;
 
         let mut parsed = BTreeMap::new();
@@ -140,6 +147,8 @@ impl SourceBundle {
             documents: BTreeMap::new(),
             imports: BTreeMap::new(),
             resolved_assets: BTreeMap::new(),
+            disk_assets,
+            resolved_disk_assets: BTreeMap::new(),
             dependencies: Vec::new(),
             source_files: Vec::new(),
         };
@@ -150,6 +159,7 @@ impl SourceBundle {
             documents: resolver.documents,
             imports: resolver.imports,
             assets: resolver.resolved_assets,
+            disk_assets: resolver.resolved_disk_assets,
             dependencies: resolver.dependencies,
             source_files: resolver.source_files,
         })
@@ -260,6 +270,7 @@ pub struct ResolvedBundle {
     pub documents: BTreeMap<String, Document>,
     pub imports: BTreeMap<String, BTreeMap<String, String>>,
     pub assets: BTreeMap<String, Vec<u8>>,
+    pub(crate) disk_assets: BTreeMap<String, std::sync::Arc<crate::disk_media::DiskAsset>>,
     pub dependencies: Vec<DependencyIdentity>,
     pub source_files: Vec<SourceIdentity>,
 }
@@ -352,6 +363,8 @@ struct Resolver<'a> {
     documents: BTreeMap<String, Document>,
     imports: BTreeMap<String, BTreeMap<String, String>>,
     resolved_assets: BTreeMap<String, Vec<u8>>,
+    disk_assets: &'a BTreeMap<String, std::sync::Arc<crate::disk_media::DiskAsset>>,
+    resolved_disk_assets: BTreeMap<String, std::sync::Arc<crate::disk_media::DiskAsset>>,
     dependencies: Vec<DependencyIdentity>,
     source_files: Vec<SourceIdentity>,
 }
@@ -496,6 +509,17 @@ impl Resolver<'_> {
         for asset in references.assets {
             let target = asset.target_path(path)?;
             validate_hash_pin(&asset.hash, "asset hash")?;
+            if let Some(snapshot) = self.disk_assets.get(&target) {
+                if snapshot.hash != asset.hash {
+                    return Err(hash_error(format!(
+                        "asset `{}` in `{path}` expected `{}`, but `{target}` has `{}`",
+                        asset.alias, asset.hash, snapshot.hash
+                    )));
+                }
+                self.resolved_disk_assets
+                    .insert(target, std::sync::Arc::clone(snapshot));
+                continue;
+            }
             let bytes = self.bundle.assets.get(&target).ok_or_else(|| {
                 asset_error(format!(
                     "{} `{}` in `{path}` refers to missing asset `{target}`",

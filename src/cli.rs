@@ -7,7 +7,9 @@ use std::fs::{self, File, OpenOptions};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use clap::{error::ErrorKind, Arg, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
+use clap::{
+    error::ErrorKind, Arg, ArgAction, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum,
+};
 use serde::Serialize;
 
 use crate::bundle::sha256_digest;
@@ -15,6 +17,7 @@ use crate::bundle::SourceBundle;
 use crate::bundle_fs;
 use crate::compiler;
 use crate::diagnostic::{Diagnostic, Diagnostics, Span};
+use crate::disk_media::DiskMediaProject;
 use crate::dsp::RenderError;
 use crate::export::{self, ExportError, FrameRange, WavFormat, WavStats, MAX_INPUT_BYTES};
 use crate::media_import::{self, ImportedWav, WavImportRange};
@@ -570,6 +573,78 @@ pub fn execute_artifact_with_range(
         start_frame: range.map(|range| range.start_frame),
         end_frame: range.map(|range| range.end_frame),
         edit: counts.edit,
+    })
+}
+
+fn execute_disk_media(command: &Command) -> Result<ArtifactCommandResult, CliError> {
+    let (input, project_root, profile) = match command {
+        Command::Check {
+            input,
+            project_root,
+            profile,
+        }
+        | Command::Build {
+            input,
+            project_root,
+            profile,
+            ..
+        } => (input.as_deref(), project_root.as_deref(), *profile),
+        _ => {
+            return Err(CliError::new(
+                "E_USAGE",
+                "--disk-media supports check and build only",
+            ))
+        }
+    };
+    let (entry, implicit_root) = resolve_source_input(input, project_root);
+    let root = implicit_root.unwrap_or_else(|| {
+        entry
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf()
+    });
+    let absolute_entry = if entry.is_absolute() {
+        entry.clone()
+    } else {
+        std::env::current_dir()
+            .map_err(|error| {
+                CliError::new("E_IO", format!("cannot get working directory: {error}"))
+            })?
+            .join(&entry)
+    };
+    let project = DiskMediaProject::load(&absolute_entry, &root)
+        .map_err(|error| CliError::from_diagnostics(&error))?;
+    let limits = profile.limits();
+    let plan = project
+        .build_with_limits(&limits)
+        .map_err(|error| CliError::from_diagnostics(&error))?;
+    let (notes, hits, audio_clips) = plan.stats();
+    let mut base = match command {
+        Command::Check { .. } => CommandResult::check(&entry, notes, plan.output().total_frames),
+        Command::Build {
+            output,
+            format,
+            force,
+            ..
+        } => {
+            let wav_format = (*format).into();
+            let stats = export::render_wav_to_path_disk_media(&plan, output, wav_format, *force)
+                .map_err(CliError::from_export)?;
+            CommandResult::render("build", &entry, output, wav_format, stats)
+        }
+        _ => unreachable!("disk-media command was checked above"),
+    };
+    if hits > 0 || audio_clips > 0 {
+        base.notes = Some(notes);
+    }
+    Ok(ArtifactCommandResult {
+        base,
+        hits,
+        audio_clips,
+        start_frame: None,
+        end_frame: None,
+        edit: None,
     })
 }
 #[derive(Default)]
@@ -1653,12 +1728,17 @@ enum ParsedArgsError {
     Usage(CliError),
 }
 
-/// Parse the existing public CLI schema while adding range flags only to the
-/// process-facing `render` command. Keeping the flags outside `Command`
-/// preserves Rust callers that construct the established command enum.
-fn parse_cli_with_render_range(
+#[derive(Default)]
+struct ProcessOptions {
+    range: Option<FrameRange>,
+    disk_media: bool,
+}
+
+/// Add process-only flags without changing the public Command enum used by
+/// library callers.
+fn parse_cli_with_process_options(
     args: Vec<std::ffi::OsString>,
-) -> Result<(Cli, Option<FrameRange>), ParsedArgsError> {
+) -> Result<(Cli, ProcessOptions), ParsedArgsError> {
     let mut command = Cli::command();
     let render = command
         .find_subcommand_mut("render")
@@ -1679,6 +1759,17 @@ fn parse_cli_with_render_range(
                 .value_parser(clap::value_parser!(u64))
                 .help("exclusive reset-origin engine frame at which an excerpt ends"),
         );
+    for name in ["check", "build"] {
+        let subcommand = command
+            .find_subcommand_mut(name)
+            .expect("disk-media command is declared");
+        *subcommand = subcommand.clone().arg(
+            Arg::new("disk-media")
+                .long("disk-media")
+                .action(ArgAction::SetTrue)
+                .help("verify and sample native PCM from private disk snapshots"),
+        );
+    }
     let matches = command
         .try_get_matches_from(args)
         .map_err(ParsedArgsError::Clap)?;
@@ -1698,8 +1789,13 @@ fn parse_cli_with_render_range(
         },
         None => None,
     };
+    let disk_media = ["check", "build"].iter().any(|name| {
+        matches
+            .subcommand_matches(name)
+            .is_some_and(|subcommand| subcommand.get_flag("disk-media"))
+    });
     let cli = Cli::from_arg_matches(&matches).map_err(ParsedArgsError::Clap)?;
-    Ok((cli, range))
+    Ok((cli, ProcessOptions { range, disk_media }))
 }
 
 pub fn run_from_args<I, T>(args: I) -> i32
@@ -1709,7 +1805,7 @@ where
 {
     let args: Vec<std::ffi::OsString> = args.into_iter().map(Into::into).collect();
     let json_requested = args.iter().any(|arg| arg == "--json");
-    let (cli, range) = match parse_cli_with_render_range(args) {
+    let (cli, options) = match parse_cli_with_process_options(args) {
         Ok(parsed) => parsed,
         Err(ParsedArgsError::Clap(error)) => {
             let result = CliError::new("E_USAGE", error.to_string());
@@ -1742,7 +1838,12 @@ where
         }
     };
     let json = cli.json;
-    match execute_artifact_with_range(&cli.command, range) {
+    let result = if options.disk_media {
+        execute_disk_media(&cli.command)
+    } else {
+        execute_artifact_with_range(&cli.command, options.range)
+    };
+    match result {
         Ok(result) => {
             if json {
                 println!(

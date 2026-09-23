@@ -12,8 +12,9 @@ use std::path::{Path, PathBuf};
 use hound::{SampleFormat, WavSpec, WavWriter};
 use tempfile::NamedTempFile;
 
+use crate::disk_media::DiskMediaPlan;
 use crate::dsp::{self, RenderError};
-use crate::plan::{Plan, PlanError, PlanLimits, PlanView};
+use crate::plan::{OutputSettings, Plan, PlanError, PlanLimits, PlanView};
 use crate::plan_v3::VersionedPlan;
 use crate::PlanArtifact;
 
@@ -299,10 +300,26 @@ fn write_wav_for_view<W: Write + Seek>(
     // writer boundary transactional for callers that supply their own sink,
     // and shares the timing allowance across validation and runtime setup.
     let mut engine = dsp::DspEngine::new_for_view(plan, limits).map_err(ExportError::Render)?;
-    let channels = plan.output.channels;
+    write_wav_with_renderer(sink, plan.output, format, range, |callback| {
+        engine.render(callback)
+    })
+}
+
+fn write_wav_with_renderer<W, R>(
+    sink: W,
+    output: &OutputSettings,
+    format: WavFormat,
+    range: FrameRange,
+    render: R,
+) -> Result<WavStats, ExportError>
+where
+    W: Write + Seek,
+    R: FnOnce(&mut dyn FnMut(&[f64]) -> dsp::Result<()>) -> dsp::Result<()>,
+{
+    let channels = output.channels;
     let spec = WavSpec {
         channels: u16::from(channels),
-        sample_rate: plan.output.sample_rate_hz,
+        sample_rate: output.sample_rate_hz,
         bits_per_sample: match format {
             WavFormat::Float32 => 32,
             WavFormat::Pcm16 => 16,
@@ -316,7 +333,7 @@ fn write_wav_for_view<W: Write + Seek>(
     let mut frames = 0u64;
     let mut render_frame = 0u64;
     let mut write_error: Option<ExportError> = None;
-    let render_result = engine.render(|frame| {
+    let render_result = render(&mut |frame| {
         if frame.len() != usize::from(channels) {
             let error = ExportError::FrameShape {
                 expected: usize::from(channels),
@@ -483,6 +500,22 @@ pub fn render_wav_to_path_artifact_with_limits(
     render_wav_for_view(plan.view(), path.as_ref(), format, force, limits, None)
 }
 
+/// Render a private file-backed media plan through the ordinary WAV encoding
+/// and atomic publication boundary. Disk media has no standalone wire format.
+pub(crate) fn render_wav_to_path_disk_media(
+    plan: &DiskMediaPlan,
+    path: impl AsRef<Path>,
+    format: WavFormat,
+    force: bool,
+) -> Result<WavStats, ExportError> {
+    publish_wav_with(path.as_ref(), force, |file| {
+        let range = FrameRange::new(0, plan.output().total_frames);
+        write_wav_with_renderer(file, plan.output(), format, range, |callback| {
+            plan.render(callback)
+        })
+    })
+}
+
 /// Render and atomically publish one reset-origin frame range from a
 /// standalone artifact using default caller limits.
 pub fn render_wav_to_path_artifact_range(
@@ -530,6 +563,16 @@ fn render_wav_for_view(
     limits: &PlanLimits,
     range: Option<FrameRange>,
 ) -> Result<WavStats, ExportError> {
+    publish_wav_with(path, force, |file| {
+        write_wav_for_view(file, plan, format, limits, range)
+    })
+}
+
+fn publish_wav_with(
+    path: &Path,
+    force: bool,
+    write: impl FnOnce(&mut std::fs::File) -> Result<WavStats, ExportError>,
+) -> Result<WavStats, ExportError> {
     if !force && path_exists(path)? {
         return Err(ExportError::OutputExists {
             path: path.to_owned(),
@@ -540,7 +583,7 @@ fn render_wav_for_view(
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
     let mut temporary = NamedTempFile::new_in(parent).map_err(ExportError::from)?;
-    let stats = write_wav_for_view(temporary.as_file_mut(), plan, format, limits, range)?;
+    let stats = write(temporary.as_file_mut())?;
     temporary
         .as_file_mut()
         .sync_all()

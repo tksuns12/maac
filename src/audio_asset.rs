@@ -21,12 +21,14 @@ pub(crate) struct AudioAsset {
     pub frames: u64,
     pub hash: String,
     pub bytes: Vec<u8>,
+    #[serde(skip)]
+    pub(crate) disk: Option<Arc<crate::disk_media::DiskAsset>>,
 }
 
 impl AudioAsset {
     pub(crate) fn validate(&self) -> Result<(), PlanError> {
         let fail = |code, message| error(code, &self.id, message);
-        if self.bytes.len() > MAX_BUNDLE_FILE_BYTES {
+        if self.disk.is_none() && self.bytes.len() > MAX_BUNDLE_FILE_BYTES {
             return Err(fail(
                 "E_RESOURCE_LIMIT",
                 "audio asset exceeds per-file byte limit",
@@ -49,16 +51,30 @@ impl AudioAsset {
             .checked_mul(u64::from(self.channels))
             .and_then(|count| count.checked_mul(4))
             .ok_or_else(|| fail("E_RESOURCE_LIMIT", "audio asset byte length overflow"))?;
-        if expected != self.bytes.len() as u64 {
+        let actual_len = self
+            .disk
+            .as_ref()
+            .map_or(self.bytes.len() as u64, |disk| disk.bytes);
+        if expected != actual_len {
             return Err(fail(
                 "E_ASSET",
                 "audio asset byte length differs from metadata",
             ));
         }
-        if self.hash != sha256_digest(&self.bytes) {
+        let actual_hash = self
+            .disk
+            .as_ref()
+            .map_or_else(|| sha256_digest(&self.bytes), |disk| disk.hash.clone());
+        if self.hash != actual_hash {
             return Err(fail(
                 "E_HASH",
                 "audio asset hash differs from exact source bytes",
+            ));
+        }
+        if self.disk.is_some() && !self.bytes.is_empty() {
+            return Err(fail(
+                "E_ASSET",
+                "disk media must not carry embedded PCM bytes",
             ));
         }
         for bytes in self.bytes.chunks_exact(4) {
@@ -71,6 +87,13 @@ impl AudioAsset {
 
     pub(crate) fn decode(&self) -> Result<Arc<[f32]>, PlanError> {
         self.validate()?;
+        if self.disk.is_some() {
+            return Err(error(
+                "E_CAPABILITY",
+                &self.id,
+                "disk media cannot be decoded into an embedded asset",
+            ));
+        }
         let mut samples = Vec::new();
         samples
             .try_reserve_exact(self.bytes.len() / 4)
@@ -91,11 +114,18 @@ impl AudioAsset {
 }
 
 pub(crate) fn validate_assets(assets: &[AudioAsset]) -> Result<(), PlanError> {
-    let total_bytes = assets
+    let total_embedded_bytes = assets
         .iter()
+        .filter(|asset| asset.disk.is_none())
         .try_fold(0usize, |total, asset| total.checked_add(asset.bytes.len()));
+    let total_disk_bytes = assets
+        .iter()
+        .filter_map(|asset| asset.disk.as_ref())
+        .try_fold(0u64, |total, disk| total.checked_add(disk.bytes));
     if assets.len() > MAX_BUNDLE_ASSETS
-        || total_bytes.is_none_or(|total| total > MAX_BUNDLE_ASSET_BYTES)
+        || total_embedded_bytes.is_none_or(|total| total > MAX_BUNDLE_ASSET_BYTES)
+        || total_disk_bytes
+            .is_none_or(|total| total > crate::disk_media::MAX_DISK_MEDIA_TOTAL_BYTES)
     {
         return Err(error(
             "E_RESOURCE_LIMIT",
@@ -140,6 +170,7 @@ mod tests {
             frames: bits.len() as u64,
             hash: sha256_digest(&bytes),
             bytes,
+            disk: None,
         }
     }
 

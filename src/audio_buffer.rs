@@ -3,7 +3,7 @@
 use crate::{audio_asset::AudioAsset, plan::PlanError};
 use std::{
     fs::File,
-    io::{Read, Seek, SeekFrom, Write},
+    io::{Seek, SeekFrom, Write},
     sync::{Arc, Mutex},
 };
 
@@ -16,6 +16,7 @@ pub(crate) struct AudioBuffer {
     channels: u8,
     frames: u64,
     byte_len: usize,
+    external_disk: bool,
     storage: SampleStorage,
 }
 
@@ -58,18 +59,26 @@ impl AudioBuffer {
             channels: asset.channels,
             frames: asset.frames,
             byte_len,
+            external_disk: false,
             storage: SampleStorage::Memory(samples),
         })
     }
 
     pub(crate) fn from_asset_disk(asset: &AudioAsset) -> Result<Self, PlanError> {
         asset.validate()?;
-        let storage = DiskStorage::new(asset)?;
+        let storage = match &asset.disk {
+            Some(snapshot) => DiskStorage::from_snapshot(asset, snapshot)?,
+            None => DiskStorage::new(asset)?,
+        };
         Ok(Self {
             rate_hz: asset.rate_hz,
             channels: asset.channels,
             frames: asset.frames,
-            byte_len: asset.bytes.len(),
+            byte_len: asset
+                .disk
+                .as_ref()
+                .map_or(asset.bytes.len(), |disk| disk.bytes as usize),
+            external_disk: asset.disk.is_some(),
             storage: SampleStorage::Disk(storage),
         })
     }
@@ -85,6 +94,9 @@ impl AudioBuffer {
     }
     pub(crate) fn byte_len(&self) -> usize {
         self.byte_len
+    }
+    pub(crate) fn is_external_disk(&self) -> bool {
+        self.external_disk
     }
 
     pub(crate) fn slice(
@@ -155,6 +167,38 @@ impl AudioBuffer {
 }
 
 impl DiskStorage {
+    fn from_snapshot(
+        asset: &AudioAsset,
+        snapshot: &crate::disk_media::DiskAsset,
+    ) -> Result<Self, PlanError> {
+        let frame_bytes = usize::from(asset.channels) * std::mem::size_of::<f32>();
+        let page_payload_bytes = (TARGET_PAGE_PAYLOAD_BYTES / frame_bytes) * frame_bytes;
+        let page_frames = (page_payload_bytes / frame_bytes) as u64;
+        let allocated_page_bytes = page_payload_bytes.min(snapshot.bytes as usize);
+        let pages = [
+            CachePage::new(allocated_page_bytes, &asset.id)?,
+            CachePage::new(allocated_page_bytes, &asset.id)?,
+        ];
+        let file = snapshot.file.try_clone().map_err(|error| {
+            disk_error(
+                &asset.id,
+                format!("cannot clone media snapshot handle: {error}"),
+            )
+        })?;
+        Ok(Self {
+            asset_id: asset.id.clone(),
+            frames: asset.frames,
+            frame_bytes,
+            page_frames,
+            page_payload_bytes: allocated_page_bytes,
+            state: Mutex::new(DiskState {
+                file,
+                pages,
+                next_victim: 0,
+            }),
+        })
+    }
+
     fn new(asset: &AudioAsset) -> Result<Self, PlanError> {
         let frame_bytes = usize::from(asset.channels) * std::mem::size_of::<f32>();
         let page_payload_bytes = (TARGET_PAGE_PAYLOAD_BYTES / frame_bytes) * frame_bytes;
@@ -233,22 +277,24 @@ impl DiskStorage {
                 } = &mut *state;
                 pages[slot].start_frame = None;
                 pages[slot].valid_bytes = 0;
-                file.seek(SeekFrom::Start(byte_offset)).map_err(|error| {
+                #[cfg(unix)]
+                let read_result = {
+                    use std::os::unix::fs::FileExt;
+                    file.read_exact_at(&mut pages[slot].bytes[..bytes_to_read], byte_offset)
+                };
+                #[cfg(not(unix))]
+                let read_result = file.seek(SeekFrom::Start(byte_offset)).and_then(|_| {
+                    std::io::Read::read_exact(file, &mut pages[slot].bytes[..bytes_to_read])
+                });
+                read_result.map_err(|error| {
                     disk_error(
                         &self.asset_id,
-                        format!("cannot seek private PCM snapshot to byte {byte_offset}: {error}"),
+                        format!(
+                            "cannot read PCM snapshot bytes {byte_offset}..{}: {error}",
+                            byte_offset + bytes_to_read as u64
+                        ),
                     )
                 })?;
-                file.read_exact(&mut pages[slot].bytes[..bytes_to_read])
-                    .map_err(|error| {
-                        disk_error(
-                            &self.asset_id,
-                            format!(
-                                "cannot read PCM snapshot bytes {byte_offset}..{}: {error}",
-                                byte_offset + bytes_to_read as u64
-                            ),
-                        )
-                    })?;
                 pages[slot].start_frame = Some(page_start);
                 pages[slot].valid_bytes = bytes_to_read;
                 *next_victim = (slot + 1) % CACHE_PAGE_COUNT;
@@ -380,6 +426,7 @@ mod tests {
             frames: (values.len() / channels as usize) as u64,
             hash: sha256_digest(&bytes),
             bytes,
+            disk: None,
         }
     }
 
