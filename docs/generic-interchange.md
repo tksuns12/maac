@@ -12,8 +12,13 @@ verify the lock against caller-supplied resolved execution/dependency/processor/
 context and exact bytes. `maac::external` now adds a strict MaaC/1 §17
 external-processor descriptor wire, verifies the complete owner-scoped locked
 dependency closure, and exposes explicit host ABI/adapter/permission authorization.
-Executable ABI invocation, lock generation/normalization, and a generic renderer
-remain separate follow-ups.
+`maac::generic_lock_normalization` now deterministically constructs canonical Config,
+RenderInput, and Lock artifacts from caller-resolved semantic context and exact bytes.
+`maac::generic_render` adds a bounded renderer for an already-resolved `Plan`: it first
+verifies the lock inputs, requires the concrete host engine identity, accepts only the
+understood built-in/core processor set and the block-independent null-schedule contract,
+executes from reset through `render_frames`, then applies crop/channel order and emits raw
+`pcm_f32le_interleaved/1` plus evidence. A separate `maac::external_host` boundary now supports explicitly registered executable ABI adapters, and `maac::external_native` implements the published Unix `maac.native-c-abi/1` / `maac.native-dylib-adapter/1` dynamic-library contract. The core `Plan` renderer still rejects external nodes. A separate `maac::generic_external_render` boundary supports one already-resolved output-only external audio generator with zero technical latency and static parameters only, using a null schedule only when the registered adapter explicitly guarantees block independence; all descriptor parameters must be resolved before instantiation. This does not reconstruct a graph from lock JSON.
 
 ## Common wire rules
 
@@ -341,5 +346,7 @@ block schedule, crop/channel order, closure bytes, and optional PCM/file evidenc
 The Rust `maac::external` boundary now parses the strict §17 descriptor wire,
 discovers and verifies complete processor-owned locked dependency closures, and
 requires explicit host capability authorization without executing module bytes.
-Lock generation/normalization, executable ABI invocation, and generic rendering
-remain separate work.
+The Rust `maac::generic_lock_normalization` boundary now generates canonical v1 Config,
+RenderInput, render-key, and Lock artifacts from typed resolved context, independently
+round-trips them through the validator/verifier, and keeps optional output evidence out
+of the render key. Bounded built-in/core rendering is provided by `maac::generic_render`; explicit native ABI invocation is provided separately by `maac::external_host` and `maac::external_native`. A bounded single-generator external render bridge now exists; mixed external/core DAG execution, external inputs/events, and automated external parameters remain separate work.
