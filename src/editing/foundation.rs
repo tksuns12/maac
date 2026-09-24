@@ -34,6 +34,9 @@ pub struct FoundationEditContext;
 pub struct BundleEditContext {
     bundle: crate::bundle::SourceBundle,
     source_path: String,
+    disk_assets:
+        Option<std::collections::BTreeMap<String, std::sync::Arc<crate::disk_media::DiskAsset>>>,
+    limits: crate::plan::PlanLimits,
 }
 
 impl BundleEditContext {
@@ -61,6 +64,26 @@ impl BundleEditContext {
         Ok(Self {
             bundle: bundle.clone(),
             source_path,
+            disk_assets: None,
+            limits: crate::plan::PlanLimits::default(),
+        })
+    }
+
+    /// Trusted archive editing context with the exact private native PCM
+    /// snapshots used by the archived composition.
+    pub(crate) fn new_disk_media(
+        bundle: &crate::bundle::SourceBundle,
+        assets: &std::collections::BTreeMap<String, std::sync::Arc<crate::disk_media::DiskAsset>>,
+        limits: crate::plan::PlanLimits,
+    ) -> EditResult<Self> {
+        bundle
+            .resolve_with_disk_assets(assets)
+            .map_err(map_diagnostics)?;
+        Ok(Self {
+            bundle: bundle.clone(),
+            source_path: bundle.entry.clone(),
+            disk_assets: Some(assets.clone()),
+            limits,
         })
     }
 
@@ -75,12 +98,25 @@ impl BundleEditContext {
         Ok(bundle)
     }
 
+    fn resolve_bundle(
+        &self,
+        bundle: &crate::bundle::SourceBundle,
+    ) -> EditResult<crate::bundle::ResolvedBundle> {
+        if let Some(assets) = &self.disk_assets {
+            bundle
+                .resolve_with_disk_assets(assets)
+                .map_err(map_diagnostics)
+        } else {
+            bundle.resolve().map_err(map_diagnostics)
+        }
+    }
+
     fn resolved_candidate(
         &self,
         authored: &Value,
     ) -> EditResult<(crate::bundle::ResolvedBundle, crate::library::LibrarySet)> {
         let bundle = self.candidate_bundle(authored)?;
-        let resolved = bundle.resolve().map_err(map_diagnostics)?;
+        let resolved = self.resolve_bundle(&bundle)?;
         let libraries = crate::library::LibrarySet::resolve(&resolved).map_err(map_diagnostics)?;
         Ok((resolved, libraries))
     }
@@ -100,8 +136,12 @@ impl BundleEditContext {
 
     fn normalized_composition(&self, authored: &Value) -> EditResult<Value> {
         let bundle = self.candidate_bundle(authored)?;
-        let artifact =
-            crate::compiler::compile_bundle_artifact(&bundle).map_err(map_diagnostics)?;
+        let artifact = if let Some(assets) = &self.disk_assets {
+            crate::compiler::compile_disk_media_artifact(&bundle, assets, &self.limits)
+                .map_err(map_diagnostics)?
+        } else {
+            crate::compiler::compile_bundle_artifact(&bundle).map_err(map_diagnostics)?
+        };
         let source = bundle.sources.get(&self.source_path).ok_or_else(|| {
             EditError::new("E_REFERENCE", "editable composition source is missing")
         })?;
@@ -167,6 +207,11 @@ impl BundleEditContext {
 impl EditContext for BundleEditContext {
     fn validate_document(&self, authored: &Value) -> EditResult<()> {
         let bundle = self.candidate_bundle(authored)?;
+        if let Some(assets) = &self.disk_assets {
+            crate::compiler::compile_disk_media_artifact(&bundle, assets, &self.limits)
+                .map_err(map_diagnostics)?;
+            return Ok(());
+        }
         let (resolved, libraries) = self.resolved_candidate(authored)?;
         let target = resolved
             .documents

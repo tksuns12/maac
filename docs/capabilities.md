@@ -37,7 +37,7 @@ Coverage of every reference processor identifier is not a full-profile claim.
 | Native production | Project-level EQ, linked peak compression with external sidechains, eight-delay reverb; required `maac.production/1` |
 | Named deliveries | Complete-graph master/stem capture; 44.1/48/96 kHz conversion; final-artifact loudness/sample-peak/experimental true-peak analysis |
 | Interchange | Independently validated standalone plans: version 1 legacy, version 2 embedded graph/data/provenance, version 3 exact ramp timing recipes, version 4 embedded audio assets and kit nodes, version 5 rate clips, version 6 warp-rate clips, version 7 core control modulation |
-| Native archive | `maac archive create/verify/unpack` captures exact source/media closures; version 2 retains complete linear checkpoints, version 3 preserves verified retained-original WAV imports, and version 4 can retain an inactive, verifiable whole-output freeze with conservative input invalidation. Versions 1–3 remain readable. Automatic edit journaling and partial-graph freeze replacement remain separate Phase 3 work |
+| Native archive | `maac archive create/patch/verify/unpack` captures exact source/media closures; version 2 retains linear checkpoints, version 3 retains verified original WAV imports, version 4 can retain an inactive whole-output freeze, and version 5 can record one explicit Protocol 2 transaction with its inverse. Versions 1–4 remain readable. Automatic edit journaling and partial-graph freeze replacement remain separate Phase 3 work |
 
 The normative [generic interchange v1 field contract](generic-interchange.md),
 [generic schema](../interchange.schema.json), and [L4 corpus](../conformance/l4/)

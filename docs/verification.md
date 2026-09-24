@@ -212,6 +212,34 @@ and version 4 history promotion. Historical verification checks integrity;
 `freeze-check` additionally compares the current source and executable
 identity, and optional replay compares rendered output evidence.
 
+## Explicit archive edit transactions (2026-09-24)
+
+Version 5 records one Protocol 2 transaction and its inverse between complete
+native checkpoints. The fixed version 4 freeze fixture made with the prior
+installed binary keeps digest
+`sha256:c836edfa73e44c0f4f44a16313e2761ce6def74971d42baf56a46e511bb08155`;
+fixed versions 1–3 retain the digests above. No full Rust integration-suite
+pass is claimed for this slice.
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Library tests | `cargo test --lib` | Passed: 280, with 3 existing ignored |
+| Focused integration | `cargo test --test archive_edit_cli --test archive_v4_compat_cli --test archive_v3_compat_cli --test archive_v2_compat_cli --test archive_cli --test archive_retained_cli --test archive_freeze_cli --test editing_cli --test disk_media_cli` | Passed: 33 tests across the nine targets |
+| Release integration | `cargo test --release --test archive_edit_cli --test archive_v4_compat_cli` | Passed: 8 archive-edit and 1 fixed-v4 tests |
+| Formatting and whitespace | `cargo fmt --all -- --check`; `git diff --check` | Passed |
+| Clippy | `cargo clippy --all-targets -- -D warnings` | Passed |
+| Installed CLI acceptance | `python3 scripts/acceptance.py` | Passed: 38 of 38 checks |
+| Independent review | Read-only Astra review of the uncommitted changes | Two findings resolved: authored-tree inverse replay at the 4 MiB source limit and preservation of semantic diagnostic codes |
+
+The edit tests cover source-preserving forward application and authored-tree
+inverse replay, offline relocation, a successful authored no-op, a stale base
+revision, a changed dependency closure, retained-original import bytes,
+native PCM above 4 MiB under the song profile, historical edit tampering,
+and a label-only edit that stales a historical freeze. A source exactly at
+4 MiB and an invalid import pin have regressions for the review fixes. The
+archive preflights edit metadata, payload sizes, aggregate transaction work,
+and closure-copy work before replay.
+
 ## Historical naming cleanup
 
 The current tree uses MaaC consistently in the specification, grammar, schema,

@@ -10,9 +10,11 @@ use serde::{Deserialize, Serialize};
 use crate::archive::{
     bounded_manifest, ArchivePreflight, ArchiveSnapshot, MANIFEST_PATH, MAX_TREE_ENTRIES,
 };
+use crate::archive_edit::{EditSnapshot, MAX_EDIT_TOTAL_BYTES, MAX_EDIT_TRANSACTION_WORK_BYTES};
 use crate::bundle::{sha256_digest, validate_hash_pin};
 use crate::bundle_fs::ProjectRoot;
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Diagnostics};
+use crate::editing::AppliedTransaction;
 use crate::freeze::{engine_digest, FreezeSnapshot};
 
 const FORMAT: &str = "maac.editable-archive";
@@ -20,10 +22,12 @@ const CHECKPOINT_FORMAT: &str = "maac.archive-checkpoint";
 const VERSION: u32 = 2;
 const RETAINED_VERSION: u32 = 3;
 const FROZEN_VERSION: u32 = 4;
+const EDITED_VERSION: u32 = 5;
 const MAX_CHECKPOINTS: usize = 32;
 const MAX_SOURCE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_ASSET_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_PCM_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+const MAX_EDIT_REPLAY_WORK_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 const MAX_MANIFEST_BYTES: usize = 1024 * 1024;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -43,6 +47,8 @@ struct CheckpointRecord {
     snapshot: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     freeze: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    edit: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -62,6 +68,15 @@ struct FrozenCheckpointIdentity<'a> {
     freeze: &'a str,
 }
 
+#[derive(Serialize)]
+struct EditedCheckpointIdentity<'a> {
+    format: &'static str,
+    version: u32,
+    parent: Option<&'a str>,
+    snapshot: &'a str,
+    edit: &'a str,
+}
+
 enum HistoryState {
     Legacy {
         snapshot: Box<ArchiveSnapshot>,
@@ -72,6 +87,7 @@ enum HistoryState {
         json: Vec<u8>,
         snapshots: Vec<ArchiveSnapshot>,
         freezes: Vec<Option<FreezeSnapshot>>,
+        edits: Vec<Option<EditSnapshot>>,
     },
 }
 
@@ -88,6 +104,12 @@ pub(crate) struct FreezeCheck {
     pub(crate) frozen_source_digest: String,
     pub(crate) output_digest: String,
     pub(crate) replay_matches: Option<bool>,
+}
+
+pub(crate) struct ArchivePatchResult {
+    pub(crate) applied: AppliedTransaction,
+    pub(crate) checkpoint: String,
+    pub(crate) edit_digest: String,
 }
 
 /// A checked archive history retaining private snapshots for every checkpoint.
@@ -140,6 +162,7 @@ impl ArchiveHistory {
                 json,
                 snapshots: vec![snapshot],
                 freezes: vec![freeze],
+                edits: vec![None],
             },
         })
     }
@@ -184,7 +207,7 @@ impl ArchiveHistory {
                     },
                 })
             }
-            Some(2..=4) => Self::verify_versioned(root, json),
+            Some(2..=5) => Self::verify_versioned(root, json),
             _ => Err(fail(
                 DiagnosticCode::Version,
                 "unsupported editable archive version",
@@ -218,12 +241,17 @@ impl ArchiveHistory {
         // Check the root tree and every small v1 manifest before loading any
         // checkpoint media. Keep child handles so renaming the outer root
         // cannot redirect later closure reads to a different archive.
-        let (checkpoints_root, freezes_root) = check_root_tree(root, &manifest)?;
+        let (checkpoints_root, freezes_root, edits_root) = check_root_tree(root, &manifest)?;
         let mut children = Vec::with_capacity(manifest.checkpoints.len());
         let mut preflights = Vec::with_capacity(manifest.checkpoints.len());
         let mut freeze_children = Vec::with_capacity(manifest.checkpoints.len());
+        let mut edit_children = Vec::with_capacity(manifest.checkpoints.len());
         let mut tree_entries = 2usize + manifest.checkpoints.len();
-        if manifest.version == FROZEN_VERSION {
+        if manifest
+            .checkpoints
+            .iter()
+            .any(|record| record.freeze.is_some())
+        {
             let unique: BTreeSet<&str> = manifest
                 .checkpoints
                 .iter()
@@ -238,13 +266,28 @@ impl ArchiveHistory {
                     )
                 })?;
         }
+        if manifest.version == EDITED_VERSION {
+            let unique: BTreeSet<&str> = manifest
+                .checkpoints
+                .iter()
+                .filter_map(|record| record.edit.as_deref())
+                .collect();
+            tree_entries = tree_entries
+                .checked_add(1 + unique.len() * 4)
+                .ok_or_else(|| {
+                    fail(
+                        DiagnosticCode::ResourceLimit,
+                        "archive tree entry count overflow",
+                    )
+                })?;
+        }
         if tree_entries > MAX_TREE_ENTRIES {
             return Err(fail(
                 DiagnosticCode::ResourceLimit,
                 "archive history contains too many filesystem entries",
             ));
         }
-        for record in &manifest.checkpoints {
+        for (index, record) in manifest.checkpoints.iter().enumerate() {
             let child = checkpoints_root.open_child_pinned(&record.id[7..])?;
             let preflight = ArchiveSnapshot::preflight_in_root(&child)?;
             if preflight.digest() != record.snapshot {
@@ -289,6 +332,37 @@ impl ArchiveHistory {
             } else {
                 freeze_children.push(None);
             }
+            if let Some(digest) = &record.edit {
+                let parent = record.parent.as_deref().ok_or_else(|| {
+                    fail(
+                        DiagnosticCode::Reference,
+                        "genesis checkpoint cannot carry an edit",
+                    )
+                })?;
+                let before = &manifest.checkpoints[index - 1].snapshot;
+                let edit_root = edits_root
+                    .as_ref()
+                    .ok_or_else(|| {
+                        fail(
+                            DiagnosticCode::Reference,
+                            "archive is missing edits directory",
+                        )
+                    })?
+                    .open_child_pinned(&digest[7..])?;
+                let preflight =
+                    EditSnapshot::preflight(&edit_root, digest, parent, before, &record.snapshot)?;
+                if preflight.source() != preflights[index - 1].entry()
+                    || preflight.source() != preflights[index].entry()
+                {
+                    return Err(fail(
+                        DiagnosticCode::Hash,
+                        "edit source differs from checkpoint entries",
+                    ));
+                }
+                edit_children.push(Some((edit_root, preflight)));
+            } else {
+                edit_children.push(None);
+            }
         }
         if manifest.version == RETAINED_VERSION
             && !preflights.iter().any(ArchivePreflight::is_retained)
@@ -308,6 +382,20 @@ impl ArchiveHistory {
                 )
             },
         ))?;
+        check_edit_total(
+            edit_children
+                .iter()
+                .filter_map(|child| child.as_ref().map(|(_, preflight)| preflight.total_bytes())),
+        )?;
+        check_edit_transaction_work(edit_children.iter().filter_map(|child| {
+            child
+                .as_ref()
+                .map(|(_, preflight)| preflight.transaction_work())
+        }))?;
+        check_edit_replay_work(
+            &manifest.checkpoints,
+            preflights.iter().map(ArchivePreflight::resource_bytes),
+        )?;
 
         before_capture();
         let mut snapshots = Vec::with_capacity(manifest.checkpoints.len());
@@ -324,6 +412,25 @@ impl ArchiveHistory {
                 None => None,
             });
         }
+        let mut edits = Vec::with_capacity(edit_children.len());
+        for child in &edit_children {
+            edits.push(match child {
+                Some((root, preflight)) => Some(EditSnapshot::verify_preflighted(root, preflight)?),
+                None => None,
+            });
+        }
+        for (index, edit) in edits.iter().enumerate() {
+            if let Some(edit) = edit {
+                edit.verify_transition(
+                    manifest.checkpoints[index]
+                        .parent
+                        .as_deref()
+                        .expect("validated edit parent"),
+                    &snapshots[index - 1],
+                    &snapshots[index],
+                )?;
+            }
+        }
         if bounded_manifest(root)? != json {
             return Err(fail(
                 DiagnosticCode::Hash,
@@ -337,6 +444,7 @@ impl ArchiveHistory {
                 json,
                 snapshots,
                 freezes,
+                edits,
             },
         })
     }
@@ -350,6 +458,100 @@ impl ArchiveHistory {
     pub(crate) fn append_frozen(&mut self, snapshot: ArchiveSnapshot) -> Result<bool, Diagnostics> {
         let freeze = FreezeSnapshot::capture(&snapshot)?;
         self.append_with_freeze(snapshot, Some(freeze))
+    }
+
+    /// Apply one source-preserving Protocol 2 transaction to the archived head.
+    /// An authored no-op still creates an auditable edited checkpoint.
+    pub(crate) fn patch_head(
+        &mut self,
+        patch_bytes: &[u8],
+    ) -> Result<ArchivePatchResult, Diagnostics> {
+        let (parent, before) = match &self.state {
+            HistoryState::Legacy {
+                snapshot,
+                genesis_id,
+            } => (genesis_id.as_str(), snapshot.as_ref()),
+            HistoryState::Versioned {
+                manifest,
+                snapshots,
+                ..
+            } => (
+                manifest.head.as_str(),
+                snapshots.last().expect("validated history has a head"),
+            ),
+        };
+        let (after, edit, applied) = EditSnapshot::capture(parent, before, patch_bytes)?;
+        let edit_digest = edit.digest();
+        let record = checkpoint_with_edit(Some(parent), &after.digest(), &edit_digest)?;
+        let checkpoint_id = record.id.clone();
+        let (mut records, mut snapshots, mut freezes, mut edits) = match &self.state {
+            HistoryState::Legacy { snapshot, .. } => (
+                vec![checkpoint(None, &snapshot.digest())?],
+                vec![snapshot.as_ref().clone()],
+                vec![None],
+                vec![None],
+            ),
+            HistoryState::Versioned {
+                manifest,
+                snapshots,
+                freezes,
+                edits,
+                ..
+            } => (
+                manifest.checkpoints.clone(),
+                snapshots.clone(),
+                freezes.clone(),
+                edits.clone(),
+            ),
+        };
+        if snapshots.len() >= MAX_CHECKPOINTS {
+            return Err(fail(
+                DiagnosticCode::ResourceLimit,
+                "archive has reached 32 checkpoints",
+            ));
+        }
+        records.push(record);
+        snapshots.push(after);
+        freezes.push(None);
+        edits.push(Some(edit));
+        check_aggregate_with_freezes(snapshots.iter().zip(&freezes).map(|(snapshot, freeze)| {
+            (
+                snapshot.resource_bytes(),
+                freeze.as_ref().map_or(0, FreezeSnapshot::output_bytes),
+            )
+        }))?;
+        check_edit_total(
+            edits
+                .iter()
+                .filter_map(|edit| edit.as_ref().map(EditSnapshot::total_bytes)),
+        )?;
+        check_edit_transaction_work(
+            edits
+                .iter()
+                .filter_map(|edit| edit.as_ref().map(EditSnapshot::transaction_work)),
+        )?;
+        check_edit_replay_work(
+            &records,
+            snapshots.iter().map(ArchiveSnapshot::resource_bytes),
+        )?;
+        check_staged_tree_with_extras(
+            snapshots.iter(),
+            unique_freeze_count(&freezes, None),
+            unique_edit_count(&edits, None),
+        )?;
+        let (manifest, json) = encode_history(records, EDITED_VERSION)?;
+        self.state = HistoryState::Versioned {
+            manifest,
+            json,
+            snapshots,
+            freezes,
+            edits,
+        };
+        Ok(ArchivePatchResult {
+            applied,
+            checkpoint: checkpoint_id,
+            edit_digest,
+        })
     }
 
     fn append_with_freeze(
@@ -393,6 +595,7 @@ impl ArchiveHistory {
                 } else {
                     vec![None]
                 };
+                let edits = vec![None; snapshots.len()];
                 check_aggregate_with_freezes(snapshots.iter().zip(&freezes).map(
                     |(snapshot, freeze)| {
                         (
@@ -418,6 +621,7 @@ impl ArchiveHistory {
                     json,
                     snapshots,
                     freezes,
+                    edits,
                 };
                 Ok(changed)
             }
@@ -426,6 +630,7 @@ impl ArchiveHistory {
                 json,
                 snapshots,
                 freezes,
+                edits,
             } => {
                 if snapshots
                     .last()
@@ -459,9 +664,10 @@ impl ArchiveHistory {
                             freeze.as_ref().map_or(0, FreezeSnapshot::output_bytes),
                         ))),
                 )?;
-                check_staged_tree_with_freezes(
+                check_staged_tree_with_extras(
                     snapshots.iter().chain(std::iter::once(&snapshot)),
                     unique_freeze_count(freezes, freeze.as_ref()),
+                    unique_edit_count(edits, None),
                 )?;
                 let mut records = manifest.checkpoints.clone();
                 records.push(checkpoint_with_freeze(
@@ -469,7 +675,9 @@ impl ArchiveHistory {
                     &snapshot.digest(),
                     freeze_digest.as_deref(),
                 )?);
-                let version = if manifest.version == FROZEN_VERSION || freeze.is_some() {
+                let version = if manifest.version == EDITED_VERSION {
+                    EDITED_VERSION
+                } else if manifest.version == FROZEN_VERSION || freeze.is_some() {
                     FROZEN_VERSION
                 } else if manifest.version == RETAINED_VERSION || snapshot.is_retained() {
                     RETAINED_VERSION
@@ -481,6 +689,7 @@ impl ArchiveHistory {
                 *json = new_json;
                 snapshots.push(snapshot);
                 freezes.push(freeze);
+                edits.push(None);
                 Ok(true)
             }
         }
@@ -643,10 +852,12 @@ impl ArchiveHistory {
                 json,
                 snapshots,
                 freezes,
+                edits,
             } => {
-                check_staged_tree_with_freezes(
+                check_staged_tree_with_extras(
                     snapshots.iter(),
                     unique_freeze_count(freezes, None),
+                    unique_edit_count(edits, None),
                 )?;
                 check_output_root(dir)?;
                 let checkpoints = dir.join("checkpoints");
@@ -666,7 +877,11 @@ impl ArchiveHistory {
                     })?;
                     snapshot.stage(&child)?;
                 }
-                if manifest.version == FROZEN_VERSION {
+                if manifest
+                    .checkpoints
+                    .iter()
+                    .any(|record| record.freeze.is_some())
+                {
                     let root = dir.join("freezes");
                     fs::create_dir(&root).map_err(|e| {
                         fail(
@@ -686,6 +901,30 @@ impl ArchiveHistory {
                                     )
                                 })?;
                                 freeze.stage_into(&child)?;
+                            }
+                        }
+                    }
+                }
+                if manifest.version == EDITED_VERSION {
+                    let root = dir.join("edits");
+                    fs::create_dir(&root).map_err(|e| {
+                        fail(
+                            DiagnosticCode::Reference,
+                            format!("cannot create edits directory: {e}"),
+                        )
+                    })?;
+                    let mut staged = BTreeSet::new();
+                    for (record, edit) in manifest.checkpoints.iter().zip(edits) {
+                        if let (Some(digest), Some(edit)) = (&record.edit, edit) {
+                            if staged.insert(digest.clone()) {
+                                let child = root.join(&digest[7..]);
+                                fs::create_dir(&child).map_err(|e| {
+                                    fail(
+                                        DiagnosticCode::Reference,
+                                        format!("cannot create edit directory: {e}"),
+                                    )
+                                })?;
+                                edit.stage_into(&child)?;
                             }
                         }
                     }
@@ -754,6 +993,43 @@ fn checkpoint_with_freeze(
         parent: parent.map(str::to_owned),
         snapshot: snapshot.into(),
         freeze: freeze.map(str::to_owned),
+        edit: None,
+    })
+}
+
+fn checkpoint_with_edit(
+    parent: Option<&str>,
+    snapshot: &str,
+    edit: &str,
+) -> Result<CheckpointRecord, Diagnostics> {
+    validate_hash_pin(snapshot, "checkpoint snapshot hash")?;
+    validate_hash_pin(edit, "checkpoint edit digest")?;
+    let parent = parent.ok_or_else(|| {
+        fail(
+            DiagnosticCode::Reference,
+            "genesis checkpoint cannot carry an edit",
+        )
+    })?;
+    validate_hash_pin(parent, "checkpoint parent id")?;
+    let bytes = serde_json::to_vec(&EditedCheckpointIdentity {
+        format: CHECKPOINT_FORMAT,
+        version: 3,
+        parent: Some(parent),
+        snapshot,
+        edit,
+    })
+    .map_err(|e| {
+        fail(
+            DiagnosticCode::Syntax,
+            format!("cannot encode edited checkpoint identity: {e}"),
+        )
+    })?;
+    Ok(CheckpointRecord {
+        id: sha256_digest(&bytes),
+        parent: Some(parent.into()),
+        snapshot: snapshot.into(),
+        freeze: None,
+        edit: Some(edit.into()),
     })
 }
 
@@ -796,7 +1072,7 @@ fn validate_history(manifest: &HistoryManifest) -> Result<(), Diagnostics> {
     if manifest.format != FORMAT
         || !matches!(
             manifest.version,
-            VERSION | RETAINED_VERSION | FROZEN_VERSION
+            VERSION | RETAINED_VERSION | FROZEN_VERSION | EDITED_VERSION
         )
     {
         return Err(fail(
@@ -815,10 +1091,22 @@ fn validate_history(manifest: &HistoryManifest) -> Result<(), Diagnostics> {
     for record in &manifest.checkpoints {
         validate_hash_pin(&record.id, "checkpoint id")?;
         validate_hash_pin(&record.snapshot, "checkpoint snapshot hash")?;
-        if record.freeze.is_some() && manifest.version != FROZEN_VERSION {
+        if record.freeze.is_some() && manifest.version < FROZEN_VERSION {
             return Err(fail(
                 DiagnosticCode::Version,
                 "v2/v3 history cannot contain freezes",
+            ));
+        }
+        if record.edit.is_some() && manifest.version != EDITED_VERSION {
+            return Err(fail(
+                DiagnosticCode::Version,
+                "older archive history cannot contain edits",
+            ));
+        }
+        if record.edit.is_some() && (record.parent.is_none() || record.freeze.is_some()) {
+            return Err(fail(
+                DiagnosticCode::Reference,
+                "edited checkpoint requires a parent and cannot inherit a freeze",
             ));
         }
         if record.parent.as_deref() != prior {
@@ -827,14 +1115,16 @@ fn validate_history(manifest: &HistoryManifest) -> Result<(), Diagnostics> {
                 "checkpoint parents do not form a linear history",
             ));
         }
-        if checkpoint_with_freeze(
-            record.parent.as_deref(),
-            &record.snapshot,
-            record.freeze.as_deref(),
-        )?
-        .id != record.id
-            || !seen.insert(&record.id)
-        {
+        let expected = if let Some(edit) = &record.edit {
+            checkpoint_with_edit(record.parent.as_deref(), &record.snapshot, edit)?
+        } else {
+            checkpoint_with_freeze(
+                record.parent.as_deref(),
+                &record.snapshot,
+                record.freeze.as_deref(),
+            )?
+        };
+        if expected.id != record.id || !seen.insert(&record.id) {
             return Err(fail(
                 DiagnosticCode::Hash,
                 "checkpoint id does not match its canonical identity",
@@ -854,6 +1144,13 @@ fn validate_history(manifest: &HistoryManifest) -> Result<(), Diagnostics> {
         return Err(fail(
             DiagnosticCode::Version,
             "v4 history has no frozen checkpoint",
+        ));
+    }
+    if manifest.version == EDITED_VERSION && !manifest.checkpoints.iter().any(|r| r.edit.is_some())
+    {
+        return Err(fail(
+            DiagnosticCode::Version,
+            "v5 history has no edited checkpoint",
         ));
     }
     Ok(())
@@ -902,7 +1199,15 @@ fn check_staged_tree_with_freezes<'a>(
     snapshots: impl Iterator<Item = &'a ArchiveSnapshot>,
     freeze_count: usize,
 ) -> Result<(), Diagnostics> {
-    let overhead = if freeze_count == 0 {
+    check_staged_tree_with_extras(snapshots, freeze_count, 0)
+}
+
+fn check_staged_tree_with_extras<'a>(
+    snapshots: impl Iterator<Item = &'a ArchiveSnapshot>,
+    freeze_count: usize,
+    edit_count: usize,
+) -> Result<(), Diagnostics> {
+    let freeze_overhead = if freeze_count == 0 {
         0
     } else {
         1usize
@@ -919,6 +1224,29 @@ fn check_staged_tree_with_freezes<'a>(
                 )
             })?
     };
+    let edit_overhead = if edit_count == 0 {
+        0
+    } else {
+        1usize
+            .checked_add(edit_count.checked_mul(4).ok_or_else(|| {
+                fail(
+                    DiagnosticCode::ResourceLimit,
+                    "archive tree entry count overflow",
+                )
+            })?)
+            .ok_or_else(|| {
+                fail(
+                    DiagnosticCode::ResourceLimit,
+                    "archive tree entry count overflow",
+                )
+            })?
+    };
+    let overhead = freeze_overhead.checked_add(edit_overhead).ok_or_else(|| {
+        fail(
+            DiagnosticCode::ResourceLimit,
+            "archive tree entry count overflow",
+        )
+    })?;
     let limit = MAX_TREE_ENTRIES.checked_sub(overhead).ok_or_else(|| {
         fail(
             DiagnosticCode::ResourceLimit,
@@ -926,6 +1254,104 @@ fn check_staged_tree_with_freezes<'a>(
         )
     })?;
     check_staged_tree_with_limit(snapshots, limit)
+}
+
+fn unique_edit_count(edits: &[Option<EditSnapshot>], extra: Option<&EditSnapshot>) -> usize {
+    edits
+        .iter()
+        .filter_map(Option::as_ref)
+        .chain(extra)
+        .map(EditSnapshot::digest)
+        .collect::<BTreeSet<_>>()
+        .len()
+}
+
+fn check_edit_total(bytes: impl Iterator<Item = u64>) -> Result<(), Diagnostics> {
+    let mut total = 0u64;
+    for amount in bytes {
+        total = total.checked_add(amount).ok_or_else(|| {
+            fail(
+                DiagnosticCode::ResourceLimit,
+                "archive edit file total overflow",
+            )
+        })?;
+        if total > MAX_EDIT_TOTAL_BYTES {
+            return Err(fail(
+                DiagnosticCode::ResourceLimit,
+                "archive edits exceed 64 MiB",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn check_edit_transaction_work(
+    amounts: impl Iterator<Item = Result<u64, Diagnostics>>,
+) -> Result<(), Diagnostics> {
+    let mut total = 0u64;
+    for amount in amounts {
+        total = total.checked_add(amount?).ok_or_else(|| {
+            fail(
+                DiagnosticCode::ResourceLimit,
+                "archive edit transaction work overflow",
+            )
+        })?;
+        if total > MAX_EDIT_TRANSACTION_WORK_BYTES {
+            return Err(fail(
+                DiagnosticCode::ResourceLimit,
+                "archive edits exceed 2 GiB aggregate transaction work preflight",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn check_edit_replay_work(
+    records: &[CheckpointRecord],
+    budgets: impl Iterator<Item = (u64, u64, u64, u64)>,
+) -> Result<(), Diagnostics> {
+    let budgets: Vec<_> = budgets.collect();
+    if budgets.len() != records.len() {
+        return Err(fail(
+            DiagnosticCode::Reference,
+            "edit replay budget has mismatched checkpoints",
+        ));
+    }
+    let mut total = 0u64;
+    for (index, record) in records.iter().enumerate().skip(1) {
+        if record.edit.is_none() {
+            continue;
+        }
+        let before = resource_sum(budgets[index - 1])?;
+        let after = resource_sum(budgets[index])?;
+        let work = before
+            .checked_mul(2)
+            .and_then(|n| n.checked_add(after))
+            .ok_or_else(|| fail(DiagnosticCode::ResourceLimit, "edit replay work overflow"))?;
+        total = total
+            .checked_add(work)
+            .ok_or_else(|| fail(DiagnosticCode::ResourceLimit, "edit replay work overflow"))?;
+        if total > MAX_EDIT_REPLAY_WORK_BYTES {
+            return Err(fail(
+                DiagnosticCode::ResourceLimit,
+                "archive edits exceed 8 GiB replay work budget",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn resource_sum((source, asset, pcm, original): (u64, u64, u64, u64)) -> Result<u64, Diagnostics> {
+    source
+        .checked_add(asset)
+        .and_then(|n| n.checked_add(pcm))
+        .and_then(|n| n.checked_add(original))
+        .ok_or_else(|| {
+            fail(
+                DiagnosticCode::ResourceLimit,
+                "archive resource total overflow",
+            )
+        })
 }
 
 fn unique_freeze_count(
@@ -969,7 +1395,12 @@ fn check_staged_tree_with_limit<'a>(
 fn check_root_tree(
     root: &ProjectRoot,
     manifest: &HistoryManifest,
-) -> Result<(ProjectRoot, Option<ProjectRoot>), Diagnostics> {
+) -> Result<(ProjectRoot, Option<ProjectRoot>, Option<ProjectRoot>), Diagnostics> {
+    let has_freezes = manifest
+        .checkpoints
+        .iter()
+        .any(|record| record.freeze.is_some());
+    let has_edits = manifest.version == EDITED_VERSION;
     let mut names = BTreeSet::new();
     for entry in root.dir().read_dir(".").map_err(|e| {
         fail(
@@ -997,8 +1428,12 @@ fn check_root_tree(
         })?;
         if (name == MANIFEST_PATH && !kind.is_file())
             || (name == "checkpoints" && !kind.is_dir())
-            || (name == "freezes" && (manifest.version != FROZEN_VERSION || !kind.is_dir()))
-            || (name != MANIFEST_PATH && name != "checkpoints" && name != "freezes")
+            || (name == "freezes" && (!has_freezes || !kind.is_dir()))
+            || (name == "edits" && (!has_edits || !kind.is_dir()))
+            || (name != MANIFEST_PATH
+                && name != "checkpoints"
+                && name != "freezes"
+                && name != "edits")
             || kind.is_symlink()
         {
             return Err(fail(
@@ -1009,8 +1444,11 @@ fn check_root_tree(
         names.insert(name);
     }
     let mut required = BTreeSet::from([MANIFEST_PATH.to_owned(), "checkpoints".to_owned()]);
-    if manifest.version == FROZEN_VERSION {
+    if has_freezes {
         required.insert("freezes".to_owned());
+    }
+    if has_edits {
+        required.insert("edits".to_owned());
     }
     if names != required {
         return Err(fail(
@@ -1061,7 +1499,7 @@ fn check_root_tree(
             "archive is missing a checkpoint directory",
         ));
     }
-    let freezes_root = if manifest.version == FROZEN_VERSION {
+    let freezes_root = if has_freezes {
         let freezes_root = root.open_child_pinned("freezes")?;
         let expected: BTreeSet<String> = manifest
             .checkpoints
@@ -1111,7 +1549,52 @@ fn check_root_tree(
     } else {
         None
     };
-    Ok((checkpoints_root, freezes_root))
+    let edits_root = if has_edits {
+        let edits_root = root.open_child_pinned("edits")?;
+        let expected: BTreeSet<String> = manifest
+            .checkpoints
+            .iter()
+            .filter_map(|record| record.edit.as_ref().map(|id| id[7..].to_owned()))
+            .collect();
+        let mut found = BTreeSet::new();
+        for entry in edits_root
+            .dir()
+            .read_dir(".")
+            .map_err(|e| fail(DiagnosticCode::Reference, format!("cannot list edits: {e}")))?
+        {
+            let entry = entry
+                .map_err(|e| fail(DiagnosticCode::Reference, format!("cannot list edits: {e}")))?;
+            let name = entry.file_name().into_string().map_err(|_| {
+                fail(
+                    DiagnosticCode::Reference,
+                    "edit directory has non-UTF-8 name",
+                )
+            })?;
+            let kind = entry.file_type().map_err(|e| {
+                fail(
+                    DiagnosticCode::Reference,
+                    format!("cannot inspect edit directory: {e}"),
+                )
+            })?;
+            if !kind.is_dir() || kind.is_symlink() || !expected.contains(&name) {
+                return Err(fail(
+                    DiagnosticCode::Reference,
+                    format!("unexpected edit directory `{name}`"),
+                ));
+            }
+            found.insert(name);
+        }
+        if found != expected {
+            return Err(fail(
+                DiagnosticCode::Reference,
+                "archive is missing an edit directory",
+            ));
+        }
+        Some(edits_root)
+    } else {
+        None
+    };
+    Ok((checkpoints_root, freezes_root, edits_root))
 }
 
 fn check_output_root(dir: &Path) -> Result<(), Diagnostics> {
@@ -1139,6 +1622,7 @@ fn fail(code: DiagnosticCode, message: impl Into<String>) -> Diagnostics {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::editing::{Operation, SourceDocument, Transaction};
     use crate::media_import::{import_wav_file_with_retention, WavImportRange};
     use hound::{SampleFormat, WavSpec, WavWriter};
 
@@ -1432,5 +1916,44 @@ mod tests {
         assert!(verified
             .freeze_check(Path::new("main.maac"), &a, None, false)
             .is_err());
+    }
+
+    #[test]
+    fn edit_promotes_v1_and_records_even_an_authored_noop() {
+        let fixture = Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/archive_v1"
+        ));
+        let mut history = ArchiveHistory::verify(fixture).unwrap();
+        let old_id = history.head_id().to_owned();
+        let revision = SourceDocument::parse(SOURCE).unwrap().revision().to_owned();
+        let patch = Transaction::new(
+            revision.clone(),
+            vec![Operation::Set {
+                object: vec!["p".into()],
+                field: vec!["tail".into()],
+                value: serde_json::json!({"t":"quantity","n":"0","d":"1","u":"s"}),
+                expect: None,
+                expect_absent: false,
+            }],
+        )
+        .unwrap()
+        .to_json()
+        .unwrap();
+        let result = history.patch_head(&patch).unwrap();
+        assert_eq!(history.version(), 5);
+        assert_ne!(result.checkpoint, old_id);
+        assert_eq!(result.applied.new_revision, revision);
+        assert_eq!(history.checkpoint_ids().len(), 2);
+        assert_eq!(
+            history.select(Some(&old_id)).unwrap().digest(),
+            history.select(None).unwrap().digest()
+        );
+        let temp = tempfile::tempdir().unwrap();
+        history.stage(temp.path()).unwrap();
+        assert_eq!(
+            ArchiveHistory::verify(temp.path()).unwrap().digest(),
+            history.digest()
+        );
     }
 }

@@ -15,7 +15,7 @@ complete professional-production product.
 | Language/conformance L1–L5 | Addressed for the bounded slices | Do not expand this into a full-profile or cross-platform identity claim. |
 | Phase 1: end-to-end inventory | Partial | Publish one lifecycle inventory covering media, recording, latency, crops, takes, routing, delivery, archive, and reopen. |
 | Phase 2: reset-correct excerpts | Complete for bounded final-WAV ranges | No claim of realtime seeking, speed-up, or arbitrary DSP-state restoration. |
-| Phase 3: media/import/packaging | In progress; bounded WAV crop import, opt-in retained-original verification, native PCM disk media, archive checkpoints, and inactive whole-output freeze records implemented | Extend archive coverage beyond retained WAV imports, then add edit transactions, processor context, and partial-graph freeze activation. |
+| Phase 3: media/import/packaging | In progress; bounded WAV crop import, opt-in retained-original verification, native PCM disk media, archive checkpoints, inactive whole-output freeze records, and explicit journaled transactions implemented | Extend archive coverage beyond retained WAV imports, then add broader editing, processor context, and partial-graph freeze activation. |
 | Phase 4: capture/playback/comping | Partial foundations only | Add recording, takes, comp selection, playback, and revision workflows. |
 | Phase 5: open processors and hosting | Partial foundations only | Generic rendering and executable native external hosting remain deferred. |
 | Phase 6: mix/master/release/reopen | Not complete | Pass the representative production, invalidation, clean-reopen, listening, and producer gates. |
@@ -41,8 +41,9 @@ pinned native dependency closure. Version 2 copies complete prior checkpoints
 into a linear history and can unpack any selected checkpoint after relocation.
 Version 3 also retains a verified original WAV and import record in each
 eligible checkpoint. Version 4 can retain an inactive full-output freeze and
-check it against current inputs after an edit. It does not infer edit
-transactions or replace part of the active graph with a freeze, so the
+check it against current inputs after an edit. Version 5 records an explicit
+Protocol 2 transaction and inverse between two checkpoints. It does not infer
+past edits or replace part of the active graph with a freeze, so the
 editable archive milestone remains open.
 
 The [capability matrix](capabilities.md), [Core Audio audit](core-audio-conformance-audit.md),

@@ -108,6 +108,10 @@ pub(crate) struct ArchivePreflight {
 }
 
 impl ArchivePreflight {
+    pub(crate) fn entry(&self) -> &str {
+        &self.manifest.entry
+    }
+
     pub(crate) fn digest(&self) -> String {
         sha256_digest(&self.json)
     }
@@ -351,6 +355,57 @@ impl ArchiveSnapshot {
 
     pub(crate) fn profile(&self) -> &str {
         &self.manifest.profile
+    }
+
+    /// Recompile an edited entry from a private staging of this exact closure.
+    /// Every other member, builtin identity, and retained sidecar must remain
+    /// identical and reachable in the new complete closure.
+    pub(crate) fn patched_entry_source(&self, source: &str) -> Result<Self, Diagnostics> {
+        if source.len() > MAX_BUNDLE_FILE_BYTES {
+            return Err(fail(
+                DiagnosticCode::ResourceLimit,
+                "edited entry source exceeds bundle file limit",
+            ));
+        }
+        let staging = tempfile::tempdir().map_err(|e| {
+            fail(
+                DiagnosticCode::Reference,
+                format!("cannot create private edit staging: {e}"),
+            )
+        })?;
+        self.stage_members(staging.path())?;
+        fs::write(staging.path().join(&self.manifest.entry), source).map_err(|e| {
+            fail(
+                DiagnosticCode::Reference,
+                format!("cannot stage edited entry source: {e}"),
+            )
+        })?;
+        let after = Self::capture(
+            Path::new(&self.manifest.entry),
+            staging.path(),
+            &self.manifest.profile,
+        )?;
+        let same_members = self
+            .manifest
+            .members
+            .iter()
+            .filter(|m| m.path != self.manifest.entry)
+            .eq(after
+                .manifest
+                .members
+                .iter()
+                .filter(|m| m.path != self.manifest.entry));
+        if !same_members
+            || self.manifest.builtins != after.manifest.builtins
+            || self.manifest.import_manifest != after.manifest.import_manifest
+            || self.manifest.original_wav != after.manifest.original_wav
+        {
+            return Err(fail(
+                DiagnosticCode::Capability,
+                "edit changed the archived non-entry closure",
+            ));
+        }
+        Ok(after)
     }
 
     pub(crate) fn resource_bytes(&self) -> (u64, u64, u64, u64) {

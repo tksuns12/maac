@@ -220,6 +220,15 @@ pub enum ArchiveCommand {
         #[arg(long)]
         freeze_output: bool,
     },
+    /// Apply one Protocol 2 transaction to the archived head and retain its inverse.
+    Patch {
+        archive: PathBuf,
+        patch: PathBuf,
+        #[arg(long)]
+        output_dir: PathBuf,
+        #[arg(long)]
+        expect_hash: Option<String>,
+    },
     /// Verify a captured archive and its current reopenable composition.
     Verify {
         archive: PathBuf,
@@ -341,6 +350,14 @@ pub struct ArtifactCommandResult {
     end_frame: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     edit: Option<crate::editing::AppliedTransaction>,
+    #[serde(flatten, skip_serializing_if = "Option::is_none")]
+    archive_patch: Option<ArchivePatchReport>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct ArchivePatchReport {
+    checkpoint: String,
+    edit_digest: String,
 }
 impl ArtifactCommandResult {
     pub fn base(&self) -> &CommandResult {
@@ -683,6 +700,7 @@ pub fn execute_artifact_with_range(
         start_frame: range.map(|range| range.start_frame),
         end_frame: range.map(|range| range.end_frame),
         edit: counts.edit,
+        archive_patch: counts.archive_patch,
     })
 }
 
@@ -755,6 +773,7 @@ fn execute_disk_media(command: &Command) -> Result<ArtifactCommandResult, CliErr
         start_frame: None,
         end_frame: None,
         edit: None,
+        archive_patch: None,
     })
 }
 #[derive(Default)]
@@ -763,6 +782,7 @@ struct EventCounts {
     hits: usize,
     audio_clips: usize,
     edit: Option<crate::editing::AppliedTransaction>,
+    archive_patch: Option<ArchivePatchReport>,
 }
 impl EventCounts {
     fn record(&mut self, plan: &PlanArtifact) {
@@ -1207,11 +1227,14 @@ fn execute_impl(
             })
         }
         Command::VerifyImport { project } => verify_import_project_with_hook(project, || {}),
-        Command::Archive { command } => execute_archive(command),
+        Command::Archive { command } => execute_archive(command, counts),
     }
 }
 
-fn execute_archive(command: &ArchiveCommand) -> Result<CommandResult, CliError> {
+fn execute_archive(
+    command: &ArchiveCommand,
+    counts: &mut EventCounts,
+) -> Result<CommandResult, CliError> {
     match command {
         ArchiveCommand::Create {
             input,
@@ -1256,6 +1279,33 @@ fn execute_archive(command: &ArchiveCommand) -> Result<CommandResult, CliError> 
             Ok(CommandResult::archive(
                 "archive create",
                 &entry,
+                Some(output_dir),
+                history.digest(),
+                history.version(),
+            ))
+        }
+        ArchiveCommand::Patch {
+            archive,
+            patch,
+            output_dir,
+            expect_hash,
+        } => {
+            ensure_output_outside_archive(output_dir, archive)?;
+            let mut history = ArchiveHistory::verify(archive)
+                .map_err(|error| CliError::from_diagnostics(&error))?;
+            verify_expected_archive_hash(expect_hash.as_deref(), &history.digest())?;
+            let applied = history
+                .patch_head(&read_bounded(patch)?)
+                .map_err(|error| CliError::from_diagnostics(&error))?;
+            stage_archive_directory(output_dir, |staging| history.stage(staging))?;
+            counts.archive_patch = Some(ArchivePatchReport {
+                checkpoint: applied.checkpoint,
+                edit_digest: applied.edit_digest,
+            });
+            counts.edit = Some(applied.applied);
+            Ok(CommandResult::archive(
+                "archive patch",
+                archive,
                 Some(output_dir),
                 history.digest(),
                 history.version(),

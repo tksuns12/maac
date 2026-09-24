@@ -3,13 +3,15 @@
 **Status:** Phase 3 bounded native archive slices. Version 1 captures one
 composition; version 2 preserves an explicit linear sequence of complete
 composition checkpoints; version 3 also retains verified original WAV import
-records when present; version 4 can retain an opt-in full-output freeze.
+records when present; version 4 can retain an opt-in full-output freeze;
+version 5 can record an explicit Protocol 2 edit and its inverse.
 
 ## Commands
 
 ```text
 maac archive create SOURCE --output-dir NEW [--project-root ROOT] [--profile default|song]
     [--previous ARCHIVE] [--expect-previous-hash SHA256] [--freeze-output]
+maac archive patch ARCHIVE PATCH.json --output-dir NEW [--expect-hash SHA256]
 maac archive verify ARCHIVE [--expect-hash SHA256]
 maac archive unpack ARCHIVE --output-dir NEW [--expect-hash SHA256] [--revision SHA256]
 maac archive freeze-check ARCHIVE --source SOURCE [--project-root ROOT]
@@ -39,6 +41,16 @@ the active path; the frozen output is a derived asset and does not replace
 nodes or change ordinary `build` results. Older checkpoints and their IDs are
 preserved when such a history is extended.
 
+`archive patch` verifies the input archive, applies one Protocol 2 transaction
+to its head composition source, and publishes a new history with a version 5
+root manifest. It records the canonical forward transaction and generated
+inverse, the authored revisions before and after, and a new checkpoint even
+when the transaction has no operations. Both checkpoints remain reopenable.
+The input archive stays unchanged. This first journaled-edit path keeps the
+same dependency closure, retained-import sidecars, and execution profile;
+edits to imported files or changes to dependency membership are outside its
+scope.
+
 `--previous` verifies a prior archive, copies its complete checkpoints into a
 new independent archive, and appends the current project. It declares a linear
 parent relationship; MaaC does not infer that the worktree was edited from the
@@ -53,7 +65,9 @@ disk space.
 resolves and compiles each archived project. For retained imports it also
 rechecks the original WAV, declared crop, native PCM, and exact import record.
 For frozen checkpoints it checks the recorded boundary, source association,
-and complete WAV identity without replaying the renderer. It rejects a
+and complete WAV identity without replaying the renderer. For journaled edits,
+it replays the forward transaction against the child authored revision and
+the inverse against the parent authored revision. It rejects a
 missing, altered, or undeclared dependency even in a checkpoint other than
 the head. `unpack` repeats full-history verification, then
 publishes the selected checkpoint's verified source, asset, and retained
@@ -65,11 +79,13 @@ revision. The source bytes, including comments, omissions, labels, and
 formatting, remain unchanged. The unpacked project uses ordinary `check` and
 `build`; large PCM requires `--disk-media`.
 
-Versions 2 through 4 store `checkpoints/<checkpoint-hex>/` directories. The root
+Versions 2 through 5 store `checkpoints/<checkpoint-hex>/` directories. The root
 manifest records the ordered IDs, parent IDs, snapshot manifest hashes, and
 head ID. Frozen records also identify their freeze manifest; version 4 keeps
-their files under `freezes/<freeze-hash>/`. A checkpoint ID hashes its canonical
-parent and snapshot identity, plus the freeze identity when present. The CLI
+their files under `freezes/<freeze-hash>/`. Journaled records identify an edit
+manifest under `edits/<edit-hash>/`, beside the exact forward and inverse JSON.
+A checkpoint ID hashes its canonical parent and snapshot identity, plus the
+freeze or edit identity when present. The CLI
 `digest` hashes the root manifest and covers the entire history. Inspect
 `maac-archive.json` for checkpoint IDs to use with `--revision`.
 
@@ -84,7 +100,7 @@ build of the same source.
 `--replay` renders only a matching candidate and compares output evidence;
 eligibility alone is not a claim of identical audio on another engine.
 
-Creation and unpacking stage files beside their destination and publish the
+Creation, patching, and unpacking stage files beside their destination and publish the
 directory atomically without replacing an existing path. Source dependencies
 are opened beneath a pinned project root, and media bytes are copied from
 private verified snapshots. Output directories cannot be created inside an
@@ -93,6 +109,10 @@ input archive. Histories permit at most 32 checkpoints, with aggregate caps of
 retained original WAV, and frozen output bytes across all stored copies. Each
 original or frozen WAV is limited to 1 GiB, each import record to 16 KiB, and
 each checkpoint retains its source, asset, execution, and native PCM limits.
+Each edit manifest is limited to 16 KiB; each forward or inverse transaction
+is limited to 4 MiB and 1,024 operations. A history permits at most 64 MiB
+of edit files, 2 GiB of preflighted transaction work, and 8 GiB of replay
+closure-copy work. The verifier checks these bounds before replaying edits.
 Unsupported source features fail during compilation.
 
 ## Scope of the claim
@@ -105,14 +125,16 @@ The manifest hash is an external pin for archive identity; a manifest alone is
 not a signature or proof of audio equivalence across environments.
 
 History begins with its first captured checkpoint or with a supplied
-predecessor. It does not reconstruct edits before that point or retain inverse
-transactions, arbitrary external processor modules or state, rendered plans,
-or delivery outputs. Version 3 retains one original WAV and
+predecessor. It does not reconstruct edits before that point or infer
+transactions for ordinary `archive create` checkpoints. It does not retain
+arbitrary external processor modules or state, rendered plans, or delivery
+outputs. Version 3 retains one original WAV and
 import record for a root `main.maac` created with `import-wav
 --retain-original`. It does not invent an original for a legacy import that
 has only a version 1 `import.json`; that record remains outside the archived
 composition closure. Multiple original inputs, nested import packaging,
-automatic edit journaling, partial-graph freeze replacement, and a complete
-producer archive remain Phase 3 work. Version 4's inactive whole-output
+automatic edit journaling, multi-file transactions, branching and merging,
+partial-graph freeze replacement, and a complete producer archive remain
+Phase 3 work. Version 4's inactive whole-output
 freeze provides conservative input invalidation, not automatic render-cache
 reuse or a claim that another engine produces identical samples.
