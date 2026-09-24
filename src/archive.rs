@@ -1,5 +1,4 @@
-//! First-slice editable composition archive: current source and media closure only.
-//! It deliberately does not retain edit history, freezes, or original sidecars.
+//! Bounded editable composition snapshots and their exact source/media closure.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
@@ -86,7 +85,7 @@ enum MemberData {
 /// Private, bounded snapshot of the current composition closure.
 ///
 /// All unpack writes come from these captured bytes and private PCM handles.
-/// The archive format does not include editing history, freezes, or sidecars.
+/// History, freezes, and retained import sidecars are layered around this closure.
 #[derive(Clone)]
 pub(crate) struct ArchiveSnapshot {
     manifest: Manifest,
@@ -344,6 +343,14 @@ impl ArchiveSnapshot {
 
     pub(crate) fn digest(&self) -> String {
         sha256_digest(&self.manifest_json)
+    }
+
+    pub(crate) fn entry(&self) -> &str {
+        &self.manifest.entry
+    }
+
+    pub(crate) fn profile(&self) -> &str {
+        &self.manifest.profile
     }
 
     pub(crate) fn resource_bytes(&self) -> (u64, u64, u64, u64) {

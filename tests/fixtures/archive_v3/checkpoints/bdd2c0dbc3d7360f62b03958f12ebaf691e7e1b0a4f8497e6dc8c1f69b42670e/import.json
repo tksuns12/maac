@@ -1,0 +1,33 @@
+{
+  "format": "maac.media-import",
+  "version": 2,
+  "decoder": "maac.wav-import/1",
+  "conversion": "maac.pcm-f32le-conversion/1",
+  "source": {
+    "name": "source.wav",
+    "bytes": 52,
+    "sha256": "sha256:63e4bd47f2cfbba5a12ef1b4abec3170197e2d9ba3d1dbfee3aa4780c9f44abe",
+    "container": "riff_wave",
+    "encoding": "pcm_s16le",
+    "rate_hz": 48000,
+    "channels": 1,
+    "frames": 4
+  },
+  "selection": {
+    "start_frame": 1,
+    "end_frame": 3
+  },
+  "output": {
+    "path": "media.pcm",
+    "format": "pcm_f32le_interleaved/1",
+    "rate_hz": 48000,
+    "channels": 1,
+    "frames": 2,
+    "sha256": "sha256:f78b3f9c53f901fcda93c375578a221d836b8cbcbb4d900a2639d76e433e8494"
+  },
+  "original": {
+    "path": "original.wav",
+    "bytes": 52,
+    "sha256": "sha256:63e4bd47f2cfbba5a12ef1b4abec3170197e2d9ba3d1dbfee3aa4780c9f44abe"
+  }
+}

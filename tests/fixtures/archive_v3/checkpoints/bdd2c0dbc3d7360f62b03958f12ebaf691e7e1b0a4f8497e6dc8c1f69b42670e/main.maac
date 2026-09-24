@@ -1,0 +1,26 @@
+maac 1;
+project imported_media {
+score = [0q, 2/48000q];
+tail = 0s;
+rate = 48000Hz;
+tempo = &tempo;
+meter = &meter;
+output = &clip:out;
+}
+tempo tempo { points = [(0q, 60bpm, step)]; }
+meter meter { points = [(0q, 4, 4)]; }
+asset media {
+kind = audio;
+path = "media.pcm";
+hash = "sha256:f78b3f9c53f901fcda93c375578a221d836b8cbcbb4d900a2639d76e433e8494";
+format = "pcm_f32le_interleaved/1";
+rate = 48000Hz;
+channels = 1;
+frames = 2;
+}
+audio clip {
+asset = &media;
+at = 0q;
+source = [0frame, 2frame];
+mode = rate;
+}

@@ -15,6 +15,7 @@ pub mod exact;
 pub mod export;
 mod expression;
 pub mod external;
+pub(crate) mod freeze;
 pub mod generic_lock;
 pub mod generic_lock_generation;
 pub mod graph;

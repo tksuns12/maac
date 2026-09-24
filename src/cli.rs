@@ -13,7 +13,7 @@ use clap::{
 use serde::Serialize;
 
 use crate::archive::ArchiveSnapshot;
-use crate::archive_history::ArchiveHistory;
+use crate::archive_history::{ArchiveHistory, FreezeCheckStatus};
 use crate::bundle::sha256_digest;
 use crate::bundle::SourceBundle;
 use crate::bundle_fs;
@@ -216,6 +216,9 @@ pub enum ArchiveCommand {
         /// Expected manifest hash of --previous.
         #[arg(long, requires = "previous")]
         expect_previous_hash: Option<String>,
+        /// Retain a verified full-output float32 WAV beside this checkpoint.
+        #[arg(long)]
+        freeze_output: bool,
     },
     /// Verify a captured archive and its current reopenable composition.
     Verify {
@@ -233,6 +236,21 @@ pub enum ArchiveCommand {
         /// Select an exact historical checkpoint ID (default: head).
         #[arg(long)]
         revision: Option<String>,
+    },
+    /// Check whether a stored output freeze still matches a current project.
+    FreezeCheck {
+        archive: PathBuf,
+        #[arg(long)]
+        source: PathBuf,
+        #[arg(long)]
+        project_root: Option<PathBuf>,
+        #[arg(long)]
+        revision: Option<String>,
+        #[arg(long)]
+        expect_hash: Option<String>,
+        /// Render matching inputs again and compare exact output bytes.
+        #[arg(long)]
+        replay: bool,
     },
 }
 
@@ -293,6 +311,19 @@ pub struct CommandResult {
     pub libraries: Option<Vec<crate::stdlib::LibraryInfo>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub delivery: Option<crate::production_delivery::DeliveryManifest>,
+    #[serde(flatten, skip_serializing_if = "Option::is_none")]
+    pub freeze: Option<Box<FreezeCheckReport>>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct FreezeCheckReport {
+    pub integrity: &'static str,
+    pub eligibility: &'static str,
+    pub replay: &'static str,
+    pub revision: String,
+    pub source_digest: String,
+    pub frozen_source_digest: String,
+    pub output_digest: String,
 }
 
 /// CLI result for artifact-aware callers. Legacy fields retain their existing wire shape.
@@ -352,6 +383,7 @@ impl CommandResult {
             library: None,
             libraries: None,
             delivery: None,
+            freeze: None,
         }
     }
 
@@ -371,6 +403,7 @@ impl CommandResult {
             library: None,
             libraries: None,
             delivery: None,
+            freeze: None,
         }
     }
 
@@ -396,6 +429,7 @@ impl CommandResult {
             library: None,
             libraries: None,
             delivery: None,
+            freeze: None,
         }
     }
 
@@ -415,6 +449,7 @@ impl CommandResult {
             library: None,
             libraries: None,
             delivery: None,
+            freeze: None,
         }
     }
 
@@ -434,6 +469,7 @@ impl CommandResult {
             library: None,
             libraries: None,
             delivery: None,
+            freeze: None,
         }
     }
 
@@ -459,6 +495,7 @@ impl CommandResult {
             library: None,
             libraries: None,
             delivery: None,
+            freeze: None,
         }
     }
 
@@ -484,6 +521,7 @@ impl CommandResult {
             library: None,
             libraries: None,
             delivery: None,
+            freeze: None,
         }
     }
 }
@@ -499,6 +537,8 @@ pub struct CliError {
     pub span: Option<Span>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub delivery: Option<Box<crate::production_delivery::DeliveryManifest>>,
+    #[serde(flatten, skip_serializing_if = "Option::is_none")]
+    pub freeze: Option<Box<FreezeCheckReport>>,
 }
 
 impl CliError {
@@ -510,6 +550,7 @@ impl CliError {
             path: None,
             span: None,
             delivery: None,
+            freeze: None,
         }
     }
 
@@ -935,6 +976,7 @@ fn execute_impl(
                 library: None,
                 libraries: None,
                 delivery: Some(report),
+                freeze: None,
             })
         }
         Command::Instruments {
@@ -964,6 +1006,7 @@ fn execute_impl(
                     library: None,
                     libraries: Some(crate::stdlib::libraries()),
                     delivery: None,
+                    freeze: None,
                 });
             }
             let selected = library.as_deref().unwrap_or(crate::stdlib::BASIC_ID);
@@ -998,6 +1041,7 @@ fn execute_impl(
                 library: library.clone(),
                 libraries: None,
                 delivery: None,
+                freeze: None,
             })
         }
         Command::Patch {
@@ -1042,6 +1086,7 @@ fn execute_impl(
                 library: None,
                 libraries: None,
                 delivery: None,
+                freeze: None,
             })
         }
         Command::Hash { input } => {
@@ -1158,6 +1203,7 @@ fn execute_impl(
                 library: None,
                 libraries: None,
                 delivery: None,
+                freeze: None,
             })
         }
         Command::VerifyImport { project } => verify_import_project_with_hook(project, || {}),
@@ -1174,24 +1220,10 @@ fn execute_archive(command: &ArchiveCommand) -> Result<CommandResult, CliError> 
             profile,
             previous,
             expect_previous_hash,
+            freeze_output,
         } => {
-            let (entry, implicit_root) = resolve_source_input(Some(input), project_root.as_deref());
-            let root = implicit_root.unwrap_or_else(|| {
-                entry
-                    .parent()
-                    .filter(|parent| !parent.as_os_str().is_empty())
-                    .unwrap_or_else(|| Path::new("."))
-                    .to_path_buf()
-            });
-            let absolute_entry = if entry.is_absolute() {
-                entry.clone()
-            } else {
-                std::env::current_dir()
-                    .map_err(|error| {
-                        CliError::new("E_IO", format!("cannot get working directory: {error}"))
-                    })?
-                    .join(&entry)
-            };
+            let (entry, root, absolute_entry) =
+                resolve_archive_source(input, project_root.as_deref())?;
             let profile = match profile {
                 ProfileArg::Default => "default",
                 ProfileArg::Song => "song",
@@ -1203,15 +1235,22 @@ fn execute_archive(command: &ArchiveCommand) -> Result<CommandResult, CliError> 
                 verify_expected_archive_hash(expect_previous_hash.as_deref(), &prior.digest())?;
                 prior
             } else {
-                ArchiveHistory::capture(&absolute_entry, &root, profile)
-                    .map_err(|error| CliError::from_diagnostics(&error))?
+                if *freeze_output {
+                    ArchiveHistory::capture_frozen(&absolute_entry, &root, profile)
+                } else {
+                    ArchiveHistory::capture(&absolute_entry, &root, profile)
+                }
+                .map_err(|error| CliError::from_diagnostics(&error))?
             };
             if previous.is_some() {
                 let snapshot = ArchiveSnapshot::capture(&absolute_entry, &root, profile)
                     .map_err(|error| CliError::from_diagnostics(&error))?;
-                history
-                    .append(snapshot)
-                    .map_err(|error| CliError::from_diagnostics(&error))?;
+                if *freeze_output {
+                    history.append_frozen(snapshot)
+                } else {
+                    history.append(snapshot)
+                }
+                .map_err(|error| CliError::from_diagnostics(&error))?;
             }
             stage_archive_directory(output_dir, |staging| history.stage(staging))?;
             Ok(CommandResult::archive(
@@ -1259,7 +1298,89 @@ fn execute_archive(command: &ArchiveCommand) -> Result<CommandResult, CliError> 
                 history.version(),
             ))
         }
+        ArchiveCommand::FreezeCheck {
+            archive,
+            source,
+            project_root,
+            revision,
+            expect_hash,
+            replay,
+        } => {
+            let history = ArchiveHistory::verify(archive)
+                .map_err(|error| CliError::from_diagnostics(&error))?;
+            verify_expected_archive_hash(expect_hash.as_deref(), &history.digest())?;
+            let (_, root, absolute_entry) =
+                resolve_archive_source(source, project_root.as_deref())?;
+            let check = history
+                .freeze_check(&absolute_entry, &root, revision.as_deref(), *replay)
+                .map_err(|error| CliError::from_diagnostics(&error))?;
+            let eligibility = match check.status {
+                FreezeCheckStatus::Current => "current",
+                FreezeCheckStatus::Stale => "stale",
+            };
+            let replay = match check.replay_matches {
+                None => "not_requested",
+                Some(true) => "matched",
+                Some(false) => "mismatch",
+            };
+            let report = FreezeCheckReport {
+                integrity: "verified",
+                eligibility,
+                replay,
+                revision: check.revision,
+                source_digest: check.source_digest,
+                frozen_source_digest: check.frozen_source_digest,
+                output_digest: check.output_digest,
+            };
+            if eligibility == "stale" {
+                let mut error =
+                    CliError::new("E_FREEZE_STALE", "stored freeze is stale for this source");
+                error.freeze = Some(Box::new(report));
+                return Err(error);
+            }
+            if replay == "mismatch" {
+                let mut error = CliError::new(
+                    "E_FREEZE_REPLAY",
+                    "replayed output differs from the stored freeze",
+                );
+                error.freeze = Some(Box::new(report));
+                return Err(error);
+            }
+            let mut result = CommandResult::archive(
+                "archive freeze-check",
+                archive,
+                None,
+                history.digest(),
+                history.version(),
+            );
+            result.freeze = Some(Box::new(report));
+            Ok(result)
+        }
     }
+}
+
+fn resolve_archive_source(
+    input: &Path,
+    project_root: Option<&Path>,
+) -> Result<(PathBuf, PathBuf, PathBuf), CliError> {
+    let (entry, implicit_root) = resolve_source_input(Some(input), project_root);
+    let root = implicit_root.unwrap_or_else(|| {
+        entry
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf()
+    });
+    let absolute_entry = if entry.is_absolute() {
+        entry.clone()
+    } else {
+        std::env::current_dir()
+            .map_err(|error| {
+                CliError::new("E_IO", format!("cannot get working directory: {error}"))
+            })?
+            .join(&entry)
+    };
+    Ok((entry, root, absolute_entry))
 }
 
 fn ensure_output_outside_archive(output: &Path, archive: &Path) -> Result<(), CliError> {
@@ -1369,6 +1490,7 @@ fn verify_import_project_with_hook(
         library: None,
         libraries: None,
         delivery: None,
+        freeze: None,
     })
 }
 

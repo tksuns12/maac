@@ -13,11 +13,13 @@ use crate::archive::{
 use crate::bundle::{sha256_digest, validate_hash_pin};
 use crate::bundle_fs::ProjectRoot;
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Diagnostics};
+use crate::freeze::{engine_digest, FreezeSnapshot};
 
 const FORMAT: &str = "maac.editable-archive";
 const CHECKPOINT_FORMAT: &str = "maac.archive-checkpoint";
 const VERSION: u32 = 2;
 const RETAINED_VERSION: u32 = 3;
+const FROZEN_VERSION: u32 = 4;
 const MAX_CHECKPOINTS: usize = 32;
 const MAX_SOURCE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_ASSET_BYTES: u64 = 64 * 1024 * 1024;
@@ -39,6 +41,8 @@ struct CheckpointRecord {
     id: String,
     parent: Option<String>,
     snapshot: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    freeze: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -47,6 +51,15 @@ struct CheckpointIdentity<'a> {
     version: u32,
     parent: Option<&'a str>,
     snapshot: &'a str,
+}
+
+#[derive(Serialize)]
+struct FrozenCheckpointIdentity<'a> {
+    format: &'static str,
+    version: u32,
+    parent: Option<&'a str>,
+    snapshot: &'a str,
+    freeze: &'a str,
 }
 
 enum HistoryState {
@@ -58,7 +71,23 @@ enum HistoryState {
         manifest: HistoryManifest,
         json: Vec<u8>,
         snapshots: Vec<ArchiveSnapshot>,
+        freezes: Vec<Option<FreezeSnapshot>>,
     },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum FreezeCheckStatus {
+    Current,
+    Stale,
+}
+
+pub(crate) struct FreezeCheck {
+    pub(crate) status: FreezeCheckStatus,
+    pub(crate) revision: String,
+    pub(crate) source_digest: String,
+    pub(crate) frozen_source_digest: String,
+    pub(crate) output_digest: String,
+    pub(crate) replay_matches: Option<bool>,
 }
 
 /// A checked archive history retaining private snapshots for every checkpoint.
@@ -70,14 +99,36 @@ impl ArchiveHistory {
     /// Capture one current composition as v2 or retained-import v3 history.
     pub(crate) fn capture(entry: &Path, root: &Path, profile: &str) -> Result<Self, Diagnostics> {
         let snapshot = ArchiveSnapshot::capture(entry, root, profile)?;
-        Self::from_genesis(snapshot)
+        Self::from_genesis(snapshot, None)
     }
 
-    fn from_genesis(snapshot: ArchiveSnapshot) -> Result<Self, Diagnostics> {
-        check_aggregate(std::iter::once(snapshot.resource_bytes()))?;
-        check_staged_tree(std::iter::once(&snapshot))?;
-        let record = checkpoint(None, &snapshot.digest())?;
-        let version = if snapshot.is_retained() {
+    pub(crate) fn capture_frozen(
+        entry: &Path,
+        root: &Path,
+        profile: &str,
+    ) -> Result<Self, Diagnostics> {
+        let snapshot = ArchiveSnapshot::capture(entry, root, profile)?;
+        let freeze = FreezeSnapshot::capture(&snapshot)?;
+        Self::from_genesis(snapshot, Some(freeze))
+    }
+
+    fn from_genesis(
+        snapshot: ArchiveSnapshot,
+        freeze: Option<FreezeSnapshot>,
+    ) -> Result<Self, Diagnostics> {
+        check_aggregate_with_freezes(std::iter::once((
+            snapshot.resource_bytes(),
+            freeze.as_ref().map_or(0, FreezeSnapshot::output_bytes),
+        )))?;
+        check_staged_tree_with_freezes(std::iter::once(&snapshot), usize::from(freeze.is_some()))?;
+        let record = checkpoint_with_freeze(
+            None,
+            &snapshot.digest(),
+            freeze.as_ref().map(FreezeSnapshot::digest).as_deref(),
+        )?;
+        let version = if freeze.is_some() {
+            FROZEN_VERSION
+        } else if snapshot.is_retained() {
             RETAINED_VERSION
         } else {
             VERSION
@@ -88,6 +139,7 @@ impl ArchiveHistory {
                 manifest,
                 json,
                 snapshots: vec![snapshot],
+                freezes: vec![freeze],
             },
         })
     }
@@ -132,7 +184,7 @@ impl ArchiveHistory {
                     },
                 })
             }
-            Some(2 | 3) => Self::verify_versioned(root, json),
+            Some(2..=4) => Self::verify_versioned(root, json),
             _ => Err(fail(
                 DiagnosticCode::Version,
                 "unsupported editable archive version",
@@ -166,10 +218,32 @@ impl ArchiveHistory {
         // Check the root tree and every small v1 manifest before loading any
         // checkpoint media. Keep child handles so renaming the outer root
         // cannot redirect later closure reads to a different archive.
-        let checkpoints_root = check_root_tree(root, &manifest)?;
+        let (checkpoints_root, freezes_root) = check_root_tree(root, &manifest)?;
         let mut children = Vec::with_capacity(manifest.checkpoints.len());
         let mut preflights = Vec::with_capacity(manifest.checkpoints.len());
+        let mut freeze_children = Vec::with_capacity(manifest.checkpoints.len());
         let mut tree_entries = 2usize + manifest.checkpoints.len();
+        if manifest.version == FROZEN_VERSION {
+            let unique: BTreeSet<&str> = manifest
+                .checkpoints
+                .iter()
+                .filter_map(|record| record.freeze.as_deref())
+                .collect();
+            tree_entries = tree_entries
+                .checked_add(1 + unique.len() * 3)
+                .ok_or_else(|| {
+                    fail(
+                        DiagnosticCode::ResourceLimit,
+                        "archive tree entry count overflow",
+                    )
+                })?;
+        }
+        if tree_entries > MAX_TREE_ENTRIES {
+            return Err(fail(
+                DiagnosticCode::ResourceLimit,
+                "archive history contains too many filesystem entries",
+            ));
+        }
         for record in &manifest.checkpoints {
             let child = checkpoints_root.open_child_pinned(&record.id[7..])?;
             let preflight = ArchiveSnapshot::preflight_in_root(&child)?;
@@ -200,6 +274,21 @@ impl ArchiveHistory {
             }
             children.push(child);
             preflights.push(preflight);
+            if let Some(digest) = &record.freeze {
+                let freeze_root = freezes_root
+                    .as_ref()
+                    .ok_or_else(|| {
+                        fail(
+                            DiagnosticCode::Reference,
+                            "archive is missing freezes directory",
+                        )
+                    })?
+                    .open_child_pinned(&digest[7..])?;
+                let preflight = FreezeSnapshot::preflight(&freeze_root, digest, &record.snapshot)?;
+                freeze_children.push(Some((freeze_root, preflight)));
+            } else {
+                freeze_children.push(None);
+            }
         }
         if manifest.version == RETAINED_VERSION
             && !preflights.iter().any(ArchivePreflight::is_retained)
@@ -209,13 +298,31 @@ impl ArchiveHistory {
                 "v3 history has no retained-import checkpoint",
             ));
         }
-        check_aggregate(preflights.iter().map(ArchivePreflight::resource_bytes))?;
+        check_aggregate_with_freezes(preflights.iter().zip(&freeze_children).map(
+            |(source, freeze)| {
+                (
+                    source.resource_bytes(),
+                    freeze
+                        .as_ref()
+                        .map_or(0, |(_, preflight)| preflight.output_bytes()),
+                )
+            },
+        ))?;
 
         before_capture();
         let mut snapshots = Vec::with_capacity(manifest.checkpoints.len());
         for (child, preflight) in children.iter().zip(&preflights) {
             let snapshot = ArchiveSnapshot::verify_preflighted_in_root(child, preflight, || {})?;
             snapshots.push(snapshot);
+        }
+        let mut freezes = Vec::with_capacity(freeze_children.len());
+        for child in &freeze_children {
+            freezes.push(match child {
+                Some((root, preflight)) => {
+                    Some(FreezeSnapshot::verify_preflighted(root, preflight)?)
+                }
+                None => None,
+            });
         }
         if bounded_manifest(root)? != json {
             return Err(fail(
@@ -229,6 +336,7 @@ impl ArchiveHistory {
                 manifest,
                 json,
                 snapshots,
+                freezes,
             },
         })
     }
@@ -236,26 +344,70 @@ impl ArchiveHistory {
     /// Append a new current composition. Identical head snapshots are a no-op.
     /// Appending to a v1 archive promotes its virtual genesis into v2 history.
     pub(crate) fn append(&mut self, snapshot: ArchiveSnapshot) -> Result<bool, Diagnostics> {
+        self.append_with_freeze(snapshot, None)
+    }
+
+    pub(crate) fn append_frozen(&mut self, snapshot: ArchiveSnapshot) -> Result<bool, Diagnostics> {
+        let freeze = FreezeSnapshot::capture(&snapshot)?;
+        self.append_with_freeze(snapshot, Some(freeze))
+    }
+
+    fn append_with_freeze(
+        &mut self,
+        snapshot: ArchiveSnapshot,
+        freeze: Option<FreezeSnapshot>,
+    ) -> Result<bool, Diagnostics> {
+        if freeze
+            .as_ref()
+            .is_some_and(|f| f.source_digest() != snapshot.digest())
+        {
+            return Err(fail(
+                DiagnosticCode::Hash,
+                "freeze source does not match appended snapshot",
+            ));
+        }
+        let freeze_digest = freeze.as_ref().map(FreezeSnapshot::digest);
         match &mut self.state {
             HistoryState::Legacy {
                 snapshot: old,
                 genesis_id,
             } => {
-                let changed = old.digest() != snapshot.digest();
+                let changed = old.digest() != snapshot.digest() || freeze.is_some();
                 let genesis = checkpoint(None, &old.digest())?;
                 debug_assert_eq!(genesis.id, *genesis_id);
                 let mut records = vec![genesis];
                 if changed {
-                    records.push(checkpoint(Some(&records[0].id), &snapshot.digest())?);
+                    records.push(checkpoint_with_freeze(
+                        Some(&records[0].id),
+                        &snapshot.digest(),
+                        freeze_digest.as_deref(),
+                    )?);
                 }
                 let snapshots = if changed {
                     vec![old.as_ref().clone(), snapshot]
                 } else {
                     vec![old.as_ref().clone()]
                 };
-                check_aggregate(snapshots.iter().map(ArchiveSnapshot::resource_bytes))?;
-                check_staged_tree(snapshots.iter())?;
-                let version = if snapshots.iter().any(ArchiveSnapshot::is_retained) {
+                let freezes = if changed {
+                    vec![None, freeze]
+                } else {
+                    vec![None]
+                };
+                check_aggregate_with_freezes(snapshots.iter().zip(&freezes).map(
+                    |(snapshot, freeze)| {
+                        (
+                            snapshot.resource_bytes(),
+                            freeze.as_ref().map_or(0, FreezeSnapshot::output_bytes),
+                        )
+                    },
+                ))?;
+                check_staged_tree_with_freezes(
+                    snapshots.iter(),
+                    unique_freeze_count(&freezes, None),
+                )?;
+                let version = if freezes.iter().any(Option::is_some) {
+                    FROZEN_VERSION
+                } else if snapshots.iter().any(ArchiveSnapshot::is_retained) {
                     RETAINED_VERSION
                 } else {
                     VERSION
@@ -265,6 +417,7 @@ impl ArchiveHistory {
                     manifest,
                     json,
                     snapshots,
+                    freezes,
                 };
                 Ok(changed)
             }
@@ -272,10 +425,16 @@ impl ArchiveHistory {
                 manifest,
                 json,
                 snapshots,
+                freezes,
             } => {
                 if snapshots
                     .last()
                     .is_some_and(|head| head.digest() == snapshot.digest())
+                    && (freeze_digest.is_none()
+                        || freezes
+                            .last()
+                            .and_then(Option::as_ref)
+                            .is_some_and(|head| Some(head.digest()) == freeze_digest))
                 {
                     return Ok(false);
                 }
@@ -285,16 +444,34 @@ impl ArchiveHistory {
                         "archive has reached 32 checkpoints",
                     ));
                 }
-                check_aggregate(
+                check_aggregate_with_freezes(
                     snapshots
                         .iter()
-                        .map(ArchiveSnapshot::resource_bytes)
-                        .chain(std::iter::once(snapshot.resource_bytes())),
+                        .zip(freezes.iter())
+                        .map(|(snapshot, freeze)| {
+                            (
+                                snapshot.resource_bytes(),
+                                freeze.as_ref().map_or(0, FreezeSnapshot::output_bytes),
+                            )
+                        })
+                        .chain(std::iter::once((
+                            snapshot.resource_bytes(),
+                            freeze.as_ref().map_or(0, FreezeSnapshot::output_bytes),
+                        ))),
                 )?;
-                check_staged_tree(snapshots.iter().chain(std::iter::once(&snapshot)))?;
+                check_staged_tree_with_freezes(
+                    snapshots.iter().chain(std::iter::once(&snapshot)),
+                    unique_freeze_count(freezes, freeze.as_ref()),
+                )?;
                 let mut records = manifest.checkpoints.clone();
-                records.push(checkpoint(Some(&manifest.head), &snapshot.digest())?);
-                let version = if manifest.version == RETAINED_VERSION || snapshot.is_retained() {
+                records.push(checkpoint_with_freeze(
+                    Some(&manifest.head),
+                    &snapshot.digest(),
+                    freeze_digest.as_deref(),
+                )?);
+                let version = if manifest.version == FROZEN_VERSION || freeze.is_some() {
+                    FROZEN_VERSION
+                } else if manifest.version == RETAINED_VERSION || snapshot.is_retained() {
                     RETAINED_VERSION
                 } else {
                     VERSION
@@ -303,6 +480,7 @@ impl ArchiveHistory {
                 *manifest = new_manifest;
                 *json = new_json;
                 snapshots.push(snapshot);
+                freezes.push(freeze);
                 Ok(true)
             }
         }
@@ -381,6 +559,81 @@ impl ArchiveHistory {
         }
     }
 
+    /// Check whether a candidate still names the frozen source and current
+    /// executable context. Optional replay verifies its whole WAV output.
+    pub(crate) fn freeze_check(
+        &self,
+        entry: &Path,
+        root: &Path,
+        revision: Option<&str>,
+        replay: bool,
+    ) -> Result<FreezeCheck, Diagnostics> {
+        if let Some(id) = revision {
+            validate_hash_pin(id, "checkpoint id")?;
+        }
+        let (record, freeze) = match &self.state {
+            HistoryState::Legacy { .. } => {
+                return Err(fail(
+                    DiagnosticCode::Reference,
+                    "selected checkpoint has no output freeze",
+                ))
+            }
+            HistoryState::Versioned {
+                manifest, freezes, ..
+            } => {
+                let wanted = revision.unwrap_or(&manifest.head);
+                let index = manifest
+                    .checkpoints
+                    .iter()
+                    .position(|r| r.id == wanted)
+                    .ok_or_else(|| {
+                        fail(
+                            DiagnosticCode::Reference,
+                            "checkpoint id is not in this archive",
+                        )
+                    })?;
+                let freeze = freezes[index].as_ref().ok_or_else(|| {
+                    fail(
+                        DiagnosticCode::Reference,
+                        "selected checkpoint has no output freeze",
+                    )
+                })?;
+                (&manifest.checkpoints[index], freeze)
+            }
+        };
+        let candidate = ArchiveSnapshot::capture(
+            entry,
+            root,
+            match self.select(Some(&record.id))?.profile() {
+                "song" => "song",
+                _ => "default",
+            },
+        )?;
+        let source_digest = candidate.digest();
+        let status = if source_digest == record.snapshot
+            && freeze.engine_digest() == engine_digest()?
+            && FreezeSnapshot::candidate_render_key(&candidate, freeze.engine_digest())?
+                == freeze.render_key()
+        {
+            FreezeCheckStatus::Current
+        } else {
+            FreezeCheckStatus::Stale
+        };
+        let replay_matches = if replay && status == FreezeCheckStatus::Current {
+            Some(FreezeSnapshot::capture(&candidate)?.output_digest() == freeze.output_digest())
+        } else {
+            None
+        };
+        Ok(FreezeCheck {
+            status,
+            revision: record.id.clone(),
+            source_digest,
+            frozen_source_digest: record.snapshot.clone(),
+            output_digest: freeze.output_digest().into(),
+            replay_matches,
+        })
+    }
+
     /// Stage a complete archive. Legacy histories preserve their v1 wire form.
     pub(crate) fn stage(&self, dir: &Path) -> Result<(), Diagnostics> {
         match &self.state {
@@ -389,8 +642,12 @@ impl ArchiveHistory {
                 manifest,
                 json,
                 snapshots,
+                freezes,
             } => {
-                check_staged_tree(snapshots.iter())?;
+                check_staged_tree_with_freezes(
+                    snapshots.iter(),
+                    unique_freeze_count(freezes, None),
+                )?;
                 check_output_root(dir)?;
                 let checkpoints = dir.join("checkpoints");
                 fs::create_dir(&checkpoints).map_err(|e| {
@@ -408,6 +665,30 @@ impl ArchiveHistory {
                         )
                     })?;
                     snapshot.stage(&child)?;
+                }
+                if manifest.version == FROZEN_VERSION {
+                    let root = dir.join("freezes");
+                    fs::create_dir(&root).map_err(|e| {
+                        fail(
+                            DiagnosticCode::Reference,
+                            format!("cannot create freezes directory: {e}"),
+                        )
+                    })?;
+                    let mut staged = BTreeSet::new();
+                    for (record, freeze) in manifest.checkpoints.iter().zip(freezes) {
+                        if let (Some(digest), Some(freeze)) = (&record.freeze, freeze) {
+                            if staged.insert(digest.clone()) {
+                                let child = root.join(&digest[7..]);
+                                fs::create_dir(&child).map_err(|e| {
+                                    fail(
+                                        DiagnosticCode::Reference,
+                                        format!("cannot create freeze directory: {e}"),
+                                    )
+                                })?;
+                                freeze.stage_into(&child)?;
+                            }
+                        }
+                    }
                 }
                 let mut file = OpenOptions::new()
                     .write(true)
@@ -431,17 +712,38 @@ impl ArchiveHistory {
 }
 
 fn checkpoint(parent: Option<&str>, snapshot: &str) -> Result<CheckpointRecord, Diagnostics> {
+    checkpoint_with_freeze(parent, snapshot, None)
+}
+
+fn checkpoint_with_freeze(
+    parent: Option<&str>,
+    snapshot: &str,
+    freeze: Option<&str>,
+) -> Result<CheckpointRecord, Diagnostics> {
     validate_hash_pin(snapshot, "checkpoint snapshot hash")?;
     if let Some(parent) = parent {
         validate_hash_pin(parent, "checkpoint parent id")?;
     }
-    let identity = CheckpointIdentity {
-        format: CHECKPOINT_FORMAT,
-        version: 1,
-        parent,
-        snapshot,
-    };
-    let bytes = serde_json::to_vec(&identity).map_err(|e| {
+    if let Some(freeze) = freeze {
+        validate_hash_pin(freeze, "checkpoint freeze digest")?;
+    }
+    let bytes = if let Some(freeze) = freeze {
+        serde_json::to_vec(&FrozenCheckpointIdentity {
+            format: CHECKPOINT_FORMAT,
+            version: 2,
+            parent,
+            snapshot,
+            freeze,
+        })
+    } else {
+        serde_json::to_vec(&CheckpointIdentity {
+            format: CHECKPOINT_FORMAT,
+            version: 1,
+            parent,
+            snapshot,
+        })
+    }
+    .map_err(|e| {
         fail(
             DiagnosticCode::Syntax,
             format!("cannot encode checkpoint identity: {e}"),
@@ -451,6 +753,7 @@ fn checkpoint(parent: Option<&str>, snapshot: &str) -> Result<CheckpointRecord, 
         id: sha256_digest(&bytes),
         parent: parent.map(str::to_owned),
         snapshot: snapshot.into(),
+        freeze: freeze.map(str::to_owned),
     })
 }
 
@@ -490,7 +793,12 @@ fn canonical_json(manifest: &HistoryManifest) -> Result<Vec<u8>, Diagnostics> {
 }
 
 fn validate_history(manifest: &HistoryManifest) -> Result<(), Diagnostics> {
-    if manifest.format != FORMAT || !matches!(manifest.version, VERSION | RETAINED_VERSION) {
+    if manifest.format != FORMAT
+        || !matches!(
+            manifest.version,
+            VERSION | RETAINED_VERSION | FROZEN_VERSION
+        )
+    {
         return Err(fail(
             DiagnosticCode::Version,
             "unsupported archive history format or version",
@@ -507,13 +815,24 @@ fn validate_history(manifest: &HistoryManifest) -> Result<(), Diagnostics> {
     for record in &manifest.checkpoints {
         validate_hash_pin(&record.id, "checkpoint id")?;
         validate_hash_pin(&record.snapshot, "checkpoint snapshot hash")?;
+        if record.freeze.is_some() && manifest.version != FROZEN_VERSION {
+            return Err(fail(
+                DiagnosticCode::Version,
+                "v2/v3 history cannot contain freezes",
+            ));
+        }
         if record.parent.as_deref() != prior {
             return Err(fail(
                 DiagnosticCode::Reference,
                 "checkpoint parents do not form a linear history",
             ));
         }
-        if checkpoint(record.parent.as_deref(), &record.snapshot)?.id != record.id
+        if checkpoint_with_freeze(
+            record.parent.as_deref(),
+            &record.snapshot,
+            record.freeze.as_deref(),
+        )?
+        .id != record.id
             || !seen.insert(&record.id)
         {
             return Err(fail(
@@ -529,12 +848,27 @@ fn validate_history(manifest: &HistoryManifest) -> Result<(), Diagnostics> {
             "archive head is not the final checkpoint",
         ));
     }
+    if manifest.version == FROZEN_VERSION
+        && !manifest.checkpoints.iter().any(|r| r.freeze.is_some())
+    {
+        return Err(fail(
+            DiagnosticCode::Version,
+            "v4 history has no frozen checkpoint",
+        ));
+    }
     Ok(())
 }
 
+#[cfg(test)]
 fn check_aggregate(budgets: impl Iterator<Item = (u64, u64, u64, u64)>) -> Result<(), Diagnostics> {
+    check_aggregate_with_freezes(budgets.map(|budget| (budget, 0)))
+}
+
+fn check_aggregate_with_freezes(
+    budgets: impl Iterator<Item = ((u64, u64, u64, u64), u64)>,
+) -> Result<(), Diagnostics> {
     let mut total = (0u64, 0u64, 0u64);
-    for (source, asset, pcm, original) in budgets {
+    for ((source, asset, pcm, original), freeze) in budgets {
         total.0 = total
             .0
             .checked_add(source)
@@ -547,10 +881,11 @@ fn check_aggregate(budgets: impl Iterator<Item = (u64, u64, u64, u64)>) -> Resul
             .2
             .checked_add(pcm)
             .and_then(|n| n.checked_add(original))
+            .and_then(|n| n.checked_add(freeze))
             .ok_or_else(|| {
                 fail(
                     DiagnosticCode::ResourceLimit,
-                    "PCM and original total overflow",
+                    "PCM, original, and freeze total overflow",
                 )
             })?;
         if total.0 > MAX_SOURCE_BYTES || total.1 > MAX_ASSET_BYTES || total.2 > MAX_PCM_BYTES {
@@ -563,10 +898,47 @@ fn check_aggregate(budgets: impl Iterator<Item = (u64, u64, u64, u64)>) -> Resul
     Ok(())
 }
 
-fn check_staged_tree<'a>(
+fn check_staged_tree_with_freezes<'a>(
     snapshots: impl Iterator<Item = &'a ArchiveSnapshot>,
+    freeze_count: usize,
 ) -> Result<(), Diagnostics> {
-    check_staged_tree_with_limit(snapshots, MAX_TREE_ENTRIES)
+    let overhead = if freeze_count == 0 {
+        0
+    } else {
+        1usize
+            .checked_add(freeze_count.checked_mul(3).ok_or_else(|| {
+                fail(
+                    DiagnosticCode::ResourceLimit,
+                    "archive tree entry count overflow",
+                )
+            })?)
+            .ok_or_else(|| {
+                fail(
+                    DiagnosticCode::ResourceLimit,
+                    "archive tree entry count overflow",
+                )
+            })?
+    };
+    let limit = MAX_TREE_ENTRIES.checked_sub(overhead).ok_or_else(|| {
+        fail(
+            DiagnosticCode::ResourceLimit,
+            "archive history contains too many filesystem entries",
+        )
+    })?;
+    check_staged_tree_with_limit(snapshots, limit)
+}
+
+fn unique_freeze_count(
+    freezes: &[Option<FreezeSnapshot>],
+    extra: Option<&FreezeSnapshot>,
+) -> usize {
+    freezes
+        .iter()
+        .filter_map(Option::as_ref)
+        .chain(extra)
+        .map(FreezeSnapshot::digest)
+        .collect::<BTreeSet<_>>()
+        .len()
 }
 
 fn check_staged_tree_with_limit<'a>(
@@ -597,7 +969,7 @@ fn check_staged_tree_with_limit<'a>(
 fn check_root_tree(
     root: &ProjectRoot,
     manifest: &HistoryManifest,
-) -> Result<ProjectRoot, Diagnostics> {
+) -> Result<(ProjectRoot, Option<ProjectRoot>), Diagnostics> {
     let mut names = BTreeSet::new();
     for entry in root.dir().read_dir(".").map_err(|e| {
         fail(
@@ -625,7 +997,8 @@ fn check_root_tree(
         })?;
         if (name == MANIFEST_PATH && !kind.is_file())
             || (name == "checkpoints" && !kind.is_dir())
-            || (name != MANIFEST_PATH && name != "checkpoints")
+            || (name == "freezes" && (manifest.version != FROZEN_VERSION || !kind.is_dir()))
+            || (name != MANIFEST_PATH && name != "checkpoints" && name != "freezes")
             || kind.is_symlink()
         {
             return Err(fail(
@@ -635,7 +1008,11 @@ fn check_root_tree(
         }
         names.insert(name);
     }
-    if names != BTreeSet::from([MANIFEST_PATH.to_owned(), "checkpoints".to_owned()]) {
+    let mut required = BTreeSet::from([MANIFEST_PATH.to_owned(), "checkpoints".to_owned()]);
+    if manifest.version == FROZEN_VERSION {
+        required.insert("freezes".to_owned());
+    }
+    if names != required {
         return Err(fail(
             DiagnosticCode::Reference,
             "archive root is missing required members",
@@ -684,7 +1061,57 @@ fn check_root_tree(
             "archive is missing a checkpoint directory",
         ));
     }
-    Ok(checkpoints_root)
+    let freezes_root = if manifest.version == FROZEN_VERSION {
+        let freezes_root = root.open_child_pinned("freezes")?;
+        let expected: BTreeSet<String> = manifest
+            .checkpoints
+            .iter()
+            .filter_map(|record| record.freeze.as_ref().map(|id| id[7..].to_owned()))
+            .collect();
+        let mut found = BTreeSet::new();
+        for entry in freezes_root.dir().read_dir(".").map_err(|e| {
+            fail(
+                DiagnosticCode::Reference,
+                format!("cannot list freezes: {e}"),
+            )
+        })? {
+            let entry = entry.map_err(|e| {
+                fail(
+                    DiagnosticCode::Reference,
+                    format!("cannot list freezes: {e}"),
+                )
+            })?;
+            let name = entry.file_name().into_string().map_err(|_| {
+                fail(
+                    DiagnosticCode::Reference,
+                    "freeze directory has non-UTF-8 name",
+                )
+            })?;
+            let kind = entry.file_type().map_err(|e| {
+                fail(
+                    DiagnosticCode::Reference,
+                    format!("cannot inspect freeze directory: {e}"),
+                )
+            })?;
+            if !kind.is_dir() || kind.is_symlink() || !expected.contains(&name) {
+                return Err(fail(
+                    DiagnosticCode::Reference,
+                    format!("unexpected freeze directory `{name}`"),
+                ));
+            }
+            found.insert(name);
+        }
+        if found != expected {
+            return Err(fail(
+                DiagnosticCode::Reference,
+                "archive is missing a freeze directory",
+            ));
+        }
+        Some(freezes_root)
+    } else {
+        None
+    };
+    Ok((checkpoints_root, freezes_root))
 }
 
 fn check_output_root(dir: &Path) -> Result<(), Diagnostics> {
@@ -967,5 +1394,43 @@ mod tests {
         bytes[44] ^= 1; // first sample lies before the declared [1,3) crop.
         fs::write(original, bytes).unwrap();
         assert!(ArchiveHistory::verify(&archive).is_err());
+    }
+
+    #[test]
+    fn frozen_checkpoint_is_v4_and_plain_append_preserves_old_freeze() {
+        let temp = tempfile::tempdir().unwrap();
+        let a = temp.path().join("a");
+        let b = temp.path().join("b");
+        write_project(&a, SOURCE);
+        write_project(&b, &format!("{SOURCE}// later source\n"));
+        let mut history =
+            ArchiveHistory::capture_frozen(Path::new("main.maac"), &a, "default").unwrap();
+        assert_eq!(history.version(), 4);
+        let frozen_id = history.head_id().to_owned();
+        assert!(!history.append_frozen(capture(&a)).unwrap());
+        assert!(history.append(capture(&b)).unwrap());
+        let archive = temp.path().join("archive");
+        fs::create_dir(&archive).unwrap();
+        history.stage(&archive).unwrap();
+        let verified = ArchiveHistory::verify(&archive).unwrap();
+        assert_eq!(verified.digest(), history.digest());
+        assert_eq!(verified.checkpoint_ids()[0], frozen_id);
+        assert_eq!(
+            verified
+                .freeze_check(Path::new("main.maac"), &a, Some(&frozen_id), true)
+                .unwrap()
+                .status,
+            FreezeCheckStatus::Current
+        );
+        assert_eq!(
+            verified
+                .freeze_check(Path::new("main.maac"), &b, Some(&frozen_id), false)
+                .unwrap()
+                .status,
+            FreezeCheckStatus::Stale
+        );
+        assert!(verified
+            .freeze_check(Path::new("main.maac"), &a, None, false)
+            .is_err());
     }
 }

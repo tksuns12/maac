@@ -184,6 +184,34 @@ orphan sidecars, nested-root guidance, and combined PCM/original budget checks.
 The preflight checks metadata and aggregate bytes across every checkpoint
 before loading original WAVs.
 
+## Inactive whole-output archive freezes (2026-09-24)
+
+Version 4 can retain an opt-in full-output float32 WAV without replacing the
+editable graph. The fixed version 3 fixture made with the prior release binary
+keeps digest
+`sha256:e20f7ca361cd3877b943e61c4f51aac0e1287543627357f4987527bdb56c269a`.
+Versions 1 and 2 keep the digests recorded above. The full Rust integration
+suite was stopped after its 276 passing library tests (3 ignored) and
+completed integration targets preceding `module_artifact` had passed; no
+full-suite pass is claimed for this slice.
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Archive integration | `cargo test --test archive_cli --test archive_freeze_cli --test archive_retained_cli --test archive_v2_compat_cli --test archive_v3_compat_cli` | Passed: 5 archive, 3 freeze, 6 retained, and 1 each fixed v2/v3 compatibility tests |
+| Post-review affected tests | `cargo test --lib freeze`; `cargo test --test archive_freeze_cli --test archive_v3_compat_cli` | Passed: 3 selected library, 3 freeze CLI, and 1 fixed v3 compatibility test |
+| Formatting and whitespace | `cargo fmt --all -- --check`; `git diff --check` | Passed |
+| Clippy | `cargo clippy --all-targets -- -D warnings` | Passed after the buffer fix |
+| Installed CLI acceptance | `python3 scripts/acceptance.py` | Passed: 38 of 38 checks after the buffer fix |
+| Independent review | Read-only Astra review of the uncommitted changes | Two findings resolved: explicitly staged the ignored historical WAV fixture and buffered freeze WAV sample reads |
+
+The freeze tests cover relocation, replay and stale detection after an exact
+source edit, an unfrozen successor preserving its frozen predecessor,
+non-head tampering, and disk-media output above the inline asset limit. Core
+tests cover canonical manifest validation, independent decoded PCM hashing,
+and version 4 history promotion. Historical verification checks integrity;
+`freeze-check` additionally compares the current source and executable
+identity, and optional replay compares rendered output evidence.
+
 ## Historical naming cleanup
 
 The current tree uses MaaC consistently in the specification, grammar, schema,
