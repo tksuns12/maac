@@ -97,7 +97,8 @@ does not support external-media or long-media streaming. The
 [native archive](editable-archive.md) can preserve this verified original WAV
 and its import record in a version 3 checkpoint. A version 6 archive can
 retain several explicitly selected existing import directories used by one
-composition. Archive patching records explicit entry-source edits, and an
-inactive whole-output freeze has conservative input invalidation. Recording
-workflows, automatic edit journaling, processor-state packaging, and active
-partial-graph freezes remain future Phase 3 work.
+composition. Archive patching records explicit entry-source and direct library
+edits. Whole-output freezes and a single native effect output freeze support
+explicit reuse after conservative input validation. Recording workflows,
+broader edit journaling, processor-state packaging, selective invalidation,
+and multiple frozen graph branches remain future Phase 3 work.
