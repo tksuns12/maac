@@ -262,6 +262,31 @@ mixed checkpoint history, non-head original tampering, invalid selections,
 and failure without publishing an output directory. Fixed v1–v4 archive
 compatibility tests passed in the full gate.
 
+## Direct library archive edits (2026-09-25)
+
+Version 7 journals a Protocol 2 edit to one directly imported local leaf
+library and the generated entry-source `import.hash` update as one checkpoint.
+Verification replays both forward transactions and both authored-tree inverses.
+The existing archive versions and their fixed compatibility fixtures remain
+readable.
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Full Rust gate before review fixes | `cargo test --all-targets --quiet` | Passed: 284 active library tests, 3 existing ignored, and all integration targets |
+| Post-review library | `cargo test --lib --quiet` | Passed: 285 active, 3 existing ignored |
+| Post-review archive integration | `cargo test --test archive_import_edit_cli --test archive_edit_cli --test archive_multi_import_cli --test archive_freeze_cli` | Passed: 3 import-edit, 8 ordinary edit, 5 multi-import, and 3 freeze tests |
+| Post-review release integration | `cargo test --release --test archive_import_edit_cli` | Passed: 3 import-edit tests |
+| Fixed archive compatibility | `cargo test --test archive_v2_compat_cli --test archive_v3_compat_cli --test archive_v4_compat_cli` | Passed: all three fixed fixtures |
+| Formatting, Clippy, whitespace | `cargo fmt --all -- --check`; `cargo clippy --all-targets -- -D warnings`; `git diff --check` | Passed |
+| Independent review | Read-only Astra review of the uncommitted change | Two findings resolved: a new import edge to an already retained source is rejected before publication, and the CLI reports full render invalidation for a changed imported source |
+
+The import-edit tests cover exact-byte pinning across Unicode comments, offline
+relocation and reopening of both versions, changed render output, an authored
+no-op, stale-revision and invalid-alias failures without publication, and
+non-head history integrity. A core regression rejects an edit that adds an
+import edge to an existing closure member while keeping the archive's original
+digest and version unchanged.
+
 ## Historical naming cleanup
 
 The current tree uses MaaC consistently in the specification, grammar, schema,

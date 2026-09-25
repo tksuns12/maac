@@ -5,7 +5,8 @@ composition; version 2 preserves an explicit linear sequence of complete
 composition checkpoints; version 3 also retains verified original WAV import
 records when present; version 4 can retain an opt-in full-output freeze;
 version 5 can record an explicit Protocol 2 edit and its inverse; version 6
-can retain several selected WAV import records in one composition.
+can retain several selected WAV import records in one composition; version 7
+can record a local library edit with its exact parent import pin update.
 
 ## Commands
 
@@ -14,6 +15,8 @@ maac archive create SOURCE --output-dir NEW [--project-root ROOT] [--profile def
     [--previous ARCHIVE] [--expect-previous-hash SHA256] [--freeze-output]
     [--retain-import RELATIVE_DIR]...
 maac archive patch ARCHIVE PATCH.json --output-dir NEW [--expect-hash SHA256]
+maac archive patch-import ARCHIVE PATCH.json --import ALIAS --output-dir NEW
+    [--expect-hash SHA256]
 maac archive verify ARCHIVE [--expect-hash SHA256]
 maac archive unpack ARCHIVE --output-dir NEW [--expect-hash SHA256] [--revision SHA256]
 maac archive freeze-check ARCHIVE --source SOURCE [--project-root ROOT]
@@ -58,14 +61,26 @@ nodes or change ordinary `build` results. Older checkpoints and their IDs are
 preserved when such a history is extended.
 
 `archive patch` verifies the input archive, applies one Protocol 2 transaction
-to its head composition source, and publishes a new history with a version 5
-or 6 root manifest. It records the canonical forward transaction and generated
+to its head composition source, and publishes a new history with at least a
+version 5 root manifest. It records the canonical forward transaction and generated
 inverse, the authored revisions before and after, and a new checkpoint even
 when the transaction makes no authored change. Both checkpoints remain reopenable.
 The input archive stays unchanged. This first journaled-edit path keeps the
 same dependency closure, retained-import sidecars, and execution profile;
 edits to imported files or changes to dependency membership are outside its
 scope.
+
+`archive patch-import` applies one Protocol 2 transaction to a directly
+imported local leaf library. It generates the matching `import.hash` edit in
+the entry source from the exact changed library bytes, then validates and
+publishes both files in one checkpoint. This first grouped path requires one
+incoming import edge and a library with no imports of its own. Shared,
+transitive, and built-in sources are outside its scope. A version 7 history
+records both forward transactions and both authored-tree inverses; verification
+replays the two-file transition against the complete before and after
+snapshots. The parent import pin hashes exact source bytes, including comments
+and formatting. The generated pin transaction has one operation and is capped
+at 16 KiB. Both prior and new checkpoints remain reopenable.
 
 `--previous` verifies a prior archive, copies its complete checkpoints into a
 new independent archive, and appends the current project. It declares a linear
@@ -95,7 +110,7 @@ revision. The source bytes, including comments, omissions, labels, and
 formatting, remain unchanged. The unpacked project uses ordinary `check` and
 `build`; large PCM requires `--disk-media`.
 
-Versions 2 through 6 store `checkpoints/<checkpoint-hex>/` directories. The root
+Versions 2 through 7 store `checkpoints/<checkpoint-hex>/` directories. The root
 manifest records the ordered IDs, parent IDs, snapshot manifest hashes, and
 head ID. Frozen records also identify their freeze manifest; version 4 keeps
 their files under `freezes/<freeze-hash>/`. Journaled records identify an edit
@@ -150,7 +165,7 @@ import record for a root `main.maac` created with `import-wav
 has only a version 1 `import.json`; that record remains outside the archived
 composition closure. Version 6 retains multiple selected existing imports,
 including nested directories whose native PCM is in the composition closure.
-Automatic edit journaling, multi-file transactions, branching and merging,
+Automatic edit journaling, general multi-file transactions, branching and merging,
 partial-graph freeze replacement, and a complete producer archive remain
 Phase 3 work. Version 4's inactive whole-output
 freeze provides conservative input invalidation, not automatic render-cache

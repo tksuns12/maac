@@ -232,6 +232,17 @@ pub enum ArchiveCommand {
         #[arg(long)]
         expect_hash: Option<String>,
     },
+    /// Edit one directly imported local library and repin its entry import.
+    PatchImport {
+        archive: PathBuf,
+        patch: PathBuf,
+        #[arg(long = "import")]
+        import_alias: String,
+        #[arg(long)]
+        output_dir: PathBuf,
+        #[arg(long)]
+        expect_hash: Option<String>,
+    },
     /// Verify a captured archive and its current reopenable composition.
     Verify {
         archive: PathBuf,
@@ -355,12 +366,27 @@ pub struct ArtifactCommandResult {
     edit: Option<crate::editing::AppliedTransaction>,
     #[serde(flatten, skip_serializing_if = "Option::is_none")]
     archive_patch: Option<ArchivePatchReport>,
+    #[serde(flatten, skip_serializing_if = "Option::is_none")]
+    archive_import_patch: Option<ArchiveImportPatchReport>,
 }
 
 #[derive(Clone, Debug, Serialize)]
 struct ArchivePatchReport {
     checkpoint: String,
     edit_digest: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct ArchiveImportPatchReport {
+    checkpoint: String,
+    edit_digest: String,
+    import_alias: String,
+    import_source: String,
+    before_revision: String,
+    after_revision: String,
+    pin: String,
+    importer_before_revision: String,
+    importer_after_revision: String,
 }
 impl ArtifactCommandResult {
     pub fn base(&self) -> &CommandResult {
@@ -704,6 +730,7 @@ pub fn execute_artifact_with_range(
         end_frame: range.map(|range| range.end_frame),
         edit: counts.edit,
         archive_patch: counts.archive_patch,
+        archive_import_patch: counts.archive_import_patch,
     })
 }
 
@@ -777,6 +804,7 @@ fn execute_disk_media(command: &Command) -> Result<ArtifactCommandResult, CliErr
         end_frame: None,
         edit: None,
         archive_patch: None,
+        archive_import_patch: None,
     })
 }
 #[derive(Default)]
@@ -786,6 +814,7 @@ struct EventCounts {
     audio_clips: usize,
     edit: Option<crate::editing::AppliedTransaction>,
     archive_patch: Option<ArchivePatchReport>,
+    archive_import_patch: Option<ArchiveImportPatchReport>,
 }
 impl EventCounts {
     fn record(&mut self, plan: &PlanArtifact) {
@@ -1327,6 +1356,50 @@ fn execute_archive(
             counts.edit = Some(applied.applied);
             Ok(CommandResult::archive(
                 "archive patch",
+                archive,
+                Some(output_dir),
+                history.digest(),
+                history.version(),
+            ))
+        }
+        ArchiveCommand::PatchImport {
+            archive,
+            patch,
+            import_alias,
+            output_dir,
+            expect_hash,
+        } => {
+            ensure_output_outside_archive(output_dir, archive)?;
+            let mut history = ArchiveHistory::verify(archive)
+                .map_err(|error| CliError::from_diagnostics(&error))?;
+            verify_expected_archive_hash(expect_hash.as_deref(), &history.digest())?;
+            let applied = history
+                .patch_import_head(import_alias, &read_bounded(patch)?)
+                .map_err(|error| CliError::from_diagnostics(&error))?;
+            stage_archive_directory(output_dir, |staging| history.stage(staging))?;
+            let changed_source = applied.before_revision != applied.after_revision
+                || applied.importer_before_revision != applied.importer_after_revision;
+            let mut edit = applied.applied;
+            if changed_source {
+                edit.impact.render_invalidation_scope =
+                    crate::editing::RenderInvalidationScope::Full;
+                edit.impact.full_render_invalidated = true;
+                edit.impact.all_expanded_events_may_be_affected = true;
+            }
+            counts.archive_import_patch = Some(ArchiveImportPatchReport {
+                checkpoint: applied.checkpoint,
+                edit_digest: applied.edit_digest,
+                import_alias: import_alias.clone(),
+                import_source: applied.import_source,
+                before_revision: applied.before_revision,
+                after_revision: applied.after_revision,
+                pin: applied.pin,
+                importer_before_revision: applied.importer_before_revision,
+                importer_after_revision: applied.importer_after_revision,
+            });
+            counts.edit = Some(edit);
+            Ok(CommandResult::archive(
+                "archive patch-import",
                 archive,
                 Some(output_dir),
                 history.digest(),

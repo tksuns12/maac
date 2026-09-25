@@ -460,6 +460,88 @@ impl ArchiveSnapshot {
         &self.manifest.profile
     }
 
+    pub(crate) fn source_text(&self, path: &str) -> Result<&str, Diagnostics> {
+        if !self
+            .manifest
+            .members
+            .iter()
+            .any(|m| m.path == path && m.kind == MemberKind::Source)
+        {
+            return Err(fail(
+                DiagnosticCode::Reference,
+                format!("`{path}` is not an archived source"),
+            ));
+        }
+        match self.data.get(path) {
+            Some(MemberData::Bytes(bytes)) => std::str::from_utf8(bytes)
+                .map_err(|_| fail(DiagnosticCode::Syntax, "archived source is not UTF-8")),
+            _ => Err(fail(
+                DiagnosticCode::Reference,
+                "archived source bytes are missing",
+            )),
+        }
+    }
+
+    pub(crate) fn patched_import_sources(
+        &self,
+        library: &str,
+        library_source: &str,
+        entry_source: &str,
+    ) -> Result<Self, Diagnostics> {
+        if library == self.entry()
+            || library_source.len() > MAX_BUNDLE_FILE_BYTES
+            || entry_source.len() > MAX_BUNDLE_FILE_BYTES
+        {
+            return Err(fail(
+                DiagnosticCode::ResourceLimit,
+                "edited source exceeds bundle file limit",
+            ));
+        }
+        self.source_text(library)?;
+        let staging = tempfile::tempdir().map_err(|e| {
+            fail(
+                DiagnosticCode::Reference,
+                format!("cannot create private edit staging: {e}"),
+            )
+        })?;
+        self.stage_members(staging.path())?;
+        fs::write(staging.path().join(library), library_source).map_err(|e| {
+            fail(
+                DiagnosticCode::Reference,
+                format!("cannot stage library source: {e}"),
+            )
+        })?;
+        fs::write(staging.path().join(self.entry()), entry_source).map_err(|e| {
+            fail(
+                DiagnosticCode::Reference,
+                format!("cannot stage importer source: {e}"),
+            )
+        })?;
+        let after = Self::capture_matching_layout(Path::new(self.entry()), staging.path(), self)?;
+        let same_members = self
+            .manifest
+            .members
+            .iter()
+            .filter(|m| m.path != library && m.path != self.entry())
+            .eq(after
+                .manifest
+                .members
+                .iter()
+                .filter(|m| m.path != library && m.path != self.entry()));
+        if !same_members
+            || self.manifest.builtins != after.manifest.builtins
+            || self.manifest.import_manifest != after.manifest.import_manifest
+            || self.manifest.original_wav != after.manifest.original_wav
+            || self.manifest.imports != after.manifest.imports
+        {
+            return Err(fail(
+                DiagnosticCode::Capability,
+                "import edit changed the archived non-source closure",
+            ));
+        }
+        Ok(after)
+    }
+
     /// Recompile an edited entry from a private staging of this exact closure.
     /// Every other member, builtin identity, and retained sidecar must remain
     /// identical and reachable in the new complete closure.

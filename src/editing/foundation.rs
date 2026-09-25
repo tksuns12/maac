@@ -37,6 +37,20 @@ pub struct BundleEditContext {
     disk_assets:
         Option<std::collections::BTreeMap<String, std::sync::Arc<crate::disk_media::DiskAsset>>>,
     limits: crate::plan::PlanLimits,
+    import_edit: Option<ImportEditMode>,
+}
+
+#[derive(Clone, Debug)]
+enum ImportEditMode {
+    Library {
+        importer: String,
+        alias: String,
+    },
+    Importer {
+        library: String,
+        alternate: String,
+        alias: String,
+    },
 }
 
 impl BundleEditContext {
@@ -66,6 +80,7 @@ impl BundleEditContext {
             source_path,
             disk_assets: None,
             limits: crate::plan::PlanLimits::default(),
+            import_edit: None,
         })
     }
 
@@ -84,7 +99,51 @@ impl BundleEditContext {
             source_path: bundle.entry.clone(),
             disk_assets: Some(assets.clone()),
             limits,
+            import_edit: None,
         })
+    }
+
+    pub(crate) fn new_disk_media_import_library(
+        bundle: &crate::bundle::SourceBundle,
+        assets: &std::collections::BTreeMap<String, std::sync::Arc<crate::disk_media::DiskAsset>>,
+        limits: crate::plan::PlanLimits,
+        library: &str,
+        importer: &str,
+        alias: &str,
+    ) -> EditResult<Self> {
+        let mut context = Self::new_disk_media(bundle, assets, limits)?;
+        if !bundle.sources.contains_key(library) || !bundle.sources.contains_key(importer) {
+            return Err(EditError::new(
+                "E_REFERENCE",
+                "import edit sources are missing",
+            ));
+        }
+        context.source_path = library.into();
+        context.import_edit = Some(ImportEditMode::Library {
+            importer: importer.into(),
+            alias: alias.into(),
+        });
+        Ok(context)
+    }
+
+    pub(crate) fn new_disk_media_importer(
+        bundle: &crate::bundle::SourceBundle,
+        assets: &std::collections::BTreeMap<String, std::sync::Arc<crate::disk_media::DiskAsset>>,
+        limits: crate::plan::PlanLimits,
+        library: &str,
+        alternate: &str,
+        alias: &str,
+    ) -> EditResult<Self> {
+        let mut context = Self::new_disk_media(bundle, assets, limits)?;
+        if !bundle.sources.contains_key(library) {
+            return Err(EditError::new("E_REFERENCE", "import library is missing"));
+        }
+        context.import_edit = Some(ImportEditMode::Importer {
+            library: library.into(),
+            alternate: alternate.into(),
+            alias: alias.into(),
+        });
+        Ok(context)
     }
 
     pub fn source_path(&self) -> &str {
@@ -95,6 +154,30 @@ impl BundleEditContext {
         let mut bundle = self.bundle.clone();
         let source = super::source::authored_source(authored)?;
         bundle.sources.insert(self.source_path.clone(), source);
+        match &self.import_edit {
+            Some(ImportEditMode::Library { importer, alias }) => {
+                let hash =
+                    crate::bundle::sha256_digest(bundle.sources[&self.source_path].as_bytes());
+                let current = bundle
+                    .sources
+                    .get(importer)
+                    .ok_or_else(|| EditError::new("E_REFERENCE", "importer source is missing"))?;
+                let updated = replace_import_hash(current, alias, &hash)?;
+                bundle.sources.insert(importer.clone(), updated);
+            }
+            Some(ImportEditMode::Importer {
+                library,
+                alternate,
+                alias,
+            }) => {
+                let pin = authored["objects"][alias]["fields"]["hash"]["v"].as_str();
+                let alternate_hash = crate::bundle::sha256_digest(alternate.as_bytes());
+                if pin == Some(alternate_hash.as_str()) {
+                    bundle.sources.insert(library.clone(), alternate.clone());
+                }
+            }
+            None => {}
+        }
         Ok(bundle)
     }
 
@@ -149,6 +232,31 @@ impl BundleEditContext {
         crate::production_identity::normalized_document_for_editing(&document, &artifact.view())
             .map_err(|error| EditError::new("E_RANGE", error.to_string()))
     }
+}
+
+fn replace_import_hash(source: &str, alias: &str, hash: &str) -> EditResult<String> {
+    let document = crate::syntax::parse(source).map_err(map_diagnostics)?;
+    let object = document
+        .objects
+        .get(alias)
+        .ok_or_else(|| EditError::new("E_REFERENCE", "import alias is missing"))?;
+    if object.kind != "import" {
+        return Err(EditError::new(
+            "E_CAPABILITY",
+            "selected alias is not an import",
+        ));
+    }
+    let field = object
+        .field("hash")
+        .ok_or_else(|| EditError::new("E_REFERENCE", "import hash is missing"))?;
+    if field.value.as_string().is_none() {
+        return Err(EditError::new("E_SYNTAX", "import hash is not a string"));
+    }
+    let replacement =
+        serde_json::to_string(hash).map_err(|e| EditError::new("E_SYNTAX", e.to_string()))?;
+    let mut output = source.to_owned();
+    output.replace_range(field.value.span.start..field.value.span.end, &replacement);
+    Ok(output)
 }
 
 impl BundleEditContext {
