@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 use crate::bundle::SourceBundle;
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Diagnostics};
 use crate::dsp::{self, AudioStorageMode, DspEngine};
-use crate::plan::{OutputSettings, PlanLimits};
+use crate::plan::{OutputSettings, PlanLimits, PortRef};
 use crate::plan_artifact::PlanArtifact;
 
 pub(crate) const MAX_DISK_MEDIA_FILE_BYTES: u64 = 1024 * 1024 * 1024;
@@ -217,6 +217,44 @@ impl DiskMediaPlan {
             AudioStorageMode::Disk,
         )?
         .render(callback)
+    }
+
+    fn engine(&self) -> dsp::Result<DspEngine<'_>> {
+        DspEngine::new_artifact_with_limits_and_storage_mode(
+            &self.artifact,
+            &self.limits,
+            AudioStorageMode::Disk,
+        )
+    }
+
+    pub(crate) fn node_freeze_channels(&self, boundary: &PortRef) -> dsp::Result<usize> {
+        self.engine()?.validate_node_freeze_boundary(boundary)
+    }
+
+    pub(crate) fn render_node_freeze_boundary<F>(
+        &self,
+        boundary: &PortRef,
+        callback: F,
+    ) -> dsp::Result<()>
+    where
+        F: FnMut(&[f64]) -> dsp::Result<()>,
+    {
+        self.engine()?
+            .render_node_freeze_boundary(boundary, callback)
+    }
+
+    pub(crate) fn render_with_node_replacement<R, F>(
+        &self,
+        boundary: &PortRef,
+        replacement: R,
+        callback: F,
+    ) -> dsp::Result<()>
+    where
+        R: FnMut(u64, &mut [f64]) -> dsp::Result<()>,
+        F: FnMut(&[f64]) -> dsp::Result<()>,
+    {
+        self.engine()?
+            .render_with_node_replacement(boundary, replacement, callback)
     }
 }
 

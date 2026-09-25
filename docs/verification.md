@@ -309,6 +309,29 @@ and a destination inside the archive. Core tests cover private snapshot use
 after archive-path tampering, no-clobber publication, and concurrent copies
 from one verified snapshot.
 
+## Single native-effect node freeze (2026-09-25)
+
+Archive version 8 can retain one internal native effect output as exact
+interleaved binary64 samples. An eligible source can render its normal graph
+with that effect output substituted before downstream processing. The final WAV
+is encoded and hashed separately from the cached node stream.
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Focused node and archive tests | `cargo test --lib node_freeze`; `cargo test --test archive_node_freeze_cli --test archive_freeze_cli --test archive_import_edit_cli --test archive_multi_import_cli --test archive_v2_compat_cli --test archive_v3_compat_cli --test archive_v4_compat_cli` | Passed: 4 node core tests; 2 node CLI, 3 whole-output freeze, 4 import-edit, 5 multi-import, and all fixed v2–v4 compatibility tests |
+| Full Rust gate before final I/O buffering | `cargo test --all-targets --quiet` | Passed: 292 active library tests, 3 existing ignored, and all integration targets |
+| Final-code regression | `cargo test --lib node_freeze`; `cargo test --test archive_node_freeze_cli --test archive_freeze_cli` | Passed: 4 node core, 2 node CLI, and 3 whole-output freeze tests after buffered cache I/O and final digest assertions |
+| Release lifecycle | `cargo test --release --test archive_node_freeze_cli` | Passed: 2 node freeze CLI tests |
+| Formatting, Clippy, whitespace | `cargo fmt --all -- --check`; `cargo clippy --all-targets -- -D warnings`; `git diff --check` | Passed |
+| Independent review | Read-only Astra review of the uncommitted change | One performance finding resolved: node cache capture and reuse now buffer per-sample file I/O |
+
+The node CLI tests cover a mono reverb cache feeding a stereo mix, relocation,
+exact replay, byte-identical final WAV, conservative staleness, payload
+tampering, unsupported nodes, and failure without archive publication. Core
+tests cover mixed whole-output and node freezes in a v8 history, exact
+binary64 capture and replacement, downstream execution, and rejection of
+invalid boundaries and nonfinite replacement samples.
+
 ## Historical naming cleanup
 
 The current tree uses MaaC consistently in the specification, grammar, schema,

@@ -6,10 +6,11 @@
 
 use std::fmt;
 use std::fs;
-use std::io::{self, BufWriter, Seek, Write};
+use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use hound::{SampleFormat, WavSpec, WavWriter};
+use sha2::{Digest, Sha256};
 use tempfile::NamedTempFile;
 
 use crate::disk_media::DiskMediaPlan;
@@ -316,10 +317,31 @@ where
     W: Write + Seek,
     R: FnOnce(&mut dyn FnMut(&[f64]) -> dsp::Result<()>) -> dsp::Result<()>,
 {
-    let channels = output.channels;
+    write_wav_with_renderer_shape(
+        sink,
+        output.sample_rate_hz,
+        output.channels,
+        format,
+        range,
+        render,
+    )
+}
+
+fn write_wav_with_renderer_shape<W, R>(
+    sink: W,
+    sample_rate_hz: u32,
+    channels: u8,
+    format: WavFormat,
+    range: FrameRange,
+    render: R,
+) -> Result<WavStats, ExportError>
+where
+    W: Write + Seek,
+    R: FnOnce(&mut dyn FnMut(&[f64]) -> dsp::Result<()>) -> dsp::Result<()>,
+{
     let spec = WavSpec {
         channels: u16::from(channels),
-        sample_rate: output.sample_rate_hz,
+        sample_rate: sample_rate_hz,
         bits_per_sample: match format {
             WavFormat::Float32 => 32,
             WavFormat::Pcm16 => 16,
@@ -516,6 +538,39 @@ pub(crate) fn render_wav_to_path_disk_media(
     })
 }
 
+/// Publish a final float32 WAV rendered through a caller-owned graph path.
+/// Hash the completed temporary file before the atomic no-clobber publication.
+pub(crate) fn render_wav_callback_to_path(
+    sample_rate_hz: u32,
+    channels: u8,
+    frames: u64,
+    path: &Path,
+    render: impl FnOnce(&mut dyn FnMut(&[f64]) -> dsp::Result<()>) -> dsp::Result<()>,
+) -> Result<(WavStats, String), ExportError> {
+    publish_wav_with(path, false, |file| {
+        let range = FrameRange::new(0, frames);
+        let stats = write_wav_with_renderer_shape(
+            &mut *file,
+            sample_rate_hz,
+            channels,
+            WavFormat::Float32,
+            range,
+            render,
+        )?;
+        file.seek(SeekFrom::Start(0)).map_err(ExportError::from)?;
+        let mut hash = Sha256::new();
+        let mut block = [0u8; 64 * 1024];
+        loop {
+            let count = file.read(&mut block).map_err(ExportError::from)?;
+            if count == 0 {
+                break;
+            }
+            hash.update(&block[..count]);
+        }
+        Ok((stats, format!("sha256:{:x}", hash.finalize())))
+    })
+}
+
 /// Render and atomically publish one reset-origin frame range from a
 /// standalone artifact using default caller limits.
 pub fn render_wav_to_path_artifact_range(
@@ -568,11 +623,11 @@ fn render_wav_for_view(
     })
 }
 
-fn publish_wav_with(
+fn publish_wav_with<T>(
     path: &Path,
     force: bool,
-    write: impl FnOnce(&mut std::fs::File) -> Result<WavStats, ExportError>,
-) -> Result<WavStats, ExportError> {
+    write: impl FnOnce(&mut std::fs::File) -> Result<T, ExportError>,
+) -> Result<T, ExportError> {
     if !force && path_exists(path)? {
         return Err(ExportError::OutputExists {
             path: path.to_owned(),

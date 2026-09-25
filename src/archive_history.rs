@@ -14,8 +14,11 @@ use crate::archive_edit::{EditSnapshot, MAX_EDIT_TOTAL_BYTES, MAX_EDIT_TRANSACTI
 use crate::bundle::{sha256_digest, validate_hash_pin};
 use crate::bundle_fs::ProjectRoot;
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Diagnostics};
+use crate::dsp;
 use crate::editing::AppliedTransaction;
 use crate::freeze::{engine_digest, FreezeSnapshot};
+use crate::node_freeze::{NodeFreezePreflight, NodeFreezeSnapshot, NODE_FREEZE_MANIFEST};
+use crate::plan::PortRef;
 
 const FORMAT: &str = "maac.editable-archive";
 const CHECKPOINT_FORMAT: &str = "maac.archive-checkpoint";
@@ -25,6 +28,7 @@ const FROZEN_VERSION: u32 = 4;
 const EDITED_VERSION: u32 = 5;
 const MULTI_IMPORT_VERSION: u32 = 6;
 const IMPORT_EDIT_VERSION: u32 = 7;
+const NODE_FROZEN_VERSION: u32 = 8;
 const MAX_CHECKPOINTS: usize = 32;
 const MAX_SOURCE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_ASSET_BYTES: u64 = 64 * 1024 * 1024;
@@ -88,7 +92,7 @@ enum HistoryState {
         manifest: HistoryManifest,
         json: Vec<u8>,
         snapshots: Vec<ArchiveSnapshot>,
-        freezes: Vec<Option<FreezeSnapshot>>,
+        freezes: Vec<Option<StoredFreeze>>,
         edits: Vec<Option<EditSnapshot>>,
     },
 }
@@ -115,6 +119,14 @@ pub(crate) struct FrozenRenderResult {
     pub(crate) frames: u64,
 }
 
+pub(crate) struct NodeFreezeInfo {
+    pub(crate) frames: u64,
+    /// Channels in the final project output, which may differ from the node stream.
+    pub(crate) channels: u8,
+    pub(crate) sample_rate_hz: u32,
+    pub(crate) boundary: PortRef,
+}
+
 pub(crate) struct ArchivePatchResult {
     pub(crate) applied: AppliedTransaction,
     pub(crate) checkpoint: String,
@@ -131,6 +143,63 @@ pub(crate) struct ArchiveImportPatchResult {
     pub(crate) pin: String,
     pub(crate) importer_before_revision: String,
     pub(crate) importer_after_revision: String,
+}
+
+#[derive(Clone)]
+enum StoredFreeze {
+    Output(FreezeSnapshot),
+    Node(NodeFreezeSnapshot),
+}
+
+impl StoredFreeze {
+    fn digest(&self) -> String {
+        match self {
+            Self::Output(f) => f.digest(),
+            Self::Node(f) => f.digest(),
+        }
+    }
+    fn output_bytes(&self) -> u64 {
+        match self {
+            Self::Output(f) => f.output_bytes(),
+            Self::Node(f) => f.output_bytes(),
+        }
+    }
+    fn source_digest(&self) -> &str {
+        match self {
+            Self::Output(f) => f.source_digest(),
+            Self::Node(f) => f.source_digest(),
+        }
+    }
+    fn stage_into(&self, dir: &Path) -> Result<(), Diagnostics> {
+        match self {
+            Self::Output(f) => f.stage_into(dir),
+            Self::Node(f) => f.stage_into(dir),
+        }
+    }
+}
+
+enum StoredPreflight {
+    Output(crate::freeze::FreezePreflight),
+    Node(NodeFreezePreflight),
+}
+
+impl StoredPreflight {
+    fn output_bytes(&self) -> u64 {
+        match self {
+            Self::Output(f) => f.output_bytes(),
+            Self::Node(f) => f.output_bytes(),
+        }
+    }
+    fn verify(&self, root: &ProjectRoot) -> Result<StoredFreeze, Diagnostics> {
+        match self {
+            Self::Output(f) => {
+                FreezeSnapshot::verify_preflighted(root, f).map(StoredFreeze::Output)
+            }
+            Self::Node(f) => {
+                NodeFreezeSnapshot::verify_preflighted(root, f).map(StoredFreeze::Node)
+            }
+        }
+    }
 }
 
 /// A checked archive history retaining private snapshots for every checkpoint.
@@ -151,7 +220,15 @@ impl ArchiveHistory {
         profile: &str,
     ) -> Result<Self, Diagnostics> {
         let snapshot = ArchiveSnapshot::capture(entry, root, profile)?;
-        let freeze = FreezeSnapshot::capture(&snapshot)?;
+        let freeze = StoredFreeze::Output(FreezeSnapshot::capture(&snapshot)?);
+        Self::from_genesis(snapshot, Some(freeze))
+    }
+
+    pub(crate) fn from_snapshot_node_frozen(
+        snapshot: ArchiveSnapshot,
+        boundary: &PortRef,
+    ) -> Result<Self, Diagnostics> {
+        let freeze = StoredFreeze::Node(NodeFreezeSnapshot::capture(&snapshot, boundary)?);
         Self::from_genesis(snapshot, Some(freeze))
     }
 
@@ -160,7 +237,7 @@ impl ArchiveHistory {
         freeze_output: bool,
     ) -> Result<Self, Diagnostics> {
         let freeze = if freeze_output {
-            Some(FreezeSnapshot::capture(&snapshot)?)
+            Some(StoredFreeze::Output(FreezeSnapshot::capture(&snapshot)?))
         } else {
             None
         };
@@ -169,19 +246,21 @@ impl ArchiveHistory {
 
     fn from_genesis(
         snapshot: ArchiveSnapshot,
-        freeze: Option<FreezeSnapshot>,
+        freeze: Option<StoredFreeze>,
     ) -> Result<Self, Diagnostics> {
         check_aggregate_with_freezes(std::iter::once((
             snapshot.resource_bytes(),
-            freeze.as_ref().map_or(0, FreezeSnapshot::output_bytes),
+            freeze.as_ref().map_or(0, StoredFreeze::output_bytes),
         )))?;
         check_staged_tree_with_freezes(std::iter::once(&snapshot), usize::from(freeze.is_some()))?;
         let record = checkpoint_with_freeze(
             None,
             &snapshot.digest(),
-            freeze.as_ref().map(FreezeSnapshot::digest).as_deref(),
+            freeze.as_ref().map(StoredFreeze::digest).as_deref(),
         )?;
-        let version = if snapshot.is_multi_import() {
+        let version = if matches!(freeze, Some(StoredFreeze::Node(_))) {
+            NODE_FROZEN_VERSION
+        } else if snapshot.is_multi_import() {
             MULTI_IMPORT_VERSION
         } else if freeze.is_some() {
             FROZEN_VERSION
@@ -242,7 +321,7 @@ impl ArchiveHistory {
                     },
                 })
             }
-            Some(2..=7) => Self::verify_versioned(root, json),
+            Some(2..=8) => Self::verify_versioned(root, json),
             _ => Err(fail(
                 DiagnosticCode::Version,
                 "unsupported editable archive version",
@@ -373,7 +452,24 @@ impl ArchiveHistory {
                         )
                     })?
                     .open_child_pinned(&digest[7..])?;
-                let preflight = FreezeSnapshot::preflight(&freeze_root, digest, &record.snapshot)?;
+                let preflight = if manifest.version == NODE_FROZEN_VERSION
+                    && freeze_root
+                        .dir()
+                        .symlink_metadata(NODE_FREEZE_MANIFEST)
+                        .is_ok()
+                {
+                    StoredPreflight::Node(NodeFreezeSnapshot::preflight(
+                        &freeze_root,
+                        digest,
+                        &record.snapshot,
+                    )?)
+                } else {
+                    StoredPreflight::Output(FreezeSnapshot::preflight(
+                        &freeze_root,
+                        digest,
+                        &record.snapshot,
+                    )?)
+                };
                 freeze_children.push(Some((freeze_root, preflight)));
             } else {
                 freeze_children.push(None);
@@ -456,6 +552,17 @@ impl ArchiveHistory {
                 "v7 history has no import edit",
             ));
         }
+        if manifest.version == NODE_FROZEN_VERSION
+            && !freeze_children
+                .iter()
+                .flatten()
+                .any(|(_, preflight)| matches!(preflight, StoredPreflight::Node(_)))
+        {
+            return Err(fail(
+                DiagnosticCode::Version,
+                "v8 history has no node freeze",
+            ));
+        }
         check_aggregate_with_freezes(preflights.iter().zip(&freeze_children).map(
             |(source, freeze)| {
                 (
@@ -490,11 +597,24 @@ impl ArchiveHistory {
         let mut freezes = Vec::with_capacity(freeze_children.len());
         for child in &freeze_children {
             freezes.push(match child {
-                Some((root, preflight)) => {
-                    Some(FreezeSnapshot::verify_preflighted(root, preflight)?)
-                }
+                Some((root, preflight)) => Some(preflight.verify(root)?),
                 None => None,
             });
+        }
+        for (snapshot, freeze) in snapshots.iter().zip(&freezes) {
+            if let Some(StoredFreeze::Node(freeze)) = freeze {
+                if NodeFreezeSnapshot::candidate_render_key(
+                    snapshot,
+                    &freeze.boundary(),
+                    freeze.engine_digest(),
+                )? != freeze.render_key()
+                {
+                    return Err(fail(
+                        DiagnosticCode::Hash,
+                        "node freeze metadata differs from its private checkpoint plan",
+                    ));
+                }
+            }
         }
         let mut edits = Vec::with_capacity(edit_children.len());
         for child in &edit_children {
@@ -540,7 +660,16 @@ impl ArchiveHistory {
     }
 
     pub(crate) fn append_frozen(&mut self, snapshot: ArchiveSnapshot) -> Result<bool, Diagnostics> {
-        let freeze = FreezeSnapshot::capture(&snapshot)?;
+        let freeze = StoredFreeze::Output(FreezeSnapshot::capture(&snapshot)?);
+        self.append_with_freeze(snapshot, Some(freeze))
+    }
+
+    pub(crate) fn append_node_frozen(
+        &mut self,
+        snapshot: ArchiveSnapshot,
+        boundary: &PortRef,
+    ) -> Result<bool, Diagnostics> {
+        let freeze = StoredFreeze::Node(NodeFreezeSnapshot::capture(&snapshot, boundary)?);
         self.append_with_freeze(snapshot, Some(freeze))
     }
 
@@ -648,7 +777,7 @@ impl ArchiveHistory {
         check_aggregate_with_freezes(snapshots.iter().zip(&freezes).map(|(snapshot, freeze)| {
             (
                 snapshot.resource_bytes(),
-                freeze.as_ref().map_or(0, FreezeSnapshot::output_bytes),
+                freeze.as_ref().map_or(0, StoredFreeze::output_bytes),
             )
         }))?;
         check_edit_total(
@@ -670,7 +799,13 @@ impl ArchiveHistory {
             unique_freeze_count(&freezes, None),
             unique_edit_entries(&edits),
         )?;
-        let version = if edits
+        let version = if freezes
+            .iter()
+            .flatten()
+            .any(|f| matches!(f, StoredFreeze::Node(_)))
+        {
+            NODE_FROZEN_VERSION
+        } else if edits
             .iter()
             .filter_map(Option::as_ref)
             .any(EditSnapshot::is_import_edit)
@@ -699,7 +834,7 @@ impl ArchiveHistory {
     fn append_with_freeze(
         &mut self,
         snapshot: ArchiveSnapshot,
-        freeze: Option<FreezeSnapshot>,
+        freeze: Option<StoredFreeze>,
     ) -> Result<bool, Diagnostics> {
         if freeze
             .as_ref()
@@ -710,7 +845,7 @@ impl ArchiveHistory {
                 "freeze source does not match appended snapshot",
             ));
         }
-        let freeze_digest = freeze.as_ref().map(FreezeSnapshot::digest);
+        let freeze_digest = freeze.as_ref().map(StoredFreeze::digest);
         match &mut self.state {
             HistoryState::Legacy {
                 snapshot: old,
@@ -742,7 +877,7 @@ impl ArchiveHistory {
                     |(snapshot, freeze)| {
                         (
                             snapshot.resource_bytes(),
-                            freeze.as_ref().map_or(0, FreezeSnapshot::output_bytes),
+                            freeze.as_ref().map_or(0, StoredFreeze::output_bytes),
                         )
                     },
                 ))?;
@@ -750,7 +885,13 @@ impl ArchiveHistory {
                     snapshots.iter(),
                     unique_freeze_count(&freezes, None),
                 )?;
-                let version = if snapshots.iter().any(ArchiveSnapshot::is_multi_import) {
+                let version = if freezes
+                    .iter()
+                    .flatten()
+                    .any(|f| matches!(f, StoredFreeze::Node(_)))
+                {
+                    NODE_FROZEN_VERSION
+                } else if snapshots.iter().any(ArchiveSnapshot::is_multi_import) {
                     MULTI_IMPORT_VERSION
                 } else if freezes.iter().any(Option::is_some) {
                     FROZEN_VERSION
@@ -800,12 +941,12 @@ impl ArchiveHistory {
                         .map(|(snapshot, freeze)| {
                             (
                                 snapshot.resource_bytes(),
-                                freeze.as_ref().map_or(0, FreezeSnapshot::output_bytes),
+                                freeze.as_ref().map_or(0, StoredFreeze::output_bytes),
                             )
                         })
                         .chain(std::iter::once((
                             snapshot.resource_bytes(),
-                            freeze.as_ref().map_or(0, FreezeSnapshot::output_bytes),
+                            freeze.as_ref().map_or(0, StoredFreeze::output_bytes),
                         ))),
                 )?;
                 check_staged_tree_with_extras(
@@ -819,7 +960,11 @@ impl ArchiveHistory {
                     &snapshot.digest(),
                     freeze_digest.as_deref(),
                 )?);
-                let version = if manifest.version == IMPORT_EDIT_VERSION {
+                let version = if manifest.version == NODE_FROZEN_VERSION
+                    || matches!(freeze, Some(StoredFreeze::Node(_)))
+                {
+                    NODE_FROZEN_VERSION
+                } else if manifest.version == IMPORT_EDIT_VERSION {
                     IMPORT_EDIT_VERSION
                 } else if manifest.version == MULTI_IMPORT_VERSION || snapshot.is_multi_import() {
                     MULTI_IMPORT_VERSION
@@ -925,17 +1070,15 @@ impl ArchiveHistory {
         revision: Option<&str>,
         replay: bool,
     ) -> Result<FreezeCheck, Diagnostics> {
-        let (record, freeze) = self.selected_freeze(revision)?;
+        let (record, stored) = self.selected_freeze(revision)?;
+        let StoredFreeze::Output(freeze) = stored else {
+            return Err(fail(
+                DiagnosticCode::Reference,
+                "selected checkpoint has no output freeze",
+            ));
+        };
         let reference = self.select(Some(&record.id))?;
-        let (candidate, missing_selected_import) =
-            match ArchiveSnapshot::capture_matching_layout(entry, root, reference) {
-                Ok(candidate) => (candidate, false),
-                Err(_) if reference.is_multi_import() => (
-                    ArchiveSnapshot::capture_closure_only(entry, root, reference.profile())?,
-                    true,
-                ),
-                Err(error) => return Err(error),
-            };
+        let (candidate, missing_selected_import) = candidate_snapshot(entry, root, reference)?;
         let source_digest = candidate.digest();
         let status = if !missing_selected_import
             && source_digest == record.snapshot
@@ -962,6 +1105,109 @@ impl ArchiveHistory {
         })
     }
 
+    /// Check exact source, executable, and validated effect boundary metadata.
+    /// Replay compares the raw interleaved binary64 output hash.
+    pub(crate) fn node_freeze_check(
+        &self,
+        entry: &Path,
+        root: &Path,
+        revision: Option<&str>,
+        replay: bool,
+    ) -> Result<FreezeCheck, Diagnostics> {
+        let (record, stored) = self.selected_freeze(revision)?;
+        let StoredFreeze::Node(freeze) = stored else {
+            return Err(fail(
+                DiagnosticCode::Reference,
+                "selected checkpoint has no node freeze",
+            ));
+        };
+        let reference = self.select(Some(&record.id))?;
+        let (candidate, missing_selected_import) = candidate_snapshot(entry, root, reference)?;
+        let source_digest = candidate.digest();
+        let status = if !missing_selected_import
+            && source_digest == record.snapshot
+            && freeze.engine_digest() == engine_digest()?
+            && NodeFreezeSnapshot::candidate_render_key(
+                &candidate,
+                &freeze.boundary(),
+                freeze.engine_digest(),
+            )? == freeze.render_key()
+        {
+            FreezeCheckStatus::Current
+        } else {
+            FreezeCheckStatus::Stale
+        };
+        let replay_matches = if replay && status == FreezeCheckStatus::Current {
+            Some(
+                NodeFreezeSnapshot::capture(&candidate, &freeze.boundary())?.output_digest()
+                    == freeze.output_digest(),
+            )
+        } else {
+            None
+        };
+        Ok(FreezeCheck {
+            status,
+            revision: record.id.clone(),
+            source_digest,
+            frozen_source_digest: record.snapshot.clone(),
+            output_digest: freeze.output_digest().into(),
+            replay_matches,
+        })
+    }
+
+    pub(crate) fn node_freeze_info(
+        &self,
+        revision: Option<&str>,
+    ) -> Result<NodeFreezeInfo, Diagnostics> {
+        let (_, StoredFreeze::Node(freeze)) = self.selected_freeze(revision)? else {
+            return Err(fail(
+                DiagnosticCode::Reference,
+                "selected checkpoint has no node freeze",
+            ));
+        };
+        Ok(NodeFreezeInfo {
+            frames: freeze.frames(),
+            channels: freeze.output_channels(),
+            sample_rate_hz: freeze.sample_rate_hz(),
+            boundary: freeze.boundary(),
+        })
+    }
+
+    /// Render downstream graph frames through the verified node replacement.
+    /// The caller encodes and publishes the resulting final output WAV.
+    pub(crate) fn render_from_node_freeze<F>(
+        &self,
+        entry: &Path,
+        root: &Path,
+        revision: Option<&str>,
+        callback: F,
+    ) -> Result<FrozenRenderResult, Diagnostics>
+    where
+        F: FnMut(&[f64]) -> dsp::Result<()>,
+    {
+        let check = self.node_freeze_check(entry, root, revision, false)?;
+        if check.status != FreezeCheckStatus::Current {
+            return Err(fail(
+                DiagnosticCode::RenderState,
+                "stored node freeze is stale for this source",
+            ));
+        }
+        let (_, StoredFreeze::Node(freeze)) = self.selected_freeze(Some(&check.revision))? else {
+            return Err(fail(
+                DiagnosticCode::Reference,
+                "selected checkpoint has no node freeze",
+            ));
+        };
+        let snapshot = self.select(Some(&check.revision))?;
+        freeze.render_replacement(snapshot, callback)?;
+        Ok(FrozenRenderResult {
+            revision: check.revision,
+            source_digest: check.source_digest,
+            output_digest: check.output_digest,
+            frames: freeze.frames(),
+        })
+    }
+
     /// Publish a whole-output freeze only while it remains eligible for the
     /// supplied source. The WAV comes from the verified private snapshot,
     /// independent of subsequent changes to the archive pathname.
@@ -979,7 +1225,12 @@ impl ArchiveHistory {
                 "stored freeze is stale for this source",
             ));
         }
-        let (_, freeze) = self.selected_freeze(Some(&check.revision))?;
+        let (_, StoredFreeze::Output(freeze)) = self.selected_freeze(Some(&check.revision))? else {
+            return Err(fail(
+                DiagnosticCode::Reference,
+                "selected checkpoint has no output freeze",
+            ));
+        };
         freeze.publish_output(destination)?;
         Ok(FrozenRenderResult {
             revision: check.revision,
@@ -992,7 +1243,7 @@ impl ArchiveHistory {
     fn selected_freeze(
         &self,
         revision: Option<&str>,
-    ) -> Result<(&CheckpointRecord, &FreezeSnapshot), Diagnostics> {
+    ) -> Result<(&CheckpointRecord, &StoredFreeze), Diagnostics> {
         if let Some(id) = revision {
             validate_hash_pin(id, "checkpoint id")?;
         }
@@ -1141,6 +1392,21 @@ fn checkpoint(parent: Option<&str>, snapshot: &str) -> Result<CheckpointRecord, 
     checkpoint_with_freeze(parent, snapshot, None)
 }
 
+fn candidate_snapshot(
+    entry: &Path,
+    root: &Path,
+    reference: &ArchiveSnapshot,
+) -> Result<(ArchiveSnapshot, bool), Diagnostics> {
+    match ArchiveSnapshot::capture_matching_layout(entry, root, reference) {
+        Ok(candidate) => Ok((candidate, false)),
+        Err(_) if reference.is_multi_import() => Ok((
+            ArchiveSnapshot::capture_closure_only(entry, root, reference.profile())?,
+            true,
+        )),
+        Err(error) => Err(error),
+    }
+}
+
 fn checkpoint_with_freeze(
     parent: Option<&str>,
     snapshot: &str,
@@ -1265,6 +1531,7 @@ fn validate_history(manifest: &HistoryManifest) -> Result<(), Diagnostics> {
                 | EDITED_VERSION
                 | MULTI_IMPORT_VERSION
                 | IMPORT_EDIT_VERSION
+                | NODE_FROZEN_VERSION
         )
     {
         return Err(fail(
@@ -1293,6 +1560,7 @@ fn validate_history(manifest: &HistoryManifest) -> Result<(), Diagnostics> {
             && manifest.version != EDITED_VERSION
             && manifest.version != MULTI_IMPORT_VERSION
             && manifest.version != IMPORT_EDIT_VERSION
+            && manifest.version != NODE_FROZEN_VERSION
         {
             return Err(fail(
                 DiagnosticCode::Version,
@@ -1543,15 +1811,12 @@ fn resource_sum((source, asset, pcm, original): (u64, u64, u64, u64)) -> Result<
         })
 }
 
-fn unique_freeze_count(
-    freezes: &[Option<FreezeSnapshot>],
-    extra: Option<&FreezeSnapshot>,
-) -> usize {
+fn unique_freeze_count(freezes: &[Option<StoredFreeze>], extra: Option<&StoredFreeze>) -> usize {
     freezes
         .iter()
         .filter_map(Option::as_ref)
         .chain(extra)
-        .map(FreezeSnapshot::digest)
+        .map(StoredFreeze::digest)
         .collect::<BTreeSet<_>>()
         .len()
 }
@@ -2338,6 +2603,87 @@ mod tests {
         assert_eq!(
             ArchiveHistory::verify(temp.path()).unwrap().digest(),
             history.digest()
+        );
+    }
+
+    #[test]
+    fn v8_retains_mixed_freezes_and_replays_node_payload() {
+        const EFFECT_SOURCE: &str = r#"maac 1;
+project p { score=[0q,1/100q]; tail=0s; rate=48000Hz; tempo=&clock; meter=&metre; output=&gain:out; requires=["maac.production/1"]; }
+tempo clock { points=[(0q,120bpm,step)]; }
+meter metre { points=[(0q,4,4)]; }
+node tone { type="core.sine/1"; params={attack=0s;release=0s;level=0.2;}; }
+node room { type="fx.reverb/1"; config={channels=1;}; params={decay=1/2s;mix=0.4;}; }
+node gain { type="core.gain/1"; config={channels=1;}; params={gain=3/4;}; }
+connect a { from=&tone:out; to=&room:in; }
+connect b { from=&room:out; to=&gain:in; }
+pattern phrase { length=1/100q; note n { at=0q; dur=1/100q; pitch=A4; velocity=1; } }
+track t { target=&tone:events; }
+place notes { pattern=&phrase; track=&t; at=0q; }
+"#;
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path().join("project");
+        write_project(&project, EFFECT_SOURCE);
+        let mut history =
+            ArchiveHistory::capture_frozen(Path::new("main.maac"), &project, "default").unwrap();
+        let output_revision = history.head_id().to_owned();
+        let boundary = PortRef::new("room", "out").unwrap();
+        assert!(history
+            .append_node_frozen(capture(&project), &boundary)
+            .unwrap());
+        assert_eq!(history.version(), 8);
+        let node_revision = history.head_id().to_owned();
+        let archive = temp.path().join("archive");
+        fs::create_dir(&archive).unwrap();
+        history.stage(&archive).unwrap();
+        let verified = ArchiveHistory::verify(&archive).unwrap();
+        assert_eq!(verified.version(), 8);
+        assert_eq!(
+            verified
+                .freeze_check(
+                    Path::new("main.maac"),
+                    &project,
+                    Some(&output_revision),
+                    true
+                )
+                .unwrap()
+                .replay_matches,
+            Some(true)
+        );
+        let check = verified
+            .node_freeze_check(Path::new("main.maac"), &project, Some(&node_revision), true)
+            .unwrap();
+        assert_eq!(check.status, FreezeCheckStatus::Current);
+        assert_eq!(check.replay_matches, Some(true));
+        let info = verified.node_freeze_info(Some(&node_revision)).unwrap();
+        let mut frames = 0u64;
+        verified
+            .render_from_node_freeze(
+                Path::new("main.maac"),
+                &project,
+                Some(&node_revision),
+                |samples| {
+                    assert_eq!(samples.len(), usize::from(info.channels));
+                    frames += 1;
+                    Ok(())
+                },
+            )
+            .unwrap();
+        assert_eq!(frames, info.frames);
+        let mut extended = verified;
+        fs::write(
+            project.join("main.maac"),
+            format!("{EFFECT_SOURCE}\n// edited\n"),
+        )
+        .unwrap();
+        assert!(extended.append(capture(&project)).unwrap());
+        assert_eq!(extended.version(), 8);
+        let extended_archive = temp.path().join("extended");
+        fs::create_dir(&extended_archive).unwrap();
+        extended.stage(&extended_archive).unwrap();
+        assert_eq!(
+            ArchiveHistory::verify(&extended_archive).unwrap().version(),
+            8
         );
     }
 }

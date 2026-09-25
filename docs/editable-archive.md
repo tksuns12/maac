@@ -6,13 +6,15 @@ composition checkpoints; version 3 also retains verified original WAV import
 records when present; version 4 can retain an opt-in full-output freeze;
 version 5 can record an explicit Protocol 2 edit and its inverse; version 6
 can retain several selected WAV import records in one composition; version 7
-can record a local library edit with its exact parent import pin update.
+can record a local library edit with its exact parent import pin update;
+version 8 can freeze one internal native effect output as exact binary64 samples.
 
 ## Commands
 
 ```text
 maac archive create SOURCE --output-dir NEW [--project-root ROOT] [--profile default|song]
-    [--previous ARCHIVE] [--expect-previous-hash SHA256] [--freeze-output]
+    [--previous ARCHIVE] [--expect-previous-hash SHA256]
+    [--freeze-output | --freeze-node NODE]
     [--retain-import RELATIVE_DIR]...
 maac archive patch ARCHIVE PATCH.json --output-dir NEW [--expect-hash SHA256]
 maac archive patch-import ARCHIVE PATCH.json --import ALIAS --output-dir NEW
@@ -112,7 +114,7 @@ revision. The source bytes, including comments, omissions, labels, and
 formatting, remain unchanged. The unpacked project uses ordinary `check` and
 `build`; large PCM requires `--disk-media`.
 
-Versions 2 through 7 store `checkpoints/<checkpoint-hex>/` directories. The root
+Versions 2 through 8 store `checkpoints/<checkpoint-hex>/` directories. The root
 manifest records the ordered IDs, parent IDs, snapshot manifest hashes, and
 head ID. Frozen records also identify their freeze manifest; version 4 keeps
 their files under `freezes/<freeze-hash>/`. Journaled records identify an edit
@@ -133,7 +135,8 @@ build of the same source.
 `--replay` renders only a matching candidate and compares output evidence;
 eligibility alone is not a claim of identical audio on another engine.
 
-`freeze-render` verifies the whole archive and the selected frozen checkpoint,
+For a whole-output freeze, `freeze-render` verifies the archive and the selected
+checkpoint,
 then compares the current source, retained import provenance, execution profile,
 render key, and executable identity with its recorded inputs. If current, it
 atomically publishes the exact stored float32 WAV to a new file without running
@@ -144,14 +147,28 @@ destination also fails without publishing output. The source graph remains
 authoritative. This is full-output reuse only: it does not replace an internal
 graph branch, convert formats, or infer eligibility from similar sound.
 
+`--freeze-node NODE` selects one project-level `fx.eq/1`, `fx.compressor/1`, or
+`fx.reverb/1` node whose `out` feeds another audio node before the project
+output. Version 8 stores every reset-origin frame of that internal output as
+finite interleaved IEEE-754 binary64 samples. `freeze-check` compares the exact
+source closure, retained import provenance, execution profile, engine identity,
+and selected boundary; `--replay` compares the internal binary64 payload.
+For a current source, `freeze-render` replaces that node's output at its normal
+graph position and runs the remaining graph through the ordinary final WAV
+encoder. Its `output_digest` identifies the published WAV; the node cache has a
+separate digest. This initial node freeze conservatively stales on any exact
+source or dependency change, including a downstream edit. Each checkpoint may
+carry one freeze, and `--freeze-node` cannot be combined with `--freeze-output`.
+Existing whole-output freezes keep their original format and behavior.
+
 Creation, patching, and unpacking stage files beside their destination and publish the
 directory atomically without replacing an existing path. Source dependencies
 are opened beneath a pinned project root, and media bytes are copied from
 private verified snapshots. Output directories cannot be created inside an
 input archive. Histories permit at most 32 checkpoints, with aggregate caps of
 64 MiB source text, 64 MiB ordinary assets, and 4 GiB combined native PCM,
-retained original WAV, and frozen output bytes across all stored copies. Each
-original or frozen WAV is limited to 1 GiB, each import record to 16 KiB, and
+retained original WAV, and frozen payload bytes across all stored copies. Each
+original WAV or frozen payload is limited to 1 GiB, each import record to 16 KiB, and
 each checkpoint retains its source, asset, execution, and native PCM limits.
 Each edit manifest is limited to 16 KiB; each forward or inverse transaction
 is limited to 4 MiB and 1,024 operations. A history permits at most 64 MiB
@@ -179,7 +196,8 @@ has only a version 1 `import.json`; that record remains outside the archived
 composition closure. Version 6 retains multiple selected existing imports,
 including nested directories whose native PCM is in the composition closure.
 Automatic edit journaling, general multi-file transactions, branching and merging,
-partial-graph freeze replacement, and a complete producer archive remain
-Phase 3 work. Version 4's whole-output freeze can be explicitly reused after
-conservative input validation; it does not provide automatic render-cache
-reuse or a claim that another engine produces identical samples.
+selective invalidation, multiple frozen graph branches, and a complete producer
+archive remain Phase 3 work. Whole-output and single-node freezes require
+explicit reuse after conservative input validation; they do not provide
+automatic render-cache reuse or a claim that another engine produces identical
+samples.

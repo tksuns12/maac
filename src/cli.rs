@@ -23,7 +23,7 @@ use crate::disk_media::DiskMediaProject;
 use crate::dsp::RenderError;
 use crate::export::{self, ExportError, FrameRange, WavFormat, WavStats, MAX_INPUT_BYTES};
 use crate::media_import::{self, ImportedWav, WavImportRange};
-use crate::plan::{Plan, PlanError, PlanLimits};
+use crate::plan::{Plan, PlanError, PlanLimits, PortRef};
 use crate::plan_v3::VersionedPlan;
 use crate::syntax::{parse, Document};
 use crate::{ModuleArtifact, PlanArtifact, MAX_MODULE_ARTIFACT_JSON_BYTES};
@@ -217,8 +217,11 @@ pub enum ArchiveCommand {
         #[arg(long, requires = "previous")]
         expect_previous_hash: Option<String>,
         /// Retain a verified full-output float32 WAV beside this checkpoint.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "freeze_node")]
         freeze_output: bool,
+        /// Retain exact f64 output from one internal native effect node.
+        #[arg(long)]
+        freeze_node: Option<String>,
         /// Retain an existing WAV import directory whose media.pcm is in the composition.
         #[arg(long = "retain-import")]
         retain_imports: Vec<PathBuf>,
@@ -363,6 +366,10 @@ pub struct FreezeCheckReport {
     pub output_digest: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reused: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub boundary: Option<PortRef>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_digest: Option<String>,
 }
 
 /// CLI result for artifact-aware callers. Legacy fields retain their existing wire shape.
@@ -1292,6 +1299,7 @@ fn execute_archive(
             previous,
             expect_previous_hash,
             freeze_output,
+            freeze_node,
             retain_imports,
         } => {
             let (entry, root, absolute_entry) =
@@ -1300,6 +1308,10 @@ fn execute_archive(
                 ProfileArg::Default => "default",
                 ProfileArg::Song => "song",
             };
+            let node_boundary = freeze_node.as_ref().map(|node| PortRef {
+                node: node.clone(),
+                port: "out".into(),
+            });
             let mut history = if let Some(previous) = previous {
                 ensure_output_outside_archive(output_dir, previous)?;
                 let prior = ArchiveHistory::verify(previous)
@@ -1307,7 +1319,20 @@ fn execute_archive(
                 verify_expected_archive_hash(expect_previous_hash.as_deref(), &prior.digest())?;
                 prior
             } else {
-                if !retain_imports.is_empty() {
+                if let Some(boundary) = &node_boundary {
+                    let snapshot = if retain_imports.is_empty() {
+                        ArchiveSnapshot::capture(&absolute_entry, &root, profile)
+                    } else {
+                        ArchiveSnapshot::capture_with_imports(
+                            &absolute_entry,
+                            &root,
+                            profile,
+                            retain_imports,
+                        )
+                    }
+                    .map_err(|error| CliError::from_diagnostics(&error))?;
+                    ArchiveHistory::from_snapshot_node_frozen(snapshot, boundary)
+                } else if !retain_imports.is_empty() {
                     let snapshot = ArchiveSnapshot::capture_with_imports(
                         &absolute_entry,
                         &root,
@@ -1335,7 +1360,9 @@ fn execute_archive(
                     )
                 }
                 .map_err(|error| CliError::from_diagnostics(&error))?;
-                if *freeze_output {
+                if let Some(boundary) = &node_boundary {
+                    history.append_node_frozen(snapshot, boundary)
+                } else if *freeze_output {
                     history.append_frozen(snapshot)
                 } else {
                     history.append(snapshot)
@@ -1472,9 +1499,13 @@ fn execute_archive(
             verify_expected_archive_hash(expect_hash.as_deref(), &history.digest())?;
             let (_, root, absolute_entry) =
                 resolve_archive_source(source, project_root.as_deref())?;
-            let check = history
-                .freeze_check(&absolute_entry, &root, revision.as_deref(), *replay)
-                .map_err(|error| CliError::from_diagnostics(&error))?;
+            let node_freeze = history.node_freeze_info(revision.as_deref()).ok();
+            let check = if node_freeze.is_some() {
+                history.node_freeze_check(&absolute_entry, &root, revision.as_deref(), *replay)
+            } else {
+                history.freeze_check(&absolute_entry, &root, revision.as_deref(), *replay)
+            }
+            .map_err(|error| CliError::from_diagnostics(&error))?;
             let eligibility = match check.status {
                 FreezeCheckStatus::Current => "current",
                 FreezeCheckStatus::Stale => "stale",
@@ -1484,6 +1515,7 @@ fn execute_archive(
                 Some(true) => "matched",
                 Some(false) => "mismatch",
             };
+            let cache_digest = node_freeze.as_ref().map(|_| check.output_digest.clone());
             let report = FreezeCheckReport {
                 integrity: "verified",
                 eligibility,
@@ -1493,6 +1525,8 @@ fn execute_archive(
                 frozen_source_digest: check.frozen_source_digest,
                 output_digest: check.output_digest,
                 reused: None,
+                boundary: node_freeze.map(|info| info.boundary),
+                cache_digest,
             };
             if eligibility == "stale" {
                 let mut error =
@@ -1537,17 +1571,81 @@ fn execute_archive(
             verify_expected_archive_hash(expect_hash.as_deref(), &history.digest())?;
             let (_, root, absolute_entry) =
                 resolve_archive_source(source, project_root.as_deref())?;
-            let rendered = history
-                .render_from_freeze(&absolute_entry, &root, revision.as_deref(), output)
+            let node_freeze = history.node_freeze_info(revision.as_deref()).ok();
+            let (rendered, output_digest, cache_digest, boundary) = if let Some(info) = node_freeze
+            {
+                let mut activation_error = None;
+                let mut activation_result = None;
+                let (stats, final_digest) = export::render_wav_callback_to_path(
+                    info.sample_rate_hz,
+                    info.channels,
+                    info.frames,
+                    output,
+                    |callback| match history.render_from_node_freeze(
+                        &absolute_entry,
+                        &root,
+                        revision.as_deref(),
+                        callback,
+                    ) {
+                        Ok(result) => {
+                            activation_result = Some(result);
+                            Ok(())
+                        }
+                        Err(error) => {
+                            activation_error = Some(error);
+                            Err(RenderError::Callback(
+                                "node freeze activation failed".into(),
+                            ))
+                        }
+                    },
+                )
                 .map_err(|error| {
-                    let mut error = CliError::from_diagnostics(&error);
-                    if error.code == "E_RENDER_STATE" {
-                        error.code = "E_FREEZE_STALE".into();
-                    } else if error.code == "E_CONFLICT" {
-                        error.code = "E_OUTPUT_EXISTS".into();
+                    let core_failure = matches!(
+                        &error,
+                        ExportError::Render(RenderError::Callback(message))
+                            if message == "node freeze activation failed"
+                    );
+                    if core_failure {
+                        let diagnostics = activation_error
+                            .take()
+                            .expect("node freeze failure retains diagnostics");
+                        let mut error = CliError::from_diagnostics(&diagnostics);
+                        if error.code == "E_RENDER_STATE"
+                            && error.message == "stored node freeze is stale for this source"
+                        {
+                            error.code = "E_FREEZE_STALE".into();
+                        }
+                        error
+                    } else {
+                        CliError::from_export(error)
                     }
-                    error
                 })?;
+                let rendered = activation_result.expect("successful node render returns metadata");
+                debug_assert_eq!(stats.frames, rendered.frames);
+                let cache_digest = rendered.output_digest.clone();
+                (
+                    rendered,
+                    final_digest,
+                    Some(cache_digest),
+                    Some(info.boundary),
+                )
+            } else {
+                let rendered = history
+                    .render_from_freeze(&absolute_entry, &root, revision.as_deref(), output)
+                    .map_err(|error| {
+                        let mut error = CliError::from_diagnostics(&error);
+                        if error.code == "E_RENDER_STATE"
+                            && error.message == "stored freeze is stale for this source"
+                        {
+                            error.code = "E_FREEZE_STALE".into();
+                        } else if error.code == "E_CONFLICT" {
+                            error.code = "E_OUTPUT_EXISTS".into();
+                        }
+                        error
+                    })?;
+                let digest = rendered.output_digest.clone();
+                (rendered, digest, None, None)
+            };
             let mut result = CommandResult::archive(
                 "archive freeze-render",
                 archive,
@@ -1563,8 +1661,10 @@ fn execute_archive(
                 revision: rendered.revision,
                 frozen_source_digest: rendered.source_digest.clone(),
                 source_digest: rendered.source_digest,
-                output_digest: rendered.output_digest,
+                output_digest,
                 reused: Some(true),
+                boundary,
+                cache_digest,
             }));
             Ok(result)
         }
