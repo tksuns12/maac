@@ -21,6 +21,8 @@ maac archive verify ARCHIVE [--expect-hash SHA256]
 maac archive unpack ARCHIVE --output-dir NEW [--expect-hash SHA256] [--revision SHA256]
 maac archive freeze-check ARCHIVE --source SOURCE [--project-root ROOT]
     [--revision SHA256] [--expect-hash SHA256] [--replay]
+maac archive freeze-render ARCHIVE --source SOURCE -o NEW.wav
+    [--project-root ROOT] [--revision SHA256] [--expect-hash SHA256]
 ```
 
 `create` accepts a project directory or a composition source file. It resolves
@@ -131,6 +133,17 @@ build of the same source.
 `--replay` renders only a matching candidate and compares output evidence;
 eligibility alone is not a claim of identical audio on another engine.
 
+`freeze-render` verifies the whole archive and the selected frozen checkpoint,
+then compares the current source, retained import provenance, execution profile,
+render key, and executable identity with its recorded inputs. If current, it
+atomically publishes the exact stored float32 WAV to a new file without running
+the DSP renderer. It reports `reused: true`, the selected checkpoint, source
+and output digests, and frame count. A stale source fails with
+`E_FREEZE_STALE`; an unfrozen checkpoint, changed archive bytes, or an existing
+destination also fails without publishing output. The source graph remains
+authoritative. This is full-output reuse only: it does not replace an internal
+graph branch, convert formats, or infer eligibility from similar sound.
+
 Creation, patching, and unpacking stage files beside their destination and publish the
 directory atomically without replacing an existing path. Source dependencies
 are opened beneath a pinned project root, and media bytes are copied from
@@ -167,6 +180,6 @@ composition closure. Version 6 retains multiple selected existing imports,
 including nested directories whose native PCM is in the composition closure.
 Automatic edit journaling, general multi-file transactions, branching and merging,
 partial-graph freeze replacement, and a complete producer archive remain
-Phase 3 work. Version 4's inactive whole-output
-freeze provides conservative input invalidation, not automatic render-cache
+Phase 3 work. Version 4's whole-output freeze can be explicitly reused after
+conservative input validation; it does not provide automatic render-cache
 reuse or a claim that another engine produces identical samples.

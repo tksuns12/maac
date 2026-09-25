@@ -94,6 +94,93 @@ fn manifest(archive: &Path) -> Value {
 }
 
 #[test]
+fn library_edit_history_reuses_only_its_historical_current_freeze() {
+    let temp = tempdir().unwrap();
+    let root = temp.path().join("project");
+    let frozen = temp.path().join("frozen");
+    let edited = temp.path().join("edited");
+    let prior = temp.path().join("prior");
+    let current = temp.path().join("current");
+    let patch = temp.path().join("patch.json");
+    let reused = temp.path().join("reused.wav");
+    project(&root);
+    fs::write(&patch, patch_bytes()).unwrap();
+    success(invoke(&[
+        Path::new("--json"),
+        Path::new("archive"),
+        Path::new("create"),
+        &root,
+        Path::new("--freeze-output"),
+        Path::new("--output-dir"),
+        &frozen,
+    ]));
+    let first = manifest(&frozen)["head"].as_str().unwrap().to_owned();
+    let result = success(edit(&frozen, &patch, &edited, "sounds"));
+    assert_eq!(result["format"], "maac.editable-archive/7");
+    success(invoke(&[
+        Path::new("--json"),
+        Path::new("archive"),
+        Path::new("unpack"),
+        &edited,
+        Path::new("--revision"),
+        Path::new(&first),
+        Path::new("--output-dir"),
+        &prior,
+    ]));
+    success(invoke(&[
+        Path::new("--json"),
+        Path::new("archive"),
+        Path::new("unpack"),
+        &edited,
+        Path::new("--output-dir"),
+        &current,
+    ]));
+    let historical = success(invoke(&[
+        Path::new("--json"),
+        Path::new("archive"),
+        Path::new("freeze-render"),
+        &edited,
+        Path::new("--revision"),
+        Path::new(&first),
+        Path::new("--source"),
+        &prior,
+        Path::new("-o"),
+        &reused,
+    ]));
+    assert_eq!(historical["reused"], true);
+    assert_eq!(historical["revision"], first);
+    assert!(reused.exists());
+    let stale_output = temp.path().join("stale.wav");
+    let stale = failure(invoke(&[
+        Path::new("--json"),
+        Path::new("archive"),
+        Path::new("freeze-render"),
+        &edited,
+        Path::new("--revision"),
+        Path::new(&first),
+        Path::new("--source"),
+        &current,
+        Path::new("-o"),
+        &stale_output,
+    ]));
+    assert_eq!(stale["code"], "E_FREEZE_STALE");
+    assert!(!stale_output.exists());
+    let head_output = temp.path().join("head.wav");
+    let unfrozen = failure(invoke(&[
+        Path::new("--json"),
+        Path::new("archive"),
+        Path::new("freeze-render"),
+        &edited,
+        Path::new("--source"),
+        &current,
+        Path::new("-o"),
+        &head_output,
+    ]));
+    assert_eq!(unfrozen["code"], "E_REFERENCE");
+    assert!(!head_output.exists());
+}
+
+#[test]
 fn library_edit_repins_exact_bytes_and_reopens_both_versions() {
     let temp = tempdir().unwrap();
     let root = temp.path().join("project");

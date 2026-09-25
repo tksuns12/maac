@@ -317,6 +317,21 @@ fn selected_import_freeze_checks_current_and_stale_sources() {
     ]));
     assert_eq!(current["eligibility"], "current");
     assert_eq!(current["replay"], "matched");
+    let reused = temp.path().join("reused.wav");
+    let reuse = success(invoke(&[
+        Path::new("--json"),
+        Path::new("archive"),
+        Path::new("freeze-render"),
+        &archive,
+        Path::new("--source"),
+        &root.join("main.maac"),
+        Path::new("--project-root"),
+        &root,
+        Path::new("-o"),
+        &reused,
+    ]));
+    assert_eq!(reuse["reused"], true);
+    assert!(reused.exists());
     fs::write(root.join("main.maac"), format!("{source}// changed\n")).unwrap();
     let stale = failure(invoke(&[
         Path::new("--json"),
@@ -352,6 +367,21 @@ fn selected_import_freeze_checks_current_and_stale_sources() {
     ]));
     assert_eq!(removed["code"], "E_FREEZE_STALE");
     assert_eq!(removed["eligibility"], "stale");
+    let rejected_output = temp.path().join("removed.wav");
+    let rejected_reuse = failure(invoke(&[
+        Path::new("--json"),
+        Path::new("archive"),
+        Path::new("freeze-render"),
+        &archive,
+        Path::new("--source"),
+        &root.join("main.maac"),
+        Path::new("--project-root"),
+        &root,
+        Path::new("-o"),
+        &rejected_output,
+    ]));
+    assert_eq!(rejected_reuse["code"], "E_FREEZE_STALE");
+    assert!(!rejected_output.exists());
 }
 
 #[test]

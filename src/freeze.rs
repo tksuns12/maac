@@ -3,12 +3,13 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use cap_std::fs::OpenOptions as CapOpenOptions;
 use hound::{SampleFormat, WavReader};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use tempfile::NamedTempFile;
 
 use crate::archive::ArchiveSnapshot;
 use crate::bundle::{sha256_digest, validate_hash_pin};
@@ -115,7 +116,7 @@ impl FreezePreflight {
 pub(crate) struct FreezeSnapshot {
     manifest: FreezeManifest,
     json: Vec<u8>,
-    output: Arc<File>,
+    output: Arc<Mutex<File>>,
 }
 
 impl FreezeSnapshot {
@@ -182,7 +183,7 @@ impl FreezeSnapshot {
         Ok(Self {
             manifest,
             json,
-            output: Arc::new(output),
+            output: Arc::new(Mutex::new(output)),
         })
     }
 
@@ -265,7 +266,7 @@ impl FreezeSnapshot {
         Ok(Self {
             manifest: preflight.manifest.clone(),
             json: preflight.json.clone(),
-            output: Arc::new(output),
+            output: Arc::new(Mutex::new(output)),
         })
     }
 
@@ -284,8 +285,74 @@ impl FreezeSnapshot {
     pub(crate) fn output_digest(&self) -> &str {
         &self.manifest.output.sha256
     }
+    pub(crate) fn frames(&self) -> u64 {
+        self.manifest.frame_end
+    }
     pub(crate) fn render_key(&self) -> &str {
         &self.manifest.render_key
+    }
+
+    /// Stream the verified private WAV into a same-directory temporary file,
+    /// then publish it without replacing an existing destination.
+    pub(crate) fn publish_output(&self, destination: &Path) -> Result<(), Diagnostics> {
+        let parent = destination
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let mut temporary = NamedTempFile::new_in(parent).map_err(|e| {
+            fail(
+                DiagnosticCode::Reference,
+                format!("cannot create temporary freeze output: {e}"),
+            )
+        })?;
+        let mut source = self.output.lock().map_err(|_| {
+            fail(
+                DiagnosticCode::Reference,
+                "private freeze output lock is poisoned",
+            )
+        })?;
+        source.seek(SeekFrom::Start(0)).map_err(|e| {
+            fail(
+                DiagnosticCode::Reference,
+                format!("cannot rewind private freeze output: {e}"),
+            )
+        })?;
+        let (bytes, hash) = copy_hash(
+            &mut source,
+            temporary.as_file_mut(),
+            MAX_FREEZE_OUTPUT_BYTES,
+        )?;
+        if bytes != self.manifest.output.bytes || hash != self.manifest.output.sha256 {
+            return Err(fail(
+                DiagnosticCode::Hash,
+                "private freeze output changed before publication",
+            ));
+        }
+        temporary.as_file_mut().sync_all().map_err(|e| {
+            fail(
+                DiagnosticCode::Reference,
+                format!("cannot sync temporary freeze output: {e}"),
+            )
+        })?;
+        temporary.persist_noclobber(destination).map_err(|error| {
+            let exists = fs::symlink_metadata(destination).is_ok();
+            fail(
+                if exists {
+                    DiagnosticCode::Conflict
+                } else {
+                    DiagnosticCode::Reference
+                },
+                if exists {
+                    format!(
+                        "freeze destination already exists: {}",
+                        destination.display()
+                    )
+                } else {
+                    format!("cannot publish freeze output: {}", error.error)
+                },
+            )
+        })?;
+        Ok(())
     }
 
     pub(crate) fn candidate_render_key(
@@ -355,10 +422,10 @@ impl FreezeSnapshot {
                     format!("cannot create freeze output: {e}"),
                 )
             })?;
-        let mut source = self.output.as_ref().try_clone().map_err(|e| {
+        let mut source = self.output.lock().map_err(|_| {
             fail(
                 DiagnosticCode::Reference,
-                format!("cannot clone private freeze output: {e}"),
+                "private freeze output lock is poisoned",
             )
         })?;
         source.seek(SeekFrom::Start(0)).map_err(|e| {
@@ -930,5 +997,28 @@ mod tests {
         assert!(
             FreezeSnapshot::preflight(&root, &sha256_digest(&unknown), &snapshot.digest()).is_err()
         );
+    }
+
+    #[test]
+    fn concurrent_publications_keep_independent_complete_wavs() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path().join("project");
+        fs::create_dir(&project).unwrap();
+        fs::write(project.join("main.maac"), SOURCE).unwrap();
+        let snapshot =
+            ArchiveSnapshot::capture(Path::new("main.maac"), &project, "default").unwrap();
+        let freeze = FreezeSnapshot::capture(&snapshot).unwrap();
+        std::thread::scope(|scope| {
+            let first = freeze.clone();
+            let second = freeze.clone();
+            let one = temp.path().join("one.wav");
+            let two = temp.path().join("two.wav");
+            scope.spawn(move || first.publish_output(&one).unwrap());
+            scope.spawn(move || second.publish_output(&two).unwrap());
+        });
+        for name in ["one.wav", "two.wav"] {
+            let bytes = fs::read(temp.path().join(name)).unwrap();
+            assert_eq!(sha256_digest(&bytes), freeze.output_digest());
+        }
     }
 }

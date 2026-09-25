@@ -287,6 +287,28 @@ non-head history integrity. A core regression rejects an edit that adds an
 import edge to an existing closure member while keeping the archive's original
 digest and version unchanged.
 
+## Explicit whole-output freeze reuse (2026-09-25)
+
+`archive freeze-render` uses an eligible checkpoint's verified private float32
+WAV and publishes it atomically to a new path. It does not change archive wire
+formats or run the DSP renderer during reuse.
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Full Rust gate before review fix | `cargo test --all-targets --quiet` | Passed: 287 active library tests, 3 existing ignored, and all integration targets |
+| Focused archive integration | `cargo test --test archive_freeze_cli --test archive_multi_import_cli`; `cargo test --test archive_import_edit_cli` | Passed: 3 freeze, 5 multi-import, and 4 import-edit tests |
+| Post-review collision regression | `cargo test --test archive_freeze_cli` | Passed: concurrent writers leave one complete WAV and return `E_OUTPUT_EXISTS` for the other |
+| Release integration | `cargo test --release --test archive_freeze_cli` | Passed: 3 freeze lifecycle tests |
+| Formatting, Clippy, whitespace | `cargo fmt --all -- --check`; `cargo clippy --all-targets -- -D warnings`; `git diff --check` | Passed |
+| Independent review | Read-only Astra review of the uncommitted change | One finding resolved: publication-time destination collisions now use the same `E_OUTPUT_EXISTS` code as pre-existing destinations |
+
+The integration tests cover relocation and byte-identical reuse, stale input,
+removed retained-import provenance, selected historical freezes in both v4 and
+v7 histories, unfrozen heads, corrupted freeze bytes, an existing destination,
+and a destination inside the archive. Core tests cover private snapshot use
+after archive-path tampering, no-clobber publication, and concurrent copies
+from one verified snapshot.
+
 ## Historical naming cleanup
 
 The current tree uses MaaC consistently in the specification, grammar, schema,

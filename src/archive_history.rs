@@ -108,6 +108,13 @@ pub(crate) struct FreezeCheck {
     pub(crate) replay_matches: Option<bool>,
 }
 
+pub(crate) struct FrozenRenderResult {
+    pub(crate) revision: String,
+    pub(crate) source_digest: String,
+    pub(crate) output_digest: String,
+    pub(crate) frames: u64,
+}
+
 pub(crate) struct ArchivePatchResult {
     pub(crate) applied: AppliedTransaction,
     pub(crate) checkpoint: String,
@@ -918,39 +925,7 @@ impl ArchiveHistory {
         revision: Option<&str>,
         replay: bool,
     ) -> Result<FreezeCheck, Diagnostics> {
-        if let Some(id) = revision {
-            validate_hash_pin(id, "checkpoint id")?;
-        }
-        let (record, freeze) = match &self.state {
-            HistoryState::Legacy { .. } => {
-                return Err(fail(
-                    DiagnosticCode::Reference,
-                    "selected checkpoint has no output freeze",
-                ))
-            }
-            HistoryState::Versioned {
-                manifest, freezes, ..
-            } => {
-                let wanted = revision.unwrap_or(&manifest.head);
-                let index = manifest
-                    .checkpoints
-                    .iter()
-                    .position(|r| r.id == wanted)
-                    .ok_or_else(|| {
-                        fail(
-                            DiagnosticCode::Reference,
-                            "checkpoint id is not in this archive",
-                        )
-                    })?;
-                let freeze = freezes[index].as_ref().ok_or_else(|| {
-                    fail(
-                        DiagnosticCode::Reference,
-                        "selected checkpoint has no output freeze",
-                    )
-                })?;
-                (&manifest.checkpoints[index], freeze)
-            }
-        };
+        let (record, freeze) = self.selected_freeze(revision)?;
         let reference = self.select(Some(&record.id))?;
         let (candidate, missing_selected_import) =
             match ArchiveSnapshot::capture_matching_layout(entry, root, reference) {
@@ -985,6 +960,70 @@ impl ArchiveHistory {
             output_digest: freeze.output_digest().into(),
             replay_matches,
         })
+    }
+
+    /// Publish a whole-output freeze only while it remains eligible for the
+    /// supplied source. The WAV comes from the verified private snapshot,
+    /// independent of subsequent changes to the archive pathname.
+    pub(crate) fn render_from_freeze(
+        &self,
+        entry: &Path,
+        root: &Path,
+        revision: Option<&str>,
+        destination: &Path,
+    ) -> Result<FrozenRenderResult, Diagnostics> {
+        let check = self.freeze_check(entry, root, revision, false)?;
+        if check.status != FreezeCheckStatus::Current {
+            return Err(fail(
+                DiagnosticCode::RenderState,
+                "stored freeze is stale for this source",
+            ));
+        }
+        let (_, freeze) = self.selected_freeze(Some(&check.revision))?;
+        freeze.publish_output(destination)?;
+        Ok(FrozenRenderResult {
+            revision: check.revision,
+            source_digest: check.source_digest,
+            output_digest: check.output_digest,
+            frames: freeze.frames(),
+        })
+    }
+
+    fn selected_freeze(
+        &self,
+        revision: Option<&str>,
+    ) -> Result<(&CheckpointRecord, &FreezeSnapshot), Diagnostics> {
+        if let Some(id) = revision {
+            validate_hash_pin(id, "checkpoint id")?;
+        }
+        match &self.state {
+            HistoryState::Legacy { .. } => Err(fail(
+                DiagnosticCode::Reference,
+                "selected checkpoint has no output freeze",
+            )),
+            HistoryState::Versioned {
+                manifest, freezes, ..
+            } => {
+                let wanted = revision.unwrap_or(&manifest.head);
+                let index = manifest
+                    .checkpoints
+                    .iter()
+                    .position(|record| record.id == wanted)
+                    .ok_or_else(|| {
+                        fail(
+                            DiagnosticCode::Reference,
+                            "checkpoint id is not in this archive",
+                        )
+                    })?;
+                let freeze = freezes[index].as_ref().ok_or_else(|| {
+                    fail(
+                        DiagnosticCode::Reference,
+                        "selected checkpoint has no output freeze",
+                    )
+                })?;
+                Ok((&manifest.checkpoints[index], freeze))
+            }
+        }
     }
 
     /// Stage a complete archive. Legacy histories preserve their v1 wire form.
@@ -2198,6 +2237,69 @@ mod tests {
         assert!(verified
             .freeze_check(Path::new("main.maac"), &a, None, false)
             .is_err());
+    }
+
+    #[test]
+    fn frozen_render_uses_verified_private_bytes_and_never_clobbers() {
+        let temp = tempfile::tempdir().unwrap();
+        let current = temp.path().join("current");
+        let stale = temp.path().join("stale");
+        write_project(&current, SOURCE);
+        write_project(&stale, &format!("{SOURCE}// changed\n"));
+        let history =
+            ArchiveHistory::capture_frozen(Path::new("main.maac"), &current, "default").unwrap();
+        let revision = history.head_id().to_owned();
+        let archive = temp.path().join("archive");
+        fs::create_dir(&archive).unwrap();
+        history.stage(&archive).unwrap();
+        let verified = ArchiveHistory::verify(&archive).unwrap();
+        let archived_output = archive
+            .join("freezes")
+            .join(
+                &verified
+                    .selected_freeze(None)
+                    .unwrap()
+                    .0
+                    .freeze
+                    .as_ref()
+                    .unwrap()[7..],
+            )
+            .join("output.wav");
+        let expected = fs::read(&archived_output).unwrap();
+        fs::write(
+            &archived_output,
+            b"archive pathname changed after verification",
+        )
+        .unwrap();
+
+        let destination = temp.path().join("reused.wav");
+        let result = verified
+            .render_from_freeze(
+                Path::new("main.maac"),
+                &current,
+                Some(&revision),
+                &destination,
+            )
+            .unwrap();
+        assert_eq!(result.revision, revision);
+        assert_eq!(
+            result.source_digest,
+            verified.select(None).unwrap().digest()
+        );
+        assert_eq!(result.output_digest, sha256_digest(&expected));
+        assert!(result.frames > 0);
+        assert_eq!(fs::read(&destination).unwrap(), expected);
+
+        assert!(verified
+            .render_from_freeze(Path::new("main.maac"), &current, None, &destination)
+            .is_err());
+        assert_eq!(fs::read(&destination).unwrap(), expected);
+
+        let missing = temp.path().join("stale.wav");
+        assert!(verified
+            .render_from_freeze(Path::new("main.maac"), &stale, None, &missing)
+            .is_err());
+        assert!(!missing.exists());
     }
 
     #[test]

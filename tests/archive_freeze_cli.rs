@@ -90,6 +90,7 @@ fn frozen_output_relocates_replays_and_becomes_stale_after_an_edit() {
     let restored = temp.path().join("restored");
     let before = temp.path().join("before.wav");
     let after = temp.path().join("after.wav");
+    let reused = temp.path().join("reused.wav");
     write_project(&project, SOURCE);
     success(invoke(&[
         Path::new("--json"),
@@ -159,6 +160,93 @@ fn frozen_output_relocates_replays_and_becomes_stale_after_an_edit() {
     assert_eq!(checked["eligibility"], "current");
     assert_eq!(checked["replay"], "matched");
 
+    let reuse = success(invoke(&[
+        Path::new("--json"),
+        Path::new("archive"),
+        Path::new("freeze-render"),
+        &moved,
+        Path::new("--source"),
+        &restored,
+        Path::new("-o"),
+        &reused,
+        Path::new("--expect-hash"),
+        Path::new(created["digest"].as_str().unwrap()),
+    ]));
+    assert_eq!(reuse["reused"], true);
+    assert_eq!(reuse["eligibility"], "current");
+    assert_eq!(reuse["digest"], created["digest"]);
+    assert_eq!(reuse["output_digest"], checked["output_digest"]);
+    assert_eq!(fs::read(&reused).unwrap(), fs::read(&before).unwrap());
+
+    let existing = rejected(invoke(&[
+        Path::new("--json"),
+        Path::new("archive"),
+        Path::new("freeze-render"),
+        &moved,
+        Path::new("--source"),
+        &restored,
+        Path::new("-o"),
+        &reused,
+    ]));
+    assert_eq!(existing["code"], "E_OUTPUT_EXISTS");
+    assert_eq!(fs::read(&reused).unwrap(), fs::read(&before).unwrap());
+
+    let raced = temp.path().join("raced.wav");
+    let contenders = std::thread::scope(|scope| {
+        let first = scope.spawn(|| {
+            invoke(&[
+                Path::new("--json"),
+                Path::new("archive"),
+                Path::new("freeze-render"),
+                &moved,
+                Path::new("--source"),
+                &restored,
+                Path::new("-o"),
+                &raced,
+            ])
+        });
+        let second = scope.spawn(|| {
+            invoke(&[
+                Path::new("--json"),
+                Path::new("archive"),
+                Path::new("freeze-render"),
+                &moved,
+                Path::new("--source"),
+                &restored,
+                Path::new("-o"),
+                &raced,
+            ])
+        });
+        [first.join().unwrap(), second.join().unwrap()]
+    });
+    assert_eq!(
+        contenders
+            .iter()
+            .filter(|output| output.status.success())
+            .count(),
+        1
+    );
+    let collision = contenders
+        .into_iter()
+        .find(|output| !output.status.success())
+        .unwrap();
+    assert_eq!(rejected(collision)["code"], "E_OUTPUT_EXISTS");
+    assert_eq!(fs::read(&raced).unwrap(), fs::read(&before).unwrap());
+
+    let inside = moved.join("inside.wav");
+    let rejected_inside = rejected(invoke(&[
+        Path::new("--json"),
+        Path::new("archive"),
+        Path::new("freeze-render"),
+        &moved,
+        Path::new("--source"),
+        &restored,
+        Path::new("-o"),
+        &inside,
+    ]));
+    assert_eq!(rejected_inside["code"], "E_REFERENCE");
+    assert!(!inside.exists());
+
     fs::write(restored.join("main.maac"), format!("{SOURCE}// changed\n")).unwrap();
     let stale = rejected(invoke(&[
         Path::new("--json"),
@@ -171,6 +259,19 @@ fn frozen_output_relocates_replays_and_becomes_stale_after_an_edit() {
     assert_eq!(stale["code"], "E_FREEZE_STALE");
     assert_eq!(stale["eligibility"], "stale");
     assert_eq!(stale["replay"], "not_requested");
+    let stale_output = temp.path().join("stale.wav");
+    let stale_render = rejected(invoke(&[
+        Path::new("--json"),
+        Path::new("archive"),
+        Path::new("freeze-render"),
+        &moved,
+        Path::new("--source"),
+        &restored,
+        Path::new("-o"),
+        &stale_output,
+    ]));
+    assert_eq!(stale_render["code"], "E_FREEZE_STALE");
+    assert!(!stale_output.exists());
 }
 
 #[test]
@@ -231,6 +332,38 @@ fn later_unfrozen_checkpoint_keeps_old_freeze_and_nonhead_tamper_blocks_verify()
     ]));
     assert_eq!(checked["eligibility"], "current");
 
+    let reused = temp.path().join("historical.wav");
+    let reuse = success(invoke(&[
+        Path::new("--json"),
+        Path::new("archive"),
+        Path::new("freeze-render"),
+        &history,
+        Path::new("--revision"),
+        Path::new(first["id"].as_str().unwrap()),
+        Path::new("--source"),
+        &restored,
+        Path::new("-o"),
+        &reused,
+    ]));
+    assert_eq!(reuse["revision"], first["id"]);
+    assert_eq!(
+        fs::read(&reused).unwrap(),
+        fs::read(freeze_path(&history, &first)).unwrap()
+    );
+    let unfrozen = temp.path().join("unfrozen.wav");
+    let missing = rejected(invoke(&[
+        Path::new("--json"),
+        Path::new("archive"),
+        Path::new("freeze-render"),
+        &history,
+        Path::new("--source"),
+        &restored,
+        Path::new("-o"),
+        &unfrozen,
+    ]));
+    assert_eq!(missing["code"], "E_REFERENCE");
+    assert!(!unfrozen.exists());
+
     let output = freeze_path(&history, &first);
     let mut bytes = fs::read(&output).unwrap();
     *bytes.last_mut().unwrap() ^= 1;
@@ -242,6 +375,21 @@ fn later_unfrozen_checkpoint_keeps_old_freeze_and_nonhead_tamper_blocks_verify()
         &history,
     ]));
     assert_eq!(failure["ok"], false);
+    let corrupt = temp.path().join("corrupt.wav");
+    let rejected_corrupt = rejected(invoke(&[
+        Path::new("--json"),
+        Path::new("archive"),
+        Path::new("freeze-render"),
+        &history,
+        Path::new("--revision"),
+        Path::new(first["id"].as_str().unwrap()),
+        Path::new("--source"),
+        &restored,
+        Path::new("-o"),
+        &corrupt,
+    ]));
+    assert_eq!(rejected_corrupt["code"], "E_HASH");
+    assert!(!corrupt.exists());
 }
 
 #[test]

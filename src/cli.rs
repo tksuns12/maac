@@ -275,6 +275,20 @@ pub enum ArchiveCommand {
         #[arg(long)]
         replay: bool,
     },
+    /// Copy a current verified full-output freeze to a new WAV file.
+    FreezeRender {
+        archive: PathBuf,
+        #[arg(long)]
+        source: PathBuf,
+        #[arg(short = 'o', long)]
+        output: PathBuf,
+        #[arg(long)]
+        project_root: Option<PathBuf>,
+        #[arg(long)]
+        revision: Option<String>,
+        #[arg(long)]
+        expect_hash: Option<String>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -347,6 +361,8 @@ pub struct FreezeCheckReport {
     pub source_digest: String,
     pub frozen_source_digest: String,
     pub output_digest: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reused: Option<bool>,
 }
 
 /// CLI result for artifact-aware callers. Legacy fields retain their existing wire shape.
@@ -1476,6 +1492,7 @@ fn execute_archive(
                 source_digest: check.source_digest,
                 frozen_source_digest: check.frozen_source_digest,
                 output_digest: check.output_digest,
+                reused: None,
             };
             if eligibility == "stale" {
                 let mut error =
@@ -1499,6 +1516,56 @@ fn execute_archive(
                 history.version(),
             );
             result.freeze = Some(Box::new(report));
+            Ok(result)
+        }
+        ArchiveCommand::FreezeRender {
+            archive,
+            source,
+            output,
+            project_root,
+            revision,
+            expect_hash,
+        } => {
+            ensure_output_outside_archive(output, archive)?;
+            if export::path_exists(output).map_err(CliError::from_export)? {
+                return Err(CliError::from_export(ExportError::OutputExists {
+                    path: output.clone(),
+                }));
+            }
+            let history = ArchiveHistory::verify(archive)
+                .map_err(|error| CliError::from_diagnostics(&error))?;
+            verify_expected_archive_hash(expect_hash.as_deref(), &history.digest())?;
+            let (_, root, absolute_entry) =
+                resolve_archive_source(source, project_root.as_deref())?;
+            let rendered = history
+                .render_from_freeze(&absolute_entry, &root, revision.as_deref(), output)
+                .map_err(|error| {
+                    let mut error = CliError::from_diagnostics(&error);
+                    if error.code == "E_RENDER_STATE" {
+                        error.code = "E_FREEZE_STALE".into();
+                    } else if error.code == "E_CONFLICT" {
+                        error.code = "E_OUTPUT_EXISTS".into();
+                    }
+                    error
+                })?;
+            let mut result = CommandResult::archive(
+                "archive freeze-render",
+                archive,
+                Some(output),
+                history.digest(),
+                history.version(),
+            );
+            result.frames = Some(rendered.frames);
+            result.freeze = Some(Box::new(FreezeCheckReport {
+                integrity: "verified",
+                eligibility: "current",
+                replay: "not_requested",
+                revision: rendered.revision,
+                frozen_source_digest: rendered.source_digest.clone(),
+                source_digest: rendered.source_digest,
+                output_digest: rendered.output_digest,
+                reused: Some(true),
+            }));
             Ok(result)
         }
     }
