@@ -240,6 +240,28 @@ and a label-only edit that stales a historical freeze. A source exactly at
 archive preflights edit metadata, payload sizes, aggregate transaction work,
 and closure-copy work before replay.
 
+## Multiple retained WAV imports (2026-09-25)
+
+Version 6 records up to 16 explicitly selected retained WAV import directories
+per checkpoint. The initial full Rust gate passed before the freeze-check review
+fix. The affected tests and release integration were rerun after that fix.
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Full Rust gate before review fix | `cargo test --all-targets` | Passed: 281 active library tests, 3 existing ignored, and all integration targets |
+| Post-review library | `cargo test --lib` | Passed: 281 active, 3 existing ignored |
+| Post-review archive integration | `cargo test --test archive_multi_import_cli`; `cargo test --test archive_freeze_cli` | Passed: 5 multi-import and 3 freeze tests |
+| Post-review release integration | `cargo test --release --test archive_multi_import_cli` | Passed: 5 tests |
+| Formatting, Clippy, whitespace | `cargo fmt --all -- --check`; `cargo clippy --all-targets -- -D warnings`; `git diff --check` | Passed |
+| Independent review | Read-only Astra review of the staged change | One finding resolved: a removed selected import now reports a stale freeze when the current composition remains valid |
+
+The multi-import tests cover two nested retained imports, archive relocation,
+exact original and record restoration, identical WAV output, journaled entry
+edits, selected-import freeze replay and staleness, explicit root selection,
+mixed checkpoint history, non-head original tampering, invalid selections,
+and failure without publishing an output directory. Fixed v1–v4 archive
+compatibility tests passed in the full gate.
+
 ## Historical naming cleanup
 
 The current tree uses MaaC consistently in the specification, grammar, schema,

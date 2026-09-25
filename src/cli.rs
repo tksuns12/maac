@@ -219,6 +219,9 @@ pub enum ArchiveCommand {
         /// Retain a verified full-output float32 WAV beside this checkpoint.
         #[arg(long)]
         freeze_output: bool,
+        /// Retain an existing WAV import directory whose media.pcm is in the composition.
+        #[arg(long = "retain-import")]
+        retain_imports: Vec<PathBuf>,
     },
     /// Apply one Protocol 2 transaction to the archived head and retain its inverse.
     Patch {
@@ -1244,6 +1247,7 @@ fn execute_archive(
             previous,
             expect_previous_hash,
             freeze_output,
+            retain_imports,
         } => {
             let (entry, root, absolute_entry) =
                 resolve_archive_source(input, project_root.as_deref())?;
@@ -1258,7 +1262,16 @@ fn execute_archive(
                 verify_expected_archive_hash(expect_previous_hash.as_deref(), &prior.digest())?;
                 prior
             } else {
-                if *freeze_output {
+                if !retain_imports.is_empty() {
+                    let snapshot = ArchiveSnapshot::capture_with_imports(
+                        &absolute_entry,
+                        &root,
+                        profile,
+                        retain_imports,
+                    )
+                    .map_err(|error| CliError::from_diagnostics(&error))?;
+                    ArchiveHistory::from_snapshot(snapshot, *freeze_output)
+                } else if *freeze_output {
                     ArchiveHistory::capture_frozen(&absolute_entry, &root, profile)
                 } else {
                     ArchiveHistory::capture(&absolute_entry, &root, profile)
@@ -1266,8 +1279,17 @@ fn execute_archive(
                 .map_err(|error| CliError::from_diagnostics(&error))?
             };
             if previous.is_some() {
-                let snapshot = ArchiveSnapshot::capture(&absolute_entry, &root, profile)
-                    .map_err(|error| CliError::from_diagnostics(&error))?;
+                let snapshot = if retain_imports.is_empty() {
+                    ArchiveSnapshot::capture(&absolute_entry, &root, profile)
+                } else {
+                    ArchiveSnapshot::capture_with_imports(
+                        &absolute_entry,
+                        &root,
+                        profile,
+                        retain_imports,
+                    )
+                }
+                .map_err(|error| CliError::from_diagnostics(&error))?;
                 if *freeze_output {
                     history.append_frozen(snapshot)
                 } else {

@@ -1,4 +1,4 @@
-//! Immutable, linear archive checkpoints with v1 and retained-import leaves.
+//! Immutable, linear archive checkpoints with closure and retained-import leaves.
 
 use std::collections::BTreeSet;
 use std::fs::{self, OpenOptions};
@@ -23,6 +23,7 @@ const VERSION: u32 = 2;
 const RETAINED_VERSION: u32 = 3;
 const FROZEN_VERSION: u32 = 4;
 const EDITED_VERSION: u32 = 5;
+const MULTI_IMPORT_VERSION: u32 = 6;
 const MAX_CHECKPOINTS: usize = 32;
 const MAX_SOURCE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_ASSET_BYTES: u64 = 64 * 1024 * 1024;
@@ -134,6 +135,18 @@ impl ArchiveHistory {
         Self::from_genesis(snapshot, Some(freeze))
     }
 
+    pub(crate) fn from_snapshot(
+        snapshot: ArchiveSnapshot,
+        freeze_output: bool,
+    ) -> Result<Self, Diagnostics> {
+        let freeze = if freeze_output {
+            Some(FreezeSnapshot::capture(&snapshot)?)
+        } else {
+            None
+        };
+        Self::from_genesis(snapshot, freeze)
+    }
+
     fn from_genesis(
         snapshot: ArchiveSnapshot,
         freeze: Option<FreezeSnapshot>,
@@ -148,7 +161,9 @@ impl ArchiveHistory {
             &snapshot.digest(),
             freeze.as_ref().map(FreezeSnapshot::digest).as_deref(),
         )?;
-        let version = if freeze.is_some() {
+        let version = if snapshot.is_multi_import() {
+            MULTI_IMPORT_VERSION
+        } else if freeze.is_some() {
             FROZEN_VERSION
         } else if snapshot.is_retained() {
             RETAINED_VERSION
@@ -207,7 +222,7 @@ impl ArchiveHistory {
                     },
                 })
             }
-            Some(2..=5) => Self::verify_versioned(root, json),
+            Some(2..=6) => Self::verify_versioned(root, json),
             _ => Err(fail(
                 DiagnosticCode::Version,
                 "unsupported editable archive version",
@@ -266,7 +281,11 @@ impl ArchiveHistory {
                     )
                 })?;
         }
-        if manifest.version == EDITED_VERSION {
+        if manifest
+            .checkpoints
+            .iter()
+            .any(|record| record.edit.is_some())
+        {
             let unique: BTreeSet<&str> = manifest
                 .checkpoints
                 .iter()
@@ -300,6 +319,12 @@ impl ArchiveHistory {
                 return Err(fail(
                     DiagnosticCode::Version,
                     "v2 history cannot contain a retained-import leaf",
+                ));
+            }
+            if manifest.version < MULTI_IMPORT_VERSION && preflight.is_multi_import() {
+                return Err(fail(
+                    DiagnosticCode::Version,
+                    "older history cannot contain a multi-import leaf",
                 ));
             }
             let child_entries = ArchiveSnapshot::tree_entries_in_root(&child, &preflight)?;
@@ -370,6 +395,14 @@ impl ArchiveHistory {
             return Err(fail(
                 DiagnosticCode::Version,
                 "v3 history has no retained-import checkpoint",
+            ));
+        }
+        if manifest.version == MULTI_IMPORT_VERSION
+            && !preflights.iter().any(ArchivePreflight::is_multi_import)
+        {
+            return Err(fail(
+                DiagnosticCode::Version,
+                "v6 history has no multi-import checkpoint",
             ));
         }
         check_aggregate_with_freezes(preflights.iter().zip(&freeze_children).map(
@@ -539,7 +572,12 @@ impl ArchiveHistory {
             unique_freeze_count(&freezes, None),
             unique_edit_count(&edits, None),
         )?;
-        let (manifest, json) = encode_history(records, EDITED_VERSION)?;
+        let version = if snapshots.iter().any(ArchiveSnapshot::is_multi_import) {
+            MULTI_IMPORT_VERSION
+        } else {
+            EDITED_VERSION
+        };
+        let (manifest, json) = encode_history(records, version)?;
         self.state = HistoryState::Versioned {
             manifest,
             json,
@@ -608,7 +646,9 @@ impl ArchiveHistory {
                     snapshots.iter(),
                     unique_freeze_count(&freezes, None),
                 )?;
-                let version = if freezes.iter().any(Option::is_some) {
+                let version = if snapshots.iter().any(ArchiveSnapshot::is_multi_import) {
+                    MULTI_IMPORT_VERSION
+                } else if freezes.iter().any(Option::is_some) {
                     FROZEN_VERSION
                 } else if snapshots.iter().any(ArchiveSnapshot::is_retained) {
                     RETAINED_VERSION
@@ -675,15 +715,18 @@ impl ArchiveHistory {
                     &snapshot.digest(),
                     freeze_digest.as_deref(),
                 )?);
-                let version = if manifest.version == EDITED_VERSION {
-                    EDITED_VERSION
-                } else if manifest.version == FROZEN_VERSION || freeze.is_some() {
-                    FROZEN_VERSION
-                } else if manifest.version == RETAINED_VERSION || snapshot.is_retained() {
-                    RETAINED_VERSION
-                } else {
-                    VERSION
-                };
+                let version =
+                    if manifest.version == MULTI_IMPORT_VERSION || snapshot.is_multi_import() {
+                        MULTI_IMPORT_VERSION
+                    } else if manifest.version == EDITED_VERSION {
+                        EDITED_VERSION
+                    } else if manifest.version == FROZEN_VERSION || freeze.is_some() {
+                        FROZEN_VERSION
+                    } else if manifest.version == RETAINED_VERSION || snapshot.is_retained() {
+                        RETAINED_VERSION
+                    } else {
+                        VERSION
+                    };
                 let (new_manifest, new_json) = encode_history(records, version)?;
                 *manifest = new_manifest;
                 *json = new_json;
@@ -810,16 +853,19 @@ impl ArchiveHistory {
                 (&manifest.checkpoints[index], freeze)
             }
         };
-        let candidate = ArchiveSnapshot::capture(
-            entry,
-            root,
-            match self.select(Some(&record.id))?.profile() {
-                "song" => "song",
-                _ => "default",
-            },
-        )?;
+        let reference = self.select(Some(&record.id))?;
+        let (candidate, missing_selected_import) =
+            match ArchiveSnapshot::capture_matching_layout(entry, root, reference) {
+                Ok(candidate) => (candidate, false),
+                Err(_) if reference.is_multi_import() => (
+                    ArchiveSnapshot::capture_closure_only(entry, root, reference.profile())?,
+                    true,
+                ),
+                Err(error) => return Err(error),
+            };
         let source_digest = candidate.digest();
-        let status = if source_digest == record.snapshot
+        let status = if !missing_selected_import
+            && source_digest == record.snapshot
             && freeze.engine_digest() == engine_digest()?
             && FreezeSnapshot::candidate_render_key(&candidate, freeze.engine_digest())?
                 == freeze.render_key()
@@ -905,7 +951,11 @@ impl ArchiveHistory {
                         }
                     }
                 }
-                if manifest.version == EDITED_VERSION {
+                if manifest
+                    .checkpoints
+                    .iter()
+                    .any(|record| record.edit.is_some())
+                {
                     let root = dir.join("edits");
                     fs::create_dir(&root).map_err(|e| {
                         fail(
@@ -1072,7 +1122,7 @@ fn validate_history(manifest: &HistoryManifest) -> Result<(), Diagnostics> {
     if manifest.format != FORMAT
         || !matches!(
             manifest.version,
-            VERSION | RETAINED_VERSION | FROZEN_VERSION | EDITED_VERSION
+            VERSION | RETAINED_VERSION | FROZEN_VERSION | EDITED_VERSION | MULTI_IMPORT_VERSION
         )
     {
         return Err(fail(
@@ -1097,7 +1147,10 @@ fn validate_history(manifest: &HistoryManifest) -> Result<(), Diagnostics> {
                 "v2/v3 history cannot contain freezes",
             ));
         }
-        if record.edit.is_some() && manifest.version != EDITED_VERSION {
+        if record.edit.is_some()
+            && manifest.version != EDITED_VERSION
+            && manifest.version != MULTI_IMPORT_VERSION
+        {
             return Err(fail(
                 DiagnosticCode::Version,
                 "older archive history cannot contain edits",
@@ -1400,7 +1453,10 @@ fn check_root_tree(
         .checkpoints
         .iter()
         .any(|record| record.freeze.is_some());
-    let has_edits = manifest.version == EDITED_VERSION;
+    let has_edits = manifest
+        .checkpoints
+        .iter()
+        .any(|record| record.edit.is_some());
     let mut names = BTreeSet::new();
     for entry in root.dir().read_dir(".").map_err(|e| {
         fail(
@@ -1671,6 +1727,50 @@ mod tests {
             .copy_original_to(&project.join("original.wav"))
             .unwrap();
         project
+    }
+
+    #[test]
+    fn selected_nested_import_is_preserved_and_verified_as_v6() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = retained_project(temp.path());
+        let nested = project.join("imports/drums");
+        fs::create_dir_all(&nested).unwrap();
+        for name in ["media.pcm", "import.json", "original.wav"] {
+            fs::rename(project.join(name), nested.join(name)).unwrap();
+        }
+        let source = fs::read_to_string(project.join("main.maac")).unwrap();
+        let rewritten =
+            source.replace("path = \"media.pcm\"", "path = \"imports/drums/media.pcm\"");
+        assert_ne!(source, rewritten);
+        fs::write(project.join("main.maac"), rewritten).unwrap();
+        let snapshot = ArchiveSnapshot::capture_with_imports(
+            Path::new("main.maac"),
+            &project,
+            "default",
+            &["imports/drums".into()],
+        )
+        .unwrap();
+        assert!(snapshot.is_multi_import());
+        let history = ArchiveHistory::from_snapshot(snapshot, false).unwrap();
+        assert_eq!(history.version(), 6);
+        let archive = temp.path().join("archive");
+        fs::create_dir(&archive).unwrap();
+        history.stage(&archive).unwrap();
+        let verified = ArchiveHistory::verify(&archive).unwrap();
+        assert_eq!(verified.digest(), history.digest());
+        assert_eq!(
+            verified.select(None).unwrap().digest(),
+            history.select(None).unwrap().digest()
+        );
+        fs::write(
+            archive
+                .join("checkpoints")
+                .join(&history.head_id()[7..])
+                .join("imports/drums/original.wav"),
+            b"tampered",
+        )
+        .unwrap();
+        assert!(ArchiveHistory::verify(&archive).is_err());
     }
 
     #[test]

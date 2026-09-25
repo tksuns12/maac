@@ -4,13 +4,15 @@
 composition; version 2 preserves an explicit linear sequence of complete
 composition checkpoints; version 3 also retains verified original WAV import
 records when present; version 4 can retain an opt-in full-output freeze;
-version 5 can record an explicit Protocol 2 edit and its inverse.
+version 5 can record an explicit Protocol 2 edit and its inverse; version 6
+can retain several selected WAV import records in one composition.
 
 ## Commands
 
 ```text
 maac archive create SOURCE --output-dir NEW [--project-root ROOT] [--profile default|song]
     [--previous ARCHIVE] [--expect-previous-hash SHA256] [--freeze-output]
+    [--retain-import RELATIVE_DIR]...
 maac archive patch ARCHIVE PATCH.json --output-dir NEW [--expect-hash SHA256]
 maac archive verify ARCHIVE [--expect-hash SHA256]
 maac archive unpack ARCHIVE --output-dir NEW [--expect-hash SHA256] [--revision SHA256]
@@ -34,6 +36,20 @@ containing such a checkpoint uses a version 3 root manifest. Version 3 may
 also contain unchanged version 1 checkpoints. Existing version 1 and 2
 archives keep their original identities and remain readable.
 
+Use repeatable `--retain-import` for a composition that uses native PCM from
+several existing `import-wav --retain-original` directories. Each selected
+directory is relative to the project root; `.` explicitly selects the root.
+It must contain a version 2 `import.json`, `original.wav`, and a `media.pcm`
+already in the compiled composition closure. The archive checks the exact
+original WAV and declared crop against that PCM before capturing it. Up to 16
+directories can be selected per checkpoint. A selected directory's generated
+`main.maac` is retained only if the composition imports it as a source.
+These checkpoints use `maac.archive-snapshot/2` with sorted import records
+bound to their PCM members, and their histories use root version 6. Omitting
+the flag preserves the existing version 1 snapshot and root import behavior.
+When extending an archive with `--previous`, select the new checkpoint's
+imports explicitly; earlier checkpoints keep their own exact records.
+
 `--freeze-output` renders the complete native project output once as an
 immutable float32 WAV and stores a strict freeze record. A history containing
 a freeze uses a version 4 root manifest. The original source graph remains
@@ -43,9 +59,9 @@ preserved when such a history is extended.
 
 `archive patch` verifies the input archive, applies one Protocol 2 transaction
 to its head composition source, and publishes a new history with a version 5
-root manifest. It records the canonical forward transaction and generated
+or 6 root manifest. It records the canonical forward transaction and generated
 inverse, the authored revisions before and after, and a new checkpoint even
-when the transaction has no operations. Both checkpoints remain reopenable.
+when the transaction makes no authored change. Both checkpoints remain reopenable.
 The input archive stays unchanged. This first journaled-edit path keeps the
 same dependency closure, retained-import sidecars, and execution profile;
 edits to imported files or changes to dependency membership are outside its
@@ -66,8 +82,8 @@ resolves and compiles each archived project. For retained imports it also
 rechecks the original WAV, declared crop, native PCM, and exact import record.
 For frozen checkpoints it checks the recorded boundary, source association,
 and complete WAV identity without replaying the renderer. For journaled edits,
-it replays the forward transaction against the child authored revision and
-the inverse against the parent authored revision. It rejects a
+it replays the forward transaction against the parent authored revision and
+the inverse against the child authored revision. It rejects a
 missing, altered, or undeclared dependency even in a checkpoint other than
 the head. `unpack` repeats full-history verification, then
 publishes the selected checkpoint's verified source, asset, and retained
@@ -79,7 +95,7 @@ revision. The source bytes, including comments, omissions, labels, and
 formatting, remain unchanged. The unpacked project uses ordinary `check` and
 `build`; large PCM requires `--disk-media`.
 
-Versions 2 through 5 store `checkpoints/<checkpoint-hex>/` directories. The root
+Versions 2 through 6 store `checkpoints/<checkpoint-hex>/` directories. The root
 manifest records the ordered IDs, parent IDs, snapshot manifest hashes, and
 head ID. Frozen records also identify their freeze manifest; version 4 keeps
 their files under `freezes/<freeze-hash>/`. Journaled records identify an edit
@@ -132,8 +148,9 @@ outputs. Version 3 retains one original WAV and
 import record for a root `main.maac` created with `import-wav
 --retain-original`. It does not invent an original for a legacy import that
 has only a version 1 `import.json`; that record remains outside the archived
-composition closure. Multiple original inputs, nested import packaging,
-automatic edit journaling, multi-file transactions, branching and merging,
+composition closure. Version 6 retains multiple selected existing imports,
+including nested directories whose native PCM is in the composition closure.
+Automatic edit journaling, multi-file transactions, branching and merging,
 partial-graph freeze replacement, and a complete producer archive remain
 Phase 3 work. Version 4's inactive whole-output
 freeze provides conservative input invalidation, not automatic render-cache

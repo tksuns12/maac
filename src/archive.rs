@@ -24,6 +24,9 @@ pub(crate) const MANIFEST_PATH: &str = "maac-archive.json";
 const FORMAT: &str = "maac.editable-archive";
 const SNAPSHOT_FORMAT: &str = "maac.archive-snapshot";
 const VERSION: u32 = 1;
+const MULTI_IMPORT_VERSION: u32 = 2;
+const MAX_RETAINED_IMPORTS: usize = 16;
+const MAX_ORIGINAL_TOTAL_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 pub(crate) const MAX_TREE_ENTRIES: usize =
     (MAX_BUNDLE_SOURCES + MAX_BUNDLE_ASSETS) * MAX_BUNDLE_PATH_BYTES + 1;
@@ -41,6 +44,8 @@ struct Manifest {
     import_manifest: Option<Sidecar>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     original_wav: Option<Sidecar>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    imports: Vec<ImportRecord>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -49,6 +54,15 @@ struct Sidecar {
     path: String,
     bytes: u64,
     sha256: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ImportRecord {
+    directory: String,
+    import_manifest: Sidecar,
+    original_wav: Sidecar,
+    pcm_member: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
@@ -92,6 +106,7 @@ pub(crate) struct ArchiveSnapshot {
     manifest_json: Vec<u8>,
     data: BTreeMap<String, MemberData>,
     retained: Option<RetainedPayload>,
+    imports: Vec<ImportPayload>,
 }
 
 #[derive(Clone)]
@@ -100,11 +115,19 @@ struct RetainedPayload {
     imported: ImportedWav,
 }
 
-/// Strict v1 metadata checked before any checkpoint media is loaded.
+#[derive(Clone)]
+struct ImportPayload {
+    directory: String,
+    import_json: Vec<u8>,
+    imported: ImportedWav,
+}
+
+/// Strict snapshot metadata checked before any checkpoint media is loaded.
 pub(crate) struct ArchivePreflight {
     manifest: Manifest,
     json: Vec<u8>,
     retained: Option<RetainedImportPreflight>,
+    imports: Vec<(String, RetainedImportPreflight)>,
 }
 
 impl ArchivePreflight {
@@ -118,23 +141,70 @@ impl ArchivePreflight {
 
     pub(crate) fn resource_bytes(&self) -> (u64, u64, u64, u64) {
         let (source, asset, pcm) = resource_bytes(&self.manifest);
-        let original = self
-            .manifest
-            .original_wav
-            .as_ref()
-            .map_or(0, |sidecar| sidecar.bytes);
+        let original = original_bytes(&self.manifest);
         (source, asset, pcm, original)
     }
 
     pub(crate) fn is_retained(&self) -> bool {
-        self.retained.is_some()
+        self.retained.is_some() || !self.imports.is_empty()
+    }
+
+    pub(crate) fn is_multi_import(&self) -> bool {
+        !self.imports.is_empty()
     }
 }
 
 impl ArchiveSnapshot {
     pub(crate) fn capture(entry: &Path, root: &Path, profile: &str) -> Result<Self, Diagnostics> {
         let root = ProjectRoot::open_pinned(root, cap_std::ambient_authority())?;
-        Self::capture_in_root(entry, &root, profile, true)
+        Self::capture_in_root(entry, &root, profile, true, &[])
+    }
+
+    /// Capture the compiled composition without import provenance. Freeze
+    /// checks use this only after a previously selected import no longer
+    /// matches, so a valid edited composition can be reported as stale.
+    pub(crate) fn capture_closure_only(
+        entry: &Path,
+        root: &Path,
+        profile: &str,
+    ) -> Result<Self, Diagnostics> {
+        let root = ProjectRoot::open_pinned(root, cap_std::ambient_authority())?;
+        Self::capture_in_root(entry, &root, profile, false, &[])
+    }
+
+    pub(crate) fn capture_with_imports(
+        entry: &Path,
+        root: &Path,
+        profile: &str,
+        selections: &[PathBuf],
+    ) -> Result<Self, Diagnostics> {
+        if selections.is_empty() {
+            return Self::capture(entry, root, profile);
+        }
+        let selected = normalize_selections(selections)?;
+        let root = ProjectRoot::open_pinned(root, cap_std::ambient_authority())?;
+        Self::capture_in_root(entry, &root, profile, false, &selected)
+    }
+
+    pub(crate) fn capture_matching_layout(
+        entry: &Path,
+        root: &Path,
+        reference: &Self,
+    ) -> Result<Self, Diagnostics> {
+        let root = ProjectRoot::open_pinned(root, cap_std::ambient_authority())?;
+        let selections: Vec<_> = reference
+            .manifest
+            .imports
+            .iter()
+            .map(|record| record.directory.clone())
+            .collect();
+        Self::capture_in_root(
+            entry,
+            &root,
+            reference.profile(),
+            reference.retained.is_some(),
+            &selections,
+        )
     }
 
     fn capture_in_root(
@@ -142,8 +212,10 @@ impl ArchiveSnapshot {
         root: &ProjectRoot,
         profile: &str,
         detect_import: bool,
+        selected_dirs: &[String],
     ) -> Result<Self, Diagnostics> {
         let limits = limits(profile)?;
+        let selected_preflights = preflight_selected(root, selected_dirs)?;
         let project = DiskMediaProject::load_in_root(entry, root)?;
         project.build_with_limits(&limits)?;
         let bundle = project.bundle();
@@ -199,6 +271,7 @@ impl ArchiveSnapshot {
         } else {
             None
         };
+        let (imports, import_records) = capture_selected(root, &selected_preflights, &data)?;
         let (import_manifest, original_wav) = if let Some(payload) = &retained {
             (
                 Some(Sidecar {
@@ -216,19 +289,24 @@ impl ArchiveSnapshot {
             (None, None)
         };
         let manifest = Manifest {
-            format: if retained.is_some() {
+            format: if retained.is_some() || !imports.is_empty() {
                 SNAPSHOT_FORMAT
             } else {
                 FORMAT
             }
             .into(),
-            version: VERSION,
+            version: if imports.is_empty() {
+                VERSION
+            } else {
+                MULTI_IMPORT_VERSION
+            },
             entry: bundle.entry.clone(),
             profile: profile.into(),
             members,
             builtins,
             import_manifest,
             original_wav,
+            imports: import_records,
         };
         validate_manifest(&manifest)?;
         let manifest_json = canonical_json(&manifest)?;
@@ -243,6 +321,7 @@ impl ArchiveSnapshot {
             manifest_json,
             data,
             retained,
+            imports,
         })
     }
 
@@ -309,10 +388,29 @@ impl ArchiveSnapshot {
         } else {
             None
         };
+        let selected_dirs: Vec<_> = manifest
+            .imports
+            .iter()
+            .map(|record| record.directory.clone())
+            .collect();
+        let imports = preflight_selected(root, &selected_dirs)?;
+        for ((_, preflight), record) in imports.iter().zip(&manifest.imports) {
+            if preflight.json().len() as u64 != record.import_manifest.bytes
+                || sha256_digest(preflight.json()) != record.import_manifest.sha256
+                || preflight.original_bytes() != record.original_wav.bytes
+                || preflight.original_hash() != record.original_wav.sha256
+            {
+                return Err(fail(
+                    DiagnosticCode::Hash,
+                    "retained import sidecar identity differs from snapshot manifest",
+                ));
+            }
+        }
         Ok(ArchivePreflight {
             manifest,
             json: bytes,
             retained,
+            imports,
         })
     }
 
@@ -328,6 +426,11 @@ impl ArchiveSnapshot {
             root,
             &preflight.manifest.profile,
             preflight.retained.is_some(),
+            &preflight
+                .imports
+                .iter()
+                .map(|(directory, _)| directory.clone())
+                .collect::<Vec<_>>(),
         )?;
         if captured.manifest != preflight.manifest || bounded_manifest(root)? != preflight.json {
             return Err(fail(
@@ -380,11 +483,8 @@ impl ArchiveSnapshot {
                 format!("cannot stage edited entry source: {e}"),
             )
         })?;
-        let after = Self::capture(
-            Path::new(&self.manifest.entry),
-            staging.path(),
-            &self.manifest.profile,
-        )?;
+        let after =
+            Self::capture_matching_layout(Path::new(&self.manifest.entry), staging.path(), self)?;
         let same_members = self
             .manifest
             .members
@@ -399,6 +499,7 @@ impl ArchiveSnapshot {
             || self.manifest.builtins != after.manifest.builtins
             || self.manifest.import_manifest != after.manifest.import_manifest
             || self.manifest.original_wav != after.manifest.original_wav
+            || self.manifest.imports != after.manifest.imports
         {
             return Err(fail(
                 DiagnosticCode::Capability,
@@ -410,31 +511,44 @@ impl ArchiveSnapshot {
 
     pub(crate) fn resource_bytes(&self) -> (u64, u64, u64, u64) {
         let (source, asset, pcm) = resource_bytes(&self.manifest);
-        let original = self
-            .manifest
-            .original_wav
-            .as_ref()
-            .map_or(0, |sidecar| sidecar.bytes);
+        let original = original_bytes(&self.manifest);
         (source, asset, pcm, original)
     }
 
     pub(crate) fn is_retained(&self) -> bool {
-        self.retained.is_some()
+        self.retained.is_some() || !self.imports.is_empty()
     }
 
-    /// Exact file and directory count produced by staging this v1 snapshot.
+    pub(crate) fn is_multi_import(&self) -> bool {
+        !self.imports.is_empty()
+    }
+
+    /// Exact file and directory count produced by staging this snapshot.
     pub(crate) fn projected_tree_entries(&self) -> usize {
         let mut directories = BTreeSet::new();
-        for member in &self.manifest.members {
-            for (index, byte) in member.path.bytes().enumerate() {
+        let sidecars = self.manifest.imports.iter().flat_map(|record| {
+            [
+                record.import_manifest.path.as_str(),
+                record.original_wav.path.as_str(),
+            ]
+        });
+        for path in self
+            .manifest
+            .members
+            .iter()
+            .map(|m| m.path.as_str())
+            .chain(sidecars)
+        {
+            for (index, byte) in path.bytes().enumerate() {
                 if byte == b'/' {
-                    directories.insert(&member.path[..index]);
+                    directories.insert(&path[..index]);
                 }
             }
         }
         1 + self.manifest.members.len()
             + directories.len()
             + if self.retained.is_some() { 2 } else { 0 }
+            + self.imports.len() * 2
     }
 
     /// Write only local closure members into an existing output directory.
@@ -496,6 +610,39 @@ impl ArchiveSnapshot {
             retained
                 .imported
                 .stage_retained_original_to(&dir.join("original.wav"))
+                .map_err(import_failure)?;
+        }
+        for payload in &self.imports {
+            let record = self
+                .manifest
+                .imports
+                .iter()
+                .find(|record| record.directory == payload.directory)
+                .expect("validated import payload");
+            let import_path = prepare_parent(dir, &record.import_manifest.path)?;
+            let mut output = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&import_path)
+                .map_err(|e| {
+                    fail(
+                        DiagnosticCode::Reference,
+                        format!("cannot create import sidecar: {e}"),
+                    )
+                })?;
+            output.write_all(&payload.import_json).map_err(|e| {
+                fail(
+                    DiagnosticCode::Reference,
+                    format!("cannot write import sidecar: {e}"),
+                )
+            })?;
+            if sha256_digest(&payload.import_json) != record.import_manifest.sha256 {
+                return Err(fail(DiagnosticCode::Hash, "private import sidecar changed"));
+            }
+            let original_path = prepare_parent(dir, &record.original_wav.path)?;
+            payload
+                .imported
+                .stage_retained_original_to(&original_path)
                 .map_err(import_failure)?;
         }
         Ok(())
@@ -577,8 +724,14 @@ fn validate_manifest(manifest: &Manifest) -> Result<(), Diagnostics> {
         &manifest.import_manifest,
         &manifest.original_wav,
     ) {
-        (FORMAT, VERSION, None, None) => false,
+        (FORMAT, VERSION, None, None) if manifest.imports.is_empty() => false,
         (SNAPSHOT_FORMAT, VERSION, Some(import), Some(original)) => {
+            if !manifest.imports.is_empty() {
+                return Err(fail(
+                    DiagnosticCode::Version,
+                    "v1 snapshot cannot contain multiple imports",
+                ));
+            }
             if manifest.entry != "main.maac"
                 || import.path != "import.json"
                 || original.path != "original.wav"
@@ -594,6 +747,11 @@ fn validate_manifest(manifest: &Manifest) -> Result<(), Diagnostics> {
             crate::bundle::validate_hash_pin(&original.sha256, "original WAV hash")?;
             true
         }
+        (SNAPSHOT_FORMAT, MULTI_IMPORT_VERSION, None, None)
+            if !manifest.imports.is_empty() && manifest.imports.len() <= MAX_RETAINED_IMPORTS =>
+        {
+            true
+        }
         _ => {
             return Err(fail(
                 DiagnosticCode::Version,
@@ -601,6 +759,68 @@ fn validate_manifest(manifest: &Manifest) -> Result<(), Diagnostics> {
             ));
         }
     };
+    if manifest.version == MULTI_IMPORT_VERSION {
+        let mut prior_directory: Option<&str> = None;
+        let mut sidecar_paths = Vec::with_capacity(manifest.imports.len() * 2);
+        let mut total_original = 0u64;
+        for record in &manifest.imports {
+            if record.directory != "." {
+                check_path(&record.directory)?;
+            }
+            if prior_directory.is_some_and(|prior| prior >= record.directory.as_str()) {
+                return Err(fail(
+                    DiagnosticCode::Reference,
+                    "retained import directories are duplicate or out of order",
+                ));
+            }
+            prior_directory = Some(&record.directory);
+            if record.import_manifest.path != import_path(&record.directory, "import.json")
+                || record.original_wav.path != import_path(&record.directory, "original.wav")
+                || record.pcm_member != import_path(&record.directory, "media.pcm")
+                || record.import_manifest.bytes > 16 * 1024
+                || record.original_wav.bytes > media_import::MAX_MEDIA_IMPORT_INPUT_BYTES
+            {
+                return Err(fail(
+                    DiagnosticCode::Reference,
+                    "invalid retained import paths or sizes",
+                ));
+            }
+            crate::bundle::validate_hash_pin(
+                &record.import_manifest.sha256,
+                "import manifest hash",
+            )?;
+            crate::bundle::validate_hash_pin(&record.original_wav.sha256, "original WAV hash")?;
+            total_original = total_original
+                .checked_add(record.original_wav.bytes)
+                .ok_or_else(|| {
+                    fail(
+                        DiagnosticCode::ResourceLimit,
+                        "retained original byte count overflow",
+                    )
+                })?;
+            sidecar_paths.push(record.import_manifest.path.as_str());
+            sidecar_paths.push(record.original_wav.path.as_str());
+        }
+        if total_original > MAX_ORIGINAL_TOTAL_BYTES {
+            return Err(fail(
+                DiagnosticCode::ResourceLimit,
+                "retained originals exceed 4 GiB",
+            ));
+        }
+        for (index, path) in sidecar_paths.iter().enumerate() {
+            check_path(path)?;
+            if paths_overlap(path, MANIFEST_PATH)
+                || sidecar_paths[..index]
+                    .iter()
+                    .any(|prior| paths_overlap(path, prior))
+            {
+                return Err(fail(
+                    DiagnosticCode::Reference,
+                    "retained sidecar paths overlap",
+                ));
+            }
+        }
+    }
     limits(&manifest.profile)?;
     check_path(&manifest.entry)?;
     if manifest.members.len() > MAX_BUNDLE_SOURCES + MAX_BUNDLE_ASSETS {
@@ -623,7 +843,13 @@ fn validate_manifest(manifest: &Manifest) -> Result<(), Diagnostics> {
     let mut pcm_bytes = 0u64;
     for member in &manifest.members {
         check_path(&member.path)?;
-        if retained && sidecar_collision(&member.path) {
+        if retained
+            && (sidecar_collision(&member.path) && manifest.version == VERSION
+                || manifest.imports.iter().any(|record| {
+                    paths_overlap(&member.path, &record.import_manifest.path)
+                        || paths_overlap(&member.path, &record.original_wav.path)
+                }))
+        {
             return Err(fail(
                 DiagnosticCode::Reference,
                 "retained sidecar collides with a closure member",
@@ -693,6 +919,27 @@ fn validate_manifest(manifest: &Manifest) -> Result<(), Diagnostics> {
             "archive entry is not a source member",
         ));
     }
+    for record in &manifest.imports {
+        if !manifest
+            .members
+            .iter()
+            .any(|member| member.path == record.pcm_member && member.kind == MemberKind::Pcm)
+        {
+            return Err(fail(
+                DiagnosticCode::Asset,
+                "retained import lacks a native PCM closure member",
+            ));
+        }
+    }
+    if pcm_bytes
+        .checked_add(original_bytes(manifest))
+        .is_none_or(|total| total > MAX_ORIGINAL_TOTAL_BYTES)
+    {
+        return Err(fail(
+            DiagnosticCode::ResourceLimit,
+            "snapshot PCM and originals exceed 4 GiB",
+        ));
+    }
     let mut prior_builtin: Option<&str> = None;
     for builtin in &manifest.builtins {
         if !builtin.path.starts_with("@builtin/")
@@ -723,6 +970,12 @@ fn validate_manifest(manifest: &Manifest) -> Result<(), Diagnostics> {
     Ok(())
 }
 
+fn paths_overlap(a: &str, b: &str) -> bool {
+    a == b
+        || a.strip_prefix(b).is_some_and(|tail| tail.starts_with('/'))
+        || b.strip_prefix(a).is_some_and(|tail| tail.starts_with('/'))
+}
+
 fn resource_bytes(manifest: &Manifest) -> (u64, u64, u64) {
     let mut source = 0;
     let mut asset = 0;
@@ -735,6 +988,159 @@ fn resource_bytes(manifest: &Manifest) -> (u64, u64, u64) {
         }
     }
     (source, asset, pcm)
+}
+
+fn original_bytes(manifest: &Manifest) -> u64 {
+    manifest
+        .original_wav
+        .as_ref()
+        .map_or(0, |sidecar| sidecar.bytes)
+        + manifest
+            .imports
+            .iter()
+            .map(|record| record.original_wav.bytes)
+            .sum::<u64>()
+}
+
+fn normalize_selections(selections: &[PathBuf]) -> Result<Vec<String>, Diagnostics> {
+    if selections.len() > MAX_RETAINED_IMPORTS {
+        return Err(fail(
+            DiagnosticCode::ResourceLimit,
+            "archive retains at most 16 imports",
+        ));
+    }
+    let mut directories = Vec::with_capacity(selections.len());
+    for path in selections {
+        let text = path
+            .to_str()
+            .ok_or_else(|| fail(DiagnosticCode::Reference, "import directory is not UTF-8"))?;
+        if text != "." {
+            check_path(text)?;
+            if text == "import.json" || text == "original.wav" {
+                return Err(fail(
+                    DiagnosticCode::Reference,
+                    "import selection is not a directory",
+                ));
+            }
+        }
+        directories.push(text.to_owned());
+    }
+    directories.sort();
+    if directories.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err(fail(
+            DiagnosticCode::Reference,
+            "duplicate retained import directory",
+        ));
+    }
+    Ok(directories)
+}
+
+fn import_path(directory: &str, name: &str) -> String {
+    if directory == "." {
+        name.to_owned()
+    } else {
+        format!("{directory}/{name}")
+    }
+}
+
+fn with_import_dir<T>(
+    root: &ProjectRoot,
+    directory: &str,
+    f: impl FnOnce(&ProjectRoot) -> Result<T, Diagnostics>,
+) -> Result<T, Diagnostics> {
+    if directory == "." {
+        return f(root);
+    }
+    let mut pinned = root.open_child_pinned(directory.split('/').next().expect("nonempty path"))?;
+    for part in directory.split('/').skip(1) {
+        pinned = pinned.open_child_pinned(part)?;
+    }
+    f(&pinned)
+}
+
+fn preflight_selected(
+    root: &ProjectRoot,
+    directories: &[String],
+) -> Result<Vec<(String, RetainedImportPreflight)>, Diagnostics> {
+    let mut result = Vec::with_capacity(directories.len());
+    let mut total = 0u64;
+    for directory in directories {
+        let preflight = with_import_dir(root, directory, |child| {
+            media_import::preflight_retained_import_in_root(child).map_err(import_failure)
+        })?;
+        total = total
+            .checked_add(preflight.original_bytes())
+            .ok_or_else(|| {
+                fail(
+                    DiagnosticCode::ResourceLimit,
+                    "retained original byte count overflow",
+                )
+            })?;
+        if total > MAX_ORIGINAL_TOTAL_BYTES {
+            return Err(fail(
+                DiagnosticCode::ResourceLimit,
+                "retained originals exceed 4 GiB",
+            ));
+        }
+        result.push((directory.clone(), preflight));
+    }
+    Ok(result)
+}
+
+fn capture_selected(
+    root: &ProjectRoot,
+    preflights: &[(String, RetainedImportPreflight)],
+    data: &BTreeMap<String, MemberData>,
+) -> Result<(Vec<ImportPayload>, Vec<ImportRecord>), Diagnostics> {
+    let mut payloads = Vec::with_capacity(preflights.len());
+    let mut records = Vec::with_capacity(preflights.len());
+    for (directory, preflight) in preflights {
+        let imported = with_import_dir(root, directory, |child| {
+            media_import::verify_retained_import_snapshot_in_root(child, preflight)
+                .map_err(import_failure)
+        })?;
+        let pcm_path = import_path(directory, "media.pcm");
+        let pcm = data.get(&pcm_path).ok_or_else(|| {
+            fail(
+                DiagnosticCode::Asset,
+                format!("selected import `{directory}` is not a closure PCM dependency"),
+            )
+        })?;
+        if !matches!(pcm, MemberData::Pcm(_)) {
+            return Err(fail(
+                DiagnosticCode::Asset,
+                format!("selected import `{directory}` is not native PCM"),
+            ));
+        }
+        if imported.pcm_hash() != preflight.output_hash()
+            || !member_matches_bytes(pcm, imported.pcm_bytes())?
+        {
+            return Err(fail(
+                DiagnosticCode::Hash,
+                format!("retained WAV crop differs from `{pcm_path}`"),
+            ));
+        }
+        records.push(ImportRecord {
+            directory: directory.clone(),
+            import_manifest: Sidecar {
+                path: import_path(directory, "import.json"),
+                bytes: preflight.json().len() as u64,
+                sha256: sha256_digest(preflight.json()),
+            },
+            original_wav: Sidecar {
+                path: import_path(directory, "original.wav"),
+                bytes: imported.input_bytes(),
+                sha256: imported.source_hash().to_owned(),
+            },
+            pcm_member: pcm_path,
+        });
+        payloads.push(ImportPayload {
+            directory: directory.clone(),
+            import_json: preflight.json().to_vec(),
+            imported,
+        });
+    }
+    Ok((payloads, records))
 }
 
 fn capture_retained(
@@ -972,6 +1378,10 @@ fn check_tree(root: &ProjectRoot, manifest: &Manifest) -> Result<usize, Diagnost
     if manifest.import_manifest.is_some() {
         expected.insert("import.json");
         expected.insert("original.wav");
+    }
+    for record in &manifest.imports {
+        expected.insert(&record.import_manifest.path);
+        expected.insert(&record.original_wav.path);
     }
     let mut found = BTreeSet::new();
     let mut pending = vec![(
