@@ -181,6 +181,128 @@ fn internal_reverb_freeze_relocates_and_preserves_final_wav() {
 }
 
 #[test]
+fn downstream_gain_and_pan_edits_reuse_the_cache_in_the_current_graph() {
+    let temp = tempdir().unwrap();
+    let source = temp.path().join("source");
+    let archive = temp.path().join("archive");
+    let original = temp.path().join("original.wav");
+    let current = temp.path().join("current.wav");
+    let reused = temp.path().join("reused.wav");
+    project(&source);
+    success(invoke(&[
+        Path::new("--json"),
+        Path::new("build"),
+        &source,
+        Path::new("-o"),
+        &original,
+    ]));
+    success(invoke(&[
+        Path::new("--json"),
+        Path::new("archive"),
+        Path::new("create"),
+        &source,
+        Path::new("--freeze-node"),
+        Path::new("room"),
+        Path::new("--output-dir"),
+        &archive,
+    ]));
+
+    let edited = SOURCE
+        .replace("gain=3/4", "gain=1/2")
+        .replace("pan=-0.2", "pan=0.1");
+    fs::write(source.join("main.maac"), edited).unwrap();
+    let checked = success(invoke(&[
+        Path::new("--json"),
+        Path::new("archive"),
+        Path::new("freeze-check"),
+        &archive,
+        Path::new("--source"),
+        &source,
+        Path::new("--replay"),
+    ]));
+    assert_eq!(checked["eligibility"], "current");
+    assert_eq!(checked["replay"], "matched");
+    assert_ne!(checked["source_digest"], checked["frozen_source_digest"]);
+    success(invoke(&[
+        Path::new("--json"),
+        Path::new("build"),
+        &source,
+        Path::new("-o"),
+        &current,
+    ]));
+    let rendered = success(invoke(&[
+        Path::new("--json"),
+        Path::new("archive"),
+        Path::new("freeze-render"),
+        &archive,
+        Path::new("--source"),
+        &source,
+        Path::new("-o"),
+        &reused,
+    ]));
+    assert_eq!(rendered["reused"], true);
+    assert_eq!(rendered["source_digest"], checked["source_digest"]);
+    assert_eq!(
+        rendered["frozen_source_digest"],
+        checked["frozen_source_digest"]
+    );
+    assert_eq!(fs::read(&reused).unwrap(), fs::read(&current).unwrap());
+    assert_ne!(fs::read(&reused).unwrap(), fs::read(&original).unwrap());
+    assert_eq!(
+        rendered["output_digest"],
+        sha256_digest(&fs::read(&reused).unwrap())
+    );
+}
+
+#[test]
+fn frozen_effect_and_upstream_edits_stale_the_node_cache() {
+    let temp = tempdir().unwrap();
+    let source = temp.path().join("source");
+    let archive = temp.path().join("archive");
+    project(&source);
+    success(invoke(&[
+        Path::new("--json"),
+        Path::new("archive"),
+        Path::new("create"),
+        &source,
+        Path::new("--freeze-node"),
+        Path::new("room"),
+        Path::new("--output-dir"),
+        &archive,
+    ]));
+
+    for (name, edited) in [
+        ("effect", SOURCE.replace("mix=0.4", "mix=0.5")),
+        ("upstream", SOURCE.replace("level=0.2", "level=0.3")),
+        ("unrelated", SOURCE.replace("pan=0.2", "pan=0.1")),
+    ] {
+        fs::write(source.join("main.maac"), edited).unwrap();
+        let checked = rejected(invoke(&[
+            Path::new("--json"),
+            Path::new("archive"),
+            Path::new("freeze-check"),
+            &archive,
+            Path::new("--source"),
+            &source,
+        ]));
+        assert_eq!(checked["code"], "E_FREEZE_STALE", "{name}");
+        let destination = temp.path().join(format!("{name}.wav"));
+        let rendered = rejected(invoke(&[
+            Path::new("--json"),
+            Path::new("archive"),
+            Path::new("freeze-render"),
+            &archive,
+            Path::new("--source"),
+            &source,
+            Path::new("-o"),
+            &destination,
+        ]));
+        assert_eq!(rendered["code"], "E_FREEZE_STALE", "{name}");
+        assert!(!destination.exists(), "{name}");
+    }
+}
+
+#[test]
 fn invalid_node_selection_fails_without_publishing_archive() {
     let temp = tempdir().unwrap();
     let source = temp.path().join("source");

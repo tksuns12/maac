@@ -127,7 +127,7 @@ freeze or edit identity when present. The CLI
 `freeze-check` verifies the archive, then captures and compiles a current
 project with the frozen checkpoint's execution profile. Its result reports
 integrity, whether the recorded inputs are current or stale, and whether a
-requested replay matched the stored WAV. Stale input fails with
+requested replay matched the stored freeze payload. Stale input fails with
 `E_FREEZE_STALE`. Any exact source or dependency change conservatively stales
 this first whole-output freeze, even if the resulting sound would be the same.
 A change to the MaaC executable bytes also stales it, including a different
@@ -150,15 +150,20 @@ graph branch, convert formats, or infer eligibility from similar sound.
 `--freeze-node NODE` selects one project-level `fx.eq/1`, `fx.compressor/1`, or
 `fx.reverb/1` node whose `out` feeds another audio node before the project
 output. Version 8 stores every reset-origin frame of that internal output as
-finite interleaved IEEE-754 binary64 samples. `freeze-check` compares the exact
+finite interleaved IEEE-754 binary64 samples. `freeze-check` compares the
 source closure, retained import provenance, execution profile, engine identity,
 and selected boundary; `--replay` compares the internal binary64 payload.
 For a current source, `freeze-render` replaces that node's output at its normal
 graph position and runs the remaining graph through the ordinary final WAV
 encoder. Its `output_digest` identifies the published WAV; the node cache has a
-separate digest. This initial node freeze conservatively stales on any exact
-source or dependency change, including a downstream edit. Each checkpoint may
-carry one freeze, and `--freeze-node` cannot be combined with `--freeze-output`.
+separate digest. New node freezes permit only static parameter-value edits on
+project-level `core.gain/1` and `core.pan/1` nodes strictly downstream of the
+frozen boundary. All other source bytes and dependencies stay pinned, including
+the frozen effect, upstream and unrelated branches, graph connections, musical
+events, timing, automation, imported media, and retained provenance. Eligible
+reuse renders the current verified source with the cached node output; older
+node freezes retain their exact-source rule. Each checkpoint may carry one
+freeze, and `--freeze-node` cannot be combined with `--freeze-output`.
 Existing whole-output freezes keep their original format and behavior.
 
 Creation, patching, and unpacking stage files beside their destination and publish the
@@ -196,7 +201,7 @@ has only a version 1 `import.json`; that record remains outside the archived
 composition closure. Version 6 retains multiple selected existing imports,
 including nested directories whose native PCM is in the composition closure.
 Automatic edit journaling, general multi-file transactions, branching and merging,
-selective invalidation, multiple frozen graph branches, and a complete producer
+broader selective invalidation, multiple frozen graph branches, and a complete producer
 archive remain Phase 3 work. Whole-output and single-node freezes require
 explicit reuse after conservative input validation; they do not provide
 automatic render-cache reuse or a claim that another engine produces identical

@@ -100,5 +100,5 @@ retain several explicitly selected existing import directories used by one
 composition. Archive patching records explicit entry-source and direct library
 edits. Whole-output freezes and a single native effect output freeze support
 explicit reuse after conservative input validation. Recording workflows,
-broader edit journaling, processor-state packaging, selective invalidation,
+broader edit journaling, processor-state packaging, broader selective invalidation,
 and multiple frozen graph branches remain future Phase 3 work.

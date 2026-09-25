@@ -332,6 +332,29 @@ tests cover mixed whole-output and node freezes in a v8 history, exact
 binary64 capture and replacement, downstream execution, and rejection of
 invalid boundaries and nonfinite replacement samples.
 
+## Bounded downstream node-freeze reuse (2026-09-25)
+
+New `maac.node-freeze/2` manifests pin the source closure except for numeric
+gain and pan value tokens on eligible downstream project nodes. Legacy v1 node
+manifests keep their exact-source rule. Reuse renders the captured current
+source, so an accepted mix edit changes the final WAV without changing the
+cached binary64 effect output.
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Focused core and history | `cargo test --lib node_freeze`; `cargo test --lib archive_history::tests::v8_retains_mixed_freezes_and_replays_node_payload` | Passed: 8 node core tests and mixed-history regression |
+| Node CLI lifecycle | `cargo test --test archive_node_freeze_cli` | Passed: 4 tests, including current-graph gain/pan reuse and rejection of frozen, upstream, and unrelated edits |
+| Full Rust gate before review reporting fix | `cargo test --all-targets --quiet` | Passed: 296 active library tests, 3 existing ignored, and all integration targets |
+| Post-review regression | `cargo test --test archive_node_freeze_cli --test archive_freeze_cli` | Passed: 4 node and 3 whole-output tests; the accepted edit reports distinct current-source and frozen-source digests |
+| Corrected release lifecycle | `cargo test --release --test archive_node_freeze_cli` | Passed: all 4 node CLI tests after the provenance fix |
+| Formatting, Clippy, whitespace | `cargo fmt --all -- --check`; `cargo clippy --all-targets -- -D warnings`; `git diff --check` | Passed after the review fix |
+| Independent review | Read-only Astra review of the uncommitted change | One provenance finding fixed: `freeze-render` now reports the original cache-producing source digest separately from the edited source digest |
+
+The core tests also verify recomputed reuse identity, legacy v1 eligibility,
+candidate snapshot activation, and reverse-path exclusion through delay edges.
+The first release run began before the provenance fix and failed the new digest
+assertion; the corrected release result appears in the table.
+
 ## Historical naming cleanup
 
 The current tree uses MaaC consistently in the specification, grammar, schema,

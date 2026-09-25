@@ -18,13 +18,14 @@ use crate::disk_media::{DiskMediaPlan, DiskMediaProject};
 use crate::dsp::{self, RenderError};
 use crate::freeze::engine_digest;
 use crate::plan::{PlanLimits, PortRef};
+use crate::syntax::{self, ValueKind};
 
 pub(crate) const NODE_FREEZE_MANIFEST: &str = "maac-node-freeze.json";
 pub(crate) const NODE_FREEZE_OUTPUT: &str = "output.f64le";
 pub(crate) const MAX_NODE_FREEZE_BYTES: u64 = 1024 * 1024 * 1024;
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 const FORMAT: &str = "maac.node-freeze";
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -44,6 +45,8 @@ struct Manifest {
     channels: u8,
     output_channels: u8,
     sample_format: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reuse_identity: Option<String>,
     render_key: String,
     output: Output,
 }
@@ -76,6 +79,23 @@ struct RenderKey<'a> {
     format: &'static str,
     version: u32,
     snapshot: &'a str,
+    engine: &'a str,
+    profile: &'a str,
+    boundary: &'a Boundary,
+    state: &'a State,
+    frame_start: u64,
+    frame_end: u64,
+    sample_rate_hz: u32,
+    channels: u8,
+    output_channels: u8,
+    sample_format: &'a str,
+}
+
+#[derive(Serialize)]
+struct SelectiveRenderKey<'a> {
+    format: &'static str,
+    version: u32,
+    reuse_identity: &'a str,
     engine: &'a str,
     profile: &'a str,
     boundary: &'a Boundary,
@@ -184,6 +204,7 @@ impl NodeFreezeSnapshot {
             format!("sha256:{:x}", hash.finalize()),
             engine_digest()?,
         );
+        manifest.reuse_identity = Some(reuse_identity(snapshot, &plan, boundary)?);
         manifest.render_key = render_key(&manifest)?;
         validate_manifest(&manifest)?;
         let json = serde_json::to_vec(&manifest).map_err(|e| {
@@ -322,33 +343,36 @@ impl NodeFreezeSnapshot {
     pub(crate) fn sample_rate_hz(&self) -> u32 {
         self.manifest.sample_rate_hz
     }
-    pub(crate) fn render_key(&self) -> &str {
-        &self.manifest.render_key
-    }
-
     pub(crate) fn boundary(&self) -> PortRef {
         PortRef::new(&self.manifest.boundary.node, &self.manifest.boundary.port)
             .expect("validated node freeze boundary")
     }
 
-    pub(crate) fn candidate_render_key(
-        snapshot: &ArchiveSnapshot,
-        boundary: &PortRef,
-        engine: &str,
-    ) -> Result<String, Diagnostics> {
+    pub(crate) fn matches_snapshot(&self, snapshot: &ArchiveSnapshot) -> Result<bool, Diagnostics> {
+        let boundary = self.boundary();
         let (_staged, plan) = staged_plan(snapshot)?;
-        let channels = plan.node_freeze_channels(boundary).map_err(render_error)?;
-        let bytes = output_bytes(plan.output().total_frames, channels)?;
-        let manifest = manifest_for(
+        let identity_matches = if self.manifest.version == 2 {
+            self.manifest.reuse_identity.as_deref()
+                == Some(reuse_identity(snapshot, &plan, &boundary)?.as_str())
+        } else {
+            self.manifest.snapshot == snapshot.digest()
+        };
+        if !identity_matches {
+            return Ok(false);
+        }
+        let channels = plan.node_freeze_channels(&boundary).map_err(render_error)?;
+        let mut candidate = manifest_for(
             snapshot,
             &plan,
-            boundary,
+            &boundary,
             channels,
-            bytes,
+            output_bytes(plan.output().total_frames, channels)?,
             String::new(),
-            engine.into(),
+            self.manifest.engine.clone(),
         );
-        render_key(&manifest)
+        candidate.version = self.manifest.version;
+        candidate.reuse_identity = self.manifest.reuse_identity.clone();
+        Ok(render_key(&candidate)? == self.manifest.render_key)
     }
 
     pub(crate) fn stage_into(&self, dir: &Path) -> Result<(), Diagnostics> {
@@ -546,6 +570,7 @@ fn manifest_for(
         channels: channels as u8,
         output_channels: plan.output().channels,
         sample_format: "ieee_f64le_interleaved".into(),
+        reuse_identity: None,
         render_key: String::new(),
         output: Output {
             path: NODE_FREEZE_OUTPUT.into(),
@@ -574,7 +599,79 @@ fn output_bytes(frames: u64, channels: usize) -> Result<u64, Diagnostics> {
     Ok(bytes)
 }
 
+fn reuse_identity(
+    snapshot: &ArchiveSnapshot,
+    plan: &DiskMediaPlan,
+    boundary: &PortRef,
+) -> Result<String, Diagnostics> {
+    let source = snapshot.source_text(snapshot.entry())?;
+    let document = syntax::parse(source)?;
+    let allowed = plan.selective_node_params(boundary);
+    let mut spans = Vec::new();
+    for (id, parameter) in allowed {
+        let Some(object) = document.object(&id) else {
+            continue;
+        };
+        if object.kind != "node" {
+            continue;
+        }
+        let Some(params) = object.field("params") else {
+            continue;
+        };
+        let ValueKind::Record(fields) = &params.value.kind else {
+            continue;
+        };
+        let Some(field) = fields.get(parameter) else {
+            continue;
+        };
+        if matches!(field.value.kind, ValueKind::Number(_)) {
+            spans.push(field.value.span);
+        }
+    }
+    spans.sort_by_key(|span| span.start);
+    let mut normalized = Vec::with_capacity(source.len());
+    let mut cursor = 0;
+    for span in spans {
+        if span.start < cursor || span.end > source.len() || span.is_empty() {
+            return Err(fail(
+                DiagnosticCode::Syntax,
+                "invalid selective node parameter span",
+            ));
+        }
+        normalized.extend_from_slice(&source.as_bytes()[cursor..span.start]);
+        normalized.extend_from_slice(b"<node-freeze-param>");
+        cursor = span.end;
+    }
+    normalized.extend_from_slice(&source.as_bytes()[cursor..]);
+    snapshot.node_freeze_reuse_identity(&normalized)
+}
+
 fn render_key(m: &Manifest) -> Result<String, Diagnostics> {
+    if m.version == 2 {
+        let key = SelectiveRenderKey {
+            format: "maac.node-freeze-render-key",
+            version: 2,
+            reuse_identity: m.reuse_identity.as_deref().ok_or_else(|| {
+                fail(DiagnosticCode::Syntax, "missing node freeze reuse identity")
+            })?,
+            engine: &m.engine,
+            profile: &m.profile,
+            boundary: &m.boundary,
+            state: &m.state,
+            frame_start: m.frame_start,
+            frame_end: m.frame_end,
+            sample_rate_hz: m.sample_rate_hz,
+            channels: m.channels,
+            output_channels: m.output_channels,
+            sample_format: &m.sample_format,
+        };
+        return Ok(sha256_digest(&serde_json::to_vec(&key).map_err(|e| {
+            fail(
+                DiagnosticCode::Syntax,
+                format!("cannot encode node freeze render key: {e}"),
+            )
+        })?));
+    }
     let key = RenderKey {
         format: "maac.node-freeze-render-key",
         version: 1,
@@ -599,7 +696,7 @@ fn render_key(m: &Manifest) -> Result<String, Diagnostics> {
 }
 
 fn validate_manifest(m: &Manifest) -> Result<(), Diagnostics> {
-    if m.format != FORMAT || m.version != VERSION {
+    if m.format != FORMAT || !matches!(m.version, 1 | 2) {
         return Err(fail(
             DiagnosticCode::Version,
             "unsupported node freeze format or version",
@@ -612,6 +709,16 @@ fn validate_manifest(m: &Manifest) -> Result<(), Diagnostics> {
         (&m.output.sha256, "output"),
     ] {
         validate_hash_pin(value, label)?;
+    }
+    match (m.version, &m.reuse_identity) {
+        (1, None) => {}
+        (2, Some(identity)) => validate_hash_pin(identity, "reuse identity")?,
+        _ => {
+            return Err(fail(
+                DiagnosticCode::Syntax,
+                "invalid node freeze reuse identity",
+            ))
+        }
     }
     if !matches!(m.profile.as_str(), "default" | "song")
         || !m.source_graph_active
@@ -920,6 +1027,107 @@ place notes { pattern=&phrase; track=&t; at=0q; }
             normal.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
             replaced.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn v2_allows_only_downstream_numeric_params_and_renders_candidate() {
+        let (project, snapshot, boundary) = project();
+        let freeze = NodeFreezeSnapshot::capture(&snapshot, &boundary).unwrap();
+        assert_eq!(freeze.manifest.version, 2);
+        let edited = SOURCE
+            .replace("gain=3/4", "gain=1/2")
+            .replace("pan=0.2", "pan=-0.1");
+        fs::write(project.path().join("main.maac"), &edited).unwrap();
+        let candidate =
+            ArchiveSnapshot::capture(Path::new("main.maac"), project.path(), "default").unwrap();
+        assert_ne!(candidate.digest(), snapshot.digest());
+        assert!(freeze.matches_snapshot(&candidate).unwrap());
+        let (_staged, plan) = staged_plan(&candidate).unwrap();
+        let mut normal = Vec::new();
+        plan.render(|frame| {
+            normal.extend_from_slice(frame);
+            Ok(())
+        })
+        .unwrap();
+        let mut reused = Vec::new();
+        freeze
+            .render_replacement(&candidate, |frame| {
+                reused.extend_from_slice(frame);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            normal.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+            reused.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+        );
+        for stale in [
+            SOURCE.replace("mix=0.4", "mix=0.3"),
+            SOURCE.replace("level=0.2", "level=0.1"),
+            format!("{SOURCE}// unrelated byte\n"),
+        ] {
+            fs::write(project.path().join("main.maac"), stale).unwrap();
+            let candidate =
+                ArchiveSnapshot::capture(Path::new("main.maac"), project.path(), "default")
+                    .unwrap();
+            assert!(!freeze.matches_snapshot(&candidate).unwrap());
+        }
+    }
+
+    #[test]
+    fn delayed_feedback_excludes_downstream_gain() {
+        let source = SOURCE
+            .replace(
+                "node room {",
+                "node sum { type=\"core.sum/1\"; config={channels=1;}; }\nnode delay { type=\"core.delay/1\"; config={channels=1;frames=1;}; }\nnode room {",
+            )
+            .replace(
+                "connect a { from=&tone:out; to=&room:in; }",
+                "connect a { from=&tone:out; to=&sum:in; }\nconnect feedback { from=&gain:out; to=&delay:in; }\nconnect delayed { from=&delay:out; to=&sum:in; }\nconnect before_room { from=&sum:out; to=&room:in; }",
+            );
+        let project = tempfile::tempdir().unwrap();
+        fs::write(project.path().join("main.maac"), source).unwrap();
+        let snapshot =
+            ArchiveSnapshot::capture(Path::new("main.maac"), project.path(), "default").unwrap();
+        let (_staged, plan) = staged_plan(&snapshot).unwrap();
+        let allowed = plan.selective_node_params(&PortRef::new("room", "out").unwrap());
+        assert!(!allowed.contains_key("gain"));
+        assert_eq!(allowed.get("pan"), Some(&"pan"));
+    }
+
+    #[test]
+    fn v1_manifest_keeps_exact_source_policy() {
+        let (project, snapshot, boundary) = project();
+        let mut freeze = NodeFreezeSnapshot::capture(&snapshot, &boundary).unwrap();
+        freeze.manifest.version = 1;
+        freeze.manifest.reuse_identity = None;
+        freeze.manifest.render_key = render_key(&freeze.manifest).unwrap();
+        freeze.json = serde_json::to_vec(&freeze.manifest).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        freeze.stage_into(directory.path()).unwrap();
+        let root =
+            ProjectRoot::open_pinned(directory.path(), cap_std::ambient_authority()).unwrap();
+        let preflight =
+            NodeFreezeSnapshot::preflight(&root, &freeze.digest(), &snapshot.digest()).unwrap();
+        let verified = NodeFreezeSnapshot::verify_preflighted(&root, &preflight).unwrap();
+        assert!(verified.matches_snapshot(&snapshot).unwrap());
+        fs::write(
+            project.path().join("main.maac"),
+            SOURCE.replace("gain=3/4", "gain=1/2"),
+        )
+        .unwrap();
+        let edited =
+            ArchiveSnapshot::capture(Path::new("main.maac"), project.path(), "default").unwrap();
+        assert!(!verified.matches_snapshot(&edited).unwrap());
+    }
+
+    #[test]
+    fn v2_manifest_identity_is_recomputed_from_archived_source() {
+        let (_project, snapshot, boundary) = project();
+        let mut freeze = NodeFreezeSnapshot::capture(&snapshot, &boundary).unwrap();
+        freeze.manifest.reuse_identity = Some(sha256_digest(b"forged identity"));
+        freeze.manifest.render_key = render_key(&freeze.manifest).unwrap();
+        freeze.json = serde_json::to_vec(&freeze.manifest).unwrap();
+        assert!(!freeze.matches_snapshot(&snapshot).unwrap());
     }
 
     #[test]

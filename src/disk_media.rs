@@ -1,6 +1,6 @@
 //! Opt-in project media snapshots outside the standalone artifact wire format.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 use crate::bundle::SourceBundle;
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Diagnostics};
 use crate::dsp::{self, AudioStorageMode, DspEngine};
-use crate::plan::{OutputSettings, PlanLimits, PortRef};
+use crate::plan::{OutputSettings, PlanLimits, PortRef, Processor, ProcessorView};
 use crate::plan_artifact::PlanArtifact;
 
 pub(crate) const MAX_DISK_MEDIA_FILE_BYTES: u64 = 1024 * 1024 * 1024;
@@ -190,6 +190,66 @@ pub(crate) struct DiskMediaPlan {
 }
 
 impl DiskMediaPlan {
+    /// Source parameter names whose values may change without affecting this
+    /// boundary. The node must lie on a forward audio path; any connection or
+    /// modulation path back to the boundary, including delay feedback, excludes it.
+    pub(crate) fn selective_node_params(
+        &self,
+        boundary: &PortRef,
+    ) -> BTreeMap<String, &'static str> {
+        let view = self.artifact.view();
+        let mut audio_edges: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+        for edge in view.connections {
+            audio_edges
+                .entry(&edge.from.node)
+                .or_default()
+                .insert(&edge.to.node);
+        }
+        let mut dependencies = audio_edges.clone();
+        for edge in view.modulations {
+            dependencies
+                .entry(&edge.from.node)
+                .or_default()
+                .insert(&edge.target.node);
+        }
+        fn reachable<'a>(
+            edges: &BTreeMap<&'a str, BTreeSet<&'a str>>,
+            start: &'a str,
+        ) -> BTreeSet<&'a str> {
+            let mut seen = BTreeSet::new();
+            let mut pending = vec![start];
+            while let Some(node) = pending.pop() {
+                if seen.insert(node) {
+                    pending.extend(
+                        edges
+                            .get(node)
+                            .into_iter()
+                            .flat_map(|next| next.iter().copied()),
+                    );
+                }
+            }
+            seen
+        }
+        let downstream = reachable(&audio_edges, &boundary.node);
+        view.nodes
+            .iter()
+            .filter_map(|node| {
+                if node.id == &boundary.node
+                    || !downstream.contains(node.id.as_str())
+                    || reachable(&dependencies, node.id).contains(boundary.node.as_str())
+                {
+                    return None;
+                }
+                let parameter = match node.processor {
+                    ProcessorView::Core(Processor::Gain { .. }) => "gain",
+                    ProcessorView::Core(Processor::Pan) => "pan",
+                    _ => return None,
+                };
+                Some((node.id.clone(), parameter))
+            })
+            .collect()
+    }
+
     pub(crate) fn output(&self) -> &OutputSettings {
         self.artifact.view().output
     }

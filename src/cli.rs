@@ -1659,7 +1659,7 @@ fn execute_archive(
                 eligibility: "current",
                 replay: "not_requested",
                 revision: rendered.revision,
-                frozen_source_digest: rendered.source_digest.clone(),
+                frozen_source_digest: rendered.frozen_source_digest,
                 source_digest: rendered.source_digest,
                 output_digest,
                 reused: Some(true),

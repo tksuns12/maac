@@ -452,6 +452,24 @@ impl ArchiveSnapshot {
         sha256_digest(&self.manifest_json)
     }
 
+    /// Hash the verified closure with only the selected entry value tokens
+    /// replaced by their caller-provided canonical source. All other member
+    /// metadata, builtins, and retained provenance remain in the identity.
+    pub(crate) fn node_freeze_reuse_identity(
+        &self,
+        normalized_entry: &[u8],
+    ) -> Result<String, Diagnostics> {
+        let mut manifest = self.manifest.clone();
+        let entry = manifest
+            .members
+            .iter_mut()
+            .find(|member| member.path == manifest.entry && member.kind == MemberKind::Source)
+            .ok_or_else(|| fail(DiagnosticCode::Reference, "archive entry source is missing"))?;
+        entry.bytes = normalized_entry.len() as u64;
+        entry.sha256 = sha256_digest(normalized_entry);
+        Ok(sha256_digest(&canonical_json(&manifest)?))
+    }
+
     pub(crate) fn entry(&self) -> &str {
         &self.manifest.entry
     }

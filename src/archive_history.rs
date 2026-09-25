@@ -115,6 +115,7 @@ pub(crate) struct FreezeCheck {
 pub(crate) struct FrozenRenderResult {
     pub(crate) revision: String,
     pub(crate) source_digest: String,
+    pub(crate) frozen_source_digest: String,
     pub(crate) output_digest: String,
     pub(crate) frames: u64,
 }
@@ -603,12 +604,7 @@ impl ArchiveHistory {
         }
         for (snapshot, freeze) in snapshots.iter().zip(&freezes) {
             if let Some(StoredFreeze::Node(freeze)) = freeze {
-                if NodeFreezeSnapshot::candidate_render_key(
-                    snapshot,
-                    &freeze.boundary(),
-                    freeze.engine_digest(),
-                )? != freeze.render_key()
-                {
+                if !freeze.matches_snapshot(snapshot)? {
                     return Err(fail(
                         DiagnosticCode::Hash,
                         "node freeze metadata differs from its private checkpoint plan",
@@ -1114,6 +1110,17 @@ impl ArchiveHistory {
         revision: Option<&str>,
         replay: bool,
     ) -> Result<FreezeCheck, Diagnostics> {
+        self.checked_node_candidate(entry, root, revision, replay)
+            .map(|(check, _)| check)
+    }
+
+    fn checked_node_candidate(
+        &self,
+        entry: &Path,
+        root: &Path,
+        revision: Option<&str>,
+        replay: bool,
+    ) -> Result<(FreezeCheck, ArchiveSnapshot), Diagnostics> {
         let (record, stored) = self.selected_freeze(revision)?;
         let StoredFreeze::Node(freeze) = stored else {
             return Err(fail(
@@ -1125,13 +1132,8 @@ impl ArchiveHistory {
         let (candidate, missing_selected_import) = candidate_snapshot(entry, root, reference)?;
         let source_digest = candidate.digest();
         let status = if !missing_selected_import
-            && source_digest == record.snapshot
             && freeze.engine_digest() == engine_digest()?
-            && NodeFreezeSnapshot::candidate_render_key(
-                &candidate,
-                &freeze.boundary(),
-                freeze.engine_digest(),
-            )? == freeze.render_key()
+            && freeze.matches_snapshot(&candidate)?
         {
             FreezeCheckStatus::Current
         } else {
@@ -1145,14 +1147,17 @@ impl ArchiveHistory {
         } else {
             None
         };
-        Ok(FreezeCheck {
-            status,
-            revision: record.id.clone(),
-            source_digest,
-            frozen_source_digest: record.snapshot.clone(),
-            output_digest: freeze.output_digest().into(),
-            replay_matches,
-        })
+        Ok((
+            FreezeCheck {
+                status,
+                revision: record.id.clone(),
+                source_digest,
+                frozen_source_digest: record.snapshot.clone(),
+                output_digest: freeze.output_digest().into(),
+                replay_matches,
+            },
+            candidate,
+        ))
     }
 
     pub(crate) fn node_freeze_info(
@@ -1185,7 +1190,7 @@ impl ArchiveHistory {
     where
         F: FnMut(&[f64]) -> dsp::Result<()>,
     {
-        let check = self.node_freeze_check(entry, root, revision, false)?;
+        let (check, candidate) = self.checked_node_candidate(entry, root, revision, false)?;
         if check.status != FreezeCheckStatus::Current {
             return Err(fail(
                 DiagnosticCode::RenderState,
@@ -1198,11 +1203,11 @@ impl ArchiveHistory {
                 "selected checkpoint has no node freeze",
             ));
         };
-        let snapshot = self.select(Some(&check.revision))?;
-        freeze.render_replacement(snapshot, callback)?;
+        freeze.render_replacement(&candidate, callback)?;
         Ok(FrozenRenderResult {
             revision: check.revision,
             source_digest: check.source_digest,
+            frozen_source_digest: check.frozen_source_digest,
             output_digest: check.output_digest,
             frames: freeze.frames(),
         })
@@ -1235,6 +1240,7 @@ impl ArchiveHistory {
         Ok(FrozenRenderResult {
             revision: check.revision,
             source_digest: check.source_digest,
+            frozen_source_digest: check.frozen_source_digest,
             output_digest: check.output_digest,
             frames: freeze.frames(),
         })
