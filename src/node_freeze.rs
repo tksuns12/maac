@@ -25,7 +25,7 @@ pub(crate) const NODE_FREEZE_OUTPUT: &str = "output.f64le";
 pub(crate) const MAX_NODE_FREEZE_BYTES: u64 = 1024 * 1024 * 1024;
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 const FORMAT: &str = "maac.node-freeze";
-const VERSION: u32 = 2;
+const VERSION: u32 = 3;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -204,7 +204,7 @@ impl NodeFreezeSnapshot {
             format!("sha256:{:x}", hash.finalize()),
             engine_digest()?,
         );
-        manifest.reuse_identity = Some(reuse_identity(snapshot, &plan, boundary)?);
+        manifest.reuse_identity = Some(reuse_identity(snapshot, &plan, boundary, VERSION)?);
         manifest.render_key = render_key(&manifest)?;
         validate_manifest(&manifest)?;
         let json = serde_json::to_vec(&manifest).map_err(|e| {
@@ -351,9 +351,9 @@ impl NodeFreezeSnapshot {
     pub(crate) fn matches_snapshot(&self, snapshot: &ArchiveSnapshot) -> Result<bool, Diagnostics> {
         let boundary = self.boundary();
         let (_staged, plan) = staged_plan(snapshot)?;
-        let identity_matches = if self.manifest.version == 2 {
+        let identity_matches = if matches!(self.manifest.version, 2 | 3) {
             self.manifest.reuse_identity.as_deref()
-                == Some(reuse_identity(snapshot, &plan, &boundary)?.as_str())
+                == Some(reuse_identity(snapshot, &plan, &boundary, self.manifest.version)?.as_str())
         } else {
             self.manifest.snapshot == snapshot.digest()
         };
@@ -603,10 +603,20 @@ fn reuse_identity(
     snapshot: &ArchiveSnapshot,
     plan: &DiskMediaPlan,
     boundary: &PortRef,
+    version: u32,
 ) -> Result<String, Diagnostics> {
     let source = snapshot.source_text(snapshot.entry())?;
     let document = syntax::parse(source)?;
-    let allowed = plan.selective_node_params(boundary);
+    let allowed = match version {
+        2 => plan.selective_node_params(boundary),
+        3 => plan.selective_node_params_v3(boundary),
+        _ => {
+            return Err(fail(
+                DiagnosticCode::Version,
+                "unsupported node freeze version",
+            ))
+        }
+    };
     let mut spans = Vec::new();
     for (id, parameter) in allowed {
         let Some(object) = document.object(&id) else {
@@ -647,10 +657,10 @@ fn reuse_identity(
 }
 
 fn render_key(m: &Manifest) -> Result<String, Diagnostics> {
-    if m.version == 2 {
+    if matches!(m.version, 2 | 3) {
         let key = SelectiveRenderKey {
             format: "maac.node-freeze-render-key",
-            version: 2,
+            version: m.version,
             reuse_identity: m.reuse_identity.as_deref().ok_or_else(|| {
                 fail(DiagnosticCode::Syntax, "missing node freeze reuse identity")
             })?,
@@ -696,7 +706,7 @@ fn render_key(m: &Manifest) -> Result<String, Diagnostics> {
 }
 
 fn validate_manifest(m: &Manifest) -> Result<(), Diagnostics> {
-    if m.format != FORMAT || !matches!(m.version, 1 | 2) {
+    if m.format != FORMAT || !matches!(m.version, 1..=3) {
         return Err(fail(
             DiagnosticCode::Version,
             "unsupported node freeze format or version",
@@ -712,7 +722,7 @@ fn validate_manifest(m: &Manifest) -> Result<(), Diagnostics> {
     }
     match (m.version, &m.reuse_identity) {
         (1, None) => {}
-        (2, Some(identity)) => validate_hash_pin(identity, "reuse identity")?,
+        (2 | 3, Some(identity)) => validate_hash_pin(identity, "reuse identity")?,
         _ => {
             return Err(fail(
                 DiagnosticCode::Syntax,
@@ -987,13 +997,44 @@ track t { target=&tone:events; }
 place notes { pattern=&phrase; track=&t; at=0q; }
 "#;
 
-    fn project() -> (tempfile::TempDir, ArchiveSnapshot, PortRef) {
+    fn project_with_source(source: &str) -> (tempfile::TempDir, ArchiveSnapshot, PortRef) {
         let dir = tempfile::tempdir().unwrap();
-        fs::write(dir.path().join("main.maac"), SOURCE).unwrap();
+        fs::write(dir.path().join("main.maac"), source).unwrap();
         let snapshot =
             ArchiveSnapshot::capture(Path::new("main.maac"), dir.path(), "default").unwrap();
         let boundary = PortRef::new("room", "out").unwrap();
         (dir, snapshot, boundary)
+    }
+
+    fn project() -> (tempfile::TempDir, ArchiveSnapshot, PortRef) {
+        project_with_source(SOURCE)
+    }
+
+    fn sibling_source() -> String {
+        SOURCE
+            .replace("output=&pan:out", "output=&bus:out")
+            .replace(
+                "node pan {",
+                "node sidegain { type=\"core.gain/1\"; config={channels=1;}; params={gain=1/3;}; }\nnode sidepan { type=\"core.pan/1\"; params={pan=-0.3;}; }\nnode bus { type=\"core.sum/1\"; config={channels=2;}; }\nnode pan {",
+            )
+            .replace(
+                "connect c { from=&gain:out; to=&pan:in; }",
+                "connect c { from=&gain:out; to=&pan:in; }\nconnect side_input { from=&tone:out; to=&sidegain:in; }\nconnect side_pan { from=&sidegain:out; to=&sidepan:in; }\nconnect main_bus { from=&pan:out; to=&bus:in; }\nconnect side_bus { from=&sidepan:out; to=&bus:in; }",
+            )
+    }
+
+    fn as_v2(
+        mut freeze: NodeFreezeSnapshot,
+        snapshot: &ArchiveSnapshot,
+        boundary: &PortRef,
+    ) -> NodeFreezeSnapshot {
+        let (_staged, plan) = staged_plan(snapshot).unwrap();
+        freeze.manifest.version = 2;
+        freeze.manifest.reuse_identity =
+            Some(reuse_identity(snapshot, &plan, boundary, 2).unwrap());
+        freeze.manifest.render_key = render_key(&freeze.manifest).unwrap();
+        freeze.json = serde_json::to_vec(&freeze.manifest).unwrap();
+        freeze
     }
 
     #[test]
@@ -1030,10 +1071,10 @@ place notes { pattern=&phrase; track=&t; at=0q; }
     }
 
     #[test]
-    fn v2_allows_only_downstream_numeric_params_and_renders_candidate() {
+    fn v3_allows_downstream_numeric_params_and_renders_candidate() {
         let (project, snapshot, boundary) = project();
         let freeze = NodeFreezeSnapshot::capture(&snapshot, &boundary).unwrap();
-        assert_eq!(freeze.manifest.version, 2);
+        assert_eq!(freeze.manifest.version, 3);
         let edited = SOURCE
             .replace("gain=3/4", "gain=1/2")
             .replace("pan=0.2", "pan=-0.1");
@@ -1074,6 +1115,69 @@ place notes { pattern=&phrase; track=&t; at=0q; }
     }
 
     #[test]
+    fn v3_reuses_sibling_gain_and_pan_and_renders_candidate() {
+        let source = sibling_source();
+        let (project, snapshot, boundary) = project_with_source(&source);
+        let freeze = NodeFreezeSnapshot::capture(&snapshot, &boundary).unwrap();
+        assert_eq!(freeze.manifest.version, 3);
+        let edited = source
+            .replace("gain=1/3", "gain=2/3")
+            .replace("pan=-0.3", "pan=0.4");
+        fs::write(project.path().join("main.maac"), edited).unwrap();
+        let candidate =
+            ArchiveSnapshot::capture(Path::new("main.maac"), project.path(), "default").unwrap();
+        assert!(freeze.matches_snapshot(&candidate).unwrap());
+        let (_staged, plan) = staged_plan(&candidate).unwrap();
+        let mut normal = Vec::new();
+        plan.render(|frame| {
+            normal.extend_from_slice(frame);
+            Ok(())
+        })
+        .unwrap();
+        let mut reused = Vec::new();
+        freeze
+            .render_replacement(&candidate, |frame| {
+                reused.extend_from_slice(frame);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            normal.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+            reused.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn v2_rejects_sibling_edits_but_accepts_downstream_edits() {
+        let source = sibling_source();
+        let (project, snapshot, boundary) = project_with_source(&source);
+        let freeze = as_v2(
+            NodeFreezeSnapshot::capture(&snapshot, &boundary).unwrap(),
+            &snapshot,
+            &boundary,
+        );
+        assert_eq!(freeze.manifest.version, 2);
+        fs::write(
+            project.path().join("main.maac"),
+            source.replace("gain=1/3", "gain=2/3"),
+        )
+        .unwrap();
+        let sibling =
+            ArchiveSnapshot::capture(Path::new("main.maac"), project.path(), "default").unwrap();
+        assert!(!freeze.matches_snapshot(&sibling).unwrap());
+        fs::write(
+            project.path().join("main.maac"),
+            source
+                .replace("gain=3/4", "gain=1/2")
+                .replace("pan=0.2", "pan=-0.1"),
+        )
+        .unwrap();
+        let downstream =
+            ArchiveSnapshot::capture(Path::new("main.maac"), project.path(), "default").unwrap();
+        assert!(freeze.matches_snapshot(&downstream).unwrap());
+    }
+
+    #[test]
     fn delayed_feedback_excludes_downstream_gain() {
         let source = SOURCE
             .replace(
@@ -1085,13 +1189,53 @@ place notes { pattern=&phrase; track=&t; at=0q; }
                 "connect a { from=&tone:out; to=&sum:in; }\nconnect feedback { from=&gain:out; to=&delay:in; }\nconnect delayed { from=&delay:out; to=&sum:in; }\nconnect before_room { from=&sum:out; to=&room:in; }",
             );
         let project = tempfile::tempdir().unwrap();
-        fs::write(project.path().join("main.maac"), source).unwrap();
+        fs::write(project.path().join("main.maac"), &source).unwrap();
         let snapshot =
             ArchiveSnapshot::capture(Path::new("main.maac"), project.path(), "default").unwrap();
         let (_staged, plan) = staged_plan(&snapshot).unwrap();
-        let allowed = plan.selective_node_params(&PortRef::new("room", "out").unwrap());
+        let boundary = PortRef::new("room", "out").unwrap();
+        let allowed = plan.selective_node_params(&boundary);
         assert!(!allowed.contains_key("gain"));
         assert_eq!(allowed.get("pan"), Some(&"pan"));
+        let allowed_v3 = plan.selective_node_params_v3(&boundary);
+        assert!(!allowed_v3.contains_key("gain"));
+        assert_eq!(allowed_v3.get("pan"), Some(&"pan"));
+        let freeze = NodeFreezeSnapshot::capture(&snapshot, &boundary).unwrap();
+        fs::write(
+            project.path().join("main.maac"),
+            source.replace("gain=3/4", "gain=1/2"),
+        )
+        .unwrap();
+        let feedback_edit =
+            ArchiveSnapshot::capture(Path::new("main.maac"), project.path(), "default").unwrap();
+        assert!(!freeze.matches_snapshot(&feedback_edit).unwrap());
+    }
+
+    #[test]
+    fn compressor_sidechain_gain_cannot_change_under_v3_freeze() {
+        let source = SOURCE
+            .replace(
+                "node room { type=\"fx.reverb/1\"; config={channels=1;}; params={decay=1/2s;mix=0.4;}; }",
+                "node room { type=\"fx.compressor/1\"; config={channels=1;detector=external;sidechain_channels=1;}; params={threshold=-30dB;ratio=2;attack=0s;release=0s;}; }\nnode detector_gain { type=\"core.gain/1\"; config={channels=1;}; params={gain=1/3;}; }",
+            )
+            .replace(
+                "connect a { from=&tone:out; to=&room:in; }",
+                "connect a { from=&tone:out; to=&room:in; }\nconnect detector_input { from=&tone:out; to=&detector_gain:in; }\nconnect sidechain { from=&detector_gain:out; to=&room:sidechain; }",
+            );
+        let (project, snapshot, boundary) = project_with_source(&source);
+        let (_staged, plan) = staged_plan(&snapshot).unwrap();
+        assert!(!plan
+            .selective_node_params_v3(&boundary)
+            .contains_key("detector_gain"));
+        let freeze = NodeFreezeSnapshot::capture(&snapshot, &boundary).unwrap();
+        fs::write(
+            project.path().join("main.maac"),
+            source.replace("gain=1/3", "gain=2/3"),
+        )
+        .unwrap();
+        let edited =
+            ArchiveSnapshot::capture(Path::new("main.maac"), project.path(), "default").unwrap();
+        assert!(!freeze.matches_snapshot(&edited).unwrap());
     }
 
     #[test]
@@ -1121,9 +1265,23 @@ place notes { pattern=&phrase; track=&t; at=0q; }
     }
 
     #[test]
-    fn v2_manifest_identity_is_recomputed_from_archived_source() {
+    fn v3_manifest_identity_is_recomputed_from_archived_source() {
         let (_project, snapshot, boundary) = project();
         let mut freeze = NodeFreezeSnapshot::capture(&snapshot, &boundary).unwrap();
+        freeze.manifest.reuse_identity = Some(sha256_digest(b"forged identity"));
+        freeze.manifest.render_key = render_key(&freeze.manifest).unwrap();
+        freeze.json = serde_json::to_vec(&freeze.manifest).unwrap();
+        assert!(!freeze.matches_snapshot(&snapshot).unwrap());
+    }
+
+    #[test]
+    fn v2_manifest_identity_is_recomputed_from_archived_source() {
+        let (_project, snapshot, boundary) = project();
+        let mut freeze = as_v2(
+            NodeFreezeSnapshot::capture(&snapshot, &boundary).unwrap(),
+            &snapshot,
+            &boundary,
+        );
         freeze.manifest.reuse_identity = Some(sha256_digest(b"forged identity"));
         freeze.manifest.render_key = render_key(&freeze.manifest).unwrap();
         freeze.json = serde_json::to_vec(&freeze.manifest).unwrap();

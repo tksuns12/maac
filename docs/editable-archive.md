@@ -156,13 +156,15 @@ and selected boundary; `--replay` compares the internal binary64 payload.
 For a current source, `freeze-render` replaces that node's output at its normal
 graph position and runs the remaining graph through the ordinary final WAV
 encoder. Its `output_digest` identifies the published WAV; the node cache has a
-separate digest. New node freezes permit only static parameter-value edits on
-project-level `core.gain/1` and `core.pan/1` nodes strictly downstream of the
-frozen boundary. All other source bytes and dependencies stay pinned, including
-the frozen effect, upstream and unrelated branches, graph connections, musical
+separate digest. New node freezes permit only numeric parameter-value edits on
+project-level `core.gain/1` and `core.pan/1` nodes with no audio or modulation
+dependency path to the frozen effect. This includes downstream and independent
+mix branches. All other source bytes and dependencies stay pinned, including
+the frozen effect, its ancestors and feedback paths, graph connections, musical
 events, timing, automation, imported media, and retained provenance. Eligible
-reuse renders the current verified source with the cached node output; older
-node freezes retain their exact-source rule. Each checkpoint may carry one
+reuse renders the current verified source with the cached node output. Older
+node freezes retain their rules: version 1 pins the exact source, while version
+2 permits only eligible downstream gain/pan edits. Each checkpoint may carry one
 freeze, and `--freeze-node` cannot be combined with `--freeze-output`.
 Existing whole-output freezes keep their original format and behavior.
 

@@ -15,7 +15,7 @@ complete professional-production product.
 | Language/conformance L1–L5 | Addressed for the bounded slices | Do not expand this into a full-profile or cross-platform identity claim. |
 | Phase 1: end-to-end inventory | Partial | Publish one lifecycle inventory covering media, recording, latency, crops, takes, routing, delivery, archive, and reopen. |
 | Phase 2: reset-correct excerpts | Complete for bounded final-WAV ranges | No claim of realtime seeking, speed-up, or arbitrary DSP-state restoration. |
-| Phase 3: media/import/packaging | In progress; bounded WAV crop import, opt-in retained-original verification, native PCM disk media, archive checkpoints, multiple selected retained WAV imports, explicit whole-output and single native-effect-node freeze reuse, bounded downstream gain/pan edit reuse, and entry and direct-library journaled transactions implemented | Add broader editing and provenance coverage, processor context, multiple frozen graph branches, and broader selective invalidation. |
+| Phase 3: media/import/packaging | In progress; bounded WAV crop import, opt-in retained-original verification, native PCM disk media, archive checkpoints, multiple selected retained WAV imports, explicit whole-output and single native-effect-node freeze reuse, bounded independent-branch gain/pan edit reuse, and entry and direct-library journaled transactions implemented | Add broader editing and provenance coverage, processor context, multiple frozen graph branches, and broader selective invalidation. |
 | Phase 4: capture/playback/comping | Partial foundations only | Add recording, takes, comp selection, playback, and revision workflows. |
 | Phase 5: open processors and hosting | Partial foundations only | Generic rendering and executable native external hosting remain deferred. |
 | Phase 6: mix/master/release/reopen | Not complete | Pass the representative production, invalidation, clean-reopen, listening, and producer gates. |
@@ -49,8 +49,9 @@ directories whose PCM belongs to the composition closure. Version 7 records a
 direct local library edit and its generated entry import pin in one checkpoint.
 Version 8 captures one internal native effect output as exact binary64 samples
 and can substitute it during a subsequent render after input validation. New
-node freezes permit bounded static gain/pan edits strictly downstream of that
-effect while retaining the other source and dependency pins. Multi-node
+node freezes permit bounded static gain/pan edits wherever the control cannot
+feed the frozen effect, including independent mix branches. Older node freezes
+keep their recorded eligibility rules. Multi-node
 replacement and broader selective invalidation remain open, so the editable
 archive milestone remains incomplete.
 

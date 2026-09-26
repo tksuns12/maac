@@ -255,6 +255,107 @@ fn downstream_gain_and_pan_edits_reuse_the_cache_in_the_current_graph() {
 }
 
 #[test]
+fn independent_sibling_gain_and_pan_edits_reuse_the_frozen_effect() {
+    let temp = tempdir().unwrap();
+    let source = temp.path().join("source");
+    let archive = temp.path().join("archive");
+    let original = temp.path().join("original.wav");
+    let current = temp.path().join("current.wav");
+    let reused = temp.path().join("reused.wav");
+    project(&source);
+    let sibling_source = SOURCE
+        .replace(
+            "node pulse_pan",
+            "node pulse_gain { type=\"core.gain/1\"; config={channels=1;}; params={gain=0.6;}; }\nnode pulse_pan",
+        )
+        .replace(
+            "connect e { from=&pulse:out; to=&pulse_pan:in; }",
+            "connect e { from=&pulse:out; to=&pulse_gain:in; }\nconnect e2 { from=&pulse_gain:out; to=&pulse_pan:in; }",
+        );
+    fs::write(source.join("main.maac"), &sibling_source).unwrap();
+    success(invoke(&[
+        Path::new("--json"),
+        Path::new("build"),
+        &source,
+        Path::new("-o"),
+        &original,
+    ]));
+    success(invoke(&[
+        Path::new("--json"),
+        Path::new("archive"),
+        Path::new("create"),
+        &source,
+        Path::new("--freeze-node"),
+        Path::new("room"),
+        Path::new("--output-dir"),
+        &archive,
+    ]));
+    let root_manifest: Value =
+        serde_json::from_slice(&fs::read(archive.join("maac-archive.json")).unwrap()).unwrap();
+    let freeze_id = root_manifest["checkpoints"][0]["freeze"].as_str().unwrap();
+    let node_manifest: Value = serde_json::from_slice(
+        &fs::read(
+            archive
+                .join("freezes")
+                .join(&freeze_id[7..])
+                .join("maac-node-freeze.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(node_manifest["version"], 3);
+
+    fs::write(
+        source.join("main.maac"),
+        sibling_source
+            .replace("gain=0.6", "gain=0.4")
+            .replace("pan=0.2", "pan=-0.1"),
+    )
+    .unwrap();
+    let checked = success(invoke(&[
+        Path::new("--json"),
+        Path::new("archive"),
+        Path::new("freeze-check"),
+        &archive,
+        Path::new("--source"),
+        &source,
+        Path::new("--replay"),
+    ]));
+    assert_eq!(checked["eligibility"], "current");
+    assert_eq!(checked["replay"], "matched");
+    assert_ne!(checked["source_digest"], checked["frozen_source_digest"]);
+    success(invoke(&[
+        Path::new("--json"),
+        Path::new("build"),
+        &source,
+        Path::new("-o"),
+        &current,
+    ]));
+    let rendered = success(invoke(&[
+        Path::new("--json"),
+        Path::new("archive"),
+        Path::new("freeze-render"),
+        &archive,
+        Path::new("--source"),
+        &source,
+        Path::new("-o"),
+        &reused,
+    ]));
+    assert_eq!(rendered["source_digest"], checked["source_digest"]);
+    assert_eq!(
+        rendered["frozen_source_digest"],
+        checked["frozen_source_digest"]
+    );
+    assert_eq!(rendered["cache_digest"], checked["cache_digest"]);
+    assert_eq!(fs::read(&reused).unwrap(), fs::read(&current).unwrap());
+    assert_ne!(fs::read(&reused).unwrap(), fs::read(&original).unwrap());
+    assert_eq!(
+        rendered["output_digest"],
+        sha256_digest(&fs::read(&reused).unwrap())
+    );
+}
+
+#[test]
 fn frozen_effect_and_upstream_edits_stale_the_node_cache() {
     let temp = tempdir().unwrap();
     let source = temp.path().join("source");
@@ -274,7 +375,6 @@ fn frozen_effect_and_upstream_edits_stale_the_node_cache() {
     for (name, edited) in [
         ("effect", SOURCE.replace("mix=0.4", "mix=0.5")),
         ("upstream", SOURCE.replace("level=0.2", "level=0.3")),
-        ("unrelated", SOURCE.replace("pan=0.2", "pan=0.1")),
     ] {
         fs::write(source.join("main.maac"), edited).unwrap();
         let checked = rejected(invoke(&[

@@ -190,12 +190,28 @@ pub(crate) struct DiskMediaPlan {
 }
 
 impl DiskMediaPlan {
-    /// Source parameter names whose values may change without affecting this
-    /// boundary. The node must lie on a forward audio path; any connection or
+    /// V2 permits only downstream gain and pan parameters. Any audio or
     /// modulation path back to the boundary, including delay feedback, excludes it.
     pub(crate) fn selective_node_params(
         &self,
         boundary: &PortRef,
+    ) -> BTreeMap<String, &'static str> {
+        self.selective_node_params_inner(boundary, true)
+    }
+
+    /// V3 also permits unrelated gain and pan nodes, provided they cannot
+    /// influence the boundary through audio or modulation dependencies.
+    pub(crate) fn selective_node_params_v3(
+        &self,
+        boundary: &PortRef,
+    ) -> BTreeMap<String, &'static str> {
+        self.selective_node_params_inner(boundary, false)
+    }
+
+    fn selective_node_params_inner(
+        &self,
+        boundary: &PortRef,
+        require_downstream: bool,
     ) -> BTreeMap<String, &'static str> {
         let view = self.artifact.view();
         let mut audio_edges: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
@@ -230,12 +246,14 @@ impl DiskMediaPlan {
             }
             seen
         }
-        let downstream = reachable(&audio_edges, &boundary.node);
+        let downstream = require_downstream.then(|| reachable(&audio_edges, &boundary.node));
         view.nodes
             .iter()
             .filter_map(|node| {
                 if node.id == &boundary.node
-                    || !downstream.contains(node.id.as_str())
+                    || downstream
+                        .as_ref()
+                        .is_some_and(|nodes| !nodes.contains(node.id.as_str()))
                     || reachable(&dependencies, node.id).contains(boundary.node.as_str())
                 {
                     return None;

@@ -355,6 +355,27 @@ candidate snapshot activation, and reverse-path exclusion through delay edges.
 The first release run began before the provenance fix and failed the new digest
 assertion; the corrected release result appears in the table.
 
+## Independent-branch node-freeze reuse (2026-09-26)
+
+New `maac.node-freeze/3` manifests permit numeric gain and pan value edits on
+project nodes without an audio or modulation path to the frozen effect. This
+includes sibling mix branches. Version 1 remains exact-source; version 2 keeps
+its downstream-only rule. The archive root remains version 8.
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Focused node and archive regression | `cargo test --locked --offline --lib node_freeze`; `cargo test --test archive_node_freeze_cli --test archive_freeze_cli` | Passed: 12 node-related unit tests, 5 node CLI lifecycle tests, and 3 whole-output freeze tests |
+| Full Rust gate before sidechain regression | `cargo test --all-targets --quiet` | Passed: 299 active library tests, 3 existing ignored, and all integration targets |
+| Sidechain exclusion regression | `cargo test --lib compressor_sidechain_gain_cannot_change_under_v3_freeze` | Passed: a gain feeding the frozen compressor's external sidechain cannot change under v3 reuse |
+| Release lifecycle | `cargo test --release --test archive_node_freeze_cli` | Passed: all 5 node CLI tests |
+| Formatting, Clippy, whitespace | `cargo fmt --all -- --check`; `cargo clippy --locked --offline --all-targets -- -D warnings`; `git diff --check` | Passed after the sidechain regression was added |
+| Independent review | Read-only Astra review of the uncommitted change | No correctness, security, or regression findings; added an explicit compressor-sidechain test from the coverage review |
+
+The new CLI test changes gain and pan on a sibling branch, then confirms that
+replay matches the cache and the reused WAV matches an ordinary build of the
+edited mix. Unit tests pin v1/v2 behavior, exclude delayed feedback and
+compressor sidechain changes, and reject forged v2/v3 reuse identities.
+
 ## Historical naming cleanup
 
 The current tree uses MaaC consistently in the specification, grammar, schema,
