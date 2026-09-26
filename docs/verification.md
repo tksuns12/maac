@@ -376,6 +376,28 @@ replay matches the cache and the reused WAV matches an ordinary build of the
 edited mix. Unit tests pin v1/v2 behavior, exclude delayed feedback and
 compressor sidechain changes, and reject forged v2/v3 reuse identities.
 
+## Independent native-effect freeze groups (2026-09-26)
+
+Archive version 9 records 2–16 independent node freezes in one checkpoint.
+Capture and reuse each execute the graph once for the group. Reuse requires
+every member to remain eligible; the final WAV is encoded and hashed separately.
+The archive keeps scalar freeze records and older checkpoint IDs unchanged.
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Focused core and history | `cargo test --lib node_freeze --quiet`; `cargo test --lib archive_history::tests --quiet` | Passed: 18 node tests and 16 archive history tests |
+| Group CLI lifecycle | `cargo test --test archive_multi_node_freeze_cli --quiet` | Passed: 4 tests |
+| Full Rust gate | `cargo test --all-targets --quiet` | Passed: 308 active library tests, 3 existing ignored, and all integration targets |
+| Formatting, Clippy, whitespace | `cargo fmt --all -- --check`; `cargo clippy --all-targets -- -D warnings`; `git diff --check` | Passed |
+| Independent review | Read-only Astra review of the combined change | Two findings resolved: executable changes no longer invalidate archive integrity, and removed effects produce structured stale results |
+
+The group CLI tests cover canonical selection order, relocation and source
+deletion, replay, byte-identical edited-mix output, one stale member blocking
+publication, removed-effect staleness, and duplicate-boundary rejection. Core
+tests cover mixed scalar/group histories, append and patch promotion, private
+stream corruption, foreign executable identity, and the 64-reference limit.
+The group payload limit is 1 GiB total, checked during archive preflight.
+
 ## Historical naming cleanup
 
 The current tree uses MaaC consistently in the specification, grammar, schema,

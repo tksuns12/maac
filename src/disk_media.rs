@@ -309,6 +309,13 @@ impl DiskMediaPlan {
         self.engine()?.validate_node_freeze_boundary(boundary)
     }
 
+    pub(crate) fn validate_node_freeze_group(
+        &self,
+        boundaries: &[PortRef],
+    ) -> dsp::Result<Vec<(PortRef, usize)>> {
+        self.engine()?.validate_node_freeze_group(boundaries)
+    }
+
     pub(crate) fn render_node_freeze_boundary<F>(
         &self,
         boundary: &PortRef,
@@ -319,6 +326,18 @@ impl DiskMediaPlan {
     {
         self.engine()?
             .render_node_freeze_boundary(boundary, callback)
+    }
+
+    pub(crate) fn render_node_freeze_group<F>(
+        &self,
+        boundaries: &[PortRef],
+        callback: F,
+    ) -> dsp::Result<()>
+    where
+        F: FnMut(&[Vec<f64>]) -> dsp::Result<()>,
+    {
+        self.engine()?
+            .render_node_freeze_group(boundaries, callback)
     }
 
     pub(crate) fn render_with_node_replacement<R, F>(
@@ -333,6 +352,20 @@ impl DiskMediaPlan {
     {
         self.engine()?
             .render_with_node_replacement(boundary, replacement, callback)
+    }
+
+    pub(crate) fn render_with_node_replacements<R, F>(
+        &self,
+        boundaries: &[PortRef],
+        replacement: R,
+        callback: F,
+    ) -> dsp::Result<()>
+    where
+        R: FnMut(usize, u64, &mut [f64]) -> dsp::Result<()>,
+        F: FnMut(&[f64]) -> dsp::Result<()>,
+    {
+        self.engine()?
+            .render_with_node_replacements(boundaries, replacement, callback)
     }
 }
 

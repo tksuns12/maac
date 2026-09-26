@@ -4,6 +4,7 @@ use std::collections::BTreeSet;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::Path;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
@@ -17,7 +18,10 @@ use crate::diagnostic::{Diagnostic, DiagnosticCode, Diagnostics};
 use crate::dsp;
 use crate::editing::AppliedTransaction;
 use crate::freeze::{engine_digest, FreezeSnapshot};
-use crate::node_freeze::{NodeFreezePreflight, NodeFreezeSnapshot, NODE_FREEZE_MANIFEST};
+use crate::node_freeze::{
+    NodeFreezeGroup, NodeFreezePreflight, NodeFreezeSnapshot, MAX_NODE_FREEZE_BYTES,
+    NODE_FREEZE_MANIFEST,
+};
 use crate::plan::PortRef;
 
 const FORMAT: &str = "maac.editable-archive";
@@ -29,7 +33,9 @@ const EDITED_VERSION: u32 = 5;
 const MULTI_IMPORT_VERSION: u32 = 6;
 const IMPORT_EDIT_VERSION: u32 = 7;
 const NODE_FROZEN_VERSION: u32 = 8;
+const NODE_GROUP_VERSION: u32 = 9;
 const MAX_CHECKPOINTS: usize = 32;
+const MAX_FREEZE_REFERENCES: usize = 64;
 const MAX_SOURCE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_ASSET_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_PCM_BYTES: u64 = 4 * 1024 * 1024 * 1024;
@@ -54,7 +60,18 @@ struct CheckpointRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     freeze: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    node_freezes: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     edit: Option<String>,
+}
+
+impl CheckpointRecord {
+    fn freeze_digests(&self) -> impl Iterator<Item = &str> {
+        self.freeze
+            .as_deref()
+            .into_iter()
+            .chain(self.node_freezes.iter().flatten().map(String::as_str))
+    }
 }
 
 #[derive(Serialize)]
@@ -81,6 +98,15 @@ struct EditedCheckpointIdentity<'a> {
     parent: Option<&'a str>,
     snapshot: &'a str,
     edit: &'a str,
+}
+
+#[derive(Serialize)]
+struct GroupCheckpointIdentity<'a> {
+    format: &'static str,
+    version: u32,
+    parent: Option<&'a str>,
+    snapshot: &'a str,
+    node_freezes: &'a [String],
 }
 
 enum HistoryState {
@@ -128,6 +154,37 @@ pub(crate) struct NodeFreezeInfo {
     pub(crate) boundary: PortRef,
 }
 
+pub(crate) struct NodeGroupLeafCheck {
+    pub(crate) boundary: PortRef,
+    pub(crate) freeze_digest: String,
+    pub(crate) output_digest: String,
+    pub(crate) eligible: bool,
+    pub(crate) replay_matches: Option<bool>,
+}
+
+pub(crate) struct NodeGroupFreezeCheck {
+    pub(crate) status: FreezeCheckStatus,
+    pub(crate) revision: String,
+    pub(crate) source_digest: String,
+    pub(crate) frozen_source_digest: String,
+    pub(crate) leaves: Vec<NodeGroupLeafCheck>,
+}
+
+pub(crate) struct NodeGroupFreezeInfo {
+    pub(crate) frames: u64,
+    pub(crate) channels: u8,
+    pub(crate) sample_rate_hz: u32,
+    pub(crate) leaves: Vec<NodeGroupLeafCheck>,
+}
+
+pub(crate) struct NodeGroupRenderResult {
+    pub(crate) revision: String,
+    pub(crate) source_digest: String,
+    pub(crate) frozen_source_digest: String,
+    pub(crate) frames: u64,
+    pub(crate) leaves: Vec<NodeGroupLeafCheck>,
+}
+
 pub(crate) struct ArchivePatchResult {
     pub(crate) applied: AppliedTransaction,
     pub(crate) checkpoint: String,
@@ -150,31 +207,44 @@ pub(crate) struct ArchiveImportPatchResult {
 enum StoredFreeze {
     Output(FreezeSnapshot),
     Node(NodeFreezeSnapshot),
+    Group(Arc<NodeFreezeGroup>),
 }
 
 impl StoredFreeze {
-    fn digest(&self) -> String {
+    fn digests(&self) -> Vec<String> {
         match self {
-            Self::Output(f) => f.digest(),
-            Self::Node(f) => f.digest(),
+            Self::Output(f) => vec![f.digest()],
+            Self::Node(f) => vec![f.digest()],
+            Self::Group(group) => group
+                .leaves()
+                .iter()
+                .map(NodeFreezeSnapshot::digest)
+                .collect(),
+        }
+    }
+    fn scalar_digest(&self) -> Option<String> {
+        match self {
+            Self::Output(f) => Some(f.digest()),
+            Self::Node(f) => Some(f.digest()),
+            Self::Group(_) => None,
         }
     }
     fn output_bytes(&self) -> u64 {
         match self {
             Self::Output(f) => f.output_bytes(),
             Self::Node(f) => f.output_bytes(),
+            Self::Group(group) => group
+                .leaves()
+                .iter()
+                .map(NodeFreezeSnapshot::output_bytes)
+                .sum(),
         }
     }
     fn source_digest(&self) -> &str {
         match self {
             Self::Output(f) => f.source_digest(),
             Self::Node(f) => f.source_digest(),
-        }
-    }
-    fn stage_into(&self, dir: &Path) -> Result<(), Diagnostics> {
-        match self {
-            Self::Output(f) => f.stage_into(dir),
-            Self::Node(f) => f.stage_into(dir),
+            Self::Group(group) => group.leaves()[0].source_digest(),
         }
     }
 }
@@ -233,6 +303,14 @@ impl ArchiveHistory {
         Self::from_genesis(snapshot, Some(freeze))
     }
 
+    pub(crate) fn from_snapshot_node_group(
+        snapshot: ArchiveSnapshot,
+        boundaries: &[PortRef],
+    ) -> Result<Self, Diagnostics> {
+        let group = NodeFreezeGroup::capture(&snapshot, boundaries)?;
+        Self::from_genesis(snapshot, Some(StoredFreeze::Group(Arc::new(group))))
+    }
+
     pub(crate) fn from_snapshot(
         snapshot: ArchiveSnapshot,
         freeze_output: bool,
@@ -253,13 +331,14 @@ impl ArchiveHistory {
             snapshot.resource_bytes(),
             freeze.as_ref().map_or(0, StoredFreeze::output_bytes),
         )))?;
-        check_staged_tree_with_freezes(std::iter::once(&snapshot), usize::from(freeze.is_some()))?;
-        let record = checkpoint_with_freeze(
-            None,
-            &snapshot.digest(),
-            freeze.as_ref().map(StoredFreeze::digest).as_deref(),
+        check_staged_tree_with_freezes(
+            std::iter::once(&snapshot),
+            freeze.as_ref().map_or(0, |f| f.digests().len()),
         )?;
-        let version = if matches!(freeze, Some(StoredFreeze::Node(_))) {
+        let record = checkpoint_for_stored(None, &snapshot.digest(), freeze.as_ref())?;
+        let version = if matches!(freeze, Some(StoredFreeze::Group(_))) {
+            NODE_GROUP_VERSION
+        } else if matches!(freeze, Some(StoredFreeze::Node(_))) {
             NODE_FROZEN_VERSION
         } else if snapshot.is_multi_import() {
             MULTI_IMPORT_VERSION
@@ -322,7 +401,7 @@ impl ArchiveHistory {
                     },
                 })
             }
-            Some(2..=8) => Self::verify_versioned(root, json),
+            Some(2..=9) => Self::verify_versioned(root, json),
             _ => Err(fail(
                 DiagnosticCode::Version,
                 "unsupported editable archive version",
@@ -366,12 +445,12 @@ impl ArchiveHistory {
         if manifest
             .checkpoints
             .iter()
-            .any(|record| record.freeze.is_some())
+            .any(|record| record.freeze_digests().next().is_some())
         {
             let unique: BTreeSet<&str> = manifest
                 .checkpoints
                 .iter()
-                .filter_map(|record| record.freeze.as_deref())
+                .flat_map(CheckpointRecord::freeze_digests)
                 .collect();
             tree_entries = tree_entries
                 .checked_add(1 + unique.len() * 3)
@@ -443,7 +522,8 @@ impl ArchiveHistory {
             }
             children.push(child);
             preflights.push(preflight);
-            if let Some(digest) = &record.freeze {
+            let mut record_children = Vec::new();
+            for digest in record.freeze_digests() {
                 let freeze_root = freezes_root
                     .as_ref()
                     .ok_or_else(|| {
@@ -453,12 +533,13 @@ impl ArchiveHistory {
                         )
                     })?
                     .open_child_pinned(&digest[7..])?;
-                let preflight = if manifest.version == NODE_FROZEN_VERSION
-                    && freeze_root
-                        .dir()
-                        .symlink_metadata(NODE_FREEZE_MANIFEST)
-                        .is_ok()
-                {
+                let node_leaf = record.node_freezes.is_some()
+                    || (manifest.version >= NODE_FROZEN_VERSION
+                        && freeze_root
+                            .dir()
+                            .symlink_metadata(NODE_FREEZE_MANIFEST)
+                            .is_ok());
+                let preflight = if node_leaf {
                     StoredPreflight::Node(NodeFreezeSnapshot::preflight(
                         &freeze_root,
                         digest,
@@ -471,10 +552,25 @@ impl ArchiveHistory {
                         &record.snapshot,
                     )?)
                 };
-                freeze_children.push(Some((freeze_root, preflight)));
-            } else {
-                freeze_children.push(None);
+                record_children.push((freeze_root, preflight));
             }
+            if record.node_freezes.is_some() {
+                let group_bytes = record_children.iter().try_fold(0u64, |total, (_, leaf)| {
+                    total.checked_add(leaf.output_bytes()).ok_or_else(|| {
+                        fail(
+                            DiagnosticCode::ResourceLimit,
+                            "node freeze group length overflow",
+                        )
+                    })
+                })?;
+                if group_bytes > MAX_NODE_FREEZE_BYTES {
+                    return Err(fail(
+                        DiagnosticCode::ResourceLimit,
+                        "node freeze group output exceeds 1 GiB",
+                    ));
+                }
+            }
+            freeze_children.push(record_children);
             if let Some(digest) = &record.edit {
                 let parent = record.parent.as_deref().ok_or_else(|| {
                     fail(
@@ -565,12 +661,13 @@ impl ArchiveHistory {
             ));
         }
         check_aggregate_with_freezes(preflights.iter().zip(&freeze_children).map(
-            |(source, freeze)| {
+            |(source, leaves)| {
                 (
                     source.resource_bytes(),
-                    freeze
-                        .as_ref()
-                        .map_or(0, |(_, preflight)| preflight.output_bytes()),
+                    leaves
+                        .iter()
+                        .map(|(_, preflight)| preflight.output_bytes())
+                        .sum(),
                 )
             },
         ))?;
@@ -596,15 +693,49 @@ impl ArchiveHistory {
             snapshots.push(snapshot);
         }
         let mut freezes = Vec::with_capacity(freeze_children.len());
-        for child in &freeze_children {
-            freezes.push(match child {
-                Some((root, preflight)) => Some(preflight.verify(root)?),
-                None => None,
-            });
+        for (record, children) in manifest.checkpoints.iter().zip(&freeze_children) {
+            let freeze = if let Some(group_digests) = &record.node_freezes {
+                let mut leaves = Vec::with_capacity(children.len());
+                for (root, preflight) in children {
+                    let StoredFreeze::Node(leaf) = preflight.verify(root)? else {
+                        return Err(fail(
+                            DiagnosticCode::Reference,
+                            "group contains a non-node freeze",
+                        ));
+                    };
+                    leaves.push(leaf);
+                }
+                let group = NodeFreezeGroup::from_verified(leaves)?;
+                if group
+                    .leaves()
+                    .iter()
+                    .map(NodeFreezeSnapshot::digest)
+                    .collect::<Vec<_>>()
+                    .as_slice()
+                    != group_digests.as_slice()
+                {
+                    return Err(fail(
+                        DiagnosticCode::Hash,
+                        "group freeze order is not canonical",
+                    ));
+                }
+                Some(StoredFreeze::Group(Arc::new(group)))
+            } else {
+                children
+                    .first()
+                    .map(|(root, preflight)| preflight.verify(root))
+                    .transpose()?
+            };
+            freezes.push(freeze);
         }
         for (snapshot, freeze) in snapshots.iter().zip(&freezes) {
-            if let Some(StoredFreeze::Node(freeze)) = freeze {
-                if !freeze.matches_snapshot(snapshot)? {
+            if let Some(freeze) = freeze {
+                let matches = match freeze {
+                    StoredFreeze::Node(leaf) => leaf.matches_snapshot(snapshot)?,
+                    StoredFreeze::Group(group) => group.matches_snapshot(snapshot)?,
+                    StoredFreeze::Output(_) => true,
+                };
+                if !matches {
                     return Err(fail(
                         DiagnosticCode::Hash,
                         "node freeze metadata differs from its private checkpoint plan",
@@ -667,6 +798,15 @@ impl ArchiveHistory {
     ) -> Result<bool, Diagnostics> {
         let freeze = StoredFreeze::Node(NodeFreezeSnapshot::capture(&snapshot, boundary)?);
         self.append_with_freeze(snapshot, Some(freeze))
+    }
+
+    pub(crate) fn append_node_group(
+        &mut self,
+        snapshot: ArchiveSnapshot,
+        boundaries: &[PortRef],
+    ) -> Result<bool, Diagnostics> {
+        let group = NodeFreezeGroup::capture(&snapshot, boundaries)?;
+        self.append_with_freeze(snapshot, Some(StoredFreeze::Group(Arc::new(group))))
     }
 
     /// Apply one source-preserving Protocol 2 transaction to the archived head.
@@ -798,6 +938,12 @@ impl ArchiveHistory {
         let version = if freezes
             .iter()
             .flatten()
+            .any(|f| matches!(f, StoredFreeze::Group(_)))
+        {
+            NODE_GROUP_VERSION
+        } else if freezes
+            .iter()
+            .flatten()
             .any(|f| matches!(f, StoredFreeze::Node(_)))
         {
             NODE_FROZEN_VERSION
@@ -841,7 +987,15 @@ impl ArchiveHistory {
                 "freeze source does not match appended snapshot",
             ));
         }
-        let freeze_digest = freeze.as_ref().map(StoredFreeze::digest);
+        if let Some(StoredFreeze::Group(group)) = &freeze {
+            if !group.matches_snapshot(&snapshot)? {
+                return Err(fail(
+                    DiagnosticCode::RenderState,
+                    "node freeze group differs from appended snapshot",
+                ));
+            }
+        }
+        let freeze_digests = freeze.as_ref().map(StoredFreeze::digests);
         match &mut self.state {
             HistoryState::Legacy {
                 snapshot: old,
@@ -852,10 +1006,10 @@ impl ArchiveHistory {
                 debug_assert_eq!(genesis.id, *genesis_id);
                 let mut records = vec![genesis];
                 if changed {
-                    records.push(checkpoint_with_freeze(
+                    records.push(checkpoint_for_stored(
                         Some(&records[0].id),
                         &snapshot.digest(),
-                        freeze_digest.as_deref(),
+                        freeze.as_ref(),
                     )?);
                 }
                 let snapshots = if changed {
@@ -882,6 +1036,12 @@ impl ArchiveHistory {
                     unique_freeze_count(&freezes, None),
                 )?;
                 let version = if freezes
+                    .iter()
+                    .flatten()
+                    .any(|f| matches!(f, StoredFreeze::Group(_)))
+                {
+                    NODE_GROUP_VERSION
+                } else if freezes
                     .iter()
                     .flatten()
                     .any(|f| matches!(f, StoredFreeze::Node(_)))
@@ -916,11 +1076,11 @@ impl ArchiveHistory {
                 if snapshots
                     .last()
                     .is_some_and(|head| head.digest() == snapshot.digest())
-                    && (freeze_digest.is_none()
+                    && (freeze_digests.is_none()
                         || freezes
                             .last()
                             .and_then(Option::as_ref)
-                            .is_some_and(|head| Some(head.digest()) == freeze_digest))
+                            .is_some_and(|head| Some(head.digests()) == freeze_digests))
                 {
                     return Ok(false);
                 }
@@ -951,12 +1111,16 @@ impl ArchiveHistory {
                     unique_edit_entries(edits),
                 )?;
                 let mut records = manifest.checkpoints.clone();
-                records.push(checkpoint_with_freeze(
+                records.push(checkpoint_for_stored(
                     Some(&manifest.head),
                     &snapshot.digest(),
-                    freeze_digest.as_deref(),
+                    freeze.as_ref(),
                 )?);
-                let version = if manifest.version == NODE_FROZEN_VERSION
+                let version = if manifest.version == NODE_GROUP_VERSION
+                    || matches!(freeze, Some(StoredFreeze::Group(_)))
+                {
+                    NODE_GROUP_VERSION
+                } else if manifest.version == NODE_FROZEN_VERSION
                     || matches!(freeze, Some(StoredFreeze::Node(_)))
                 {
                     NODE_FROZEN_VERSION
@@ -1178,6 +1342,121 @@ impl ArchiveHistory {
         })
     }
 
+    pub(crate) fn node_group_check(
+        &self,
+        entry: &Path,
+        root: &Path,
+        revision: Option<&str>,
+        replay: bool,
+    ) -> Result<NodeGroupFreezeCheck, Diagnostics> {
+        self.checked_node_group_candidate(entry, root, revision, replay)
+            .map(|(check, _)| check)
+    }
+
+    fn checked_node_group_candidate(
+        &self,
+        entry: &Path,
+        root: &Path,
+        revision: Option<&str>,
+        replay: bool,
+    ) -> Result<(NodeGroupFreezeCheck, ArchiveSnapshot), Diagnostics> {
+        let (record, stored) = self.selected_freeze(revision)?;
+        let StoredFreeze::Group(group) = stored else {
+            return Err(fail(
+                DiagnosticCode::Reference,
+                "selected checkpoint has no node freeze group",
+            ));
+        };
+        let reference = self.select(Some(&record.id))?;
+        let (candidate, missing_selected_import) = candidate_snapshot(entry, root, reference)?;
+        let source_digest = candidate.digest();
+        // Candidate edits can remove or rewire a selected effect. Keep a
+        // per-leaf stale result while requiring the group shape to remain valid.
+        let (group_shape_valid, leaf_matches) = group.candidate_eligibility(&candidate)?;
+        let engine_current = group.leaves()[0].engine_digest() == engine_digest()?;
+        let eligibility: Vec<_> = leaf_matches
+            .into_iter()
+            .map(|eligible| eligible && !missing_selected_import && engine_current)
+            .collect();
+        let status = if group_shape_valid && eligibility.iter().all(|eligible| *eligible) {
+            FreezeCheckStatus::Current
+        } else {
+            FreezeCheckStatus::Stale
+        };
+        let replay_matches = if replay && status == FreezeCheckStatus::Current {
+            Some(group.replay_matches(&candidate)?)
+        } else {
+            None
+        };
+        let check = NodeGroupFreezeCheck {
+            status,
+            revision: record.id.clone(),
+            source_digest,
+            frozen_source_digest: record.snapshot.clone(),
+            leaves: group_leaf_checks(group, Some(&eligibility), replay_matches.as_deref()),
+        };
+        Ok((check, candidate))
+    }
+
+    pub(crate) fn node_group_info(
+        &self,
+        revision: Option<&str>,
+    ) -> Result<NodeGroupFreezeInfo, Diagnostics> {
+        let (_, StoredFreeze::Group(group)) = self.selected_freeze(revision)? else {
+            return Err(fail(
+                DiagnosticCode::Reference,
+                "selected checkpoint has no node freeze group",
+            ));
+        };
+        let info = group.info();
+        Ok(NodeGroupFreezeInfo {
+            frames: info.frames,
+            channels: info.channels,
+            sample_rate_hz: info.sample_rate_hz,
+            leaves: group_leaf_checks(group, None, None),
+        })
+    }
+
+    pub(crate) fn render_from_node_group<F>(
+        &self,
+        entry: &Path,
+        root: &Path,
+        revision: Option<&str>,
+        callback: F,
+    ) -> Result<NodeGroupRenderResult, Diagnostics>
+    where
+        F: FnMut(&[f64]) -> dsp::Result<()>,
+    {
+        let (check, candidate) = self.checked_node_group_candidate(entry, root, revision, false)?;
+        if check.status != FreezeCheckStatus::Current {
+            let stale = check
+                .leaves
+                .iter()
+                .filter(|leaf| !leaf.eligible)
+                .map(|leaf| leaf.boundary.node.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(fail(
+                DiagnosticCode::RenderState,
+                format!("stored node freeze group is stale for this source: {stale}"),
+            ));
+        }
+        let (_, StoredFreeze::Group(group)) = self.selected_freeze(Some(&check.revision))? else {
+            return Err(fail(
+                DiagnosticCode::Reference,
+                "selected checkpoint has no node freeze group",
+            ));
+        };
+        group.render_replacements(&candidate, callback)?;
+        Ok(NodeGroupRenderResult {
+            revision: check.revision,
+            source_digest: check.source_digest,
+            frozen_source_digest: check.frozen_source_digest,
+            frames: group.info().frames,
+            leaves: check.leaves,
+        })
+    }
+
     /// Render downstream graph frames through the verified node replacement.
     /// The caller encodes and publishes the resulting final output WAV.
     pub(crate) fn render_from_node_freeze<F>(
@@ -1320,7 +1599,7 @@ impl ArchiveHistory {
                 if manifest
                     .checkpoints
                     .iter()
-                    .any(|record| record.freeze.is_some())
+                    .any(|record| record.freeze_digests().next().is_some())
                 {
                     let root = dir.join("freezes");
                     fs::create_dir(&root).map_err(|e| {
@@ -1331,16 +1610,36 @@ impl ArchiveHistory {
                     })?;
                     let mut staged = BTreeSet::new();
                     for (record, freeze) in manifest.checkpoints.iter().zip(freezes) {
-                        if let (Some(digest), Some(freeze)) = (&record.freeze, freeze) {
-                            if staged.insert(digest.clone()) {
-                                let child = root.join(&digest[7..]);
-                                fs::create_dir(&child).map_err(|e| {
-                                    fail(
-                                        DiagnosticCode::Reference,
-                                        format!("cannot create freeze directory: {e}"),
-                                    )
-                                })?;
-                                freeze.stage_into(&child)?;
+                        let Some(freeze) = freeze else { continue };
+                        if record.freeze_digests().collect::<Vec<_>>()
+                            != freeze
+                                .digests()
+                                .iter()
+                                .map(String::as_str)
+                                .collect::<Vec<_>>()
+                        {
+                            return Err(fail(
+                                DiagnosticCode::Hash,
+                                "freeze record differs from private media",
+                            ));
+                        }
+                        match freeze {
+                            StoredFreeze::Output(leaf) => {
+                                stage_freeze_leaf(&root, &mut staged, &leaf.digest(), |dir| {
+                                    leaf.stage_into(dir)
+                                })?
+                            }
+                            StoredFreeze::Node(leaf) => {
+                                stage_freeze_leaf(&root, &mut staged, &leaf.digest(), |dir| {
+                                    leaf.stage_into(dir)
+                                })?
+                            }
+                            StoredFreeze::Group(group) => {
+                                for leaf in group.leaves() {
+                                    stage_freeze_leaf(&root, &mut staged, &leaf.digest(), |dir| {
+                                        leaf.stage_into(dir)
+                                    })?;
+                                }
                             }
                         }
                     }
@@ -1392,6 +1691,44 @@ impl ArchiveHistory {
             }
         }
     }
+}
+
+fn stage_freeze_leaf(
+    root: &Path,
+    staged: &mut BTreeSet<String>,
+    digest: &str,
+    stage: impl FnOnce(&Path) -> Result<(), Diagnostics>,
+) -> Result<(), Diagnostics> {
+    if staged.insert(digest.to_owned()) {
+        let child = root.join(&digest[7..]);
+        fs::create_dir(&child).map_err(|e| {
+            fail(
+                DiagnosticCode::Reference,
+                format!("cannot create freeze directory: {e}"),
+            )
+        })?;
+        stage(&child)?;
+    }
+    Ok(())
+}
+
+fn group_leaf_checks(
+    group: &NodeFreezeGroup,
+    eligibility: Option<&[bool]>,
+    replay: Option<&[bool]>,
+) -> Vec<NodeGroupLeafCheck> {
+    group
+        .leaves()
+        .iter()
+        .enumerate()
+        .map(|(index, leaf)| NodeGroupLeafCheck {
+            boundary: leaf.boundary(),
+            freeze_digest: leaf.digest(),
+            output_digest: leaf.output_digest().to_owned(),
+            eligible: eligibility.is_some_and(|values| values[index]),
+            replay_matches: replay.map(|values| values[index]),
+        })
+        .collect()
 }
 
 fn checkpoint(parent: Option<&str>, snapshot: &str) -> Result<CheckpointRecord, Diagnostics> {
@@ -1452,8 +1789,80 @@ fn checkpoint_with_freeze(
         parent: parent.map(str::to_owned),
         snapshot: snapshot.into(),
         freeze: freeze.map(str::to_owned),
+        node_freezes: None,
         edit: None,
     })
+}
+
+fn checkpoint_with_node_freezes(
+    parent: Option<&str>,
+    snapshot: &str,
+    node_freezes: &[String],
+) -> Result<CheckpointRecord, Diagnostics> {
+    validate_hash_pin(snapshot, "checkpoint snapshot hash")?;
+    if let Some(parent) = parent {
+        validate_hash_pin(parent, "checkpoint parent id")?;
+    }
+    if !(2..=16).contains(&node_freezes.len()) {
+        return Err(fail(
+            DiagnosticCode::ResourceLimit,
+            "node freeze group requires 2 to 16 leaves",
+        ));
+    }
+    let mut unique = BTreeSet::new();
+    for digest in node_freezes {
+        validate_hash_pin(digest, "checkpoint node freeze digest")?;
+        if !unique.insert(digest) {
+            return Err(fail(
+                DiagnosticCode::Reference,
+                "node freeze group repeats a leaf digest",
+            ));
+        }
+    }
+    let bytes = serde_json::to_vec(&GroupCheckpointIdentity {
+        format: CHECKPOINT_FORMAT,
+        version: 4,
+        parent,
+        snapshot,
+        node_freezes,
+    })
+    .map_err(|e| {
+        fail(
+            DiagnosticCode::Syntax,
+            format!("cannot encode grouped checkpoint identity: {e}"),
+        )
+    })?;
+    Ok(CheckpointRecord {
+        id: sha256_digest(&bytes),
+        parent: parent.map(str::to_owned),
+        snapshot: snapshot.into(),
+        freeze: None,
+        node_freezes: Some(node_freezes.to_vec()),
+        edit: None,
+    })
+}
+
+fn checkpoint_for_stored(
+    parent: Option<&str>,
+    snapshot: &str,
+    freeze: Option<&StoredFreeze>,
+) -> Result<CheckpointRecord, Diagnostics> {
+    match freeze {
+        Some(StoredFreeze::Group(group)) => checkpoint_with_node_freezes(
+            parent,
+            snapshot,
+            &group
+                .leaves()
+                .iter()
+                .map(NodeFreezeSnapshot::digest)
+                .collect::<Vec<_>>(),
+        ),
+        _ => checkpoint_with_freeze(
+            parent,
+            snapshot,
+            freeze.and_then(StoredFreeze::scalar_digest).as_deref(),
+        ),
+    }
 }
 
 fn checkpoint_with_edit(
@@ -1488,6 +1897,7 @@ fn checkpoint_with_edit(
         parent: Some(parent.into()),
         snapshot: snapshot.into(),
         freeze: None,
+        node_freezes: None,
         edit: Some(edit.into()),
     })
 }
@@ -1538,6 +1948,7 @@ fn validate_history(manifest: &HistoryManifest) -> Result<(), Diagnostics> {
                 | MULTI_IMPORT_VERSION
                 | IMPORT_EDIT_VERSION
                 | NODE_FROZEN_VERSION
+                | NODE_GROUP_VERSION
         )
     {
         return Err(fail(
@@ -1553,6 +1964,7 @@ fn validate_history(manifest: &HistoryManifest) -> Result<(), Diagnostics> {
     }
     let mut prior: Option<&str> = None;
     let mut seen = BTreeSet::new();
+    let mut freeze_references = 0usize;
     for record in &manifest.checkpoints {
         validate_hash_pin(&record.id, "checkpoint id")?;
         validate_hash_pin(&record.snapshot, "checkpoint snapshot hash")?;
@@ -1567,16 +1979,44 @@ fn validate_history(manifest: &HistoryManifest) -> Result<(), Diagnostics> {
             && manifest.version != MULTI_IMPORT_VERSION
             && manifest.version != IMPORT_EDIT_VERSION
             && manifest.version != NODE_FROZEN_VERSION
+            && manifest.version != NODE_GROUP_VERSION
         {
             return Err(fail(
                 DiagnosticCode::Version,
                 "older archive history cannot contain edits",
             ));
         }
+        if record.node_freezes.is_some() && manifest.version != NODE_GROUP_VERSION {
+            return Err(fail(
+                DiagnosticCode::Version,
+                "older archive history cannot contain grouped node freezes",
+            ));
+        }
+        if record.node_freezes.is_some() && (record.freeze.is_some() || record.edit.is_some()) {
+            return Err(fail(
+                DiagnosticCode::Reference,
+                "grouped node freeze cannot share a checkpoint with scalar freeze or edit",
+            ));
+        }
         if record.edit.is_some() && (record.parent.is_none() || record.freeze.is_some()) {
             return Err(fail(
                 DiagnosticCode::Reference,
                 "edited checkpoint requires a parent and cannot inherit a freeze",
+            ));
+        }
+        freeze_references = freeze_references
+            .checked_add(usize::from(record.freeze.is_some()))
+            .and_then(|n| n.checked_add(record.node_freezes.as_ref().map_or(0, Vec::len)))
+            .ok_or_else(|| {
+                fail(
+                    DiagnosticCode::ResourceLimit,
+                    "freeze reference count overflow",
+                )
+            })?;
+        if freeze_references > MAX_FREEZE_REFERENCES {
+            return Err(fail(
+                DiagnosticCode::ResourceLimit,
+                "archive history exceeds 64 freeze references",
             ));
         }
         if record.parent.as_deref() != prior {
@@ -1587,6 +2027,8 @@ fn validate_history(manifest: &HistoryManifest) -> Result<(), Diagnostics> {
         }
         let expected = if let Some(edit) = &record.edit {
             checkpoint_with_edit(record.parent.as_deref(), &record.snapshot, edit)?
+        } else if let Some(group) = &record.node_freezes {
+            checkpoint_with_node_freezes(record.parent.as_deref(), &record.snapshot, group)?
         } else {
             checkpoint_with_freeze(
                 record.parent.as_deref(),
@@ -1621,6 +2063,17 @@ fn validate_history(manifest: &HistoryManifest) -> Result<(), Diagnostics> {
         return Err(fail(
             DiagnosticCode::Version,
             "v5 history has no edited checkpoint",
+        ));
+    }
+    if manifest.version == NODE_GROUP_VERSION
+        && !manifest
+            .checkpoints
+            .iter()
+            .any(|r| r.node_freezes.is_some())
+    {
+        return Err(fail(
+            DiagnosticCode::Version,
+            "v9 history has no grouped node freeze",
         ));
     }
     Ok(())
@@ -1822,7 +2275,7 @@ fn unique_freeze_count(freezes: &[Option<StoredFreeze>], extra: Option<&StoredFr
         .iter()
         .filter_map(Option::as_ref)
         .chain(extra)
-        .map(StoredFreeze::digest)
+        .flat_map(StoredFreeze::digests)
         .collect::<BTreeSet<_>>()
         .len()
 }
@@ -1859,7 +2312,7 @@ fn check_root_tree(
     let has_freezes = manifest
         .checkpoints
         .iter()
-        .any(|record| record.freeze.is_some());
+        .any(|record| record.freeze_digests().next().is_some());
     let has_edits = manifest
         .checkpoints
         .iter()
@@ -1967,7 +2420,8 @@ fn check_root_tree(
         let expected: BTreeSet<String> = manifest
             .checkpoints
             .iter()
-            .filter_map(|record| record.freeze.as_ref().map(|id| id[7..].to_owned()))
+            .flat_map(CheckpointRecord::freeze_digests)
+            .map(|id| id[7..].to_owned())
             .collect();
         let mut found = BTreeSet::new();
         for entry in freezes_root.dir().read_dir(".").map_err(|e| {
@@ -2691,5 +3145,177 @@ place notes { pattern=&phrase; track=&t; at=0q; }
             ArchiveHistory::verify(&extended_archive).unwrap().version(),
             8
         );
+    }
+
+    const GROUP_SOURCE: &str = r#"maac 1;
+project p { score=[0q,1/100q]; tail=0s; rate=48000Hz; tempo=&clock; meter=&metre; output=&sum:out; requires=["maac.production/1"]; }
+tempo clock { points=[(0q,120bpm,step)]; }
+meter metre { points=[(0q,4,4)]; }
+node tone_a { type="core.sine/1"; params={attack=0s;release=0s;level=0.2;}; }
+node tone_b { type="core.sine/1"; params={attack=0s;release=0s;level=0.1;}; }
+node trim { type="core.gain/1"; config={channels=1;}; params={gain=1;}; }
+node eq { type="fx.eq/1"; config={channels=1;mode=low_pass;}; params={frequency=12000Hz;q=1/2;}; }
+node room { type="fx.reverb/1"; config={channels=1;}; params={decay=1/2s;mix=0.4;}; }
+node sum { type="core.sum/1"; config={channels=1;}; }
+connect a { from=&tone_a:out; to=&trim:in; }
+connect trim_to_eq { from=&trim:out; to=&eq:in; }
+connect b { from=&tone_b:out; to=&room:in; }
+connect c { from=&eq:out; to=&sum:in; }
+connect d { from=&room:out; to=&sum:in; }
+pattern phrase { length=1/100q; note n { at=0q; dur=1/100q; pitch=A4; velocity=1; } }
+track ta { target=&tone_a:events; }
+track tb { target=&tone_b:events; }
+place pa { pattern=&phrase; track=&ta; at=0q; }
+place pb { pattern=&phrase; track=&tb; at=0q; }
+"#;
+
+    fn group_boundaries() -> [PortRef; 2] {
+        [
+            PortRef::new("room", "out").unwrap(),
+            PortRef::new("eq", "out").unwrap(),
+        ]
+    }
+
+    #[test]
+    fn v9_group_round_trip_mixed_history_replay_and_partial_eligibility() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path().join("project");
+        write_project(&project, GROUP_SOURCE);
+        let mut history =
+            ArchiveHistory::capture_frozen(Path::new("main.maac"), &project, "default").unwrap();
+        let scalar_id = history.head_id().to_owned();
+        assert!(history
+            .append_node_group(capture(&project), &group_boundaries())
+            .unwrap());
+        assert_eq!(history.version(), NODE_GROUP_VERSION);
+        let group_id = history.head_id().to_owned();
+        assert!(!history
+            .append_node_group(capture(&project), &group_boundaries())
+            .unwrap());
+        let archive = temp.path().join("archive");
+        fs::create_dir(&archive).unwrap();
+        history.stage(&archive).unwrap();
+        let mut verified = ArchiveHistory::verify(&archive).unwrap();
+        assert_eq!(verified.checkpoint_ids()[0], scalar_id);
+        assert_eq!(verified.head_id(), group_id);
+        let check = verified
+            .node_group_check(Path::new("main.maac"), &project, None, true)
+            .unwrap();
+        assert_eq!(check.status, FreezeCheckStatus::Current);
+        assert_eq!(check.leaves.len(), 2);
+        assert_eq!(check.leaves[0].boundary.node, "eq");
+        assert_eq!(check.leaves[1].boundary.node, "room");
+        assert!(check
+            .leaves
+            .iter()
+            .all(|leaf| leaf.eligible && leaf.replay_matches == Some(true)));
+        let info = verified.node_group_info(None).unwrap();
+        let mut rendered = Vec::new();
+        let render = verified
+            .render_from_node_group(Path::new("main.maac"), &project, None, |frame| {
+                rendered.extend_from_slice(frame);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(render.frames, info.frames);
+        assert_eq!(render.leaves.len(), 2);
+        let mut normal = Vec::new();
+        crate::disk_media::DiskMediaProject::load(Path::new("main.maac"), &project)
+            .unwrap()
+            .build_with_limits(&crate::plan::PlanLimits::default())
+            .unwrap()
+            .render(|frame| {
+                normal.extend_from_slice(frame);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            rendered.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+            normal.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+        );
+
+        fs::write(
+            project.join("main.maac"),
+            GROUP_SOURCE.replace("gain=1;", "gain=1/2;"),
+        )
+        .unwrap();
+        let partial = verified
+            .node_group_check(Path::new("main.maac"), &project, None, true)
+            .unwrap();
+        assert_eq!(partial.status, FreezeCheckStatus::Stale);
+        assert!(!partial.leaves[0].eligible);
+        assert!(partial.leaves[1].eligible);
+        assert!(partial
+            .leaves
+            .iter()
+            .all(|leaf| leaf.replay_matches.is_none()));
+        assert!(verified
+            .render_from_node_group(Path::new("main.maac"), &project, None, |_| Ok(()))
+            .is_err());
+        assert!(verified.append(capture(&project)).unwrap());
+        assert_eq!(verified.version(), NODE_GROUP_VERSION);
+        let source = fs::read_to_string(project.join("main.maac")).unwrap();
+        let source_revision = SourceDocument::parse(&source)
+            .unwrap()
+            .revision()
+            .to_owned();
+        let patch = Transaction::new(
+            source_revision,
+            vec![Operation::Set {
+                object: vec!["p".into()],
+                field: vec!["tail".into()],
+                value: serde_json::json!({"t":"quantity","n":"0","d":"1","u":"s"}),
+                expect: None,
+                expect_absent: false,
+            }],
+        )
+        .unwrap()
+        .to_json()
+        .unwrap();
+        verified.patch_head(&patch).unwrap();
+        assert_eq!(verified.version(), NODE_GROUP_VERSION);
+        let extended = temp.path().join("extended");
+        fs::create_dir(&extended).unwrap();
+        verified.stage(&extended).unwrap();
+        assert_eq!(
+            ArchiveHistory::verify(&extended).unwrap().version(),
+            NODE_GROUP_VERSION
+        );
+        let damaged_leaf = archive
+            .join("freezes")
+            .join(&check.leaves[1].freeze_digest[7..])
+            .join(crate::node_freeze::NODE_FREEZE_OUTPUT);
+        fs::write(damaged_leaf, b"damaged").unwrap();
+        assert!(ArchiveHistory::verify(&archive).is_err());
+    }
+
+    #[test]
+    fn grouped_checkpoint_identity_and_reference_bound_are_enforced() {
+        let snapshot = sha256_digest(b"group snapshot");
+        let mut records = Vec::new();
+        for index in 0..5 {
+            let digests: Vec<_> = (0..16)
+                .map(|leaf| sha256_digest(format!("{index}-{leaf}").as_bytes()))
+                .collect();
+            records.push(
+                checkpoint_with_node_freezes(
+                    records.last().map(|r: &CheckpointRecord| r.id.as_str()),
+                    &snapshot,
+                    &digests,
+                )
+                .unwrap(),
+            );
+        }
+        assert!(encode_history(records, NODE_GROUP_VERSION).is_err());
+        assert!(checkpoint_with_node_freezes(
+            None,
+            &snapshot,
+            &[sha256_digest(b"same"), sha256_digest(b"same")]
+        )
+        .is_err());
+        let legacy =
+            checkpoint_with_freeze(None, &snapshot, Some(&sha256_digest(b"single"))).unwrap();
+        let json = serde_json::to_string(&legacy).unwrap();
+        assert!(!json.contains("node_freezes"));
     }
 }

@@ -7,14 +7,15 @@ records when present; version 4 can retain an opt-in full-output freeze;
 version 5 can record an explicit Protocol 2 edit and its inverse; version 6
 can retain several selected WAV import records in one composition; version 7
 can record a local library edit with its exact parent import pin update;
-version 8 can freeze one internal native effect output as exact binary64 samples.
+version 8 can freeze one internal native effect output as exact binary64 samples;
+version 9 can retain a group of independent native effect outputs.
 
 ## Commands
 
 ```text
 maac archive create SOURCE --output-dir NEW [--project-root ROOT] [--profile default|song]
     [--previous ARCHIVE] [--expect-previous-hash SHA256]
-    [--freeze-output | --freeze-node NODE]
+    [--freeze-output | --freeze-node NODE ...]
     [--retain-import RELATIVE_DIR]...
 maac archive patch ARCHIVE PATCH.json --output-dir NEW [--expect-hash SHA256]
 maac archive patch-import ARCHIVE PATCH.json --import ALIAS --output-dir NEW
@@ -114,7 +115,7 @@ revision. The source bytes, including comments, omissions, labels, and
 formatting, remain unchanged. The unpacked project uses ordinary `check` and
 `build`; large PCM requires `--disk-media`.
 
-Versions 2 through 8 store `checkpoints/<checkpoint-hex>/` directories. The root
+Versions 2 through 9 store `checkpoints/<checkpoint-hex>/` directories. The root
 manifest records the ordered IDs, parent IDs, snapshot manifest hashes, and
 head ID. Frozen records also identify their freeze manifest; version 4 keeps
 their files under `freezes/<freeze-hash>/`. Journaled records identify an edit
@@ -168,6 +169,15 @@ node freezes retain their rules: version 1 pins the exact source, while version
 freeze, and `--freeze-node` cannot be combined with `--freeze-output`.
 Existing whole-output freezes keep their original format and behavior.
 
+Repeating `--freeze-node` selects 2–16 independent native effect outputs for a
+version 9 checkpoint. The selected effects must have no audio, sidechain,
+modulation, or delayed-feedback path between them. Capture, replay, and reuse
+process the group in one graph execution. `freeze-check` reports each member's
+boundary, cache identity, and eligibility; all members must be current before
+`freeze-render` publishes the final WAV. A stale member prevents all reuse.
+Selection order does not change the archive identity. Singleton checkpoints
+retain their original format, identifiers, and CLI result fields.
+
 Creation, patching, and unpacking stage files beside their destination and publish the
 directory atomically without replacing an existing path. Source dependencies
 are opened beneath a pinned project root, and media bytes are copied from
@@ -175,7 +185,8 @@ private verified snapshots. Output directories cannot be created inside an
 input archive. Histories permit at most 32 checkpoints, with aggregate caps of
 64 MiB source text, 64 MiB ordinary assets, and 4 GiB combined native PCM,
 retained original WAV, and frozen payload bytes across all stored copies. Each
-original WAV or frozen payload is limited to 1 GiB, each import record to 16 KiB, and
+original WAV or frozen payload is limited to 1 GiB; a grouped node freeze is
+limited to 1 GiB across its members. Each import record is limited to 16 KiB, and
 each checkpoint retains its source, asset, execution, and native PCM limits.
 Each edit manifest is limited to 16 KiB; each forward or inverse transaction
 is limited to 4 MiB and 1,024 operations. A history permits at most 64 MiB
@@ -203,8 +214,8 @@ has only a version 1 `import.json`; that record remains outside the archived
 composition closure. Version 6 retains multiple selected existing imports,
 including nested directories whose native PCM is in the composition closure.
 Automatic edit journaling, general multi-file transactions, branching and merging,
-broader selective invalidation, multiple frozen graph branches, and a complete producer
-archive remain Phase 3 work. Whole-output and single-node freezes require
+broader selective invalidation, overlapping frozen graph branches, and a complete producer
+archive remain Phase 3 work. Whole-output and native-node freezes require
 explicit reuse after conservative input validation; they do not provide
 automatic render-cache reuse or a claim that another engine produces identical
 samples.

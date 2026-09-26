@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
+use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -124,6 +124,18 @@ pub(crate) struct NodeFreezeSnapshot {
     manifest: Manifest,
     json: Vec<u8>,
     output: Arc<Mutex<File>>,
+}
+
+/// A set of independent leaf freezes. Each member remains a normal, separately
+/// stageable node-freeze archive with the existing manifest and payload format.
+pub(crate) struct NodeFreezeGroup {
+    leaves: Vec<NodeFreezeSnapshot>,
+}
+
+pub(crate) struct NodeFreezeGroupInfo {
+    pub(crate) frames: u64,
+    pub(crate) channels: u8,
+    pub(crate) sample_rate_hz: u32,
 }
 
 impl NodeFreezeSnapshot {
@@ -349,11 +361,19 @@ impl NodeFreezeSnapshot {
     }
 
     pub(crate) fn matches_snapshot(&self, snapshot: &ArchiveSnapshot) -> Result<bool, Diagnostics> {
-        let boundary = self.boundary();
         let (_staged, plan) = staged_plan(snapshot)?;
+        self.matches_plan(snapshot, &plan)
+    }
+
+    fn matches_plan(
+        &self,
+        snapshot: &ArchiveSnapshot,
+        plan: &DiskMediaPlan,
+    ) -> Result<bool, Diagnostics> {
+        let boundary = self.boundary();
         let identity_matches = if matches!(self.manifest.version, 2 | 3) {
             self.manifest.reuse_identity.as_deref()
-                == Some(reuse_identity(snapshot, &plan, &boundary, self.manifest.version)?.as_str())
+                == Some(reuse_identity(snapshot, plan, &boundary, self.manifest.version)?.as_str())
         } else {
             self.manifest.snapshot == snapshot.digest()
         };
@@ -363,7 +383,7 @@ impl NodeFreezeSnapshot {
         let channels = plan.node_freeze_channels(&boundary).map_err(render_error)?;
         let mut candidate = manifest_for(
             snapshot,
-            &plan,
+            plan,
             &boundary,
             channels,
             output_bytes(plan.output().total_frames, channels)?,
@@ -511,6 +531,492 @@ impl NodeFreezeSnapshot {
             ));
         }
         Ok(())
+    }
+}
+
+struct CapturedGroupStream {
+    writer: BufWriter<File>,
+    hash: Sha256,
+    frames: u64,
+    channels: usize,
+    bytes: u64,
+}
+
+impl NodeFreezeGroup {
+    /// Capture all independent effects in one reset-origin execution. The DSP
+    /// validator fixes canonical node-ID order before any private output exists.
+    pub(crate) fn capture(
+        snapshot: &ArchiveSnapshot,
+        boundaries: &[PortRef],
+    ) -> Result<Self, Diagnostics> {
+        let (_staged, plan) = staged_plan(snapshot)?;
+        let ordered = plan
+            .validate_node_freeze_group(boundaries)
+            .map_err(render_error)?;
+        let mut total_bytes = 0u64;
+        let mut streams = Vec::with_capacity(ordered.len());
+        for (_, channels) in &ordered {
+            let bytes = output_bytes(plan.output().total_frames, *channels)?;
+            total_bytes = total_bytes.checked_add(bytes).ok_or_else(|| {
+                fail(
+                    DiagnosticCode::ResourceLimit,
+                    "node freeze group length overflow",
+                )
+            })?;
+            if total_bytes > MAX_NODE_FREEZE_BYTES {
+                return Err(fail(
+                    DiagnosticCode::ResourceLimit,
+                    "node freeze group output exceeds 1 GiB",
+                ));
+            }
+            let output = tempfile::tempfile().map_err(|e| {
+                fail(
+                    DiagnosticCode::Reference,
+                    format!("cannot create private node freeze output: {e}"),
+                )
+            })?;
+            streams.push(CapturedGroupStream {
+                writer: BufWriter::new(output),
+                hash: Sha256::new(),
+                frames: 0,
+                channels: *channels,
+                bytes,
+            });
+        }
+        let ports: Vec<_> = ordered.iter().map(|(port, _)| port.clone()).collect();
+        plan.render_node_freeze_group(&ports, |outputs| {
+            if outputs.len() != streams.len() {
+                return Err(RenderError::Callback(
+                    "node freeze group frame shape differs from plan".into(),
+                ));
+            }
+            for (samples, stream) in outputs.iter().zip(&mut streams) {
+                if samples.len() != stream.channels || stream.frames >= plan.output().total_frames {
+                    return Err(RenderError::Callback(
+                        "node freeze group frame shape differs from plan".into(),
+                    ));
+                }
+                for &sample in samples {
+                    if !sample.is_finite() {
+                        return Err(RenderError::Nonfinite(
+                            "node freeze contains nonfinite PCM".into(),
+                        ));
+                    }
+                    let bytes = sample.to_le_bytes();
+                    stream.hash.update(bytes);
+                    stream.writer.write_all(&bytes).map_err(|e| {
+                        RenderError::Callback(format!("cannot write node freeze output: {e}"))
+                    })?;
+                }
+                stream.frames += 1;
+            }
+            Ok(())
+        })
+        .map_err(render_error)?;
+        let engine = engine_digest()?;
+        let mut leaves = Vec::with_capacity(ordered.len());
+        for ((boundary, channels), mut stream) in ordered.into_iter().zip(streams) {
+            stream.writer.flush().map_err(|e| {
+                fail(
+                    DiagnosticCode::Reference,
+                    format!("cannot flush node freeze output: {e}"),
+                )
+            })?;
+            let mut output = stream.writer.into_inner().map_err(|e| {
+                fail(
+                    DiagnosticCode::Reference,
+                    format!("cannot finish node freeze output: {e}"),
+                )
+            })?;
+            if stream.frames != plan.output().total_frames
+                || output
+                    .metadata()
+                    .map_err(|e| {
+                        fail(
+                            DiagnosticCode::Reference,
+                            format!("cannot inspect node freeze output: {e}"),
+                        )
+                    })?
+                    .len()
+                    != stream.bytes
+            {
+                return Err(fail(
+                    DiagnosticCode::RenderState,
+                    "node freeze group frame count differs from plan",
+                ));
+            }
+            output.seek(SeekFrom::Start(0)).map_err(|e| {
+                fail(
+                    DiagnosticCode::Reference,
+                    format!("cannot rewind node freeze output: {e}"),
+                )
+            })?;
+            let mut manifest = manifest_for(
+                snapshot,
+                &plan,
+                &boundary,
+                channels,
+                stream.bytes,
+                format!("sha256:{:x}", stream.hash.finalize()),
+                engine.clone(),
+            );
+            manifest.reuse_identity = Some(reuse_identity(snapshot, &plan, &boundary, VERSION)?);
+            manifest.render_key = render_key(&manifest)?;
+            validate_manifest(&manifest)?;
+            let json = serde_json::to_vec(&manifest).map_err(|e| {
+                fail(
+                    DiagnosticCode::Syntax,
+                    format!("cannot encode node freeze manifest: {e}"),
+                )
+            })?;
+            if json.len() as u64 > MAX_MANIFEST_BYTES {
+                return Err(fail(
+                    DiagnosticCode::ResourceLimit,
+                    "node freeze manifest exceeds 1 MiB",
+                ));
+            }
+            leaves.push(NodeFreezeSnapshot {
+                manifest,
+                json,
+                output: Arc::new(Mutex::new(output)),
+            });
+        }
+        Ok(Self { leaves })
+    }
+
+    /// Retain already verified archive leaves, sorted by canonical node ID.
+    pub(crate) fn from_verified(mut leaves: Vec<NodeFreezeSnapshot>) -> Result<Self, Diagnostics> {
+        if !(2..=16).contains(&leaves.len()) {
+            return Err(fail(
+                DiagnosticCode::RenderState,
+                "node freeze group must contain 2..16 boundaries",
+            ));
+        }
+        leaves.sort_by(|left, right| {
+            left.manifest
+                .boundary
+                .node
+                .as_bytes()
+                .cmp(right.manifest.boundary.node.as_bytes())
+        });
+        let first = &leaves[0].manifest;
+        let mut total_bytes = 0u64;
+        let mut previous: Option<&str> = None;
+        for leaf in &leaves {
+            let manifest = &leaf.manifest;
+            validate_manifest(manifest)?;
+            if previous == Some(manifest.boundary.node.as_str())
+                || manifest.engine != first.engine
+                || manifest.profile != first.profile
+                || manifest.frame_end != first.frame_end
+                || manifest.sample_rate_hz != first.sample_rate_hz
+                || manifest.output_channels != first.output_channels
+            {
+                return Err(fail(
+                    DiagnosticCode::RenderState,
+                    "node freeze group leaves have incompatible metadata",
+                ));
+            }
+            previous = Some(&manifest.boundary.node);
+            total_bytes = total_bytes
+                .checked_add(manifest.output.bytes)
+                .ok_or_else(|| {
+                    fail(
+                        DiagnosticCode::ResourceLimit,
+                        "node freeze group length overflow",
+                    )
+                })?;
+            if total_bytes > MAX_NODE_FREEZE_BYTES {
+                return Err(fail(
+                    DiagnosticCode::ResourceLimit,
+                    "node freeze group output exceeds 1 GiB",
+                ));
+            }
+        }
+        Ok(Self { leaves })
+    }
+
+    pub(crate) fn leaves(&self) -> &[NodeFreezeSnapshot] {
+        &self.leaves
+    }
+
+    pub(crate) fn info(&self) -> NodeFreezeGroupInfo {
+        let first = &self.leaves[0];
+        NodeFreezeGroupInfo {
+            frames: first.frames(),
+            channels: first.output_channels(),
+            sample_rate_hz: first.sample_rate_hz(),
+        }
+    }
+
+    pub(crate) fn matches_snapshot(&self, snapshot: &ArchiveSnapshot) -> Result<bool, Diagnostics> {
+        let (_staged, plan) = staged_plan(snapshot)?;
+        let ordered = plan
+            .validate_node_freeze_group(&self.boundaries())
+            .map_err(render_error)?;
+        for ((boundary, channels), leaf) in ordered.iter().zip(&self.leaves) {
+            if boundary != &leaf.boundary()
+                || *channels != usize::from(leaf.manifest.channels)
+                || !leaf.matches_plan(snapshot, &plan)?
+            {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// Candidate edits may remove or rewire a boundary. Report those as stale
+    /// leaves while archive integrity continues to use strict validation.
+    pub(crate) fn candidate_eligibility(
+        &self,
+        snapshot: &ArchiveSnapshot,
+    ) -> Result<(bool, Vec<bool>), Diagnostics> {
+        let (_staged, plan) = staged_plan(snapshot)?;
+        let group_shape_valid = plan.validate_node_freeze_group(&self.boundaries()).is_ok();
+        let mut leaves = Vec::with_capacity(self.leaves.len());
+        for leaf in &self.leaves {
+            let boundary = leaf.boundary();
+            let eligible = if plan.node_freeze_channels(&boundary).is_ok() {
+                leaf.matches_plan(snapshot, &plan)?
+            } else {
+                false
+            };
+            leaves.push(eligible);
+        }
+        Ok((group_shape_valid, leaves))
+    }
+
+    /// Re-render every selected output once and return its leaf PCM digests in
+    /// the same canonical order returned by `leaves`.
+    pub(crate) fn replay_output_digests(
+        &self,
+        candidate: &ArchiveSnapshot,
+    ) -> Result<Vec<String>, Diagnostics> {
+        let replay = Self::capture(candidate, &self.boundaries())?;
+        Ok(replay
+            .leaves()
+            .iter()
+            .map(|leaf| leaf.output_digest().to_owned())
+            .collect())
+    }
+
+    /// Compare all stored leaf digests using one candidate render.
+    pub(crate) fn replay_matches(
+        &self,
+        candidate: &ArchiveSnapshot,
+    ) -> Result<Vec<bool>, Diagnostics> {
+        let digests = self.replay_output_digests(candidate)?;
+        Ok(self
+            .leaves
+            .iter()
+            .zip(digests)
+            .map(|(stored, digest)| stored.output_digest() == digest)
+            .collect())
+    }
+
+    /// Run the graph once with all verified private streams. No final-output
+    /// frame reaches the caller until replacement and graph rendering complete.
+    pub(crate) fn render_replacements<F>(
+        &self,
+        candidate: &ArchiveSnapshot,
+        mut callback: F,
+    ) -> Result<(), Diagnostics>
+    where
+        F: FnMut(&[f64]) -> dsp::Result<()>,
+    {
+        if self.leaves[0].engine_digest() != engine_digest()? {
+            return Err(fail(
+                DiagnosticCode::RenderState,
+                "node freeze group engine differs from current executable",
+            ));
+        }
+        let (_staged, plan) = staged_plan(candidate)?;
+        let boundaries = self.boundaries();
+        let ordered = plan
+            .validate_node_freeze_group(&boundaries)
+            .map_err(render_error)?;
+        for ((boundary, channels), leaf) in ordered.iter().zip(&self.leaves) {
+            if boundary != &leaf.boundary()
+                || *channels != usize::from(leaf.manifest.channels)
+                || !leaf.matches_plan(candidate, &plan)?
+            {
+                return Err(fail(
+                    DiagnosticCode::RenderState,
+                    "node freeze group differs from candidate plan",
+                ));
+            }
+        }
+        let mut sources = self
+            .leaves
+            .iter()
+            .map(|leaf| {
+                leaf.output.lock().map_err(|_| {
+                    fail(
+                        DiagnosticCode::Reference,
+                        "private node freeze output lock is poisoned",
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        for (leaf, source) in self.leaves.iter().zip(&mut sources) {
+            source.seek(SeekFrom::Start(0)).map_err(|e| {
+                fail(
+                    DiagnosticCode::Reference,
+                    format!("cannot rewind node freeze output: {e}"),
+                )
+            })?;
+            let (bytes, hash) = copy_checked(&mut *source, &mut io::sink(), leaf.output_bytes())?;
+            if bytes != leaf.output_bytes() || hash != leaf.output_digest() {
+                return Err(fail(
+                    DiagnosticCode::Hash,
+                    "private node freeze output changed before activation",
+                ));
+            }
+            source.seek(SeekFrom::Start(0)).map_err(|e| {
+                fail(
+                    DiagnosticCode::Reference,
+                    format!("cannot rewind node freeze output: {e}"),
+                )
+            })?;
+        }
+        let mut readers: Vec<_> = sources
+            .iter_mut()
+            .map(|source| BufReader::new(&mut **source))
+            .collect();
+        let mut hashes = vec![Sha256::new(); self.leaves.len()];
+        let mut next_frames = vec![0u64; self.leaves.len()];
+        let output_bytes = output_bytes(
+            plan.output().total_frames,
+            usize::from(plan.output().channels),
+        )?;
+        let final_output = tempfile::tempfile().map_err(|e| {
+            fail(
+                DiagnosticCode::Reference,
+                format!("cannot create private node freeze render: {e}"),
+            )
+        })?;
+        let mut rendered_frames = 0u64;
+        let mut writer = BufWriter::new(final_output);
+        plan.render_with_node_replacements(
+            &boundaries,
+            |index, frame, samples| {
+                let leaf = &self.leaves[index];
+                if frame != next_frames[index]
+                    || frame >= leaf.frames()
+                    || samples.len() != usize::from(leaf.manifest.channels)
+                {
+                    return Err(RenderError::Callback(
+                        "node freeze replacement frame shape differs".into(),
+                    ));
+                }
+                for sample in samples {
+                    let mut bytes = [0u8; 8];
+                    readers[index].read_exact(&mut bytes).map_err(|e| {
+                        RenderError::Callback(format!("cannot read node freeze output: {e}"))
+                    })?;
+                    let value = f64::from_le_bytes(bytes);
+                    if !value.is_finite() {
+                        return Err(RenderError::Nonfinite(
+                            "node freeze contains nonfinite PCM".into(),
+                        ));
+                    }
+                    hashes[index].update(bytes);
+                    *sample = value;
+                }
+                next_frames[index] += 1;
+                Ok(())
+            },
+            |samples| {
+                if samples.len() != usize::from(plan.output().channels)
+                    || rendered_frames >= plan.output().total_frames
+                {
+                    return Err(RenderError::Callback(
+                        "node freeze final frame shape differs from plan".into(),
+                    ));
+                }
+                for &sample in samples {
+                    if !sample.is_finite() {
+                        return Err(RenderError::Nonfinite(
+                            "node freeze render contains nonfinite PCM".into(),
+                        ));
+                    }
+                    writer.write_all(&sample.to_le_bytes()).map_err(|e| {
+                        RenderError::Callback(format!("cannot write node freeze render: {e}"))
+                    })?;
+                }
+                rendered_frames += 1;
+                Ok(())
+            },
+        )
+        .map_err(render_error)?;
+        for (index, leaf) in self.leaves.iter().enumerate() {
+            if next_frames[index] != leaf.frames()
+                || format!("sha256:{:x}", hashes[index].clone().finalize()) != leaf.output_digest()
+            {
+                return Err(fail(
+                    DiagnosticCode::Hash,
+                    "private node freeze output changed during activation",
+                ));
+            }
+        }
+        writer.flush().map_err(|e| {
+            fail(
+                DiagnosticCode::Reference,
+                format!("cannot flush node freeze render: {e}"),
+            )
+        })?;
+        let mut final_output = writer.into_inner().map_err(|e| {
+            fail(
+                DiagnosticCode::Reference,
+                format!("cannot finish node freeze render: {e}"),
+            )
+        })?;
+        if rendered_frames != plan.output().total_frames
+            || final_output
+                .metadata()
+                .map_err(|e| {
+                    fail(
+                        DiagnosticCode::Reference,
+                        format!("cannot inspect node freeze render: {e}"),
+                    )
+                })?
+                .len()
+                != output_bytes
+        {
+            return Err(fail(
+                DiagnosticCode::RenderState,
+                "node freeze final frame count differs from plan",
+            ));
+        }
+        final_output.seek(SeekFrom::Start(0)).map_err(|e| {
+            fail(
+                DiagnosticCode::Reference,
+                format!("cannot rewind node freeze render: {e}"),
+            )
+        })?;
+        let mut reader = BufReader::new(final_output);
+        let mut frame = vec![0.0; usize::from(plan.output().channels)];
+        for _ in 0..rendered_frames {
+            for sample in &mut frame {
+                let mut bytes = [0u8; 8];
+                reader.read_exact(&mut bytes).map_err(|e| {
+                    fail(
+                        DiagnosticCode::Reference,
+                        format!("cannot read node freeze render: {e}"),
+                    )
+                })?;
+                *sample = f64::from_le_bytes(bytes);
+            }
+            callback(&frame).map_err(render_error)?;
+        }
+        Ok(())
+    }
+
+    fn boundaries(&self) -> Vec<PortRef> {
+        self.leaves
+            .iter()
+            .map(NodeFreezeSnapshot::boundary)
+            .collect()
     }
 }
 
@@ -887,7 +1393,7 @@ fn read_small(root: &ProjectRoot, path: &str) -> Result<Vec<u8>, Diagnostics> {
 
 fn copy_checked(
     source: &mut File,
-    destination: &mut File,
+    destination: &mut impl Write,
     expected: u64,
 ) -> Result<(u64, String), Diagnostics> {
     let mut hash = Sha256::new();
@@ -1023,6 +1529,18 @@ place notes { pattern=&phrase; track=&t; at=0q; }
             )
     }
 
+    fn independent_effects_source() -> String {
+        sibling_source()
+            .replace(
+                "node sidegain {",
+                "node sideroom { type=\"fx.reverb/1\"; config={channels=1;}; params={decay=1/3s;mix=0.25;}; }\nnode sidegain {",
+            )
+            .replace(
+                "connect side_pan { from=&sidegain:out; to=&sidepan:in; }",
+                "connect side_room { from=&sidegain:out; to=&sideroom:in; }\nconnect side_pan { from=&sideroom:out; to=&sidepan:in; }",
+            )
+    }
+
     fn as_v2(
         mut freeze: NodeFreezeSnapshot,
         snapshot: &ArchiveSnapshot,
@@ -1068,6 +1586,122 @@ place notes { pattern=&phrase; track=&t; at=0q; }
             normal.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
             replaced.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn group_capture_keeps_leaf_bytes_and_replays_in_canonical_order() {
+        let (_project, snapshot, room) = project_with_source(&independent_effects_source());
+        let side = PortRef::new("sideroom", "out").unwrap();
+        let group = NodeFreezeGroup::capture(&snapshot, &[side.clone(), room.clone()]).unwrap();
+        assert_eq!(
+            group
+                .leaves()
+                .iter()
+                .map(NodeFreezeSnapshot::boundary)
+                .collect::<Vec<_>>(),
+            vec![room.clone(), side.clone()]
+        );
+        assert_eq!(group.info().channels, 2);
+        assert_eq!(group.info().sample_rate_hz, 48_000);
+        assert!(group.info().frames > 0);
+        for leaf in group.leaves() {
+            let single = NodeFreezeSnapshot::capture(&snapshot, &leaf.boundary()).unwrap();
+            assert_eq!(leaf.digest(), single.digest());
+            assert_eq!(leaf.output_digest(), single.output_digest());
+        }
+        assert_eq!(group.replay_matches(&snapshot).unwrap(), vec![true, true]);
+        let verified = group
+            .leaves()
+            .iter()
+            .rev()
+            .map(|leaf| {
+                let directory = tempfile::tempdir().unwrap();
+                leaf.stage_into(directory.path()).unwrap();
+                let root = ProjectRoot::open_pinned(directory.path(), cap_std::ambient_authority())
+                    .unwrap();
+                let preflight =
+                    NodeFreezeSnapshot::preflight(&root, &leaf.digest(), &snapshot.digest())
+                        .unwrap();
+                NodeFreezeSnapshot::verify_preflighted(&root, &preflight).unwrap()
+            })
+            .collect();
+        let restored = NodeFreezeGroup::from_verified(verified).unwrap();
+        assert_eq!(
+            restored
+                .leaves()
+                .iter()
+                .map(NodeFreezeSnapshot::boundary)
+                .collect::<Vec<_>>(),
+            vec![room, side]
+        );
+        assert!(restored.matches_snapshot(&snapshot).unwrap());
+        let (_staged, plan) = staged_plan(&snapshot).unwrap();
+        let mut normal = Vec::new();
+        plan.render(|frame| {
+            normal.extend(frame.iter().map(|sample| sample.to_bits()));
+            Ok(())
+        })
+        .unwrap();
+        let mut replaced = Vec::new();
+        restored
+            .render_replacements(&snapshot, |frame| {
+                replaced.extend(frame.iter().map(|sample| sample.to_bits()));
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(replaced, normal);
+    }
+
+    #[test]
+    fn group_integrity_survives_a_new_executable_identity() {
+        let (_project, snapshot, room) = project_with_source(&independent_effects_source());
+        let side = PortRef::new("sideroom", "out").unwrap();
+        let mut group = NodeFreezeGroup::capture(&snapshot, &[room, side]).unwrap();
+        for leaf in &mut group.leaves {
+            leaf.manifest.engine = sha256_digest(b"a different executable");
+            leaf.manifest.render_key = render_key(&leaf.manifest).unwrap();
+            leaf.json = serde_json::to_vec(&leaf.manifest).unwrap();
+        }
+        assert!(group.matches_snapshot(&snapshot).unwrap());
+        assert!(group.render_replacements(&snapshot, |_| Ok(())).is_err());
+    }
+
+    #[test]
+    fn group_rejects_duplicates_and_corrupt_private_stream_before_callback() {
+        let (_project, snapshot, room) = project_with_source(&independent_effects_source());
+        let side = PortRef::new("sideroom", "out").unwrap();
+        assert!(NodeFreezeGroup::capture(&snapshot, std::slice::from_ref(&room)).is_err());
+        assert!(NodeFreezeGroup::capture(&snapshot, &[room.clone(), room.clone()]).is_err());
+        let group = NodeFreezeGroup::capture(&snapshot, &[room, side]).unwrap();
+        {
+            let mut output = group.leaves()[1].output.lock().unwrap();
+            output.seek(SeekFrom::Start(0)).unwrap();
+            output.write_all(&0.25f64.to_le_bytes()).unwrap();
+        }
+        let mut called = 0usize;
+        assert!(group
+            .render_replacements(&snapshot, |_| {
+                called += 1;
+                Ok(())
+            })
+            .is_err());
+        assert_eq!(called, 0);
+    }
+
+    #[test]
+    fn group_rejects_effects_with_a_signal_path_between_them() {
+        let source = SOURCE
+            .replace(
+                "node gain {",
+                "node after_room { type=\"fx.reverb/1\"; config={channels=1;}; params={decay=1/3s;mix=0.25;}; }\nnode gain {",
+            )
+            .replace(
+                "connect b { from=&room:out; to=&gain:in; }",
+                "connect b { from=&room:out; to=&after_room:in; }\nconnect after { from=&after_room:out; to=&gain:in; }",
+            );
+        let (_project, snapshot, room) = project_with_source(&source);
+        let downstream = PortRef::new("after_room", "out").unwrap();
+        assert!(NodeFreezeGroup::capture(&snapshot, &[room, downstream]).is_err());
     }
 
     #[test]

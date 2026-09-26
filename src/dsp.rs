@@ -179,9 +179,11 @@ pub struct DspEngine<'a> {
     frame: Vec<f64>,
 }
 
+type NodeReplacementFill<'a> = dyn FnMut(usize, u64, &mut [f64]) -> Result<()> + 'a;
+
 struct NodeReplacement<'a> {
-    index: usize,
-    fill: &'a mut dyn FnMut(u64, &mut [f64]) -> Result<()>,
+    indices: Vec<usize>,
+    fill: &'a mut NodeReplacementFill<'a>,
 }
 
 impl<'a> DspEngine<'a> {
@@ -646,6 +648,63 @@ impl<'a> DspEngine<'a> {
         ))
     }
 
+    /// Validate independent native effects and return their boundaries in a
+    /// stable order. A path through audio, sidechain, modulation, or delayed
+    /// feedback edges makes two selected effects dependent.
+    pub(crate) fn validate_node_freeze_group(
+        &self,
+        boundaries: &[PortRef],
+    ) -> Result<Vec<(PortRef, usize)>> {
+        if !(2..=16).contains(&boundaries.len()) {
+            return Err(RenderError::RenderState(
+                "node freeze group must contain 2..16 boundaries".into(),
+            ));
+        }
+        let mut ordered = Vec::with_capacity(boundaries.len());
+        let mut selected = BTreeSet::new();
+        for boundary in boundaries {
+            let channels = self.validate_node_freeze_boundary(boundary)?;
+            let index = self.node_indices[&boundary.node];
+            if !selected.insert(index) {
+                return Err(RenderError::RenderState(
+                    "node freeze group contains a duplicate boundary".into(),
+                ));
+            }
+            ordered.push((boundary.clone(), channels));
+        }
+        for &origin in &selected {
+            let mut seen = vec![false; self.nodes.len()];
+            let mut pending = vec![origin];
+            seen[origin] = true;
+            while let Some(current) = pending.pop() {
+                for next in self
+                    .connections
+                    .iter()
+                    .filter(|edge| edge.from == current)
+                    .map(|edge| edge.to)
+                    .chain(
+                        self.modulations
+                            .iter()
+                            .filter(|edge| edge.from == current)
+                            .map(|edge| edge.to),
+                    )
+                {
+                    if next != origin && selected.contains(&next) {
+                        return Err(RenderError::RenderState(
+                            "node freeze group contains dependent boundaries".into(),
+                        ));
+                    }
+                    if !seen[next] {
+                        seen[next] = true;
+                        pending.push(next);
+                    }
+                }
+            }
+        }
+        ordered.sort_by(|left, right| left.0.node.as_bytes().cmp(right.0.node.as_bytes()));
+        Ok(ordered)
+    }
+
     /// Capture the exact f64 output of one validated native effect each frame.
     pub(crate) fn render_node_freeze_boundary<F>(
         &mut self,
@@ -676,11 +735,57 @@ impl<'a> DspEngine<'a> {
         self.validate_node_freeze_boundary(boundary)?;
         let index = self.node_indices[&boundary.node];
         let output = self.plan.output.output.clone();
+        let mut indexed_replacement =
+            |_: usize, frame: u64, samples: &mut [f64]| replacement(frame, samples);
         self.render_ports_inner(
             &[output],
             false,
             Some(NodeReplacement {
-                index,
+                indices: vec![index],
+                fill: &mut indexed_replacement,
+            }),
+            |outputs| callback(&outputs[0]),
+        )
+    }
+
+    /// Capture all selected native-effect outputs in one reset-origin render.
+    /// Frames contain one slice per boundary in canonical group order.
+    pub(crate) fn render_node_freeze_group<F>(
+        &mut self,
+        boundaries: &[PortRef],
+        callback: F,
+    ) -> Result<()>
+    where
+        F: FnMut(&[Vec<f64>]) -> Result<()>,
+    {
+        let ordered = self.validate_node_freeze_group(boundaries)?;
+        let ports: Vec<_> = ordered.into_iter().map(|(port, _)| port).collect();
+        self.render_ports(&ports, callback)
+    }
+
+    /// Replace each selected processor at its normal topological position.
+    /// The replacement index is its position in canonical group order.
+    pub(crate) fn render_with_node_replacements<R, F>(
+        &mut self,
+        boundaries: &[PortRef],
+        mut replacement: R,
+        mut callback: F,
+    ) -> Result<()>
+    where
+        R: FnMut(usize, u64, &mut [f64]) -> Result<()>,
+        F: FnMut(&[f64]) -> Result<()>,
+    {
+        let ordered = self.validate_node_freeze_group(boundaries)?;
+        let indices = ordered
+            .iter()
+            .map(|(port, _)| self.node_indices[&port.node])
+            .collect();
+        let output = self.plan.output.output.clone();
+        self.render_ports_inner(
+            &[output],
+            false,
+            Some(NodeReplacement {
+                indices,
                 fill: &mut replacement,
             }),
             |outputs| callback(&outputs[0]),
@@ -717,7 +822,11 @@ impl<'a> DspEngine<'a> {
             .ok_or_else(resource_error)
         })?;
         let replacement_channels = replacement.as_ref().map_or(0u64, |replacement| {
-            self.nodes[replacement.index].output.len() as u64
+            replacement
+                .indices
+                .iter()
+                .map(|&index| self.nodes[index].output.len() as u64)
+                .sum()
         });
         let extra_channels = (if charge_capture { channels } else { 0 })
             .checked_add(replacement_channels)
@@ -807,10 +916,14 @@ impl<'a> DspEngine<'a> {
             let topo_order = self.topo_order.clone();
             for node_index in topo_order {
                 if let Some(replacement) = &mut replacement {
-                    if node_index == replacement.index {
+                    if let Some(position) = replacement
+                        .indices
+                        .iter()
+                        .position(|&index| node_index == index)
+                    {
                         let node = &mut self.nodes[node_index];
                         node.output.fill(f64::NAN);
-                        (replacement.fill)(frame_index, &mut node.output)?;
+                        (replacement.fill)(position, frame_index, &mut node.output)?;
                         if node.output.iter().any(|sample| !sample.is_finite()) {
                             return Err(RenderError::Nonfinite(format!(
                                 "nonfinite node freeze replacement at frame {frame_index}"
@@ -3372,6 +3485,179 @@ mod delay_scheduler_tests {
 #[cfg(test)]
 mod node_freeze_tests {
     use super::*;
+
+    fn group_plan() -> Plan {
+        let source = r#"maac 1;
+project p { score=[0q,1/100q]; rate=48000Hz; tempo=&t; meter=&m; output=&sum:out; tail=0s; requires=["maac.production/1"]; }
+tempo t { points=[(0q,120bpm,step)]; }
+meter m { points=[(0q,4,4)]; }
+node sine_a { type="core.sine/1"; params={attack=0s;release=0s;level=0.2;}; }
+node sine_b { type="core.sine/1"; params={attack=0s;release=0s;level=0.1;}; }
+node fx_a { type="fx.eq/1"; config={channels=1;mode=low_pass;}; params={frequency=12000Hz;q=1/2;}; }
+node fx_b { type="fx.reverb/1"; config={channels=1;}; params={mix=0;}; }
+node sum { type="core.sum/1"; config={channels=1;}; }
+connect input_a { from=&sine_a:out; to=&fx_a:in; }
+connect input_b { from=&sine_b:out; to=&fx_b:in; }
+connect output_a { from=&fx_a:out; to=&sum:in; }
+connect output_b { from=&fx_b:out; to=&sum:in; }
+pattern phrase { length=1/100q; note n {at=0q;dur=1/100q;pitch=A4;velocity=1;} }
+track notes_a { target=&sine_a:events; }
+track notes_b { target=&sine_b:events; }
+place play_a { pattern=&phrase;track=&notes_a;at=0q; }
+place play_b { pattern=&phrase;track=&notes_b;at=0q; }
+"#;
+        crate::compile(&crate::parse(source).unwrap()).unwrap()
+    }
+
+    fn group_boundaries() -> [PortRef; 2] {
+        [
+            PortRef::new("fx_b", "out").unwrap(),
+            PortRef::new("fx_a", "out").unwrap(),
+        ]
+    }
+
+    #[test]
+    fn group_capture_and_replay_use_canonical_order_and_skip_processors() {
+        let plan = group_plan();
+        let boundaries = group_boundaries();
+        let mut engine = DspEngine::new(&plan).unwrap();
+        assert_eq!(
+            engine.validate_node_freeze_group(&boundaries).unwrap(),
+            vec![
+                (PortRef::new("fx_a", "out").unwrap(), 1),
+                (PortRef::new("fx_b", "out").unwrap(), 1),
+            ]
+        );
+        let mut captured = Vec::new();
+        engine
+            .render_node_freeze_group(&boundaries, |outputs| {
+                assert_eq!(outputs.len(), 2);
+                assert_eq!(outputs[0].len(), 1);
+                assert_eq!(outputs[1].len(), 1);
+                captured.push([outputs[0][0], outputs[1][0]]);
+                Ok(())
+            })
+            .unwrap();
+        assert!(captured.iter().any(|samples| samples[0] != samples[1]));
+        let mut ordinary = Vec::new();
+        engine
+            .render(|frame| {
+                ordinary.push(frame[0]);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(ordinary.len(), captured.len());
+        for (output, selected) in ordinary.iter().zip(&captured) {
+            assert_eq!(*output, selected[0] + selected[1]);
+        }
+        let mut replay = Vec::new();
+        engine
+            .render_with_node_replacements(
+                &boundaries,
+                |index, frame, output| {
+                    output[0] = captured[frame as usize][index];
+                    Ok(())
+                },
+                |frame| {
+                    replay.push(frame[0]);
+                    Ok(())
+                },
+            )
+            .unwrap();
+        assert_eq!(replay, ordinary);
+        let eq_index = engine.node_indices["fx_a"];
+        let mut fresh = Eq::new(1, crate::production_eq::EqMode::LowPass).unwrap();
+        assert_eq!(
+            engine.nodes[eq_index]
+                .eq
+                .as_mut()
+                .unwrap()
+                .process(&[1.0], 12_000.0, 0.5, 0.0)
+                .unwrap(),
+            fresh.process(&[1.0], 12_000.0, 0.5, 0.0).unwrap()
+        );
+        let mut altered = Vec::new();
+        engine
+            .render_with_node_replacements(
+                &boundaries,
+                |index, frame, output| {
+                    output[0] = frame as f64 + index as f64;
+                    Ok(())
+                },
+                |frame| {
+                    altered.push(frame[0]);
+                    Ok(())
+                },
+            )
+            .unwrap();
+        for (frame, output) in altered.iter().enumerate() {
+            assert_eq!(*output, frame as f64 * 2.0 + 1.0);
+        }
+    }
+
+    #[test]
+    fn group_rejects_duplicates_dependencies_and_aggregate_work() {
+        let plan = group_plan();
+        let boundaries = group_boundaries();
+        let engine = DspEngine::new(&plan).unwrap();
+        assert_eq!(
+            engine
+                .validate_node_freeze_group(&[boundaries[0].clone(), boundaries[0].clone()])
+                .unwrap_err()
+                .code(),
+            "E_RENDER_STATE"
+        );
+        assert_eq!(
+            engine
+                .validate_node_freeze_group(&boundaries[..1])
+                .unwrap_err()
+                .code(),
+            "E_RENDER_STATE"
+        );
+
+        // Reversing caller order cannot hide a directed dependency.
+        let mut dependent = plan.clone();
+        dependent
+            .connections
+            .iter_mut()
+            .find(|edge| edge.id == "input_b")
+            .unwrap()
+            .from = PortRef::new("fx_a", "out").unwrap();
+        let dependent_engine = DspEngine::new(&dependent).unwrap();
+        for order in [
+            boundaries.clone(),
+            [boundaries[1].clone(), boundaries[0].clone()],
+        ] {
+            assert_eq!(
+                dependent_engine
+                    .validate_node_freeze_group(&order)
+                    .unwrap_err()
+                    .code(),
+                "E_RENDER_STATE"
+            );
+        }
+
+        let baseline = plan.view().execution_work(&PlanLimits::default()).unwrap();
+        let limits = PlanLimits {
+            max_execution_work: baseline + plan.output.total_frames * 2 - 1,
+            ..PlanLimits::default()
+        };
+        let mut limited = DspEngine::new_with_limits(&plan, &limits).unwrap();
+        assert_eq!(
+            limited
+                .render_node_freeze_group(&boundaries, |_| Ok(()))
+                .unwrap_err()
+                .code(),
+            "E_RESOURCE_LIMIT"
+        );
+        assert_eq!(
+            limited
+                .render_with_node_replacements(&boundaries, |_, _, _| Ok(()), |_| Ok(()))
+                .unwrap_err()
+                .code(),
+            "E_RESOURCE_LIMIT"
+        );
+    }
 
     fn plan(kind: &str, config: &str, params: &str) -> Plan {
         let source = format!(
