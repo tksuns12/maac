@@ -398,6 +398,34 @@ tests cover mixed scalar/group histories, append and patch promotion, private
 stream corruption, foreign executable identity, and the 64-reference limit.
 The group payload limit is 1 GiB total, checked during archive preflight.
 
+## Grouped archive source edits (2026-09-27)
+
+Archive version 10 journals one edit checkpoint for 1–16 direct local leaf
+imports, with an optional entry source edit. Each import keeps its own before
+and after revision, forward edit, and inverse edit; the entry is repinned once
+after all import edits. Older edit records and checkpoint identities remain
+valid. The CLI accepts repeated `--import ALIAS=PATCH.json`, optionally with
+`--entry-patch PATCH.json`, and writes the new archive atomically. Supplied
+patches are limited to 4 MiB in total, and generated repinning is limited to
+16 KiB.
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Group CLI lifecycle | `cargo test --test archive_group_edit_cli --quiet` | Passed: 3 tests |
+| Archive core | `cargo test --lib archive_ --quiet` | Passed: 27 focused tests; the final replay-budget regression passed in the full gate |
+| Focused compatibility | `cargo test --test archive_group_edit_cli --test archive_import_edit_cli --test archive_multi_node_freeze_cli --quiet` | Passed |
+| Full Rust gate | `cargo test --all-targets --quiet` | Passed: 312 active library tests, 3 existing ignored, and all integration targets |
+| Formatting and whitespace | `cargo fmt --all -- --check`; `git diff --check` | Passed |
+| Clippy | `cargo clippy --all-targets -- -D warnings` | Passed |
+| Independent review | Read-only Astra review of the combined change | Replay accounting, inverse replay context, and CLI input bounds findings resolved |
+
+The group CLI tests cover canonical alias ordering, original and current
+archive extraction, relocation after source deletion, stale versus reusable
+whole-output freezes, subsequent archive append, duplicate and no-clobber
+rejection, tampered edit evidence, and a no-op group checkpoint. Core tests
+cover v3 edit evidence, inverse replay against the original trusted bundle,
+and a replay budget charged for each member closure pass.
+
 ## Historical naming cleanup
 
 The current tree uses MaaC consistently in the specification, grammar, schema,

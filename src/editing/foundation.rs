@@ -51,6 +51,9 @@ enum ImportEditMode {
         alternate: String,
         alias: String,
     },
+    GroupImporter {
+        alternates: BTreeMap<String, (String, String)>,
+    },
 }
 
 impl BundleEditContext {
@@ -146,6 +149,27 @@ impl BundleEditContext {
         Ok(context)
     }
 
+    pub(crate) fn new_disk_media_group_importer(
+        bundle: &crate::bundle::SourceBundle,
+        assets: &std::collections::BTreeMap<String, std::sync::Arc<crate::disk_media::DiskAsset>>,
+        limits: crate::plan::PlanLimits,
+        alternates: BTreeMap<String, (String, String)>,
+    ) -> EditResult<Self> {
+        let mut context = Self::new_disk_media(bundle, assets, limits)?;
+        if alternates.is_empty()
+            || alternates
+                .values()
+                .any(|(library, _)| !bundle.sources.contains_key(library))
+        {
+            return Err(EditError::new(
+                "E_REFERENCE",
+                "group import libraries are missing",
+            ));
+        }
+        context.import_edit = Some(ImportEditMode::GroupImporter { alternates });
+        Ok(context)
+    }
+
     pub fn source_path(&self) -> &str {
         &self.source_path
     }
@@ -174,6 +198,15 @@ impl BundleEditContext {
                 let alternate_hash = crate::bundle::sha256_digest(alternate.as_bytes());
                 if pin == Some(alternate_hash.as_str()) {
                     bundle.sources.insert(library.clone(), alternate.clone());
+                }
+            }
+            Some(ImportEditMode::GroupImporter { alternates }) => {
+                for (alias, (library, alternate)) in alternates {
+                    let pin = authored["objects"][alias]["fields"]["hash"]["v"].as_str();
+                    let alternate_hash = crate::bundle::sha256_digest(alternate.as_bytes());
+                    if pin == Some(alternate_hash.as_str()) {
+                        bundle.sources.insert(library.clone(), alternate.clone());
+                    }
                 }
             }
             None => {}

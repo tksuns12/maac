@@ -560,6 +560,68 @@ impl ArchiveSnapshot {
         Ok(after)
     }
 
+    /// Recompile a coordinated edit of existing archived source members. The
+    /// caller supplies the complete final source text for every changed member;
+    /// all other closure members and retained provenance must stay identical.
+    pub(crate) fn patched_sources(
+        &self,
+        replacements: &BTreeMap<String, String>,
+    ) -> Result<Self, Diagnostics> {
+        if replacements.is_empty() {
+            return Err(fail(
+                DiagnosticCode::Reference,
+                "source edit requires at least one replacement",
+            ));
+        }
+        for (path, source) in replacements {
+            self.source_text(path)?;
+            if source.len() > MAX_BUNDLE_FILE_BYTES {
+                return Err(fail(
+                    DiagnosticCode::ResourceLimit,
+                    "edited source exceeds bundle file limit",
+                ));
+            }
+        }
+        let staging = tempfile::tempdir().map_err(|e| {
+            fail(
+                DiagnosticCode::Reference,
+                format!("cannot create private edit staging: {e}"),
+            )
+        })?;
+        self.stage_members(staging.path())?;
+        for (path, source) in replacements {
+            fs::write(staging.path().join(path), source).map_err(|e| {
+                fail(
+                    DiagnosticCode::Reference,
+                    format!("cannot stage edited source `{path}`: {e}"),
+                )
+            })?;
+        }
+        let after = Self::capture_matching_layout(Path::new(self.entry()), staging.path(), self)?;
+        let same_members = self
+            .manifest
+            .members
+            .iter()
+            .filter(|member| !replacements.contains_key(&member.path))
+            .eq(after
+                .manifest
+                .members
+                .iter()
+                .filter(|member| !replacements.contains_key(&member.path)));
+        if !same_members
+            || self.manifest.builtins != after.manifest.builtins
+            || self.manifest.import_manifest != after.manifest.import_manifest
+            || self.manifest.original_wav != after.manifest.original_wav
+            || self.manifest.imports != after.manifest.imports
+        {
+            return Err(fail(
+                DiagnosticCode::Capability,
+                "source edit changed the archived non-source closure",
+            ));
+        }
+        Ok(after)
+    }
+
     /// Recompile an edited entry from a private staging of this exact closure.
     /// Every other member, builtin identity, and retained sidecar must remain
     /// identical and reachable in the new complete closure.

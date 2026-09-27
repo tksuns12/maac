@@ -246,6 +246,20 @@ pub enum ArchiveCommand {
         #[arg(long)]
         expect_hash: Option<String>,
     },
+    /// Atomically edit direct local leaf imports and repin the entry source.
+    PatchGroup {
+        archive: PathBuf,
+        /// Repeat ALIAS=PATCH.json for each distinct direct local leaf import.
+        #[arg(long = "import", required = true)]
+        imports: Vec<String>,
+        /// Optional independent Protocol 2 edit of the entry source.
+        #[arg(long)]
+        entry_patch: Option<PathBuf>,
+        #[arg(long)]
+        output_dir: PathBuf,
+        #[arg(long)]
+        expect_hash: Option<String>,
+    },
     /// Verify a captured archive and its current reopenable composition.
     Verify {
         archive: PathBuf,
@@ -403,6 +417,8 @@ pub struct ArtifactCommandResult {
     archive_patch: Option<ArchivePatchReport>,
     #[serde(flatten, skip_serializing_if = "Option::is_none")]
     archive_import_patch: Option<ArchiveImportPatchReport>,
+    #[serde(flatten, skip_serializing_if = "Option::is_none")]
+    archive_group_patch: Option<ArchiveGroupPatchReport>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -422,6 +438,25 @@ struct ArchiveImportPatchReport {
     pin: String,
     importer_before_revision: String,
     importer_after_revision: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct ArchiveGroupPatchReport {
+    checkpoint: String,
+    edit_digest: String,
+    imports: Vec<GroupImportPatchReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    entry_edit: Option<crate::editing::AppliedTransaction>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct GroupImportPatchReport {
+    alias: String,
+    source: String,
+    before_revision: String,
+    after_revision: String,
+    pin: String,
+    edit: crate::editing::AppliedTransaction,
 }
 impl ArtifactCommandResult {
     pub fn base(&self) -> &CommandResult {
@@ -766,6 +801,7 @@ pub fn execute_artifact_with_range(
         edit: counts.edit,
         archive_patch: counts.archive_patch,
         archive_import_patch: counts.archive_import_patch,
+        archive_group_patch: counts.archive_group_patch,
     })
 }
 
@@ -840,6 +876,7 @@ fn execute_disk_media(command: &Command) -> Result<ArtifactCommandResult, CliErr
         edit: None,
         archive_patch: None,
         archive_import_patch: None,
+        archive_group_patch: None,
     })
 }
 #[derive(Default)]
@@ -850,6 +887,7 @@ struct EventCounts {
     edit: Option<crate::editing::AppliedTransaction>,
     archive_patch: Option<ArchivePatchReport>,
     archive_import_patch: Option<ArchiveImportPatchReport>,
+    archive_group_patch: Option<ArchiveGroupPatchReport>,
 }
 impl EventCounts {
     fn record(&mut self, plan: &PlanArtifact) {
@@ -1474,6 +1512,94 @@ fn execute_archive(
             counts.edit = Some(edit);
             Ok(CommandResult::archive(
                 "archive patch-import",
+                archive,
+                Some(output_dir),
+                history.digest(),
+                history.version(),
+            ))
+        }
+        ArchiveCommand::PatchGroup {
+            archive,
+            imports,
+            entry_patch,
+            output_dir,
+            expect_hash,
+        } => {
+            ensure_output_outside_archive(output_dir, archive)?;
+            if imports.len() > 16 {
+                return Err(CliError::new(
+                    "E_RESOURCE_LIMIT",
+                    "group edit exceeds 16 imports",
+                ));
+            }
+            let mut specs = Vec::with_capacity(imports.len());
+            for import in imports {
+                let (alias, path) = import.split_once('=').ok_or_else(|| {
+                    CliError::new("E_USAGE", "--import requires ALIAS=PATCH.json")
+                })?;
+                if alias.is_empty() || path.is_empty() {
+                    return Err(CliError::new(
+                        "E_USAGE",
+                        "--import requires nonempty ALIAS and PATCH.json",
+                    ));
+                }
+                specs.push((alias.to_owned(), PathBuf::from(path)));
+            }
+            specs.sort_by(|left, right| left.0.as_bytes().cmp(right.0.as_bytes()));
+            if specs.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+                return Err(CliError::new("E_USAGE", "duplicate group import alias"));
+            }
+            let mut patch_bytes = 0usize;
+            let mut patches = Vec::with_capacity(specs.len());
+            for (alias, path) in specs {
+                let bytes = read_bounded(&path)?;
+                patch_bytes = patch_bytes.checked_add(bytes.len()).ok_or_else(|| {
+                    CliError::new("E_RESOURCE_LIMIT", "group patch size overflow")
+                })?;
+                if patch_bytes > MAX_INPUT_BYTES {
+                    return Err(CliError::new(
+                        "E_RESOURCE_LIMIT",
+                        "group patch input exceeds 4 MiB",
+                    ));
+                }
+                patches.push((alias, bytes));
+            }
+            let entry_bytes = entry_patch
+                .as_ref()
+                .map(|path| read_bounded(path))
+                .transpose()?;
+            if patch_bytes + entry_bytes.as_ref().map_or(0, Vec::len) > MAX_INPUT_BYTES {
+                return Err(CliError::new(
+                    "E_RESOURCE_LIMIT",
+                    "group patch input exceeds 4 MiB",
+                ));
+            }
+            let mut history = ArchiveHistory::verify(archive)
+                .map_err(|error| CliError::from_diagnostics(&error))?;
+            verify_expected_archive_hash(expect_hash.as_deref(), &history.digest())?;
+            let result = history
+                .patch_group_head(&patches, entry_bytes.as_deref())
+                .map_err(|error| CliError::from_diagnostics(&error))?;
+            stage_archive_directory(output_dir, |staging| history.stage(staging))?;
+            counts.archive_group_patch = Some(ArchiveGroupPatchReport {
+                checkpoint: result.checkpoint,
+                edit_digest: result.edit_digest,
+                imports: result
+                    .leaves
+                    .into_iter()
+                    .map(|leaf| GroupImportPatchReport {
+                        alias: leaf.alias,
+                        source: leaf.source,
+                        before_revision: leaf.before_revision,
+                        after_revision: leaf.after_revision,
+                        pin: leaf.pin,
+                        edit: leaf.applied,
+                    })
+                    .collect(),
+                entry_edit: result.entry_applied,
+            });
+            Ok(CommandResult::archive(
+                "archive patch-group",
                 archive,
                 Some(output_dir),
                 history.digest(),

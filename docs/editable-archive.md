@@ -8,7 +8,8 @@ version 5 can record an explicit Protocol 2 edit and its inverse; version 6
 can retain several selected WAV import records in one composition; version 7
 can record a local library edit with its exact parent import pin update;
 version 8 can freeze one internal native effect output as exact binary64 samples;
-version 9 can retain a group of independent native effect outputs.
+version 9 can retain a group of independent native effect outputs; version 10
+can journal a bounded group of local source edits in one checkpoint.
 
 ## Commands
 
@@ -20,6 +21,8 @@ maac archive create SOURCE --output-dir NEW [--project-root ROOT] [--profile def
 maac archive patch ARCHIVE PATCH.json --output-dir NEW [--expect-hash SHA256]
 maac archive patch-import ARCHIVE PATCH.json --import ALIAS --output-dir NEW
     [--expect-hash SHA256]
+maac archive patch-group ARCHIVE --import ALIAS=PATCH.json [--import ALIAS=PATCH.json]...
+    [--entry-patch PATCH.json] --output-dir NEW [--expect-hash SHA256]
 maac archive verify ARCHIVE [--expect-hash SHA256]
 maac archive unpack ARCHIVE --output-dir NEW [--expect-hash SHA256] [--revision SHA256]
 maac archive freeze-check ARCHIVE --source SOURCE [--project-root ROOT]
@@ -87,6 +90,22 @@ snapshots. The parent import pin hashes exact source bytes, including comments
 and formatting. The generated pin transaction has one operation and is capped
 at 16 KiB. Both prior and new checkpoints remain reopenable.
 
+`archive patch-group` journals 1–16 distinct direct local leaf-library edits
+and an optional entry-source edit as one version 10 checkpoint. Each supplied
+Protocol 2 transaction addresses the original head and must be valid on its
+own. MaaC applies all library edits, generates one entry transaction with the
+exact new byte hash for each selected import, and checks the complete combined
+composition before publication. Request order does not change archive identity.
+The record retains each forward transaction and authored-tree inverse, plus
+the generated pin transaction and its inverse. Verification replays all of
+them and rejects changed import topology, unrelated source or media changes,
+and altered journal bytes. Shared, transitive, and built-in imports remain
+outside this bounded command; edits that require an invalid intermediate
+source meaning are also outside it. An authored no-op still creates a
+journaled checkpoint. The supplied patch files together are limited to 4 MiB;
+the generated pin transaction is limited to 16 KiB. Older edit records and
+checkpoint IDs stay unchanged.
+
 `--previous` verifies a prior archive, copies its complete checkpoints into a
 new independent archive, and appends the current project. It declares a linear
 parent relationship; MaaC does not infer that the worktree was edited from the
@@ -115,7 +134,7 @@ revision. The source bytes, including comments, omissions, labels, and
 formatting, remain unchanged. The unpacked project uses ordinary `check` and
 `build`; large PCM requires `--disk-media`.
 
-Versions 2 through 9 store `checkpoints/<checkpoint-hex>/` directories. The root
+Versions 2 through 10 store `checkpoints/<checkpoint-hex>/` directories. The root
 manifest records the ordered IDs, parent IDs, snapshot manifest hashes, and
 head ID. Frozen records also identify their freeze manifest; version 4 keeps
 their files under `freezes/<freeze-hash>/`. Journaled records identify an edit
@@ -213,7 +232,7 @@ import record for a root `main.maac` created with `import-wav
 has only a version 1 `import.json`; that record remains outside the archived
 composition closure. Version 6 retains multiple selected existing imports,
 including nested directories whose native PCM is in the composition closure.
-Automatic edit journaling, general multi-file transactions, branching and merging,
+Automatic edit journaling, arbitrary source-graph transactions, branching and merging,
 broader selective invalidation, overlapping frozen graph branches, and a complete producer
 archive remain Phase 3 work. Whole-output and native-node freezes require
 explicit reuse after conservative input validation; they do not provide

@@ -11,7 +11,9 @@ use serde::{Deserialize, Serialize};
 use crate::archive::{
     bounded_manifest, ArchivePreflight, ArchiveSnapshot, MANIFEST_PATH, MAX_TREE_ENTRIES,
 };
-use crate::archive_edit::{EditSnapshot, MAX_EDIT_TOTAL_BYTES, MAX_EDIT_TRANSACTION_WORK_BYTES};
+use crate::archive_edit::{
+    EditSnapshot, GroupLeafCapture, MAX_EDIT_TOTAL_BYTES, MAX_EDIT_TRANSACTION_WORK_BYTES,
+};
 use crate::bundle::{sha256_digest, validate_hash_pin};
 use crate::bundle_fs::ProjectRoot;
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Diagnostics};
@@ -34,6 +36,7 @@ const MULTI_IMPORT_VERSION: u32 = 6;
 const IMPORT_EDIT_VERSION: u32 = 7;
 const NODE_FROZEN_VERSION: u32 = 8;
 const NODE_GROUP_VERSION: u32 = 9;
+const GROUP_EDIT_VERSION: u32 = 10;
 const MAX_CHECKPOINTS: usize = 32;
 const MAX_FREEZE_REFERENCES: usize = 64;
 const MAX_SOURCE_BYTES: u64 = 64 * 1024 * 1024;
@@ -201,6 +204,13 @@ pub(crate) struct ArchiveImportPatchResult {
     pub(crate) pin: String,
     pub(crate) importer_before_revision: String,
     pub(crate) importer_after_revision: String,
+}
+
+pub(crate) struct ArchiveGroupPatchResult {
+    pub(crate) checkpoint: String,
+    pub(crate) edit_digest: String,
+    pub(crate) leaves: Vec<GroupLeafCapture>,
+    pub(crate) entry_applied: Option<AppliedTransaction>,
 }
 
 #[derive(Clone)]
@@ -401,7 +411,7 @@ impl ArchiveHistory {
                     },
                 })
             }
-            Some(2..=9) => Self::verify_versioned(root, json),
+            Some(2..=10) => Self::verify_versioned(root, json),
             _ => Err(fail(
                 DiagnosticCode::Version,
                 "unsupported editable archive version",
@@ -590,11 +600,17 @@ impl ArchiveHistory {
                     .open_child_pinned(&digest[7..])?;
                 let preflight =
                     EditSnapshot::preflight(&edit_root, digest, parent, before, &record.snapshot)?;
-                if preflight.is_import_edit() {
-                    if manifest.version < IMPORT_EDIT_VERSION {
+                if preflight.is_import_edit() || preflight.is_group_edit() {
+                    if preflight.is_import_edit() && manifest.version < IMPORT_EDIT_VERSION {
                         return Err(fail(
                             DiagnosticCode::Version,
                             "older history cannot contain import edits",
+                        ));
+                    }
+                    if preflight.is_group_edit() && manifest.version < GROUP_EDIT_VERSION {
+                        return Err(fail(
+                            DiagnosticCode::Version,
+                            "older history cannot contain grouped source edits",
                         ));
                     }
                     if counted_import_edits.insert(digest.clone()) {
@@ -649,6 +665,17 @@ impl ArchiveHistory {
                 "v7 history has no import edit",
             ));
         }
+        if manifest.version == GROUP_EDIT_VERSION
+            && !edit_children
+                .iter()
+                .filter_map(Option::as_ref)
+                .any(|(_, preflight)| preflight.is_group_edit())
+        {
+            return Err(fail(
+                DiagnosticCode::Version,
+                "v10 history has no grouped source edit",
+            ));
+        }
         if manifest.version == NODE_FROZEN_VERSION
             && !freeze_children
                 .iter()
@@ -684,6 +711,11 @@ impl ArchiveHistory {
         check_edit_replay_work(
             &manifest.checkpoints,
             preflights.iter().map(ArchivePreflight::resource_bytes),
+            edit_children.iter().map(|child| {
+                child
+                    .as_ref()
+                    .and_then(|(_, preflight)| preflight.group_leaf_count())
+            }),
         )?;
 
         before_capture();
@@ -867,6 +899,36 @@ impl ArchiveHistory {
         })
     }
 
+    pub(crate) fn patch_group_head(
+        &mut self,
+        imports: &[(String, Vec<u8>)],
+        entry_patch: Option<&[u8]>,
+    ) -> Result<ArchiveGroupPatchResult, Diagnostics> {
+        let (parent, before) = match &self.state {
+            HistoryState::Legacy {
+                snapshot,
+                genesis_id,
+            } => (genesis_id.as_str(), snapshot.as_ref()),
+            HistoryState::Versioned {
+                manifest,
+                snapshots,
+                ..
+            } => (
+                manifest.head.as_str(),
+                snapshots.last().expect("validated history has a head"),
+            ),
+        };
+        let capture = EditSnapshot::capture_group(parent, before, imports, entry_patch)?;
+        let applied = capture.leaves[0].applied.clone();
+        let result = self.append_edit_checkpoint(capture.after, capture.edit, applied)?;
+        Ok(ArchiveGroupPatchResult {
+            checkpoint: result.checkpoint,
+            edit_digest: result.edit_digest,
+            leaves: capture.leaves,
+            entry_applied: capture.entry_applied,
+        })
+    }
+
     fn append_edit_checkpoint(
         &mut self,
         after: ArchiveSnapshot,
@@ -929,13 +991,22 @@ impl ArchiveHistory {
         check_edit_replay_work(
             &records,
             snapshots.iter().map(ArchiveSnapshot::resource_bytes),
+            edits
+                .iter()
+                .map(|edit| edit.as_ref().and_then(EditSnapshot::group_leaf_count)),
         )?;
         check_staged_tree_with_extras(
             snapshots.iter(),
             unique_freeze_count(&freezes, None),
             unique_edit_entries(&edits),
         )?;
-        let version = if freezes
+        let version = if edits
+            .iter()
+            .filter_map(Option::as_ref)
+            .any(EditSnapshot::is_group_edit)
+        {
+            GROUP_EDIT_VERSION
+        } else if freezes
             .iter()
             .flatten()
             .any(|f| matches!(f, StoredFreeze::Group(_)))
@@ -1116,7 +1187,9 @@ impl ArchiveHistory {
                     &snapshot.digest(),
                     freeze.as_ref(),
                 )?);
-                let version = if manifest.version == NODE_GROUP_VERSION
+                let version = if manifest.version == GROUP_EDIT_VERSION {
+                    GROUP_EDIT_VERSION
+                } else if manifest.version == NODE_GROUP_VERSION
                     || matches!(freeze, Some(StoredFreeze::Group(_)))
                 {
                     NODE_GROUP_VERSION
@@ -1949,6 +2022,7 @@ fn validate_history(manifest: &HistoryManifest) -> Result<(), Diagnostics> {
                 | IMPORT_EDIT_VERSION
                 | NODE_FROZEN_VERSION
                 | NODE_GROUP_VERSION
+                | GROUP_EDIT_VERSION
         )
     {
         return Err(fail(
@@ -1980,13 +2054,17 @@ fn validate_history(manifest: &HistoryManifest) -> Result<(), Diagnostics> {
             && manifest.version != IMPORT_EDIT_VERSION
             && manifest.version != NODE_FROZEN_VERSION
             && manifest.version != NODE_GROUP_VERSION
+            && manifest.version != GROUP_EDIT_VERSION
         {
             return Err(fail(
                 DiagnosticCode::Version,
                 "older archive history cannot contain edits",
             ));
         }
-        if record.node_freezes.is_some() && manifest.version != NODE_GROUP_VERSION {
+        if record.node_freezes.is_some()
+            && manifest.version != NODE_GROUP_VERSION
+            && manifest.version != GROUP_EDIT_VERSION
+        {
             return Err(fail(
                 DiagnosticCode::Version,
                 "older archive history cannot contain grouped node freezes",
@@ -2225,9 +2303,11 @@ fn check_edit_transaction_work(
 fn check_edit_replay_work(
     records: &[CheckpointRecord],
     budgets: impl Iterator<Item = (u64, u64, u64, u64)>,
+    group_leaf_counts: impl Iterator<Item = Option<usize>>,
 ) -> Result<(), Diagnostics> {
     let budgets: Vec<_> = budgets.collect();
-    if budgets.len() != records.len() {
+    let group_leaf_counts: Vec<_> = group_leaf_counts.collect();
+    if budgets.len() != records.len() || group_leaf_counts.len() != records.len() {
         return Err(fail(
             DiagnosticCode::Reference,
             "edit replay budget has mismatched checkpoints",
@@ -2240,9 +2320,16 @@ fn check_edit_replay_work(
         }
         let before = resource_sum(budgets[index - 1])?;
         let after = resource_sum(budgets[index])?;
+        let (before_passes, after_passes) = group_leaf_counts[index]
+            .map(|leaves| (leaves as u64 + 3, leaves as u64 + 2))
+            .unwrap_or((2, 1));
         let work = before
-            .checked_mul(2)
-            .and_then(|n| n.checked_add(after))
+            .checked_mul(before_passes)
+            .and_then(|n| {
+                after
+                    .checked_mul(after_passes)
+                    .and_then(|after| n.checked_add(after))
+            })
             .ok_or_else(|| fail(DiagnosticCode::ResourceLimit, "edit replay work overflow"))?;
         total = total
             .checked_add(work)
@@ -3317,5 +3404,28 @@ place pb { pattern=&phrase; track=&tb; at=0q; }
             checkpoint_with_freeze(None, &snapshot, Some(&sha256_digest(b"single"))).unwrap();
         let json = serde_json::to_string(&legacy).unwrap();
         assert!(!json.contains("node_freezes"));
+    }
+
+    #[test]
+    fn grouped_edit_replay_budget_charges_each_member_closure_pass() {
+        let snapshot = sha256_digest(b"snapshot");
+        let first = checkpoint(None, &snapshot).unwrap();
+        let second =
+            checkpoint_with_edit(Some(&first.id), &snapshot, &sha256_digest(b"group edit"))
+                .unwrap();
+        let records = [first, second];
+        let budget = (0, 0, 256 * 1024 * 1024, 0);
+        assert!(check_edit_replay_work(
+            &records,
+            [budget, budget].into_iter(),
+            [None, Some(16)].into_iter(),
+        )
+        .is_err());
+        assert!(check_edit_replay_work(
+            &records,
+            [budget, budget].into_iter(),
+            [None, None].into_iter(),
+        )
+        .is_ok());
     }
 }
