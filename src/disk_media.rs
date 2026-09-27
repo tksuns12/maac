@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 use crate::bundle::SourceBundle;
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Diagnostics};
 use crate::dsp::{self, AudioStorageMode, DspEngine};
-use crate::plan::{OutputSettings, PlanLimits, PortRef, Processor, ProcessorView};
+use crate::plan::{OutputSettings, PlanLimits, PlanView, PortRef, Processor, ProcessorView};
 use crate::plan_artifact::PlanArtifact;
 
 pub(crate) const MAX_DISK_MEDIA_FILE_BYTES: u64 = 1024 * 1024 * 1024;
@@ -190,6 +190,10 @@ pub(crate) struct DiskMediaPlan {
 }
 
 impl DiskMediaPlan {
+    pub(crate) fn view(&self) -> PlanView<'_> {
+        self.artifact.view()
+    }
+
     /// V2 permits only downstream gain and pan parameters. Any audio or
     /// modulation path back to the boundary, including delay feedback, excludes it.
     pub(crate) fn selective_node_params(

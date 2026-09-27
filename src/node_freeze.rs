@@ -1124,8 +1124,8 @@ fn reuse_identity(
         }
     };
     let mut spans = Vec::new();
-    for (id, parameter) in allowed {
-        let Some(object) = document.object(&id) else {
+    for (id, parameter) in &allowed {
+        let Some(object) = document.object(id) else {
             continue;
         };
         if object.kind != "node" {
@@ -1137,7 +1137,7 @@ fn reuse_identity(
         let ValueKind::Record(fields) = &params.value.kind else {
             continue;
         };
-        let Some(field) = fields.get(parameter) else {
+        let Some(field) = fields.get(*parameter) else {
             continue;
         };
         if matches!(field.value.kind, ValueKind::Number(_)) {
@@ -1159,7 +1159,7 @@ fn reuse_identity(
         cursor = span.end;
     }
     normalized.extend_from_slice(&source.as_bytes()[cursor..]);
-    snapshot.node_freeze_reuse_identity(&normalized)
+    snapshot.node_freeze_reuse_identity_with_mask(&normalized, &allowed)
 }
 
 fn render_key(m: &Manifest) -> Result<String, Diagnostics> {

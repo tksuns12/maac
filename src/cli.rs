@@ -225,6 +225,9 @@ pub enum ArchiveCommand {
         /// Retain an existing WAV import directory whose media.pcm is in the composition.
         #[arg(long = "retain-import")]
         retain_imports: Vec<PathBuf>,
+        /// Retain verified native processor context with this checkpoint.
+        #[arg(long)]
+        processor_context: bool,
     },
     /// Apply one Protocol 2 transaction to the archived head and retain its inverse.
     Patch {
@@ -1394,6 +1397,7 @@ fn execute_archive(
             freeze_output,
             freeze_node,
             retain_imports,
+            processor_context,
         } => {
             let (entry, root, absolute_entry) =
                 resolve_archive_source(input, project_root.as_deref())?;
@@ -1409,6 +1413,16 @@ fn execute_archive(
                 })
                 .collect();
             let node_boundary = node_boundaries.first();
+            let capture_snapshot = |include_context| {
+                ArchiveSnapshot::capture_with_options(
+                    &absolute_entry,
+                    &root,
+                    profile,
+                    retain_imports,
+                    include_context,
+                )
+                .map_err(|error| CliError::from_diagnostics(&error))
+            };
             let mut history = if let Some(previous) = previous {
                 ensure_output_outside_archive(output_dir, previous)?;
                 let prior = ArchiveHistory::verify(previous)
@@ -1416,60 +1430,18 @@ fn execute_archive(
                 verify_expected_archive_hash(expect_previous_hash.as_deref(), &prior.digest())?;
                 prior
             } else {
+                let snapshot = capture_snapshot(*processor_context)?;
                 if node_boundaries.len() > 1 {
-                    let snapshot = if retain_imports.is_empty() {
-                        ArchiveSnapshot::capture(&absolute_entry, &root, profile)
-                    } else {
-                        ArchiveSnapshot::capture_with_imports(
-                            &absolute_entry,
-                            &root,
-                            profile,
-                            retain_imports,
-                        )
-                    }
-                    .map_err(|error| CliError::from_diagnostics(&error))?;
                     ArchiveHistory::from_snapshot_node_group(snapshot, &node_boundaries)
                 } else if let Some(boundary) = node_boundary {
-                    let snapshot = if retain_imports.is_empty() {
-                        ArchiveSnapshot::capture(&absolute_entry, &root, profile)
-                    } else {
-                        ArchiveSnapshot::capture_with_imports(
-                            &absolute_entry,
-                            &root,
-                            profile,
-                            retain_imports,
-                        )
-                    }
-                    .map_err(|error| CliError::from_diagnostics(&error))?;
                     ArchiveHistory::from_snapshot_node_frozen(snapshot, boundary)
-                } else if !retain_imports.is_empty() {
-                    let snapshot = ArchiveSnapshot::capture_with_imports(
-                        &absolute_entry,
-                        &root,
-                        profile,
-                        retain_imports,
-                    )
-                    .map_err(|error| CliError::from_diagnostics(&error))?;
-                    ArchiveHistory::from_snapshot(snapshot, *freeze_output)
-                } else if *freeze_output {
-                    ArchiveHistory::capture_frozen(&absolute_entry, &root, profile)
                 } else {
-                    ArchiveHistory::capture(&absolute_entry, &root, profile)
+                    ArchiveHistory::from_snapshot(snapshot, *freeze_output)
                 }
                 .map_err(|error| CliError::from_diagnostics(&error))?
             };
             if previous.is_some() {
-                let snapshot = if retain_imports.is_empty() {
-                    ArchiveSnapshot::capture(&absolute_entry, &root, profile)
-                } else {
-                    ArchiveSnapshot::capture_with_imports(
-                        &absolute_entry,
-                        &root,
-                        profile,
-                        retain_imports,
-                    )
-                }
-                .map_err(|error| CliError::from_diagnostics(&error))?;
+                let snapshot = capture_snapshot(*processor_context || history.version() == 12)?;
                 if node_boundaries.len() > 1 {
                     history.append_node_group(snapshot, &node_boundaries)
                 } else if let Some(boundary) = node_boundary {

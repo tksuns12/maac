@@ -10,6 +10,7 @@ use cap_std::fs::OpenOptions as CapOpenOptions;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::archive_processors::NativeProcessorContext;
 use crate::bundle::{
     sha256_digest, MAX_BUNDLE_ASSETS, MAX_BUNDLE_FILE_BYTES, MAX_BUNDLE_PATH_BYTES,
     MAX_BUNDLE_SOURCES,
@@ -25,6 +26,9 @@ const FORMAT: &str = "maac.editable-archive";
 const SNAPSHOT_FORMAT: &str = "maac.archive-snapshot";
 const VERSION: u32 = 1;
 const MULTI_IMPORT_VERSION: u32 = 2;
+const PROCESSOR_CONTEXT_VERSION: u32 = 3;
+const PROCESSOR_CONTEXT_PATH: &str = "maac-processors.json";
+const MAX_PROCESSOR_CONTEXT_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_RETAINED_IMPORTS: usize = 16;
 const MAX_ORIGINAL_TOTAL_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
@@ -46,6 +50,8 @@ struct Manifest {
     original_wav: Option<Sidecar>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     imports: Vec<ImportRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    processor_context: Option<Sidecar>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -107,6 +113,7 @@ pub(crate) struct ArchiveSnapshot {
     data: BTreeMap<String, MemberData>,
     retained: Option<RetainedPayload>,
     imports: Vec<ImportPayload>,
+    processor_context: Option<Vec<u8>>,
 }
 
 #[derive(Clone)]
@@ -128,6 +135,7 @@ pub(crate) struct ArchivePreflight {
     json: Vec<u8>,
     retained: Option<RetainedImportPreflight>,
     imports: Vec<(String, RetainedImportPreflight)>,
+    processor_context: Option<Vec<u8>>,
 }
 
 impl ArchivePreflight {
@@ -152,12 +160,16 @@ impl ArchivePreflight {
     pub(crate) fn is_multi_import(&self) -> bool {
         !self.imports.is_empty()
     }
+
+    pub(crate) fn has_processor_context(&self) -> bool {
+        self.processor_context.is_some()
+    }
 }
 
 impl ArchiveSnapshot {
     pub(crate) fn capture(entry: &Path, root: &Path, profile: &str) -> Result<Self, Diagnostics> {
         let root = ProjectRoot::open_pinned(root, cap_std::ambient_authority())?;
-        Self::capture_in_root(entry, &root, profile, true, &[])
+        Self::capture_in_root(entry, &root, profile, true, &[], false)
     }
 
     /// Capture the compiled composition without import provenance. Freeze
@@ -169,7 +181,7 @@ impl ArchiveSnapshot {
         profile: &str,
     ) -> Result<Self, Diagnostics> {
         let root = ProjectRoot::open_pinned(root, cap_std::ambient_authority())?;
-        Self::capture_in_root(entry, &root, profile, false, &[])
+        Self::capture_in_root(entry, &root, profile, false, &[], false)
     }
 
     pub(crate) fn capture_with_imports(
@@ -183,7 +195,29 @@ impl ArchiveSnapshot {
         }
         let selected = normalize_selections(selections)?;
         let root = ProjectRoot::open_pinned(root, cap_std::ambient_authority())?;
-        Self::capture_in_root(entry, &root, profile, false, &selected)
+        Self::capture_in_root(entry, &root, profile, false, &selected, false)
+    }
+
+    pub(crate) fn capture_with_options(
+        entry: &Path,
+        root: &Path,
+        profile: &str,
+        retain_imports: &[PathBuf],
+        processor_context: bool,
+    ) -> Result<Self, Diagnostics> {
+        if !processor_context {
+            return Self::capture_with_imports(entry, root, profile, retain_imports);
+        }
+        let selected = normalize_selections(retain_imports)?;
+        let root = ProjectRoot::open_pinned(root, cap_std::ambient_authority())?;
+        Self::capture_in_root(
+            entry,
+            &root,
+            profile,
+            selected.is_empty(),
+            &selected,
+            processor_context,
+        )
     }
 
     pub(crate) fn capture_matching_layout(
@@ -204,6 +238,7 @@ impl ArchiveSnapshot {
             reference.profile(),
             reference.retained.is_some(),
             &selections,
+            reference.has_processor_context(),
         )
     }
 
@@ -213,11 +248,23 @@ impl ArchiveSnapshot {
         profile: &str,
         detect_import: bool,
         selected_dirs: &[String],
+        include_processor_context: bool,
     ) -> Result<Self, Diagnostics> {
         let limits = limits(profile)?;
         let selected_preflights = preflight_selected(root, selected_dirs)?;
         let project = DiskMediaProject::load_in_root(entry, root)?;
-        project.build_with_limits(&limits)?;
+        let plan = project.build_with_limits(&limits)?;
+        let (processor_context, processor_context_sidecar) = if include_processor_context {
+            let context = NativeProcessorContext::capture(&plan)?;
+            let sidecar = Sidecar {
+                path: PROCESSOR_CONTEXT_PATH.into(),
+                bytes: context.bytes_len() as u64,
+                sha256: context.digest(),
+            };
+            (Some(context.bytes().to_vec()), Some(sidecar))
+        } else {
+            (None, None)
+        };
         let bundle = project.bundle();
         let resolved = bundle.resolve_with_disk_assets(project.disk_assets())?;
         let snapshots = bundle.snapshot_resolved_sources(&resolved)?;
@@ -289,13 +336,15 @@ impl ArchiveSnapshot {
             (None, None)
         };
         let manifest = Manifest {
-            format: if retained.is_some() || !imports.is_empty() {
+            format: if retained.is_some() || !imports.is_empty() || include_processor_context {
                 SNAPSHOT_FORMAT
             } else {
                 FORMAT
             }
             .into(),
-            version: if imports.is_empty() {
+            version: if include_processor_context {
+                PROCESSOR_CONTEXT_VERSION
+            } else if imports.is_empty() {
                 VERSION
             } else {
                 MULTI_IMPORT_VERSION
@@ -307,6 +356,7 @@ impl ArchiveSnapshot {
             import_manifest,
             original_wav,
             imports: import_records,
+            processor_context: processor_context_sidecar,
         };
         validate_manifest(&manifest)?;
         let manifest_json = canonical_json(&manifest)?;
@@ -322,6 +372,7 @@ impl ArchiveSnapshot {
             data,
             retained,
             imports,
+            processor_context,
         })
     }
 
@@ -406,11 +457,25 @@ impl ArchiveSnapshot {
                 ));
             }
         }
+        let processor_context = if let Some(sidecar) = &manifest.processor_context {
+            let bytes = bounded_processor_context(root)?;
+            NativeProcessorContext::from_bytes(&bytes)?;
+            if bytes.len() as u64 != sidecar.bytes || sha256_digest(&bytes) != sidecar.sha256 {
+                return Err(fail(
+                    DiagnosticCode::Hash,
+                    "processor context sidecar identity differs from snapshot manifest",
+                ));
+            }
+            Some(bytes)
+        } else {
+            None
+        };
         Ok(ArchivePreflight {
             manifest,
             json: bytes,
             retained,
             imports,
+            processor_context,
         })
     }
 
@@ -431,7 +496,16 @@ impl ArchiveSnapshot {
                 .iter()
                 .map(|(directory, _)| directory.clone())
                 .collect::<Vec<_>>(),
+            preflight.processor_context.is_some(),
         )?;
+        if let Some(expected) = &preflight.processor_context {
+            if bounded_processor_context(root)? != *expected {
+                return Err(fail(
+                    DiagnosticCode::Hash,
+                    "processor context sidecar changed during verification",
+                ));
+            }
+        }
         if captured.manifest != preflight.manifest || bounded_manifest(root)? != preflight.json {
             return Err(fail(
                 DiagnosticCode::Hash,
@@ -467,6 +541,38 @@ impl ArchiveSnapshot {
             .ok_or_else(|| fail(DiagnosticCode::Reference, "archive entry source is missing"))?;
         entry.bytes = normalized_entry.len() as u64;
         entry.sha256 = sha256_digest(normalized_entry);
+        Ok(sha256_digest(&canonical_json(&manifest)?))
+    }
+
+    pub(crate) fn node_freeze_reuse_identity_with_mask(
+        &self,
+        normalized_entry: &[u8],
+        mask: &BTreeMap<String, &'static str>,
+    ) -> Result<String, Diagnostics> {
+        if !self.has_processor_context() {
+            return self.node_freeze_reuse_identity(normalized_entry);
+        }
+        let mut manifest = self.manifest.clone();
+        let entry = manifest
+            .members
+            .iter_mut()
+            .find(|member| member.path == manifest.entry && member.kind == MemberKind::Source)
+            .ok_or_else(|| fail(DiagnosticCode::Reference, "archive entry source is missing"))?;
+        entry.bytes = normalized_entry.len() as u64;
+        entry.sha256 = sha256_digest(normalized_entry);
+        let context = self.processor_context.as_ref().ok_or_else(|| {
+            fail(
+                DiagnosticCode::Reference,
+                "private processor context is missing",
+            )
+        })?;
+        let projected = NativeProcessorContext::from_bytes(context)?.projected_for_mask(mask)?;
+        let sidecar = manifest
+            .processor_context
+            .as_mut()
+            .expect("context manifest");
+        sidecar.bytes = projected.len() as u64;
+        sidecar.sha256 = sha256_digest(&projected);
         Ok(sha256_digest(&canonical_json(&manifest)?))
     }
 
@@ -685,6 +791,10 @@ impl ArchiveSnapshot {
         !self.imports.is_empty()
     }
 
+    pub(crate) fn has_processor_context(&self) -> bool {
+        self.processor_context.is_some()
+    }
+
     /// Exact file and directory count produced by staging this snapshot.
     pub(crate) fn projected_tree_entries(&self) -> usize {
         let mut directories = BTreeSet::new();
@@ -711,6 +821,7 @@ impl ArchiveSnapshot {
             + directories.len()
             + if self.retained.is_some() { 2 } else { 0 }
             + self.imports.len() * 2
+            + usize::from(self.processor_context.is_some())
     }
 
     /// Write only local closure members into an existing output directory.
@@ -807,6 +918,36 @@ impl ArchiveSnapshot {
                 .stage_retained_original_to(&original_path)
                 .map_err(import_failure)?;
         }
+        if let Some(bytes) = &self.processor_context {
+            let sidecar = self
+                .manifest
+                .processor_context
+                .as_ref()
+                .expect("context manifest");
+            if bytes.len() as u64 != sidecar.bytes || sha256_digest(bytes) != sidecar.sha256 {
+                return Err(fail(
+                    DiagnosticCode::Hash,
+                    "private processor context changed",
+                ));
+            }
+            let output = prepare_parent(dir, PROCESSOR_CONTEXT_PATH)?;
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&output)
+                .map_err(|e| {
+                    fail(
+                        DiagnosticCode::Reference,
+                        format!("cannot create processor context: {e}"),
+                    )
+                })?;
+            file.write_all(bytes).map_err(|e| {
+                fail(
+                    DiagnosticCode::Reference,
+                    format!("cannot write processor context: {e}"),
+                )
+            })?;
+        }
         Ok(())
     }
 
@@ -880,18 +1021,35 @@ fn canonical_json(manifest: &Manifest) -> Result<Vec<u8>, Diagnostics> {
 }
 
 fn validate_manifest(manifest: &Manifest) -> Result<(), Diagnostics> {
+    let context = manifest.processor_context.as_ref();
+    if let Some(sidecar) = context {
+        if sidecar.path != PROCESSOR_CONTEXT_PATH || sidecar.bytes > MAX_PROCESSOR_CONTEXT_BYTES {
+            return Err(fail(
+                DiagnosticCode::Reference,
+                "invalid processor context path or size",
+            ));
+        }
+        crate::bundle::validate_hash_pin(&sidecar.sha256, "processor context hash")?;
+    }
     let retained = match (
         manifest.format.as_str(),
         manifest.version,
         &manifest.import_manifest,
         &manifest.original_wav,
+        context.is_some(),
     ) {
-        (FORMAT, VERSION, None, None) if manifest.imports.is_empty() => false,
-        (SNAPSHOT_FORMAT, VERSION, Some(import), Some(original)) => {
+        (FORMAT, VERSION, None, None, false) if manifest.imports.is_empty() => false,
+        (
+            SNAPSHOT_FORMAT,
+            VERSION | PROCESSOR_CONTEXT_VERSION,
+            Some(import),
+            Some(original),
+            has_context,
+        ) if (manifest.version == PROCESSOR_CONTEXT_VERSION) == has_context => {
             if !manifest.imports.is_empty() {
                 return Err(fail(
                     DiagnosticCode::Version,
-                    "v1 snapshot cannot contain multiple imports",
+                    "root retained snapshot cannot contain multiple imports",
                 ));
             }
             if manifest.entry != "main.maac"
@@ -909,10 +1067,22 @@ fn validate_manifest(manifest: &Manifest) -> Result<(), Diagnostics> {
             crate::bundle::validate_hash_pin(&original.sha256, "original WAV hash")?;
             true
         }
-        (SNAPSHOT_FORMAT, MULTI_IMPORT_VERSION, None, None)
-            if !manifest.imports.is_empty() && manifest.imports.len() <= MAX_RETAINED_IMPORTS =>
+        (
+            SNAPSHOT_FORMAT,
+            MULTI_IMPORT_VERSION | PROCESSOR_CONTEXT_VERSION,
+            None,
+            None,
+            has_context,
+        ) if (manifest.version == PROCESSOR_CONTEXT_VERSION) == has_context
+            && !manifest.imports.is_empty()
+            && manifest.imports.len() <= MAX_RETAINED_IMPORTS =>
         {
             true
+        }
+        (SNAPSHOT_FORMAT, PROCESSOR_CONTEXT_VERSION, None, None, true)
+            if manifest.imports.is_empty() =>
+        {
+            false
         }
         _ => {
             return Err(fail(
@@ -921,7 +1091,7 @@ fn validate_manifest(manifest: &Manifest) -> Result<(), Diagnostics> {
             ));
         }
     };
-    if manifest.version == MULTI_IMPORT_VERSION {
+    if manifest.version >= MULTI_IMPORT_VERSION {
         let mut prior_directory: Option<&str> = None;
         let mut sidecar_paths = Vec::with_capacity(manifest.imports.len() * 2);
         let mut total_original = 0u64;
@@ -972,6 +1142,7 @@ fn validate_manifest(manifest: &Manifest) -> Result<(), Diagnostics> {
         for (index, path) in sidecar_paths.iter().enumerate() {
             check_path(path)?;
             if paths_overlap(path, MANIFEST_PATH)
+                || context.is_some_and(|_| paths_overlap(path, PROCESSOR_CONTEXT_PATH))
                 || sidecar_paths[..index]
                     .iter()
                     .any(|prior| paths_overlap(path, prior))
@@ -1005,8 +1176,14 @@ fn validate_manifest(manifest: &Manifest) -> Result<(), Diagnostics> {
     let mut pcm_bytes = 0u64;
     for member in &manifest.members {
         check_path(&member.path)?;
+        if context.is_some() && paths_overlap(&member.path, PROCESSOR_CONTEXT_PATH) {
+            return Err(fail(
+                DiagnosticCode::Reference,
+                "processor context collides with a closure member",
+            ));
+        }
         if retained
-            && (sidecar_collision(&member.path) && manifest.version == VERSION
+            && (sidecar_collision(&member.path) && manifest.import_manifest.is_some()
                 || manifest.imports.iter().any(|record| {
                     paths_overlap(&member.path, &record.import_manifest.path)
                         || paths_overlap(&member.path, &record.original_wav.path)
@@ -1061,9 +1238,10 @@ fn validate_manifest(manifest: &Manifest) -> Result<(), Diagnostics> {
         }
     }
     if sources > MAX_BUNDLE_SOURCES
-        || assets > MAX_BUNDLE_ASSETS
+        || assets + usize::from(context.is_some()) > MAX_BUNDLE_ASSETS
         || source_bytes > crate::bundle::MAX_BUNDLE_SOURCE_BYTES as u64
-        || asset_bytes > crate::bundle::MAX_BUNDLE_ASSET_BYTES as u64
+        || asset_bytes + context.map_or(0, |sidecar| sidecar.bytes)
+            > crate::bundle::MAX_BUNDLE_ASSET_BYTES as u64
         || pcm_bytes > crate::disk_media::MAX_DISK_MEDIA_TOTAL_BYTES
     {
         return Err(fail(
@@ -1149,6 +1327,10 @@ fn resource_bytes(manifest: &Manifest) -> (u64, u64, u64) {
             MemberKind::Pcm => pcm += member.bytes,
         }
     }
+    asset += manifest
+        .processor_context
+        .as_ref()
+        .map_or(0, |sidecar| sidecar.bytes);
     (source, asset, pcm)
 }
 
@@ -1530,6 +1712,72 @@ pub(crate) fn bounded_manifest(root: &ProjectRoot) -> Result<Vec<u8>, Diagnostic
     Ok(bytes)
 }
 
+fn bounded_processor_context(root: &ProjectRoot) -> Result<Vec<u8>, Diagnostics> {
+    let metadata = root
+        .dir()
+        .symlink_metadata(PROCESSOR_CONTEXT_PATH)
+        .map_err(|e| {
+            fail(
+                DiagnosticCode::Reference,
+                format!("cannot inspect processor context: {e}"),
+            )
+        })?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return Err(fail(
+            DiagnosticCode::Reference,
+            "processor context is not a regular file",
+        ));
+    }
+    let mut options = CapOpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use cap_std::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW);
+    }
+    let file = root
+        .dir()
+        .open_with(PROCESSOR_CONTEXT_PATH, &options)
+        .map_err(|e| {
+            fail(
+                DiagnosticCode::Reference,
+                format!("cannot open processor context: {e}"),
+            )
+        })?
+        .into_std();
+    if !file
+        .metadata()
+        .map_err(|e| {
+            fail(
+                DiagnosticCode::Reference,
+                format!("cannot inspect processor context: {e}"),
+            )
+        })?
+        .is_file()
+    {
+        return Err(fail(
+            DiagnosticCode::Reference,
+            "processor context is not a regular file",
+        ));
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_PROCESSOR_CONTEXT_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| {
+            fail(
+                DiagnosticCode::Reference,
+                format!("cannot read processor context: {e}"),
+            )
+        })?;
+    if bytes.len() as u64 > MAX_PROCESSOR_CONTEXT_BYTES {
+        return Err(fail(
+            DiagnosticCode::ResourceLimit,
+            "processor context exceeds 4 MiB",
+        ));
+    }
+    Ok(bytes)
+}
+
 fn check_tree(root: &ProjectRoot, manifest: &Manifest) -> Result<usize, Diagnostics> {
     let mut expected: BTreeSet<&str> = manifest
         .members
@@ -1544,6 +1792,9 @@ fn check_tree(root: &ProjectRoot, manifest: &Manifest) -> Result<usize, Diagnost
     for record in &manifest.imports {
         expected.insert(&record.import_manifest.path);
         expected.insert(&record.original_wav.path);
+    }
+    if manifest.processor_context.is_some() {
+        expected.insert(PROCESSOR_CONTEXT_PATH);
     }
     let mut found = BTreeSet::new();
     let mut pending = vec![(
@@ -1670,7 +1921,7 @@ fn prepare_parent(root: &Path, logical: &str) -> Result<PathBuf, Diagnostics> {
                 return Err(fail(
                     DiagnosticCode::Reference,
                     format!("cannot create output directory: {e}"),
-                ))
+                ));
             }
         }
         parent = child;
@@ -1764,7 +2015,9 @@ mod tests {
 
     fn source(asset: Option<(&str, usize)>) -> String {
         let output = if asset.is_some() { "clip" } else { "tone" };
-        let mut text = format!("maac 1;\nproject p {{ score=[0q,1/4q]; tail=0s; rate=48000Hz; tempo=&clock; meter=&metre; output=&{output}:out; }}\ntempo clock {{ points=[(0q,120bpm,step)]; }}\nmeter metre {{ points=[(0q,4,4)]; }}\n");
+        let mut text = format!(
+            "maac 1;\nproject p {{ score=[0q,1/4q]; tail=0s; rate=48000Hz; tempo=&clock; meter=&metre; output=&{output}:out; }}\ntempo clock {{ points=[(0q,120bpm,step)]; }}\nmeter metre {{ points=[(0q,4,4)]; }}\n"
+        );
         if let Some((hash, frames)) = asset {
             text.push_str(&format!("asset sample {{ kind=audio; path=\"sample.pcm\"; hash=\"{hash}\"; format=\"pcm_f32le_interleaved/1\"; rate=48000Hz; channels=1; frames={frames}; }}\naudio clip {{ asset=&sample; at=0q; source=[0frame,1frame]; mode=rate; }}\n"));
         } else {
@@ -1775,6 +2028,77 @@ mod tests {
 
     fn project(root: &Path) {
         fs::write(root.join("main.maac"), source(None)).unwrap();
+    }
+
+    #[test]
+    fn legacy_options_preserve_snapshot_identity() {
+        let source_dir = tempfile::tempdir().unwrap();
+        project(source_dir.path());
+        let legacy =
+            ArchiveSnapshot::capture(Path::new("main.maac"), source_dir.path(), "default").unwrap();
+        let options = ArchiveSnapshot::capture_with_options(
+            Path::new("main.maac"),
+            source_dir.path(),
+            "default",
+            &[],
+            false,
+        )
+        .unwrap();
+        assert_eq!(legacy.manifest_json, options.manifest_json);
+        assert_eq!(legacy.digest(), options.digest());
+        assert!(!options.has_processor_context());
+    }
+
+    #[test]
+    fn processor_context_round_trip_rejects_rehashed_foreign_context() {
+        let source_dir = tempfile::tempdir().unwrap();
+        project(source_dir.path());
+        let snapshot = ArchiveSnapshot::capture_with_options(
+            Path::new("main.maac"),
+            source_dir.path(),
+            "default",
+            &[],
+            true,
+        )
+        .unwrap();
+        assert_eq!(snapshot.manifest.version, PROCESSOR_CONTEXT_VERSION);
+        assert!(snapshot.has_processor_context());
+        let archive = tempfile::tempdir().unwrap();
+        snapshot.stage(archive.path()).unwrap();
+        let verified = ArchiveSnapshot::verify(archive.path()).unwrap();
+        assert_eq!(verified.digest(), snapshot.digest());
+        assert_eq!(
+            verified.resource_bytes().1,
+            snapshot.processor_context.as_ref().unwrap().len() as u64
+        );
+
+        let other_source = tempfile::tempdir().unwrap();
+        fs::write(
+            other_source.path().join("main.maac"),
+            source(None).replace("level=0.2", "level=0.4"),
+        )
+        .unwrap();
+        let other = ArchiveSnapshot::capture_with_options(
+            Path::new("main.maac"),
+            other_source.path(),
+            "default",
+            &[],
+            true,
+        )
+        .unwrap();
+        let foreign = other.processor_context.as_ref().unwrap();
+        assert_ne!(foreign, snapshot.processor_context.as_ref().unwrap());
+        fs::write(archive.path().join(PROCESSOR_CONTEXT_PATH), foreign).unwrap();
+        let mut forged = snapshot.manifest.clone();
+        let sidecar = forged.processor_context.as_mut().unwrap();
+        sidecar.bytes = foreign.len() as u64;
+        sidecar.sha256 = sha256_digest(foreign);
+        fs::write(
+            archive.path().join(MANIFEST_PATH),
+            canonical_json(&forged).unwrap(),
+        )
+        .unwrap();
+        assert!(ArchiveSnapshot::verify(archive.path()).is_err());
     }
 
     #[test]

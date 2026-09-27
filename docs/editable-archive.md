@@ -10,13 +10,15 @@ can record a local library edit with its exact parent import pin update;
 version 8 can freeze one internal native effect output as exact binary64 samples;
 version 9 can retain a group of independent native effect outputs; version 10
 can journal a bounded group of direct local source edits in one checkpoint;
-version 11 can journal edits to shared or transitively imported local sources.
+version 11 can journal edits to shared or transitively imported local sources;
+version 12 can retain verified native processor context.
 
 ## Commands
 
 ```text
 maac archive create SOURCE --output-dir NEW [--project-root ROOT] [--profile default|song]
     [--previous ARCHIVE] [--expect-previous-hash SHA256]
+    [--processor-context]
     [--freeze-output | --freeze-node NODE ...]
     [--retain-import RELATIVE_DIR]...
 maac archive patch ARCHIVE PATCH.json --output-dir NEW [--expect-hash SHA256]
@@ -123,6 +125,19 @@ declarations and dependency membership. Built-in sources and topology changes
 remain unsupported. The `--source` and `--import` forms are mutually exclusive;
 existing `--import` records retain their version 10 identities.
 
+`--processor-context` adds a bounded, derived `maac-processors.json` record to
+the new checkpoint. It identifies native executable nodes, resolved initial
+configuration and parameters, reset-state policy, declared technical latency,
+and resolved local instrument graph bindings. Verification recompiles the
+archived source and compares the regenerated record, so a changed metadata
+file fails even if its outer hashes are recomputed. `unpack` exposes the
+verified record for inspection; source remains authoritative for execution.
+Subsequent edits regenerate the record, and `create --previous` inherits
+context capture once enabled. Earlier checkpoints and identities are copied
+unchanged. This is native context under the current engine; it does not retain
+external processor executable modules, non-null external state, or a running
+DSP state checkpoint.
+
 `--previous` verifies a prior archive, copies its complete checkpoints into a
 new independent archive, and appends the current project. It declares a linear
 parent relationship; MaaC does not infer that the worktree was edited from the
@@ -224,7 +239,8 @@ retained original WAV, and frozen payload bytes across all stored copies. Each
 original WAV or frozen payload is limited to 1 GiB; a grouped node freeze is
 limited to 1 GiB across its members. Each import record is limited to 16 KiB, and
 each checkpoint retains its source, asset, execution, and native PCM limits.
-Edit manifests through version 3 are limited to 16 KiB; version 4 graph edit
+The processor context is limited to 4 MiB and charged to the ordinary-asset
+budget. Edit manifests through version 3 are limited to 16 KiB; version 4 graph edit
 manifests are limited to 256 KiB. Each forward or inverse transaction
 is limited to 4 MiB and 1,024 operations. A history permits at most 64 MiB
 of edit files, 2 GiB of preflighted transaction work, and 8 GiB of replay

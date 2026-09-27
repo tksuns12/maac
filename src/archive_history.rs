@@ -39,6 +39,7 @@ const NODE_FROZEN_VERSION: u32 = 8;
 const NODE_GROUP_VERSION: u32 = 9;
 const GROUP_EDIT_VERSION: u32 = 10;
 const GRAPH_EDIT_VERSION: u32 = 11;
+const PROCESSOR_CONTEXT_VERSION: u32 = 12;
 const MAX_CHECKPOINTS: usize = 32;
 const MAX_FREEZE_REFERENCES: usize = 64;
 const MAX_SOURCE_BYTES: u64 = 64 * 1024 * 1024;
@@ -300,11 +301,13 @@ pub(crate) struct ArchiveHistory {
 
 impl ArchiveHistory {
     /// Capture one current composition as v2 or retained-import v3 history.
+    #[cfg(test)]
     pub(crate) fn capture(entry: &Path, root: &Path, profile: &str) -> Result<Self, Diagnostics> {
         let snapshot = ArchiveSnapshot::capture(entry, root, profile)?;
         Self::from_genesis(snapshot, None)
     }
 
+    #[cfg(test)]
     pub(crate) fn capture_frozen(
         entry: &Path,
         root: &Path,
@@ -356,7 +359,9 @@ impl ArchiveHistory {
             freeze.as_ref().map_or(0, |f| f.digests().len()),
         )?;
         let record = checkpoint_for_stored(None, &snapshot.digest(), freeze.as_ref())?;
-        let version = if matches!(freeze, Some(StoredFreeze::Group(_))) {
+        let version = if snapshot.has_processor_context() {
+            PROCESSOR_CONTEXT_VERSION
+        } else if matches!(freeze, Some(StoredFreeze::Group(_))) {
             NODE_GROUP_VERSION
         } else if matches!(freeze, Some(StoredFreeze::Node(_))) {
             NODE_FROZEN_VERSION
@@ -421,7 +426,7 @@ impl ArchiveHistory {
                     },
                 })
             }
-            Some(2..=11) => Self::verify_versioned(root, json),
+            Some(2..=12) => Self::verify_versioned(root, json),
             _ => Err(fail(
                 DiagnosticCode::Version,
                 "unsupported editable archive version",
@@ -525,6 +530,12 @@ impl ArchiveHistory {
                 return Err(fail(
                     DiagnosticCode::Version,
                     "older history cannot contain a multi-import leaf",
+                ));
+            }
+            if manifest.version < PROCESSOR_CONTEXT_VERSION && preflight.has_processor_context() {
+                return Err(fail(
+                    DiagnosticCode::Version,
+                    "older history cannot contain processor context",
                 ));
             }
             let child_entries = ArchiveSnapshot::tree_entries_in_root(&child, &preflight)?;
@@ -704,6 +715,16 @@ impl ArchiveHistory {
             return Err(fail(
                 DiagnosticCode::Version,
                 "v11 history has no graph source edit",
+            ));
+        }
+        if manifest.version == PROCESSOR_CONTEXT_VERSION
+            && !preflights
+                .iter()
+                .any(ArchivePreflight::has_processor_context)
+        {
+            return Err(fail(
+                DiagnosticCode::Version,
+                "v12 history has no processor-context checkpoint",
             ));
         }
         if manifest.version == NODE_FROZEN_VERSION
@@ -1070,7 +1091,9 @@ impl ArchiveHistory {
             unique_freeze_count(&freezes, None),
             unique_edit_entries(&edits),
         )?;
-        let version = if edits
+        let version = if snapshots.iter().any(ArchiveSnapshot::has_processor_context) {
+            PROCESSOR_CONTEXT_VERSION
+        } else if edits
             .iter()
             .filter_map(Option::as_ref)
             .any(EditSnapshot::is_graph_edit)
@@ -1182,7 +1205,9 @@ impl ArchiveHistory {
                     snapshots.iter(),
                     unique_freeze_count(&freezes, None),
                 )?;
-                let version = if freezes
+                let version = if snapshots.iter().any(ArchiveSnapshot::has_processor_context) {
+                    PROCESSOR_CONTEXT_VERSION
+                } else if freezes
                     .iter()
                     .flatten()
                     .any(|f| matches!(f, StoredFreeze::Group(_)))
@@ -1263,7 +1288,11 @@ impl ArchiveHistory {
                     &snapshot.digest(),
                     freeze.as_ref(),
                 )?);
-                let version = if manifest.version == GRAPH_EDIT_VERSION {
+                let version = if manifest.version == PROCESSOR_CONTEXT_VERSION
+                    || snapshot.has_processor_context()
+                {
+                    PROCESSOR_CONTEXT_VERSION
+                } else if manifest.version == GRAPH_EDIT_VERSION {
                     GRAPH_EDIT_VERSION
                 } else if manifest.version == GROUP_EDIT_VERSION {
                     GROUP_EDIT_VERSION
@@ -2102,6 +2131,7 @@ fn validate_history(manifest: &HistoryManifest) -> Result<(), Diagnostics> {
                 | NODE_GROUP_VERSION
                 | GROUP_EDIT_VERSION
                 | GRAPH_EDIT_VERSION
+                | PROCESSOR_CONTEXT_VERSION
         )
     {
         return Err(fail(
@@ -2135,6 +2165,7 @@ fn validate_history(manifest: &HistoryManifest) -> Result<(), Diagnostics> {
             && manifest.version != NODE_GROUP_VERSION
             && manifest.version != GROUP_EDIT_VERSION
             && manifest.version != GRAPH_EDIT_VERSION
+            && manifest.version != PROCESSOR_CONTEXT_VERSION
         {
             return Err(fail(
                 DiagnosticCode::Version,
@@ -2145,6 +2176,7 @@ fn validate_history(manifest: &HistoryManifest) -> Result<(), Diagnostics> {
             && manifest.version != NODE_GROUP_VERSION
             && manifest.version != GROUP_EDIT_VERSION
             && manifest.version != GRAPH_EDIT_VERSION
+            && manifest.version != PROCESSOR_CONTEXT_VERSION
         {
             return Err(fail(
                 DiagnosticCode::Version,

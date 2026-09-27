@@ -456,6 +456,36 @@ the focused core and CLI tests, type check, and strict Clippy covered the final
 source afterward. Memoization avoids repeated hashing for several aliases to
 one imported source and does not change edit records or transaction order.
 
+## Opt-in native processor context in archives (2026-09-27)
+
+Archive version 12 adds `archive create --processor-context`. A bounded
+`maac-processors.json` record captures compiled native processors, initial
+parameters, reset origin, declared latency, and resolved local instrument
+bindings. Verification derives it again from the archived source; appends and
+journaled edits retain or regenerate it. Older archive identities remain
+unchanged.
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Context CLI lifecycle | `cargo test --test archive_processor_context_cli --locked --offline --quiet` | Passed: 1 test |
+| Processor-context core | Four focused library tests | Passed |
+| Full Rust gate | `cargo test --all-targets --locked --offline --quiet` | Passed: 319 active library tests, 3 existing ignored, and all integration targets; run began before the final size-guard change |
+| Post-fix type check and lint | `cargo check --all-targets --locked --offline`; `cargo clippy --all-targets --locked --offline -- -D warnings` | Passed |
+| Doctest | `cargo test --doc --locked --offline --quiet` | Passed: 1 test |
+| Formatting and whitespace | `cargo fmt --all -- --check`; `git diff --check` | Passed |
+| Independent review | Read-only Astra review | A resource-bound issue was fixed; no remaining actionable findings |
+
+The CLI test covers relocation, verify and unpack, approved gain edit reuse of
+a native node freeze, inherited context on append, and regenerated context
+after a Protocol 2 entry edit. Core tests cover canonical decode, resolved
+defaults and latency, freeze projection, local instrument bindings, and the
+other native processor variants. A large shared-instrument fixture exposed
+graph duplication before the 4 MiB limit; capture now counts each node's
+serialized size before retaining it. After the fix, the focused core and CLI
+tests passed, and that fixture returned `E_RESOURCE_LIMIT` in about two
+seconds. The full gate's pre-fix timing is stated above so it is not mistaken
+for a second full run after the guard changed.
+
 ## Historical naming cleanup
 
 The current tree uses MaaC consistently in the specification, grammar, schema,
