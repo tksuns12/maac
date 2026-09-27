@@ -1,7 +1,7 @@
 # MaaC end-to-end production plan
 
 **Status:** accepted product direction; non-normative capability roadmap; dated
-2026-09-13. The current execution status below was reconciled on 2026-09-25.
+2026-09-13. The current execution status below was reconciled on 2026-09-27.
 
 ## Current execution status
 
@@ -15,7 +15,7 @@ complete professional-production product.
 | Language/conformance L1–L5 | Addressed for the bounded slices | Do not expand this into a full-profile or cross-platform identity claim. |
 | Phase 1: end-to-end inventory | Partial | Publish one lifecycle inventory covering media, recording, latency, crops, takes, routing, delivery, archive, and reopen. |
 | Phase 2: reset-correct excerpts | Complete for bounded final-WAV ranges | No claim of realtime seeking, speed-up, or arbitrary DSP-state restoration. |
-| Phase 3: media/import/packaging | In progress; bounded WAV crop import, opt-in retained-original verification, native PCM disk media, archive checkpoints, multiple selected retained WAV imports, explicit whole-output and independent native-effect-group freeze reuse, bounded independent-branch gain/pan edit reuse, and entry, direct-library, and grouped direct-library journaled transactions implemented | Add transitive/shared-source editing and provenance, processor context, overlapping frozen graph branches, and broader selective invalidation. |
+| Phase 3: media/import/packaging | In progress; bounded WAV crop import, opt-in retained-original verification, native PCM disk media, archive checkpoints, multiple selected retained WAV imports, explicit whole-output and independent native-effect-group freeze reuse, bounded independent-branch gain/pan edit reuse, and journaled entry, direct, grouped, shared, and transitive local-source transactions implemented | Add processor context, overlapping frozen graph branches, broader selective invalidation, and remaining media and reopen coverage. |
 | Phase 4: capture/playback/comping | Partial foundations only | Add recording, takes, comp selection, playback, and revision workflows. |
 | Phase 5: open processors and hosting | Partial foundations only | Generic rendering and executable native external hosting remain deferred. |
 | Phase 6: mix/master/release/reopen | Not complete | Pass the representative production, invalidation, clean-reopen, listening, and producer gates. |
@@ -55,8 +55,10 @@ independent native effect outputs and reuses them together only while every
 member remains eligible. Older node freezes keep their recorded eligibility
 rules. Version 10 journals independently valid edits to several direct local
 leaf libraries and an optional entry edit in one checkpoint, with one generated
-pin update transaction. Transitive or shared-source edits, overlapping frozen
-branches, and broader selective invalidation remain open, so the editable
+pin update transaction. Version 11 journals selected shared or transitively
+imported local-source edits and exact pin propagation across their incoming
+import graph. Processor context, overlapping frozen branches, and broader
+selective invalidation remain open, so the editable
 archive milestone remains incomplete.
 
 The [capability matrix](capabilities.md), [Core Audio audit](core-audio-conformance-audit.md),

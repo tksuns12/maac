@@ -54,6 +54,10 @@ enum ImportEditMode {
     GroupImporter {
         alternates: BTreeMap<String, (String, String)>,
     },
+    Graph {
+        imports: BTreeMap<String, BTreeMap<String, String>>,
+        overrides: BTreeMap<String, String>,
+    },
 }
 
 impl BundleEditContext {
@@ -170,6 +174,49 @@ impl BundleEditContext {
         Ok(context)
     }
 
+    /// Validate a source against the original graph with private candidate
+    /// replacements. Every ancestor pin is repaired only in this semantic
+    /// context; the caller still has to journal the exact pin edits it emits.
+    pub(crate) fn new_disk_media_graph_source(
+        bundle: &crate::bundle::SourceBundle,
+        assets: &std::collections::BTreeMap<String, std::sync::Arc<crate::disk_media::DiskAsset>>,
+        limits: crate::plan::PlanLimits,
+        source: &str,
+        overrides: BTreeMap<String, String>,
+    ) -> EditResult<Self> {
+        let resolved = bundle
+            .resolve_with_disk_assets(assets)
+            .map_err(map_diagnostics)?;
+        if !bundle.sources.contains_key(source)
+            || overrides
+                .keys()
+                .any(|path| !bundle.sources.contains_key(path))
+        {
+            return Err(EditError::new(
+                "E_REFERENCE",
+                "graph edit source is missing",
+            ));
+        }
+        let imports = resolved
+            .imports
+            .into_iter()
+            .map(|(path, aliases)| {
+                let local = aliases
+                    .into_iter()
+                    .filter(|(_, target)| bundle.sources.contains_key(target))
+                    .collect();
+                (path, local)
+            })
+            .collect();
+        Ok(Self {
+            bundle: bundle.clone(),
+            source_path: source.into(),
+            disk_assets: Some(assets.clone()),
+            limits,
+            import_edit: Some(ImportEditMode::Graph { imports, overrides }),
+        })
+    }
+
     pub fn source_path(&self) -> &str {
         &self.source_path
     }
@@ -208,6 +255,18 @@ impl BundleEditContext {
                         bundle.sources.insert(library.clone(), alternate.clone());
                     }
                 }
+            }
+            Some(ImportEditMode::Graph { imports, overrides }) => {
+                for (path, source) in overrides {
+                    bundle.sources.insert(path.clone(), source.clone());
+                }
+                // The candidate source takes precedence over any staged copy.
+                bundle.sources.insert(
+                    self.source_path.clone(),
+                    super::source::authored_source(authored)?,
+                );
+                let entry = bundle.entry.clone();
+                repin_graph(&mut bundle, imports, &entry)?;
             }
             None => {}
         }
@@ -265,6 +324,95 @@ impl BundleEditContext {
         crate::production_identity::normalized_document_for_editing(&document, &artifact.view())
             .map_err(|error| EditError::new("E_RANGE", error.to_string()))
     }
+}
+
+fn repin_graph(
+    bundle: &mut crate::bundle::SourceBundle,
+    imports: &BTreeMap<String, BTreeMap<String, String>>,
+    path: &str,
+) -> EditResult<()> {
+    repin_graph_visit(bundle, imports, path, &mut BTreeSet::new())
+}
+
+fn repin_graph_visit(
+    bundle: &mut crate::bundle::SourceBundle,
+    imports: &BTreeMap<String, BTreeMap<String, String>>,
+    path: &str,
+    visited: &mut BTreeSet<String>,
+) -> EditResult<()> {
+    if !visited.insert(path.into()) {
+        return Ok(());
+    }
+    if let Some(aliases) = imports.get(path) {
+        let mut hashes = BTreeMap::new();
+        let mut target_hashes: BTreeMap<String, String> = BTreeMap::new();
+        for (alias, target) in aliases {
+            repin_graph_visit(bundle, imports, target, visited)?;
+            let hash = if let Some(hash) = target_hashes.get(target) {
+                hash.clone()
+            } else {
+                let target_source = bundle.sources.get(target).ok_or_else(|| {
+                    EditError::new("E_REFERENCE", "graph edit import target is missing")
+                })?;
+                let hash = crate::bundle::sha256_digest(target_source.as_bytes());
+                target_hashes.insert(target.clone(), hash.clone());
+                hash
+            };
+            hashes.insert(alias.clone(), hash);
+        }
+        let current = bundle
+            .sources
+            .get(path)
+            .ok_or_else(|| EditError::new("E_REFERENCE", "graph edit importer is missing"))?;
+        if let Some(updated) = replace_import_hashes(current, &hashes)? {
+            bundle.sources.insert(path.into(), updated);
+        }
+    }
+    Ok(())
+}
+
+fn replace_import_hashes(
+    source: &str,
+    hashes: &BTreeMap<String, String>,
+) -> EditResult<Option<String>> {
+    if hashes.is_empty() {
+        return Ok(None);
+    }
+    let document = crate::syntax::parse(source).map_err(map_diagnostics)?;
+    let mut replacements = Vec::new();
+    for (alias, hash) in hashes {
+        let object = document
+            .objects
+            .get(alias)
+            .ok_or_else(|| EditError::new("E_REFERENCE", "import alias is missing"))?;
+        if object.kind != "import" {
+            return Err(EditError::new(
+                "E_CAPABILITY",
+                "selected alias is not an import",
+            ));
+        }
+        let field = object
+            .field("hash")
+            .ok_or_else(|| EditError::new("E_REFERENCE", "import hash is missing"))?;
+        let previous = field
+            .value
+            .as_string()
+            .ok_or_else(|| EditError::new("E_SYNTAX", "import hash is not a string"))?;
+        if previous != hash {
+            let replacement = serde_json::to_string(hash)
+                .map_err(|e| EditError::new("E_SYNTAX", e.to_string()))?;
+            replacements.push((field.value.span.start, field.value.span.end, replacement));
+        }
+    }
+    if replacements.is_empty() {
+        return Ok(None);
+    }
+    replacements.sort_unstable_by_key(|item| std::cmp::Reverse(item.0));
+    let mut output = source.to_owned();
+    for (start, end, replacement) in replacements {
+        output.replace_range(start..end, &replacement);
+    }
+    Ok(Some(output))
 }
 
 fn replace_import_hash(source: &str, alias: &str, hash: &str) -> EditResult<String> {

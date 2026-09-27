@@ -426,6 +426,36 @@ rejection, tampered edit evidence, and a no-op group checkpoint. Core tests
 cover v3 edit evidence, inverse replay against the original trusted bundle,
 and a replay budget charged for each member closure pass.
 
+## Shared and transitive archive source edits (2026-09-27)
+
+Archive version 11 adds a source-path mode to `archive patch-group` for 1–16
+reachable non-entry local sources. Edit evidence version 4 records independent
+user transactions and generated pin transactions for every affected importer.
+It replays the exact projected bytes, validates inverses in isolated contexts,
+and keeps older checkpoint records unchanged. The source-path and alias modes
+are mutually exclusive; the alias mode continues to produce version 10.
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Source graph CLI lifecycle | `cargo test --test archive_source_edit_cli --quiet` | Passed: 4 tests |
+| Archive core | `cargo test --lib archive_ --locked --offline --quiet` | Passed: 29 tests after the final pin-hash cache change |
+| Focused compatibility | `cargo test --test archive_group_edit_cli --test archive_import_edit_cli --test archive_source_edit_cli --locked --offline --quiet` | Passed: 3, 4, and 4 tests |
+| Full Rust gate | `cargo test --all-targets --locked --offline --quiet` | Passed: 313 active library tests, 3 existing ignored, and all integration targets |
+| Doctest | `cargo test --doc --locked --offline --quiet` | Passed: 1 test |
+| Integration type check | `cargo check --all-targets --locked --offline` | Passed |
+| Formatting, Clippy, whitespace | `cargo fmt --all -- --check`; `cargo clippy --all-targets --locked --offline -- -D warnings`; `git diff --check` | Passed |
+| Independent review | Read-only Astra review | Replay preflight, duplicate-alias pin repair, duplicate hashing, and conservative render invalidation findings resolved; no remaining actionable findings |
+
+The CLI tests cover a shared diamond with duplicate aliases, an overlapping
+selected ancestor and descendant, exact pin propagation after relocation,
+request-order identity, duplicate selection and output no-clobber rejection,
+topology-edit rejection, no-op journaling, version 11 continuation, and
+promotion from a version 10 history without changing prior checkpoints.
+The full Rust gate compiled before a final target-hash memoization change;
+the focused core and CLI tests, type check, and strict Clippy covered the final
+source afterward. Memoization avoids repeated hashing for several aliases to
+one imported source and does not change edit records or transaction order.
+
 ## Historical naming cleanup
 
 The current tree uses MaaC consistently in the specification, grammar, schema,

@@ -246,12 +246,15 @@ pub enum ArchiveCommand {
         #[arg(long)]
         expect_hash: Option<String>,
     },
-    /// Atomically edit direct local leaf imports and repin the entry source.
+    /// Atomically edit direct imports or reachable local source paths.
     PatchGroup {
         archive: PathBuf,
         /// Repeat ALIAS=PATCH.json for each distinct direct local leaf import.
-        #[arg(long = "import", required = true)]
+        #[arg(long = "import", conflicts_with = "sources")]
         imports: Vec<String>,
+        /// Repeat SOURCE=PATCH.json for each reachable non-entry local source.
+        #[arg(long = "source", conflicts_with = "imports")]
+        sources: Vec<String>,
         /// Optional independent Protocol 2 edit of the entry source.
         #[arg(long)]
         entry_patch: Option<PathBuf>,
@@ -419,6 +422,8 @@ pub struct ArtifactCommandResult {
     archive_import_patch: Option<ArchiveImportPatchReport>,
     #[serde(flatten, skip_serializing_if = "Option::is_none")]
     archive_group_patch: Option<ArchiveGroupPatchReport>,
+    #[serde(flatten, skip_serializing_if = "Option::is_none")]
+    archive_graph_patch: Option<ArchiveGraphPatchReport>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -447,6 +452,41 @@ struct ArchiveGroupPatchReport {
     imports: Vec<GroupImportPatchReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
     entry_edit: Option<crate::editing::AppliedTransaction>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct ArchiveGraphPatchReport {
+    checkpoint: String,
+    edit_digest: String,
+    sources: Vec<GraphSourcePatchReport>,
+    generated: Vec<GraphPinPatchReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    entry_edit: Option<crate::editing::AppliedTransaction>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct GraphSourcePatchReport {
+    source: String,
+    before_revision: String,
+    after_revision: String,
+    final_revision: String,
+    pin: String,
+    final_pin: String,
+    edit: crate::editing::AppliedTransaction,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct GraphPinPatchReport {
+    source: String,
+    before_revision: String,
+    after_revision: String,
+    edges: Vec<GraphPinEdgeReport>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct GraphPinEdgeReport {
+    alias: String,
+    target: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -802,6 +842,7 @@ pub fn execute_artifact_with_range(
         archive_patch: counts.archive_patch,
         archive_import_patch: counts.archive_import_patch,
         archive_group_patch: counts.archive_group_patch,
+        archive_graph_patch: counts.archive_graph_patch,
     })
 }
 
@@ -877,6 +918,7 @@ fn execute_disk_media(command: &Command) -> Result<ArtifactCommandResult, CliErr
         archive_patch: None,
         archive_import_patch: None,
         archive_group_patch: None,
+        archive_graph_patch: None,
     })
 }
 #[derive(Default)]
@@ -888,6 +930,7 @@ struct EventCounts {
     archive_patch: Option<ArchivePatchReport>,
     archive_import_patch: Option<ArchiveImportPatchReport>,
     archive_group_patch: Option<ArchiveGroupPatchReport>,
+    archive_graph_patch: Option<ArchiveGraphPatchReport>,
 }
 impl EventCounts {
     fn record(&mut self, plan: &PlanArtifact) {
@@ -1521,37 +1564,51 @@ fn execute_archive(
         ArchiveCommand::PatchGroup {
             archive,
             imports,
+            sources,
             entry_patch,
             output_dir,
             expect_hash,
         } => {
             ensure_output_outside_archive(output_dir, archive)?;
-            if imports.len() > 16 {
+            if imports.is_empty() == sources.is_empty() {
                 return Err(CliError::new(
-                    "E_RESOURCE_LIMIT",
-                    "group edit exceeds 16 imports",
+                    "E_USAGE",
+                    "select either --import or --source at least once",
                 ));
             }
-            let mut specs = Vec::with_capacity(imports.len());
-            for import in imports {
-                let (alias, path) = import.split_once('=').ok_or_else(|| {
-                    CliError::new("E_USAGE", "--import requires ALIAS=PATCH.json")
+            let graph_mode = !sources.is_empty();
+            let selectors = if graph_mode { sources } else { imports };
+            let flag = if graph_mode { "--source" } else { "--import" };
+            let kind = if graph_mode { "SOURCE" } else { "ALIAS" };
+            if selectors.len() > 16 {
+                return Err(CliError::new(
+                    "E_RESOURCE_LIMIT",
+                    "group edit exceeds 16 selected sources",
+                ));
+            }
+            let mut specs = Vec::with_capacity(selectors.len());
+            for selector in selectors {
+                let (name, path) = selector.split_once('=').ok_or_else(|| {
+                    CliError::new("E_USAGE", format!("{flag} requires {kind}=PATCH.json"))
                 })?;
-                if alias.is_empty() || path.is_empty() {
+                if name.is_empty() || path.is_empty() {
                     return Err(CliError::new(
                         "E_USAGE",
-                        "--import requires nonempty ALIAS and PATCH.json",
+                        format!("{flag} requires nonempty {kind} and PATCH.json"),
                     ));
                 }
-                specs.push((alias.to_owned(), PathBuf::from(path)));
+                specs.push((name.to_owned(), PathBuf::from(path)));
             }
             specs.sort_by(|left, right| left.0.as_bytes().cmp(right.0.as_bytes()));
             if specs.windows(2).any(|pair| pair[0].0 == pair[1].0) {
-                return Err(CliError::new("E_USAGE", "duplicate group import alias"));
+                return Err(CliError::new(
+                    "E_USAGE",
+                    format!("duplicate {kind} selection"),
+                ));
             }
             let mut patch_bytes = 0usize;
             let mut patches = Vec::with_capacity(specs.len());
-            for (alias, path) in specs {
+            for (name, path) in specs {
                 let bytes = read_bounded(&path)?;
                 patch_bytes = patch_bytes.checked_add(bytes.len()).ok_or_else(|| {
                     CliError::new("E_RESOURCE_LIMIT", "group patch size overflow")
@@ -1562,7 +1619,7 @@ fn execute_archive(
                         "group patch input exceeds 4 MiB",
                     ));
                 }
-                patches.push((alias, bytes));
+                patches.push((name, bytes));
             }
             let entry_bytes = entry_patch
                 .as_ref()
@@ -1577,27 +1634,75 @@ fn execute_archive(
             let mut history = ArchiveHistory::verify(archive)
                 .map_err(|error| CliError::from_diagnostics(&error))?;
             verify_expected_archive_hash(expect_hash.as_deref(), &history.digest())?;
-            let result = history
-                .patch_group_head(&patches, entry_bytes.as_deref())
-                .map_err(|error| CliError::from_diagnostics(&error))?;
+            if graph_mode {
+                let result = history
+                    .patch_graph_head(&patches, entry_bytes.as_deref())
+                    .map_err(|error| CliError::from_diagnostics(&error))?;
+                counts.archive_graph_patch = Some(ArchiveGraphPatchReport {
+                    checkpoint: result.checkpoint,
+                    edit_digest: result.edit_digest,
+                    sources: result
+                        .sources
+                        .into_iter()
+                        .map(|source| {
+                            let changed_source = source.before_revision != source.final_revision;
+                            let mut edit = source.applied;
+                            if changed_source {
+                                edit.impact.render_invalidation_scope =
+                                    crate::editing::RenderInvalidationScope::Full;
+                                edit.impact.full_render_invalidated = true;
+                                edit.impact.all_expanded_events_may_be_affected = true;
+                            }
+                            GraphSourcePatchReport {
+                                source: source.source,
+                                before_revision: source.before_revision,
+                                after_revision: source.after_revision,
+                                final_revision: source.final_revision,
+                                pin: source.pin,
+                                final_pin: source.final_pin,
+                                edit,
+                            }
+                        })
+                        .collect(),
+                    generated: result
+                        .generated
+                        .into_iter()
+                        .map(|pin| GraphPinPatchReport {
+                            source: pin.source,
+                            before_revision: pin.before_revision,
+                            after_revision: pin.after_revision,
+                            edges: pin
+                                .edges
+                                .into_iter()
+                                .map(|(alias, target)| GraphPinEdgeReport { alias, target })
+                                .collect(),
+                        })
+                        .collect(),
+                    entry_edit: result.entry_applied,
+                });
+            } else {
+                let result = history
+                    .patch_group_head(&patches, entry_bytes.as_deref())
+                    .map_err(|error| CliError::from_diagnostics(&error))?;
+                counts.archive_group_patch = Some(ArchiveGroupPatchReport {
+                    checkpoint: result.checkpoint,
+                    edit_digest: result.edit_digest,
+                    imports: result
+                        .leaves
+                        .into_iter()
+                        .map(|leaf| GroupImportPatchReport {
+                            alias: leaf.alias,
+                            source: leaf.source,
+                            before_revision: leaf.before_revision,
+                            after_revision: leaf.after_revision,
+                            pin: leaf.pin,
+                            edit: leaf.applied,
+                        })
+                        .collect(),
+                    entry_edit: result.entry_applied,
+                });
+            }
             stage_archive_directory(output_dir, |staging| history.stage(staging))?;
-            counts.archive_group_patch = Some(ArchiveGroupPatchReport {
-                checkpoint: result.checkpoint,
-                edit_digest: result.edit_digest,
-                imports: result
-                    .leaves
-                    .into_iter()
-                    .map(|leaf| GroupImportPatchReport {
-                        alias: leaf.alias,
-                        source: leaf.source,
-                        before_revision: leaf.before_revision,
-                        after_revision: leaf.after_revision,
-                        pin: leaf.pin,
-                        edit: leaf.applied,
-                    })
-                    .collect(),
-                entry_edit: result.entry_applied,
-            });
             Ok(CommandResult::archive(
                 "archive patch-group",
                 archive,

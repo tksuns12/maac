@@ -12,7 +12,8 @@ use crate::archive::{
     bounded_manifest, ArchivePreflight, ArchiveSnapshot, MANIFEST_PATH, MAX_TREE_ENTRIES,
 };
 use crate::archive_edit::{
-    EditSnapshot, GroupLeafCapture, MAX_EDIT_TOTAL_BYTES, MAX_EDIT_TRANSACTION_WORK_BYTES,
+    EditSnapshot, GraphPinCapture, GraphSourceCapture, GroupLeafCapture, MAX_EDIT_TOTAL_BYTES,
+    MAX_EDIT_TRANSACTION_WORK_BYTES,
 };
 use crate::bundle::{sha256_digest, validate_hash_pin};
 use crate::bundle_fs::ProjectRoot;
@@ -37,6 +38,7 @@ const IMPORT_EDIT_VERSION: u32 = 7;
 const NODE_FROZEN_VERSION: u32 = 8;
 const NODE_GROUP_VERSION: u32 = 9;
 const GROUP_EDIT_VERSION: u32 = 10;
+const GRAPH_EDIT_VERSION: u32 = 11;
 const MAX_CHECKPOINTS: usize = 32;
 const MAX_FREEZE_REFERENCES: usize = 64;
 const MAX_SOURCE_BYTES: u64 = 64 * 1024 * 1024;
@@ -210,6 +212,14 @@ pub(crate) struct ArchiveGroupPatchResult {
     pub(crate) checkpoint: String,
     pub(crate) edit_digest: String,
     pub(crate) leaves: Vec<GroupLeafCapture>,
+    pub(crate) entry_applied: Option<AppliedTransaction>,
+}
+
+pub(crate) struct ArchiveGraphPatchResult {
+    pub(crate) checkpoint: String,
+    pub(crate) edit_digest: String,
+    pub(crate) sources: Vec<GraphSourceCapture>,
+    pub(crate) generated: Vec<GraphPinCapture>,
     pub(crate) entry_applied: Option<AppliedTransaction>,
 }
 
@@ -411,7 +421,7 @@ impl ArchiveHistory {
                     },
                 })
             }
-            Some(2..=10) => Self::verify_versioned(root, json),
+            Some(2..=11) => Self::verify_versioned(root, json),
             _ => Err(fail(
                 DiagnosticCode::Version,
                 "unsupported editable archive version",
@@ -600,7 +610,10 @@ impl ArchiveHistory {
                     .open_child_pinned(&digest[7..])?;
                 let preflight =
                     EditSnapshot::preflight(&edit_root, digest, parent, before, &record.snapshot)?;
-                if preflight.is_import_edit() || preflight.is_group_edit() {
+                if preflight.is_import_edit()
+                    || preflight.is_group_edit()
+                    || preflight.is_graph_edit()
+                {
                     if preflight.is_import_edit() && manifest.version < IMPORT_EDIT_VERSION {
                         return Err(fail(
                             DiagnosticCode::Version,
@@ -611,6 +624,12 @@ impl ArchiveHistory {
                         return Err(fail(
                             DiagnosticCode::Version,
                             "older history cannot contain grouped source edits",
+                        ));
+                    }
+                    if preflight.is_graph_edit() && manifest.version < GRAPH_EDIT_VERSION {
+                        return Err(fail(
+                            DiagnosticCode::Version,
+                            "older history cannot contain graph source edits",
                         ));
                     }
                     if counted_import_edits.insert(digest.clone()) {
@@ -676,6 +695,17 @@ impl ArchiveHistory {
                 "v10 history has no grouped source edit",
             ));
         }
+        if manifest.version == GRAPH_EDIT_VERSION
+            && !edit_children
+                .iter()
+                .filter_map(Option::as_ref)
+                .any(|(_, preflight)| preflight.is_graph_edit())
+        {
+            return Err(fail(
+                DiagnosticCode::Version,
+                "v11 history has no graph source edit",
+            ));
+        }
         if manifest.version == NODE_FROZEN_VERSION
             && !freeze_children
                 .iter()
@@ -712,9 +742,13 @@ impl ArchiveHistory {
             &manifest.checkpoints,
             preflights.iter().map(ArchivePreflight::resource_bytes),
             edit_children.iter().map(|child| {
-                child
-                    .as_ref()
-                    .and_then(|(_, preflight)| preflight.group_leaf_count())
+                child.as_ref().and_then(|(_, preflight)| {
+                    preflight.graph_replay_passes().or_else(|| {
+                        preflight
+                            .group_leaf_count()
+                            .map(|leaves| (leaves as u64 + 3, leaves as u64 + 2))
+                    })
+                })
             }),
         )?;
 
@@ -929,6 +963,37 @@ impl ArchiveHistory {
         })
     }
 
+    pub(crate) fn patch_graph_head(
+        &mut self,
+        sources: &[(String, Vec<u8>)],
+        entry_patch: Option<&[u8]>,
+    ) -> Result<ArchiveGraphPatchResult, Diagnostics> {
+        let (parent, before) = match &self.state {
+            HistoryState::Legacy {
+                snapshot,
+                genesis_id,
+            } => (genesis_id.as_str(), snapshot.as_ref()),
+            HistoryState::Versioned {
+                manifest,
+                snapshots,
+                ..
+            } => (
+                manifest.head.as_str(),
+                snapshots.last().expect("validated history has a head"),
+            ),
+        };
+        let capture = EditSnapshot::capture_graph(parent, before, sources, entry_patch)?;
+        let applied = capture.sources[0].applied.clone();
+        let result = self.append_edit_checkpoint(capture.after, capture.edit, applied)?;
+        Ok(ArchiveGraphPatchResult {
+            checkpoint: result.checkpoint,
+            edit_digest: result.edit_digest,
+            sources: capture.sources,
+            generated: capture.generated,
+            entry_applied: capture.entry_applied,
+        })
+    }
+
     fn append_edit_checkpoint(
         &mut self,
         after: ArchiveSnapshot,
@@ -991,9 +1056,14 @@ impl ArchiveHistory {
         check_edit_replay_work(
             &records,
             snapshots.iter().map(ArchiveSnapshot::resource_bytes),
-            edits
-                .iter()
-                .map(|edit| edit.as_ref().and_then(EditSnapshot::group_leaf_count)),
+            edits.iter().map(|edit| {
+                edit.as_ref().and_then(|edit| {
+                    edit.graph_replay_passes().or_else(|| {
+                        edit.group_leaf_count()
+                            .map(|leaves| (leaves as u64 + 3, leaves as u64 + 2))
+                    })
+                })
+            }),
         )?;
         check_staged_tree_with_extras(
             snapshots.iter(),
@@ -1001,6 +1071,12 @@ impl ArchiveHistory {
             unique_edit_entries(&edits),
         )?;
         let version = if edits
+            .iter()
+            .filter_map(Option::as_ref)
+            .any(EditSnapshot::is_graph_edit)
+        {
+            GRAPH_EDIT_VERSION
+        } else if edits
             .iter()
             .filter_map(Option::as_ref)
             .any(EditSnapshot::is_group_edit)
@@ -1187,7 +1263,9 @@ impl ArchiveHistory {
                     &snapshot.digest(),
                     freeze.as_ref(),
                 )?);
-                let version = if manifest.version == GROUP_EDIT_VERSION {
+                let version = if manifest.version == GRAPH_EDIT_VERSION {
+                    GRAPH_EDIT_VERSION
+                } else if manifest.version == GROUP_EDIT_VERSION {
                     GROUP_EDIT_VERSION
                 } else if manifest.version == NODE_GROUP_VERSION
                     || matches!(freeze, Some(StoredFreeze::Group(_)))
@@ -2023,6 +2101,7 @@ fn validate_history(manifest: &HistoryManifest) -> Result<(), Diagnostics> {
                 | NODE_FROZEN_VERSION
                 | NODE_GROUP_VERSION
                 | GROUP_EDIT_VERSION
+                | GRAPH_EDIT_VERSION
         )
     {
         return Err(fail(
@@ -2055,6 +2134,7 @@ fn validate_history(manifest: &HistoryManifest) -> Result<(), Diagnostics> {
             && manifest.version != NODE_FROZEN_VERSION
             && manifest.version != NODE_GROUP_VERSION
             && manifest.version != GROUP_EDIT_VERSION
+            && manifest.version != GRAPH_EDIT_VERSION
         {
             return Err(fail(
                 DiagnosticCode::Version,
@@ -2064,6 +2144,7 @@ fn validate_history(manifest: &HistoryManifest) -> Result<(), Diagnostics> {
         if record.node_freezes.is_some()
             && manifest.version != NODE_GROUP_VERSION
             && manifest.version != GROUP_EDIT_VERSION
+            && manifest.version != GRAPH_EDIT_VERSION
         {
             return Err(fail(
                 DiagnosticCode::Version,
@@ -2303,11 +2384,11 @@ fn check_edit_transaction_work(
 fn check_edit_replay_work(
     records: &[CheckpointRecord],
     budgets: impl Iterator<Item = (u64, u64, u64, u64)>,
-    group_leaf_counts: impl Iterator<Item = Option<usize>>,
+    replay_passes: impl Iterator<Item = Option<(u64, u64)>>,
 ) -> Result<(), Diagnostics> {
     let budgets: Vec<_> = budgets.collect();
-    let group_leaf_counts: Vec<_> = group_leaf_counts.collect();
-    if budgets.len() != records.len() || group_leaf_counts.len() != records.len() {
+    let replay_passes: Vec<_> = replay_passes.collect();
+    if budgets.len() != records.len() || replay_passes.len() != records.len() {
         return Err(fail(
             DiagnosticCode::Reference,
             "edit replay budget has mismatched checkpoints",
@@ -2320,9 +2401,7 @@ fn check_edit_replay_work(
         }
         let before = resource_sum(budgets[index - 1])?;
         let after = resource_sum(budgets[index])?;
-        let (before_passes, after_passes) = group_leaf_counts[index]
-            .map(|leaves| (leaves as u64 + 3, leaves as u64 + 2))
-            .unwrap_or((2, 1));
+        let (before_passes, after_passes) = replay_passes[index].unwrap_or((2, 1));
         let work = before
             .checked_mul(before_passes)
             .and_then(|n| {
@@ -3418,7 +3497,7 @@ place pb { pattern=&phrase; track=&tb; at=0q; }
         assert!(check_edit_replay_work(
             &records,
             [budget, budget].into_iter(),
-            [None, Some(16)].into_iter(),
+            [None, Some((19, 18))].into_iter(),
         )
         .is_err());
         assert!(check_edit_replay_work(

@@ -9,7 +9,8 @@ can retain several selected WAV import records in one composition; version 7
 can record a local library edit with its exact parent import pin update;
 version 8 can freeze one internal native effect output as exact binary64 samples;
 version 9 can retain a group of independent native effect outputs; version 10
-can journal a bounded group of local source edits in one checkpoint.
+can journal a bounded group of direct local source edits in one checkpoint;
+version 11 can journal edits to shared or transitively imported local sources.
 
 ## Commands
 
@@ -22,6 +23,8 @@ maac archive patch ARCHIVE PATCH.json --output-dir NEW [--expect-hash SHA256]
 maac archive patch-import ARCHIVE PATCH.json --import ALIAS --output-dir NEW
     [--expect-hash SHA256]
 maac archive patch-group ARCHIVE --import ALIAS=PATCH.json [--import ALIAS=PATCH.json]...
+    [--entry-patch PATCH.json] --output-dir NEW [--expect-hash SHA256]
+maac archive patch-group ARCHIVE --source SOURCE=PATCH.json [--source SOURCE=PATCH.json]...
     [--entry-patch PATCH.json] --output-dir NEW [--expect-hash SHA256]
 maac archive verify ARCHIVE [--expect-hash SHA256]
 maac archive unpack ARCHIVE --output-dir NEW [--expect-hash SHA256] [--revision SHA256]
@@ -100,11 +103,25 @@ The record retains each forward transaction and authored-tree inverse, plus
 the generated pin transaction and its inverse. Verification replays all of
 them and rejects changed import topology, unrelated source or media changes,
 and altered journal bytes. Shared, transitive, and built-in imports remain
-outside this bounded command; edits that require an invalid intermediate
+outside this bounded `--import` form; edits that require an invalid intermediate
 source meaning are also outside it. An authored no-op still creates a
 journaled checkpoint. The supplied patch files together are limited to 4 MiB;
 the generated pin transaction is limited to 16 KiB. Older edit records and
 checkpoint IDs stay unchanged.
+
+The `--source` form selects 1–16 distinct existing, reachable, non-entry local
+source paths. It writes a version 11 checkpoint with version 4 edit evidence.
+Selected sources may be shared, imported transitively, or contain their own
+imports. Each supplied transaction uses that source's original revision.
+After the user edits, MaaC generates exact-byte hash updates in dependency
+order for every affected incoming import edge, including multiple aliases to
+one source. A selected importer's generated pin update follows its own user
+edit. The journal records both stages and their inverses; verification derives
+the expected propagation and checks the complete resulting closure. Request
+order does not affect the archive identity. User edits must preserve import
+declarations and dependency membership. Built-in sources and topology changes
+remain unsupported. The `--source` and `--import` forms are mutually exclusive;
+existing `--import` records retain their version 10 identities.
 
 `--previous` verifies a prior archive, copies its complete checkpoints into a
 new independent archive, and appends the current project. It declares a linear
@@ -207,7 +224,8 @@ retained original WAV, and frozen payload bytes across all stored copies. Each
 original WAV or frozen payload is limited to 1 GiB; a grouped node freeze is
 limited to 1 GiB across its members. Each import record is limited to 16 KiB, and
 each checkpoint retains its source, asset, execution, and native PCM limits.
-Each edit manifest is limited to 16 KiB; each forward or inverse transaction
+Edit manifests through version 3 are limited to 16 KiB; version 4 graph edit
+manifests are limited to 256 KiB. Each forward or inverse transaction
 is limited to 4 MiB and 1,024 operations. A history permits at most 64 MiB
 of edit files, 2 GiB of preflighted transaction work, and 8 GiB of replay
 closure-copy work. The verifier checks these bounds before replaying edits.

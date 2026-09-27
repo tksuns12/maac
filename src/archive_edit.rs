@@ -23,6 +23,7 @@ pub(crate) const EDIT_MANIFEST: &str = "maac-edit.json";
 pub(crate) const EDIT_FORWARD: &str = "forward.json";
 pub(crate) const EDIT_INVERSE: &str = "inverse.json";
 pub(crate) const MAX_EDIT_MANIFEST_BYTES: u64 = 16 * 1024;
+const MAX_GRAPH_EDIT_MANIFEST_BYTES: u64 = 256 * 1024;
 pub(crate) const MAX_EDIT_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
 pub(crate) const MAX_EDIT_TRANSACTION_WORK_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_SINGLE_TRANSACTION_WORK_BYTES: u64 = 256 * 1024 * 1024;
@@ -30,6 +31,7 @@ const FORMAT: &str = "maac.archive-edit";
 const VERSION: u32 = 1;
 const IMPORT_VERSION: u32 = 2;
 const GROUP_VERSION: u32 = 3;
+const GRAPH_VERSION: u32 = 4;
 const MAX_GROUP_LEAVES: usize = 16;
 const IMPORTER_FORWARD: &str = "importer-forward.json";
 const IMPORTER_INVERSE: &str = "importer-inverse.json";
@@ -57,6 +59,39 @@ struct EditManifest {
     importer: Option<ImporterEdit>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     group: Option<GroupEdit>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    graph: Option<GraphEdit>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GraphEdit {
+    entry_source: String,
+    sources: Vec<GraphSourceEdit>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    entry: Option<GroupEntryEdit>,
+    pins: Vec<GraphPinEdit>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GraphSourceEdit {
+    source: String,
+    before_revision: String,
+    after_revision: String,
+    pin: String,
+    forward: EditFile,
+    inverse: EditFile,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GraphPinEdit {
+    source: String,
+    before_revision: String,
+    after_revision: String,
+    forward: EditFile,
+    inverse: EditFile,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -120,6 +155,9 @@ pub(crate) struct EditPreflight {
 
 impl EditPreflight {
     pub(crate) fn source(&self) -> &str {
+        if let Some(graph) = &self.manifest.graph {
+            return &graph.entry_source;
+        }
         if let Some(group) = &self.manifest.group {
             return &group.entry_source;
         }
@@ -130,7 +168,9 @@ impl EditPreflight {
     }
 
     pub(crate) fn is_import_edit(&self) -> bool {
-        self.manifest.importer.is_some() || self.manifest.group.is_some()
+        self.manifest.importer.is_some()
+            || self.manifest.group.is_some()
+            || self.manifest.graph.is_some()
     }
 
     pub(crate) fn is_group_edit(&self) -> bool {
@@ -142,6 +182,14 @@ impl EditPreflight {
             .group
             .as_ref()
             .map(|group| group.others.len() + 1)
+    }
+
+    pub(crate) fn is_graph_edit(&self) -> bool {
+        self.manifest.graph.is_some()
+    }
+
+    pub(crate) fn graph_replay_passes(&self) -> Option<(u64, u64)> {
+        self.manifest.graph.as_ref().map(graph_replay_passes)
     }
 
     pub(crate) fn tree_entries(&self) -> usize {
@@ -188,6 +236,31 @@ pub(crate) struct GroupEditCapture {
     pub(crate) entry_applied: Option<AppliedTransaction>,
 }
 
+pub(crate) struct GraphSourceCapture {
+    pub(crate) source: String,
+    pub(crate) before_revision: String,
+    pub(crate) after_revision: String,
+    pub(crate) final_revision: String,
+    pub(crate) pin: String,
+    pub(crate) final_pin: String,
+    pub(crate) applied: AppliedTransaction,
+}
+
+pub(crate) struct GraphPinCapture {
+    pub(crate) source: String,
+    pub(crate) before_revision: String,
+    pub(crate) after_revision: String,
+    pub(crate) edges: Vec<(String, String)>,
+}
+
+pub(crate) struct GraphEditCapture {
+    pub(crate) after: ArchiveSnapshot,
+    pub(crate) edit: EditSnapshot,
+    pub(crate) sources: Vec<GraphSourceCapture>,
+    pub(crate) generated: Vec<GraphPinCapture>,
+    pub(crate) entry_applied: Option<AppliedTransaction>,
+}
+
 pub(crate) struct ImportEditCapture {
     pub(crate) after: ArchiveSnapshot,
     pub(crate) edit: EditSnapshot,
@@ -204,6 +277,178 @@ struct TrustedImport {
     bundle: crate::bundle::SourceBundle,
     assets: BTreeMap<String, std::sync::Arc<DiskAsset>>,
     library: String,
+}
+
+struct TrustedGraph {
+    bundle: crate::bundle::SourceBundle,
+    assets: BTreeMap<String, std::sync::Arc<DiskAsset>>,
+    imports: BTreeMap<String, BTreeMap<String, String>>,
+    order: Vec<String>,
+}
+
+fn trusted_graph(snapshot: &ArchiveSnapshot) -> Result<TrustedGraph, Diagnostics> {
+    let staging = tempfile::tempdir().map_err(|e| {
+        fail(
+            DiagnosticCode::Reference,
+            format!("cannot create private graph staging: {e}"),
+        )
+    })?;
+    snapshot.stage_members(staging.path())?;
+    let project = DiskMediaProject::load(Path::new(snapshot.entry()), staging.path())?;
+    let bundle = project.bundle().clone();
+    let assets = project.disk_assets().clone();
+    let resolved = bundle.resolve_with_disk_assets(&assets)?;
+    let imports: BTreeMap<String, BTreeMap<String, String>> = resolved
+        .imports
+        .into_iter()
+        .filter(|(path, _)| bundle.sources.contains_key(path))
+        .map(|(path, aliases)| {
+            (
+                path,
+                aliases
+                    .into_iter()
+                    .filter(|(_, target)| bundle.sources.contains_key(target))
+                    .collect(),
+            )
+        })
+        .collect();
+    fn visit(
+        path: &str,
+        imports: &BTreeMap<String, BTreeMap<String, String>>,
+        visited: &mut BTreeSet<String>,
+        order: &mut Vec<String>,
+    ) {
+        if !visited.insert(path.into()) {
+            return;
+        }
+        if let Some(aliases) = imports.get(path) {
+            for target in aliases.values() {
+                visit(target, imports, visited, order);
+            }
+        }
+        order.push(path.into());
+    }
+    let mut order = Vec::new();
+    visit(&bundle.entry, &imports, &mut BTreeSet::new(), &mut order);
+    Ok(TrustedGraph {
+        bundle,
+        assets,
+        imports,
+        order,
+    })
+}
+
+fn import_objects(source: &str) -> Result<BTreeMap<String, serde_json::Value>, Diagnostics> {
+    let document = SourceDocument::parse(source).map_err(edit_failure)?;
+    let mut result = BTreeMap::new();
+    if let Some(objects) = document.authored().tree()["objects"].as_object() {
+        for (id, value) in objects {
+            if value["kind"] == "import" {
+                result.insert(id.clone(), value.clone());
+            }
+        }
+    }
+    Ok(result)
+}
+
+fn unchanged_imports(before: &str, after: &str) -> Result<(), Diagnostics> {
+    if import_objects(before)? != import_objects(after)? {
+        return Err(fail(
+            DiagnosticCode::Capability,
+            "graph user patch changed import topology or pins",
+        ));
+    }
+    Ok(())
+}
+
+fn source_at<'a>(
+    graph: &'a TrustedGraph,
+    replacements: &'a BTreeMap<String, String>,
+    path: &str,
+) -> Result<&'a str, Diagnostics> {
+    replacements
+        .get(path)
+        .or_else(|| graph.bundle.sources.get(path))
+        .map(String::as_str)
+        .ok_or_else(|| fail(DiagnosticCode::Reference, "graph source is missing"))
+}
+
+fn expected_graph_pin_transaction(
+    graph: &TrustedGraph,
+    replacements: &BTreeMap<String, String>,
+    path: &str,
+) -> Result<Option<Transaction>, Diagnostics> {
+    let source = source_at(graph, replacements, path)?;
+    let document = SourceDocument::parse(source).map_err(edit_failure)?;
+    let mut operations = Vec::new();
+    let mut target_pins: BTreeMap<String, String> = BTreeMap::new();
+    for (alias, target) in graph.imports.get(path).into_iter().flat_map(|m| m.iter()) {
+        let current = document.authored().tree()["objects"][alias]["fields"]["hash"]["v"]
+            .as_str()
+            .ok_or_else(|| fail(DiagnosticCode::Capability, "graph import hash is missing"))?;
+        let pin = if let Some(pin) = target_pins.get(target) {
+            pin.clone()
+        } else {
+            let pin = sha256_digest(source_at(graph, replacements, target)?.as_bytes());
+            target_pins.insert(target.clone(), pin.clone());
+            pin
+        };
+        if current != pin {
+            operations.push(Operation::Set {
+                object: vec![alias.clone()],
+                field: vec!["hash".into()],
+                value: serde_json::json!({"t":"string","v":pin}),
+                expect: Some(serde_json::json!({"t":"string","v":current})),
+                expect_absent: false,
+            });
+            if operations.len() > MAX_OPERATIONS {
+                return Err(fail(
+                    DiagnosticCode::ResourceLimit,
+                    "generated graph pin transaction exceeds operation limit",
+                ));
+            }
+        }
+    }
+    if operations.is_empty() {
+        return Ok(None);
+    }
+    Transaction::new(document.revision().into(), operations)
+        .map(Some)
+        .map_err(edit_failure)
+}
+
+fn graph_context(
+    graph: &TrustedGraph,
+    profile: &str,
+    source: &str,
+    replacements: &BTreeMap<String, String>,
+) -> Result<BundleEditContext, Diagnostics> {
+    BundleEditContext::new_disk_media_graph_source(
+        &graph.bundle,
+        &graph.assets,
+        limits(profile)?,
+        source,
+        replacements.clone(),
+    )
+    .map_err(edit_failure)
+}
+
+fn graph_replay_passes(graph: &GraphEdit) -> (u64, u64) {
+    // Verification reconstructs the forward graph, then replays user inverses
+    // against the original isolated context and pin inverses against the child.
+    // Include the context constructors, semantic before/after validation, and
+    // staging/topology checks with a small allowance for normalization.
+    let user = (graph.sources.len() + 1 + usize::from(graph.entry.is_some())) as u64;
+    // A malicious but rehashed manifest can omit pin records. Verification
+    // regenerates them before comparing the journal, so charge the maximum
+    // number of local source importers supported by the bundle contract.
+    let pins = crate::bundle::MAX_BUNDLE_SOURCES as u64;
+    (
+        user.saturating_mul(8)
+            .saturating_add(pins.saturating_mul(4))
+            .saturating_add(12),
+        pins.saturating_mul(4).saturating_add(8),
+    )
 }
 
 struct SourceApplication {
@@ -230,6 +475,243 @@ struct GroupLeafApplication {
 }
 
 impl EditSnapshot {
+    pub(crate) fn capture_graph(
+        parent: &str,
+        before: &ArchiveSnapshot,
+        source_patches: &[(String, Vec<u8>)],
+        entry_patch: Option<&[u8]>,
+    ) -> Result<GraphEditCapture, Diagnostics> {
+        validate_hash_pin(parent, "edit parent checkpoint")?;
+        if source_patches.is_empty() || source_patches.len() > MAX_GROUP_LEAVES {
+            return Err(fail(
+                DiagnosticCode::ResourceLimit,
+                "graph edit requires 1 to 16 sources",
+            ));
+        }
+        if source_patches.windows(2).any(|pair| pair[0].0 >= pair[1].0) {
+            return Err(fail(
+                DiagnosticCode::Syntax,
+                "graph sources must be distinct and sorted",
+            ));
+        }
+        let graph = trusted_graph(before)?;
+        let mut replacements = BTreeMap::new();
+        let mut captures = Vec::new();
+        let mut payloads = BTreeMap::new();
+        let mut extra_sources = Vec::new();
+        let mut first_forward = Vec::new();
+        let mut first_inverse = Vec::new();
+        let mut first_before_revision = String::new();
+        let mut first_after_revision = String::new();
+        for (index, (path, patch)) in source_patches.iter().enumerate() {
+            if path == before.entry()
+                || path.starts_with("@builtin/")
+                || !graph.order.iter().any(|reachable| reachable == path)
+                || !graph.bundle.sources.contains_key(path)
+            {
+                return Err(fail(
+                    DiagnosticCode::Capability,
+                    "selected source must be an existing reachable local non-entry source",
+                ));
+            }
+            let original = before.source_text(path)?;
+            let tx = Transaction::from_json(patch).map_err(edit_failure)?;
+            let forward = tx.to_json().map_err(edit_failure)?;
+            let mut document = SourceDocument::parse(original).map_err(edit_failure)?;
+            let before_revision = document.revision().to_owned();
+            let context = graph_context(&graph, before.profile(), path, &BTreeMap::new())?;
+            let applied = document.apply(&tx, &context).map_err(edit_failure)?;
+            unchanged_imports(original, document.source())?;
+            let inverse = applied.inverse.to_json().map_err(edit_failure)?;
+            let pin = sha256_digest(document.source().as_bytes());
+            let capture = GraphSourceCapture {
+                source: path.clone(),
+                before_revision: before_revision.clone(),
+                after_revision: applied.new_revision.clone(),
+                final_revision: applied.new_revision.clone(),
+                pin: pin.clone(),
+                final_pin: pin.clone(),
+                applied,
+            };
+            if index == 0 {
+                first_before_revision = before_revision;
+                first_after_revision = capture.after_revision.clone();
+                first_forward = forward;
+                first_inverse = inverse;
+            } else {
+                let forward_name = format!("source-{index:02}-forward.json");
+                let inverse_name = format!("source-{index:02}-inverse.json");
+                extra_sources.push(GraphSourceEdit {
+                    source: path.clone(),
+                    before_revision,
+                    after_revision: capture.after_revision.clone(),
+                    pin,
+                    forward: edit_file(&forward_name, &forward, tx.operations.len()),
+                    inverse: edit_file(
+                        &inverse_name,
+                        &inverse,
+                        capture.applied.inverse.operations.len(),
+                    ),
+                });
+                payloads.insert(forward_name, forward);
+                payloads.insert(inverse_name, inverse);
+            }
+            replacements.insert(path.clone(), document.source().into());
+            captures.push(capture);
+        }
+        let mut entry_user = None;
+        let mut entry_applied = None;
+        if let Some(patch) = entry_patch {
+            let original = before.source_text(before.entry())?;
+            let tx = Transaction::from_json(patch).map_err(edit_failure)?;
+            let forward = tx.to_json().map_err(edit_failure)?;
+            let mut document = SourceDocument::parse(original).map_err(edit_failure)?;
+            let before_revision = document.revision().to_owned();
+            let context =
+                graph_context(&graph, before.profile(), before.entry(), &BTreeMap::new())?;
+            let applied = document.apply(&tx, &context).map_err(edit_failure)?;
+            unchanged_imports(original, document.source())?;
+            let inverse = applied.inverse.to_json().map_err(edit_failure)?;
+            entry_user = Some(GroupEntryEdit {
+                before_revision,
+                after_revision: applied.new_revision.clone(),
+                forward: edit_file(ENTRY_FORWARD, &forward, tx.operations.len()),
+                inverse: edit_file(ENTRY_INVERSE, &inverse, applied.inverse.operations.len()),
+            });
+            payloads.insert(ENTRY_FORWARD.into(), forward);
+            payloads.insert(ENTRY_INVERSE.into(), inverse);
+            replacements.insert(before.entry().into(), document.source().into());
+            entry_applied = Some(applied);
+        }
+        let mut pins = Vec::new();
+        let mut generated = Vec::new();
+        for path in &graph.order {
+            let Some(tx) = expected_graph_pin_transaction(&graph, &replacements, path)? else {
+                continue;
+            };
+            let mut document = SourceDocument::parse(source_at(&graph, &replacements, path)?)
+                .map_err(edit_failure)?;
+            let before_revision = document.revision().to_owned();
+            let forward = tx.to_json().map_err(edit_failure)?;
+            if forward.len() > MAX_GENERATED_PIN_BYTES {
+                return Err(fail(
+                    DiagnosticCode::ResourceLimit,
+                    "generated graph pin transaction exceeds 16 KiB",
+                ));
+            }
+            let context = graph_context(&graph, before.profile(), path, &replacements)?;
+            let applied = document.apply(&tx, &context).map_err(edit_failure)?;
+            let inverse = applied.inverse.to_json().map_err(edit_failure)?;
+            let edges = tx
+                .operations
+                .iter()
+                .filter_map(|operation| match operation {
+                    Operation::Set { object, .. } => object.first().and_then(|alias| {
+                        graph
+                            .imports
+                            .get(path)?
+                            .get(alias)
+                            .map(|target| (alias.clone(), target.clone()))
+                    }),
+                    _ => None,
+                })
+                .collect();
+            generated.push(GraphPinCapture {
+                source: path.clone(),
+                before_revision: before_revision.clone(),
+                after_revision: applied.new_revision.clone(),
+                edges,
+            });
+            if let Some(capture) = captures.iter_mut().find(|capture| capture.source == *path) {
+                capture.final_revision = applied.new_revision.clone();
+                capture.final_pin = sha256_digest(document.source().as_bytes());
+            }
+            let index = pins.len();
+            let forward_name = format!("pin-{index:02}-forward.json");
+            let inverse_name = format!("pin-{index:02}-inverse.json");
+            pins.push(GraphPinEdit {
+                source: path.clone(),
+                before_revision,
+                after_revision: applied.new_revision,
+                forward: edit_file(&forward_name, &forward, tx.operations.len()),
+                inverse: edit_file(&inverse_name, &inverse, applied.inverse.operations.len()),
+            });
+            payloads.insert(forward_name, forward);
+            payloads.insert(inverse_name, inverse);
+            replacements.insert(path.clone(), document.source().into());
+        }
+        let after = before.patched_sources(&replacements)?;
+        check_graph_topology(before, &after, &graph)?;
+        let first = &captures[0];
+        let manifest = EditManifest {
+            format: FORMAT.into(),
+            version: GRAPH_VERSION,
+            parent: parent.into(),
+            before: before.digest(),
+            after: after.digest(),
+            source: first.source.clone(),
+            revision_algorithm: REVISION_ALGORITHM.into(),
+            before_revision: first_before_revision,
+            after_revision: first_after_revision,
+            forward: edit_file(
+                EDIT_FORWARD,
+                &first_forward,
+                Transaction::from_json(&first_forward)
+                    .map_err(edit_failure)?
+                    .operations
+                    .len(),
+            ),
+            inverse: edit_file(
+                EDIT_INVERSE,
+                &first_inverse,
+                first.applied.inverse.operations.len(),
+            ),
+            importer: None,
+            group: None,
+            graph: Some(GraphEdit {
+                entry_source: before.entry().into(),
+                sources: extra_sources,
+                entry: entry_user,
+                pins,
+            }),
+        };
+        validate_manifest(&manifest)?;
+        let json = serde_json::to_vec(&manifest).map_err(|e| {
+            fail(
+                DiagnosticCode::Syntax,
+                format!("cannot encode edit manifest: {e}"),
+            )
+        })?;
+        if json.len() as u64 > MAX_GRAPH_EDIT_MANIFEST_BYTES {
+            return Err(fail(
+                DiagnosticCode::ResourceLimit,
+                "graph edit manifest exceeds 256 KiB",
+            ));
+        }
+        let edit = Self {
+            manifest,
+            json,
+            forward: first_forward,
+            inverse: first_inverse,
+            importer_forward: None,
+            importer_inverse: None,
+            group_payloads: payloads,
+        };
+        if edit.total_bytes() > MAX_EDIT_TOTAL_BYTES {
+            return Err(fail(
+                DiagnosticCode::ResourceLimit,
+                "graph edit exceeds total byte limit",
+            ));
+        }
+        Ok(GraphEditCapture {
+            after,
+            edit,
+            sources: captures,
+            generated,
+            entry_applied,
+        })
+    }
+
     pub(crate) fn capture_group(
         parent: &str,
         before: &ArchiveSnapshot,
@@ -438,6 +920,7 @@ impl EditSnapshot {
                     ),
                 },
             }),
+            graph: None,
         };
         validate_manifest(&manifest)?;
         let json = serde_json::to_vec(&manifest).map_err(|e| {
@@ -579,6 +1062,7 @@ impl EditSnapshot {
                 ),
             }),
             group: None,
+            graph: None,
         };
         validate_manifest(&manifest)?;
         let json = serde_json::to_vec(&manifest).map_err(|e| {
@@ -654,6 +1138,7 @@ impl EditSnapshot {
             },
             importer: None,
             group: None,
+            graph: None,
         };
         validate_manifest(&manifest)?;
         let json = serde_json::to_vec(&manifest).map_err(|e| {
@@ -691,7 +1176,7 @@ impl EditSnapshot {
         after: &str,
     ) -> Result<EditPreflight, Diagnostics> {
         validate_hash_pin(digest, "edit digest")?;
-        let json = read_bounded(root, EDIT_MANIFEST, MAX_EDIT_MANIFEST_BYTES)?;
+        let json = read_bounded(root, EDIT_MANIFEST, MAX_GRAPH_EDIT_MANIFEST_BYTES)?;
         let manifest: EditManifest = serde_json::from_slice(&json).map_err(|e| {
             fail(
                 DiagnosticCode::Syntax,
@@ -699,6 +1184,12 @@ impl EditSnapshot {
             )
         })?;
         validate_manifest(&manifest)?;
+        if manifest.graph.is_none() && json.len() as u64 > MAX_EDIT_MANIFEST_BYTES {
+            return Err(fail(
+                DiagnosticCode::ResourceLimit,
+                "edit manifest exceeds 16 KiB",
+            ));
+        }
         check_tree(root, &manifest)?;
         if serde_json::to_vec(&manifest).map_err(|e| {
             fail(
@@ -765,7 +1256,7 @@ impl EditSnapshot {
             None
         };
         let mut group_payloads = BTreeMap::new();
-        if preflight.manifest.group.is_some() {
+        if preflight.manifest.group.is_some() || preflight.manifest.graph.is_some() {
             for file in edit_files(&preflight.manifest).into_iter().skip(2) {
                 let limit = if file.path == PIN_FORWARD {
                     MAX_GENERATED_PIN_BYTES as u64
@@ -789,7 +1280,7 @@ impl EditSnapshot {
                 importer_inverse.as_ref().expect("v2 file"),
             ));
         }
-        if preflight.manifest.group.is_some() {
+        if preflight.manifest.group.is_some() || preflight.manifest.graph.is_some() {
             for file in edit_files(&preflight.manifest).into_iter().skip(2) {
                 files.push((file, group_payloads.get(&file.path).expect("v3 file")));
             }
@@ -811,7 +1302,7 @@ impl EditSnapshot {
                 ));
             }
         }
-        if read_bounded(root, EDIT_MANIFEST, MAX_EDIT_MANIFEST_BYTES)? != preflight.json {
+        if read_bounded(root, EDIT_MANIFEST, MAX_GRAPH_EDIT_MANIFEST_BYTES)? != preflight.json {
             return Err(fail(
                 DiagnosticCode::Hash,
                 "edit manifest changed during verification",
@@ -834,6 +1325,9 @@ impl EditSnapshot {
         before: &ArchiveSnapshot,
         after: &ArchiveSnapshot,
     ) -> Result<(), Diagnostics> {
+        if self.manifest.graph.is_some() {
+            return self.verify_graph_transition(parent, before, after);
+        }
         if self.manifest.group.is_some() {
             return self.verify_group_transition(parent, before, after);
         }
@@ -1375,6 +1869,197 @@ impl EditSnapshot {
         Ok(())
     }
 
+    fn verify_graph_transition(
+        &self,
+        parent: &str,
+        before: &ArchiveSnapshot,
+        after: &ArchiveSnapshot,
+    ) -> Result<(), Diagnostics> {
+        let graph = self.manifest.graph.as_ref().expect("v4 graph");
+        if self.manifest.parent != parent
+            || self.manifest.before != before.digest()
+            || self.manifest.after != after.digest()
+            || graph.entry_source != before.entry()
+            || graph.entry_source != after.entry()
+        {
+            return Err(fail(
+                DiagnosticCode::Hash,
+                "graph edit checkpoint transition is inconsistent",
+            ));
+        }
+        let mut patches = vec![(self.manifest.source.clone(), self.forward.clone())];
+        for source in &graph.sources {
+            patches.push((
+                source.source.clone(),
+                self.group_payloads
+                    .get(&source.forward.path)
+                    .ok_or_else(|| {
+                        fail(DiagnosticCode::Reference, "graph source forward is missing")
+                    })?
+                    .clone(),
+            ));
+        }
+        let entry_patch = graph
+            .entry
+            .as_ref()
+            .map(|entry| {
+                self.group_payloads
+                    .get(&entry.forward.path)
+                    .map(Vec::as_slice)
+                    .ok_or_else(|| {
+                        fail(DiagnosticCode::Reference, "graph entry forward is missing")
+                    })
+            })
+            .transpose()?;
+        // Replay the complete byte graph from the parent. Recomputing every
+        // generated transaction also proves the recorded pin provenance and
+        // rejects any unjournaled source or closure change.
+        let replayed = Self::capture_graph(parent, before, &patches, entry_patch)?;
+        if replayed.after.digest() != after.digest()
+            || replayed.edit.json != self.json
+            || replayed.edit.forward != self.forward
+            || replayed.edit.inverse != self.inverse
+            || replayed.edit.group_payloads != self.group_payloads
+        {
+            return Err(fail(
+                DiagnosticCode::Hash,
+                "graph edit journal does not reproduce exact child bytes",
+            ));
+        }
+
+        let original = trusted_graph(before)?;
+        let final_graph = trusted_graph(after)?;
+        for (path, forward_bytes) in &patches {
+            let mut document =
+                SourceDocument::parse(before.source_text(path)?).map_err(edit_failure)?;
+            let before_tree = document.authored().tree().clone();
+            let forward = Transaction::from_json(forward_bytes).map_err(edit_failure)?;
+            let context = graph_context(&original, before.profile(), path, &BTreeMap::new())?;
+            document.apply(&forward, &context).map_err(edit_failure)?;
+            let user_tree = document.authored().tree().clone();
+            let inverse_bytes = if path == &self.manifest.source {
+                &self.inverse
+            } else {
+                let record = graph
+                    .sources
+                    .iter()
+                    .find(|record| &record.source == path)
+                    .expect("recorded graph source");
+                self.group_payloads
+                    .get(&record.inverse.path)
+                    .expect("verified graph inverse")
+            };
+            let inverse = Transaction::from_json(inverse_bytes).map_err(edit_failure)?;
+            let mut restored = document.authored().clone();
+            apply_transaction(&mut restored, &inverse, &context).map_err(edit_failure)?;
+            if restored.tree() != &before_tree
+                || restored.revision()
+                    != SourceDocument::parse(before.source_text(path)?)
+                        .map_err(edit_failure)?
+                        .revision()
+            {
+                return Err(fail(
+                    DiagnosticCode::Hash,
+                    "graph user inverse does not restore parent authored tree",
+                ));
+            }
+            if let Some(pin) = graph.pins.iter().find(|pin| &pin.source == path) {
+                verify_graph_pin_inverse(
+                    pin,
+                    after,
+                    &final_graph,
+                    &self.group_payloads,
+                    &user_tree,
+                )?;
+            } else if SourceDocument::parse(after.source_text(path)?)
+                .map_err(edit_failure)?
+                .authored()
+                .tree()
+                != &user_tree
+            {
+                return Err(fail(
+                    DiagnosticCode::Hash,
+                    "graph user stage differs from child authored tree",
+                ));
+            }
+        }
+        if let Some(entry) = &graph.entry {
+            let path = before.entry();
+            let mut document =
+                SourceDocument::parse(before.source_text(path)?).map_err(edit_failure)?;
+            let before_tree = document.authored().tree().clone();
+            let forward = Transaction::from_json(entry_patch.expect("graph entry bytes"))
+                .map_err(edit_failure)?;
+            let context = graph_context(&original, before.profile(), path, &BTreeMap::new())?;
+            document.apply(&forward, &context).map_err(edit_failure)?;
+            let user_tree = document.authored().tree().clone();
+            let inverse = Transaction::from_json(
+                self.group_payloads
+                    .get(&entry.inverse.path)
+                    .expect("verified graph entry inverse"),
+            )
+            .map_err(edit_failure)?;
+            let mut restored = document.authored().clone();
+            apply_transaction(&mut restored, &inverse, &context).map_err(edit_failure)?;
+            if restored.tree() != &before_tree || restored.revision() != entry.before_revision {
+                return Err(fail(
+                    DiagnosticCode::Hash,
+                    "graph entry inverse does not restore parent authored tree",
+                ));
+            }
+            if let Some(pin) = graph.pins.iter().find(|pin| pin.source == path) {
+                verify_graph_pin_inverse(
+                    pin,
+                    after,
+                    &final_graph,
+                    &self.group_payloads,
+                    &user_tree,
+                )?;
+            } else if SourceDocument::parse(after.source_text(path)?)
+                .map_err(edit_failure)?
+                .authored()
+                .tree()
+                != &user_tree
+            {
+                return Err(fail(
+                    DiagnosticCode::Hash,
+                    "graph entry user stage differs from child",
+                ));
+            }
+        }
+        for pin in &graph.pins {
+            if pin.source != before.entry() && !patches.iter().any(|(path, _)| path == &pin.source)
+            {
+                let before_tree = SourceDocument::parse(before.source_text(&pin.source)?)
+                    .map_err(edit_failure)?
+                    .authored()
+                    .tree()
+                    .clone();
+                verify_graph_pin_inverse(
+                    pin,
+                    after,
+                    &final_graph,
+                    &self.group_payloads,
+                    &before_tree,
+                )?;
+            } else if pin.source == before.entry() && graph.entry.is_none() {
+                let before_tree = SourceDocument::parse(before.source_text(before.entry())?)
+                    .map_err(edit_failure)?
+                    .authored()
+                    .tree()
+                    .clone();
+                verify_graph_pin_inverse(
+                    pin,
+                    after,
+                    &final_graph,
+                    &self.group_payloads,
+                    &before_tree,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn digest(&self) -> String {
         sha256_digest(&self.json)
     }
@@ -1387,7 +2072,9 @@ impl EditSnapshot {
             + self.group_payloads.values().map(Vec::len).sum::<usize>() as u64
     }
     pub(crate) fn is_import_edit(&self) -> bool {
-        self.manifest.importer.is_some() || self.manifest.group.is_some()
+        self.manifest.importer.is_some()
+            || self.manifest.group.is_some()
+            || self.manifest.graph.is_some()
     }
     pub(crate) fn is_group_edit(&self) -> bool {
         self.manifest.group.is_some()
@@ -1399,6 +2086,12 @@ impl EditSnapshot {
             .as_ref()
             .map(|group| group.others.len() + 1)
     }
+    pub(crate) fn is_graph_edit(&self) -> bool {
+        self.manifest.graph.is_some()
+    }
+    pub(crate) fn graph_replay_passes(&self) -> Option<(u64, u64)> {
+        self.manifest.graph.as_ref().map(graph_replay_passes)
+    }
     pub(crate) fn tree_entries(&self) -> usize {
         2 + edit_files(&self.manifest).len()
     }
@@ -1407,15 +2100,16 @@ impl EditSnapshot {
     }
 
     pub(crate) fn stage_into(&self, dir: &Path) -> Result<(), Diagnostics> {
-        let expected_group: BTreeSet<_> = if self.manifest.group.is_some() {
-            edit_files(&self.manifest)
-                .into_iter()
-                .skip(2)
-                .map(|file| file.path.as_str())
-                .collect()
-        } else {
-            BTreeSet::new()
-        };
+        let expected_group: BTreeSet<_> =
+            if self.manifest.group.is_some() || self.manifest.graph.is_some() {
+                edit_files(&self.manifest)
+                    .into_iter()
+                    .skip(2)
+                    .map(|file| file.path.as_str())
+                    .collect()
+            } else {
+                BTreeSet::new()
+            };
         if expected_group != self.group_payloads.keys().map(String::as_str).collect() {
             return Err(fail(
                 DiagnosticCode::Hash,
@@ -1481,13 +2175,13 @@ impl EditSnapshot {
                         .as_ref()
                         .is_none_or(|bytes| sha256_digest(bytes) != importer.inverse.sha256)
             })
-            || self.manifest.group.as_ref().is_some_and(|_| {
+            || (self.manifest.group.is_some() || self.manifest.graph.is_some()) && {
                 edit_files(&self.manifest).into_iter().skip(2).any(|file| {
                     self.group_payloads.get(&file.path).is_none_or(|bytes| {
                         bytes.len() as u64 != file.bytes || sha256_digest(bytes) != file.sha256
                     })
                 })
-            })
+            }
         {
             return Err(fail(
                 DiagnosticCode::Hash,
@@ -1627,6 +2321,76 @@ fn check_group_import_topology(
     Ok(())
 }
 
+fn check_graph_topology(
+    before: &ArchiveSnapshot,
+    after: &ArchiveSnapshot,
+    graph: &TrustedGraph,
+) -> Result<(), Diagnostics> {
+    let original = import_topology(before)?;
+    let child = import_topology(after)?;
+    if original.len() != child.len() {
+        return Err(fail(
+            DiagnosticCode::Capability,
+            "graph edit changed import topology",
+        ));
+    }
+    let mut target_pins: BTreeMap<String, String> = BTreeMap::new();
+    for ((source, alias), (target, old_pin)) in &original {
+        let expected_pin = if graph.bundle.sources.contains_key(target) {
+            if let Some(pin) = target_pins.get(target) {
+                pin.clone()
+            } else {
+                let pin = sha256_digest(after.source_text(target)?.as_bytes());
+                target_pins.insert(target.clone(), pin.clone());
+                pin
+            }
+        } else {
+            old_pin.clone()
+        };
+        if child.get(&(source.clone(), alias.clone())) != Some(&(target.clone(), expected_pin)) {
+            return Err(fail(
+                DiagnosticCode::Capability,
+                "graph edit changed import topology or an unrelated pin",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn verify_graph_pin_inverse(
+    pin: &GraphPinEdit,
+    after: &ArchiveSnapshot,
+    graph: &TrustedGraph,
+    payloads: &BTreeMap<String, Vec<u8>>,
+    expected_before: &serde_json::Value,
+) -> Result<(), Diagnostics> {
+    let mut authored = SourceDocument::parse(after.source_text(&pin.source)?)
+        .map_err(edit_failure)?
+        .authored()
+        .clone();
+    if authored.revision() != pin.after_revision {
+        return Err(fail(
+            DiagnosticCode::Hash,
+            "graph pin child revision differs",
+        ));
+    }
+    let inverse = Transaction::from_json(
+        payloads
+            .get(&pin.inverse.path)
+            .ok_or_else(|| fail(DiagnosticCode::Reference, "graph pin inverse is missing"))?,
+    )
+    .map_err(edit_failure)?;
+    let context = graph_context(graph, after.profile(), &pin.source, &BTreeMap::new())?;
+    apply_transaction(&mut authored, &inverse, &context).map_err(edit_failure)?;
+    if authored.revision() != pin.before_revision || authored.tree() != expected_before {
+        return Err(fail(
+            DiagnosticCode::Hash,
+            "graph pin inverse does not restore prior authored tree",
+        ));
+    }
+    Ok(())
+}
+
 fn apply_source(
     snapshot: &ArchiveSnapshot,
     transaction: &Transaction,
@@ -1704,8 +2468,16 @@ fn trusted_document_and_context(
 fn validate_manifest(m: &EditManifest) -> Result<(), Diagnostics> {
     if m.format != FORMAT
         || !matches!(
-            (m.version, m.importer.is_some(), m.group.is_some()),
-            (VERSION, false, false) | (IMPORT_VERSION, true, false) | (GROUP_VERSION, false, true)
+            (
+                m.version,
+                m.importer.is_some(),
+                m.group.is_some(),
+                m.graph.is_some()
+            ),
+            (VERSION, false, false, false)
+                | (IMPORT_VERSION, true, false, false)
+                | (GROUP_VERSION, false, true, false)
+                | (GRAPH_VERSION, false, false, true)
         )
     {
         return Err(fail(
@@ -1827,6 +2599,55 @@ fn validate_manifest(m: &EditManifest) -> Result<(), Diagnostics> {
             ));
         }
     }
+    if let Some(graph) = &m.graph {
+        if !valid_source_path(&graph.entry_source)
+            || graph.entry_source == m.source
+            || graph.sources.len() >= MAX_GROUP_LEAVES
+            || !valid_source_path(&m.source)
+        {
+            return Err(fail(DiagnosticCode::Syntax, "invalid graph edit sources"));
+        }
+        let mut previous = m.source.as_str();
+        for (index, source) in graph.sources.iter().enumerate() {
+            if source.source.as_str() <= previous
+                || source.source == graph.entry_source
+                || !valid_source_path(&source.source)
+                || source.forward.path != format!("source-{:02}-forward.json", index + 1)
+                || source.inverse.path != format!("source-{:02}-inverse.json", index + 1)
+            {
+                return Err(fail(
+                    DiagnosticCode::Syntax,
+                    "graph sources are not canonical",
+                ));
+            }
+            for pin in [&source.before_revision, &source.after_revision, &source.pin] {
+                validate_hash_pin(pin, "graph source revision or pin")?;
+            }
+            previous = &source.source;
+        }
+        if let Some(entry) = &graph.entry {
+            validate_group_entry(entry, ENTRY_FORWARD, ENTRY_INVERSE)?;
+        }
+        let mut seen = BTreeSet::new();
+        for (index, pin) in graph.pins.iter().enumerate() {
+            if !valid_source_path(&pin.source)
+                || !seen.insert(&pin.source)
+                || pin.forward.path != format!("pin-{index:02}-forward.json")
+                || pin.inverse.path != format!("pin-{index:02}-inverse.json")
+                || pin.forward.bytes > MAX_GENERATED_PIN_BYTES as u64
+            {
+                return Err(fail(DiagnosticCode::Syntax, "graph pins are not canonical"));
+            }
+            validate_hash_pin(&pin.before_revision, "graph pin before revision")?;
+            validate_hash_pin(&pin.after_revision, "graph pin after revision")?;
+        }
+        if graph.pins.len() > crate::bundle::MAX_BUNDLE_SOURCES {
+            return Err(fail(
+                DiagnosticCode::ResourceLimit,
+                "too many graph pin sources",
+            ));
+        }
+    }
     for file in edit_files(m) {
         let name = file.path.as_str();
         if (name.contains('/') || name.contains('\\') || name.is_empty())
@@ -1859,7 +2680,7 @@ fn validate_manifest(m: &EditManifest) -> Result<(), Diagnostics> {
             "invalid edit transaction paths",
         ));
     }
-    if m.group.is_some()
+    if (m.group.is_some() || m.graph.is_some())
         && edit_files(m).iter().map(|file| file.bytes).sum::<u64>() > MAX_EDIT_TOTAL_BYTES
     {
         return Err(fail(
@@ -1868,7 +2689,7 @@ fn validate_manifest(m: &EditManifest) -> Result<(), Diagnostics> {
         ));
     }
     let work = transaction_work(m)?;
-    if m.group.is_some() && work > MAX_EDIT_TRANSACTION_WORK_BYTES {
+    if (m.group.is_some() || m.graph.is_some()) && work > MAX_EDIT_TRANSACTION_WORK_BYTES {
         return Err(fail(
             DiagnosticCode::ResourceLimit,
             "group edit exceeds 2 GiB transaction work preflight",
@@ -1922,6 +2743,20 @@ fn edit_files(manifest: &EditManifest) -> Vec<&EditFile> {
         }
         files.push(&group.pin.forward);
         files.push(&group.pin.inverse);
+    }
+    if let Some(graph) = &manifest.graph {
+        for source in &graph.sources {
+            files.push(&source.forward);
+            files.push(&source.inverse);
+        }
+        if let Some(entry) = &graph.entry {
+            files.push(&entry.forward);
+            files.push(&entry.inverse);
+        }
+        for pin in &graph.pins {
+            files.push(&pin.forward);
+            files.push(&pin.inverse);
+        }
     }
     files
 }
@@ -2136,6 +2971,146 @@ mod tests {
     use crate::editing::Operation;
 
     const SOURCE: &str = include_str!("../tests/fixtures/archive_v1/main.maac");
+
+    fn version_patch(source: &str, id: &str, next: &str) -> Vec<u8> {
+        Transaction::new(
+            SourceDocument::parse(source).unwrap().revision().into(),
+            vec![Operation::Set {
+                object: vec![id.into()],
+                field: vec!["version".into()],
+                value: serde_json::json!({"t":"string","v":next}),
+                expect: Some(serde_json::json!({"t":"string","v":"1"})),
+                expect_absent: false,
+            }],
+        )
+        .unwrap()
+        .to_json()
+        .unwrap()
+    }
+
+    #[test]
+    fn graph_edit_replays_shared_transitive_source_and_all_ancestor_pins() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = "maac 1;\nlibrary base { version=\"1\"; }\n";
+        let left = format!("maac 1;\nlibrary left {{ version=\"1\"; }}\nimport base {{ path=\"base.maac\"; hash=\"{}\"; }}\n", sha256_digest(base.as_bytes()));
+        let right = format!("maac 1;\nlibrary right {{ version=\"1\"; }}\nimport base {{ path=\"base.maac\"; hash=\"{}\"; }}\n", sha256_digest(base.as_bytes()));
+        let entry = format!("{SOURCE}import left {{ path=\"left.maac\"; hash=\"{}\"; }}\nimport left_again {{ path=\"left.maac\"; hash=\"{}\"; }}\nimport right {{ path=\"right.maac\"; hash=\"{}\"; }}\n", sha256_digest(left.as_bytes()), sha256_digest(left.as_bytes()), sha256_digest(right.as_bytes()));
+        for (path, text) in [
+            ("main.maac", entry.as_str()),
+            ("base.maac", base),
+            ("left.maac", &left),
+            ("right.maac", &right),
+        ] {
+            fs::write(temp.path().join(path), text).unwrap();
+        }
+        let before =
+            ArchiveSnapshot::capture(Path::new("main.maac"), temp.path(), "default").unwrap();
+        let parent = format!("sha256:{}", "1".repeat(64));
+        let captured = EditSnapshot::capture_graph(
+            &parent,
+            &before,
+            &[("base.maac".into(), version_patch(base, "base", "2"))],
+            None,
+        )
+        .unwrap();
+        assert_eq!(captured.sources.len(), 1);
+        assert_eq!(captured.generated.len(), 3);
+        assert_eq!(
+            captured
+                .generated
+                .iter()
+                .map(|pin| pin.source.as_str())
+                .collect::<Vec<_>>(),
+            ["left.maac", "right.maac", "main.maac"]
+        );
+        assert_eq!(captured.generated[2].edges.len(), 3);
+        assert_eq!(captured.sources[0].pin, captured.sources[0].final_pin);
+        assert_eq!(captured.edit.tree_entries(), 10);
+        captured
+            .edit
+            .verify_transition(&parent, &before, &captured.after)
+            .unwrap();
+        let dir = temp.path().join("edit");
+        fs::create_dir(&dir).unwrap();
+        captured.edit.stage_into(&dir).unwrap();
+        let root = ProjectRoot::open(&dir, cap_std::ambient_authority()).unwrap();
+        let preflight = EditSnapshot::preflight(
+            &root,
+            &captured.edit.digest(),
+            &parent,
+            &before.digest(),
+            &captured.after.digest(),
+        )
+        .unwrap();
+        assert!(preflight.is_graph_edit());
+        let verified = EditSnapshot::verify_preflighted(&root, &preflight).unwrap();
+        verified
+            .verify_transition(&parent, &before, &captured.after)
+            .unwrap();
+
+        let entry_patch = Transaction::new(
+            SourceDocument::parse(&entry).unwrap().revision().into(),
+            vec![Operation::Set {
+                object: vec!["p".into()],
+                field: vec!["tail".into()],
+                value: serde_json::json!({"t":"quantity","n":"1","d":"1","u":"s"}),
+                expect: Some(serde_json::json!({"t":"quantity","n":"0","d":"1","u":"s"})),
+                expect_absent: false,
+            }],
+        )
+        .unwrap()
+        .to_json()
+        .unwrap();
+        let overlapping = EditSnapshot::capture_graph(
+            &parent,
+            &before,
+            &[
+                ("base.maac".into(), version_patch(base, "base", "2")),
+                ("left.maac".into(), version_patch(&left, "left", "2")),
+            ],
+            Some(&entry_patch),
+        )
+        .unwrap();
+        assert_eq!(overlapping.sources.len(), 2);
+        assert!(overlapping.entry_applied.is_some());
+        assert_ne!(
+            overlapping.sources[1].after_revision,
+            overlapping.sources[1].final_revision
+        );
+        assert_ne!(overlapping.sources[1].pin, overlapping.sources[1].final_pin);
+        overlapping
+            .edit
+            .verify_transition(&parent, &before, &overlapping.after)
+            .unwrap();
+
+        let changed_import = Transaction::new(
+            SourceDocument::parse(&left).unwrap().revision().into(),
+            vec![Operation::Set {
+                object: vec!["base".into()],
+                field: vec!["hash".into()],
+                value: serde_json::json!({"t":"string","v":format!("sha256:{}", "f".repeat(64))}),
+                expect: Some(serde_json::json!({"t":"string","v":sha256_digest(base.as_bytes())})),
+                expect_absent: false,
+            }],
+        )
+        .unwrap()
+        .to_json()
+        .unwrap();
+        assert!(EditSnapshot::capture_graph(
+            &parent,
+            &before,
+            &[("left.maac".into(), changed_import)],
+            None
+        )
+        .is_err());
+        assert!(EditSnapshot::capture_graph(
+            &parent,
+            &before,
+            &[("main.maac".into(), version_patch(base, "base", "2"))],
+            None
+        )
+        .is_err());
+    }
 
     #[test]
     fn group_edit_replays_two_leaves_and_entry_with_exact_pins() {
