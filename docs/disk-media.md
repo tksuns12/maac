@@ -10,6 +10,7 @@ maac check SOURCE --disk-media [--project-root ROOT] [--profile default|song]
 maac build SOURCE --disk-media -o OUTPUT.wav [--project-root ROOT] [--profile default|song]
 maac import-wav INPUT.wav --disk-media --output-dir NEW_PROJECT [--retain-original] [--profile default|song]
 maac verify-import NEW_PROJECT --disk-media [--profile default|song]
+maac patch SOURCE EDIT.json --disk-media -o EDITED.maac [--profile default|song] [--force]
 ```
 
 `--disk-media` selects a process-local, file-backed render path for a MaaC
@@ -25,6 +26,10 @@ same 1 GiB PCM cap and stages its provenance record and optional original WAV.
 `verify-import --disk-media` rechecks a retained import and its current source
 closure after relocation. `--profile song` on import and verification increases
 only the existing execution-work allowance, matching `check` and `build`.
+`patch --disk-media` uses the same private media snapshots for source-preserving
+Protocol 2 edits, including clip crops, placement, and fades. It validates
+against the initially loaded dependency closure and returns the transaction
+inverse and impact report; see the [editing contract](editing-kernel.md#source-edits-with-disk-backed-media).
 The flag does not produce a standalone performance plan. `compile`, `render`,
 and `deliver` retain their existing contracts and do not accept it. This path
 does not change MaaC/1 syntax, the public `SourceBundle`, or saved plan versions

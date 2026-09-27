@@ -552,6 +552,39 @@ and escaping original-WAV symlinks and removed current media dependencies fail.
 The input snapshot and decoded PCM each remain capped at 1 GiB; this is a
 bounded disk path, not general streaming or recording.
 
+## Direct source edits with disk-backed media (2026-09-28)
+
+`patch --disk-media [--profile song]` connects retained long-media imports to
+source-preserving Protocol 2 edits using captured local source bytes and
+private native PCM snapshots. The public patch command/API, complete inverse
+and impact result, and atomic output contract remain compatible.
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Snapshot and existing CLI unit tests | `cargo test --lib cli:: --locked --offline --quiet` | Passed: 4 tests |
+| New disk-media editing workflow | `cargo test --test disk_media_editing_cli --locked --offline --quiet` | Passed: 3 tests |
+| Existing editing regressions | `cargo test --test editing_cli --test editing_bundle --test editing_source --locked --offline --quiet` | Passed: 5, 8, and 6 tests |
+| All-targets strict Clippy | `cargo clippy --all-targets --locked --offline -- -D warnings` | Passed |
+| Release build | `cargo build --release --locked --offline` | Passed |
+| Formatting and whitespace | `cargo fmt --all -- --check`; `git diff --check` | Passed |
+| Independent review | Read-only Astra max review | Local-dependency documentation corrected; no implementation findings |
+
+The workflow imports and relocates retained stereo media above 4 MiB, edits
+source frames, placement, and fades atomically, checks exact final samples,
+verifies unchanged import provenance, and replays the same edit through archive
+journaling and relocated reopen. The returned inverse restores the original
+authored revision. Failure tests cover stale revisions, invalid crops, an
+existing but uncaptured local media path, corrupted or missing PCM, and
+destination preservation with `--force`. A 210-second active clip built from
+a compact media fixture demonstrates default work rejection and song-profile
+acceptance. The pinned-root test replaces the project directory after loading
+and confirms editing uses the captured source and PCM. Its initial assertion
+was corrected to compare the authored tail quantity rather than source spacing.
+
+This slice used focused editing/CLI execution gates and all-targets static
+checking; it does not claim a new full-suite run. Recording, take membership,
+and comp selection remain outside this implementation.
+
 ## Historical naming cleanup
 
 The current tree uses MaaC consistently in the specification, grammar, schema,

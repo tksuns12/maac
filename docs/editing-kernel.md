@@ -161,6 +161,34 @@ when the recognized production extension or `fx.*` descriptors are present; loca
 `synth.* /1` defaults are resolved in their library context. `maac patch --project-root` exposes
 this same bundle-aware path while retaining source-preserving projection.
 
+## Source edits with disk-backed media
+
+```text
+maac patch PROJECT EDIT.json --disk-media [--profile default|song] -o EDITED.maac
+maac patch PROJECT EDIT.json --disk-media --profile song -o PROJECT/main.maac --force
+```
+
+The opt-in disk path loads the source closure and privately snapshots pinned
+native PCM before applying Protocol 2. It can edit source-frame crops,
+placement, reverse, speed, gain, and fades in projects whose media exceeds the
+embedded asset limit. It uses the existing transaction, conflict, candidate
+validation, source projection, inverse, and atomic publication contracts.
+`--profile song` changes execution work only; it requires `--disk-media` on
+`patch`. Ordinary patch commands and the public `Command::Patch` API retain
+their existing behavior.
+
+Local on-disk dependencies are limited to the initially loaded closure. A
+transaction may refer to an already captured asset or local library, but an
+unseen local path fails rather than loading new bytes during candidate
+validation. Built-in imports retain the existing pinned registry resolution.
+The command writes only
+the requested source file; dependencies and retained import records remain
+caller-owned project members. Replacing the current entry requires `--force`.
+Unrelated source comments survive forward projection. The inverse restores
+the canonical authored tree; it may replace formatting on changed roots.
+Audio-clip edits retain conservative full-render invalidation. Recording,
+take collections, and comp selection remain separate roadmap work.
+
 ## Work outside the first P0
 
 Further precision in impact reporting can extend beyond pattern/place dependencies to

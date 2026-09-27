@@ -1,7 +1,7 @@
 # MaaC end-to-end production plan
 
 **Status:** accepted product direction; non-normative capability roadmap; dated
-2026-09-13. The current execution status below was reconciled on 2026-09-27.
+2026-09-13. The current execution status below was reconciled on 2026-09-28.
 
 ## Current execution status
 
@@ -16,7 +16,7 @@ complete professional-production product.
 | Phase 1: end-to-end inventory | Complete as a bounded reference inventory | Keep the [lifecycle inventory](end-to-end-lifecycle-inventory.md) aligned with implemented slices and open gates. |
 | Phase 2: reset-correct excerpts | Complete for bounded final-WAV ranges | No claim of realtime seeking, speed-up, or arbitrary DSP-state restoration. |
 | Phase 3: media/import/packaging | In progress; bounded WAV crop import, opt-in retained-original verification, opt-in file-backed WAV import and verification up to the native PCM disk-media limit, archive checkpoints, multiple selected retained WAV imports, explicit whole-output and independent native-effect-group freeze reuse, opt-in partial reuse of eligible group members, bounded independent-branch gain/pan edit reuse, journaled local-source transactions, and opt-in verified native processor context implemented | Add external processor dependency/state packaging, overlapping frozen graph branches, broader selective invalidation, and remaining media and reopen coverage. |
-| Phase 4: capture/playback/comping | Partial foundations only | Add recording, takes, comp selection, playback, and revision workflows. |
+| Phase 4: capture/playback/comping | Partial foundations, including source-preserving Protocol 2 edits of disk-backed audio clips with conflicts and inverses | Add recording, takes, comp selection, playback, and broader revision workflows. |
 | Phase 5: open processors and hosting | Partial foundations only | Generic rendering and executable native external hosting remain deferred. |
 | Phase 6: mix/master/release/reopen | Not complete | Pass the representative production, invalidation, clean-reopen, listening, and producer gates. |
 
@@ -251,6 +251,14 @@ inventing a second mutation model. Persistent linked sections should be added
 only if real workflows require propagation after duplication. Recording and
 playback must remain explicit about device latency, monitoring versus render
 paths, reset origin, and crop prehistory.
+
+The bounded `patch --disk-media [--profile song]` path now supports existing
+audio source-frame crops, placement, gain, speed/reverse, and fades through
+Protocol 2 without loading complete PCM into memory. Candidate validation uses
+the captured dependency closure; conflicts, source projection, inverses, and
+atomic publication retain the existing editing contract. This connects long
+imported material to direct source editing and archive journal replay. It does
+not provide take membership, comp selection, device capture, or playback.
 
 ### 5. Open samplers, processors, libraries, and plugin contracts
 

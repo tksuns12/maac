@@ -856,13 +856,13 @@ pub fn execute_artifact_with_range(
 
 fn execute_disk_media(
     command: &Command,
-    import_profile: ProfileArg,
+    disk_media_profile: ProfileArg,
 ) -> Result<ArtifactCommandResult, CliError> {
     if matches!(
         command,
         Command::ImportWav { .. } | Command::VerifyImport { .. }
     ) {
-        let base = execute_disk_media_import(command, import_profile)?;
+        let base = execute_disk_media_import(command, disk_media_profile)?;
         return Ok(ArtifactCommandResult {
             base,
             hits: 0,
@@ -888,10 +888,19 @@ fn execute_disk_media(
             profile,
             ..
         } => (input.as_deref(), project_root.as_deref(), *profile),
+        Command::Patch {
+            input,
+            project_root,
+            ..
+        } => (
+            Some(input.as_path()),
+            project_root.as_deref(),
+            disk_media_profile,
+        ),
         _ => {
             return Err(CliError::new(
                 "E_USAGE",
-                "--disk-media supports check, build, import-wav, and verify-import only",
+                "--disk-media supports check, build, patch, import-wav, and verify-import only",
             ))
         }
     };
@@ -914,6 +923,35 @@ fn execute_disk_media(
     };
     let project = DiskMediaProject::load(&absolute_entry, &root)
         .map_err(|error| CliError::from_diagnostics(&error))?;
+    if let Command::Patch {
+        input,
+        patch,
+        output,
+        force,
+        ..
+    } = command
+    {
+        let (base, edit) = apply_disk_media_source_patch(
+            input,
+            patch,
+            output,
+            *force,
+            &project,
+            profile.limits(),
+        )?;
+        return Ok(ArtifactCommandResult {
+            base,
+            hits: 0,
+            audio_clips: 0,
+            start_frame: None,
+            end_frame: None,
+            edit: Some(edit),
+            archive_patch: None,
+            archive_import_patch: None,
+            archive_group_patch: None,
+            archive_graph_patch: None,
+        });
+    }
     let limits = profile.limits();
     let plan = project
         .build_with_limits(&limits)
@@ -1310,41 +1348,12 @@ fn execute_impl(
         } => {
             let (resolved_input, root) = resolve_source_input(Some(input), project_root.as_deref());
             let bundle = load_source_bundle(&resolved_input, root.as_deref())?;
-            let source = bundle.sources.get(&bundle.entry).ok_or_else(|| {
-                CliError::new(
-                    "E_REFERENCE",
-                    "resolved patch source is missing from bundle",
-                )
-            })?;
-            let mut document = crate::editing::SourceDocument::parse(source.clone())
-                .map_err(CliError::from_edit)?;
             let context =
                 crate::editing::BundleEditContext::new(&bundle).map_err(CliError::from_edit)?;
-            let transaction = crate::editing::Transaction::from_json(&read_bounded(patch)?)
-                .map_err(CliError::from_edit)?;
-            let applied = document
-                .apply(&transaction, &context)
-                .map_err(CliError::from_edit)?;
-            export::atomic_write(output, document.source().as_bytes(), *force)
-                .map_err(CliError::from_export)?;
-            counts.edit = Some(applied.clone());
-            Ok(CommandResult {
-                ok: true,
-                command: "patch".into(),
-                input: input.display().to_string(),
-                output: Some(output.display().to_string()),
-                format: Some("maac.edit/2".into()),
-                notes: None,
-                frames: None,
-                digest: Some(applied.new_revision),
-                exports: None,
-                catalog: None,
-                instrument: None,
-                library: None,
-                libraries: None,
-                delivery: None,
-                freeze: None,
-            })
+            let (result, applied) =
+                apply_source_patch(input, patch, output, *force, &bundle, &context)?;
+            counts.edit = Some(applied);
+            Ok(result)
         }
         Command::Hash { input } => {
             let bytes = read_bounded(input)?;
@@ -2399,6 +2408,66 @@ fn load_source_bundle(input: &Path, project_root: Option<&Path>) -> Result<Sourc
     bundle_fs::load_bundle(&entry, &root).map_err(|error| CliError::from_diagnostics(&error))
 }
 
+fn apply_source_patch(
+    input: &Path,
+    patch: &Path,
+    output: &Path,
+    force: bool,
+    bundle: &SourceBundle,
+    context: &impl crate::editing::EditContext,
+) -> Result<(CommandResult, crate::editing::AppliedTransaction), CliError> {
+    let source = bundle.sources.get(&bundle.entry).ok_or_else(|| {
+        CliError::new(
+            "E_REFERENCE",
+            "resolved patch source is missing from bundle",
+        )
+    })?;
+    let mut document =
+        crate::editing::SourceDocument::parse(source.clone()).map_err(CliError::from_edit)?;
+    let transaction = crate::editing::Transaction::from_json(&read_bounded(patch)?)
+        .map_err(CliError::from_edit)?;
+    let applied = document
+        .apply(&transaction, context)
+        .map_err(CliError::from_edit)?;
+    export::atomic_write(output, document.source().as_bytes(), force)
+        .map_err(CliError::from_export)?;
+    let result = CommandResult {
+        ok: true,
+        command: "patch".into(),
+        input: input.display().to_string(),
+        output: Some(output.display().to_string()),
+        format: Some("maac.edit/2".into()),
+        notes: None,
+        frames: None,
+        digest: Some(applied.new_revision.clone()),
+        exports: None,
+        catalog: None,
+        instrument: None,
+        library: None,
+        libraries: None,
+        delivery: None,
+        freeze: None,
+    };
+    Ok((result, applied))
+}
+
+fn apply_disk_media_source_patch(
+    input: &Path,
+    patch: &Path,
+    output: &Path,
+    force: bool,
+    project: &DiskMediaProject,
+    limits: PlanLimits,
+) -> Result<(CommandResult, crate::editing::AppliedTransaction), CliError> {
+    let context = crate::editing::BundleEditContext::new_disk_media(
+        project.bundle(),
+        project.disk_assets(),
+        limits,
+    )
+    .map_err(CliError::from_edit)?;
+    apply_source_patch(input, patch, output, force, project.bundle(), &context)
+}
+
 fn bundle_entry_document(bundle: &SourceBundle) -> Result<Document, CliError> {
     let source = bundle.sources.get(&bundle.entry).ok_or_else(|| {
         CliError::new(
@@ -3009,7 +3078,7 @@ enum ParsedArgsError {
 struct ProcessOptions {
     range: Option<FrameRange>,
     disk_media: bool,
-    import_profile: Option<ProfileArg>,
+    disk_media_profile: Option<ProfileArg>,
 }
 
 /// Add process-only flags without changing the public Command enum used by
@@ -3037,7 +3106,7 @@ fn parse_cli_with_process_options(
                 .value_parser(clap::value_parser!(u64))
                 .help("exclusive reset-origin engine frame at which an excerpt ends"),
         );
-    for name in ["check", "build", "import-wav", "verify-import"] {
+    for name in ["check", "build", "patch", "import-wav", "verify-import"] {
         let subcommand = command
             .find_subcommand_mut(name)
             .expect("disk-media command is declared");
@@ -3048,16 +3117,16 @@ fn parse_cli_with_process_options(
                 .help("use bounded private disk snapshots for native PCM"),
         );
     }
-    for name in ["import-wav", "verify-import"] {
+    for name in ["patch", "import-wav", "verify-import"] {
         let subcommand = command
             .find_subcommand_mut(name)
-            .expect("disk-media import command is declared");
+            .expect("disk-media profile command is declared");
         *subcommand = subcommand.clone().arg(
-            Arg::new("import-profile")
+            Arg::new("disk-media-profile")
                 .long("profile")
                 .value_name("PROFILE")
                 .value_parser(clap::value_parser!(ProfileArg))
-                .help("execution-work profile for disk-media import or verification"),
+                .help("execution-work profile for disk-media processing"),
         );
     }
     let matches = command
@@ -3079,26 +3148,28 @@ fn parse_cli_with_process_options(
         },
         None => None,
     };
-    let disk_media = ["check", "build", "import-wav", "verify-import"]
+    let disk_media = ["check", "build", "patch", "import-wav", "verify-import"]
         .iter()
         .any(|name| {
             matches
                 .subcommand_matches(name)
                 .is_some_and(|subcommand| subcommand.get_flag("disk-media"))
         });
-    let import_profile = ["import-wav", "verify-import"].iter().find_map(|name| {
-        matches
-            .subcommand_matches(name)
-            .and_then(|subcommand| subcommand.get_one::<ProfileArg>("import-profile"))
-            .copied()
-    });
+    let disk_media_profile = ["patch", "import-wav", "verify-import"]
+        .iter()
+        .find_map(|name| {
+            matches
+                .subcommand_matches(name)
+                .and_then(|subcommand| subcommand.get_one::<ProfileArg>("disk-media-profile"))
+                .copied()
+        });
     let cli = Cli::from_arg_matches(&matches).map_err(ParsedArgsError::Clap)?;
     Ok((
         cli,
         ProcessOptions {
             range,
             disk_media,
-            import_profile,
+            disk_media_profile,
         },
     ))
 }
@@ -3143,15 +3214,15 @@ where
         }
     };
     let json = cli.json;
-    let result = if options.import_profile.is_some() && !options.disk_media {
+    let result = if options.disk_media_profile.is_some() && !options.disk_media {
         Err(CliError::new(
             "E_USAGE",
-            "--profile on import-wav or verify-import requires --disk-media",
+            "--profile on patch, import-wav, or verify-import requires --disk-media",
         ))
     } else if options.disk_media {
         execute_disk_media(
             &cli.command,
-            options.import_profile.unwrap_or(ProfileArg::Default),
+            options.disk_media_profile.unwrap_or(ProfileArg::Default),
         )
     } else {
         execute_artifact_with_range(&cli.command, options.range)
@@ -3291,5 +3362,69 @@ mod import_verification_tests {
         assert_eq!(failure.code, "E_REFERENCE");
         assert!(!archived.join("main.maac").exists());
         assert!(!project.join("import.json").exists());
+    }
+}
+
+#[cfg(test)]
+mod disk_media_patch_snapshot_tests {
+    use super::*;
+
+    #[test]
+    fn patch_uses_the_captured_source_and_media_after_project_root_replacement() {
+        let directory = tempfile::tempdir().unwrap();
+        let project_dir = directory.path().join("project");
+        fs::create_dir(&project_dir).unwrap();
+        let pcm = [0.25f32, -0.25]
+            .into_iter()
+            .flat_map(f32::to_le_bytes)
+            .collect::<Vec<_>>();
+        fs::write(project_dir.join("sample.pcm"), &pcm).unwrap();
+        let source = format!(
+            "maac 1;\nproject p {{ score=[0q,1/4q]; tail=0s; rate=48000Hz; tempo=&clock; meter=&metre; output=&clip:out; }}\ntempo clock {{ points=[(0q,120bpm,step)]; }}\nmeter metre {{ points=[(0q,4,4)]; }}\nasset sample {{ kind=audio; path=\"sample.pcm\"; hash=\"{}\"; format=\"pcm_f32le_interleaved/1\"; rate=48000Hz; channels=1; frames=2; }}\naudio clip {{ asset=&sample; at=0q; source=[0frame,2frame]; mode=rate; }}\n",
+            sha256_digest(&pcm),
+        );
+        let input = project_dir.join("main.maac");
+        fs::write(&input, &source).unwrap();
+        let project = DiskMediaProject::load(&input, &project_dir).unwrap();
+
+        let document = crate::editing::SourceDocument::parse(source).unwrap();
+        let transaction = crate::editing::Transaction::new(
+            document.revision().to_owned(),
+            vec![crate::editing::Operation::Set {
+                object: vec!["p".into()],
+                field: vec!["tail".into()],
+                value: serde_json::json!({"t":"quantity","n":"1","d":"1","u":"s"}),
+                expect: Some(serde_json::json!({"t":"quantity","n":"0","d":"1","u":"s"})),
+                expect_absent: false,
+            }],
+        )
+        .unwrap();
+        let patch = directory.path().join("patch.json");
+        fs::write(&patch, transaction.to_json().unwrap()).unwrap();
+
+        let archived = directory.path().join("archived-project");
+        fs::rename(&project_dir, &archived).unwrap();
+        fs::create_dir(&project_dir).unwrap();
+        fs::write(project_dir.join("main.maac"), b"replacement project").unwrap();
+        fs::write(project_dir.join("sample.pcm"), [0u8; 8]).unwrap();
+
+        let output = directory.path().join("edited.maac");
+        let (result, _) = apply_disk_media_source_patch(
+            &input,
+            &patch,
+            &output,
+            false,
+            &project,
+            PlanLimits::default(),
+        )
+        .unwrap();
+        let edited = fs::read_to_string(output).unwrap();
+        let edited_document = crate::editing::SourceDocument::parse(edited).unwrap();
+        assert_eq!(
+            edited_document.authored().tree()["objects"]["p"]["fields"]["tail"],
+            serde_json::json!({"t":"quantity","n":"1","d":"1","u":"s"})
+        );
+        let edited_revision = edited_document.revision().to_owned();
+        assert_eq!(result.digest.as_deref(), Some(edited_revision.as_str()));
     }
 }

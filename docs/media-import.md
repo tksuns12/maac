@@ -95,6 +95,11 @@ The default execution-work profile remains in force. Select `--profile song`
 on import and retained verification for longer projects, and use the same
 profile on later `check` or `build` commands when their work exceeds the
 default allowance. The profile changes work allowance only, not byte limits.
+Use `patch --disk-media [--profile song]` for source-preserving Protocol 2
+changes to the imported clip's source frames, placement, fades, or other
+supported fields. These edits preserve the immutable import provenance and
+use the current captured dependency closure; see the
+[editing contract](editing-kernel.md#source-edits-with-disk-backed-media).
 For retained imports, `verify-import --disk-media` re-decodes and compares the
 original, PCM, and current project dependency closure using bounded private
 snapshots. An ordinary `verify-import` remains limited to the inline profile.
