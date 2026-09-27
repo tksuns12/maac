@@ -13,9 +13,9 @@ complete professional-production product.
 | --- | --- | --- |
 | Playable foundation | Complete within the bounded implementation plan | Keep the automated foundation and release gates green. |
 | Language/conformance L1–L5 | Addressed for the bounded slices | Do not expand this into a full-profile or cross-platform identity claim. |
-| Phase 1: end-to-end inventory | Partial | Publish one lifecycle inventory covering media, recording, latency, crops, takes, routing, delivery, archive, and reopen. |
+| Phase 1: end-to-end inventory | Complete as a bounded reference inventory | Keep the [lifecycle inventory](end-to-end-lifecycle-inventory.md) aligned with implemented slices and open gates. |
 | Phase 2: reset-correct excerpts | Complete for bounded final-WAV ranges | No claim of realtime seeking, speed-up, or arbitrary DSP-state restoration. |
-| Phase 3: media/import/packaging | In progress; bounded WAV crop import, opt-in retained-original verification, native PCM disk media, archive checkpoints, multiple selected retained WAV imports, explicit whole-output and independent native-effect-group freeze reuse, bounded independent-branch gain/pan edit reuse, journaled local-source transactions, and opt-in verified native processor context implemented | Add external processor dependency/state packaging, overlapping frozen graph branches, broader selective invalidation, and remaining media and reopen coverage. |
+| Phase 3: media/import/packaging | In progress; bounded WAV crop import, opt-in retained-original verification, native PCM disk media, archive checkpoints, multiple selected retained WAV imports, explicit whole-output and independent native-effect-group freeze reuse, opt-in partial reuse of eligible group members, bounded independent-branch gain/pan edit reuse, journaled local-source transactions, and opt-in verified native processor context implemented | Add external processor dependency/state packaging, overlapping frozen graph branches, broader selective invalidation, and remaining media and reopen coverage. |
 | Phase 4: capture/playback/comping | Partial foundations only | Add recording, takes, comp selection, playback, and revision workflows. |
 | Phase 5: open processors and hosting | Partial foundations only | Generic rendering and executable native external hosting remain deferred. |
 | Phase 6: mix/master/release/reopen | Not complete | Pass the representative production, invalidation, clean-reopen, listening, and producer gates. |
@@ -51,8 +51,10 @@ Version 8 captures one internal native effect output as exact binary64 samples
 and can substitute it during a subsequent render after input validation. New
 node freezes permit bounded static gain/pan edits wherever the control cannot
 feed the frozen effect, including independent mix branches. Version 9 groups
-independent native effect outputs and reuses them together only while every
-member remains eligible. Older node freezes keep their recorded eligibility
+independent native effect outputs and reuses them together while every member
+remains eligible by default. An opt-in render can reuse the eligible members
+of a still-valid independent group while executing stale effects from the
+current source. Older node freezes keep their recorded eligibility
 rules. Version 10 journals independently valid edits to several direct local
 leaf libraries and an optional entry edit in one checkpoint, with one generated
 pin update transaction. Version 11 journals selected shared or transitively
@@ -63,7 +65,7 @@ context. External processor dependencies and non-null state, overlapping
 frozen branches, and broader selective invalidation remain open, so the editable
 archive milestone remains incomplete.
 
-The [capability matrix](capabilities.md), [Core Audio audit](core-audio-conformance-audit.md),
+The [lifecycle inventory](end-to-end-lifecycle-inventory.md), [capability matrix](capabilities.md), [Core Audio audit](core-audio-conformance-audit.md),
 and [current verification record](verification.md) provide supporting evidence;
 this table owns the roadmap status and sequencing.
 

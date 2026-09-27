@@ -68,6 +68,7 @@ fn two_independent_effects_relocate_and_reuse_the_edited_mix() {
     let restored = temp.path().join("restored");
     let normal = temp.path().join("normal.wav");
     let reused = temp.path().join("reused.wav");
+    let opted = temp.path().join("opted.wav");
     project(&source);
     let created = success(invoke(&[
         Path::new("--json"),
@@ -159,6 +160,21 @@ fn two_independent_effects_relocate_and_reuse_the_edited_mix() {
         rendered["output_digest"],
         sha256_digest(&fs::read(&reused).unwrap())
     );
+    let opted_result = success(invoke(&[
+        Path::new("--json"),
+        Path::new("archive"),
+        Path::new("freeze-render"),
+        &relocated,
+        Path::new("--source"),
+        &restored,
+        Path::new("--reuse-current-nodes"),
+        Path::new("-o"),
+        &opted,
+    ]));
+    assert_eq!(opted_result["eligibility"], "current");
+    assert_eq!(opted_result["nodes"][0]["reused"], true);
+    assert_eq!(opted_result["nodes"][1]["reused"], true);
+    assert_eq!(fs::read(&opted).unwrap(), fs::read(&reused).unwrap());
 }
 
 #[test]
@@ -166,7 +182,10 @@ fn one_stale_member_prevents_group_publication() {
     let temp = tempdir().unwrap();
     let source = temp.path().join("source");
     let archive = temp.path().join("archive");
+    let relocated = temp.path().join("relocated");
     let output = temp.path().join("stale.wav");
+    let normal = temp.path().join("normal.wav");
+    let partial = temp.path().join("partial.wav");
     project(&source);
     success(invoke(&[
         Path::new("--json"),
@@ -177,9 +196,11 @@ fn one_stale_member_prevents_group_publication() {
         Path::new("room"),
         Path::new("--freeze-node"),
         Path::new("eq"),
+        Path::new("--processor-context"),
         Path::new("--output-dir"),
         &archive,
     ]));
+    fs::rename(&archive, &relocated).unwrap();
     fs::write(
         source.join("main.maac"),
         SOURCE.replace("gain=0.8", "gain=0.6"),
@@ -189,7 +210,7 @@ fn one_stale_member_prevents_group_publication() {
         Path::new("--json"),
         Path::new("archive"),
         Path::new("freeze-check"),
-        &archive,
+        &relocated,
         Path::new("--source"),
         &source,
     ]));
@@ -198,7 +219,7 @@ fn one_stale_member_prevents_group_publication() {
         Path::new("--json"),
         Path::new("archive"),
         Path::new("freeze-render"),
-        &archive,
+        &relocated,
         Path::new("--source"),
         &source,
         Path::new("-o"),
@@ -206,6 +227,91 @@ fn one_stale_member_prevents_group_publication() {
     ]));
     assert_eq!(rendered["code"], "E_FREEZE_STALE");
     assert!(!output.exists());
+    success(invoke(&[
+        Path::new("--json"),
+        Path::new("build"),
+        &source,
+        Path::new("-o"),
+        &normal,
+    ]));
+    let partial_result = success(invoke(&[
+        Path::new("--json"),
+        Path::new("archive"),
+        Path::new("freeze-render"),
+        &relocated,
+        Path::new("--source"),
+        &source,
+        Path::new("--reuse-current-nodes"),
+        Path::new("-o"),
+        &partial,
+    ]));
+    assert_eq!(partial_result["eligibility"], "partial");
+    assert_eq!(partial_result["nodes"][0]["boundary"]["node"], "eq");
+    assert_eq!(partial_result["nodes"][0]["reused"], true);
+    assert_eq!(partial_result["nodes"][1]["boundary"]["node"], "room");
+    assert_eq!(partial_result["nodes"][1]["reused"], false);
+    assert_eq!(fs::read(&partial).unwrap(), fs::read(&normal).unwrap());
+
+    fs::write(
+        source.join("main.maac"),
+        SOURCE
+            .replace("gain=0.8", "gain=0.6")
+            .replace("pan=0.2", "pan=0.4"),
+    )
+    .unwrap();
+    let none = temp.path().join("none.wav");
+    let rejected_partial = rejected(invoke(&[
+        Path::new("--json"),
+        Path::new("archive"),
+        Path::new("freeze-render"),
+        &relocated,
+        Path::new("--source"),
+        &source,
+        Path::new("--reuse-current-nodes"),
+        Path::new("-o"),
+        &none,
+    ]));
+    assert_eq!(rejected_partial["code"], "E_FREEZE_STALE");
+    assert!(!none.exists());
+
+    fs::write(
+        source.join("main.maac"),
+        SOURCE.replace("gain=0.8", "gain=0.6"),
+    )
+    .unwrap();
+
+    let manifest: Value =
+        serde_json::from_slice(&fs::read(relocated.join("maac-archive.json")).unwrap()).unwrap();
+    let stale_digest = manifest["checkpoints"][0]["node_freezes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|digest| {
+            let digest = digest.as_str()?;
+            let leaf = relocated.join("freezes").join(&digest[7..]);
+            let metadata: Value =
+                serde_json::from_slice(&fs::read(leaf.join("maac-node-freeze.json")).ok()?).ok()?;
+            (metadata["boundary"]["node"] == "room").then_some(leaf)
+        })
+        .unwrap();
+    let payload = stale_digest.join("output.f64le");
+    let mut bytes = fs::read(&payload).unwrap();
+    *bytes.last_mut().unwrap() ^= 1;
+    fs::write(payload, bytes).unwrap();
+    let corrupt_output = temp.path().join("corrupt.wav");
+    let corrupt = rejected(invoke(&[
+        Path::new("--json"),
+        Path::new("archive"),
+        Path::new("freeze-render"),
+        &relocated,
+        Path::new("--source"),
+        &source,
+        Path::new("--reuse-current-nodes"),
+        Path::new("-o"),
+        &corrupt_output,
+    ]));
+    assert_eq!(corrupt["code"], "E_HASH");
+    assert!(!corrupt_output.exists());
 }
 
 #[test]
@@ -248,6 +354,20 @@ fn removed_effect_reports_a_stale_group() {
     assert_eq!(checked["code"], "E_FREEZE_STALE");
     assert_eq!(checked["nodes"].as_array().unwrap().len(), 2);
     assert_eq!(checked["nodes"][0]["eligibility"], "stale");
+    let output = temp.path().join("invalid.wav");
+    let rejected_partial = rejected(invoke(&[
+        Path::new("--json"),
+        Path::new("archive"),
+        Path::new("freeze-render"),
+        &archive,
+        Path::new("--source"),
+        &source,
+        Path::new("--reuse-current-nodes"),
+        Path::new("-o"),
+        &output,
+    ]));
+    assert_eq!(rejected_partial["code"], "E_FREEZE_STALE");
+    assert!(!output.exists());
 }
 
 #[test]

@@ -819,11 +819,32 @@ impl NodeFreezeGroup {
     pub(crate) fn render_replacements<F>(
         &self,
         candidate: &ArchiveSnapshot,
+        callback: F,
+    ) -> Result<(), Diagnostics>
+    where
+        F: FnMut(&[f64]) -> dsp::Result<()>,
+    {
+        self.render_selected_replacements(candidate, &vec![true; self.leaves.len()], callback)
+    }
+
+    /// Replace a canonical subset while verifying the full group still has a
+    /// valid independent shape. Selected streams and final output remain private
+    /// until every hash and frame count has been checked.
+    pub(crate) fn render_selected_replacements<F>(
+        &self,
+        candidate: &ArchiveSnapshot,
+        selected: &[bool],
         mut callback: F,
     ) -> Result<(), Diagnostics>
     where
         F: FnMut(&[f64]) -> dsp::Result<()>,
     {
+        if selected.len() != self.leaves.len() || !selected.iter().any(|selected| *selected) {
+            return Err(fail(
+                DiagnosticCode::RenderState,
+                "node freeze group requires at least one selected leaf",
+            ));
+        }
         if self.leaves[0].engine_digest() != engine_digest()? {
             return Err(fail(
                 DiagnosticCode::RenderState,
@@ -835,7 +856,13 @@ impl NodeFreezeGroup {
         let ordered = plan
             .validate_node_freeze_group(&boundaries)
             .map_err(render_error)?;
-        for ((boundary, channels), leaf) in ordered.iter().zip(&self.leaves) {
+        let mut leaves = Vec::new();
+        for ((boundary, channels), (leaf, selected)) in
+            ordered.iter().zip(self.leaves.iter().zip(selected))
+        {
+            if !selected {
+                continue;
+            }
             if boundary != &leaf.boundary()
                 || *channels != usize::from(leaf.manifest.channels)
                 || !leaf.matches_plan(candidate, &plan)?
@@ -845,9 +872,10 @@ impl NodeFreezeGroup {
                     "node freeze group differs from candidate plan",
                 ));
             }
+            leaves.push(leaf);
         }
-        let mut sources = self
-            .leaves
+        let boundaries: Vec<_> = leaves.iter().map(|leaf| leaf.boundary()).collect();
+        let mut sources = leaves
             .iter()
             .map(|leaf| {
                 leaf.output.lock().map_err(|_| {
@@ -858,7 +886,7 @@ impl NodeFreezeGroup {
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
-        for (leaf, source) in self.leaves.iter().zip(&mut sources) {
+        for (leaf, source) in leaves.iter().zip(&mut sources) {
             source.seek(SeekFrom::Start(0)).map_err(|e| {
                 fail(
                     DiagnosticCode::Reference,
@@ -883,8 +911,8 @@ impl NodeFreezeGroup {
             .iter_mut()
             .map(|source| BufReader::new(&mut **source))
             .collect();
-        let mut hashes = vec![Sha256::new(); self.leaves.len()];
-        let mut next_frames = vec![0u64; self.leaves.len()];
+        let mut hashes = vec![Sha256::new(); leaves.len()];
+        let mut next_frames = vec![0u64; leaves.len()];
         let output_bytes = output_bytes(
             plan.output().total_frames,
             usize::from(plan.output().channels),
@@ -897,59 +925,66 @@ impl NodeFreezeGroup {
         })?;
         let mut rendered_frames = 0u64;
         let mut writer = BufWriter::new(final_output);
-        plan.render_with_node_replacements(
-            &boundaries,
-            |index, frame, samples| {
-                let leaf = &self.leaves[index];
-                if frame != next_frames[index]
-                    || frame >= leaf.frames()
-                    || samples.len() != usize::from(leaf.manifest.channels)
-                {
-                    return Err(RenderError::Callback(
-                        "node freeze replacement frame shape differs".into(),
+        let mut replace = |index: usize, frame: u64, samples: &mut [f64]| {
+            let leaf = leaves[index];
+            if frame != next_frames[index]
+                || frame >= leaf.frames()
+                || samples.len() != usize::from(leaf.manifest.channels)
+            {
+                return Err(RenderError::Callback(
+                    "node freeze replacement frame shape differs".into(),
+                ));
+            }
+            for sample in samples {
+                let mut bytes = [0u8; 8];
+                readers[index].read_exact(&mut bytes).map_err(|e| {
+                    RenderError::Callback(format!("cannot read node freeze output: {e}"))
+                })?;
+                let value = f64::from_le_bytes(bytes);
+                if !value.is_finite() {
+                    return Err(RenderError::Nonfinite(
+                        "node freeze contains nonfinite PCM".into(),
                     ));
                 }
-                for sample in samples {
-                    let mut bytes = [0u8; 8];
-                    readers[index].read_exact(&mut bytes).map_err(|e| {
-                        RenderError::Callback(format!("cannot read node freeze output: {e}"))
-                    })?;
-                    let value = f64::from_le_bytes(bytes);
-                    if !value.is_finite() {
-                        return Err(RenderError::Nonfinite(
-                            "node freeze contains nonfinite PCM".into(),
-                        ));
-                    }
-                    hashes[index].update(bytes);
-                    *sample = value;
-                }
-                next_frames[index] += 1;
-                Ok(())
-            },
-            |samples| {
-                if samples.len() != usize::from(plan.output().channels)
-                    || rendered_frames >= plan.output().total_frames
-                {
-                    return Err(RenderError::Callback(
-                        "node freeze final frame shape differs from plan".into(),
+                hashes[index].update(bytes);
+                *sample = value;
+            }
+            next_frames[index] += 1;
+            Ok(())
+        };
+        let mut spool = |samples: &[f64]| {
+            if samples.len() != usize::from(plan.output().channels)
+                || rendered_frames >= plan.output().total_frames
+            {
+                return Err(RenderError::Callback(
+                    "node freeze final frame shape differs from plan".into(),
+                ));
+            }
+            for &sample in samples {
+                if !sample.is_finite() {
+                    return Err(RenderError::Nonfinite(
+                        "node freeze render contains nonfinite PCM".into(),
                     ));
                 }
-                for &sample in samples {
-                    if !sample.is_finite() {
-                        return Err(RenderError::Nonfinite(
-                            "node freeze render contains nonfinite PCM".into(),
-                        ));
-                    }
-                    writer.write_all(&sample.to_le_bytes()).map_err(|e| {
-                        RenderError::Callback(format!("cannot write node freeze render: {e}"))
-                    })?;
-                }
-                rendered_frames += 1;
-                Ok(())
-            },
-        )
-        .map_err(render_error)?;
-        for (index, leaf) in self.leaves.iter().enumerate() {
+                writer.write_all(&sample.to_le_bytes()).map_err(|e| {
+                    RenderError::Callback(format!("cannot write node freeze render: {e}"))
+                })?;
+            }
+            rendered_frames += 1;
+            Ok(())
+        };
+        if boundaries.len() == 1 {
+            plan.render_with_node_replacement(
+                &boundaries[0],
+                |frame, samples| replace(0, frame, samples),
+                &mut spool,
+            )
+            .map_err(render_error)?;
+        } else {
+            plan.render_with_node_replacements(&boundaries, &mut replace, &mut spool)
+                .map_err(render_error)?;
+        }
+        for (index, leaf) in leaves.iter().enumerate() {
             if next_frames[index] != leaf.frames()
                 || format!("sha256:{:x}", hashes[index].clone().finalize()) != leaf.output_digest()
             {
@@ -1541,6 +1576,18 @@ place notes { pattern=&phrase; track=&t; at=0q; }
             )
     }
 
+    fn three_independent_effects_source() -> String {
+        independent_effects_source()
+            .replace(
+                "node bus {",
+                "node thirdpan { type=\"core.pan/1\"; params={pan=0.2;}; }\nnode thirdfx { type=\"fx.reverb/1\"; config={channels=2;}; params={decay=1/4s;mix=0.3;}; }\nnode bus {",
+            )
+            .replace(
+                "connect side_bus { from=&sidepan:out; to=&bus:in; }",
+                "connect side_bus { from=&sidepan:out; to=&bus:in; }\nconnect third_input { from=&tone:out; to=&thirdpan:in; }\nconnect third_room { from=&thirdpan:out; to=&thirdfx:in; }\nconnect third_bus { from=&thirdfx:out; to=&bus:in; }",
+            )
+    }
+
     fn as_v2(
         mut freeze: NodeFreezeSnapshot,
         snapshot: &ArchiveSnapshot,
@@ -1645,6 +1692,97 @@ place notes { pattern=&phrase; track=&t; at=0q; }
         let mut replaced = Vec::new();
         restored
             .render_replacements(&snapshot, |frame| {
+                replaced.extend(frame.iter().map(|sample| sample.to_bits()));
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(replaced, normal);
+    }
+
+    #[test]
+    fn group_partial_replacement_uses_one_verified_leaf_and_spools_output() {
+        let (project, snapshot, room) = project_with_source(&independent_effects_source());
+        let side = PortRef::new("sideroom", "out").unwrap();
+        let group = NodeFreezeGroup::capture(&snapshot, &[room, side]).unwrap();
+        let source = fs::read_to_string(project.path().join("main.maac")).unwrap();
+        fs::write(
+            project.path().join("main.maac"),
+            source.replace("gain=1/3;", "gain=1/4;"),
+        )
+        .unwrap();
+        let candidate =
+            ArchiveSnapshot::capture(Path::new("main.maac"), project.path(), "default").unwrap();
+        assert_eq!(
+            group.candidate_eligibility(&candidate).unwrap(),
+            (true, vec![true, false])
+        );
+        let (_staged, plan) = staged_plan(&candidate).unwrap();
+        let mut normal = Vec::new();
+        plan.render(|frame| {
+            normal.extend(frame.iter().map(|sample| sample.to_bits()));
+            Ok(())
+        })
+        .unwrap();
+        let mut replaced = Vec::new();
+        group
+            .render_selected_replacements(&candidate, &[true, false], |frame| {
+                replaced.extend(frame.iter().map(|sample| sample.to_bits()));
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(replaced, normal);
+
+        let mut output = group.leaves()[0].output.lock().unwrap();
+        output.seek(SeekFrom::Start(0)).unwrap();
+        output.write_all(&0.25f64.to_le_bytes()).unwrap();
+        drop(output);
+        let mut called = false;
+        assert!(group
+            .render_selected_replacements(&candidate, &[true, false], |_| {
+                called = true;
+                Ok(())
+            })
+            .is_err());
+        assert!(!called);
+    }
+
+    #[test]
+    fn group_partial_replacement_uses_mixed_width_canonical_subset() {
+        let (project, snapshot, room) = project_with_source(&three_independent_effects_source());
+        let side = PortRef::new("sideroom", "out").unwrap();
+        let third = PortRef::new("thirdfx", "out").unwrap();
+        let group = NodeFreezeGroup::capture(&snapshot, &[third, side, room]).unwrap();
+        assert_eq!(
+            group
+                .leaves()
+                .iter()
+                .map(|leaf| leaf.manifest.channels)
+                .collect::<Vec<_>>(),
+            vec![1, 1, 2]
+        );
+        let source = fs::read_to_string(project.path().join("main.maac")).unwrap();
+        fs::write(
+            project.path().join("main.maac"),
+            source.replace("gain=1/3;", "gain=1/4;"),
+        )
+        .unwrap();
+        let candidate =
+            ArchiveSnapshot::capture(Path::new("main.maac"), project.path(), "default").unwrap();
+        let selected = [true, false, true];
+        assert_eq!(
+            group.candidate_eligibility(&candidate).unwrap(),
+            (true, selected.to_vec())
+        );
+        let (_staged, plan) = staged_plan(&candidate).unwrap();
+        let mut normal = Vec::new();
+        plan.render(|frame| {
+            normal.extend(frame.iter().map(|sample| sample.to_bits()));
+            Ok(())
+        })
+        .unwrap();
+        let mut replaced = Vec::new();
+        group
+            .render_selected_replacements(&candidate, &selected, |frame| {
                 replaced.extend(frame.iter().map(|sample| sample.to_bits()));
                 Ok(())
             })

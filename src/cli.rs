@@ -13,7 +13,7 @@ use clap::{
 use serde::Serialize;
 
 use crate::archive::ArchiveSnapshot;
-use crate::archive_history::{ArchiveHistory, FreezeCheckStatus};
+use crate::archive_history::{ArchiveHistory, FreezeCheckStatus, NodeGroupReuseStatus};
 use crate::bundle::sha256_digest;
 use crate::bundle::SourceBundle;
 use crate::bundle_fs;
@@ -311,6 +311,9 @@ pub enum ArchiveCommand {
         revision: Option<String>,
         #[arg(long)]
         expect_hash: Option<String>,
+        /// Reuse eligible members of an independent node freeze group.
+        #[arg(long)]
+        reuse_current_nodes: bool,
     },
 }
 
@@ -402,6 +405,8 @@ pub struct FreezeNodeReport {
     pub cache_digest: String,
     pub eligibility: &'static str,
     pub replay: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reused: Option<bool>,
 }
 
 /// CLI result for artifact-aware callers. Legacy fields retain their existing wire shape.
@@ -1781,6 +1786,7 @@ fn execute_archive(
                                     Some(true) => "matched",
                                     Some(false) => "mismatch",
                                 },
+                                reused: None,
                             })
                             .collect(),
                     ),
@@ -1871,6 +1877,7 @@ fn execute_archive(
             project_root,
             revision,
             expect_hash,
+            reuse_current_nodes,
         } => {
             ensure_output_outside_archive(output, archive)?;
             if export::path_exists(output).map_err(CliError::from_export)? {
@@ -1883,6 +1890,11 @@ fn execute_archive(
             verify_expected_archive_hash(expect_hash.as_deref(), &history.digest())?;
             let (_, root, absolute_entry) =
                 resolve_archive_source(source, project_root.as_deref())?;
+            if *reuse_current_nodes {
+                history
+                    .select(revision.as_deref())
+                    .map_err(|error| CliError::from_diagnostics(&error))?;
+            }
             if let Ok(info) = history.node_group_info(revision.as_deref()) {
                 let mut activation_error = None;
                 let mut activation_result = None;
@@ -1891,12 +1903,21 @@ fn execute_archive(
                     info.channels,
                     info.frames,
                     output,
-                    |callback| match history.render_from_node_group(
-                        &absolute_entry,
-                        &root,
-                        revision.as_deref(),
-                        callback,
-                    ) {
+                    |callback| match if *reuse_current_nodes {
+                        history.render_from_node_group_partial(
+                            &absolute_entry,
+                            &root,
+                            revision.as_deref(),
+                            callback,
+                        )
+                    } else {
+                        history.render_from_node_group(
+                            &absolute_entry,
+                            &root,
+                            revision.as_deref(),
+                            callback,
+                        )
+                    } {
                         Ok(result) => {
                             activation_result = Some(result);
                             Ok(())
@@ -1921,9 +1942,7 @@ fn execute_archive(
                             .expect("node freeze group failure retains diagnostics");
                         let mut error = CliError::from_diagnostics(&diagnostics);
                         if error.code == "E_RENDER_STATE"
-                            && error
-                                .message
-                                .starts_with("stored node freeze group is stale")
+                            && error.message.starts_with("stored node freeze group")
                         {
                             error.code = "E_FREEZE_STALE".into();
                         }
@@ -1946,30 +1965,41 @@ fn execute_archive(
                 result.frames = Some(rendered.frames);
                 result.freeze = Some(Box::new(FreezeCheckReport {
                     integrity: "verified",
-                    eligibility: "current",
+                    eligibility: match rendered.reuse_status {
+                        NodeGroupReuseStatus::Current => "current",
+                        NodeGroupReuseStatus::Partial => "partial",
+                    },
                     replay: "not_requested",
                     revision: rendered.revision,
                     source_digest: rendered.source_digest,
                     frozen_source_digest: rendered.frozen_source_digest,
                     output_digest: Some(final_digest),
-                    reused: Some(true),
+                    reused: Some(rendered.reused.iter().any(|reused| *reused)),
                     boundary: None,
                     cache_digest: None,
                     nodes: Some(
                         rendered
                             .leaves
                             .into_iter()
-                            .map(|leaf| FreezeNodeReport {
+                            .zip(rendered.reused)
+                            .map(|(leaf, reused)| FreezeNodeReport {
                                 boundary: leaf.boundary,
                                 freeze_digest: leaf.freeze_digest,
                                 cache_digest: leaf.output_digest,
-                                eligibility: "current",
+                                eligibility: if leaf.eligible { "current" } else { "stale" },
                                 replay: "not_requested",
+                                reused: (*reuse_current_nodes).then_some(reused),
                             })
                             .collect(),
                     ),
                 }));
                 return Ok(result);
+            }
+            if *reuse_current_nodes {
+                return Err(CliError::new(
+                    "E_CAPABILITY",
+                    "--reuse-current-nodes requires an independent node freeze group",
+                ));
             }
             let node_freeze = history.node_freeze_info(revision.as_deref()).ok();
             let (rendered, output_digest, cache_digest, boundary) = if let Some(info) = node_freeze

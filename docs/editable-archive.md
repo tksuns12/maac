@@ -32,7 +32,7 @@ maac archive verify ARCHIVE [--expect-hash SHA256]
 maac archive unpack ARCHIVE --output-dir NEW [--expect-hash SHA256] [--revision SHA256]
 maac archive freeze-check ARCHIVE --source SOURCE [--project-root ROOT]
     [--revision SHA256] [--expect-hash SHA256] [--replay]
-maac archive freeze-render ARCHIVE --source SOURCE -o NEW.wav
+maac archive freeze-render ARCHIVE --source SOURCE -o NEW.wav [--reuse-current-nodes]
     [--project-root ROOT] [--revision SHA256] [--expect-hash SHA256]
 ```
 
@@ -225,7 +225,14 @@ version 9 checkpoint. The selected effects must have no audio, sidechain,
 modulation, or delayed-feedback path between them. Capture, replay, and reuse
 process the group in one graph execution. `freeze-check` reports each member's
 boundary, cache identity, and eligibility; all members must be current before
-`freeze-render` publishes the final WAV. A stale member prevents all reuse.
+ordinary `freeze-render` publishes the final WAV. With
+`--reuse-current-nodes`, a group with its original independent boundaries and
+at least one eligible member can instead reuse just those members, run stale
+effects from the current source, and publish the complete current mix. The
+result reports `current` or `partial` eligibility and each member's `reused`
+value. The option is unavailable for whole-output and singleton freezes. A
+missing or rewired boundary, no eligible member, changed engine, or failed
+archive integrity check prevents publication.
 Selection order does not change the archive identity. Singleton checkpoints
 retain their original format, identifiers, and CLI result fields.
 

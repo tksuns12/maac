@@ -486,6 +486,40 @@ tests passed, and that fixture returned `E_RESOURCE_LIMIT` in about two
 seconds. The full gate's pre-fix timing is stated above so it is not mistaken
 for a second full run after the guard changed.
 
+## Phase 1 inventory and partial group freeze reuse (2026-09-27)
+
+The [lifecycle inventory](end-to-end-lifecycle-inventory.md) maps the current
+bounded implementation against media, recording, latency, crops, takes,
+automation, routing, delivery, archive, and clean reopen gates. Its 54 local
+links and heading fragments resolved in a documentation-only check.
+
+`archive freeze-render --reuse-current-nodes` can explicitly reuse the still
+eligible members of an independent native-effect freeze group while executing
+stale members from the current source. The default group render remains
+all-or-nothing. The feature changes no archive format or older freeze
+identity.
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Node-freeze core | `cargo test --lib node_freeze --locked --offline --quiet` | Passed: 20 tests |
+| Focused archive CLI | `cargo test --test archive_multi_node_freeze_cli --test archive_node_freeze_cli --test archive_processor_context_cli --locked --offline --quiet` | Passed: 4, 5, and 1 tests |
+| Full Rust gate | `cargo test --all-targets --locked --offline --quiet` | Passed: 321 active library tests, 3 existing ignored, and all integration targets |
+| Type check and strict Clippy | `cargo check --all-targets --locked --offline`; `cargo clippy --all-targets --locked --offline -- -D warnings` | Passed |
+| Doctest | `cargo test --doc --locked --offline --quiet` | Passed: 1 test |
+| Release build | `cargo build --release --locked --offline` | Passed |
+| Formatting and whitespace | `cargo fmt --all -- --check`; `git diff --check` | Passed |
+| Independent review | Read-only Astra review | Diagnostic issue fixed; no remaining actionable findings |
+
+The tests cover one eligible member after relocation with a v12 context,
+two eligible members in a three-effect mono/stereo group, exact final PCM
+against an ordinary render, all-current opt-in output, zero eligible members,
+removed boundaries, a corrupted unused cache, and the singleton option
+rejection. All failure cases preserve the absent destination. A review-found
+diagnostic issue was fixed so private-spool write failures retain
+`E_RENDER_STATE` rather than being reported as stale. A controlled
+`RLIMIT_FSIZE=140000` reproduction confirmed this for normal and opt-in
+rendering; neither published a WAV.
+
 ## Historical naming cleanup
 
 The current tree uses MaaC consistently in the specification, grammar, schema,

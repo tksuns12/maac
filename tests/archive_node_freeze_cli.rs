@@ -128,6 +128,20 @@ fn internal_reverb_freeze_relocates_and_preserves_final_wav() {
         rendered["output_digest"],
         sha256_digest(&fs::read(&reused).unwrap())
     );
+    let unsupported_output = temp.path().join("unsupported.wav");
+    let unsupported = rejected(invoke(&[
+        Path::new("--json"),
+        Path::new("archive"),
+        Path::new("freeze-render"),
+        &moved,
+        Path::new("--source"),
+        &restored,
+        Path::new("--reuse-current-nodes"),
+        Path::new("-o"),
+        &unsupported_output,
+    ]));
+    assert_eq!(unsupported["code"], "E_CAPABILITY");
+    assert!(!unsupported_output.exists());
 
     fs::write(
         restored.join("main.maac"),

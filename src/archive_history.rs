@@ -170,6 +170,7 @@ pub(crate) struct NodeGroupLeafCheck {
 
 pub(crate) struct NodeGroupFreezeCheck {
     pub(crate) status: FreezeCheckStatus,
+    group_shape_valid: bool,
     pub(crate) revision: String,
     pub(crate) source_digest: String,
     pub(crate) frozen_source_digest: String,
@@ -183,12 +184,21 @@ pub(crate) struct NodeGroupFreezeInfo {
     pub(crate) leaves: Vec<NodeGroupLeafCheck>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum NodeGroupReuseStatus {
+    Current,
+    Partial,
+}
+
 pub(crate) struct NodeGroupRenderResult {
     pub(crate) revision: String,
     pub(crate) source_digest: String,
     pub(crate) frozen_source_digest: String,
     pub(crate) frames: u64,
     pub(crate) leaves: Vec<NodeGroupLeafCheck>,
+    pub(crate) reuse_status: NodeGroupReuseStatus,
+    /// Canonical leaf order, matching `leaves`.
+    pub(crate) reused: Vec<bool>,
 }
 
 pub(crate) struct ArchivePatchResult {
@@ -1570,6 +1580,7 @@ impl ArchiveHistory {
         };
         let check = NodeGroupFreezeCheck {
             status,
+            group_shape_valid,
             revision: record.id.clone(),
             source_digest,
             frozen_source_digest: record.snapshot.clone(),
@@ -1628,12 +1639,63 @@ impl ArchiveHistory {
             ));
         };
         group.render_replacements(&candidate, callback)?;
+        let reused = vec![true; check.leaves.len()];
         Ok(NodeGroupRenderResult {
             revision: check.revision,
             source_digest: check.source_digest,
             frozen_source_digest: check.frozen_source_digest,
             frames: group.info().frames,
             leaves: check.leaves,
+            reuse_status: NodeGroupReuseStatus::Current,
+            reused,
+        })
+    }
+
+    /// Opt in to reusing every still eligible leaf of a valid independent
+    /// group. Unselected effects execute normally in the candidate graph.
+    pub(crate) fn render_from_node_group_partial<F>(
+        &self,
+        entry: &Path,
+        root: &Path,
+        revision: Option<&str>,
+        callback: F,
+    ) -> Result<NodeGroupRenderResult, Diagnostics>
+    where
+        F: FnMut(&[f64]) -> dsp::Result<()>,
+    {
+        let (check, candidate) = self.checked_node_group_candidate(entry, root, revision, false)?;
+        if !check.group_shape_valid {
+            return Err(fail(
+                DiagnosticCode::RenderState,
+                "stored node freeze group has changed boundaries for this source",
+            ));
+        }
+        let reused: Vec<_> = check.leaves.iter().map(|leaf| leaf.eligible).collect();
+        if !reused.iter().any(|reused| *reused) {
+            return Err(fail(
+                DiagnosticCode::RenderState,
+                "stored node freeze group has no eligible leaves for this source",
+            ));
+        }
+        let (_, StoredFreeze::Group(group)) = self.selected_freeze(Some(&check.revision))? else {
+            return Err(fail(
+                DiagnosticCode::Reference,
+                "selected checkpoint has no node freeze group",
+            ));
+        };
+        group.render_selected_replacements(&candidate, &reused, callback)?;
+        Ok(NodeGroupRenderResult {
+            revision: check.revision,
+            source_digest: check.source_digest,
+            frozen_source_digest: check.frozen_source_digest,
+            frames: group.info().frames,
+            leaves: check.leaves,
+            reuse_status: if reused.iter().all(|reused| *reused) {
+                NodeGroupReuseStatus::Current
+            } else {
+                NodeGroupReuseStatus::Partial
+            },
+            reused,
         })
     }
 
@@ -3417,6 +3479,8 @@ place pb { pattern=&phrase; track=&tb; at=0q; }
             .unwrap();
         assert_eq!(render.frames, info.frames);
         assert_eq!(render.leaves.len(), 2);
+        assert_eq!(render.reuse_status, NodeGroupReuseStatus::Current);
+        assert_eq!(render.reused, vec![true, true]);
         let mut normal = Vec::new();
         crate::disk_media::DiskMediaProject::load(Path::new("main.maac"), &project)
             .unwrap()
@@ -3450,6 +3514,26 @@ place pb { pattern=&phrase; track=&tb; at=0q; }
         assert!(verified
             .render_from_node_group(Path::new("main.maac"), &project, None, |_| Ok(()))
             .is_err());
+        let mut partially_rendered = Vec::new();
+        let partial_render = verified
+            .render_from_node_group_partial(Path::new("main.maac"), &project, None, |frame| {
+                partially_rendered.extend(frame.iter().map(|sample| sample.to_bits()));
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(partial_render.reuse_status, NodeGroupReuseStatus::Partial);
+        assert_eq!(partial_render.reused, vec![false, true]);
+        let mut current_render = Vec::new();
+        crate::disk_media::DiskMediaProject::load(Path::new("main.maac"), &project)
+            .unwrap()
+            .build_with_limits(&crate::plan::PlanLimits::default())
+            .unwrap()
+            .render(|frame| {
+                current_render.extend(frame.iter().map(|sample| sample.to_bits()));
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(partially_rendered, current_render);
         assert!(verified.append(capture(&project)).unwrap());
         assert_eq!(verified.version(), NODE_GROUP_VERSION);
         let source = fs::read_to_string(project.join("main.maac")).unwrap();
