@@ -1,5 +1,6 @@
 use std::{
     fs,
+    io::Write,
     path::Path,
     process::{Command, Output},
 };
@@ -220,6 +221,217 @@ fn retained_import_crops_source_larger_than_native_asset_limit() {
     );
     assert_eq!(fs::metadata(project.join("media.pcm")).unwrap().len(), 400);
     success(verify(&project));
+}
+
+#[test]
+fn disk_media_import_reopens_large_retained_crop_after_relocation() {
+    let directory = tempdir().unwrap();
+    let input = directory.path().join("long.wav");
+    let ordinary = directory.path().join("ordinary");
+    let project = directory.path().join("disk project");
+    let moved = directory.path().join("moved project");
+    let frames = 530_000usize;
+    let data_bytes = frames * 2 * 2;
+    let mut wav_bytes = Vec::with_capacity(44 + data_bytes);
+    wav_bytes.extend_from_slice(b"RIFF");
+    wav_bytes.extend_from_slice(&(36u32 + data_bytes as u32).to_le_bytes());
+    wav_bytes.extend_from_slice(b"WAVEfmt ");
+    wav_bytes.extend_from_slice(&16u32.to_le_bytes());
+    wav_bytes.extend_from_slice(&1u16.to_le_bytes());
+    wav_bytes.extend_from_slice(&2u16.to_le_bytes());
+    wav_bytes.extend_from_slice(&48_000u32.to_le_bytes());
+    wav_bytes.extend_from_slice(&(48_000u32 * 4).to_le_bytes());
+    wav_bytes.extend_from_slice(&4u16.to_le_bytes());
+    wav_bytes.extend_from_slice(&16u16.to_le_bytes());
+    wav_bytes.extend_from_slice(b"data");
+    wav_bytes.extend_from_slice(&(data_bytes as u32).to_le_bytes());
+    wav_bytes.resize(44 + data_bytes, 0);
+    fs::write(&input, wav_bytes).unwrap();
+
+    let old = failed(invoke(&[
+        Path::new("--json"),
+        Path::new("import-wav"),
+        &input,
+        Path::new("--output-dir"),
+        &ordinary,
+    ]));
+    assert_eq!(old["code"], "E_RESOURCE_LIMIT");
+    assert!(!ordinary.exists());
+    let imported = success(invoke(&[
+        Path::new("--json"),
+        Path::new("import-wav"),
+        &input,
+        Path::new("--disk-media"),
+        Path::new("--retain-original"),
+        Path::new("--output-dir"),
+        &project,
+    ]));
+    assert_eq!(imported["frames"], frames as u64);
+    assert_eq!(manifest(&project)["version"], 2);
+    assert_eq!(
+        fs::metadata(project.join("media.pcm")).unwrap().len(),
+        (frames * 2 * 4) as u64
+    );
+    fs::remove_file(input).unwrap();
+    fs::rename(&project, &moved).unwrap();
+    success(invoke(&[
+        Path::new("--json"),
+        Path::new("verify-import"),
+        &moved,
+        Path::new("--disk-media"),
+    ]));
+    success(invoke(&[
+        Path::new("--json"),
+        Path::new("check"),
+        &moved,
+        Path::new("--disk-media"),
+    ]));
+    assert_eq!(failed(verify(&moved))["code"], "E_RESOURCE_LIMIT");
+
+    let pcm = moved.join("media.pcm");
+    let mut bytes = fs::read(&pcm).unwrap();
+    bytes[0] = 1;
+    fs::write(&pcm, bytes).unwrap();
+    assert_eq!(
+        failed(invoke(&[
+            Path::new("--json"),
+            Path::new("verify-import"),
+            &moved,
+            Path::new("--disk-media"),
+        ]))["code"],
+        "E_IMPORT_MISMATCH"
+    );
+}
+
+#[test]
+fn disk_media_import_matches_embedded_conversion_for_supported_wav_encodings() {
+    let directory = tempdir().unwrap();
+    for (name, bits, format) in [
+        ("pcm16", 16, SampleFormat::Int),
+        ("pcm24", 24, SampleFormat::Int),
+        ("pcm32", 32, SampleFormat::Int),
+        ("float32", 32, SampleFormat::Float),
+    ] {
+        let input = directory.path().join(format!("{name}.wav"));
+        let embedded = directory.path().join(format!("{name}-embedded"));
+        let disk = directory.path().join(format!("{name}-disk"));
+        let mut writer = WavWriter::create(
+            &input,
+            WavSpec {
+                channels: 1,
+                sample_rate: 48_000,
+                bits_per_sample: bits,
+                sample_format: format,
+            },
+        )
+        .unwrap();
+        match format {
+            SampleFormat::Int if bits == 16 => {
+                for sample in [i16::MIN, -1, 0, 1, i16::MAX] {
+                    writer.write_sample(sample).unwrap();
+                }
+            }
+            SampleFormat::Int => {
+                let scale = if bits == 24 { 256 } else { 1 };
+                for sample in [i32::MIN / scale, -1, 0, 1, i32::MAX / scale] {
+                    writer.write_sample(sample).unwrap();
+                }
+            }
+            SampleFormat::Float => {
+                for sample in [-0.0f32, f32::from_bits(1), 0.5, -1.0] {
+                    writer.write_sample(sample).unwrap();
+                }
+            }
+        }
+        writer.finalize().unwrap();
+        success(invoke(&[
+            Path::new("--json"),
+            Path::new("import-wav"),
+            &input,
+            Path::new("--output-dir"),
+            &embedded,
+        ]));
+        success(invoke(&[
+            Path::new("--json"),
+            Path::new("import-wav"),
+            &input,
+            Path::new("--disk-media"),
+            Path::new("--output-dir"),
+            &disk,
+        ]));
+        assert_eq!(
+            fs::read(embedded.join("media.pcm")).unwrap(),
+            fs::read(disk.join("media.pcm")).unwrap(),
+            "{name}"
+        );
+        assert_eq!(manifest(&embedded), manifest(&disk), "{name}");
+    }
+}
+
+#[test]
+fn disk_media_import_and_verify_accept_song_work_profile() {
+    let directory = tempdir().unwrap();
+    let input = directory.path().join("song.wav");
+    let refused = directory.path().join("refused");
+    let project = directory.path().join("song project");
+    let frames = 210u32 * 48_000;
+    let data_bytes = frames * 4;
+    let mut file = fs::File::create(&input).unwrap();
+    file.write_all(b"RIFF").unwrap();
+    file.write_all(&(36 + data_bytes).to_le_bytes()).unwrap();
+    file.write_all(b"WAVEfmt ").unwrap();
+    file.write_all(&16u32.to_le_bytes()).unwrap();
+    file.write_all(&1u16.to_le_bytes()).unwrap();
+    file.write_all(&2u16.to_le_bytes()).unwrap();
+    file.write_all(&48_000u32.to_le_bytes()).unwrap();
+    file.write_all(&(48_000u32 * 4).to_le_bytes()).unwrap();
+    file.write_all(&4u16.to_le_bytes()).unwrap();
+    file.write_all(&16u16.to_le_bytes()).unwrap();
+    file.write_all(b"data").unwrap();
+    file.write_all(&data_bytes.to_le_bytes()).unwrap();
+    file.set_len(44 + u64::from(data_bytes)).unwrap();
+    drop(file);
+
+    assert_eq!(
+        failed(invoke(&[
+            Path::new("--json"),
+            Path::new("import-wav"),
+            &input,
+            Path::new("--disk-media"),
+            Path::new("--output-dir"),
+            &refused,
+        ]))["code"],
+        "E_RESOURCE_LIMIT"
+    );
+    assert!(!refused.exists());
+    success(invoke(&[
+        Path::new("--json"),
+        Path::new("import-wav"),
+        &input,
+        Path::new("--disk-media"),
+        Path::new("--profile"),
+        Path::new("song"),
+        Path::new("--retain-original"),
+        Path::new("--output-dir"),
+        &project,
+    ]));
+    assert_eq!(
+        failed(invoke(&[
+            Path::new("--json"),
+            Path::new("verify-import"),
+            &project,
+            Path::new("--disk-media"),
+        ]))["code"],
+        "E_RESOURCE_LIMIT"
+    );
+    success(invoke(&[
+        Path::new("--json"),
+        Path::new("verify-import"),
+        &project,
+        Path::new("--disk-media"),
+        Path::new("--profile"),
+        Path::new("song"),
+    ]));
 }
 
 #[test]

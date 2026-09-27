@@ -60,6 +60,9 @@ already in the compiled composition closure. The archive checks the exact
 original WAV and declared crop against that PCM before capturing it. Up to 16
 directories can be selected per checkpoint. A selected directory's generated
 `main.maac` is retained only if the composition imports it as a source.
+Retained imports created with `import-wav --disk-media` use the same version 2
+import record; archive capture and verification compare their decoded PCM with
+bounded private files, including crops above the ordinary 4 MiB asset limit.
 These checkpoints use `maac.archive-snapshot/2` with sorted import records
 bound to their PCM members, and their histories use root version 6. Omitting
 the flag preserves the existing version 1 snapshot and root import behavior.

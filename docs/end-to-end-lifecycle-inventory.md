@@ -37,7 +37,7 @@ production readiness.
 | --- | --- | --- | --- |
 | Authoring and offline composition | supported | MaaC source can express finite note and hit patterns, explicit arrangements, tempo and meter, a bounded set of instruments and processors, and reset-state offline rendering. The implementation remains a subset of the specification. See [capabilities](capabilities.md), the [Core Audio audit](core-audio-conformance-audit.md), and [release readiness](release-readiness.md). | Expand only against separately accepted contracts; retain explicit unsupported-feature errors. |
 | Sample-kit input | supported | Core kits consume pinned raw float32 mono/stereo PCM at native rate for one-shot hits, with interpolation and natural tails. This is not a pitched sampled-instrument library. See [capabilities](capabilities.md), the [kit contract](core-kit.md), and [kit validation](core-kit-validation.md). | Add pinned sampled instruments, articulation maps, and larger open sound-library coverage under Phase 5. |
-| WAV import and source-crop import | importer-only | `maac import-wav` accepts bounded mono/stereo PCM16/24/32 or IEEE float32 RIFF WAV and can import a nonempty source-frame crop as native float32 PCM with provenance. Retaining the original WAV is opt-in. See [media import](media-import.md), [import implementation](../src/media_import.rs), and [CLI evidence](../tests/media_import_cli.rs). | Add the broader decoder, recording metadata, and streaming/resource behavior required for practical long media. |
+| WAV import and source-crop import | importer-only | `maac import-wav` accepts bounded mono/stereo PCM16/24/32 or IEEE float32 RIFF WAV and can import a nonempty source-frame crop as native float32 PCM with provenance. `--disk-media` permits a file-backed decoded crop up to 1 GiB under the disk-media profile; retaining and verifying the original WAV is opt-in. See [media import](media-import.md), [import implementation](../src/media_import.rs), and [CLI evidence](../tests/media_import_cli.rs). | Add broader decoders, recording metadata, and streaming or resource behavior beyond this bounded disk path. |
 | Recording from devices | missing | No device-capture, monitoring, dropout-recovery, or recorded-take path is exposed. The roadmap treats capture and playback as a later phase; the accepted CLI-first direction does not mean these tools already exist. See the [roadmap's capture phase](end-to-end-production-plan.md) and the [capability boundary](capabilities.md). | Define and implement rate, channels, capture origin, device latency, failure recovery, and durable recording provenance. |
 | Arranged audio crops and fades | supported | Rate-mode clips can use half-open source-frame slices, reverse/speed, gain, and linear or equal-power fades. Warp-rate clips add explicit musical source-frame anchors. See [audio clips](audio-clips.md), [warp-rate clips](warp-rate.md), and their [validation](audio-clips-validation.md). | Add source-addressed edit transactions and practical multi-lane editing; preserve explicit score/seconds semantics. |
 | Rendered excerpt crops | supported | `maac render` can write a reset-origin half-open WAV frame range. It still prepares and executes the complete plan through the selected end, so stateful history before the excerpt is preserved. This does not provide seek, realtime preview, source cropping, or shortened delivery. See [range export](render-range.md), [validation](render-range-validation.md), and [implementation](../src/export.rs). | Keep this gate bounded to final-WAV excerpts; implement any later seek path with explicit prehistory/state restoration. |
@@ -56,9 +56,10 @@ production readiness.
 ## Cross-cutting findings
 
 - Media is currently split across embedded raw PCM, imported WAV crops, and an
-  opt-in disk-media profile for hash-pinned native PCM. A small import crop
-  still snapshots and reads the entire WAV once; the disk-media path scans all
-  samples before rendering. Neither behavior is general-purpose streaming.
+  opt-in disk-media profile for hash-pinned native PCM. File-backed WAV import
+  permits larger selected crops, but a small crop still snapshots and reads the
+  entire WAV once; the disk-media path scans all samples before rendering.
+  Neither behavior is general-purpose streaming.
 - The only crop contracts currently evidenced are source-frame slices in
   imported/arranged audio and reset-correct final-WAV range export. Realtime
   seeking, speed-up preview, and arbitrary DSP-state restoration remain absent.

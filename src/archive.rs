@@ -18,7 +18,7 @@ use crate::bundle::{
 use crate::bundle_fs::ProjectRoot;
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Diagnostics};
 use crate::disk_media::{DiskAsset, DiskMediaProject, MAX_DISK_MEDIA_FILE_BYTES};
-use crate::media_import::{self, ImportedWav, RetainedImportPreflight};
+use crate::media_import::{self, DiskImportedWav, RetainedImportPreflight};
 use crate::plan::PlanLimits;
 
 pub(crate) const MANIFEST_PATH: &str = "maac-archive.json";
@@ -119,14 +119,14 @@ pub(crate) struct ArchiveSnapshot {
 #[derive(Clone)]
 struct RetainedPayload {
     import_json: Vec<u8>,
-    imported: ImportedWav,
+    imported: DiskImportedWav,
 }
 
 #[derive(Clone)]
 struct ImportPayload {
     directory: String,
     import_json: Vec<u8>,
-    imported: ImportedWav,
+    imported: DiskImportedWav,
 }
 
 /// Strict snapshot metadata checked before any checkpoint media is loaded.
@@ -1440,7 +1440,7 @@ fn capture_selected(
     let mut records = Vec::with_capacity(preflights.len());
     for (directory, preflight) in preflights {
         let imported = with_import_dir(root, directory, |child| {
-            media_import::verify_retained_import_snapshot_in_root(child, preflight)
+            media_import::verify_retained_import_snapshot_disk_in_root(child, preflight)
                 .map_err(import_failure)
         })?;
         let pcm_path = import_path(directory, "media.pcm");
@@ -1456,8 +1456,7 @@ fn capture_selected(
                 format!("selected import `{directory}` is not native PCM"),
             ));
         }
-        if imported.pcm_hash() != preflight.output_hash()
-            || !member_matches_bytes(pcm, imported.pcm_bytes())?
+        if imported.pcm_hash() != preflight.output_hash() || !member_matches_import(pcm, &imported)?
         {
             return Err(fail(
                 DiagnosticCode::Hash,
@@ -1533,7 +1532,7 @@ fn capture_retained(
     }
     let preflight =
         media_import::preflight_retained_import_in_root(root).map_err(import_failure)?;
-    let imported = media_import::verify_retained_import_snapshot_in_root(root, &preflight)
+    let imported = media_import::verify_retained_import_snapshot_disk_in_root(root, &preflight)
         .map_err(import_failure)?;
     let pcm = data.get("media.pcm").ok_or_else(|| {
         fail(
@@ -1547,9 +1546,7 @@ fn capture_retained(
             "retained import media.pcm is not a native PCM dependency",
         ));
     }
-    if imported.pcm_hash() != preflight.output_hash()
-        || !member_matches_bytes(pcm, imported.pcm_bytes())?
-    {
+    if imported.pcm_hash() != preflight.output_hash() || !member_matches_import(pcm, &imported)? {
         return Err(fail(
             DiagnosticCode::Hash,
             "retained WAV crop differs from captured media.pcm",
@@ -1583,28 +1580,47 @@ fn sidecar_exists(root: &ProjectRoot, path: &str) -> Result<bool, Diagnostics> {
     }
 }
 
-fn member_matches_bytes(data: &MemberData, expected: &[u8]) -> Result<bool, Diagnostics> {
+fn member_matches_import(
+    data: &MemberData,
+    imported: &DiskImportedWav,
+) -> Result<bool, Diagnostics> {
     match data {
-        MemberData::Bytes(bytes) => Ok(bytes == expected),
+        MemberData::Bytes(_) => Ok(false),
         MemberData::Pcm(asset) => {
-            if asset.bytes != expected.len() as u64 {
+            if asset.bytes != imported.pcm_bytes_len() {
                 return Ok(false);
             }
+            let mut expected = imported.pcm_snapshot().reopen().map_err(|e| {
+                fail(
+                    DiagnosticCode::Asset,
+                    format!("cannot reopen private imported PCM snapshot: {e}"),
+                )
+            })?;
             let mut block = [0u8; 64 * 1024];
-            let mut offset = 0usize;
-            while offset < expected.len() {
-                let wanted = block.len().min(expected.len() - offset);
-                let n = read_snapshot_at(&asset.file, &mut block[..wanted], offset as u64)
-                    .map_err(|e| {
+            let mut compare = [0u8; 64 * 1024];
+            let mut offset = 0u64;
+            while offset < asset.bytes {
+                let wanted = block.len().min((asset.bytes - offset) as usize);
+                let n =
+                    read_snapshot_at(&asset.file, &mut block[..wanted], offset).map_err(|e| {
                         fail(
                             DiagnosticCode::Asset,
                             format!("cannot compare private PCM snapshot: {e}"),
                         )
                     })?;
-                if n == 0 || block[..n] != expected[offset..offset + n] {
+                if n == 0 {
                     return Ok(false);
                 }
-                offset += n;
+                expected.read_exact(&mut compare[..n]).map_err(|e| {
+                    fail(
+                        DiagnosticCode::Asset,
+                        format!("cannot read private imported PCM snapshot: {e}"),
+                    )
+                })?;
+                if block[..n] != compare[..n] {
+                    return Ok(false);
+                }
+                offset += n as u64;
             }
             Ok(true)
         }

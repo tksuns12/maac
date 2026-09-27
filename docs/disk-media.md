@@ -8,6 +8,8 @@ contract is below; the current test evidence is in [verification](verification.m
 ```text
 maac check SOURCE --disk-media [--project-root ROOT] [--profile default|song]
 maac build SOURCE --disk-media -o OUTPUT.wav [--project-root ROOT] [--profile default|song]
+maac import-wav INPUT.wav --disk-media --output-dir NEW_PROJECT [--retain-original] [--profile default|song]
+maac verify-import NEW_PROJECT --disk-media [--profile default|song]
 ```
 
 `--disk-media` selects a process-local, file-backed render path for a MaaC
@@ -18,6 +20,11 @@ instruments, routing, automation, and native production graph retain their
 ordinary authored meaning. Default `check` and `build` keep the embedded-media
 profile and its existing limits.
 
+For `import-wav`, the flag also permits a selected decoded WAV crop up to the
+same 1 GiB PCM cap and stages its provenance record and optional original WAV.
+`verify-import --disk-media` rechecks a retained import and its current source
+closure after relocation. `--profile song` on import and verification increases
+only the existing execution-work allowance, matching `check` and `build`.
 The flag does not produce a standalone performance plan. `compile`, `render`,
 and `deliver` retain their existing contracts and do not accept it. This path
 does not change MaaC/1 syntax, the public `SourceBundle`, or saved plan versions
@@ -54,5 +61,7 @@ relocated project with the same pinned files produces the same output in the
 same environment. Compact compositions render the same samples through disk
 and embedded paths. External media is required for this process-local path;
 the project is not a dependency-complete archive, and no source-free retained
-plan is produced. WAV decoding, recording, history, freeze invalidation, and
-general editable archive packaging remain separate Phase 3 work.
+plan is produced. File-backed WAV import still snapshots the entire input and
+is limited to RIFF/WAVE PCM16/24/32 or float32 mono/stereo. Recording, broader
+history, freeze invalidation, and general editable archive packaging remain
+separate Phase 3 work.

@@ -27,6 +27,7 @@ pub const MEDIA_IMPORT_RETAINED_VERSION: u32 = 2;
 pub const MEDIA_IMPORT_DECODER_ID: &str = "maac.wav-import/1";
 pub const MEDIA_IMPORT_CONVERSION_ID: &str = "maac.pcm-f32le-conversion/1";
 pub const MAX_MEDIA_IMPORT_INPUT_BYTES: u64 = 1024 * 1024 * 1024;
+pub const MAX_MEDIA_IMPORT_DECODED_BYTES: u64 = 1024 * 1024 * 1024;
 const SNAPSHOT_BUFFER_BYTES: usize = 64 * 1024;
 const MAX_MEDIA_IMPORT_MANIFEST_BYTES: u64 = 16 * 1024;
 const CORE_AUDIO_FORMAT: &str = "pcm_f32le_interleaved/1";
@@ -204,61 +205,41 @@ impl ImportedWav {
         Ok(())
     }
 
-    /// Stage retained bytes without replacing an existing file, checking the
-    /// complete byte count and hash while copying from the private snapshot.
-    pub(crate) fn stage_retained_original_to(
-        &self,
-        destination: &Path,
-    ) -> Result<(), MediaImportError> {
-        let snapshot = self
-            .retained_snapshot
-            .as_ref()
-            .ok_or_else(|| import_error("E_INTERNAL", "import has no private original snapshot"))?;
-        let mut input = snapshot
-            .reopen()
-            .map_err(|e| import_error("E_IO", format!("cannot reopen original snapshot: {e}")))?;
-        let mut output = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(destination)
-            .map_err(|e| import_error("E_IO", format!("cannot create original.wav: {e}")))?;
-        let mut hasher = Sha256::new();
-        let mut total = 0u64;
-        let mut block = [0u8; SNAPSHOT_BUFFER_BYTES];
-        loop {
-            let n = input
-                .read(&mut block)
-                .map_err(|e| import_error("E_IO", format!("cannot read original snapshot: {e}")))?;
-            if n == 0 {
-                break;
-            }
-            total = total.checked_add(n as u64).ok_or_else(|| {
-                import_error("E_RESOURCE_LIMIT", "original snapshot size overflow")
-            })?;
-            if total > self.input_bytes || total > MAX_MEDIA_IMPORT_INPUT_BYTES {
-                return Err(import_error("E_IMPORT_MISMATCH", "original snapshot grew"));
-            }
-            output
-                .write_all(&block[..n])
-                .map_err(|e| import_error("E_IO", format!("cannot write original.wav: {e}")))?;
-            hasher.update(&block[..n]);
-        }
-        if total != self.input_bytes
-            || format!("sha256:{:x}", hasher.finalize()) != self.source_hash
-        {
-            return Err(import_error(
-                "E_IMPORT_MISMATCH",
-                "original snapshot changed",
-            ));
-        }
-        Ok(())
-    }
-
     /// Build the ordinary source bundle that is written by the CLI and can
     /// subsequently pass through the existing check/build/compile pipeline.
     pub fn source_bundle(&self) -> SourceBundle {
-        let source = format!(
-            "maac 1;\n\
+        let source = source_text(
+            self.frames(),
+            self.source_rate_hz,
+            self.source_channels,
+            &self.pcm_hash,
+        );
+        SourceBundle {
+            entry: "main.maac".into(),
+            sources: [("main.maac".into(), source)].into(),
+            assets: [("media.pcm".into(), self.pcm_bytes.clone())].into(),
+        }
+    }
+
+    pub fn manifest_json(&self) -> Result<Vec<u8>, MediaImportError> {
+        import_manifest_json(
+            &self.input_name,
+            self.input_bytes,
+            &self.source_hash,
+            &self.source_encoding,
+            self.source_rate_hz,
+            self.source_channels,
+            self.source_frames,
+            self.range,
+            &self.pcm_hash,
+            self.manifest_version(),
+        )
+    }
+}
+
+fn source_text(frames: u64, rate_hz: u32, channels: u16, pcm_hash: &str) -> String {
+    format!(
+        "maac 1;\n\
              project imported_media {{\n\
                score = [0q, {}/{}q];\n\
                tail = 0s;\n\
@@ -284,66 +265,64 @@ impl ImportedWav {
                source = [0frame, {}frame];\n\
                mode = rate;\n\
              }}\n",
-            self.frames(),
-            self.source_rate_hz,
-            self.pcm_hash,
-            CORE_AUDIO_FORMAT,
-            self.source_rate_hz,
-            self.source_channels,
-            self.frames(),
-            self.frames(),
-        );
-        SourceBundle {
-            entry: "main.maac".into(),
-            sources: [("main.maac".into(), source)].into(),
-            assets: [("media.pcm".into(), self.pcm_bytes.clone())].into(),
-        }
-    }
+        frames, rate_hz, pcm_hash, CORE_AUDIO_FORMAT, rate_hz, channels, frames, frames,
+    )
+}
 
-    pub fn manifest_json(&self) -> Result<Vec<u8>, MediaImportError> {
-        let manifest = MediaImportManifest {
-            format: MEDIA_IMPORT_FORMAT,
-            version: self.manifest_version(),
-            decoder: MEDIA_IMPORT_DECODER_ID,
-            conversion: MEDIA_IMPORT_CONVERSION_ID,
-            source: MediaImportSource {
-                name: &self.input_name,
-                bytes: self.input_bytes,
-                sha256: &self.source_hash,
-                container: "riff_wave",
-                encoding: &self.source_encoding,
-                rate_hz: self.source_rate_hz,
-                channels: self.source_channels,
-                frames: self.source_frames,
+#[allow(clippy::too_many_arguments)]
+fn import_manifest_json(
+    input_name: &str,
+    input_bytes: u64,
+    source_hash: &str,
+    source_encoding: &str,
+    source_rate_hz: u32,
+    source_channels: u16,
+    source_frames: u32,
+    range: WavImportRange,
+    pcm_hash: &str,
+    manifest_version: u32,
+) -> Result<Vec<u8>, MediaImportError> {
+    let manifest = MediaImportManifest {
+        format: MEDIA_IMPORT_FORMAT,
+        version: manifest_version,
+        decoder: MEDIA_IMPORT_DECODER_ID,
+        conversion: MEDIA_IMPORT_CONVERSION_ID,
+        source: MediaImportSource {
+            name: input_name,
+            bytes: input_bytes,
+            sha256: source_hash,
+            container: "riff_wave",
+            encoding: source_encoding,
+            rate_hz: source_rate_hz,
+            channels: source_channels,
+            frames: source_frames,
+        },
+        selection: MediaImportSelection {
+            start_frame: range.start_frame,
+            end_frame: range.end_frame,
+        },
+        output: MediaImportOutput {
+            path: "media.pcm",
+            format: CORE_AUDIO_FORMAT,
+            rate_hz: source_rate_hz,
+            channels: source_channels,
+            frames: range.end_frame - range.start_frame,
+            sha256: pcm_hash,
+        },
+        original: (manifest_version == MEDIA_IMPORT_RETAINED_VERSION).then_some(
+            MediaImportOriginal {
+                path: "original.wav",
+                bytes: input_bytes,
+                sha256: source_hash,
             },
-            selection: MediaImportSelection {
-                start_frame: self.range.start_frame,
-                end_frame: self.range.end_frame,
-            },
-            output: MediaImportOutput {
-                path: "media.pcm",
-                format: CORE_AUDIO_FORMAT,
-                rate_hz: self.source_rate_hz,
-                channels: self.source_channels,
-                frames: self.frames(),
-                sha256: &self.pcm_hash,
-            },
-            original: self
-                .retained_snapshot
-                .as_ref()
-                .map(|_| MediaImportOriginal {
-                    path: "original.wav",
-                    bytes: self.input_bytes,
-                    sha256: &self.source_hash,
-                }),
-        };
-        serde_json::to_vec_pretty(&manifest).map_err(|error| {
-            import_error(
-                "E_INTERNAL",
-                format!("cannot encode import manifest: {error}"),
-            )
-        })
-    }
+        ),
+    };
+    serde_json::to_vec_pretty(&manifest).map_err(|error| {
+        import_error(
+            "E_INTERNAL",
+            format!("cannot encode import manifest: {error}"),
+        )
+    })
 }
 
 /// Snapshot, identify, and convert one WAV file into the supported native PCM
@@ -434,30 +413,7 @@ fn import_wav_open_file(
                     format!("WAV data ended before the selected crop: {error}"),
                 )
             })?;
-        let converted = match (spec.sample_format, sample_bytes) {
-            (SampleFormat::Int, 2) => {
-                f64::from(i16::from_le_bytes([bytes[0], bytes[1]])) as f32 / 32_768.0
-            }
-            (SampleFormat::Int, 3) => {
-                let sign = if bytes[2] & 0x80 == 0 { 0 } else { 0xff };
-                let sample = i32::from_le_bytes([bytes[0], bytes[1], bytes[2], sign]);
-                (f64::from(sample) / 8_388_608.0) as f32
-            }
-            (SampleFormat::Int, 4) => {
-                (f64::from(i32::from_le_bytes(bytes)) / 2_147_483_648.0) as f32
-            }
-            (SampleFormat::Float, 4) => {
-                let sample = f32::from_le_bytes(bytes);
-                if !sample.is_finite() {
-                    return Err(import_error(
-                        "E_ASSET",
-                        "selected WAV crop contains a nonfinite float sample",
-                    ));
-                }
-                sample
-            }
-            _ => unreachable!("source_encoding checked the sample representation"),
-        };
+        let converted = convert_sample(spec.sample_format, sample_bytes, bytes)?;
         pcm_bytes.extend_from_slice(&converted.to_le_bytes());
     }
 
@@ -475,6 +431,293 @@ fn import_wav_open_file(
         pcm_hash,
         retained_snapshot: retain_original.then(|| Arc::new(snapshot)),
     })
+}
+
+fn convert_sample(
+    format: SampleFormat,
+    sample_bytes: usize,
+    bytes: [u8; 4],
+) -> Result<f32, MediaImportError> {
+    Ok(match (format, sample_bytes) {
+        (SampleFormat::Int, 2) => {
+            f64::from(i16::from_le_bytes([bytes[0], bytes[1]])) as f32 / 32_768.0
+        }
+        (SampleFormat::Int, 3) => {
+            let sign = if bytes[2] & 0x80 == 0 { 0 } else { 0xff };
+            let sample = i32::from_le_bytes([bytes[0], bytes[1], bytes[2], sign]);
+            (f64::from(sample) / 8_388_608.0) as f32
+        }
+        (SampleFormat::Int, 4) => (f64::from(i32::from_le_bytes(bytes)) / 2_147_483_648.0) as f32,
+        (SampleFormat::Float, 4) => {
+            let sample = f32::from_le_bytes(bytes);
+            if !sample.is_finite() {
+                return Err(import_error(
+                    "E_ASSET",
+                    "selected WAV crop contains a nonfinite float sample",
+                ));
+            }
+            sample
+        }
+        _ => unreachable!("source_encoding checked the sample representation"),
+    })
+}
+
+/// An imported WAV whose decoded PCM is held in private temporary storage.
+/// Cloning keeps both snapshots alive; the decoded crop is never materialized
+/// as a single allocation.
+#[derive(Clone, Debug)]
+pub struct DiskImportedWav {
+    input_name: String,
+    input_bytes: u64,
+    source_hash: String,
+    source_encoding: String,
+    source_rate_hz: u32,
+    source_channels: u16,
+    source_frames: u32,
+    range: WavImportRange,
+    pcm_bytes_len: u64,
+    pcm_hash: String,
+    pcm_snapshot: Arc<NamedTempFile>,
+    retained_snapshot: Option<Arc<NamedTempFile>>,
+}
+
+impl DiskImportedWav {
+    pub fn input_bytes(&self) -> u64 {
+        self.input_bytes
+    }
+
+    pub fn source_hash(&self) -> &str {
+        &self.source_hash
+    }
+
+    pub fn pcm_hash(&self) -> &str {
+        &self.pcm_hash
+    }
+
+    pub fn pcm_bytes_len(&self) -> u64 {
+        self.pcm_bytes_len
+    }
+
+    pub fn frames(&self) -> u64 {
+        self.range.end_frame - self.range.start_frame
+    }
+
+    pub fn manifest_version(&self) -> u32 {
+        if self.retained_snapshot.is_some() {
+            MEDIA_IMPORT_RETAINED_VERSION
+        } else {
+            MEDIA_IMPORT_VERSION
+        }
+    }
+
+    pub fn source_text(&self) -> String {
+        source_text(
+            self.frames(),
+            self.source_rate_hz,
+            self.source_channels,
+            &self.pcm_hash,
+        )
+    }
+
+    pub fn manifest_json(&self) -> Result<Vec<u8>, MediaImportError> {
+        import_manifest_json(
+            &self.input_name,
+            self.input_bytes,
+            &self.source_hash,
+            &self.source_encoding,
+            self.source_rate_hz,
+            self.source_channels,
+            self.source_frames,
+            self.range,
+            &self.pcm_hash,
+            self.manifest_version(),
+        )
+    }
+
+    pub fn stage_pcm_to(&self, destination: &Path) -> Result<(), MediaImportError> {
+        stage_snapshot(
+            &self.pcm_snapshot,
+            destination,
+            self.pcm_bytes_len,
+            &self.pcm_hash,
+            "media.pcm",
+        )
+    }
+
+    pub fn stage_retained_original_to(&self, destination: &Path) -> Result<(), MediaImportError> {
+        let snapshot = self
+            .retained_snapshot
+            .as_ref()
+            .ok_or_else(|| import_error("E_INTERNAL", "import has no private original snapshot"))?;
+        stage_snapshot(
+            snapshot,
+            destination,
+            self.input_bytes,
+            &self.source_hash,
+            "original.wav",
+        )
+    }
+
+    pub(crate) fn pcm_snapshot(&self) -> &NamedTempFile {
+        &self.pcm_snapshot
+    }
+}
+
+/// Opt-in file-backed WAV import for selected crops up to 1 GiB of decoded
+/// interleaved float32 PCM. Its manifest and source text are identical to the
+/// in-memory importer for the same crop.
+pub fn import_wav_file_disk_with_retention(
+    input_path: &Path,
+    range: Option<WavImportRange>,
+    retain_original: bool,
+) -> Result<DiskImportedWav, MediaImportError> {
+    let input = open_import_input(input_path).map_err(|error| {
+        import_error(
+            "E_IO",
+            format!("cannot open {}: {error}", input_path.display()),
+        )
+    })?;
+    let input_name = input_path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "input.wav".into());
+    import_wav_open_file_disk(input, input_name, range, retain_original)
+}
+
+fn import_wav_open_file_disk(
+    input: File,
+    input_name: String,
+    range: Option<WavImportRange>,
+    retain_original: bool,
+) -> Result<DiskImportedWav, MediaImportError> {
+    let (snapshot, input_bytes, source_hash) = snapshot_and_hash(input)?;
+    let layout = inspect_wav(&snapshot, input_bytes)?;
+    let spec = layout.spec;
+    let source_encoding = source_encoding(spec.sample_format, spec.bits_per_sample)?;
+    let source_frames = layout.data_bytes / u32::from(layout.block_align);
+    let range = range.unwrap_or(WavImportRange::new(0, u64::from(source_frames)));
+    if range.start_frame >= range.end_frame || range.end_frame > u64::from(source_frames) {
+        return Err(import_error(
+            "E_RANGE",
+            format!("crop must satisfy 0 <= start < end <= {source_frames} frames"),
+        ));
+    }
+    let frames = range.end_frame - range.start_frame;
+    let sample_count = frames
+        .checked_mul(u64::from(spec.channels))
+        .ok_or_else(|| import_error("E_RESOURCE_LIMIT", "crop sample count overflows"))?;
+    let pcm_bytes_len = sample_count
+        .checked_mul(4)
+        .ok_or_else(|| import_error("E_RESOURCE_LIMIT", "crop byte count overflows"))?;
+    if pcm_bytes_len > MAX_MEDIA_IMPORT_DECODED_BYTES {
+        return Err(import_error(
+            "E_RESOURCE_LIMIT",
+            format!("imported PCM crop exceeds {MAX_MEDIA_IMPORT_DECODED_BYTES} bytes"),
+        ));
+    }
+
+    let crop_offset = layout.data_offset + range.start_frame * u64::from(layout.block_align);
+    let snapshot_reader = snapshot
+        .reopen()
+        .map_err(|error| import_error("E_IO", format!("cannot reopen WAV snapshot: {error}")))?;
+    let mut reader = BufReader::new(snapshot_reader);
+    reader
+        .seek(SeekFrom::Start(crop_offset))
+        .map_err(|error| import_error("E_WAV", format!("cannot seek to crop: {error}")))?;
+    let mut pcm_snapshot = NamedTempFile::new()
+        .map_err(|error| import_error("E_IO", format!("cannot create PCM snapshot: {error}")))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = Vec::with_capacity(SNAPSHOT_BUFFER_BYTES);
+    let sample_bytes = usize::from(spec.bits_per_sample / 8);
+    let mut bytes = [0u8; 4];
+    for _ in 0..sample_count {
+        reader
+            .read_exact(&mut bytes[..sample_bytes])
+            .map_err(|error| {
+                import_error(
+                    "E_WAV",
+                    format!("WAV data ended before the selected crop: {error}"),
+                )
+            })?;
+        let converted = convert_sample(spec.sample_format, sample_bytes, bytes)?;
+        buffer.extend_from_slice(&converted.to_le_bytes());
+        if buffer.len() == SNAPSHOT_BUFFER_BYTES {
+            pcm_snapshot.write_all(&buffer).map_err(|error| {
+                import_error("E_IO", format!("cannot write PCM snapshot: {error}"))
+            })?;
+            hasher.update(&buffer);
+            buffer.clear();
+        }
+    }
+    if !buffer.is_empty() {
+        pcm_snapshot
+            .write_all(&buffer)
+            .map_err(|error| import_error("E_IO", format!("cannot write PCM snapshot: {error}")))?;
+        hasher.update(&buffer);
+    }
+    let pcm_hash = format!("sha256:{:x}", hasher.finalize());
+    Ok(DiskImportedWav {
+        input_name,
+        input_bytes,
+        source_hash,
+        source_encoding,
+        source_rate_hz: spec.sample_rate,
+        source_channels: spec.channels,
+        source_frames,
+        range,
+        pcm_bytes_len,
+        pcm_hash,
+        pcm_snapshot: Arc::new(pcm_snapshot),
+        retained_snapshot: retain_original.then(|| Arc::new(snapshot)),
+    })
+}
+
+fn stage_snapshot(
+    snapshot: &NamedTempFile,
+    destination: &Path,
+    expected_bytes: u64,
+    expected_hash: &str,
+    name: &str,
+) -> Result<(), MediaImportError> {
+    let mut input = snapshot
+        .reopen()
+        .map_err(|error| import_error("E_IO", format!("cannot reopen {name} snapshot: {error}")))?;
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)
+        .map_err(|error| import_error("E_IO", format!("cannot create {name}: {error}")))?;
+    let mut hasher = Sha256::new();
+    let mut total = 0u64;
+    let mut block = [0u8; SNAPSHOT_BUFFER_BYTES];
+    loop {
+        let n = input.read(&mut block).map_err(|error| {
+            import_error("E_IO", format!("cannot read {name} snapshot: {error}"))
+        })?;
+        if n == 0 {
+            break;
+        }
+        total = total
+            .checked_add(n as u64)
+            .ok_or_else(|| import_error("E_RESOURCE_LIMIT", "snapshot size overflow"))?;
+        if total > expected_bytes {
+            return Err(import_error(
+                "E_IMPORT_MISMATCH",
+                format!("{name} snapshot grew"),
+            ));
+        }
+        output
+            .write_all(&block[..n])
+            .map_err(|error| import_error("E_IO", format!("cannot write {name}: {error}")))?;
+        hasher.update(&block[..n]);
+    }
+    if total != expected_bytes || format!("sha256:{:x}", hasher.finalize()) != expected_hash {
+        return Err(import_error(
+            "E_IMPORT_MISMATCH",
+            format!("{name} snapshot changed"),
+        ));
+    }
+    Ok(())
 }
 
 fn source_encoding(format: SampleFormat, bits_per_sample: u16) -> Result<String, MediaImportError> {
@@ -891,7 +1134,7 @@ fn validate_import_manifest(manifest: &RetainedManifest) -> Result<(), MediaImpo
         || manifest.source.frames == 0
         || manifest.selection.start_frame >= manifest.selection.end_frame
         || manifest.selection.end_frame > u64::from(manifest.source.frames)
-        || output_bytes.is_none_or(|bytes| bytes > MAX_BUNDLE_FILE_BYTES as u64)
+        || output_bytes.is_none_or(|bytes| bytes > MAX_MEDIA_IMPORT_DECODED_BYTES)
         || !valid_hash_pin(&manifest.source.sha256)
         || !valid_hash_pin(&manifest.output.sha256)
     {
@@ -985,6 +1228,97 @@ pub(crate) fn verify_retained_import_snapshot_in_root(
     Ok(imported)
 }
 
+pub(crate) fn verify_retained_import_snapshot_disk_in_root(
+    root: &bundle_fs::ProjectRoot,
+    preflight: &RetainedImportPreflight,
+) -> Result<DiskImportedWav, MediaImportError> {
+    let manifest = &preflight.manifest;
+    let original = bundle_fs::open_contained_member(root, "original.wav")
+        .map_err(|error| import_error("E_REFERENCE", format!("original.wav: {error}")))?;
+    let imported = import_wav_open_file_disk(
+        original,
+        manifest.source.name.clone(),
+        Some(WavImportRange::new(
+            manifest.selection.start_frame,
+            manifest.selection.end_frame,
+        )),
+        true,
+    )?;
+    if imported.input_bytes != manifest.source.bytes
+        || imported.source_hash != manifest.source.sha256
+        || imported.source_encoding != manifest.source.encoding
+        || imported.source_rate_hz != manifest.source.rate_hz
+        || imported.source_channels != manifest.source.channels
+        || imported.source_frames != manifest.source.frames
+        || imported.frames() != manifest.output.frames
+        || imported.source_rate_hz != manifest.output.rate_hz
+        || imported.source_channels != manifest.output.channels
+        || imported.pcm_hash != manifest.output.sha256
+    {
+        return Err(import_error(
+            "E_IMPORT_MISMATCH",
+            "retained WAV or decoded crop differs from import.json",
+        ));
+    }
+    Ok(imported)
+}
+
+/// Verify the retained original and media.pcm with bounded buffers while
+/// keeping the decoded crop in private file-backed storage.
+pub fn verify_retained_import_disk(project: &Path) -> Result<DiskImportedWav, MediaImportError> {
+    let root = bundle_fs::ProjectRoot::open_pinned(project, cap_std::ambient_authority())
+        .map_err(|error| import_error("E_REFERENCE", format!("project root: {error}")))?;
+    verify_retained_import_disk_in_root(&root)
+}
+
+pub(crate) fn verify_retained_import_disk_in_root(
+    root: &bundle_fs::ProjectRoot,
+) -> Result<DiskImportedWav, MediaImportError> {
+    let preflight = preflight_retained_import_in_root(root)?;
+    let imported = verify_retained_import_snapshot_disk_in_root(root, &preflight)?;
+    let mut actual = bundle_fs::open_contained_member(root, "media.pcm")
+        .map_err(|error| import_error("E_REFERENCE", format!("media.pcm: {error}")))?;
+    let mut expected = imported
+        .pcm_snapshot
+        .reopen()
+        .map_err(|error| import_error("E_IO", format!("cannot reopen PCM snapshot: {error}")))?;
+    let mut actual_block = [0u8; SNAPSHOT_BUFFER_BYTES];
+    let mut expected_block = [0u8; SNAPSHOT_BUFFER_BYTES];
+    let mut remaining = imported.pcm_bytes_len;
+    while remaining > 0 {
+        let wanted = remaining.min(SNAPSHOT_BUFFER_BYTES as u64) as usize;
+        expected
+            .read_exact(&mut expected_block[..wanted])
+            .map_err(|error| import_error("E_IO", format!("cannot read PCM snapshot: {error}")))?;
+        actual
+            .read_exact(&mut actual_block[..wanted])
+            .map_err(|error| {
+                import_error(
+                    "E_IMPORT_MISMATCH",
+                    format!("media.pcm ended early: {error}"),
+                )
+            })?;
+        if actual_block[..wanted] != expected_block[..wanted] {
+            return Err(import_error(
+                "E_IMPORT_MISMATCH",
+                "media.pcm differs from the decoded retained WAV crop",
+            ));
+        }
+        remaining -= wanted as u64;
+    }
+    if actual
+        .read(&mut actual_block[..1])
+        .map_err(|error| import_error("E_IO", format!("cannot read media.pcm: {error}")))?
+        != 0
+    {
+        return Err(import_error(
+            "E_IMPORT_MISMATCH",
+            "media.pcm differs from the decoded retained WAV crop",
+        ));
+    }
+    Ok(imported)
+}
+
 /// Verify a retained import's original, declared crop, and exact native PCM.
 /// Source closure compilation is performed separately by the CLI so edits to
 /// the MaaC source do not invalidate this immutable import record.
@@ -1062,9 +1396,8 @@ mod retained_archive_tests {
         let imported =
             import_wav_file_with_retention(&input, Some(WavImportRange::new(1, 3)), true).unwrap();
         let original = temp.path().join("original.wav");
-        imported.stage_retained_original_to(&original).unwrap();
+        imported.copy_original_to(&original).unwrap();
         assert_eq!(fs::read(&input).unwrap(), fs::read(&original).unwrap());
-        assert!(imported.stage_retained_original_to(&original).is_err());
 
         let manifest = temp.path().join("import.json");
         fs::write(&manifest, imported.manifest_json().unwrap()).unwrap();
@@ -1085,5 +1418,89 @@ mod retained_archive_tests {
         value["extra"] = serde_json::json!(true);
         fs::write(manifest, serde_json::to_vec(&value).unwrap()).unwrap();
         assert!(preflight_retained_import_in_root(&root).is_err());
+    }
+
+    #[test]
+    fn disk_import_matches_memory_and_verifies_retained_bytes() {
+        let temp = tempfile::tempdir().unwrap();
+        let input = temp.path().join("input.wav");
+        let mut writer = hound::WavWriter::create(
+            &input,
+            WavSpec {
+                channels: 2,
+                sample_rate: 44_100,
+                bits_per_sample: 24,
+                sample_format: SampleFormat::Int,
+            },
+        )
+        .unwrap();
+        for sample in [0i32, 0, 1_234_567, -2_345_678, 8_388_607, -8_388_608] {
+            writer.write_sample(sample).unwrap();
+        }
+        writer.finalize().unwrap();
+        let range = Some(WavImportRange::new(1, 3));
+        let memory = import_wav_file_with_retention(&input, range, true).unwrap();
+        let disk = import_wav_file_disk_with_retention(&input, range, true).unwrap();
+        assert_eq!(
+            disk.source_text(),
+            memory.source_bundle().sources["main.maac"]
+        );
+        assert_eq!(
+            disk.manifest_json().unwrap(),
+            memory.manifest_json().unwrap()
+        );
+        assert_eq!(disk.pcm_hash(), memory.pcm_hash());
+        assert_eq!(disk.pcm_bytes_len(), memory.pcm_bytes().len() as u64);
+
+        fs::write(temp.path().join("main.maac"), disk.source_text()).unwrap();
+        disk.stage_pcm_to(&temp.path().join("media.pcm")).unwrap();
+        disk.stage_retained_original_to(&temp.path().join("original.wav"))
+            .unwrap();
+        fs::write(
+            temp.path().join("import.json"),
+            disk.manifest_json().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read(temp.path().join("media.pcm")).unwrap(),
+            memory.pcm_bytes()
+        );
+        verify_retained_import_disk(temp.path()).unwrap();
+        fs::write(temp.path().join("media.pcm"), [0u8; 16]).unwrap();
+        assert_eq!(
+            verify_retained_import_disk(temp.path()).unwrap_err().code(),
+            "E_IMPORT_MISMATCH"
+        );
+    }
+
+    #[test]
+    fn disk_import_accepts_crop_above_in_memory_asset_limit() {
+        let temp = tempfile::tempdir().unwrap();
+        let input = temp.path().join("long.wav");
+        let mut writer = hound::WavWriter::create(
+            &input,
+            WavSpec {
+                channels: 1,
+                sample_rate: 48_000,
+                bits_per_sample: 16,
+                sample_format: SampleFormat::Int,
+            },
+        )
+        .unwrap();
+        let frames = MAX_BUNDLE_FILE_BYTES as u64 / 4 + 1;
+        for _ in 0..frames {
+            writer.write_sample(0i16).unwrap();
+        }
+        writer.finalize().unwrap();
+        assert_eq!(
+            import_wav_file(&input, None).unwrap_err().code(),
+            "E_RESOURCE_LIMIT"
+        );
+        let disk = import_wav_file_disk_with_retention(&input, None, false).unwrap();
+        assert_eq!(disk.pcm_bytes_len(), frames * 4);
+        assert_eq!(disk.manifest_version(), MEDIA_IMPORT_VERSION);
+        let pcm = temp.path().join("media.pcm");
+        disk.stage_pcm_to(&pcm).unwrap();
+        assert_eq!(fs::metadata(pcm).unwrap().len(), frames * 4);
     }
 }

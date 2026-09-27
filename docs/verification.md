@@ -520,6 +520,38 @@ diagnostic issue was fixed so private-spool write failures retain
 `RLIMIT_FSIZE=140000` reproduction confirmed this for normal and opt-in
 rendering; neither published a WAV.
 
+## File-backed WAV import and retained archive reopen (2026-09-27)
+
+`import-wav --disk-media` can decode a selected native PCM crop beyond the
+ordinary 4 MiB asset limit into bounded private storage, preserving the version
+1/2 provenance record. `verify-import --disk-media` rechecks retained original
+and PCM bytes and the current pinned project closure. The existing `song`
+execution-work profile is available on both commands. Root and selected nested
+retained imports can be captured, relocated, verified, unpacked, and reopened
+through the native archive without materializing the full decoded PCM.
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Focused media CLI | `cargo test --test media_import_cli --locked --offline --quiet` | Passed: 9 tests |
+| Focused archive CLI | `cargo test --test archive_retained_cli --test archive_multi_import_cli --locked --offline --quiet` | Passed: 6 and 7 tests |
+| Full Rust gate | `cargo test --all-targets --locked --offline --quiet` | Passed: 324 active library tests, 3 existing ignored, and every integration target |
+| Type check | `cargo check --all-targets --locked --offline` | Passed |
+| Strict Clippy | `cargo clippy --all-targets --locked --offline -- -D warnings` | Passed |
+| Doctest | `cargo test --doc --locked --offline --quiet` | Passed: 1 test |
+| Release build | `cargo build --release --locked --offline` | Passed |
+| Formatting and whitespace | `cargo fmt --all -- --check`; `git diff --check` | Passed |
+| Independent review | Read-only Astra review | Work-profile and pinned-root coverage gaps fixed; no remaining findings |
+
+The focused tests cover four WAV encodings with exact disk/embedded conversion
+parity, a 4,240,000-byte decoded stereo crop, the default profile rejection and song
+profile acceptance of a 210-second stereo import, relocation without the input
+path, changed PCM and original detection, and root and nested retained archive
+reopen. A deterministic pinned-root replacement test covers disk verification.
+The review also confirmed private snapshot write failure publishes no project,
+and escaping original-WAV symlinks and removed current media dependencies fail.
+The input snapshot and decoded PCM each remain capped at 1 GiB; this is a
+bounded disk path, not general streaming or recording.
+
 ## Historical naming cleanup
 
 The current tree uses MaaC consistently in the specification, grammar, schema,

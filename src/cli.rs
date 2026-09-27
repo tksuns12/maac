@@ -854,7 +854,28 @@ pub fn execute_artifact_with_range(
     })
 }
 
-fn execute_disk_media(command: &Command) -> Result<ArtifactCommandResult, CliError> {
+fn execute_disk_media(
+    command: &Command,
+    import_profile: ProfileArg,
+) -> Result<ArtifactCommandResult, CliError> {
+    if matches!(
+        command,
+        Command::ImportWav { .. } | Command::VerifyImport { .. }
+    ) {
+        let base = execute_disk_media_import(command, import_profile)?;
+        return Ok(ArtifactCommandResult {
+            base,
+            hits: 0,
+            audio_clips: 0,
+            start_frame: None,
+            end_frame: None,
+            edit: None,
+            archive_patch: None,
+            archive_import_patch: None,
+            archive_group_patch: None,
+            archive_graph_patch: None,
+        });
+    }
     let (input, project_root, profile) = match command {
         Command::Check {
             input,
@@ -870,7 +891,7 @@ fn execute_disk_media(command: &Command) -> Result<ArtifactCommandResult, CliErr
         _ => {
             return Err(CliError::new(
                 "E_USAGE",
-                "--disk-media supports check and build only",
+                "--disk-media supports check, build, import-wav, and verify-import only",
             ))
         }
     };
@@ -928,6 +949,66 @@ fn execute_disk_media(command: &Command) -> Result<ArtifactCommandResult, CliErr
         archive_group_patch: None,
         archive_graph_patch: None,
     })
+}
+
+fn execute_disk_media_import(
+    command: &Command,
+    profile: ProfileArg,
+) -> Result<CommandResult, CliError> {
+    match command {
+        Command::ImportWav {
+            input,
+            retain_original,
+            start_frame,
+            end_frame,
+            output_dir,
+        } => {
+            if export::path_exists(output_dir).map_err(CliError::from_export)? {
+                return Err(CliError::from_export(ExportError::OutputExists {
+                    path: output_dir.to_owned(),
+                }));
+            }
+            let range = match (start_frame, end_frame) {
+                (Some(start), Some(end)) => Some(WavImportRange::new(*start, *end)),
+                (None, None) => None,
+                _ => {
+                    return Err(CliError::new(
+                        "E_USAGE",
+                        "WAV crop requires both --start-frame and --end-frame",
+                    ))
+                }
+            };
+            let imported =
+                media_import::import_wav_file_disk_with_retention(input, range, *retain_original)
+                    .map_err(|error| CliError::new(error.code(), error.message().to_owned()))?;
+            write_disk_media_import_project(&imported, output_dir, profile)?;
+            Ok(CommandResult {
+                ok: true,
+                command: "import-wav".into(),
+                input: input.display().to_string(),
+                output: Some(output_dir.display().to_string()),
+                format: Some(format!(
+                    "{}/{}",
+                    media_import::MEDIA_IMPORT_FORMAT,
+                    imported.manifest_version()
+                )),
+                notes: None,
+                frames: Some(imported.frames()),
+                digest: Some(imported.source_hash().into()),
+                exports: None,
+                catalog: None,
+                instrument: None,
+                library: None,
+                libraries: None,
+                delivery: None,
+                freeze: None,
+            })
+        }
+        Command::VerifyImport { project } => {
+            verify_import_project_disk_with_hook(project, profile, || {})
+        }
+        _ => unreachable!("disk-media import command was checked above"),
+    }
 }
 #[derive(Default)]
 struct EventCounts {
@@ -2237,6 +2318,56 @@ fn verify_import_project_with_hook(
     })
 }
 
+fn verify_import_project_disk_with_hook(
+    project: &Path,
+    profile: ProfileArg,
+    after_media: impl FnOnce(),
+) -> Result<CommandResult, CliError> {
+    let root = bundle_fs::ProjectRoot::open_pinned(project, cap_std::ambient_authority())
+        .map_err(|error| CliError::from_diagnostics(&error))?;
+    let imported = media_import::verify_retained_import_disk_in_root(&root)
+        .map_err(|error| CliError::new(error.code(), error.message().to_owned()))?;
+    after_media();
+    let current = DiskMediaProject::load_in_root(Path::new("main.maac"), &root)
+        .map_err(|error| CliError::from_diagnostics(&error))?;
+    let asset = current.disk_assets().get("media.pcm").ok_or_else(|| {
+        CliError::new(
+            "E_IMPORT_MISMATCH",
+            "current MaaC project does not depend on the verified media.pcm asset",
+        )
+    })?;
+    if asset.bytes != imported.pcm_bytes_len() || asset.hash != imported.pcm_hash() {
+        return Err(CliError::new(
+            "E_IMPORT_MISMATCH",
+            "current MaaC project does not depend on the verified media.pcm asset",
+        ));
+    }
+    current
+        .build_with_limits(&profile.limits())
+        .map_err(|error| CliError::from_diagnostics(&error))?;
+    Ok(CommandResult {
+        ok: true,
+        command: "verify-import".into(),
+        input: project.display().to_string(),
+        output: None,
+        format: Some(format!(
+            "{}/{}",
+            media_import::MEDIA_IMPORT_FORMAT,
+            media_import::MEDIA_IMPORT_RETAINED_VERSION
+        )),
+        notes: None,
+        frames: Some(imported.frames()),
+        digest: Some(imported.source_hash().into()),
+        exports: None,
+        catalog: None,
+        instrument: None,
+        library: None,
+        libraries: None,
+        delivery: None,
+        freeze: None,
+    })
+}
+
 /// Select the entry spelling and containment root without following a main
 /// file symlink to choose its root. Explicit files retain their previous root
 /// inference in load_source_bundle; explicit project roots always override.
@@ -2461,6 +2592,52 @@ fn write_media_import_project(
             .copy_original_to(&staging.path().join("original.wav"))
             .map_err(|error| CliError::new(error.code(), error.message().to_owned()))?;
     }
+    publish_staged_directory_noclobber(staging.path(), output_dir, "media project")
+}
+
+fn write_disk_media_import_project(
+    imported: &media_import::DiskImportedWav,
+    output_dir: &Path,
+    profile: ProfileArg,
+) -> Result<(), CliError> {
+    if export::path_exists(output_dir).map_err(CliError::from_export)? {
+        return Err(CliError::from_export(ExportError::OutputExists {
+            path: output_dir.to_owned(),
+        }));
+    }
+    let manifest = imported
+        .manifest_json()
+        .map_err(|error| CliError::new(error.code(), error.message().to_owned()))?;
+    let parent = output_dir
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let staging = tempfile::tempdir_in(parent).map_err(|error| {
+        CliError::new(
+            "E_IO",
+            format!(
+                "cannot stage media project in {}: {error}",
+                parent.display()
+            ),
+        )
+    })?;
+    fs::write(staging.path().join("main.maac"), imported.source_text())
+        .map_err(|error| CliError::new("E_IO", format!("cannot stage main.maac: {error}")))?;
+    imported
+        .stage_pcm_to(&staging.path().join("media.pcm"))
+        .map_err(|error| CliError::new(error.code(), error.message().to_owned()))?;
+    fs::write(staging.path().join("import.json"), manifest)
+        .map_err(|error| CliError::new("E_IO", format!("cannot stage import.json: {error}")))?;
+    if imported.manifest_version() == media_import::MEDIA_IMPORT_RETAINED_VERSION {
+        imported
+            .stage_retained_original_to(&staging.path().join("original.wav"))
+            .map_err(|error| CliError::new(error.code(), error.message().to_owned()))?;
+    }
+    let project = DiskMediaProject::load(&staging.path().join("main.maac"), staging.path())
+        .map_err(|error| CliError::from_diagnostics(&error))?;
+    project
+        .build_with_limits(&profile.limits())
+        .map_err(|error| CliError::from_diagnostics(&error))?;
     publish_staged_directory_noclobber(staging.path(), output_dir, "media project")
 }
 
@@ -2832,6 +3009,7 @@ enum ParsedArgsError {
 struct ProcessOptions {
     range: Option<FrameRange>,
     disk_media: bool,
+    import_profile: Option<ProfileArg>,
 }
 
 /// Add process-only flags without changing the public Command enum used by
@@ -2859,7 +3037,7 @@ fn parse_cli_with_process_options(
                 .value_parser(clap::value_parser!(u64))
                 .help("exclusive reset-origin engine frame at which an excerpt ends"),
         );
-    for name in ["check", "build"] {
+    for name in ["check", "build", "import-wav", "verify-import"] {
         let subcommand = command
             .find_subcommand_mut(name)
             .expect("disk-media command is declared");
@@ -2867,7 +3045,19 @@ fn parse_cli_with_process_options(
             Arg::new("disk-media")
                 .long("disk-media")
                 .action(ArgAction::SetTrue)
-                .help("verify and sample native PCM from private disk snapshots"),
+                .help("use bounded private disk snapshots for native PCM"),
+        );
+    }
+    for name in ["import-wav", "verify-import"] {
+        let subcommand = command
+            .find_subcommand_mut(name)
+            .expect("disk-media import command is declared");
+        *subcommand = subcommand.clone().arg(
+            Arg::new("import-profile")
+                .long("profile")
+                .value_name("PROFILE")
+                .value_parser(clap::value_parser!(ProfileArg))
+                .help("execution-work profile for disk-media import or verification"),
         );
     }
     let matches = command
@@ -2889,13 +3079,28 @@ fn parse_cli_with_process_options(
         },
         None => None,
     };
-    let disk_media = ["check", "build"].iter().any(|name| {
+    let disk_media = ["check", "build", "import-wav", "verify-import"]
+        .iter()
+        .any(|name| {
+            matches
+                .subcommand_matches(name)
+                .is_some_and(|subcommand| subcommand.get_flag("disk-media"))
+        });
+    let import_profile = ["import-wav", "verify-import"].iter().find_map(|name| {
         matches
             .subcommand_matches(name)
-            .is_some_and(|subcommand| subcommand.get_flag("disk-media"))
+            .and_then(|subcommand| subcommand.get_one::<ProfileArg>("import-profile"))
+            .copied()
     });
     let cli = Cli::from_arg_matches(&matches).map_err(ParsedArgsError::Clap)?;
-    Ok((cli, ProcessOptions { range, disk_media }))
+    Ok((
+        cli,
+        ProcessOptions {
+            range,
+            disk_media,
+            import_profile,
+        },
+    ))
 }
 
 pub fn run_from_args<I, T>(args: I) -> i32
@@ -2938,8 +3143,16 @@ where
         }
     };
     let json = cli.json;
-    let result = if options.disk_media {
-        execute_disk_media(&cli.command)
+    let result = if options.import_profile.is_some() && !options.disk_media {
+        Err(CliError::new(
+            "E_USAGE",
+            "--profile on import-wav or verify-import requires --disk-media",
+        ))
+    } else if options.disk_media {
+        execute_disk_media(
+            &cli.command,
+            options.import_profile.unwrap_or(ProfileArg::Default),
+        )
     } else {
         execute_artifact_with_range(&cli.command, options.range)
     };
@@ -3028,6 +3241,47 @@ mod import_verification_tests {
         let archived = directory.path().join("archived");
         fs::create_dir(&replacement).unwrap();
         let failure = verify_import_project_with_hook(&project, || {
+            fs::rename(project.join("main.maac"), replacement.join("main.maac")).unwrap();
+            fs::rename(project.join("media.pcm"), replacement.join("media.pcm")).unwrap();
+            fs::rename(&project, &archived).unwrap();
+            fs::rename(&replacement, &project).unwrap();
+        })
+        .unwrap_err();
+        assert_eq!(failure.code, "E_REFERENCE");
+        assert!(!archived.join("main.maac").exists());
+        assert!(!project.join("import.json").exists());
+    }
+
+    #[test]
+    fn disk_import_verifier_keeps_project_root_pinned_across_replacement() {
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("input.wav");
+        let mut writer = WavWriter::create(
+            &input,
+            WavSpec {
+                channels: 1,
+                sample_rate: 48_000,
+                bits_per_sample: 16,
+                sample_format: SampleFormat::Int,
+            },
+        )
+        .unwrap();
+        writer.write_sample(100i16).unwrap();
+        writer.finalize().unwrap();
+        let project = directory.path().join("project");
+        execute(&Command::ImportWav {
+            input,
+            retain_original: true,
+            start_frame: None,
+            end_frame: None,
+            output_dir: project.clone(),
+        })
+        .unwrap();
+
+        let replacement = directory.path().join("replacement");
+        let archived = directory.path().join("archived");
+        fs::create_dir(&replacement).unwrap();
+        let failure = verify_import_project_disk_with_hook(&project, ProfileArg::Default, || {
             fs::rename(project.join("main.maac"), replacement.join("main.maac")).unwrap();
             fs::rename(project.join("media.pcm"), replacement.join("media.pcm")).unwrap();
             fs::rename(&project, &archived).unwrap();

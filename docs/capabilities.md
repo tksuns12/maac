@@ -24,7 +24,7 @@ Coverage of every reference processor identifier is not a full-profile claim.
 | Processors | `core.sine/1`, `core.kit/1`, `core.onepole/1`, `core.pan/1`, `core.sum/1`, `core.gain/1`, `core.fader/1`, `core.matrix/1`, `core.delay/1`, `core.noise/1` (mono/stereo); explicit delays permit causal feedback |
 | Sample kits | Pinned raw float32 mono/stereo assets, native-rate one-shot playback, linear interpolation, natural tails and sample-rate level automation |
 | Arranged audio | Top-level rate and warp-rate clips; source-frame slicing, musical warp anchors, rate-mode speed/reverse/physical placement, gain, linear/equal-power fades, explicit routing and tempo-aware tails |
-| WAV import and disk media | `maac import-wav` imports whole mono/stereo RIFF WAVs or nonempty frame crops from PCM16/24/32 and IEEE float32 into a relocatable source project with native float32 PCM and source/conversion provenance; `--retain-original` preserves the snapshotted WAV and `maac verify-import` checks it, the crop, and the current project closure. `check` and `build` accept `--disk-media` to verify and render hash-pinned native PCM beyond inline limits from private snapshots. The artifact DSP engine also supports opt-in disk-backed sampling of already-embedded PCM. |
+| WAV import and disk media | `maac import-wav` imports whole mono/stereo RIFF WAVs or nonempty frame crops from PCM16/24/32 and IEEE float32 into a relocatable source project with native float32 PCM and source/conversion provenance; `--retain-original` preserves the snapshotted WAV and `maac verify-import` checks it, the crop, and the current project closure. Opt-in `import-wav --disk-media` and `verify-import --disk-media` handle selected native PCM crops up to 1 GiB through private files. `check` and `build` accept `--disk-media` to verify and render hash-pinned native PCM beyond inline limits from private snapshots. The artifact DSP engine also supports opt-in disk-backed sampling of already-embedded PCM. |
 | Reusable instruments | Named libraries, typed public controls, presets, independent polyphonic instances, voice and shared graphs |
 | Sound graphs | Versioned sine/saw/square/triangle/wavetable oscillators, deterministic noise and recirculating plucked strings, linear ADSR, sine LFO, gain, low/high-pass one-pole filtering, mixing and panning |
 | Modulation | Top-level typed control modulation of continuous sample-rate, note-on/note-off, and instrument reset parameters, score/seconds LFOs and automated constants; instrument feed-forward graph modulation, ADSR, voice phase, and shared-LFO reset capture, and sample-wise through-zero linear FM; no oversampling |
@@ -232,6 +232,10 @@ every sample before rendering and reads a private snapshot through bounded
 pages. The normal source, graph, duration, output, and plan limits remain in
 force; the saved plan format does not gain external media references. See the
 [disk-media contract](disk-media.md).
+The opt-in `import-wav --disk-media` path uses the same PCM byte cap for its
+selected decoded crop, and `verify-import --disk-media` rechecks retained
+imports through bounded private files. Ordinary import and verification keep
+the embedded asset limit.
 
 The explicit song profile changes only execution work. Plan bytes, duration,
 events, channels, rate, graph/voice states and pluck memory retain their existing

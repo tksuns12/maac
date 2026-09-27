@@ -15,7 +15,7 @@ complete professional-production product.
 | Language/conformance L1–L5 | Addressed for the bounded slices | Do not expand this into a full-profile or cross-platform identity claim. |
 | Phase 1: end-to-end inventory | Complete as a bounded reference inventory | Keep the [lifecycle inventory](end-to-end-lifecycle-inventory.md) aligned with implemented slices and open gates. |
 | Phase 2: reset-correct excerpts | Complete for bounded final-WAV ranges | No claim of realtime seeking, speed-up, or arbitrary DSP-state restoration. |
-| Phase 3: media/import/packaging | In progress; bounded WAV crop import, opt-in retained-original verification, native PCM disk media, archive checkpoints, multiple selected retained WAV imports, explicit whole-output and independent native-effect-group freeze reuse, opt-in partial reuse of eligible group members, bounded independent-branch gain/pan edit reuse, journaled local-source transactions, and opt-in verified native processor context implemented | Add external processor dependency/state packaging, overlapping frozen graph branches, broader selective invalidation, and remaining media and reopen coverage. |
+| Phase 3: media/import/packaging | In progress; bounded WAV crop import, opt-in retained-original verification, opt-in file-backed WAV import and verification up to the native PCM disk-media limit, archive checkpoints, multiple selected retained WAV imports, explicit whole-output and independent native-effect-group freeze reuse, opt-in partial reuse of eligible group members, bounded independent-branch gain/pan edit reuse, journaled local-source transactions, and opt-in verified native processor context implemented | Add external processor dependency/state packaging, overlapping frozen graph branches, broader selective invalidation, and remaining media and reopen coverage. |
 | Phase 4: capture/playback/comping | Partial foundations only | Add recording, takes, comp selection, playback, and revision workflows. |
 | Phase 5: open processors and hosting | Partial foundations only | Generic rendering and executable native external hosting remain deferred. |
 | Phase 6: mix/master/release/reopen | Not complete | Pass the representative production, invalidation, clean-reopen, listening, and producer gates. |
@@ -36,6 +36,12 @@ generic-lock construction is a separate bounded slice. Another opt-in slice,
 native PCM beyond the inline limits using private snapshots and bounded cache
 pages. It does not produce a source-free saved plan. Continue Phase 3 with
 editable packaging; these bounded slices do not complete the phase.
+An opt-in `import-wav --disk-media` path writes the selected decoded PCM crop
+through bounded private storage up to 1 GiB, validates the staged project with
+the disk-media compiler, and preserves the same import provenance record.
+Retained imports can be rechecked with `verify-import --disk-media` and captured
+by the native archive without loading the complete PCM into memory. It does not
+replace the input snapshot pass or provide device recording.
 The [native archive](editable-archive.md) packages exact source bytes and the
 pinned native dependency closure. Version 2 copies complete prior checkpoints
 into a linear history and can unpack any selected checkpoint after relocation.

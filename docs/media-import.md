@@ -11,6 +11,8 @@ maac import-wav INPUT.wav --output-dir NEW_PROJECT
 maac import-wav INPUT.wav --start-frame N --end-frame M --output-dir NEW_PROJECT
 maac import-wav INPUT.wav --retain-original --output-dir NEW_PROJECT
 maac verify-import NEW_PROJECT
+maac import-wav INPUT.wav --disk-media [--profile default|song] --retain-original --output-dir NEW_PROJECT
+maac verify-import NEW_PROJECT --disk-media [--profile default|song]
 ```
 
 The optional crop is a nonempty half-open source-frame interval `[N, M)`;
@@ -82,11 +84,28 @@ the generated standalone plan fits the normal plan serialization limit before
 publishing. The provenance sidecar is not needed to check, compile, or build
 the generated project.
 
+`--disk-media` selects a separate file-backed import path for a decoded crop up
+to 1 GiB of native PCM. The WAV input remains capped at 1 GiB. Conversion writes
+to a private file with bounded memory, then validates the staged project using
+the disk-media compiler before atomic publication. It keeps the same `main.maac`,
+`media.pcm`, `import.json`, and optional `original.wav` layout and version 1/2
+import records. Reopened projects use `check --disk-media` and
+`build --disk-media`; `compile` still requires the ordinary inline limits.
+The default execution-work profile remains in force. Select `--profile song`
+on import and retained verification for longer projects, and use the same
+profile on later `check` or `build` commands when their work exceeds the
+default allowance. The profile changes work allowance only, not byte limits.
+For retained imports, `verify-import --disk-media` re-decodes and compares the
+original, PCM, and current project dependency closure using bounded private
+snapshots. An ordinary `verify-import` remains limited to the inline profile.
+
 ## Acceptance boundary
 
-After import, the project can be moved and reopened with the ordinary `check`,
-`compile`, and `build` commands without access to the original WAV. This is a
-bounded crop-import and reopen result. The original WAV is retained only with
+After an embedded import, the project can be moved and reopened with ordinary
+`check`, `compile`, and `build` commands without access to the original WAV.
+Larger file-backed imports use `check --disk-media` and `build --disk-media`
+with the appropriate execution profile. This is a bounded crop-import and
+reopen result. The original WAV is retained only with
 the opt-in flag; this does not define a dependency-complete editable archive.
 The DSP artifact engine separately offers opt-in disk-backed sampling for
 validated PCM that is still embedded in the artifact. This writes a private

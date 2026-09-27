@@ -61,6 +61,31 @@ fn large_wav(path: &Path) {
     fs::write(path, bytes).unwrap();
 }
 
+fn long_stereo_wav(path: &Path, frames: u32) {
+    let data_bytes = frames * 4;
+    let mut header = Vec::with_capacity(44);
+    header.extend_from_slice(b"RIFF");
+    header.extend_from_slice(&(36 + data_bytes).to_le_bytes());
+    header.extend_from_slice(b"WAVEfmt ");
+    header.extend_from_slice(&16u32.to_le_bytes());
+    header.extend_from_slice(&1u16.to_le_bytes());
+    header.extend_from_slice(&2u16.to_le_bytes());
+    header.extend_from_slice(&48_000u32.to_le_bytes());
+    header.extend_from_slice(&192_000u32.to_le_bytes());
+    header.extend_from_slice(&4u16.to_le_bytes());
+    header.extend_from_slice(&16u16.to_le_bytes());
+    header.extend_from_slice(b"data");
+    header.extend_from_slice(&data_bytes.to_le_bytes());
+    assert_eq!(header.len(), 44);
+    fs::write(path, header).unwrap();
+    fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_len(44 + u64::from(data_bytes))
+        .unwrap();
+}
+
 fn import(input: &Path, project: &Path, retain: bool) {
     let mut args = vec![
         Path::new("--json"),
@@ -168,6 +193,68 @@ fn retained_large_wav_relocates_and_restores_exact_four_files() {
         fs::read(before_render).unwrap(),
         fs::read(after_render).unwrap()
     );
+}
+
+#[test]
+fn retained_disk_media_crop_over_four_mib_reopens_from_moved_archive() {
+    let temp = tempdir().unwrap();
+    let input = temp.path().join("long.wav");
+    let project = temp.path().join("project");
+    let archive = temp.path().join("archive");
+    let moved = temp.path().join("moved");
+    let unpacked = temp.path().join("unpacked");
+    let frames = 530_000u32;
+    long_stereo_wav(&input, frames);
+    success(invoke(&[
+        Path::new("--json"),
+        Path::new("import-wav"),
+        &input,
+        Path::new("--disk-media"),
+        Path::new("--retain-original"),
+        Path::new("--output-dir"),
+        &project,
+    ]));
+    assert!(fs::metadata(project.join("media.pcm")).unwrap().len() > 4 * 1024 * 1024);
+    assert_eq!(
+        create(&project, &archive, None)["format"],
+        "maac.editable-archive/3"
+    );
+    fs::rename(&archive, &moved).unwrap();
+    success(invoke(&[
+        Path::new("--json"),
+        Path::new("archive"),
+        Path::new("verify"),
+        &moved,
+    ]));
+    success(invoke(&[
+        Path::new("--json"),
+        Path::new("archive"),
+        Path::new("unpack"),
+        &moved,
+        Path::new("--output-dir"),
+        &unpacked,
+    ]));
+    for name in ["main.maac", "media.pcm", "import.json", "original.wav"] {
+        assert_eq!(
+            fs::read(project.join(name)).unwrap(),
+            fs::read(unpacked.join(name)).unwrap(),
+            "{name}"
+        );
+    }
+    fs::remove_dir_all(&project).unwrap();
+    fs::remove_file(&input).unwrap();
+    success(invoke(&[
+        Path::new("--json"),
+        Path::new("verify-import"),
+        &unpacked,
+        Path::new("--disk-media"),
+    ]));
+    success(invoke(&[
+        Path::new("--json"),
+        Path::new("check"),
+        &unpacked,
+        Path::new("--disk-media"),
+    ]));
 }
 
 #[test]
