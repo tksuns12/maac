@@ -569,43 +569,46 @@ pub(crate) fn discover_document_references(
             _ => {}
         }
     }
-    // Only the descriptor explicitly referenced by a recognized production
-    // extension is an executable dependency. Other non-audio core assets remain for the
+    // Only descriptors explicitly referenced by recognized source extensions
+    // are executable dependencies. Other non-audio core assets remain for the
     // ordinary semantic validator to reject, without loading their bytes.
     for extension in document
         .objects
         .values()
         .filter(|object| object.kind == "extension")
     {
-        if extension
+        let namespace = extension
             .field("namespace")
-            .and_then(|field| field.value.as_string())
-            != Some(crate::production_data::CAPABILITY)
-        {
-            continue;
-        }
+            .and_then(|field| field.value.as_string());
+        let name = match namespace {
+            Some(crate::production_data::CAPABILITY) => "production",
+            Some(crate::takes::CAPABILITY) => "takes",
+            _ => continue,
+        };
         let reference = extension
             .field("schema")
             .and_then(|field| field.value.reference())
-            .ok_or_else(|| reference_error("production schema requires a descriptor reference"))?;
+            .ok_or_else(|| {
+                reference_error(format!("{name} schema requires a descriptor reference"))
+            })?;
         if reference.path.len() != 1 || reference.port.is_some() {
-            return Err(reference_error(
-                "production schema must reference a top-level descriptor",
-            ));
+            return Err(reference_error(format!(
+                "{name} schema must reference a top-level descriptor"
+            )));
         }
         let descriptor = document
             .objects
             .get(&reference.path[0])
-            .ok_or_else(|| reference_error("production schema descriptor does not exist"))?;
+            .ok_or_else(|| reference_error(format!("{name} schema descriptor does not exist")))?;
         if descriptor.kind != "asset"
             || descriptor
                 .field("kind")
                 .and_then(|field| field.value.as_symbol())
                 != Some("descriptor")
         {
-            return Err(asset_error(
-                "production schema must reference a descriptor asset",
-            ));
+            return Err(asset_error(format!(
+                "{name} schema must reference a descriptor asset"
+            )));
         }
         let mut reference = pinned_fields(source_path, descriptor, DiagnosticCode::Asset)?;
         reference.base = ReferenceBase::PackageRoot;

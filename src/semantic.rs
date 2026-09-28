@@ -1045,7 +1045,10 @@ impl<'a> Validator<'a> {
             if let ValueKind::List(items) = &field.value.kind {
                 for item in items {
                     if let ValueKind::String(capability) = &item.kind {
-                        if capability != "maac.production/1" {
+                        if !matches!(
+                            capability.as_str(),
+                            crate::production_data::CAPABILITY | crate::takes::CAPABILITY
+                        ) {
                             self.push(
                                 DiagnosticCode::Capability,
                                 format!("unsupported required capability `{capability}`"),

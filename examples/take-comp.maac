@@ -1,0 +1,61 @@
+maac 1;
+
+// Synthetic alternatives demonstrate the take contract; these are not recordings.
+// maac build examples/take-comp.maac --project-root . -o take-comp.wav
+project demo {
+  requires = ["maac.takes/1"];
+  score = [0q, 1q]; tail = 0s; rate = 48000Hz;
+  tempo = &clock; meter = &metre; output = &mix:out;
+}
+tempo clock { points = [(0q, 60bpm, step)]; }
+meter metre { points = [(0q, 4, 4)]; }
+asset takes_schema {
+  kind = descriptor;
+  path = "takes.schema.json";
+  hash = "sha256:11cd8e70cf09aff986f821f88f46ad97056cfb5514a4344eeaa38a6d2e432960";
+}
+asset kick_sample {
+  kind = audio;
+  path = "examples/sounds/core-kit/kick.pcm";
+  hash = "sha256:b29ea5c52a79d974b5d897530609d0d06a7d6cd315ae2d774340a8322c887b04";
+  format = "pcm_f32le_interleaved/1";
+  rate = 24000Hz; channels = 1; frames = 4800;
+}
+asset snare_sample {
+  kind = audio;
+  path = "examples/sounds/core-kit/snare.pcm";
+  hash = "sha256:dfedbee9ec071476e09e6ea8e54eb7338cac15629b4c26405eb67cff6ce507ca";
+  format = "pcm_f32le_interleaved/1";
+  rate = 24000Hz; channels = 1; frames = 2400;
+}
+extension takes {
+  namespace = "maac.takes/1";
+  schema = &takes_schema;
+  render_affecting = true;
+  data = {
+    groups = {
+      percussion = {
+        origin = 1/4s;
+        takes = {
+          first = { asset = &kick_sample; source_origin = 0frame; };
+          second = { asset = &snare_sample; source_origin = 0frame; };
+        };
+        regions = {
+          opening = { take = first; range = [0frame, 1200frame]; clip = &opening; };
+          ending = { take = second; range = [1200frame, 2400frame]; clip = &ending; };
+        };
+      };
+    };
+  };
+}
+audio opening {
+  asset = &kick_sample; source = [0frame, 1200frame]; at = 1/4s;
+  mode = rate; gain = 1/2; fade_in = 1ms; fade_out = 2ms;
+}
+audio ending {
+  asset = &snare_sample; source = [1200frame, 2400frame]; at = 3/10s;
+  mode = rate; gain = 1/2; fade_in = 2ms; fade_out = 2ms;
+}
+node mix { type = "core.sum/1"; config = { channels = 1; }; }
+connect opening_route { from = &opening:out; to = &mix:in; }
+connect ending_route { from = &ending:out; to = &mix:in; }

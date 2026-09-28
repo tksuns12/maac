@@ -20,6 +20,19 @@ The plan embeds its samples for source-free replay. The external
 assets were made; rendering needs only the committed PCM files or retained plan.
 See the [kit contract](../docs/core-kit.md) for raw format, playback and limits.
 
+# Take selection and comp regions
+
+[`take-comp.maac`](take-comp.maac) uses two synthetic percussion alternatives
+with one shared physical origin and two adjacent comp regions. The second
+alternative is shorter. Each region names the selected take and its explicit
+audio clip; fades and routing remain authored on the clips. This demonstrates
+the [take contract](../docs/takes-and-comping.md), not device recording.
+
+```sh
+maac check examples/take-comp.maac --project-root . --disk-media
+maac build examples/take-comp.maac --project-root . --disk-media -o take-comp.wav
+```
+
 # Musical audio warping
 
 [`warp-rate.maac`](warp-rate.maac) combines two native warp-rate clips, a rate

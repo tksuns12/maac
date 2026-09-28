@@ -585,6 +585,51 @@ This slice used focused editing/CLI execution gates and all-targets static
 checking; it does not claim a new full-suite run. Recording, take membership,
 and comp selection remain outside this implementation.
 
+## Bounded take membership and comp selection (2026-09-28)
+
+`maac.takes/1` adds alternate native mono/stereo asset membership, a shared
+physical origin, and disjoint selected frame regions. Validation requires each
+selection to agree exactly with an existing native rate-mode audio clip. The
+source capability uses existing Protocol 2 transactions, saved-plan versions,
+and archive formats. See the [contract](takes-and-comping.md) and
+[runnable synthetic example](../examples/take-comp.maac).
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Core validation | `cargo test --lib takes:: --locked --offline --quiet` | Passed: 10 tests |
+| Library and adjacent integration gate | `cargo test --lib --test bundle --test editing_cli --test editing_source --test archive_cli --test archive_edit_cli --test archive_processor_context_cli --locked --offline --quiet` | Passed: 335 active library tests, 3 existing ignored; 17 bundle, 5 editing CLI, 6 source editing, 5 archive CLI, 8 archive edit, and 1 processor-context tests |
+| Take workflow | `cargo test --test takes_cli --locked --offline --quiet` | Passed: 6 tests, including the post-review regression |
+| Existing production and bundle editing | `cargo test --test audio_production --test production_data --test editing_bundle --locked --offline --quiet` | Passed: 4, 13, and 8 tests |
+| Post-review editing gate | Foundation library tests and `editing_bundle` | Passed: 10 and 8 tests |
+| All-targets strict Clippy | `cargo clippy --all-targets --locked --offline -- -D warnings` | Passed after the review fix |
+| Independent review | Read-only Astra max review and reproduction after the fix | No unresolved findings |
+| Release build | `cargo build --release --locked --offline` | Passed after the review fix |
+| Runnable example | Check and build `examples/take-comp.maac --project-root .` through embedded and disk-media paths, including the release binary | Passed: identical 48,000-frame WAV bytes |
+| Formatting and whitespace | `cargo fmt --all -- --check`; `git diff --check` | Passed |
+
+The take workflow checks exact selected samples, atomic switching and inverse
+restoration, preserved comments, asset/clip renames, and production delivery
+coexistence in retained plans. It journals a selection in an archive with
+processor context, deletes the original project, relocates and unpacks the
+archive, then restores the original revision through the inverse. Both
+alternate assets and the pinned schema survive. A nested source entry resolves
+the descriptor from the package root; missing/corrupt inactive media and
+corrupt descriptor bytes fail explicitly.
+
+Invalid cases cover partial selections, unknown takes, overlapping regions,
+duplicate managed clips, mixed formats, unsupported clip playback, crop
+mismatches, unavailable frames, checked-add overflow, and aggregate limits.
+Independent Astra review found that ordinary patch validation could accept
+`requires=["maac.takes/1"]` without its required extension. Candidate validation
+and normalization now enter artifact preparation for that declaration. The
+regression proves incomplete addition/removal preserves an existing destination
+and source, while complete metadata/capability removal preserves audio.
+
+This is a library and focused-integration gate, not a new full all-targets
+test-suite run. Device capture, synchronized microphone-file groups, playback,
+automatic crossfades, and representative listening/producer acceptance remain
+open.
+
 ## Historical naming cleanup
 
 The current tree uses MaaC consistently in the specification, grammar, schema,

@@ -106,6 +106,12 @@ four-times Annex 2 true-peak profile. See the applicable fixture results and
 historical profile comparison in the [metering evidence](docs/production-metering-evidence.md).
 No professional sound-quality or full ITU/EBU conformance claim is made.
 
+The [take and comp capability](docs/takes-and-comping.md) records alternate
+audio assets, a shared physical origin, and comp regions checked against
+explicit clips. Selection changes use existing atomic edits, inverses, and
+archive history. Try the [synthetic take example](examples/take-comp.maac);
+device recording and synchronized microphone-file groups remain future work.
+
 ## Quick start
 
 Install a current stable Rust toolchain. From the repository root:

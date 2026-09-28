@@ -24,6 +24,7 @@ Coverage of every reference processor identifier is not a full-profile claim.
 | Processors | `core.sine/1`, `core.kit/1`, `core.onepole/1`, `core.pan/1`, `core.sum/1`, `core.gain/1`, `core.fader/1`, `core.matrix/1`, `core.delay/1`, `core.noise/1` (mono/stereo); explicit delays permit causal feedback |
 | Sample kits | Pinned raw float32 mono/stereo assets, native-rate one-shot playback, linear interpolation, natural tails and sample-rate level automation |
 | Arranged audio | Top-level rate and warp-rate clips; source-frame slicing, musical warp anchors, rate-mode speed/reverse/physical placement, gain, linear/equal-power fades, explicit routing and tempo-aware tails |
+| Takes and comping | Required `maac.takes/1`: alternate mono/stereo assets, shared physical origins, disjoint frame regions validated against explicit rate-mode clips, atomic Protocol 2 selection edits and inverse history, and archived inactive alternates. No device capture or synchronized microphone-file groups. |
 | WAV import and disk media | `maac import-wav` imports whole mono/stereo RIFF WAVs or nonempty frame crops from PCM16/24/32 and IEEE float32 into a relocatable source project with native float32 PCM and source/conversion provenance; `--retain-original` preserves the snapshotted WAV and `maac verify-import` checks it, the crop, and the current project closure. Opt-in `import-wav --disk-media` and `verify-import --disk-media` handle selected native PCM crops up to 1 GiB through private files. `check` and `build` accept `--disk-media` to verify and render hash-pinned native PCM beyond inline limits from private snapshots. `patch --disk-media [--profile song]` edits source against captured PCM with the existing Protocol 2 conflicts and inverses. The artifact DSP engine also supports opt-in disk-backed sampling of already-embedded PCM. |
 | Reusable instruments | Named libraries, typed public controls, presets, independent polyphonic instances, voice and shared graphs |
 | Sound graphs | Versioned sine/saw/square/triangle/wavetable oscillators, deterministic noise and recirculating plucked strings, linear ADSR, sine LFO, gain, low/high-pass one-pole filtering, mixing and panning |
@@ -67,7 +68,7 @@ described above; they do not provide generic DSP execution. The bounded MIDI 1.0
 offline interchange export and does not provide live MIDI device transport.
 Protocol 2 transactional editing is implemented through `maac::editing` and `maac patch` for
 core compositions, hash-pinned local/built-in imports, reusable library sources and the recognized
-production extension. Candidate import edits are re-resolved and repinned atomically, and editing
+production and take extensions. Candidate import edits are re-resolved and repinned atomically, and editing
 preconditions use label-retaining N(A) with library/production descriptor defaults. Contracts for
 external processors that the runtime itself does not implement still fail explicitly rather than
 being approximated.
@@ -120,6 +121,13 @@ a source, and the frozen basic/acoustic libraries reject timbre with `E_CAPABILI
 The [pressure guide](pressure-expression.md) adds independent authored pressure
 mappings with separate `synth.pressure/1` opt-in. All four expression kinds may
 coexist when the graph declares both sources; frozen libraries remain unchanged.
+
+The [take and comp contract](takes-and-comping.md), required capability
+`maac.takes/1`, preserves explicit alternate membership and selection in source.
+Selected regions must agree exactly with ordinary audio clips; saved plans
+retain their resolved audio. All alternate assets remain pinned in source
+archives. The capability coexists with native production deliveries and uses
+existing editing, conflict, inverse, and disk-media paths.
 
 The [native production contract](production.md), required capability
 `maac.production/1`, has an **experimental implementation**. Native `fx.eq/1`,

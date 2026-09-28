@@ -573,8 +573,8 @@ impl Limits {
     }
 }
 
-/// Validate known production source data and its exact bundled descriptor bytes.
-/// Only the validated extension and the descriptor it references are removed;
+/// Validate known production and take source data and their bundled descriptors.
+/// Only validated extensions and the descriptors they reference are removed;
 /// all other syntax reaches the ordinary semantic compiler unchanged. Port
 /// layout resolution is finalized by `ProductionSettings::validate` after the
 /// complete graph has been compiled.
@@ -582,7 +582,12 @@ pub fn prepare_document(
     document: &Document,
     assets: &BTreeMap<String, Vec<u8>>,
 ) -> Result<(Document, Option<ProductionSettings>), Diagnostics> {
-    prepare(document, assets).map_err(|failure| {
+    let prepared_takes = if crate::takes::declared(document) {
+        Some(crate::takes::prepare_document(document, assets)?)
+    } else {
+        None
+    };
+    prepare(prepared_takes.as_ref().unwrap_or(document), assets).map_err(|failure| {
         let mut diagnostics = Diagnostics::new();
         diagnostics.push(failure.diagnostic());
         diagnostics

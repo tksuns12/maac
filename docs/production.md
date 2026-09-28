@@ -13,7 +13,9 @@ The capability adds project-level native `fx.eq/1`, `fx.compressor/1`, and
 `fx.reverb/1` nodes and named master/stem deliveries. It leaves `maac 1`, Core
 Audio conformance obligations, the grammar, the generic syntax-tree schema, and
 implemented performance-plan versions unchanged. Expressive instruments,
-multisampling, reusable sections, and take editing remain separate future work.
+multisampling and reusable sections remain separate future work. Bounded take
+membership and comp selection use the separate [`maac.takes/1`](takes-and-comping.md)
+capability, which can coexist with production deliveries.
 
 ## 1. Capability, source, and identity
 

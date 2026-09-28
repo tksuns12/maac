@@ -58,6 +58,7 @@ pub mod semantic;
 pub mod stdlib;
 pub mod syntax;
 pub mod synth;
+pub mod takes;
 pub mod tempo;
 pub mod voice;
 pub mod wavetable;

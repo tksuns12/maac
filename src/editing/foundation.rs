@@ -301,6 +301,15 @@ impl BundleEditContext {
             && authored["objects"].as_object().is_some_and(|objects| {
                 objects.values().any(|object| {
                     object["kind"] == "extension"
+                        || (object["kind"] == "project"
+                            && object["fields"]["requires"]["items"]
+                                .as_array()
+                                .is_some_and(|items| {
+                                    items.iter().any(|item| {
+                                        item["t"] == "string"
+                                            && item["v"] == crate::takes::CAPABILITY
+                                    })
+                                }))
                         || (object["kind"] == "node"
                             && object["fields"]["type"]["v"]
                                 .as_str()
@@ -513,14 +522,15 @@ impl EditContext for BundleEditContext {
         {
             return Ok(());
         }
-        let needs_artifact_validation = target.objects.values().any(|object| {
-            object.kind == "extension"
-                || (object.kind == "node"
-                    && object
-                        .field("type")
-                        .and_then(|field| field.value.as_string())
-                        .is_some_and(|processor| processor.starts_with("fx.")))
-        });
+        let needs_artifact_validation = crate::takes::declared(target)
+            || target.objects.values().any(|object| {
+                object.kind == "extension"
+                    || (object.kind == "node"
+                        && object
+                            .field("type")
+                            .and_then(|field| field.value.as_string())
+                            .is_some_and(|processor| processor.starts_with("fx.")))
+            });
         if needs_artifact_validation {
             return crate::compiler::check_bundle_artifact(&bundle).map_err(map_diagnostics);
         }
