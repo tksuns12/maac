@@ -14,7 +14,10 @@ use crate::plan::PlanError;
 use crate::syntax::{Document, Field, Object, Unit, Value, ValueKind};
 
 pub const CAPABILITY: &str = "maac.takes/1";
+pub const CAPABILITY_V2: &str = "maac.takes/2";
 pub const SCHEMA_BYTES: &[u8] = include_bytes!("../takes.schema.json");
+pub const SCHEMA_V2_BYTES: &[u8] = include_bytes!("../takes-v2.schema.json");
+pub const MAX_LANES: usize = 16;
 pub const MAX_GROUPS: usize = 64;
 pub const MAX_TAKES: usize = 64;
 pub const MAX_REGIONS: usize = 256;
@@ -40,28 +43,90 @@ pub fn prepare_document(
     })
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Version {
+    One,
+    Two,
+}
+
+impl Version {
+    fn from_capability(value: &str) -> Option<Self> {
+        match value {
+            CAPABILITY => Some(Self::One),
+            CAPABILITY_V2 => Some(Self::Two),
+            _ => None,
+        }
+    }
+
+    fn capability(self) -> &'static str {
+        match self {
+            Self::One => CAPABILITY,
+            Self::Two => CAPABILITY_V2,
+        }
+    }
+
+    fn schema(self) -> &'static [u8] {
+        match self {
+            Self::One => SCHEMA_BYTES,
+            Self::Two => SCHEMA_V2_BYTES,
+        }
+    }
+}
+
+pub(crate) fn is_capability(value: &str) -> bool {
+    Version::from_capability(value).is_some()
+}
+
 pub(crate) fn declared(document: &Document) -> bool {
     document.objects.values().any(|object| {
         (object.kind == "extension"
-            && object.field("namespace").and_then(|f| f.value.as_string()) == Some(CAPABILITY))
-            || (object.kind == "project" && requires(object, CAPABILITY))
+            && object
+                .field("namespace")
+                .and_then(|f| f.value.as_string())
+                .is_some_and(is_capability))
+            || (object.kind == "project"
+                && [CAPABILITY, CAPABILITY_V2]
+                    .iter()
+                    .any(|capability| requires(object, capability)))
     })
+}
+
+#[derive(Default)]
+struct Counts {
+    groups: usize,
+    takes: usize,
+    regions: usize,
 }
 
 fn prepare(document: &Document, assets: &BTreeMap<String, Vec<u8>>) -> Result<Document, PlanError> {
     let extensions: Vec<_> = document
         .objects
         .values()
-        .filter(|object| {
-            object.kind == "extension"
-                && object.field("namespace").and_then(|f| f.value.as_string()) == Some(CAPABILITY)
+        .filter_map(|object| {
+            if object.kind != "extension" {
+                return None;
+            }
+            let version = Version::from_capability(object.field("namespace")?.value.as_string()?)?;
+            Some((object, version))
         })
         .collect();
-    if extensions.is_empty() {
-        if document
-            .objects
-            .values()
-            .any(|object| object.kind == "project" && requires(object, CAPABILITY))
+    for version in [Version::One, Version::Two] {
+        let count = extensions
+            .iter()
+            .filter(|(_, candidate)| *candidate == version)
+            .count();
+        if count > 1 {
+            return Err(error(
+                "E_CAPABILITY",
+                "takes",
+                "at most one take extension per version is supported",
+            ));
+        }
+        if count == 0
+            && document
+                .objects
+                .values()
+                .any(|object| object.kind == "project" && requires(object, version.capability()))
         {
             return Err(error(
                 "E_CAPABILITY",
@@ -69,76 +134,129 @@ fn prepare(document: &Document, assets: &BTreeMap<String, Vec<u8>>) -> Result<Do
                 "the required take capability needs one take extension",
             ));
         }
+    }
+    if extensions.is_empty() {
         return Ok(document.clone());
-    }
-    if extensions.len() != 1 {
-        return Err(error(
-            "E_CAPABILITY",
-            "takes",
-            "exactly one take extension is supported",
-        ));
-    }
-    let extension = extensions[0];
-    object_fields(
-        extension,
-        &["namespace", "schema", "render_affecting", "data"],
-    )?;
-    if field(&extension.fields, "render_affecting")?.kind != ValueKind::Boolean(true) {
-        return Err(error(
-            "E_CAPABILITY",
-            "takes",
-            "take selection must affect rendering",
-        ));
     }
     let projects: Vec<_> = document
         .objects
         .values()
-        .filter(|o| o.kind == "project")
+        .filter(|object| object.kind == "project")
         .collect();
-    if projects.len() != 1 || !requires(projects[0], CAPABILITY) {
-        return Err(error(
-            "E_CAPABILITY",
-            "project.requires",
-            "takes need one project requiring maac.takes/1",
-        ));
-    }
-    let descriptor = descriptor(document, extension, assets)?;
-    let data = record(field(&extension.fields, "data")?)?;
-    exact_fields(data, &["groups"], &[], "takes.data")?;
-    let groups = record(field(data, "groups")?)?;
-    bounded_count(groups.len(), MAX_GROUPS, "takes.groups")?;
-    let mut take_count = 0usize;
-    let mut region_count = 0usize;
+    let mut counts = Counts::default();
     let mut clips = BTreeSet::new();
-    for (group_id, group) in groups {
-        identifier(group_id)?;
-        let fields = record(&group.value)?;
-        let path = format!("takes.groups.{group_id}");
-        exact_fields(fields, &["origin", "takes", "regions"], &[], &path)?;
-        let origin = seconds(field(fields, "origin")?)?;
-        if origin < Rational::zero() {
+    let mut prepared = document.clone();
+    for (extension, version) in extensions {
+        object_fields(
+            extension,
+            &["namespace", "schema", "render_affecting", "data"],
+        )?;
+        if field(&extension.fields, "render_affecting")?.kind != ValueKind::Boolean(true) {
             return Err(error(
-                "E_RANGE",
-                &path,
-                "capture origin must be nonnegative",
+                "E_CAPABILITY",
+                "takes",
+                "take selection must affect rendering",
             ));
         }
-        let definitions = record(field(fields, "takes")?)?;
-        bounded_count(definitions.len(), MAX_TAKES, &path)?;
-        take_count += definitions.len();
-        if take_count > MAX_TAKES {
+        if projects.len() != 1 || !requires(projects[0], version.capability()) {
+            return Err(error(
+                "E_CAPABILITY",
+                "project.requires",
+                "takes need one project requiring the matching take capability",
+            ));
+        }
+        let descriptor = descriptor(document, extension, assets, version)?;
+        let data = record(field(&extension.fields, "data")?)?;
+        exact_fields(data, &["groups"], &[], "takes.data")?;
+        let groups = record(field(data, "groups")?)?;
+        bounded_count(groups.len(), MAX_GROUPS, "takes.groups")?;
+        counts.groups += groups.len();
+        if counts.groups > MAX_GROUPS {
             return Err(error(
                 "E_RESOURCE_LIMIT",
                 "takes",
-                "total take count exceeds 64",
+                "total group count exceeds 64",
             ));
         }
-        let mut takes = BTreeMap::new();
-        let mut member_assets = BTreeSet::new();
-        let mut layout = None;
-        for (take_id, definition) in definitions {
-            identifier(take_id)?;
-            let values = record(&definition.value)?;
+        for (group_id, group) in groups {
+            identifier(group_id)?;
+            validate_group(
+                document,
+                group_id,
+                &group.value,
+                version,
+                &mut counts,
+                &mut clips,
+            )?;
+        }
+        prepared.objects.remove(&extension.id);
+        prepared.objects.remove(&descriptor.id);
+    }
+    Ok(prepared)
+}
+
+fn validate_group<'a>(
+    document: &'a Document,
+    group_id: &str,
+    group: &'a Value,
+    version: Version,
+    counts: &mut Counts,
+    clips: &mut BTreeSet<&'a str>,
+) -> Result<(), PlanError> {
+    let fields = record(group)?;
+    let path = format!("takes.groups.{group_id}");
+    exact_fields(fields, &["origin", "takes", "regions"], &[], &path)?;
+    let origin = seconds(field(fields, "origin")?)?;
+    if origin < Rational::zero() {
+        return Err(error(
+            "E_RANGE",
+            &path,
+            "capture origin must be nonnegative",
+        ));
+    }
+    let definitions = record(field(fields, "takes")?)?;
+    bounded_count(definitions.len(), MAX_TAKES, &path)?;
+    counts.takes += definitions.len();
+    if counts.takes > MAX_TAKES {
+        return Err(error(
+            "E_RESOURCE_LIMIT",
+            "takes",
+            "total take count exceeds 64",
+        ));
+    }
+    let mut takes: BTreeMap<&str, BTreeMap<&str, Take<'_>>> = BTreeMap::new();
+    let mut member_assets = BTreeSet::new();
+    let mut rate = None;
+    let mut channels = BTreeMap::new();
+    for (take_id, definition) in definitions {
+        identifier(take_id)?;
+        let values = record(&definition.value)?;
+        let lanes = match version {
+            Version::One => vec![("", values)],
+            Version::Two => {
+                exact_fields(values, &["lanes"], &[], &path)?;
+                let lanes = record(field(values, "lanes")?)?;
+                bounded_count(lanes.len(), MAX_LANES, &path)?;
+                lanes
+                    .iter()
+                    .map(|(id, value)| {
+                        identifier(id)?;
+                        Ok((id.as_str(), record(&value.value)?))
+                    })
+                    .collect::<Result<Vec<_>, PlanError>>()?
+            }
+        };
+        if let Some(first) = takes.values().next() {
+            if !first.keys().copied().eq(lanes.iter().map(|(id, _)| *id)) {
+                return Err(error(
+                    "E_REFERENCE",
+                    &path,
+                    "every take must contain the same microphone lanes",
+                ));
+            }
+        }
+        let mut members = BTreeMap::new();
+        for (lane_id, values) in lanes {
             exact_fields(values, &["asset", "source_origin"], &[], &path)?;
             let asset = top_reference(field(values, "asset")?)?;
             if !member_assets.insert(asset) {
@@ -157,19 +275,17 @@ fn prepare(document: &Document, assets: &BTreeMap<String, Vec<u8>>) -> Result<Do
                     "take source origin must precede asset end",
                 ));
             }
-            let current_layout = (metadata.rate, metadata.channels);
-            if layout
-                .replace(current_layout)
-                .is_some_and(|old| old != current_layout)
+            if rate
+                .replace(metadata.rate)
+                .is_some_and(|old| old != metadata.rate)
+                || channels
+                    .insert(lane_id, metadata.channels)
+                    .is_some_and(|old| old != metadata.channels)
             {
-                return Err(error(
-                    "E_ASSET",
-                    &path,
-                    "take members must share sample rate and channels",
-                ));
+                return Err(error("E_ASSET", &path, "take files must share a sample rate and each lane must retain its channel count"));
             }
-            takes.insert(
-                take_id.as_str(),
+            members.insert(
+                lane_id,
                 Take {
                     asset,
                     source_origin,
@@ -177,27 +293,57 @@ fn prepare(document: &Document, assets: &BTreeMap<String, Vec<u8>>) -> Result<Do
                 },
             );
         }
-        let regions = record(field(fields, "regions")?)?;
-        bounded_count(regions.len(), MAX_REGIONS, &path)?;
-        region_count += regions.len();
-        if region_count > MAX_REGIONS {
+        takes.insert(take_id, members);
+    }
+    let regions = record(field(fields, "regions")?)?;
+    bounded_count(regions.len(), MAX_REGIONS, &path)?;
+    counts.regions += regions.len();
+    if counts.regions > MAX_REGIONS {
+        return Err(error(
+            "E_RESOURCE_LIMIT",
+            "takes",
+            "total region count exceeds 256",
+        ));
+    }
+    let mut ranges = Vec::with_capacity(regions.len());
+    for (region_id, definition) in regions {
+        identifier(region_id)?;
+        let values = record(&definition.value)?;
+        let path = format!("{path}.regions.{region_id}");
+        let clip_field = match version {
+            Version::One => "clip",
+            Version::Two => "clips",
+        };
+        exact_fields(values, &["take", "range", clip_field], &[], &path)?;
+        let take_id = symbol(field(values, "take")?)?;
+        let selected = takes
+            .get(take_id)
+            .ok_or_else(|| error("E_REFERENCE", &path, "region must select a member take"))?;
+        let (start, end) = frame_range(field(values, "range")?)?;
+        let bindings = match version {
+            Version::One => vec![("", field(values, "clip")?)],
+            Version::Two => {
+                let bindings = record(field(values, "clips")?)?;
+                bounded_count(bindings.len(), MAX_LANES, &path)?;
+                bindings
+                    .iter()
+                    .map(|(id, value)| (id.as_str(), &value.value))
+                    .collect()
+            }
+        };
+        if !selected
+            .keys()
+            .copied()
+            .eq(bindings.iter().map(|(id, _)| *id))
+        {
             return Err(error(
-                "E_RESOURCE_LIMIT",
-                "takes",
-                "total region count exceeds 256",
+                "E_REFERENCE",
+                &path,
+                "region clips must contain every microphone lane exactly once",
             ));
         }
-        let mut ranges = Vec::with_capacity(regions.len());
-        for (region_id, definition) in regions {
-            identifier(region_id)?;
-            let values = record(&definition.value)?;
-            let path = format!("{path}.regions.{region_id}");
-            exact_fields(values, &["take", "range", "clip"], &[], &path)?;
-            let take_id = symbol(field(values, "take")?)?;
-            let take = takes
-                .get(take_id)
-                .ok_or_else(|| error("E_REFERENCE", &path, "region must select a member take"))?;
-            let (start, end) = frame_range(field(values, "range")?)?;
+        for (lane_id, reference) in bindings {
+            let take = &selected[lane_id];
             let source_start = take.source_origin.checked_add(start).ok_or_else(|| {
                 error("E_RANGE", &path, "selected take source start overflows u64")
             })?;
@@ -212,7 +358,7 @@ fn prepare(document: &Document, assets: &BTreeMap<String, Vec<u8>>) -> Result<Do
                     "region exceeds selected take asset",
                 ));
             }
-            let clip_id = top_reference(field(values, "clip")?)?;
+            let clip_id = top_reference(reference)?;
             if !clips.insert(clip_id) {
                 return Err(error(
                     "E_REFERENCE",
@@ -232,21 +378,18 @@ fn prepare(document: &Document, assets: &BTreeMap<String, Vec<u8>>) -> Result<Do
                     )
                 })?;
             validate_clip(clip, take, &origin, start, source_start, source_end, &path)?;
-            ranges.push((start, end));
         }
-        ranges.sort_unstable();
-        if ranges.windows(2).any(|pair| pair[1].0 < pair[0].1) {
-            return Err(error(
-                "E_RANGE",
-                &path,
-                "comp regions must not overlap within a group",
-            ));
-        }
+        ranges.push((start, end));
     }
-    let mut prepared = document.clone();
-    prepared.objects.remove(&extension.id);
-    prepared.objects.remove(&descriptor.id);
-    Ok(prepared)
+    ranges.sort_unstable();
+    if ranges.windows(2).any(|pair| pair[1].0 < pair[0].1) {
+        return Err(error(
+            "E_RANGE",
+            &path,
+            "comp regions must not overlap within a group",
+        ));
+    }
+    Ok(())
 }
 
 fn requires(project: &Object, capability: &str) -> bool {
@@ -259,6 +402,7 @@ fn descriptor<'a>(
     document: &'a Document,
     extension: &Object,
     assets: &BTreeMap<String, Vec<u8>>,
+    version: Version,
 ) -> Result<&'a Object, PlanError> {
     let id = top_reference(field(&extension.fields, "schema")?)?;
     let descriptor = document
@@ -296,8 +440,8 @@ fn descriptor<'a>(
             "schema bytes are missing from the bundle",
         )
     })?;
-    if string(field(&descriptor.fields, "hash")?)? != sha256_digest(SCHEMA_BYTES)
-        || supplied.as_slice() != SCHEMA_BYTES
+    if string(field(&descriptor.fields, "hash")?)? != sha256_digest(version.schema())
+        || supplied.as_slice() != version.schema()
     {
         return Err(error(
             "E_HASH",
@@ -965,5 +1109,207 @@ extension comp {{ namespace="maac.takes/1"; schema=&schema; render_affecting=tru
         let failure = prepare(&document, &assets()).unwrap_err();
         assert_eq!(failure.code, "E_RESOURCE_LIMIT");
         assert_eq!(failure.message, "total region count exceeds 256");
+    }
+
+    fn grouped_source() -> String {
+        source()
+            .replace(CAPABILITY, CAPABILITY_V2)
+            .replace("takes.schema.json", "takes-v2.schema.json")
+            .replace(&sha256_digest(SCHEMA_BYTES), &sha256_digest(SCHEMA_V2_BYTES))
+            .replace("first_take={asset=&first; source_origin=1frame;}", "first_take={lanes={close={asset=&first; source_origin=1frame;};room={asset=&third; source_origin=2frame;};};}")
+            .replace("second_take={asset=&second; source_origin=2frame;}", "second_take={lanes={close={asset=&second; source_origin=2frame;};room={asset=&fourth; source_origin=3frame;};};}")
+            .replace("clip=&early", "clips={close=&early;room=&early_room;}")
+            .replace("clip=&late", "clips={close=&late;room=&late_room;}")
+            + &format!(r#"
+asset third {{ kind=audio; path="room.pcm"; hash="{hash}"; format="pcm_f32le_interleaved/1"; rate=48000Hz; channels=2; frames=8; }}
+asset fourth {{ kind=audio; path="room.pcm"; hash="{hash}"; format="pcm_f32le_interleaved/1"; rate=48000Hz; channels=2; frames=8; }}
+audio early_room {{ asset=&third; at=0s; source=[2frame,4frame]; mode=rate; }}
+audio late_room {{ asset=&fourth; at=1/24000s; source=[5frame,7frame]; mode=rate; }}
+"#, hash=sha256_digest(&[0;64]))
+    }
+
+    fn grouped_assets() -> BTreeMap<String, Vec<u8>> {
+        let mut assets = assets();
+        assets.insert("takes-v2.schema.json".into(), SCHEMA_V2_BYTES.to_vec());
+        assets.insert("room.pcm".into(), vec![0; 64]);
+        assets
+    }
+
+    fn grouped_prepare(source: &str) -> Result<Document, PlanError> {
+        prepare(&crate::parse(source).unwrap(), &grouped_assets())
+    }
+
+    #[test]
+    fn grouped_takes_accept_mixed_lane_layouts_and_preserve_explicit_clips() {
+        let source = grouped_source();
+        let document = crate::parse(&source).unwrap();
+        let prepared = grouped_prepare(&source).unwrap();
+        assert_eq!(prepared.objects.len(), document.objects.len() - 2);
+        for (id, object) in &prepared.objects {
+            assert_eq!(Some(object), document.objects.get(id));
+        }
+        let mut bundle = crate::SourceBundle::new("nested/main.maac", source);
+        bundle.assets = grouped_assets();
+        assert!(crate::compile_bundle_artifact(&bundle).is_ok());
+    }
+
+    #[test]
+    fn grouped_takes_require_complete_lanes_and_exact_selected_alignment() {
+        for (old, new) in [
+            ("room={asset=&fourth; source_origin=3frame;};", ""),
+            ("room={asset=&fourth;", "other={asset=&fourth;"),
+            ("room=&early_room;", ""),
+            ("room=&early_room;", "room=&early_room;extra=&early_room;"),
+            ("room=&early_room;", "room=&early;"),
+            ("room=&early_room;", "room=&missing;"),
+            ("room=&early_room;", "room=&early_room:out;"),
+            (
+                "asset=&fourth; source_origin=3frame",
+                "asset=&third; source_origin=3frame",
+            ),
+            (
+                "audio early_room { asset=&third;",
+                "audio early_room { asset=&fourth;",
+            ),
+            ("source=[2frame,4frame]", "source=[3frame,5frame]"),
+            (
+                "audio early_room { asset=&third; at=0s;",
+                "audio early_room { asset=&third; at=1ms;",
+            ),
+            ("source_origin=3frame", "source_origin=8frame"),
+            ("source_origin=3frame", "source_origin=5frame"),
+            ("clips={close=&early;room=&early_room;}", "clip=&early"),
+            ("source_origin=3frame", "source_origin=3frame;unknown=1"),
+        ] {
+            let source = grouped_source();
+            assert!(source.contains(old), "missing {old}");
+            assert!(
+                grouped_prepare(&source.replacen(old, new, 1)).is_err(),
+                "accepted {new}"
+            );
+        }
+    }
+
+    #[test]
+    fn grouped_takes_reject_layout_changes_and_missing_version_contracts() {
+        let source = grouped_source();
+        for changed in [
+            source.replacen("rate=48kHz", "rate=44100Hz", 1),
+            source.replacen("channels=2; frames=8", "channels=1; frames=8", 1),
+            source.replace("requires=[\"maac.takes/2\"]", "requires=[]"),
+            source.replace("namespace=\"maac.takes/2\"", "namespace=\"maac.takes/1\""),
+            source.replace(
+                &sha256_digest(SCHEMA_V2_BYTES),
+                &sha256_digest(SCHEMA_BYTES),
+            ),
+            source.replace("render_affecting=true", "render_affecting=false"),
+        ] {
+            assert!(grouped_prepare(&changed).is_err());
+        }
+        let mut document = crate::parse(&source).unwrap();
+        document.objects.remove("comp");
+        assert_eq!(
+            prepare(&document, &grouped_assets()).unwrap_err().code,
+            "E_CAPABILITY"
+        );
+        let mut document = crate::parse(&source).unwrap();
+        let mut duplicate = document.objects["comp"].clone();
+        duplicate.id = "duplicate".into();
+        document.objects.insert(duplicate.id.clone(), duplicate);
+        assert_eq!(
+            prepare(&document, &grouped_assets()).unwrap_err().code,
+            "E_CAPABILITY"
+        );
+    }
+
+    #[test]
+    fn grouped_lane_count_and_source_addition_are_bounded() {
+        let extra_lanes = (0..17)
+            .map(|i| format!("l{i}={{asset=&third;source_origin=0frame;}};"))
+            .collect::<String>();
+        let source = grouped_source().replace("close={asset=&first; source_origin=1frame;};room={asset=&third; source_origin=2frame;};", &extra_lanes);
+        assert_eq!(
+            grouped_prepare(&source).unwrap_err().code,
+            "E_RESOURCE_LIMIT"
+        );
+        let source = grouped_source()
+            .replace("frames=8", "frames=18446744073709551615")
+            .replace(
+                "source_origin=2frame;};};}",
+                "source_origin=18446744073709551614frame;};};}",
+            );
+        let failure = grouped_prepare(&source).unwrap_err();
+        assert_eq!(failure.code, "E_RANGE");
+        assert!(failure.message.contains("overflows u64"));
+    }
+
+    #[test]
+    fn versions_share_clip_ownership_and_aggregate_counts() {
+        let mut grouped = crate::parse(&grouped_source()).unwrap();
+        let original = crate::parse(&source()).unwrap();
+        // The v1 extension deliberately points at the same clips as v2.
+        let mut extension = original.objects["comp"].clone();
+        extension.id = "v1_comp".into();
+        let mut schema = original.objects["schema"].clone();
+        schema.id = "v1_schema".into();
+        let ValueKind::Reference(reference) =
+            &mut extension.fields.get_mut("schema").unwrap().value.kind
+        else {
+            panic!()
+        };
+        reference.path = vec![schema.id.clone()];
+        grouped.objects.insert(schema.id.clone(), schema);
+        grouped.objects.insert(extension.id.clone(), extension);
+        let ValueKind::List(requirements) = &mut grouped
+            .objects
+            .get_mut("p")
+            .unwrap()
+            .fields
+            .get_mut("requires")
+            .unwrap()
+            .value
+            .kind
+        else {
+            panic!()
+        };
+        let original_requires = &original.objects["p"].fields["requires"].value;
+        let ValueKind::List(v1) = &original_requires.kind else {
+            panic!()
+        };
+        requirements.extend(v1.clone());
+        let failure = prepare(&grouped, &grouped_assets()).unwrap_err();
+        assert_eq!(failure.code, "E_REFERENCE");
+        assert!(failure.message.contains("distinct clip"));
+
+        // Simulate previous groups/versions filling each shared counter. The
+        // next valid group's addition must fail before any clips are accepted.
+        let document = crate::parse(&grouped_source()).unwrap();
+        let ValueKind::Record(data) = &document.objects["comp"].fields["data"].value.kind else {
+            panic!()
+        };
+        let ValueKind::Record(groups) = &data["groups"].value.kind else {
+            panic!()
+        };
+        for mut counts in [
+            Counts {
+                takes: MAX_TAKES,
+                ..Counts::default()
+            },
+            Counts {
+                regions: MAX_REGIONS,
+                ..Counts::default()
+            },
+        ] {
+            let failure = validate_group(
+                &document,
+                "vocals",
+                &groups["vocals"].value,
+                Version::Two,
+                &mut counts,
+                &mut BTreeSet::new(),
+            )
+            .unwrap_err();
+            assert_eq!(failure.code, "E_RESOURCE_LIMIT");
+        }
     }
 }

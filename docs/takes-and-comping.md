@@ -8,7 +8,9 @@ source records preserve take membership, alignment coordinates, and selection.
 The capability uses existing `extension`, asset, audio, and Protocol 2 syntax.
 It adds no processor or performance-plan version. Recording from devices,
 monitoring, separate synchronized microphone files, playback transport,
-warped/reversed comp clips, and automatic crossfades remain outside this slice.
+warped/reversed comp clips, and automatic crossfades remain outside this v1
+slice. [`maac.takes/2`](grouped-takes.md) separately implements synchronized
+microphone-file lanes while preserving this schema and v1 behavior.
 
 ## Source contract
 
@@ -17,8 +19,9 @@ and contain exactly one extension with that namespace. The extension requires
 `render_affecting=true`, a `schema` reference to a top-level descriptor asset,
 and `data`. The descriptor's hash and bytes must match the shipped
 [`takes.schema.json`](../takes.schema.json). Its path is relative to the package
-root, including when the composition entry is in a subdirectory. One take
-extension can coexist with the existing production delivery extension.
+root, including when the composition entry is in a subdirectory. One v1 take
+extension can coexist with one v2 take extension and the existing production
+delivery extension. Each version needs its matching required capability.
 
 ```maac
 extension takes {
@@ -117,7 +120,8 @@ Unknown extensions, unavailable dependencies, and mismatches fail explicitly.
 
 ## Bounds and evidence
 
-At most 64 groups, 64 total take entries, and 256 total regions are accepted.
+At most 64 groups, 64 total take entries, and 256 total regions are accepted
+across v1 and v2 combined. Clip ownership is also shared across both versions.
 Existing source, asset, graph, exact-arithmetic, duration, and work limits also
 apply. Frame offset addition is checked before use. Schema shape validation
 alone does not establish asset identity, alignment, or clip agreement.
@@ -125,6 +129,6 @@ alone does not establish asset identity, alignment, or clip agreement.
 The [verification record](verification.md) describes executable acceptance,
 including exact selected samples, atomic switching and inverse restoration,
 production delivery coexistence, and archive relocation. This capability
-provides a first comp-selection contract; the broader capture, grouped-mic,
-listening, and producer workflow gates remain in the
+provides the original single-file comp-selection contract; the broader capture,
+playback, listening, and producer workflow gates remain in the
 [roadmap](end-to-end-production-plan.md).

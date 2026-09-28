@@ -110,7 +110,8 @@ The [take and comp capability](docs/takes-and-comping.md) records alternate
 audio assets, a shared physical origin, and comp regions checked against
 explicit clips. Selection changes use existing atomic edits, inverses, and
 archive history. Try the [synthetic take example](examples/take-comp.maac);
-device recording and synchronized microphone-file groups remain future work.
+[v2 microphone groups](docs/grouped-takes.md) coordinate all lanes of a take.
+Device recording and playback remain future work.
 
 ## Quick start
 

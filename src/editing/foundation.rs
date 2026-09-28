@@ -307,7 +307,9 @@ impl BundleEditContext {
                                 .is_some_and(|items| {
                                     items.iter().any(|item| {
                                         item["t"] == "string"
-                                            && item["v"] == crate::takes::CAPABILITY
+                                            && item["v"]
+                                                .as_str()
+                                                .is_some_and(crate::takes::is_capability)
                                     })
                                 }))
                         || (object["kind"] == "node"

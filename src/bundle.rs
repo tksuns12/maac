@@ -582,7 +582,7 @@ pub(crate) fn discover_document_references(
             .and_then(|field| field.value.as_string());
         let name = match namespace {
             Some(crate::production_data::CAPABILITY) => "production",
-            Some(crate::takes::CAPABILITY) => "takes",
+            Some(crate::takes::CAPABILITY | crate::takes::CAPABILITY_V2) => "takes",
             _ => continue,
         };
         let reference = extension

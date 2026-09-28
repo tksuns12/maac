@@ -1047,7 +1047,9 @@ impl<'a> Validator<'a> {
                     if let ValueKind::String(capability) = &item.kind {
                         if !matches!(
                             capability.as_str(),
-                            crate::production_data::CAPABILITY | crate::takes::CAPABILITY
+                            crate::production_data::CAPABILITY
+                                | crate::takes::CAPABILITY
+                                | crate::takes::CAPABILITY_V2
                         ) {
                             self.push(
                                 DiagnosticCode::Capability,

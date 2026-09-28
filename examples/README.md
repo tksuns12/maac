@@ -33,6 +33,19 @@ maac check examples/take-comp.maac --project-root . --disk-media
 maac build examples/take-comp.maac --project-root . --disk-media -o take-comp.wav
 ```
 
+# Synchronized microphone-file lanes
+
+[`grouped-takes.maac`](grouped-takes.maac) uses v2 takes with two named lanes,
+individual source origins, and adjacent selections. Explicit matrices route
+close and room lanes to left and right channels. The files are synthetic
+percussion alternatives, not microphone recordings. See the
+[grouped-take contract](../docs/grouped-takes.md).
+
+```sh
+maac check examples/grouped-takes.maac --project-root . --disk-media
+maac build examples/grouped-takes.maac --project-root . --disk-media -o grouped.wav
+```
+
 # Musical audio warping
 
 [`warp-rate.maac`](warp-rate.maac) combines two native warp-rate clips, a rate

@@ -15,7 +15,8 @@ Audio conformance obligations, the grammar, the generic syntax-tree schema, and
 implemented performance-plan versions unchanged. Expressive instruments,
 multisampling and reusable sections remain separate future work. Bounded take
 membership and comp selection use the separate [`maac.takes/1`](takes-and-comping.md)
-capability, which can coexist with production deliveries.
+and [`maac.takes/2` microphone-group](grouped-takes.md) capabilities, which can
+coexist with production deliveries.
 
 ## 1. Capability, source, and identity
 

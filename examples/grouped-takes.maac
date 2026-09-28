@@ -1,0 +1,89 @@
+maac 1;
+
+// Synthetic files illustrate authored alignment, not actual microphone capture.
+// maac build examples/grouped-takes.maac --project-root . --disk-media -o grouped.wav
+project demo {
+  requires = ["maac.takes/2"];
+  score = [0q, 1q]; tail = 0s; rate = 48000Hz;
+  tempo = &clock; meter = &metre; output = &mix:out;
+}
+tempo clock { points = [(0q, 60bpm, step)]; }
+meter metre { points = [(0q, 4, 4)]; }
+asset microphone_schema {
+  kind = descriptor; path = "takes-v2.schema.json";
+  hash = "sha256:4a98b2d72733cd9ba6f90e7c121ea7d67ce79e7d274305a722bbad25ee420e79";
+}
+asset first_close {
+  kind = audio; path = "examples/sounds/core-kit/kick.pcm";
+  hash = "sha256:b29ea5c52a79d974b5d897530609d0d06a7d6cd315ae2d774340a8322c887b04";
+  format = "pcm_f32le_interleaved/1";
+  rate = 24000Hz; channels = 1; frames = 4800;
+}
+asset first_room {
+  kind = audio; path = "examples/sounds/core-kit/snare.pcm";
+  hash = "sha256:dfedbee9ec071476e09e6ea8e54eb7338cac15629b4c26405eb67cff6ce507ca";
+  format = "pcm_f32le_interleaved/1";
+  rate = 24000Hz; channels = 1; frames = 2400;
+}
+asset second_close {
+  kind = audio; path = "examples/sounds/core-kit/snare.pcm";
+  hash = "sha256:dfedbee9ec071476e09e6ea8e54eb7338cac15629b4c26405eb67cff6ce507ca";
+  format = "pcm_f32le_interleaved/1";
+  rate = 24000Hz; channels = 1; frames = 2400;
+}
+asset second_room {
+  kind = audio; path = "examples/sounds/core-kit/kick.pcm";
+  hash = "sha256:b29ea5c52a79d974b5d897530609d0d06a7d6cd315ae2d774340a8322c887b04";
+  format = "pcm_f32le_interleaved/1";
+  rate = 24000Hz; channels = 1; frames = 4800;
+}
+extension microphones {
+  namespace = "maac.takes/2"; schema = &microphone_schema; render_affecting = true;
+  data = { groups = { drums = {
+    origin = 1/4s;
+    takes = {
+      first = { lanes = {
+        close = { asset = &first_close; source_origin = 0frame; };
+        room = { asset = &first_room; source_origin = 24frame; };
+      }; };
+      second = { lanes = {
+        close = { asset = &second_close; source_origin = 12frame; };
+        room = { asset = &second_room; source_origin = 48frame; };
+      }; };
+    };
+    regions = {
+      opening = { take = first; range = [0frame, 1200frame]; clips = { close = &opening_close; room = &opening_room; }; };
+      ending = { take = second; range = [1200frame, 2200frame]; clips = { close = &ending_close; room = &ending_room; }; };
+    };
+  }; }; };
+}
+audio opening_close {
+  asset = &first_close; source = [0frame, 1200frame]; at = 1/4s;
+  mode = rate; gain = 1/2; fade_in = 2ms; fade_out = 2ms;
+}
+audio opening_room {
+  asset = &first_room; source = [24frame, 1224frame]; at = 1/4s;
+  mode = rate; gain = 1/2; fade_in = 2ms; fade_out = 2ms;
+}
+audio ending_close {
+  asset = &second_close; source = [1212frame, 2212frame]; at = 3/10s;
+  mode = rate; gain = 1/2; fade_in = 2ms; fade_out = 2ms;
+}
+audio ending_room {
+  asset = &second_room; source = [1248frame, 2248frame]; at = 3/10s;
+  mode = rate; gain = 1/2; fade_in = 2ms; fade_out = 2ms;
+}
+// Explicit routing places close on the left and room on the right.
+node close_bus { type = "core.sum/1"; config = { channels = 1; }; }
+node room_bus { type = "core.sum/1"; config = { channels = 1; }; }
+node close_output { type = "core.matrix/1"; config = { inputs = 1; outputs = 2; coefficients = [[1], [0]]; }; }
+node room_output { type = "core.matrix/1"; config = { inputs = 1; outputs = 2; coefficients = [[0], [1]]; }; }
+node mix { type = "core.sum/1"; config = { channels = 2; }; }
+connect c1 { from = &opening_close:out; to = &close_bus:in; }
+connect c2 { from = &ending_close:out; to = &close_bus:in; }
+connect r1 { from = &opening_room:out; to = &room_bus:in; }
+connect r2 { from = &ending_room:out; to = &room_bus:in; }
+connect c_out { from = &close_bus:out; to = &close_output:in; }
+connect r_out { from = &room_bus:out; to = &room_output:in; }
+connect c_mix { from = &close_output:out; to = &mix:in; }
+connect r_mix { from = &room_output:out; to = &mix:in; }

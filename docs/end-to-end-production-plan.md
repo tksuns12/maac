@@ -16,7 +16,7 @@ complete professional-production product.
 | Phase 1: end-to-end inventory | Complete as a bounded reference inventory | Keep the [lifecycle inventory](end-to-end-lifecycle-inventory.md) aligned with implemented slices and open gates. |
 | Phase 2: reset-correct excerpts | Complete for bounded final-WAV ranges | No claim of realtime seeking, speed-up, or arbitrary DSP-state restoration. |
 | Phase 3: media/import/packaging | In progress; bounded WAV crop import, opt-in retained-original verification, opt-in file-backed WAV import and verification up to the native PCM disk-media limit, archive checkpoints, multiple selected retained WAV imports, explicit whole-output and independent native-effect-group freeze reuse, opt-in partial reuse of eligible group members, bounded independent-branch gain/pan edit reuse, journaled local-source transactions, and opt-in verified native processor context implemented | Add external processor dependency/state packaging, overlapping frozen graph branches, broader selective invalidation, and remaining media and reopen coverage. |
-| Phase 4: capture/playback/comping | Partial foundations: source-preserving Protocol 2 edits of disk-backed audio clips, bounded take membership with a shared physical origin, and explicit comp selection with conflicts, inverses, and archive reopen | Add device recording, synchronized microphone-file groups, playback, broader revision workflows, and representative listening acceptance. |
+| Phase 4: capture/playback/comping | Partial foundations: source-preserving Protocol 2 edits of disk-backed audio clips, bounded take membership with a shared physical origin, synchronized microphone-file lanes, and explicit comp selection with conflicts, inverses, and archive reopen | Add device recording, playback, broader revision workflows, and representative listening acceptance. |
 | Phase 5: open processors and hosting | Partial foundations only | Generic rendering and executable native external hosting remain deferred. |
 | Phase 6: mix/master/release/reopen | Not complete | Pass the representative production, invalidation, clean-reopen, listening, and producer gates. |
 
@@ -265,8 +265,12 @@ frame regions. Each selection must agree exactly with its explicit native
 rate-mode audio clip. Protocol 2 transactions change the selection and clip
 together, preserve inverses, and reject inconsistent candidates. Archives
 retain all alternates and the selection history after relocation. This does
-not establish device capture, synchronized microphone-file groups, playback,
-automatic crossfades, or listening acceptance.
+not establish device capture, playback, automatic crossfades, or listening
+acceptance. The additive [`maac.takes/2`](grouped-takes.md) contract now selects
+synchronized microphone-file lanes together. Every take and region has the
+same lane set; files share a rate, while each lane retains its channel layout
+and individual source origin. Partial lane switches fail atomically. V1
+descriptors and projects remain supported without a schema rewrite.
 
 ### 5. Open samplers, processors, libraries, and plugin contracts
 

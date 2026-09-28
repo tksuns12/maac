@@ -630,6 +630,57 @@ test-suite run. Device capture, synchronized microphone-file groups, playback,
 automatic crossfades, and representative listening/producer acceptance remain
 open.
 
+## Synchronized microphone-file take lanes (2026-09-28)
+
+`maac.takes/2` adds named microphone-file lanes with individual source-frame
+origins and one comp selection across every lane. It reuses explicit audio
+clips, Protocol 2 transactions, and existing archive and saved-plan formats.
+V1 and v2 share aggregate metadata limits and clip ownership while retaining
+separate pinned schemas. See the [grouped-take contract](grouped-takes.md) and
+[synthetic example](../examples/grouped-takes.maac).
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Take core validation | `cargo test --lib takes:: --locked --offline --quiet` | Passed: 15 tests, including all 10 v1 tests |
+| Library and adjacent integration gate | `cargo test --lib --test takes_cli --test bundle --test editing_bundle --test editing_cli --test editing_source --test production_data --test audio_production --test archive_cli --test archive_processor_context_cli --locked --offline --quiet` | Passed: 340 active library tests, 3 existing ignored; 6 v1 take CLI, 17 bundle, 8 bundle editing, 5 editing CLI, 6 source editing, 13 production data, 4 audio production, 5 archive CLI, and 1 processor-context tests |
+| Grouped take workflow | `cargo test --test grouped_takes_cli --locked --offline -- --nocapture` | Passed: 7 tests, including relocated inverse restoration |
+| V1 schema compatibility | Golden SHA-256 assertion in grouped CLI tests; diff against previous commit | Passed: unchanged `11cd8e70cf09aff986f821f88f46ad97056cfb5514a4344eeaa38a6d2e432960` |
+| All-targets strict Clippy | `cargo clippy --all-targets --locked --offline -- -D warnings` | Passed after the final acceptance-test changes |
+| Formatting and whitespace | `cargo fmt --all -- --check`; `git diff --check` | Passed |
+| Independent review | Read-only Astra max core/schema and acceptance review | No remaining material findings |
+| Release build | `cargo build --release --locked --offline` | Passed |
+| Release examples | Check both take examples with `--disk-media`; build `examples/grouped-takes.maac --project-root .` through embedded and disk paths | Passed: identical 48,000-frame stereo WAV bytes |
+
+The deterministic workflow uses two takes with four distinct files, a mono
+close lane and a stereo room lane, and four different file-frame origins.
+Expected stereo samples are checked exactly before selection, after switching
+all lanes together, and after inverse restoration. Ordinary and disk-media
+patch paths preserve source comments; incomplete switches preserve both source
+and an existing output. Requirement-only additions and partial metadata removals
+fail atomically. Complete capability removal remains valid.
+
+The archive test creates a checkpoint, journals the selection, deletes the
+original project and base archive, relocates and verifies the resulting archive,
+unpacks all four media files and the descriptor, and checks selected audio.
+Applying the inverse to the reopened project restores its original revision
+and samples. Corrupt inactive media fails with `E_HASH`. A project containing
+v1, v2, and production extensions compiles to a retained plan and renders its
+expected audio after deleting the source project.
+
+Core failure cases cover missing or extra lanes, duplicate assets or clips,
+channel-layout changes across takes, mixed sample rates, unsupported playback,
+incorrect selected ranges and placement, unavailable frames, offset overflow,
+lane-count bounds, aggregate bounds, mismatched descriptors, and duplicate or
+missing capability extensions. Clip ownership is enforced across both versions.
+Independent Astra review found no core/schema issues; acceptance review prompted
+explicit inverse application after relocated reopen. The v2 schema received
+structural/local-reference inspection; a formal Python Draft 2020-12 check was
+not run because `jsonschema` is unavailable in the local Python environment.
+
+This is a library and focused-integration gate, not a full all-targets test-suite
+run. The fixtures prove authored coordinates and sample selection, not measured
+capture latency, acoustic phase, listening quality, device recording, or playback.
+
 ## Historical naming cleanup
 
 The current tree uses MaaC consistently in the specification, grammar, schema,

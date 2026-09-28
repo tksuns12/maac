@@ -1,0 +1,403 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MaaC takes/2 synchronized microphone take and comp data (tagged syntax record)",
+  "description": "Validates extension.data shape only. See docs/grouped-takes.md for complete lane sets, shared sample rate, per-lane channel layout and source origins, selected clip agreement, global clip ownership and aggregate count bounds. Every $ref is local.",
+  "x-maac-capability": "maac.takes/2",
+  "type": "object",
+  "properties": {
+    "t": {
+      "const": "record"
+    },
+    "fields": {
+      "type": "object",
+      "properties": {
+        "groups": {
+          "$ref": "#/$defs/groups"
+        }
+      },
+      "required": [
+        "groups"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "t",
+    "fields"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+      "maxLength": 128
+    },
+    "physical_position": {
+      "type": "object",
+      "properties": {
+        "t": {
+          "const": "quantity"
+        },
+        "n": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)$"
+        },
+        "d": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*$"
+        },
+        "u": {
+          "enum": [
+            "s",
+            "ms"
+          ]
+        }
+      },
+      "required": [
+        "t",
+        "n",
+        "d",
+        "u"
+      ],
+      "additionalProperties": false
+    },
+    "frame": {
+      "type": "object",
+      "properties": {
+        "t": {
+          "const": "quantity"
+        },
+        "n": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)$",
+          "maxLength": 20
+        },
+        "d": {
+          "const": "1"
+        },
+        "u": {
+          "const": "frame"
+        }
+      },
+      "required": [
+        "t",
+        "n",
+        "d",
+        "u"
+      ],
+      "additionalProperties": false
+    },
+    "top_reference": {
+      "type": "object",
+      "properties": {
+        "t": {
+          "const": "ref"
+        },
+        "path": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/identifier"
+          },
+          "minItems": 1,
+          "maxItems": 1
+        },
+        "port": {
+          "type": "null"
+        }
+      },
+      "required": [
+        "t",
+        "path",
+        "port"
+      ],
+      "additionalProperties": false
+    },
+    "take_id": {
+      "type": "object",
+      "properties": {
+        "t": {
+          "const": "symbol"
+        },
+        "v": {
+          "$ref": "#/$defs/identifier"
+        }
+      },
+      "required": [
+        "t",
+        "v"
+      ],
+      "additionalProperties": false
+    },
+    "frame_range": {
+      "type": "object",
+      "properties": {
+        "t": {
+          "const": "list"
+        },
+        "items": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {
+            "$ref": "#/$defs/frame"
+          }
+        }
+      },
+      "required": [
+        "t",
+        "items"
+      ],
+      "additionalProperties": false
+    },
+    "take": {
+      "type": "object",
+      "properties": {
+        "t": {
+          "const": "record"
+        },
+        "fields": {
+          "type": "object",
+          "properties": {
+            "lanes": {
+              "$ref": "#/$defs/lanes"
+            }
+          },
+          "required": [
+            "lanes"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "t",
+        "fields"
+      ],
+      "additionalProperties": false
+    },
+    "region": {
+      "type": "object",
+      "properties": {
+        "t": {
+          "const": "record"
+        },
+        "fields": {
+          "type": "object",
+          "properties": {
+            "take": {
+              "$ref": "#/$defs/take_id"
+            },
+            "range": {
+              "$ref": "#/$defs/frame_range"
+            },
+            "clips": {
+              "$ref": "#/$defs/clips"
+            }
+          },
+          "required": [
+            "take",
+            "range",
+            "clips"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "t",
+        "fields"
+      ],
+      "additionalProperties": false
+    },
+    "takes": {
+      "type": "object",
+      "properties": {
+        "t": {
+          "const": "record"
+        },
+        "fields": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 64,
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+            "maxLength": 128
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/take"
+          }
+        }
+      },
+      "required": [
+        "t",
+        "fields"
+      ],
+      "additionalProperties": false
+    },
+    "regions": {
+      "type": "object",
+      "properties": {
+        "t": {
+          "const": "record"
+        },
+        "fields": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 256,
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+            "maxLength": 128
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/region"
+          }
+        }
+      },
+      "required": [
+        "t",
+        "fields"
+      ],
+      "additionalProperties": false
+    },
+    "group": {
+      "type": "object",
+      "properties": {
+        "t": {
+          "const": "record"
+        },
+        "fields": {
+          "type": "object",
+          "properties": {
+            "origin": {
+              "$ref": "#/$defs/physical_position"
+            },
+            "takes": {
+              "$ref": "#/$defs/takes"
+            },
+            "regions": {
+              "$ref": "#/$defs/regions"
+            }
+          },
+          "required": [
+            "origin",
+            "takes",
+            "regions"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "t",
+        "fields"
+      ],
+      "additionalProperties": false
+    },
+    "groups": {
+      "type": "object",
+      "properties": {
+        "t": {
+          "const": "record"
+        },
+        "fields": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 64,
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+            "maxLength": 128
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/group"
+          }
+        }
+      },
+      "required": [
+        "t",
+        "fields"
+      ],
+      "additionalProperties": false
+    },
+    "lane_member": {
+      "type": "object",
+      "properties": {
+        "t": {
+          "const": "record"
+        },
+        "fields": {
+          "type": "object",
+          "properties": {
+            "asset": {
+              "$ref": "#/$defs/top_reference"
+            },
+            "source_origin": {
+              "$ref": "#/$defs/frame"
+            }
+          },
+          "required": [
+            "asset",
+            "source_origin"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "t",
+        "fields"
+      ],
+      "additionalProperties": false
+    },
+    "lanes": {
+      "type": "object",
+      "properties": {
+        "t": {
+          "const": "record"
+        },
+        "fields": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 16,
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+            "maxLength": 128
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/lane_member"
+          }
+        }
+      },
+      "required": [
+        "t",
+        "fields"
+      ],
+      "additionalProperties": false
+    },
+    "clips": {
+      "type": "object",
+      "properties": {
+        "t": {
+          "const": "record"
+        },
+        "fields": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 16,
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+            "maxLength": 128
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/top_reference"
+          }
+        }
+      },
+      "required": [
+        "t",
+        "fields"
+      ],
+      "additionalProperties": false
+    }
+  }
+}
