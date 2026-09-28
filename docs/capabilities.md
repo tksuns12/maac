@@ -13,6 +13,9 @@ hosting belong to a deferred host/tooling track.
 The [Core Audio conformance audit](core-audio-conformance-audit.md) records
 processor coverage, confirmed discrepancies, and remaining profile obligations.
 Coverage of every reference processor identifier is not a full-profile claim.
+The [Document/Performance evidence map](document-performance-evidence.md)
+records scoped language obligations, public boundaries, and fixed test cases;
+its execution record distinguishes inspected evidence from freshly run gates.
 
 | Feature | Foundation scope |
 | --- | --- |

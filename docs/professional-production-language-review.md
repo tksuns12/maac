@@ -46,8 +46,10 @@ artifact](musical-module-artifact.md). The [reconciled library
 contract](instruments.md#reusable-musical-declarations) now defines their
 ownership and validation; [scoped evidence](musical-library-contract-validation.md)
 records the completed P1 slice.
-Occurrence expression changes can use `materialize-instance`, which creates
-an independent pattern copy. Retaining a local bend while propagating later
+The specification defines `materialize-instance` for occurrence expression
+changes, creating an independent pattern copy. The [P2 evidence map](document-performance-evidence.md#performance-obligations)
+does not establish an integrated public operation/test for that contract.
+Retaining a local bend while propagating later
 shared pitch edits would require a new, explicitly designed ownership model.
 
 Notes, audio, and automation are representable, and exact transactions already

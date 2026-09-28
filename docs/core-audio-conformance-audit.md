@@ -17,6 +17,10 @@ the full Core Audio profile. Under [§1.2](../MaaC-1-Specification.md#12-conform
 Core Audio additionally inherits Document and Performance requirements and
 includes the core asset/transport profile.
 
+The later [Document/Performance evidence map](document-performance-evidence.md)
+tracks bounded evidence for those inherited language obligations. It is
+separate from this processor audit and does not establish full-profile support.
+
 This audit compares normative requirements with implementation paths and
 targeted test evidence. It is not an exhaustive proof of all valid documents,
 an external processor certification, or a Locked Render claim. The existing

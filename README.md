@@ -218,6 +218,8 @@ Read the [quick start](docs/quickstart.md), [authoring tutorial](docs/tutorial.m
 The [language specification and conformance plan](docs/language-specification-plan.md#current-priorities)
 owns active priorities: portable musical meaning, reusable source data,
 interchange, and evidence for stated conformance boundaries.
+The [Document/Performance evidence map](docs/document-performance-evidence.md)
+connects language obligations to public APIs, fixed tests, and remaining limits.
 The [end-to-end production plan](docs/end-to-end-production-plan.md) preserves
 the deferred broader-product proposal. Device capture, monitoring, transport,
 and host integration are optional tooling, not language-completeness gates.

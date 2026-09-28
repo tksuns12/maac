@@ -53,3 +53,9 @@ cargo test --locked --offline --test l5_core_audio
 The index checker never runs either recipe, and reports runtime checks as not
 run. Static reference validation and runtime observation are separate evidence
 claims.
+
+The separate [Document/Performance evidence map](../docs/document-performance-evidence.md)
+relates bounded language obligations to public runtime APIs and named tests,
+including tests outside this seven-suite index. It records its own execution
+evidence and remaining gaps. It does not extend this index schema or make a
+full-profile claim.

@@ -36,8 +36,9 @@ future obligations remain separate from these completed slices.
 
 ## Current priorities
 
-**Reader and action:** P1 is addressed within its bounded contract; contributors
-selecting the next language task should start with P2 below, retain implemented behavior, and state separately
+**Reader and action:** P1 and P2 are addressed within their bounded scopes; P2's
+[evidence map](document-performance-evidence.md) selects final edit graph
+validation as P3. Contributors should retain implemented behavior and state separately
 what is specified, implemented, and proven by conformance evidence. This
 roadmap does not authorize unrelated grammar, runtime API, or profile changes.
 P1's normative clarification and scoped evidence are recorded separately.
@@ -62,8 +63,8 @@ audio output device, or DAW session to establish its semantic results.
 | Priority | Work | Evidence for the gap | Acceptance boundary |
 | --- | --- | --- | --- |
 | P1 — addressed 2026-09-28 | Reconcile the existing musical-library contract | The older declaration inventory excluded implemented pattern/curve/tuning exports. The [amended contract](instruments.md#reusable-musical-declarations) now defines ownership, caller context, validation, and identity consistently with the existing module path | [52 scoped tests and semantic review](musical-library-contract-validation.md); no new runtime/export feature or wire format |
-| P2 — next | Map Document and Performance obligations to public-boundary evidence | L1–L5 are bounded slices; the [capability declaration](capabilities.md) still disclaims complete profiles and the [Core Audio audit](core-audio-conformance-audit.md) does not prove inherited obligations exhaustively | A requirement-to-contract/vector/API matrix classifying each obligation as evidenced within limits, specified-only, unsupported, or unverified; select the first demonstrated discrepancy for a bounded fix |
-| P3 — evidence-selected | Close a demonstrated semantic, validation, or interchange discrepancy from that matrix | A missing test, missing public path, and inconsistent semantics are different gaps and must not be conflated | A reproducing independent expected vector, compatible contract or implementation correction, and proof at the declared boundary |
+| P2 — addressed 2026-09-28 | Map Document and Performance obligations to public-boundary evidence | The [requirement/evidence map](document-performance-evidence.md) separates bounded runtime evidence, static vectors, unsupported behavior, unverified obligations and demonstrated failures | 29 requirement groups, 250 passing scoped tests, independent semantic review, and a reproduced final edit-validation discrepancy; no complete-profile claim |
+| P3 — next | Reject same-sample graph cycles before an edit commits or publishes source | A valid gain graph can be edited into a self-cycle through foundation/bundle contexts and CLI patch; subsequent compilation rejects it with `E_ALGEBRAIC_LOOP` | [Public regression and compatibility requirements](document-performance-evidence.md#p3-acceptance): atomic refusal, no output publication, valid explicit-delay feedback, final-state validation, and preserved Document-only editing |
 
 P2/P3 are not a blanket promise to implement every profile, renderer algorithm,
 or external receiver. Unsupported capabilities must remain explicit. The
@@ -113,8 +114,10 @@ the take/comp extension also have bounded implementations. Their limits remain
 in the capability matrix; do not reintroduce them as wholly missing features.
 
 Occurrence-local expression variants that preserve shared source edits are an
-optional language-design candidate. Current materialization intentionally
-creates an independent copy. A different sharing model needs a separate
+optional language-design candidate. The specified materialization operation
+creates an independent copy; [P2's evidence map](document-performance-evidence.md#performance-obligations)
+does not establish an integrated public implementation of that operation.
+A different sharing model needs a separate
 ownership, precedence, identity, and compatibility decision; it is not a defect
 merely because the current contract lacks it. Multi-lane move/duplicate helpers
 belong first to tools over existing transactions. Pitched samplers,
