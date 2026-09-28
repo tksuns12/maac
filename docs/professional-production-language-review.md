@@ -42,8 +42,10 @@ renderer by accident.
 
 Several research questions sit around that foundation. Pinned pattern, curve,
 and tuning exports now work, as does the bounded [musical source module
-artifact](musical-module-artifact.md). Older library-contract prose needs
-reconciliation with that implementation; this is the active plan's next slice.
+artifact](musical-module-artifact.md). The [reconciled library
+contract](instruments.md#reusable-musical-declarations) now defines their
+ownership and validation; [scoped evidence](musical-library-contract-validation.md)
+records the completed P1 slice.
 Occurrence expression changes can use `materialize-instance`, which creates
 an independent pattern copy. Retaining a local bend while propagating later
 shared pitch edits would require a new, explicitly designed ownership model.
@@ -71,7 +73,7 @@ a later implementation; full product or listening acceptance is not implied.
 
 | Rank | Candidate | Boundary | Existing foundation and missing contract | First observable acceptance scenario |
 | ---: | --- | --- | --- | --- |
-| 1 | Pinned pattern and curve library exports | Language/library semantics | Bounded pattern/curve/tuning exports and module artifacts are implemented; reconcile older normative library prose with the existing behavior. | Two projects import one pinned motif and curve, place and transform them differently, preserve source addresses, and reject an altered pin. |
+| 1 | Pinned pattern and curve library exports | Language/library semantics | Bounded pattern/curve/tuning exports, module artifacts, and the reconciled library contract are implemented and evidenced. | Two projects import one pinned motif and curve, place and transform them differently, preserve source addresses, and reject an altered pin. |
 | 2 | Occurrence-local expression variants | Language semantics | Per-note pitch, gain, pressure, and timbre exist; complex occurrence expression currently requires materialization. | Change bend on one occurrence, change source pitch afterward, and observe local bend retention with intended shared pitch propagation. |
 | 3 | Multi-lane arrangement operations | Editor/tool contract over existing transactions | Notes, audio, and automation are separately expressible; grouped selection, clock conversion, merge policy, and linked ownership are unspecified. | Duplicate an eight-bar mixed-media chorus across a tempo change with approved alignments, unchanged unrelated automation, and one inspectable inverse. |
 | 4 | Faithful handoff: MIDI, aligned stems, descriptors, and loss reports | Interchange/profile and adapter contracts | Descriptor fields, latency, state, and fidelity refusal are specified; the initial MIDI 1.0 SMF format-0 adapter and versioned loss-report wire are now implemented, while aligned-stem handoff, descriptor receiver mappings, notation, and DAW-session profiles remain deferred. | A Type 1 MIDI file, aligned PCM WAV stems, original MaaC source/dependencies, and manifest account for overlaps, expression, tempo ramps, audio, and automation, rejecting any unapproved loss. |
@@ -95,9 +97,9 @@ semantics. Callers must resolve references explicitly, and an import must not
 replace the composition's tempo map. Placement supplies the transform, so one
 motif can serve verse and chorus without changing its source.
 
-The contract audit must reconcile export kinds, stable addresses, dependency
-closure, caller bindings, and compatible language/profile versions against
-existing behavior and vectors. Linked audio or multi-track sections remain
+The completed contract reconciliation covers export kinds, stable addresses,
+dependency closure, caller bindings, and compatibility against existing
+behavior and fixed vectors. Linked audio or multi-track sections remain
 separate proposals and need demonstrated use before adding semantics.
 
 ### Local expressive variants
@@ -241,9 +243,9 @@ changes to the core clock or silent conversions.
 
 The original two-consumer motif/curve experiment is now implemented in bounded
 musical-library tests, including differing caller context, source mappings,
-tuning, and altered-pin rejection. The next work is the active language plan's
-contract reconciliation, followed by evidence mapping for Document and
-Performance obligations. It does not require a DAW experiment.
+tuning, and altered-pin rejection. Contract reconciliation is complete for the
+bounded P1 slice. The next work is the active language plan's evidence mapping
+for Document and Performance obligations. It does not require a DAW experiment.
 
 If a DAW handoff track is selected later, a separate experiment can export the
 proposed MIDI/stems/source/manifest package to named receiver versions, inspect

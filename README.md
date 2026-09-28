@@ -23,6 +23,12 @@ presets, sample-wise FM, and morphing wavetables. Import local source files with
 SHA-256 pins, instantiate their instruments, and automate the exposed controls.
 Compiled plans embed everything needed for offline rendering.
 
+[Musical libraries](docs/instruments.md#reusable-musical-declarations) also
+export pinned patterns, curves, and tunings. Their references stay owned by
+the library while each composition supplies its own tempo, placement, and
+targets. [Source module artifacts](docs/musical-module-artifact.md) preserve
+these libraries and their dependency closure for reuse.
+
 [Tempo ramps](docs/tempo-ramps.md) use the existing `linear` tempo shape to
 accelerate or slow down across score positions. Try
 `maac build examples/tempo-ramps.maac -o tempo-ramps.wav`.

@@ -32,6 +32,13 @@ duplicate JSON fields, malformed identities, altered bytes, non-normalized
 paths, missing or extra closure members, cycles, and existing bundle resource
 limit violations are rejected.
 
+Musical export ownership, namespace resolution, caller context, and validation
+are defined by the [reusable musical declaration contract](instruments.md#reusable-musical-declarations).
+The requirement for a direct musical export is specific to this artifact
+format; it does not prohibit valid empty, sound-only, or import-only library
+documents. Imported dependencies remain closure members, not re-exported entry
+declarations.
+
 Built-in source identities and bytes are retained in the artifact and checked
 against the embedded registry. They are not emitted by unpack because the
 authored `builtin = ...` declarations reproduce them through the existing

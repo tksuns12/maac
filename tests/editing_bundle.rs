@@ -94,7 +94,10 @@ pattern riff { length=1q; note n { at=0q; dur=1/2q; pitch=D4; } }
         ],
     )
     .unwrap();
-    apply_transaction(&mut document, &transaction, &context).unwrap();
+    let prior_revision = document.revision().to_owned();
+    let applied = apply_transaction(&mut document, &transaction, &context).unwrap();
+    assert_ne!(applied.new_revision, prior_revision);
+    assert_eq!(applied.new_revision, document.revision());
     assert_eq!(
         document.tree()["objects"]["sounds"]["fields"]["path"]["v"],
         "other.maac"
@@ -149,6 +152,25 @@ pattern riff { length=1q; note n { at=0q; dur=1/2q; pitch=C4; } }
         document.tree()["objects"]["sounds"]["fields"]["creator"]["v"],
         "Editor"
     );
+}
+
+#[test]
+fn library_comment_edits_change_import_pin_without_changing_authored_revision() {
+    let first = r#"maac 1;
+// first source comment
+library sounds { version="1"; }
+pattern riff { length=1q; note n { at=0q; dur=1/2q; pitch=C4; } }
+"#;
+    let second = first.replace("first source comment", "edited source comment");
+    let first_authored = AuthoredDocument::from_document(&maac::parse(first).unwrap()).unwrap();
+    let second_authored = AuthoredDocument::from_document(&maac::parse(&second).unwrap()).unwrap();
+
+    assert_ne!(
+        sha256_digest(first.as_bytes()),
+        sha256_digest(second.as_bytes())
+    );
+    assert_eq!(first_authored.revision(), second_authored.revision());
+    assert_eq!(first_authored, second_authored);
 }
 
 fn imported_instrument_bundle() -> SourceBundle {

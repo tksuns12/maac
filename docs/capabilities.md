@@ -37,7 +37,7 @@ Coverage of every reference processor identifier is not a full-profile claim.
 | Modulation | Top-level typed control modulation of continuous sample-rate, note-on/note-off, and instrument reset parameters, score/seconds LFOs and automated constants; instrument feed-forward graph modulation, ADSR, voice phase, and shared-LFO reset capture, and sample-wise through-zero linear FM; no oversampling |
 | Built-in instruments | 24 stereo exports in `std/basic/1.0.0` with four common controls; three separate `std/acoustic/1.0.0` guitars with six controls; exact-version CLI/Rust discovery |
 | Local dependencies | Explicit namespace aliases, transitive declaring-file resolution, SHA-256 source/WAV pins, project containment |
-| Musical library reuse | Pinned pattern, curve, and tuning exports resolve with namespaced dependencies and source provenance; `maac.module-source/1` packages their source/asset closure. Older normative library prose still needs reconciliation; see the active language plan. |
+| Musical library reuse | Pinned pattern, curve, and tuning exports resolve in their declaring library and retain alias-qualified source provenance; caller tempo, placement, and global automation remain explicit. `maac.module-source/1` packages their source/asset closure. See the [musical contract](instruments.md#reusable-musical-declarations) and [scoped evidence](musical-library-contract-validation.md). |
 | Wavetables | Explicit mono WAV cycles, cyclic interpolation, adjacent-frame morphing and harmonic-limited banks |
 | Regions | Named score intervals retained as non-rendering metadata |
 | Render | Reset-state offline rendering at 48 kHz, score-end releases, explicit tail, and reset-correct WAV excerpts that still execute through the complete plan |

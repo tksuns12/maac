@@ -23,6 +23,7 @@ pattern leaf_note {
         r#"maac 1;
 library phrases {{ version = "1"; }}
 import notes {{ path = "deps/leaf.maac"; hash = "{leaf_pin}"; }}
+tuning root_fifths {{ period = 1200ct; steps = [0ct, 700ct]; reference_index = 0; reference_frequency = 220Hz; }}
 curve motion {{ clock = score; points = [(0q, 1/4, linear), (1q, 3/4, step)]; }}
 pattern phrase {{ length = 1q; use nested {{ pattern = &notes.leaf_note; at = 0q; }} }}
 "#
@@ -135,7 +136,11 @@ fn canonical_json_roundtrip_digest_and_exports_are_derived() {
             .iter()
             .map(|export| (export.kind(), export.name()))
             .collect::<Vec<_>>(),
-        vec![("curve", "motion"), ("pattern", "phrase")]
+        vec![
+            ("curve", "motion"),
+            ("pattern", "phrase"),
+            ("tuning", "root_fifths")
+        ]
     );
 
     let decoded = ModuleArtifact::from_json(&bytes).unwrap();
@@ -399,9 +404,24 @@ fn composition_roots_and_explicit_json_byte_limits_are_rejected() {
         DiagnosticCode::Conflict
     );
     let no_musical = SourceBundle::new("main.maac", "maac 1; library empty { version = \"1\"; }");
+    maac::check_bundle(&no_musical).expect("an empty library is independently valid");
     assert_eq!(
         first_code(&ModuleArtifact::from_source_bundle(&no_musical).unwrap_err()),
         DiagnosticCode::Conflict
+    );
+
+    let leaf = "maac 1; library leaf { version = \"1\"; } pattern phrase { length = 1q; }";
+    let leaf_pin = sha256_digest(leaf.as_bytes());
+    let mut import_only = SourceBundle::new(
+        "root.maac",
+        format!("maac 1; library root {{ version = \"1\"; }} import child {{ path = \"leaf.maac\"; hash = \"{leaf_pin}\"; }}"),
+    );
+    import_only.sources.insert("leaf.maac".into(), leaf.into());
+    maac::check_bundle(&import_only).expect("a library may only bind a musical dependency");
+    assert_eq!(
+        first_code(&ModuleArtifact::from_source_bundle(&import_only).unwrap_err()),
+        DiagnosticCode::Conflict,
+        "transitive musical exports do not satisfy direct entry export eligibility"
     );
 
     let artifact = ModuleArtifact::from_source_bundle(&library_bundle()).unwrap();

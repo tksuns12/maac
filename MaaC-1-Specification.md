@@ -48,7 +48,18 @@ An implementation states its profiles and its supported extension identifiers. A
 
 ### 1.3 Implemented local sound-library extension
 
-The normative [reusable instrument contract](docs/instruments.md) defines this repository's local-library extension: library documents, hash-pinned imports, instruments, presets, explicit WAV wavetables, and versioned `synth.* /1` voice/shared processors. It specifies the additional declaration and namespace rules, public control interfaces, synthesis behavior, and resource limits. These declarations opt into the extension; they do not change existing core processor behavior. The [capability matrix](docs/capabilities.md) identifies the implemented subset, and [performance-plan versions 1, 2 and 3](docs/performance-plan.md) define the separate rendering interchange format.
+The normative [reusable library and instrument contract](docs/instruments.md)
+defines this repository's local-library extension: library documents,
+hash-pinned imports, reusable patterns, curves and tunings, instruments,
+presets, explicit WAV wavetables, and versioned `synth.* /1` voice/shared
+processors. It specifies declaration and namespace rules, musical reference
+ownership, public control interfaces, synthesis behavior, and resource limits.
+Importing musical definitions retains the consuming composition's tempo,
+meter, placement, and target bindings. These declarations opt into the
+extension; they do not change existing core processor behavior. The
+[capability matrix](docs/capabilities.md) identifies the implemented subset,
+and [performance-plan versions 1, 2 and 3](docs/performance-plan.md) define the
+separate rendering interchange format.
 
 The normative [plucked-string implementation contract](docs/plucked-string.md)
 adds the approved `synth.pluck/1` internally stateful string processor and the
@@ -176,11 +187,20 @@ No other function name is executable core syntax. In particular, `random()`, `hu
 
 `&a.b` addresses a child of `a`; `&a.params.x` addresses a processor parameter. `&a:out` addresses a named port. References are absolute within the single file, not relative to the source line. A reference must resolve to the expected type.
 
+Under the §1.3 library extension, `&alias.name` also addresses a top-level
+export through an import declared in the reference's owning document.
+Imported definitions keep that document's reference context; their references
+do not resolve against caller declarations. The
+[library reference rules](docs/instruments.md#reference-ownership-and-caller-context)
+distinguish direct imports from transitive dependency provenance.
+
 A processor may have a port and parameter with the same local name because the colon and `.params.` addresses disambiguate them. IDs are identities, not display names. Renaming a display label does not rename the object. An explicit ID rename must update every reference atomically.
 
 ## 4. Core object inventory
 
-There is exactly one `project`. Other top-level kinds are:
+A core composition has exactly one `project`. A §1.3 library instead has one
+`library` and no `project`, with the restricted declaration inventory defined
+by that extension. Other top-level kinds in a core composition are:
 
 | Kind | Function |
 |---|---|

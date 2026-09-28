@@ -36,11 +36,11 @@ future obligations remain separate from these completed slices.
 
 ## Current priorities
 
-**Reader and action:** contributors selecting the next language task should
-start with P1 below, retain already implemented behavior, and state separately
+**Reader and action:** P1 is addressed within its bounded contract; contributors
+selecting the next language task should start with P2 below, retain implemented behavior, and state separately
 what is specified, implemented, and proven by conformance evidence. This
-roadmap correction changes no grammar, normative semantics, runtime API, or
-conformance-profile claim.
+roadmap does not authorize unrelated grammar, runtime API, or profile changes.
+P1's normative clarification and scoped evidence are recorded separately.
 
 ### Scope and ownership
 
@@ -61,8 +61,8 @@ audio output device, or DAW session to establish its semantic results.
 
 | Priority | Work | Evidence for the gap | Acceptance boundary |
 | --- | --- | --- | --- |
-| P1 — next | Reconcile the existing musical-library contract | The normative [instrument/library contract](instruments.md#documents-and-dependencies) restricts libraries to imports, instruments, presets, and wavetables, while the implementation accepts pattern/curve/tuning exports and the [module artifact contract](musical-module-artifact.md#contract) requires them | One consistent contract for existing musical exports, fixed accepted/rejected semantic vectors, and compatibility evidence; no new export feature |
-| P2 — after P1 | Map Document and Performance obligations to public-boundary evidence | L1–L5 are bounded slices; the [capability declaration](capabilities.md) still disclaims complete profiles and the [Core Audio audit](core-audio-conformance-audit.md) does not prove inherited obligations exhaustively | A requirement-to-contract/vector/API matrix classifying each obligation as evidenced within limits, specified-only, unsupported, or unverified; select the first demonstrated discrepancy for a bounded fix |
+| P1 — addressed 2026-09-28 | Reconcile the existing musical-library contract | The older declaration inventory excluded implemented pattern/curve/tuning exports. The [amended contract](instruments.md#reusable-musical-declarations) now defines ownership, caller context, validation, and identity consistently with the existing module path | [52 scoped tests and semantic review](musical-library-contract-validation.md); no new runtime/export feature or wire format |
+| P2 — next | Map Document and Performance obligations to public-boundary evidence | L1–L5 are bounded slices; the [capability declaration](capabilities.md) still disclaims complete profiles and the [Core Audio audit](core-audio-conformance-audit.md) does not prove inherited obligations exhaustively | A requirement-to-contract/vector/API matrix classifying each obligation as evidenced within limits, specified-only, unsupported, or unverified; select the first demonstrated discrepancy for a bounded fix |
 | P3 — evidence-selected | Close a demonstrated semantic, validation, or interchange discrepancy from that matrix | A missing test, missing public path, and inconsistent semantics are different gaps and must not be conflated | A reproducing independent expected vector, compatible contract or implementation correction, and proof at the declared boundary |
 
 P2/P3 are not a blanket promise to implement every profile, renderer algorithm,
@@ -70,13 +70,14 @@ or external receiver. Unsupported capabilities must remain explicit. The
 existing L1–L5 corpus is retained; its completed status is not reset and no L6
 conformance level is introduced by this roadmap.
 
-### P1 handoff: musical-library contract reconciliation
+### P1 record: musical-library contract reconciliation
 
-The next slice documents and verifies the reusable musical data that already
-works. It must resolve the contradiction between the incorporated normative
-library contract and the existing module/export path, with semantic review
-before changing normative text. Implementation behavior is evidence to inspect,
-not automatic authority over the specification.
+**Addressed 2026-09-28.** This slice documented and verified the reusable musical
+data that already worked. Semantic review preceded the normative amendment;
+independent final review and [scoped verification](musical-library-contract-validation.md)
+cover its acceptance. The handoff requirements below are retained to bound the
+result. Implementation behavior is evidence to inspect, not automatic authority
+over the specification.
 
 The contract must settle:
 
@@ -126,13 +127,14 @@ listening experiments do not gate this plan.
 
 ### Evidence for this roadmap reset
 
-On 2026-09-28, inspection identified the library declaration contradiction
+During the earlier roadmap reset on 2026-09-28, inspection identified the library declaration contradiction
 above. The existing `musical_library`, `module_artifact`, `module_cli`, and
 `editing_bundle` test targets were run with Cargo's locked/offline settings:
 27 tests passed. Added documentation links and anchors were checked. This
-supports the inventory correction; it does not complete P1, amend normative
-semantics, or establish a full conformance profile. No runtime code or device
-behavior changed in this roadmap reset.
+supported that documentation-only inventory correction; it did not complete P1
+or amend normative semantics. P1's subsequent amendment and 52-test gate are
+recorded above. Neither step establishes a full conformance profile, and neither
+changes runtime code or device behavior.
 
 ## Completed specification slices
 

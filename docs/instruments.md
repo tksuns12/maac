@@ -1,6 +1,7 @@
 # Reusable instruments and sound libraries
 
-This document specifies the local sound-library extension to MaaC/1. It extends
+This document specifies the local library extension to MaaC/1 for reusable
+musical data and sound definitions. It extends
 the implemented foundation without changing existing `core.* /1` processors,
 exact event scheduling, or version 1 performance-plan rendering. The user-facing
 delivery is reusable source files and offline 48 kHz mono/stereo audio.
@@ -12,11 +13,19 @@ processors, graph DAG rules, and frozen basic-library bytes.
 
 ## Documents and dependencies
 
-A library has one `library` declaration and no `project`. A composition has one
-`project` and no `library`. Both may declare imports, instruments, presets, and
-wavetables. Library documents otherwise contain only those declarations. Every
-export is validated, including unused exports. The generic MaaC surface grammar
-already supports these declarations.
+A library MUST have exactly one `library` declaration and no `project`.
+A composition has one `project` and no `library`. In addition to its `library`
+declaration, a library permits only top-level `import`, `instrument`, `preset`,
+`wavetable`, `pattern`, `curve`, and `tuning` declarations. The six definition
+kinds are directly exported by their authored IDs; `library` and `import`
+declarations are metadata and dependency bindings, not exports. Child objects
+retain the rules of their enclosing definition kind. Compositions may declare
+these reusable definitions alongside their existing composition objects.
+
+Every export MUST be validated, including unused exports. The generic MaaC
+surface grammar already supports these declarations; this inventory does not
+add syntax or a new export declaration. A library import MUST resolve to a
+library document, not a composition.
 
 ```maac
 maac 1;
@@ -66,6 +75,94 @@ commands use the entry file's directory as the project root unless an explicit
 project root is supplied. No network
 resolution occurs. Path keys and authored references are bounded to 4096 UTF-8
 bytes before normalization; normalized paths have the same limit.
+
+## Reusable musical declarations
+
+Exported `pattern`, `curve`, and `tuning` objects retain their existing core
+fields, child objects, units, defaults, and validation rules. Patterns retain
+finite nesting, musical coordinates, transforms, and explicit curve/tuning
+references. Curves retain their declared clock, coordinates, values, and
+interpolation. Tunings retain their explicit definition and reference pitch.
+The library extension adds no pattern parameters or implicit transformations.
+
+### Reference ownership and caller context
+
+A reference to a top-level export uses `&name` in its declaring document or
+`&alias.name` through an import declared in that document. This rule also
+applies inside exported patterns: nested `use.pattern` references,
+note-expression curve references, and explicit tuning references in `degree`
+resolve in the definition's own document and imports. Caller declarations MUST
+NOT satisfy a missing library reference. The referenced export MUST have the
+kind required by the consuming field.
+
+Transitive dependencies resolve through each declaring document's imports.
+Their aliases do not become caller aliases: a caller MUST NOT traverse an
+import chain using `&outer.inner.name`. A directly exported pattern may use a
+dependency's pattern without re-exporting the dependency's declarations.
+This does not restrict the existing child/port/parameter reference forms in
+fields that explicitly accept them; it defines access to top-level exports.
+
+The consuming composition supplies its project tempo and meter, track
+destinations, placements and placement transforms, and global automation
+targets and anchors. Existing composition rules determine how imported
+material is scheduled and consumed. Importing a definition MUST NOT replace
+those choices or introduce implicit bindings. Note-expression attachments and
+tuning references authored within a library remain owned by that library.
+Libraries do not declare top-level tempo, meter, track, placement, routing, or
+global automation objects.
+
+### Validation boundary
+
+Validation MUST cover every export in the entry and its reachable library
+dependencies, including unused exports. Reusable declarations must satisfy
+their own schema, reference, type, unit, range, and acyclic-pattern requirements
+without inventing a project clock or destination. When a composition consumes
+them, its placement, timing, target, and receiver requirements are also checked.
+A successful library check does not imply compatibility with every receiver.
+A library can be checked independently; compiling a performance requires a
+composition.
+
+### Source identity and derived identity
+
+An imported event's source mapping preserves the import-alias route to its
+declaring pattern and leaf. Its occurrence address remains the placement ID,
+repetition indices, nested `use` IDs, and leaf ID defined by
+[MaaC-1 §10](../MaaC-1-Specification.md#10-tracks-placement-and-event-identity).
+For example, a source path `["music", "notes", "leaf_note", "tone"]` identifies
+the declaring leaf through two import aliases; its expanded occurrence may
+be `play/0/nested/0/tone`. The source path does not grant a caller the authored
+reference form `&music.notes.leaf_note`.
+
+Resolution and compilation MUST NOT rewrite the canonical authored graph
+**A**. Authored IDs, import declarations and pins, and reference paths retain
+the revision and editing rules of
+[MaaC-1 §§20–21](../MaaC-1-Specification.md#20-canonical-data-and-hashes).
+Internal resolved catalogs and expanded performance events are derived data.
+Execution hashes retain the existing §20.2 **N(A)** definition; render keys
+retain their transitive dependency requirements. This extension defines no
+new hash preimage and promises no identity preservation after alias renaming.
+
+An import pin hashes the exact UTF-8 source bytes. An authored revision hashes
+the canonical authored document under §20.2. The separate module-artifact
+digest hashes its canonical package JSON. These identities MUST NOT be
+substituted for one another.
+
+### Musical source packaging
+
+The [module artifact contract](musical-module-artifact.md) packages a library
+entry and its exact reachable source and asset closure as
+`maac.module-source/1`. Its entry must directly declare at least one pattern,
+curve, or tuning. This packaging condition does not require every valid
+library to contain a musical export: a valid empty, instrument-only, or
+import-only library can be ineligible for this artifact format. The artifact's
+musical export inventory contains only direct entry declarations.
+
+Artifact export/check/unpack preserves ordinary source imports. Unpacked
+libraries are consumed through existing path/hash declarations; no direct
+artifact import syntax is introduced. The
+[contract validation record](musical-library-contract-validation.md) identifies
+the fixed semantic cases and their execution evidence separately from these
+normative rules.
 
 ## Instruments, controls, and presets
 

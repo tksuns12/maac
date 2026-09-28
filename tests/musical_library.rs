@@ -176,10 +176,48 @@ fn library_only_check_validates_every_export_but_compile_remains_a_conflict() {
         ),
         DiagnosticCode::Reference
     );
+
+    let leaf = r#"maac 1;
+library leaf { version = "1"; }
+pattern unused_bad_pitch {
+  length = 1q;
+  note tone { at = 0q; dur = 1/2q; pitch = ratio(0, 440Hz); }
+}
+"#;
+    let leaf_pin = sha256_digest(leaf.as_bytes());
+    let middle = format!(
+        r#"maac 1;
+library middle {{ version = "1"; }}
+import hidden {{ path = "leaf.maac"; hash = "{leaf_pin}"; }}
+"#
+    );
+    let middle_pin = sha256_digest(middle.as_bytes());
+    let root = format!(
+        r#"maac 1;
+library root {{ version = "1"; }}
+import nested {{ path = "deps/middle.maac"; hash = "{middle_pin}"; }}
+"#
+    );
+    let transitive = SourceBundle {
+        entry: "root.maac".into(),
+        sources: BTreeMap::from([
+            ("root.maac".into(), root),
+            ("deps/middle.maac".into(), middle),
+            ("deps/leaf.maac".into(), leaf.into()),
+        ]),
+        assets: BTreeMap::new(),
+    };
+    assert_eq!(
+        first_code(
+            &check_bundle(&transitive)
+                .expect_err("an unused invalid export in a transitive library must fail")
+        ),
+        DiagnosticCode::Range
+    );
 }
 
 #[test]
-fn missing_library_local_references_cannot_capture_entry_declarations() {
+fn library_local_references_cannot_capture_entry_declarations_or_aliases() {
     let cases = [
         (
             r#"pattern exported { length = 1q; use nested { pattern = &shared_pattern; at = 0q; } }"#,
@@ -192,6 +230,10 @@ fn missing_library_local_references_cannot_capture_entry_declarations() {
         (
             r#"pattern exported { length = 1q; note tone { at = 0q; dur = 1/2q; pitch = C4; expression bend { kind = pitch; curve = &shared_curve; } } }"#,
             r#"curve shared_curve { clock = normalized; points = [(0, 0ct, linear), (1, 100ct, step)]; }"#,
+        ),
+        (
+            r#"curve shared_curve { clock = normalized; points = [(0, 0ct, linear), (1, 100ct, step)]; } pattern exported { length = 1q; note tone { at = 0q; dur = 1/2q; pitch = C4; expression bend { kind = pitch; curve = &isolated.shared_curve; } } }"#,
+            "",
         ),
     ];
 
@@ -224,6 +266,103 @@ place play {{ pattern = &isolated.exported; track = &notes; at = 0q; }}
                     .expect_err("an unresolved library-local reference must not capture the entry")
             ),
             DiagnosticCode::Reference
+        );
+    }
+}
+
+#[test]
+fn caller_cannot_address_a_transitive_import_through_its_alias() {
+    let leaf = r#"maac 1;
+library leaf { version = "1"; }
+pattern leaf_note {
+  length = 1q;
+  note tone { at = 0q; dur = 1/2q; pitch = C4; }
+}
+"#;
+    let leaf_pin = sha256_digest(leaf.as_bytes());
+    let middle = format!(
+        r#"maac 1;
+library middle {{ version = "1"; }}
+import inner {{ path = "leaf.maac"; hash = "{leaf_pin}"; }}
+pattern phrase {{ length = 1q; use nested {{ pattern = &inner.leaf_note; at = 0q; }} }}
+"#
+    );
+    let middle_pin = sha256_digest(middle.as_bytes());
+    let entry = format!(
+        r#"maac 1;
+project song {{ score = [0q, 2q]; rate = 48000Hz; tempo = &clock; meter = &metre; output = &synth:out; }}
+tempo clock {{ points = [(0q, 120bpm, step)]; }}
+meter metre {{ points = [(0q, 4, 4)]; }}
+import outer {{ path = "lib/middle.maac"; hash = "{middle_pin}"; }}
+node synth {{ type = "core.sine/1"; }}
+track notes {{ target = &synth:events; }}
+place legal {{ pattern = &outer.phrase; track = &notes; at = 0q; }}
+place transitive {{ pattern = &outer.inner.leaf_note; track = &notes; at = 1q; }}
+"#
+    );
+    let bundle = SourceBundle {
+        entry: "scores/main.maac".into(),
+        sources: BTreeMap::from([
+            ("scores/main.maac".into(), entry),
+            ("scores/lib/middle.maac".into(), middle),
+            ("scores/lib/leaf.maac".into(), leaf.into()),
+        ]),
+        assets: BTreeMap::new(),
+    };
+
+    assert_eq!(
+        first_code(
+            &compile_bundle(&bundle)
+                .expect_err("callers cannot name a nested library's import alias")
+        ),
+        DiagnosticCode::Reference
+    );
+}
+
+#[test]
+fn libraries_reject_composition_owned_global_declarations() {
+    let declarations = [
+        (
+            "tempo",
+            "tempo clock { points = [(0q, 120bpm, step)]; }",
+            DiagnosticCode::UnknownKind,
+        ),
+        (
+            "meter",
+            "meter metre { points = [(0q, 4, 4)]; }",
+            DiagnosticCode::UnknownKind,
+        ),
+        (
+            "track",
+            "track notes { target = &synth:events; }",
+            DiagnosticCode::UnknownKind,
+        ),
+        (
+            "placement",
+            "place play { pattern = &phrase; track = &notes; at = 0q; }",
+            DiagnosticCode::UnknownKind,
+        ),
+        (
+            "automation",
+            "automation move { target = &synth.params.level; curve = &motion; at = 0q; }",
+            DiagnosticCode::UnknownKind,
+        ),
+        (
+            "project root",
+            "project song { score = [0q, 1q]; rate = 48000Hz; }",
+            DiagnosticCode::Conflict,
+        ),
+    ];
+
+    for (label, declaration, expected) in declarations {
+        let source = format!("maac 1; library invalid {{ version = \"1\"; }} {declaration}");
+        assert_eq!(
+            first_code(
+                &check_bundle(&SourceBundle::new("invalid.maac", source))
+                    .expect_err("libraries cannot contain composition-owned globals")
+            ),
+            expected,
+            "declaration: {label}"
         );
     }
 }

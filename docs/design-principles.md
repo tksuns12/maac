@@ -42,9 +42,9 @@ The implementation supports instruments, presets, wavetables, and pinned
 pattern, curve, and tuning exports. The bounded [musical module
 artifact](musical-module-artifact.md) packages existing musical exports and
 their closure. Tempo-map exports remain unsupported: the importing composition
-owns its tempo. The [active language plan](language-specification-plan.md#current-priorities)
-tracks reconciliation of older library-contract prose with the implemented
-musical exports. Released library versions retain their defined content and
+owns its tempo. The [musical declaration contract](instruments.md#reusable-musical-declarations)
+defines reference ownership, caller context, validation, and source identity.
+Released library versions retain their defined content and
 sound behavior; changes require a new version.
 
 ## Give new algorithms explicit engine boundaries
