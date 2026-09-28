@@ -2,7 +2,7 @@
 //! AudioQueue owns its callback thread; the normal control thread owns all
 //! teardown and keeps callback storage alive until synchronous disposal.
 
-use std::ffi::{c_char, c_void};
+use std::ffi::c_void;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::mem::{self, size_of};
@@ -14,9 +14,10 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use super::{
+    devices::{self, Provider, ReadFailure, ResolvedInput},
     recording_error,
     stream::{Ring, WaveSink, CHUNK_FRAMES},
-    CliError, InputDevice, RATE,
+    CliError, InputDeviceInfo, InputDevicesResult, RATE,
 };
 
 type Queue = *mut c_void;
@@ -24,6 +25,8 @@ type CfString = *const c_void;
 const fn fourcc(value: &[u8; 4]) -> u32 {
     u32::from_be_bytes(*value)
 }
+const DEVICES: u32 = fourcc(b"dev#");
+const NAME: u32 = fourcc(b"lnam");
 const CURRENT_DEVICE: u32 = fourcc(b"aqcd");
 const STREAM_DESCRIPTION: u32 = fourcc(b"aqft");
 const GLOBAL: u32 = fourcc(b"glob");
@@ -129,6 +132,13 @@ unsafe extern "C" {
         listener: QueueListener,
         data: *mut c_void,
     ) -> i32;
+    fn AudioObjectGetPropertyDataSize(
+        object: u32,
+        address: *const Address,
+        qualifier_size: u32,
+        qualifier: *const c_void,
+        size: *mut u32,
+    ) -> i32;
     fn AudioObjectGetPropertyData(
         object: u32,
         address: *const Address,
@@ -150,7 +160,23 @@ unsafe extern "C" {
         data: *mut c_void,
     ) -> i32;
     fn CFStringGetLength(string: CfString) -> isize;
-    fn CFStringGetCString(string: CfString, buffer: *mut c_char, size: isize, encoding: u32) -> u8;
+    fn CFStringGetBytes(
+        string: CfString,
+        range: CfRange,
+        encoding: u32,
+        loss: u8,
+        external: u8,
+        buffer: *mut u8,
+        maximum: isize,
+        used: *mut isize,
+    ) -> isize;
+    fn CFStringCreateWithBytes(
+        allocator: *const c_void,
+        bytes: *const u8,
+        count: isize,
+        encoding: u32,
+        external: u8,
+    ) -> CfString;
     fn CFRelease(object: *const c_void);
 }
 
@@ -273,45 +299,53 @@ impl Drop for QueueGuard {
     }
 }
 
-pub(super) fn capture(duration: u32, wave: &Path) -> Result<(), CliError> {
-    // SAFETY: the shim runs real TCC authorization and returns only a status.
-    if unsafe { maac_microphone_authorize() } != 0 {
-        return Err(CliError::new("E_PERMISSION", "microphone access is denied or restricted; enable MaaC or its launching application in macOS Privacy & Security > Microphone"));
-    }
-    let mut lifecycle = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(wave.with_extension("status"))
-        .map_err(|error| {
-            CliError::new(
-                "E_IO",
-                format!("cannot create recording lifecycle marker: {error}"),
-            )
-        })?;
-    lifecycle.write_all(b"authorized").map_err(|error| {
-        CliError::new(
-            "E_IO",
-            format!("cannot update recording lifecycle marker: {error}"),
-        )
-    })?;
-    let authorization_finished = Instant::now();
-    let device: u32 = object_property(1, DEFAULT_INPUT, GLOBAL)?;
-    if device == 0 {
-        return Err(recording_error("macOS has no default input device"));
-    }
-    let uid_ref: CfString = object_property(device, UID, GLOBAL)?;
-    let uid = string_and_release(uid_ref)?;
-    let rate: f64 = object_property(device, NOMINAL_RATE, GLOBAL)?;
-    if !rate.is_finite() || rate <= 0.0 {
-        return Err(recording_error(
-            "selected input device has an invalid nominal rate",
-        ));
-    }
-    let alive: u32 = object_property(device, ALIVE, GLOBAL)?;
-    if alive == 0 {
-        return Err(recording_error("selected input device is unavailable"));
-    }
+pub(super) fn capture(
+    duration: u32,
+    wave: &Path,
+    requested_uid: Option<&str>,
+) -> Result<(), CliError> {
+    // Resolve before authorization. This choice survives a long permission
+    // prompt; a changed or removed device fails instead of selecting a fallback.
+    let mut authorized = None;
+    let (selected, provenance) = devices::prepare_and_authorize(
+        &mut NativeProvider,
+        duration,
+        requested_uid,
+        || {
+            // SAFETY: the shim runs real TCC authorization and returns only a status.
+            if unsafe { maac_microphone_authorize() } != 0 {
+                return Err(CliError::new("E_PERMISSION", "microphone access is denied or restricted; enable MaaC or its launching application in macOS Privacy & Security > Microphone"));
+            }
+            let authorization_finished = Instant::now();
+            let mut lifecycle = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(wave.with_extension("status"))
+                .map_err(|error| {
+                    CliError::new(
+                        "E_IO",
+                        format!("cannot create recording lifecycle marker: {error}"),
+                    )
+                })?;
+            lifecycle.write_all(b"authorized").map_err(|error| {
+                CliError::new(
+                    "E_IO",
+                    format!("cannot update recording lifecycle marker: {error}"),
+                )
+            })?;
+            authorized = Some((lifecycle, authorization_finished));
+            Ok(())
+        },
+    )?;
+    let device = selected.object;
+    let uid = selected.info.uid.clone();
+    let rate = selected
+        .info
+        .hardware_rate_hz
+        .expect("resolved live input has a rate");
+    let (mut lifecycle, authorization_finished) =
+        authorized.expect("successful authorization creates lifecycle marker");
     let format = Format {
         rate: f64::from(RATE),
         id: fourcc(b"lpcm"),
@@ -348,24 +382,22 @@ pub(super) fn capture(duration: u32, wave: &Path) -> Result<(), CliError> {
     if guard.queue.is_null() {
         return Err(recording_error("macOS returned a null microphone queue"));
     }
-    // Reacquire a CFString UID solely for the property call. The queue retains
-    // its own copy; CoreAudio returns a retained property value to this caller.
-    let selected_uid: CfString = object_property(device, UID, GLOBAL)?;
+    // Use the resolved exact UTF-8 UID, without reacquiring a possibly changed
+    // device property. The queue retains its own copy on a successful set.
+    let selected_uid = OwnedString::from_utf8(&uid)?;
     // SAFETY: CurrentDevice expects the address of a live CFStringRef.
-    let selected = unsafe {
-        AudioQueueSetProperty(
-            guard.queue,
-            CURRENT_DEVICE,
-            (&selected_uid as *const CfString).cast(),
-            size_of::<CfString>() as u32,
-        )
-    };
-    // SAFETY: the UID is a retained CoreAudio property result.
-    unsafe {
-        CFRelease(selected_uid);
-    }
-    status(selected, "pin microphone input device")?;
-    check_queue(guard.queue, &format)?;
+    status(
+        unsafe {
+            AudioQueueSetProperty(
+                guard.queue,
+                CURRENT_DEVICE,
+                (&selected_uid.0 as *const CfString).cast(),
+                size_of::<CfString>() as u32,
+            )
+        },
+        "pin microphone input device",
+    )?;
+    check_queue(guard.queue, &format, &uid)?;
     DEVICE_CHANGED.store(false, Ordering::Release);
     for property in [CURRENT_DEVICE, STREAM_DESCRIPTION] {
         // SAFETY: live queue listener uses only static atomic state.
@@ -410,6 +442,13 @@ pub(super) fn capture(duration: u32, wave: &Path) -> Result<(), CliError> {
             "enqueue microphone buffer",
         )?;
     }
+    check_selected(&selected)?;
+    check_queue(guard.queue, &format, &uid)?;
+    if DEVICE_CHANGED.load(Ordering::Acquire) {
+        return Err(recording_error(
+            "selected microphone device or format changed before capture",
+        ));
+    }
     let mut sink = WaveSink::create(wave, duration)?;
     // SAFETY: queue has its fixed format, pinned device, and reserved buffers.
     status(
@@ -450,7 +489,7 @@ pub(super) fn capture(duration: u32, wave: &Path) -> Result<(), CliError> {
             ));
         }
         if inspection.elapsed() >= Duration::from_millis(100) {
-            check_queue(guard.queue, &format)?;
+            check_queue(guard.queue, &format, &uid)?;
             let alive: u32 = object_property(device, ALIVE, GLOBAL)?;
             let actual_rate: f64 = object_property(device, NOMINAL_RATE, GLOBAL)?;
             if alive == 0 || actual_rate != rate {
@@ -467,7 +506,7 @@ pub(super) fn capture(duration: u32, wave: &Path) -> Result<(), CliError> {
             "selected microphone device or format changed during capture",
         ));
     }
-    check_queue(guard.queue, &format)?;
+    check_queue(guard.queue, &format, &uid)?;
     guard.shutdown()?;
     guard.ring.check()?;
     if DEVICE_CHANGED.load(Ordering::Acquire) {
@@ -475,14 +514,7 @@ pub(super) fn capture(duration: u32, wave: &Path) -> Result<(), CliError> {
             "selected microphone device or format changed during capture",
         ));
     }
-    sink.finish(
-        duration,
-        InputDevice {
-            selection: "system-default".into(),
-            uid,
-            hardware_rate_hz: Some(rate),
-        },
-    )
+    sink.finish(duration, provenance)
 }
 
 fn status(value: i32, operation: &str) -> Result<(), CliError> {
@@ -540,48 +572,286 @@ fn queue_property<T: Copy>(queue: Queue, property: u32) -> Result<T, CliError> {
     // SAFETY: successful exact-size property read initialized the typed result.
     Ok(unsafe { value.assume_init() })
 }
-fn check_queue(queue: Queue, format: &Format) -> Result<(), CliError> {
+fn check_queue(queue: Queue, format: &Format, uid: &str) -> Result<(), CliError> {
     let actual: Format = queue_property(queue, STREAM_DESCRIPTION)?;
-    // CurrentDevice is explicitly set and subsequently monitored by its
-    // change listener. Avoid assuming ownership of undocumented CFString
-    // out-parameters from AudioQueueGetProperty.
-    if actual != *format {
+    // AudioQueueGetProperty duplicates CF objects even though it is named Get.
+    // Apple requires the caller to release them (AudioQueueGetProperty docs).
+    let reported = owned_string_property(
+        |value, size| {
+            // SAFETY: initialized CFString out pointer has exactly the size
+            // supplied by the helper; queue is live throughout this call.
+            unsafe { AudioQueueGetProperty(queue, CURRENT_DEVICE, value.cast(), size) }
+        },
+        "inspect microphone queue device",
+    )?;
+    if actual != *format || reported != uid {
         return Err(recording_error(
             "macOS could not retain the selected microphone and fixed delivered format",
         ));
     }
     Ok(())
 }
-fn string_and_release(string: CfString) -> Result<String, CliError> {
-    if string.is_null() {
-        return Err(recording_error("macOS returned an empty input device UID"));
+#[repr(C)]
+struct CfRange {
+    location: isize,
+    length: isize,
+}
+
+struct OwnedString(CfString);
+impl Drop for OwnedString {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            // SAFETY: CoreAudio/AQ property and Create results are caller-owned.
+            unsafe {
+                CFRelease(self.0);
+            }
+        }
     }
-    // SAFETY: retained CoreAudio/AudioQueue property is a CFStringRef; conversion
-    // storage is bounded and the owned reference is released on every path.
-    let result = unsafe {
-        let mut bytes = [0i8; 4097];
-        if CFStringGetLength(string) <= 0
-            || CFStringGetLength(string) > 4096
-            || CFStringGetCString(
-                string,
+}
+impl OwnedString {
+    fn from_utf8(value: &str) -> Result<Self, CliError> {
+        // SAFETY: bounded UTF-8 slice and count are valid for the duration of Create.
+        let string = Self(unsafe {
+            CFStringCreateWithBytes(
+                ptr::null(),
+                value.as_ptr(),
+                value.len() as isize,
+                0x0800_0100,
+                0,
+            )
+        });
+        if string.0.is_null() {
+            return Err(recording_error("cannot encode input device UID"));
+        }
+        Ok(string)
+    }
+    fn utf8(&self) -> Result<String, CliError> {
+        if self.0.is_null() {
+            return Err(recording_error(
+                "macOS returned an empty input device string",
+            ));
+        }
+        // SAFETY: this owner holds the CFString throughout conversion. GetBytes
+        // preserves embedded NUL so validation cannot silently truncate a UID.
+        unsafe {
+            let length = CFStringGetLength(self.0);
+            if !(1..=4096).contains(&length) {
+                return Err(recording_error(
+                    "input device string exceeds its bounded UTF-8 envelope",
+                ));
+            }
+            let mut bytes = [0u8; 4096];
+            let mut used = 0isize;
+            let converted = CFStringGetBytes(
+                self.0,
+                CfRange {
+                    location: 0,
+                    length,
+                },
+                0x0800_0100,
+                0,
+                0,
                 bytes.as_mut_ptr(),
                 bytes.len() as isize,
-                0x0800_0100,
-            ) == 0
-        {
-            Err(recording_error(
-                "input device UID exceeds its bounded UTF-8 envelope",
-            ))
-        } else {
-            std::ffi::CStr::from_ptr(bytes.as_ptr())
-                .to_str()
+                &mut used,
+            );
+            if converted != length || !(1..=4096).contains(&used) {
+                return Err(recording_error(
+                    "input device string exceeds its bounded UTF-8 envelope",
+                ));
+            }
+            std::str::from_utf8(&bytes[..used as usize])
                 .map(str::to_owned)
-                .map_err(|_| recording_error("input device UID is not UTF-8"))
+                .map_err(|_| recording_error("input device string is not UTF-8"))
         }
-    };
-    // SAFETY: release the owned property reference after conversion.
-    unsafe {
-        CFRelease(string);
     }
-    result
+}
+fn owned_string_property(
+    read: impl FnOnce(*mut CfString, *mut u32) -> i32,
+    operation: &str,
+) -> Result<String, CliError> {
+    let mut value = ptr::null();
+    let mut size = size_of::<CfString>() as u32;
+    status(read(&mut value, &mut size), operation)?;
+    // Successful CF property reads return a caller-owned object. Establish
+    // ownership before validating the returned size or converting the string,
+    // so every subsequent error releases the returned reference.
+    let value = OwnedString(value);
+    if size as usize != size_of::<CfString>() {
+        return Err(recording_error(
+            "macOS returned an inconsistent input string property size",
+        ));
+    }
+    value.utf8()
+}
+fn object_string(object: u32, selector: u32) -> Result<String, CliError> {
+    let address = Address {
+        selector,
+        scope: GLOBAL,
+        element: 0,
+    };
+    owned_string_property(
+        |value, size| {
+            // SAFETY: fixed CFString storage and address are initialized;
+            // CoreAudio returns a retained reference on success.
+            unsafe {
+                AudioObjectGetPropertyData(object, &address, 0, ptr::null(), size, value.cast())
+            }
+        },
+        "inspect input device string",
+    )
+}
+
+struct NativeProvider;
+impl Provider for NativeProvider {
+    fn ids(&mut self) -> Result<Vec<u32>, CliError> {
+        devices::parse_ids(&variable_property(1, DEVICES, GLOBAL)?)
+    }
+    fn default_input(&mut self) -> Result<u32, CliError> {
+        object_property(1, DEFAULT_INPUT, GLOBAL)
+    }
+    fn info(&mut self, object: u32) -> Result<Option<InputDeviceInfo>, CliError> {
+        let channels =
+            devices::parse_channels(&variable_property(object, STREAM_CONFIGURATION, INPUT)?)?;
+        if channels == 0 {
+            return Ok(None);
+        }
+        let uid = object_string(object, UID)?;
+        if uid.contains('\0') {
+            return Err(recording_error(
+                "macOS returned an input device UID containing NUL",
+            ));
+        }
+        let name = object_string(object, NAME)?;
+        let available: u32 = object_property(object, ALIVE, GLOBAL)?;
+        let rate = if available != 0 {
+            Some(object_property(object, NOMINAL_RATE, GLOBAL)?)
+        } else {
+            None
+        };
+        Ok(Some(InputDeviceInfo {
+            uid,
+            name,
+            input_channels: channels,
+            is_default: false,
+            hardware_rate_hz: rate,
+            available: available != 0,
+        }))
+    }
+}
+
+fn variable_property(object: u32, selector: u32, scope: u32) -> Result<Vec<u8>, CliError> {
+    let address = Address {
+        selector,
+        scope,
+        element: 0,
+    };
+    devices::read_variable(
+        || {
+            let mut size = 0;
+            // SAFETY: initialized out size and valid property address; no qualifiers.
+            status(
+                unsafe {
+                    AudioObjectGetPropertyDataSize(object, &address, 0, ptr::null(), &mut size)
+                },
+                "size input device property",
+            )?;
+            Ok(size as usize)
+        },
+        |storage, capacity| {
+            let mut size = capacity as u32;
+            // SAFETY: word-aligned initialized storage reserves the bounded
+            // requested byte capacity, even for a size/data hotplug race.
+            let result = unsafe {
+                AudioObjectGetPropertyData(
+                    object,
+                    &address,
+                    0,
+                    ptr::null(),
+                    &mut size,
+                    storage.as_mut_ptr().cast(),
+                )
+            };
+            if result == fourcc(b"!siz") as i32 {
+                return Err(ReadFailure::Resized);
+            }
+            status(result, "inspect input device property").map_err(ReadFailure::Failed)?;
+            Ok(size as usize)
+        },
+    )
+}
+
+fn check_selected(selected: &ResolvedInput) -> Result<(), CliError> {
+    devices::revalidate(&mut NativeProvider, selected)
+}
+
+pub(super) fn inputs() -> Result<InputDevicesResult, CliError> {
+    let devices = devices::snapshot(&mut NativeProvider)?
+        .into_iter()
+        .map(|device| device.info)
+        .collect();
+    Ok(InputDevicesResult {
+        ok: true,
+        command: "inputs",
+        backend: "macos-coreaudio/1",
+        devices,
+    })
+}
+
+#[cfg(test)]
+mod string_tests {
+    use super::*;
+    unsafe extern "C" {
+        fn CFRetain(object: *const c_void) -> *const c_void;
+        fn CFGetRetainCount(object: *const c_void) -> isize;
+    }
+    #[test]
+    fn cfstring_conversion_preserves_nul_and_bounds_actual_utf8_bytes() {
+        let value = "device\0hidden\n한글";
+        assert_eq!(
+            OwnedString::from_utf8(value).unwrap().utf8().unwrap(),
+            value
+        );
+        let exact = "한".repeat(1365) + "x";
+        assert_eq!(exact.len(), 4096);
+        assert_eq!(
+            OwnedString::from_utf8(&exact).unwrap().utf8().unwrap(),
+            exact
+        );
+        assert!(OwnedString::from_utf8(&(exact + "x"))
+            .unwrap()
+            .utf8()
+            .is_err());
+    }
+
+    #[test]
+    fn successful_cf_properties_release_owned_results_on_validation_errors() {
+        for (text, wrong_size) in [
+            ("runtime UID ".repeat(100), true),
+            ("x".repeat(4097), false),
+        ] {
+            let owner = OwnedString::from_utf8(&text).unwrap();
+            // SAFETY: the live owner keeps this runtime-created object valid;
+            // retain emulates the caller-owned copy returned by a CF property.
+            let before = unsafe { CFGetRetainCount(owner.0) };
+            unsafe {
+                CFRetain(owner.0);
+            }
+            let result = owned_string_property(
+                |value, size| {
+                    // SAFETY: helper supplies initialized, correctly sized outputs.
+                    unsafe {
+                        *value = owner.0;
+                        if wrong_size {
+                            *size -= 1;
+                        }
+                    }
+                    0
+                },
+                "test owned input property",
+            );
+            assert!(result.is_err());
+            assert_eq!(unsafe { CFGetRetainCount(owner.0) }, before);
+        }
+    }
 }

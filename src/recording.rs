@@ -20,6 +20,7 @@ pub(crate) struct RecordRequest {
     pub duration_seconds: u32,
     pub output_dir: PathBuf,
     pub profile: ProfileArg,
+    pub input_device: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -66,6 +67,54 @@ struct RecordingMetadata {
     latency: Latency,
     continuity: Continuity,
     data_sha256: String,
+}
+
+#[cfg(any(target_os = "macos", all(test, unix)))]
+impl RecordingMetadata {
+    fn for_capture(duration: u32, device: InputDevice, digest: String) -> Self {
+        Self {
+            format: "maac.recording".into(),
+            version: if device.selection == "explicit-uid" {
+                2
+            } else {
+                1
+            },
+            backend: BACKEND.into(),
+            requested_duration_seconds: duration,
+            delivered: Delivered {
+                encoding: "ieee_f32le".into(),
+                rate_hz: RATE,
+                channels: 1,
+                frames: u64::from(duration) * u64::from(RATE),
+            },
+            input_device: device,
+            origin: Origin {
+                kind: "first-delivered-frame".into(),
+                source_frame: 0,
+            },
+            latency: Latency {
+                measured_input_frames: None,
+                compensation_frames: 0,
+            },
+            continuity: Continuity {
+                policy: "abort-on-detected-discontinuity".into(),
+                detected_discontinuities: 0,
+            },
+            data_sha256: digest,
+        }
+    }
+
+    fn bounded_bytes(&self) -> Result<Vec<u8>, CliError> {
+        let bytes = serde_json::to_vec(self).map_err(|error| {
+            recording_error(format!("cannot encode recording provenance: {error}"))
+        })?;
+        if bytes.len() > MAX_METADATA_BYTES {
+            return Err(recording_error(
+                "recording provenance exceeds its bounded envelope",
+            ));
+        }
+        Ok(bytes)
+    }
 }
 
 #[cfg(any(target_os = "macos", all(test, unix)))]
@@ -123,6 +172,16 @@ fn recording_error(message: impl Into<String>) -> CliError {
 }
 
 fn preflight(request: &RecordRequest) -> Result<(), CliError> {
+    if request
+        .input_device
+        .as_ref()
+        .is_some_and(|uid| uid.is_empty() || uid.len() > 4096 || uid.contains('\0'))
+    {
+        return Err(CliError::new(
+            "E_USAGE",
+            "input device UID must be nonempty UTF-8 of at most 4096 bytes without NUL",
+        ));
+    }
     if !(1..=1800).contains(&request.duration_seconds) {
         return Err(CliError::new(
             "E_USAGE",
@@ -185,7 +244,7 @@ pub(crate) fn run(request: &RecordRequest) -> Result<RecordResult, RecordFailure
 }
 
 /// An unadvertised same-executable child protocol. It accepts no backend,
-/// source, device, or format override and never publishes a user project.
+/// source, backend, or format override and never publishes a user project.
 pub(crate) fn private_child(args: &[OsString]) -> Option<i32> {
     if args.get(1).is_none_or(|arg| arg != CHILD_ARGUMENT) {
         return None;
@@ -193,7 +252,7 @@ pub(crate) fn private_child(args: &[OsString]) -> Option<i32> {
     #[cfg(target_os = "macos")]
     {
         let result = (|| {
-            if args.len() != 4 {
+            if args.len() != 4 && args.len() != 6 {
                 return Err(recording_error("invalid private capture request"));
             }
             let duration = args[2]
@@ -201,7 +260,20 @@ pub(crate) fn private_child(args: &[OsString]) -> Option<i32> {
                 .and_then(|arg| arg.parse::<u32>().ok())
                 .filter(|duration| (1..=1800).contains(duration))
                 .ok_or_else(|| recording_error("invalid private capture duration"))?;
-            native::capture(duration, Path::new(&args[3]))
+            let uid = if args.len() == 6 {
+                if args[4] != "--input-device" {
+                    return Err(recording_error("invalid private capture selector"));
+                }
+                Some(
+                    args[5]
+                        .to_str()
+                        .filter(|uid| !uid.is_empty() && uid.len() <= 4096 && !uid.contains('\0'))
+                        .ok_or_else(|| recording_error("invalid private input device UID"))?,
+                )
+            } else {
+                None
+            };
+            native::capture(duration, Path::new(&args[3]), uid)
         })();
         match result {
             Ok(()) => {
@@ -231,3 +303,38 @@ mod native;
 mod stream;
 #[cfg(all(test, unix))]
 mod tests;
+
+#[cfg(any(target_os = "macos", all(test, unix)))]
+mod devices;
+
+#[derive(Debug, Serialize)]
+pub(crate) struct InputDevicesResult {
+    pub ok: bool,
+    pub command: &'static str,
+    pub backend: &'static str,
+    pub devices: Vec<InputDeviceInfo>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub(crate) struct InputDeviceInfo {
+    pub uid: String,
+    pub name: String,
+    pub input_channels: u32,
+    pub is_default: bool,
+    pub hardware_rate_hz: Option<f64>,
+    pub available: bool,
+}
+
+pub(crate) fn inputs() -> Result<InputDevicesResult, CliError> {
+    #[cfg(target_os = "macos")]
+    {
+        native::inputs()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err(CliError::new(
+            "E_CAPABILITY",
+            "input device discovery requires macOS",
+        ))
+    }
+}

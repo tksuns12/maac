@@ -31,13 +31,16 @@ fn chunk(time: f64, frames: usize) -> Chunk {
     }
 }
 fn reference(path: &Path) {
+    reference_device(path, device());
+}
+fn reference_device(path: &Path, device: InputDevice) {
     let mut sink = WaveSink::create(path, 1).unwrap();
     let mut time = 9123.0;
     while !sink.complete() {
         sink.accept(&chunk(time, CHUNK_FRAMES)).unwrap();
         time += CHUNK_FRAMES as f64;
     }
-    sink.finish(1, device()).unwrap();
+    sink.finish(1, device).unwrap();
 }
 
 #[test]
@@ -109,7 +112,7 @@ fn exact_final_frames_and_strict_provenance_validate_without_native_device() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("reference.wav");
     reference(&path);
-    let metadata = stream::validate_wave(&path, 1, || Ok(())).unwrap();
+    let metadata = stream::validate_wave(&path, 1, None, || Ok(())).unwrap();
     assert_eq!(metadata.delivered.frames, 48_000);
     assert_eq!(metadata.origin.source_frame, 0);
     assert!(metadata.latency.measured_input_frames.is_none());
@@ -123,18 +126,80 @@ fn exact_final_frames_and_strict_provenance_validate_without_native_device() {
     let mut corrupt = clean.clone();
     corrupt[44] ^= 1;
     fs::write(&path, corrupt).unwrap();
-    assert!(stream::validate_wave(&path, 1, || Ok(()))
+    assert!(stream::validate_wave(&path, 1, None, || Ok(()))
         .unwrap_err()
         .message
         .contains("provenance differs"));
     fs::write(&path, &clean).unwrap();
-    assert!(stream::validate_wave(&path, 2, || Ok(())).is_err());
+    assert!(stream::validate_wave(&path, 2, None, || Ok(())).is_err());
     let mut trailing = clean;
     trailing.extend_from_slice(b"maac\0\0\0\0");
     let extent = (trailing.len() - 8) as u32;
     trailing[4..8].copy_from_slice(&extent.to_le_bytes());
     fs::write(&path, trailing).unwrap();
-    assert!(stream::validate_wave(&path, 1, || Ok(())).is_err());
+    assert!(stream::validate_wave(&path, 1, None, || Ok(())).is_err());
+}
+
+fn edit_provenance(path: &Path, edit: impl FnOnce(&mut Value)) {
+    let mut bytes = fs::read(path).unwrap();
+    let offset = 44 + 48_000 * 4;
+    let length = u32::from_le_bytes(bytes[offset + 4..offset + 8].try_into().unwrap()) as usize;
+    let mut metadata: Value =
+        serde_json::from_slice(&bytes[offset + 8..offset + 8 + length]).unwrap();
+    edit(&mut metadata);
+    let encoded = serde_json::to_vec(&metadata).unwrap();
+    bytes.truncate(offset);
+    bytes.extend_from_slice(b"maac");
+    bytes.extend_from_slice(&(encoded.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(&encoded);
+    if !encoded.len().is_multiple_of(2) {
+        bytes.push(0);
+    }
+    let extent = (bytes.len() - 8) as u32;
+    bytes[4..8].copy_from_slice(&extent.to_le_bytes());
+    fs::write(path, bytes).unwrap();
+}
+
+#[test]
+fn explicit_provenance_requires_v2_and_exact_request_binding() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("explicit.wav");
+    let uid = " opaque UID 한글\n";
+    let mut explicit = device();
+    explicit.selection = "explicit-uid".into();
+    explicit.uid = uid.into();
+    reference_device(&path, explicit);
+    let metadata = stream::validate_wave(&path, 1, Some(uid), || Ok(())).unwrap();
+    assert_eq!(metadata.version, 2);
+    assert_eq!(metadata.input_device.selection, "explicit-uid");
+    assert_eq!(metadata.input_device.uid, uid);
+    assert!(stream::validate_wave(&path, 1, None, || Ok(())).is_err());
+    assert!(stream::validate_wave(&path, 1, Some(uid.trim()), || Ok(())).is_err());
+    let clean = fs::read(&path).unwrap();
+    for (field, value) in [
+        ("version", serde_json::json!(1)),
+        (
+            "input_device",
+            serde_json::json!({"selection":"system-default","uid":uid}),
+        ),
+        ("requested_uid", serde_json::json!(uid)),
+    ] {
+        fs::write(&path, &clean).unwrap();
+        edit_provenance(&path, |metadata| metadata[field] = value);
+        assert!(stream::validate_wave(&path, 1, Some(uid), || Ok(())).is_err());
+    }
+    reference(&root.path().join("default.wav"));
+    let default =
+        stream::validate_wave(&root.path().join("default.wav"), 1, None, || Ok(())).unwrap();
+    assert_eq!(default.version, 1);
+    assert_eq!(default.input_device.selection, "system-default");
+    assert!(stream::validate_wave(
+        &root.path().join("default.wav"),
+        1,
+        Some("synthetic-test-input"),
+        || Ok(())
+    )
+    .is_err());
 }
 
 #[test]
@@ -144,6 +209,7 @@ fn budget_preflight_matches_generated_mono_clip_boundary() {
         duration_seconds: 231,
         output_dir: root.path().join("out"),
         profile: ProfileArg::Default,
+        input_device: None,
     };
     super::preflight(&request).unwrap();
     request.duration_seconds = 232;
@@ -201,7 +267,7 @@ impl Fixture {
         fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
     }
     fn capture(&self, extra: &str) {
-        self.script("capture", &format!("printf '%s' \"$$\" > {}\nprintf '%s' \"$3\" > {}\ncp {} \"$3\"\n{extra}\nprintf '%s\\n' '{{\"ok\":true}}'", quoted(&self.path("capture-pid")), quoted(&self.path("wave-path")), quoted(&self.path("reference.wav"))));
+        self.script("capture", &format!("printf '%s\\000' \"$@\" > {}\nprintf '%s' \"$$\" > {}\nprintf '%s' \"$3\" > {}\ncp {} \"$3\"\n{extra}\nprintf '%s\\n' '{{\"ok\":true}}'", quoted(&self.path("capture-args")), quoted(&self.path("capture-pid")), quoted(&self.path("wave-path")), quoted(&self.path("reference.wav"))));
     }
     fn spawn(&self) -> Child {
         Command::new(std::env::current_exe().unwrap())
@@ -281,6 +347,68 @@ fn synthetic_supervisor_uses_real_retained_import_and_archive_roundtrip() {
     assert_eq!(result["command"], "record");
     assert_eq!(result["frames"], 48_000);
     assert_eq!(result["input_device"]["uid"], "synthetic-test-input");
+    assert_eq!(result["recording_format"], "maac.recording/1");
+    let arguments = fs::read(fixture.path("capture-args")).unwrap();
+    assert_eq!(
+        arguments
+            .split(|byte| *byte == 0)
+            .filter(|arg| !arg.is_empty())
+            .count(),
+        3
+    );
+    assert_archive_roundtrip(&fixture, None);
+}
+
+#[test]
+fn explicit_supervisor_forwards_opaque_uid_and_archives_bound_v2_provenance() {
+    let fixture = Fixture::new();
+    let uid = " -opaque UID 한글\n";
+    fs::write(fixture.path("requested-uid"), uid).unwrap();
+    let mut input = device();
+    input.selection = "explicit-uid".into();
+    input.uid = uid.into();
+    fs::remove_file(fixture.path("reference.wav")).unwrap();
+    reference_device(&fixture.path("reference.wav"), input);
+    let output = finish(fixture.spawn());
+    assert!(output.status.success(), "{output:?}");
+    let result = fixture.result();
+    assert_eq!(result["input_device"]["uid"], uid);
+    assert_eq!(result["recording_format"], "maac.recording/2");
+    let arguments = fs::read(fixture.path("capture-args")).unwrap();
+    let arguments = arguments
+        .split(|byte| *byte == 0)
+        .filter(|arg| !arg.is_empty())
+        .collect::<Vec<_>>();
+    assert_eq!(arguments.len(), 5);
+    assert_eq!(arguments[3], b"--input-device");
+    assert_eq!(arguments[4], uid.as_bytes());
+    assert_archive_roundtrip(&fixture, Some(uid));
+}
+
+#[test]
+fn supervisor_rejects_fallback_and_wrong_uid_before_retained_import() {
+    let fixture = Fixture::new();
+    fs::write(fixture.path("requested-uid"), "requested").unwrap();
+    let output = finish(fixture.spawn());
+    assert!(!output.status.success());
+    assert_eq!(fixture.result()["code"], "E_RECORDING");
+    assert!(!fixture.path("output").exists());
+    assert!(!fixture.path("import-result.json").exists());
+    fixture.clean();
+    let mut wrong = device();
+    wrong.selection = "explicit-uid".into();
+    wrong.uid = "different".into();
+    fs::remove_file(fixture.path("reference.wav")).unwrap();
+    reference_device(&fixture.path("reference.wav"), wrong);
+    let output = finish(fixture.spawn());
+    assert!(!output.status.success());
+    assert_eq!(fixture.result()["code"], "E_RECORDING");
+    assert!(!fixture.path("output").exists());
+    assert!(!fixture.path("import-result.json").exists());
+    fixture.clean();
+}
+
+fn assert_archive_roundtrip(fixture: &Fixture, requested_uid: Option<&str>) {
     let project = fixture.path("output");
     assert_eq!(fs::read_dir(&project).unwrap().count(), 4);
     let original = fs::read(project.join("original.wav")).unwrap();
@@ -325,7 +453,7 @@ fn synthetic_supervisor_uses_real_retained_import_and_archive_roundtrip() {
     .unwrap();
     assert_eq!(fs::read(restored.join("original.wav")).unwrap(), original);
     crate::media_import::verify_retained_import_disk(&restored).unwrap();
-    stream::validate_wave(&restored.join("original.wav"), 1, || Ok(())).unwrap();
+    stream::validate_wave(&restored.join("original.wav"), 1, requested_uid, || Ok(())).unwrap();
     fixture.clean();
 }
 
@@ -564,6 +692,7 @@ fn supervisor_helper() {
         duration_seconds: 1,
         output_dir: root.join("output"),
         profile: ProfileArg::Default,
+        input_device: fs::read_to_string(root.join("requested-uid")).ok(),
     };
     let before = signal_actions();
     let result = managed::run_with(

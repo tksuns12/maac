@@ -87,6 +87,6 @@ source/media snapshots. At the 30-minute stereo limit the WAV alone is roughly
 errors are reported explicitly.
 
 Bounded [device recording](recording.md) is available separately. Input monitoring,
-device enumeration/selection, latency-aligned overdub, low-latency transport,
+playback-output selection, latency-aligned overdub, low-latency transport,
 and producer listening acceptance remain separate
 [roadmap](end-to-end-production-plan.md) gates.

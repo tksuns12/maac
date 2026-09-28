@@ -1,7 +1,7 @@
 # Bounded microphone recording on macOS
 
-The experimental `maac record` command records a fixed duration from the macOS default audio input and
-creates a new editable MaaC project. The delivered stream is mono Float32 at
+The experimental `maac record` command records a fixed duration from the macOS
+default or explicitly selected audio input and creates a new editable MaaC project. The delivered stream is mono Float32 at
 48 kHz. The operating system may convert the device's native rate and channel
 layout; the command does not assert that the hardware itself runs in this format.
 
@@ -30,10 +30,12 @@ Microphone. Automated tests use synthetic input and do not request microphone
 access. Apple documents the required [microphone usage description](https://developer.apple.com/documentation/BundleResources/Information-Property-List/NSMicrophoneUsageDescription)
 and [capture authorization](https://developer.apple.com/documentation/avfoundation/requesting-authorization-to-capture-and-save-media).
 
-The default input is selected once and pinned for the recording. The command
+Use [`maac inputs`](input-devices.md) to list recording inputs without capture
+permission, then select one with `record --input-device UID`. Without that flag,
+the default input is selected once and pinned for the recording. The command
 does not silently move to another input if the device changes or disappears.
 Changing the system default preference alone does not stop a still-valid pinned
-input. It supplies no device selector, stereo/multichannel mode, monitoring, backing
+input. It supplies no stereo/multichannel mode, monitoring, backing
 track playback, overdub alignment, or automatic take-group editing.
 
 ## Project and recording provenance
@@ -47,7 +49,10 @@ disk-media path. The published project contains:
 - `original.wav`: the exact captured WAV, including its recording provenance.
 
 Recording provenance is a bounded JSON record in the WAV's `maac` RIFF chunk.
-The versioned `maac.recording/1` record identifies the selected input, requested
+Default selection uses `maac.recording/1`; explicit UID selection uses
+`maac.recording/2`, with the same fields and an explicit selection policy. The
+[selection contract](input-devices.md) binds the recorded UID to the request.
+The record identifies the selected input, requested
 duration, delivered format/frame count, sample-data hash, capture origin, and
 failure policy. Input latency is unknown and applied compensation is zero.
 Source frame zero means the first delivered capture frame; it does not establish
@@ -95,7 +100,7 @@ reopening a project that requires it.
 
 `--json` emits one terminal result with the output path, frame count, sample
 rate, channel count, selected input UID, backend `macos-audioqueue/1`, recording
-format `maac.recording/1`, and retained WAV digest. Completion means capture and validated
+format `maac.recording/1` or `/2`, and retained WAV digest. Completion means capture and validated
 project publication succeeded. It does not measure audible quality, physical
 input latency, or synchronization. Other platforms return `E_CAPABILITY`.
 This command belongs to the process CLI; the public `Command` enum and

@@ -22,7 +22,12 @@ fn recording_help_and_usage_require_an_explicit_bounded_capture() {
     let output = invoke(&["record", "--help"]);
     assert!(output.status.success(), "{output:?}");
     let help = String::from_utf8(output.stdout).unwrap();
-    for option in ["--duration-seconds", "--output-dir", "--profile"] {
+    for option in [
+        "--duration-seconds",
+        "--output-dir",
+        "--profile",
+        "--input-device",
+    ] {
         assert!(help.contains(option), "missing {option}: {help}");
     }
     let output = invoke(&["--help"]);
@@ -70,6 +75,78 @@ fn recording_help_and_usage_require_an_explicit_bounded_capture() {
             "option={option}"
         );
     }
+}
+
+#[test]
+fn input_listing_help_and_usage_are_read_only_and_input_specific() {
+    let output = invoke(&["inputs", "--help"]);
+    assert!(output.status.success(), "{output:?}");
+    let help = String::from_utf8(output.stdout).unwrap();
+    assert!(help.to_lowercase().contains("input"));
+    let output = invoke(&["--help"]);
+    assert!(String::from_utf8(output.stdout).unwrap().contains("inputs"));
+    for args in [
+        vec!["--json", "inputs", "extra"],
+        vec!["--json", "inputs", "--output-dir", "unused"],
+        vec!["--json", "inputs", "--device", "unknown"],
+    ] {
+        assert_eq!(error(invoke(&args))["code"], "E_USAGE", "{args:?}");
+    }
+}
+
+#[test]
+fn malformed_input_uids_fail_before_any_capture_can_start() {
+    // An existing destination also prevents capture if selector validation ever
+    // regresses. These tests must not depend on the machine's microphone state.
+    let root = tempfile::tempdir().unwrap();
+    let sentinel = root.path().join("sentinel");
+    std::fs::write(&sentinel, b"preserve").unwrap();
+    for uid in [String::new(), "x".repeat(4097), "é".repeat(2049)] {
+        let output = Command::new(env!("CARGO_BIN_EXE_maac"))
+            .args([
+                "--json",
+                "record",
+                "--duration-seconds",
+                "1",
+                "--input-device",
+            ])
+            .arg(&uid)
+            .arg("--output-dir")
+            .arg(root.path())
+            .output()
+            .unwrap();
+        assert_eq!(error(output)["code"], "E_USAGE", "uid bytes={}", uid.len());
+    }
+    assert_eq!(std::fs::read(sentinel).unwrap(), b"preserve");
+    assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn valid_opaque_input_uids_preserve_destination_preflight() {
+    let root = tempfile::tempdir().unwrap();
+    for uid in [
+        "a device UID with spaces",
+        "-dash-prefixed-uid",
+        "入力-device",
+        "default",
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_maac"))
+            .args(["--json", "record", "--duration-seconds", "1"])
+            .arg(format!("--input-device={uid}"))
+            .arg("--output-dir")
+            .arg(root.path())
+            .output()
+            .unwrap();
+        assert_eq!(error(output)["code"], "E_OUTPUT_EXISTS", "uid={uid:?}");
+    }
+    assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
+}
+
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn input_listing_requires_macos() {
+    assert_eq!(error(invoke(&["--json", "inputs"]))["code"], "E_CAPABILITY");
 }
 
 #[cfg(target_os = "macos")]

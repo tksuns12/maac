@@ -7,8 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use sha2::{Digest, Sha256};
 
 use super::{
-    recording_error, CliError, Continuity, Delivered, InputDevice, Latency, Origin,
-    RecordingMetadata, BACKEND, MAX_METADATA_BYTES, RATE,
+    recording_error, CliError, InputDevice, RecordingMetadata, BACKEND, MAX_METADATA_BYTES, RATE,
 };
 
 pub(super) const CHUNK_FRAMES: usize = 2048;
@@ -213,40 +212,12 @@ impl WaveSink {
                 "microphone capture ended before the requested frame count",
             ));
         }
-        let metadata = RecordingMetadata {
-            format: "maac.recording".into(),
-            version: 1,
-            backend: BACKEND.into(),
-            requested_duration_seconds: duration,
-            delivered: Delivered {
-                encoding: "ieee_f32le".into(),
-                rate_hz: RATE,
-                channels: 1,
-                frames: self.frames,
-            },
-            input_device: device,
-            origin: Origin {
-                kind: "first-delivered-frame".into(),
-                source_frame: 0,
-            },
-            latency: Latency {
-                measured_input_frames: None,
-                compensation_frames: 0,
-            },
-            continuity: Continuity {
-                policy: "abort-on-detected-discontinuity".into(),
-                detected_discontinuities: 0,
-            },
-            data_sha256: format!("sha256:{:x}", self.hasher.finalize()),
-        };
-        let bytes = serde_json::to_vec(&metadata).map_err(|error| {
-            recording_error(format!("cannot encode recording provenance: {error}"))
-        })?;
-        if bytes.len() > MAX_METADATA_BYTES {
-            return Err(recording_error(
-                "recording provenance exceeds its bounded envelope",
-            ));
-        }
+        let metadata = RecordingMetadata::for_capture(
+            duration,
+            device,
+            format!("sha256:{:x}", self.hasher.finalize()),
+        );
+        let bytes = metadata.bounded_bytes()?;
         self.writer.write_all(b"maac").map_err(io_error)?;
         self.writer
             .write_all(&(bytes.len() as u32).to_le_bytes())
@@ -271,6 +242,7 @@ impl WaveSink {
 pub(super) fn validate_wave(
     path: &Path,
     duration: u32,
+    requested_uid: Option<&str>,
     mut check: impl FnMut() -> Result<(), CliError>,
 ) -> Result<RecordingMetadata, CliError> {
     let mut file = File::open(path).map_err(io_error)?;
@@ -337,16 +309,23 @@ pub(super) fn validate_wave(
     let metadata: RecordingMetadata = serde_json::from_slice(&bytes)
         .map_err(|error| recording_error(format!("invalid recording provenance: {error}")))?;
     if metadata.format != "maac.recording"
-        || metadata.version != 1
+        || metadata.version != if requested_uid.is_some() { 2 } else { 1 }
         || metadata.backend != BACKEND
         || metadata.requested_duration_seconds != duration
         || metadata.delivered.encoding != "ieee_f32le"
         || metadata.delivered.rate_hz != RATE
         || metadata.delivered.channels != 1
         || metadata.delivered.frames != expected_frames
-        || metadata.input_device.selection != "system-default"
+        || metadata.input_device.selection
+            != if requested_uid.is_some() {
+                "explicit-uid"
+            } else {
+                "system-default"
+            }
+        || requested_uid.is_some_and(|uid| metadata.input_device.uid != uid)
         || metadata.input_device.uid.is_empty()
         || metadata.input_device.uid.len() > 4096
+        || metadata.input_device.uid.contains('\0')
         || metadata
             .input_device
             .hardware_rate_hz

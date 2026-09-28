@@ -309,6 +309,9 @@ fn prepare_and_publish(
         .arg(CHILD_ARGUMENT)
         .arg(request.duration_seconds.to_string())
         .arg(&wave);
+    if let Some(uid) = &request.input_device {
+        capture.arg("--input-device").arg(uid);
+    }
     redirect(&mut capture, &capture_stdout, &capture_stderr)?;
     signals.check()?;
     let phase = wave.with_extension("status");
@@ -316,9 +319,12 @@ fn prepare_and_publish(
         .wait(signals, Some((&phase, request.duration_seconds)))?;
     check_child(&capture_stdout, status, "capture")?;
     signals.check()?;
-    let metadata = stream::validate_wave(&wave, request.duration_seconds, || {
-        signals.check().map_err(|failure| *failure.error)
-    })?;
+    let metadata = stream::validate_wave(
+        &wave,
+        request.duration_seconds,
+        request.input_device.as_deref(),
+        || signals.check().map_err(|failure| *failure.error),
+    )?;
     signals.check()?;
     let import_stdout = stage.join("import.stdout");
     let import_stderr = stage.join("import.stderr");
@@ -368,7 +374,11 @@ fn prepare_and_publish(
         channels: 1,
         format: "float32",
         output: request.output_dir.display().to_string(),
-        recording_format: "maac.recording/1",
+        recording_format: if metadata.version == 2 {
+            "maac.recording/2"
+        } else {
+            "maac.recording/1"
+        },
         digest: imported["digest"]
             .as_str()
             .expect("checked digest")

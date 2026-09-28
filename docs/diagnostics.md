@@ -25,7 +25,7 @@ UTF-8 byte ranges; they refer to the original authored source.
 | `E_NONFINITE` | Reduce values that make a DSP or export calculation nonfinite |
 | `E_PCM16_RANGE` | Keep raw samples within `[-1,1]` before PCM16 export; samples are never clipped or normalized |
 | `E_PLAYBACK` | Playback backend startup/execution or renderer-child protocol failed; inspect the reported stage and system output device |
-| `E_RECORDING` | Capture startup, stream continuity, device state, or finalized capture validation failed; no partial project is published |
+| `E_RECORDING` | Input listing/selection, capture startup, stream continuity, device state, or finalized capture validation failed; no partial project is published |
 | `E_PERMISSION` | Microphone access is denied or restricted; review the launching application’s macOS microphone permission |
 | `E_INTERRUPTED` | `play` or `record` was stopped; SIGINT exits 130 and SIGTERM exits 143 after child termination and temporary-file cleanup |
 | `E_OUTPUT_EXISTS` | Choose a new destination or pass `--force` to replace an existing file |

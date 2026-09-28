@@ -113,7 +113,9 @@ archive history. Try the [synthetic take example](examples/take-comp.maac);
 [v2 microphone groups](docs/grouped-takes.md) coordinate all lanes of a take.
 [Rendered playback](docs/playback.md) is available through `maac play` on
 macOS. Bounded [microphone recording](docs/recording.md) creates an editable
-project with retained capture provenance. Monitoring, low-latency transport,
+project with retained capture provenance. [Input selection](docs/input-devices.md)
+lists devices with `maac inputs` and selects exact UIDs with `record --input-device`.
+Monitoring, low-latency transport,
 and physical-device production acceptance remain open.
 
 ## Quick start

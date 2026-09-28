@@ -781,6 +781,60 @@ capture continuity, latency, or listening quality. Those remain deliberate
 hardware-acceptance work. Non-macOS execution was not run, and this focused gate
 does not replace the full all-targets test suite or the producer-acceptance gate.
 
+## Input discovery and exact recording selection (2026-09-28)
+
+`maac inputs` adds read-only macOS input metadata discovery. The process CLI
+accepts `record --input-device UID`, resolves it before microphone authorization,
+rechecks it afterward, and pins and verifies the queue's actual UID. The retained
+WAV uses `maac.recording/2` for explicit selection; default selection keeps the
+existing v1 fields and policy. See the [input-device contract](input-devices.md).
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Final library and adjacent CLI gate | `cargo test --lib --test recording_cli --test playback_cli --test cli --test cli_bundle --test cli_execution_profiles --test media_import_cli --test disk_media_cli --test archive_retained_cli --locked --offline --quiet` | Passed after final source edits: 385 active library tests, 3 existing ignored; 7 recording, 4 playback, 3 CLI, 7 bundle CLI, 3 execution-profile, 9 media-import, 3 disk-media, and 7 retained-archive CLI tests |
+| Recording and discovery checks | Included in the library gate | Passed: 29 cases in the final library gate, including both provenance versions and CF ownership |
+| All-target strict Clippy | `cargo clippy --all-targets --locked --offline -- -D warnings` | Passed after final lint fixes |
+| Formatting and whitespace | `cargo fmt --all -- --check`; `git diff --check` | Passed |
+| Independent review | Read-only Astra max device-query, selection, provenance, lifecycle, documentation, and test review | No remaining material findings |
+| Native debug metadata smoke | JSON and human `inputs`; selector help; no capture invocation | Passed: empty sandbox inventory; outside the sandbox, one available default mono input at nominal 48 kHz; no files or microphone access |
+| Release build | `cargo build --release --locked --offline` | Passed after final source edits |
+| Native release metadata smoke | JSON/human `inputs`, selection help, bounded field checks | Passed outside the sandbox: one available default mono input at nominal 48 kHz; no capture or files created |
+
+Synthetic provider tests exercise ordering, input-only filtering, no default,
+empty and unavailable inventories, duplicate IDs/UIDs, changing inventories,
+malformed and oversized property data, and exact selection. Property buffers
+are bounded; discovery requires matching observations within a finite retry
+budget. Name/UID controls are escaped in human output. Explicit requests retain
+spaces, non-ASCII characters, and dash-prefixed UIDs without treating them as
+names, indices, or aliases.
+
+The authorization seam verifies selection and metadata size before permission,
+then revalidates availability, identity, channels, and rate afterward. Tests
+cover disappearance or ambiguity across that boundary. The authorized marker
+is written before post-permission inspection so the existing setup watchdog
+covers it. Default preference changes do not retarget a pinned input.
+
+The supervisor binds metadata version, selection policy, and actual UID to the
+request before import/publication. Synthetic v1 and v2 captures pass retained
+import verification and archive relocation/reopen; wrong UID, fallback version,
+malformed metadata, or oversized encoding is rejected. The existing original
+WAV and import/archive formats retain these bytes without a migration. Public
+CLI tests use existing destinations as a second barrier against accidental
+capture while exercising selector validation and argument handling.
+
+Apple’s [AudioQueueGetProperty documentation](https://developer.apple.com/documentation/audiotoolbox/audioqueuegetproperty%28_%3A_%3A_%3A_%3A%29)
+confirms that returned CF values are duplicated and caller-owned. Native queue UID checks now release those
+references after bounded conversion. Focused tests prove correct release on
+success and property-size/conversion failure without opening an audio device.
+Review also corrected platform configuration and post-authorization timing
+and ambiguity handling before the final gate.
+
+Read-only enumeration is the only actual-device operation exercised here.
+No microphone authorization, default-input capture, or selected-input capture
+was invoked. Physical capture, monitoring, latency/clock alignment, listening
+acceptance, and non-macOS execution remain unverified. This is a library and
+focused CLI gate, not a full all-targets test-suite refresh.
+
 ## Historical naming cleanup
 
 The current tree uses MaaC consistently in the specification, grammar, schema,
