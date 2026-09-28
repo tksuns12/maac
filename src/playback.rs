@@ -79,7 +79,7 @@ mod managed {
     use std::fs::File;
     use std::io::{Read, Seek};
     use std::mem;
-    use std::os::unix::process::CommandExt;
+    use std::os::unix::{fs::PermissionsExt, process::CommandExt};
     use std::path::Path;
     use std::process::{Child, Command, ExitStatus, Stdio};
     use std::sync::atomic::{AtomicI32, Ordering};
@@ -244,7 +244,9 @@ mod managed {
         let signals = Signals::install()?;
         signals.check()?;
         let mut builder = tempfile::Builder::new();
-        builder.prefix("maac-play-");
+        builder
+            .prefix("maac-play-")
+            .permissions(std::fs::Permissions::from_mode(0o700));
         let temporary = match temporary_parent {
             Some(parent) => builder.tempdir_in(parent),
             None => builder.tempdir(),
@@ -297,6 +299,11 @@ mod managed {
         let render_stderr = temporary.join("render.stderr");
         let mut render = Command::new(renderer);
         render
+            // A killed renderer cannot run tempfile destructors. Keep its
+            // media snapshots under the supervisor's cleanup boundary.
+            .env("TMPDIR", temporary)
+            .env("TMP", temporary)
+            .env("TEMP", temporary)
             .arg("--json")
             .arg(if request.plan { "render" } else { "build" });
         render.args(["--format", "float32", "--profile"]);

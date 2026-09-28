@@ -13,6 +13,7 @@ language.
 | `maac build [INPUT] -o WAV [--project-root ROOT] [--profile default\|song]` | Resolve, compile and render a composition bundle through the same selected limits |
 | `maac play [INPUT] [--project-root ROOT] [--disk-media] [--profile default\|song]` | Render source to a private Float32 WAV, then play through macOS system-default output; Ctrl-C stops preparation or playback |
 | `maac play PLAN --plan [--profile default\|song]` | Validate and render an explicit retained plan, then play it through the same backend |
+| `maac record --duration-seconds N --output-dir NEW [--profile default\|song]` | Capture 1–1800 whole seconds of 48 kHz mono Float32 from macOS default input into a new retained-import project |
 | `maac deliver INPUT --delivery ID --output-dir DIR [--target ID] [--profile default\|song]` | Render selected named targets from source or retained JSON, analyze final WAVs, and publish a manifest |
 | `maac instruments [NAME]` | List the built-in catalog, or show one instrument with controls, musical guidance and runnable usage |
 | `maac instruments [NAME] --library ID` | Select an exact built-in version for catalog listing or named detail |
@@ -45,6 +46,11 @@ SIGINT/SIGTERM, and has no device selector, seek, or monitoring path. `--plan`
 requires input and conflicts with source-only flags. The public `Command` and
 `execute*` APIs remain unchanged. See [playback](playback.md).
 
+`record` is also process-only. It requires microphone authorization, records a
+fixed duration, and atomically publishes a new project with the original WAV
+retained. Ctrl-C aborts; it does not save a partial take. See
+[recording](recording.md) for provenance and hardware-acceptance limits.
+
 `render` accepts `--start-frame N` and `--end-frame M` only as a pair. They
 select `[N, M)` in reset-origin engine frames, including the plan's declared
 tail, with `0 <= N <= M <= plan.output.total_frames`; an empty interval is a
@@ -61,7 +67,7 @@ recursive or ancestor search. `-o` remains required where shown, and relative
 outputs remain relative to the process cwd. Explicit filenames retain their
 existing behavior; `render`/`hash` do not discover `main.maac`.
 
-`--profile` is per-command on check/compile/build/render/deliver/play, not a language
+`--profile` is per-command on check/compile/build/render/deliver/play/record, not a language
 conformance declaration. Default work remains 500,000,000; explicit `song`
 permits at most 10,000,000,000 work units with every other bound unchanged.
 Composition `check` includes this budget validation. Large retained plans need

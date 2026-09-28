@@ -726,6 +726,61 @@ run or a cross-platform execution result. Device capture, input monitoring,
 low-latency transport, and representative producer/listening acceptance remain
 open.
 
+## Bounded macOS microphone recording (2026-09-28)
+
+The experimental process-only `maac record` command captures a required finite
+interval as delivered 48 kHz mono Float32, embeds bounded `maac.recording/1`
+provenance in a WAV chunk, and creates an ordinary retained disk-media import.
+The final new project is published atomically with owner-only permissions.
+See the [recording contract](recording.md) for authorization, limits, capture
+origin, failure behavior, and the separate hardware-acceptance boundary.
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Library and adjacent CLI gate | `cargo test --lib --test recording_cli --test playback_cli --test cli --test cli_bundle --test cli_execution_profiles --test media_import_cli --test disk_media_cli --test archive_retained_cli --locked --offline --quiet` | Passed: 373 active library tests, 3 existing ignored; 4 recording, 4 playback, 3 CLI, 7 bundle CLI, 3 execution-profile, 9 media-import, 3 disk-media, and 7 retained-archive CLI tests |
+| Recording core lifecycle | `cargo test --lib recording:: --locked --offline --quiet` | Passed: 17 tests after final review fixes; included in the library gate above |
+| Playback snapshot cleanup | `cargo test --lib playback:: --locked --offline --quiet` | Passed: 16 tests, including the new real temporary-snapshot cancellation regression |
+| All-targets strict Clippy | `cargo clippy --all-targets -- -D warnings` | Passed after final source and regression changes |
+| Formatting and whitespace | `cargo fmt --all -- --check`; `git diff --check` | Passed |
+| Independent review | Read-only Astra max native, lifecycle, publication, and playback delta review | No unresolved actionable findings |
+| Apple SDK ABI and permission metadata | Clang static assertions against installed Xcode 26.5 headers; `plutil` | Passed: audio format, queue buffer, timestamp, property-address layouts, selectors, PCM flags, and plist syntax |
+| Release build | `cargo build --release --locked --offline` | Passed after final native and publication fixes |
+| Release CLI and native packaging | `record --help`, invalid/existing-output and resource preflight, `otool -P`, `otool -L` | Passed: required help, preserved destination, expected error codes, embedded microphone purpose, and required macOS frameworks; no microphone access |
+
+Synthetic input exercises exact final-frame trimming, Float32 sample identity,
+bounded callback storage, overflow, timeline discontinuity, invalid samples,
+strict WAV/recording metadata, requested duration, and PCM hash validation.
+The successful supervisor test uses the real retained importer, verifies the
+resulting project, creates an archive, deletes the source project, relocates
+and verifies the archive, then unpacks and verifies the exact original WAV.
+No archive schema or import manifest version changed.
+
+Process tests check SIGINT/SIGTERM during capture and import, child reaping,
+no-clobber publication races, permission-error propagation, bounded setup and
+capture watchdogs, and cleanup failures with recoverable staging paths.
+A real disk-import fixture holds actual source-WAV and PCM snapshots while
+being interrupted; it verifies that all snapshots remain inside owner-only
+staging and are removed even though the killed child cannot run destructors.
+The analogous playback regression uses a real default `NamedTempFile` in a
+renderer child and checks both signals. Permission checks run under a deliberately
+permissive umask. Public CLI tests reject invalid duration/flags, existing files,
+directories and dangling symlinks, missing parents, and predictable work-budget
+failure before microphone access.
+
+Independent review corrected escaped child temporary files, default staging
+permissions, a successful-rename cleanup regression, and an expected AudioQueue
+shutdown enqueue rejection that could incorrectly fail a completed take.
+Capture rechecks fatal callback state after disposal while distinguishing
+those documented shutdown statuses. Publication disarms the temporary-directory
+owner after the atomic rename; failures still clean staging and report residue.
+
+No microphone authorization or real device capture was invoked during this
+work. The native build, synthetic pipeline, and ABI checks do not establish
+TCC/signing behavior, device pinning and conversion on real hardware, physical
+capture continuity, latency, or listening quality. Those remain deliberate
+hardware-acceptance work. Non-macOS execution was not run, and this focused gate
+does not replace the full all-targets test suite or the producer-acceptance gate.
+
 ## Historical naming cleanup
 
 The current tree uses MaaC consistently in the specification, grammar, schema,

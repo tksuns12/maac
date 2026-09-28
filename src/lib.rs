@@ -55,6 +55,7 @@ pub mod production_delivery;
 mod production_eq;
 pub mod production_identity;
 mod production_reverb;
+mod recording;
 pub mod semantic;
 pub mod stdlib;
 pub mod syntax;

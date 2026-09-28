@@ -42,6 +42,8 @@ Playback does not alter source, save a WAV beside it, or modify an archive.
 Press **Ctrl-C** to stop during source loading, compilation, rendering, or
 playback. The CLI also handles SIGTERM. It terminates and reaps its active child
 before removing the private WAV, partial render files, and captured diagnostics.
+Renderer-created media snapshots are contained in the same owner-only staging
+directory, including when the renderer is forcibly stopped.
 If filesystem permissions prevent cleanup, the error includes the surviving
 staging path so it can be removed after access is restored.
 It restores the previous signal handlers before returning. A handled SIGINT
@@ -84,6 +86,7 @@ source/media snapshots. At the 30-minute stereo limit the WAV alone is roughly
 691 MB. Existing duration, media, graph, and work limits still apply, and disk
 errors are reported explicitly.
 
-Device recording, input monitoring, device enumeration/selection, latency-aligned
-overdub, low-latency transport, and producer listening acceptance remain separate
+Bounded [device recording](recording.md) is available separately. Input monitoring,
+device enumeration/selection, latency-aligned overdub, low-latency transport,
+and producer listening acceptance remain separate
 [roadmap](end-to-end-production-plan.md) gates.

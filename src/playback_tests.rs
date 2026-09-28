@@ -411,12 +411,74 @@ fn interrupt_player(signal: libc::c_int) {
 }
 
 #[test]
+fn interrupted_renderer_cleans_descendant_media_snapshots() {
+    for signal in [libc::SIGINT, libc::SIGTERM] {
+        let fixture = Fixture::new();
+        fs::write(fixture.path("permissive-umask"), b"test").unwrap();
+        fixture.renderer(&format!(
+            "export MAAC_PLAYBACK_SNAPSHOT_TEST_ROOT={}\nexec {} --exact playback::tests::snapshot_helper --nocapture",
+            quoted(fixture.directory.path()),
+            quoted(&std::env::current_exe().unwrap()),
+        ));
+        let mut child = fixture.spawn();
+        wait_for_file(&fixture.path("snapshot-ready"), &mut child);
+        let snapshot = PathBuf::from(fs::read_to_string(fixture.path("snapshot-path")).unwrap());
+        assert!(snapshot.exists());
+        assert!(
+            snapshot.starts_with(fixture.path("staging")),
+            "{snapshot:?}"
+        );
+        assert_eq!(
+            fs::metadata(snapshot.parent().unwrap())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        // SAFETY: only the owned supervisor receives the signal; it kills and
+        // reaps the snapshot helper before removing the containing stage.
+        assert_eq!(unsafe { libc::kill(child.id() as libc::pid_t, signal) }, 0);
+        finish_with_deadline(&mut child, Duration::from_secs(5));
+        assert_eq!(child.wait().unwrap().code(), Some(128 + signal));
+        assert_eq!(fixture.result()["code"], "E_INTERRUPTED");
+        assert_reaped(&fixture.path("snapshot-pid"));
+        assert!(!snapshot.exists());
+        fixture.assert_clean();
+    }
+}
+
+#[test]
+fn snapshot_helper() {
+    let Some(root) = std::env::var_os("MAAC_PLAYBACK_SNAPSHOT_TEST_ROOT") else {
+        return;
+    };
+    let root = PathBuf::from(root);
+    // Use the same default temporary-file API as media loading. SIGKILL will
+    // prevent its destructor; only supervisor-owned containment can clean it.
+    let snapshot = tempfile::NamedTempFile::new().unwrap();
+    fs::write(snapshot.path(), b"private decoded audio snapshot").unwrap();
+    fs::write(
+        root.join("snapshot-path"),
+        snapshot.path().to_str().unwrap(),
+    )
+    .unwrap();
+    fs::write(root.join("snapshot-pid"), std::process::id().to_string()).unwrap();
+    fs::write(root.join("snapshot-ready"), b"ready").unwrap();
+    thread::sleep(Duration::from_secs(60));
+}
+
+#[test]
 fn supervisor_helper() {
     let Some(root) = std::env::var_os("MAAC_PLAYBACK_TEST_ROOT") else {
         return;
     };
     let root = PathBuf::from(root);
     // Snapshot process signal actions around every stage, including failures.
+    if root.join("permissive-umask").exists() {
+        // SAFETY: this is an isolated helper process, never the test runner.
+        unsafe { libc::umask(0) };
+    }
     let before = signal_actions();
     let request = PlayRequest {
         input: Some(PathBuf::from("--dash-input.maac")),

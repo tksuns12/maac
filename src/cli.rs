@@ -324,7 +324,7 @@ pub enum ProfileArg {
 }
 
 impl ProfileArg {
-    fn limits(self) -> PlanLimits {
+    pub(crate) fn limits(self) -> PlanLimits {
         match self {
             Self::Default => PlanLimits::default(),
             Self::Song => PlanLimits::song(),
@@ -989,7 +989,7 @@ fn execute_disk_media(
     })
 }
 
-fn execute_disk_media_import(
+pub(crate) fn execute_disk_media_import(
     command: &Command,
     profile: ProfileArg,
 ) -> Result<CommandResult, CliError> {
@@ -2807,7 +2807,7 @@ fn publish_staged_module_noclobber(staging: &Path, destination: &Path) -> Result
 }
 
 #[cfg(target_vendor = "apple")]
-fn publish_staged_directory_noclobber(
+pub(crate) fn publish_staged_directory_noclobber(
     staging: &Path,
     destination: &Path,
     artifact: &str,
@@ -2829,7 +2829,7 @@ fn publish_staged_directory_noclobber(
 }
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
-fn publish_staged_directory_noclobber(
+pub(crate) fn publish_staged_directory_noclobber(
     staging: &Path,
     destination: &Path,
     artifact: &str,
@@ -2875,7 +2875,7 @@ fn finish_staged_directory_publish(
 }
 
 #[cfg(target_os = "windows")]
-fn publish_staged_directory_noclobber(
+pub(crate) fn publish_staged_directory_noclobber(
     staging: &Path,
     destination: &Path,
     artifact: &str,
@@ -2924,7 +2924,7 @@ fn publish_staged_directory_noclobber(
     target_os = "android",
     target_os = "windows"
 )))]
-fn publish_staged_directory_noclobber(
+pub(crate) fn publish_staged_directory_noclobber(
     _staging: &Path,
     destination: &Path,
     _artifact: &str,
@@ -3087,6 +3087,10 @@ enum ProcessRequest {
         request: crate::playback::PlayRequest,
         json: bool,
     },
+    Record {
+        request: crate::recording::RecordRequest,
+        json: bool,
+    },
 }
 
 /// Add process-only flags without changing the public Command enum used by
@@ -3095,6 +3099,14 @@ fn parse_cli_with_process_options(
     args: Vec<std::ffi::OsString>,
 ) -> Result<ProcessRequest, ParsedArgsError> {
     let mut command = Cli::command();
+    command = command.subcommand(
+        clap::Command::new("record")
+            .about("Record the macOS default microphone into a new retained media project")
+            .after_help("Captures exactly the requested duration as 48000 Hz mono Float32. The input device is selected once and pinned. Microphone permission is requested before capture. Press Ctrl-C to abort and remove private files without publishing a project.")
+            .arg(Arg::new("duration-seconds").long("duration-seconds").value_name("N").required(true).value_parser(clap::value_parser!(u32).range(1..=1800)).help("required whole seconds of delivered input (1..1800)"))
+            .arg(Arg::new("output-dir").long("output-dir").value_name("NEW").required(true).value_parser(clap::value_parser!(PathBuf)).help("new project directory; parent must already exist"))
+            .arg(Arg::new("profile").long("profile").default_value("default").value_parser(clap::value_parser!(ProfileArg)).help("finite execution-work allowance for the resulting project")),
+    );
     command = command.subcommand(
         clap::Command::new("play")
             .about("Render a source or retained plan privately and audition through macOS afplay")
@@ -3178,6 +3190,23 @@ fn parse_cli_with_process_options(
     let matches = command
         .try_get_matches_from(args)
         .map_err(ParsedArgsError::Clap)?;
+    if let Some(record) = matches.subcommand_matches("record") {
+        return Ok(ProcessRequest::Record {
+            request: crate::recording::RecordRequest {
+                duration_seconds: *record
+                    .get_one::<u32>("duration-seconds")
+                    .expect("duration is required"),
+                output_dir: record
+                    .get_one::<PathBuf>("output-dir")
+                    .expect("output is required")
+                    .clone(),
+                profile: *record
+                    .get_one::<ProfileArg>("profile")
+                    .expect("profile has a default"),
+            },
+            json: matches.get_flag("json"),
+        });
+    }
     if let Some(play) = matches.subcommand_matches("play") {
         return Ok(ProcessRequest::Play {
             request: crate::playback::PlayRequest {
@@ -3240,6 +3269,9 @@ where
     T: Into<std::ffi::OsString> + Clone,
 {
     let args: Vec<std::ffi::OsString> = args.into_iter().map(Into::into).collect();
+    if let Some(code) = crate::recording::private_child(&args) {
+        return code;
+    }
     let json_requested = args.iter().any(|arg| arg == "--json");
     let parsed = match parse_cli_with_process_options(args) {
         Ok(parsed) => parsed,
@@ -3276,6 +3308,7 @@ where
     let (cli, options) = match parsed {
         ProcessRequest::Existing(cli, options) => (cli, options),
         ProcessRequest::Play { request, json } => return run_playback(&request, json),
+        ProcessRequest::Record { request, json } => return run_recording(&request, json),
     };
     let json = cli.json;
     let result = if options.disk_media_profile.is_some() && !options.disk_media {
@@ -3317,6 +3350,36 @@ where
                 eprintln!("{error}");
             }
             1
+        }
+    }
+}
+
+fn run_recording(request: &crate::recording::RecordRequest, json: bool) -> i32 {
+    match crate::recording::run(request) {
+        Ok(result) => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string(&result).expect("recording result is serializable")
+                );
+            } else {
+                println!(
+                    "Recorded {} frames at {} Hz into {}",
+                    result.frames, result.sample_rate, result.output
+                );
+            }
+            0
+        }
+        Err(failure) => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string(&failure.error).expect("recording error is serializable")
+                );
+            } else {
+                eprintln!("{}", failure.error);
+            }
+            failure.exit_code
         }
     }
 }

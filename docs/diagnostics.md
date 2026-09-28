@@ -25,7 +25,9 @@ UTF-8 byte ranges; they refer to the original authored source.
 | `E_NONFINITE` | Reduce values that make a DSP or export calculation nonfinite |
 | `E_PCM16_RANGE` | Keep raw samples within `[-1,1]` before PCM16 export; samples are never clipped or normalized |
 | `E_PLAYBACK` | Playback backend startup/execution or renderer-child protocol failed; inspect the reported stage and system output device |
-| `E_INTERRUPTED` | `play` was stopped; SIGINT exits 130 and SIGTERM exits 143 after child termination and temporary-file cleanup |
+| `E_RECORDING` | Capture startup, stream continuity, device state, or finalized capture validation failed; no partial project is published |
+| `E_PERMISSION` | Microphone access is denied or restricted; review the launching application’s macOS microphone permission |
+| `E_INTERRUPTED` | `play` or `record` was stopped; SIGINT exits 130 and SIGTERM exits 143 after child termination and temporary-file cleanup |
 | `E_OUTPUT_EXISTS` | Choose a new destination or pass `--force` to replace an existing file |
 | `E_IO`, `E_WAV`, `E_FORMAT` | Correct the destination, permissions, WAV writer state or requested encoding |
 | `E_RENDER_STATE`, `E_RENDER_CALLBACK` | Correct an invalid execution graph or renderer/export boundary failure |
@@ -52,7 +54,9 @@ dependencies through the bounded local bundle loader. Compilation uses that
 bundle; retained-plan rendering uses embedded assets. Neither executes plug-ins,
 hardware adapters, or network requests. The separate [`play`](playback.md) command
 supervises a renderer child and the fixed macOS system player; unsupported hosts
-return `E_CAPABILITY` before rendering.
+return `E_CAPABILITY` before rendering. The separate [`record`](recording.md)
+command requests microphone authorization and captures through the macOS native
+audio API; it creates a new retained-import project only after capture succeeds.
 
 A hit onset must schedule before the score-end frame. If a physically pre-end
 onset rounds to that frame, compilation returns `E_INTERVAL`; move the onset

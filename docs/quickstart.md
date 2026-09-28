@@ -116,3 +116,16 @@ The command renders the complete output before playing through the system-defaul
 audio route. Ctrl-C stops rendering or playback. Large imported projects can add
 `--disk-media` in source mode. See [rendered playback](playback.md) for limits and
 platform support.
+
+## Record a microphone take on macOS
+
+```sh
+maac record --duration-seconds 10 --output-dir new-take
+maac verify-import new-take --disk-media
+maac play new-take --disk-media
+```
+
+The OS must authorize microphone access. The command captures a fixed duration
+from the default input, then creates a new editable project with its original
+WAV retained. It delivers 48 kHz mono; Ctrl-C aborts without saving a partial
+take. See [recording](recording.md) for device, provenance, and acceptance limits.

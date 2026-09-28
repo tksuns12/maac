@@ -112,11 +112,15 @@ explicit clips. Selection changes use existing atomic edits, inverses, and
 archive history. Try the [synthetic take example](examples/take-comp.maac);
 [v2 microphone groups](docs/grouped-takes.md) coordinate all lanes of a take.
 [Rendered playback](docs/playback.md) is available through `maac play` on
-macOS. Device recording and low-latency transport remain future work.
+macOS. Bounded [microphone recording](docs/recording.md) creates an editable
+project with retained capture provenance. Monitoring, low-latency transport,
+and physical-device production acceptance remain open.
 
 ## Quick start
 
-Install a current stable Rust toolchain. From the repository root:
+Install a current stable Rust toolchain. macOS builds also use Apple’s Xcode
+Command Line Tools to compile the microphone permission bridge; no runtime
+compiler or downloaded recording helper is needed. From the repository root:
 
 ```sh
 cargo build --release --locked
