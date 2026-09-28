@@ -139,6 +139,8 @@ budgets, and media byte limits. These maxima are not a promise that every
 combination fits those other limits.
 
 See the [verification record](verification.md) for exact-sample switching,
-atomic rejection, undo, compatibility, and relocated archive evidence. Device
-capture, playback, listening acceptance, and the representative production
-workload remain in the [roadmap](end-to-end-production-plan.md).
+atomic rejection, undo, compatibility, and relocated archive evidence. The
+separate [`play`](playback.md) command auditions rendered output on macOS.
+Device capture, low-latency transport, listening acceptance, and the
+representative production workload remain in the
+[roadmap](end-to-end-production-plan.md).

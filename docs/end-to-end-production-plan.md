@@ -16,7 +16,7 @@ complete professional-production product.
 | Phase 1: end-to-end inventory | Complete as a bounded reference inventory | Keep the [lifecycle inventory](end-to-end-lifecycle-inventory.md) aligned with implemented slices and open gates. |
 | Phase 2: reset-correct excerpts | Complete for bounded final-WAV ranges | No claim of realtime seeking, speed-up, or arbitrary DSP-state restoration. |
 | Phase 3: media/import/packaging | In progress; bounded WAV crop import, opt-in retained-original verification, opt-in file-backed WAV import and verification up to the native PCM disk-media limit, archive checkpoints, multiple selected retained WAV imports, explicit whole-output and independent native-effect-group freeze reuse, opt-in partial reuse of eligible group members, bounded independent-branch gain/pan edit reuse, journaled local-source transactions, and opt-in verified native processor context implemented | Add external processor dependency/state packaging, overlapping frozen graph branches, broader selective invalidation, and remaining media and reopen coverage. |
-| Phase 4: capture/playback/comping | Partial foundations: source-preserving Protocol 2 edits of disk-backed audio clips, bounded take membership with a shared physical origin, synchronized microphone-file lanes, and explicit comp selection with conflicts, inverses, and archive reopen | Add device recording, playback, broader revision workflows, and representative listening acceptance. |
+| Phase 4: capture/playback/comping | Partial foundations: source-preserving Protocol 2 edits of disk-backed audio clips, bounded take membership with a shared physical origin, synchronized microphone-file lanes, explicit comp selection with conflicts, inverses, and archive reopen, and macOS rendered playback | Add device recording, low-latency transport and monitoring, broader revision workflows, and representative listening acceptance. |
 | Phase 5: open processors and hosting | Partial foundations only | Generic rendering and executable native external hosting remain deferred. |
 | Phase 6: mix/master/release/reopen | Not complete | Pass the representative production, invalidation, clean-reopen, listening, and producer gates. |
 
@@ -271,6 +271,14 @@ synchronized microphone-file lanes together. Every take and region has the
 same lane set; files share a rate, while each lane retains its channel layout
 and individual source origin. Partial lane switches fail atomically. V1
 descriptors and projects remain supported without a schema rewrite.
+
+The bounded [`maac play`](playback.md) command now renders source or retained
+plans through the existing pipeline and auditions the complete Float32 output
+using macOS's system-default player. It supports source disk media and the
+existing work profiles, with SIGINT/SIGTERM child termination and private-file
+cleanup. This provides offline audition with render-before-play delay; device
+capture, monitoring, device selection, low-latency transport, and listening
+acceptance remain open.
 
 ### 5. Open samplers, processors, libraries, and plugin contracts
 

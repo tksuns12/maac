@@ -45,6 +45,7 @@ mod plan_v4;
 mod plan_v5;
 mod plan_v6;
 mod plan_v7;
+mod playback;
 mod pluck;
 pub mod production_analysis;
 mod production_compressor;

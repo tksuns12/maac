@@ -681,6 +681,51 @@ This is a library and focused-integration gate, not a full all-targets test-suit
 run. The fixtures prove authored coordinates and sample selection, not measured
 capture latency, acoustic phase, listening quality, device recording, or playback.
 
+## Rendered macOS playback (2026-09-28)
+
+`maac play` supervises the existing source-build or retained-plan renderer,
+validates its private Float32 WAV, then runs macOS `/usr/bin/afplay` on the
+system-default output. See the [playback contract](playback.md) for supported
+flags, signal handling, diagnostics, cleanup, and limits.
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Library and adjacent CLI gate | `cargo test --lib --test playback_cli --test cli --test cli_bundle --test cli_execution_profiles --test disk_media_cli --test grouped_takes_cli --locked --offline --quiet` | Passed: 354 active library tests, 3 existing ignored; 4 playback, 3 CLI, 7 bundle CLI, 3 execution-profile, 3 disk-media CLI, and 7 grouped-take CLI tests |
+| Playback lifecycle | Fourteen library tests included above | Passed: isolated subprocess supervision, signals, diagnostics, finalized WAV validation, cleanup, and restored signal handlers |
+| All-targets strict Clippy | `cargo clippy --all-targets --locked --offline -- -D warnings` | Passed after final code changes |
+| Formatting and whitespace | `cargo fmt --all -- --check`; `git diff --check` | Passed |
+| Independent review | Read-only Astra max supervisor and CLI review | No remaining findings after the fixes below |
+| Real renderer handoff | Private test helper invokes the real CLI renderer and compares the staged WAV with an ordinary build | Passed: exact Float32 WAV bytes for 48,000 stereo grouped-take frames; disk-media/song renderer; staging empty |
+| Release build | `cargo build --release --locked --offline` | Passed |
+| Release backend smoke | Quiet 50 ms source, disk-media/song source, and retained plan through the fixed system player | Passed outside the execution sandbox: each completed with 2,400 mono frames at 48 kHz, one JSON result, empty stderr, and empty staging |
+
+The lifecycle tests cover renderer and backend startup/failure, malformed or
+incomplete WAV output, exact player input bytes, bounded backend stderr, large
+UTF-8 renderer diagnostics, option forwarding, SIGINT/SIGTERM during playback,
+child termination/reaping, and temporary-file removal. Public CLI tests also
+interrupt a renderer blocked on input and check usage conflicts and source/plan
+diagnostic identity. Deliberate permission loss checks cleanup failure after
+success, backend failure, and interruption. The primary failure and signal exit
+status survive; the diagnostic identifies the remaining directory for recovery.
+
+Independent review identified three issues that were fixed and covered by
+regressions: parsing a large valid renderer error before truncating its message,
+forwarding dash-prefixed project roots as one option value, and reporting cleanup
+failure without replacing the primary error. Backend message truncation also
+now includes an explicit marker. A fresh public-binary permission-loss check
+returned SIGTERM exit 143 with `E_INTERRUPTED`, the surviving path, one JSON
+object, and empty stderr.
+
+An initial debug smoke inside the execution sandbox reported `E_PLAYBACK` for
+`AudioQueueStart failed (-66680)`; the same short fixture succeeded outside the
+sandbox. Real-player success proves successful backend process completion,
+not that a listener heard it, measured latency, or the physical device rate.
+
+This is a library and focused-integration gate, not a full all-targets test-suite
+run or a cross-platform execution result. Device capture, input monitoring,
+low-latency transport, and representative producer/listening acceptance remain
+open.
+
 ## Historical naming cleanup
 
 The current tree uses MaaC consistently in the specification, grammar, schema,

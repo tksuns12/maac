@@ -104,3 +104,15 @@ Read the [authoring tutorial](tutorial.md), [capability matrix](capabilities.md)
 and [diagnostics guide](diagnostics.md) before using features beyond these examples.
 The [full specification](../MaaC-1-Specification.md) defines the language;
 foundation support is explicitly narrower than its conformance profiles.
+
+## Audition on macOS
+
+```sh
+maac play . --profile song
+maac play song.performance.json --plan --profile song
+```
+
+The command renders the complete output before playing through the system-default
+audio route. Ctrl-C stops rendering or playback. Large imported projects can add
+`--disk-media` in source mode. See [rendered playback](playback.md) for limits and
+platform support.

@@ -136,7 +136,9 @@ language or audio conformance.
 
 `check`, `compile`, `build`, and `render` accept `--profile default|song`.
 Omission is exactly `default`; an unknown name is a CLI usage error. Other
-commands do not gain a profile option.
+commands do not gain a profile option through this contract. The separately
+documented [`play`](playback.md) command forwards this profile unchanged to its
+source or retained-plan renderer.
 
 | Profile | Maximum conservative execution work |
 | --- | --- |

@@ -24,7 +24,7 @@ Coverage of every reference processor identifier is not a full-profile claim.
 | Processors | `core.sine/1`, `core.kit/1`, `core.onepole/1`, `core.pan/1`, `core.sum/1`, `core.gain/1`, `core.fader/1`, `core.matrix/1`, `core.delay/1`, `core.noise/1` (mono/stereo); explicit delays permit causal feedback |
 | Sample kits | Pinned raw float32 mono/stereo assets, native-rate one-shot playback, linear interpolation, natural tails and sample-rate level automation |
 | Arranged audio | Top-level rate and warp-rate clips; source-frame slicing, musical warp anchors, rate-mode speed/reverse/physical placement, gain, linear/equal-power fades, explicit routing and tempo-aware tails |
-| Takes and comping | Required `maac.takes/1` or `maac.takes/2`: alternate mono/stereo assets, shared physical origins, disjoint frame regions validated against explicit rate-mode clips, atomic Protocol 2 selection edits and inverse history, and archived inactive alternates. V2 synchronizes named microphone-file lanes with individual source origins and one selection. No device capture or playback. |
+| Takes and comping | Required `maac.takes/1` or `maac.takes/2`: alternate mono/stereo assets, shared physical origins, disjoint frame regions validated against explicit rate-mode clips, atomic Protocol 2 selection edits and inverse history, and archived inactive alternates. V2 synchronizes named microphone-file lanes with individual source origins and one selection. Device capture remains separate; rendered audition uses the `play` command. |
 | WAV import and disk media | `maac import-wav` imports whole mono/stereo RIFF WAVs or nonempty frame crops from PCM16/24/32 and IEEE float32 into a relocatable source project with native float32 PCM and source/conversion provenance; `--retain-original` preserves the snapshotted WAV and `maac verify-import` checks it, the crop, and the current project closure. Opt-in `import-wav --disk-media` and `verify-import --disk-media` handle selected native PCM crops up to 1 GiB through private files. `check` and `build` accept `--disk-media` to verify and render hash-pinned native PCM beyond inline limits from private snapshots. `patch --disk-media [--profile song]` edits source against captured PCM with the existing Protocol 2 conflicts and inverses. The artifact DSP engine also supports opt-in disk-backed sampling of already-embedded PCM. |
 | Reusable instruments | Named libraries, typed public controls, presets, independent polyphonic instances, voice and shared graphs |
 | Sound graphs | Versioned sine/saw/square/triangle/wavetable oscillators, deterministic noise and recirculating plucked strings, linear ADSR, sine LFO, gain, low/high-pass one-pole filtering, mixing and panning |
@@ -34,6 +34,7 @@ Coverage of every reference processor identifier is not a full-profile claim.
 | Wavetables | Explicit mono WAV cycles, cyclic interpolation, adjacent-frame morphing and harmonic-limited banks |
 | Regions | Named score intervals retained as non-rendering metadata |
 | Render | Reset-state offline rendering at 48 kHz, score-end releases, explicit tail, and reset-correct WAV excerpts that still execute through the complete plan |
+| Playback | `maac play` renders complete source or retained-plan output to a private Float32 WAV and auditions it through macOS system-default output. Supports source disk media, existing profiles, interrupt cleanup, and explicit device/backend errors. No live DSP, seek, monitoring, or device selection. |
 | Export | Legacy build/render: Float32 WAV or overload-rejecting PCM16; `render` accepts paired reset-origin frame bounds for exact payload slices; production delivery also adds PCM24 and explicit seeded TPDF |
 | Native production | Project-level EQ, linked peak compression with external sidechains, eight-delay reverb; required `maac.production/1` |
 | Named deliveries | Complete-graph master/stem capture; 44.1/48/96 kHz conversion; final-artifact loudness/sample-peak/experimental true-peak analysis |
@@ -121,6 +122,11 @@ a source, and the frozen basic/acoustic libraries reject timbre with `E_CAPABILI
 The [pressure guide](pressure-expression.md) adds independent authored pressure
 mappings with separate `synth.pressure/1` opt-in. All four expression kinds may
 coexist when the graph declares both sources; frozen libraries remain unchanged.
+
+The [playback guide](playback.md) describes process-only rendered audition on
+macOS, cancellation during preparation and playback, private file cleanup, and
+terminal result semantics. Other hosts fail explicitly. A successful player
+exit is not measured device-latency or listening evidence.
 
 The [take and comp contract](takes-and-comping.md), required capability
 `maac.takes/1`, preserves explicit alternate membership and selection in source.

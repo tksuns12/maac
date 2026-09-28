@@ -111,7 +111,8 @@ audio assets, a shared physical origin, and comp regions checked against
 explicit clips. Selection changes use existing atomic edits, inverses, and
 archive history. Try the [synthetic take example](examples/take-comp.maac);
 [v2 microphone groups](docs/grouped-takes.md) coordinate all lanes of a take.
-Device recording and playback remain future work.
+[Rendered playback](docs/playback.md) is available through `maac play` on
+macOS. Device recording and low-latency transport remain future work.
 
 ## Quick start
 
@@ -142,6 +143,16 @@ maac check example.maac
 maac compile example.maac -o example.performance.json
 maac render example.performance.json -o example.wav
 ```
+
+On macOS, audition a composition or retained plan through the default output:
+
+```sh
+maac play examples/basic/mellow_piano.maac
+maac play example.performance.json --plan
+```
+
+Rendering finishes before playback starts. Ctrl-C stops either phase. See the
+[playback guide](docs/playback.md) for device and platform boundaries.
 
 Render the named production example from the repository root:
 

@@ -3081,12 +3081,58 @@ struct ProcessOptions {
     disk_media_profile: Option<ProfileArg>,
 }
 
+enum ProcessRequest {
+    Existing(Cli, ProcessOptions),
+    Play {
+        request: crate::playback::PlayRequest,
+        json: bool,
+    },
+}
+
 /// Add process-only flags without changing the public Command enum used by
 /// library callers.
 fn parse_cli_with_process_options(
     args: Vec<std::ffi::OsString>,
-) -> Result<(Cli, ProcessOptions), ParsedArgsError> {
+) -> Result<ProcessRequest, ParsedArgsError> {
     let mut command = Cli::command();
+    command = command.subcommand(
+        clap::Command::new("play")
+            .about("Render a source or retained plan privately and audition through macOS afplay")
+            .after_help("Renders complete output before playback through the macOS system default output device. Press Ctrl-C to stop preparation or playback and clean up private files.")
+            .arg(
+                Arg::new("input")
+                    .value_name("INPUT")
+                    .value_parser(clap::value_parser!(PathBuf)),
+            )
+            .arg(
+                Arg::new("plan")
+                    .long("plan")
+                    .action(ArgAction::SetTrue)
+                    .requires("input")
+                    .conflicts_with_all(["project-root", "disk-media"])
+                    .help("interpret INPUT as a retained performance-plan JSON file"),
+            )
+            .arg(
+                Arg::new("project-root")
+                    .long("project-root")
+                    .value_name("PATH")
+                    .value_parser(clap::value_parser!(PathBuf))
+                    .help("root used to resolve source imports and assets"),
+            )
+            .arg(
+                Arg::new("disk-media")
+                    .long("disk-media")
+                    .action(ArgAction::SetTrue)
+                    .help("use bounded private disk snapshots for native source PCM"),
+            )
+            .arg(
+                Arg::new("profile")
+                    .long("profile")
+                    .default_value("default")
+                    .value_parser(clap::value_parser!(ProfileArg))
+                    .help("finite execution-work allowance for preparation"),
+            ),
+    );
     let render = command
         .find_subcommand_mut("render")
         .expect("render command is declared");
@@ -3132,6 +3178,20 @@ fn parse_cli_with_process_options(
     let matches = command
         .try_get_matches_from(args)
         .map_err(ParsedArgsError::Clap)?;
+    if let Some(play) = matches.subcommand_matches("play") {
+        return Ok(ProcessRequest::Play {
+            request: crate::playback::PlayRequest {
+                input: play.get_one::<PathBuf>("input").cloned(),
+                plan: play.get_flag("plan"),
+                project_root: play.get_one::<PathBuf>("project-root").cloned(),
+                disk_media: play.get_flag("disk-media"),
+                profile: *play
+                    .get_one::<ProfileArg>("profile")
+                    .expect("profile has a default"),
+            },
+            json: matches.get_flag("json"),
+        });
+    }
     let range = match matches.subcommand_matches("render") {
         Some(render) => match (
             render.get_one::<u64>("start-frame"),
@@ -3164,7 +3224,7 @@ fn parse_cli_with_process_options(
                 .copied()
         });
     let cli = Cli::from_arg_matches(&matches).map_err(ParsedArgsError::Clap)?;
-    Ok((
+    Ok(ProcessRequest::Existing(
         cli,
         ProcessOptions {
             range,
@@ -3181,7 +3241,7 @@ where
 {
     let args: Vec<std::ffi::OsString> = args.into_iter().map(Into::into).collect();
     let json_requested = args.iter().any(|arg| arg == "--json");
-    let (cli, options) = match parse_cli_with_process_options(args) {
+    let parsed = match parse_cli_with_process_options(args) {
         Ok(parsed) => parsed,
         Err(ParsedArgsError::Clap(error)) => {
             let result = CliError::new("E_USAGE", error.to_string());
@@ -3212,6 +3272,10 @@ where
             }
             return 1;
         }
+    };
+    let (cli, options) = match parsed {
+        ProcessRequest::Existing(cli, options) => (cli, options),
+        ProcessRequest::Play { request, json } => return run_playback(&request, json),
     };
     let json = cli.json;
     let result = if options.disk_media_profile.is_some() && !options.disk_media {
@@ -3253,6 +3317,36 @@ where
                 eprintln!("{error}");
             }
             1
+        }
+    }
+}
+
+fn run_playback(request: &crate::playback::PlayRequest, json: bool) -> i32 {
+    match crate::playback::run(request) {
+        Ok(result) => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string(&result).expect("playback result is serializable")
+                );
+            } else {
+                println!(
+                    "play: completed {} frames from {} through {} (system default device)",
+                    result.frames, result.input, result.backend
+                );
+            }
+            0
+        }
+        Err(failure) => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string(&failure.error).expect("playback error is serializable")
+                );
+            } else {
+                eprintln!("{}", failure.error);
+            }
+            failure.exit_code
         }
     }
 }
