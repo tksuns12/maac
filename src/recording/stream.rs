@@ -7,7 +7,8 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use sha2::{Digest, Sha256};
 
 use super::{
-    recording_error, CliError, InputDevice, RecordingMetadata, BACKEND, MAX_METADATA_BYTES, RATE,
+    recording_error, CliError, InputDevice, Monitoring, RecordingMetadata, BACKEND,
+    MAX_METADATA_BYTES, MONITOR_BACKEND, RATE,
 };
 
 pub(super) const CHUNK_FRAMES: usize = 2048;
@@ -116,6 +117,9 @@ impl Ring {
                 "bounded recording callback queue overflowed",
             )),
             4 => Err(recording_error("cannot re-enqueue microphone input buffer")),
+            6 => Err(recording_error("overlapping AUHAL monitor callbacks")),
+            7 => Err(recording_error("microphone delivered a nonfinite sample")),
+            8 => Err(recording_error("cannot render AUHAL microphone input")),
             _ => Err(recording_error(
                 "microphone input changed or became unavailable",
             )),
@@ -206,17 +210,28 @@ impl WaveSink {
         self.frames == self.target
     }
 
-    pub fn finish(mut self, duration: u32, device: InputDevice) -> Result<(), CliError> {
+    pub fn finish(self, duration: u32, device: InputDevice) -> Result<(), CliError> {
+        self.finish_with_monitor(duration, device, None)
+    }
+
+    pub fn finish_with_monitor(
+        mut self,
+        duration: u32,
+        device: InputDevice,
+        monitoring: Option<Monitoring>,
+    ) -> Result<(), CliError> {
         if !self.complete() {
             return Err(recording_error(
                 "microphone capture ended before the requested frame count",
             ));
         }
-        let metadata = RecordingMetadata::for_capture(
-            duration,
-            device,
-            format!("sha256:{:x}", self.hasher.finalize()),
-        );
+        let digest = format!("sha256:{:x}", self.hasher.finalize());
+        let metadata = match monitoring {
+            Some(monitoring) => {
+                RecordingMetadata::for_monitor(duration, device, digest, monitoring)
+            }
+            None => RecordingMetadata::for_capture(duration, device, digest),
+        };
         let bytes = metadata.bounded_bytes()?;
         self.writer.write_all(b"maac").map_err(io_error)?;
         self.writer
@@ -239,10 +254,21 @@ impl WaveSink {
 
 /// The parent checks exact container extent, unique format/data/provenance,
 /// finite PCM, strict metadata, and the data-only digest using bounded buffers.
+#[cfg(test)]
 pub(super) fn validate_wave(
     path: &Path,
     duration: u32,
     requested_uid: Option<&str>,
+    check: impl FnMut() -> Result<(), CliError>,
+) -> Result<RecordingMetadata, CliError> {
+    validate_wave_request(path, duration, requested_uid, false, check)
+}
+
+pub(super) fn validate_wave_request(
+    path: &Path,
+    duration: u32,
+    requested_uid: Option<&str>,
+    monitor: bool,
     mut check: impl FnMut() -> Result<(), CliError>,
 ) -> Result<RecordingMetadata, CliError> {
     let mut file = File::open(path).map_err(io_error)?;
@@ -309,8 +335,25 @@ pub(super) fn validate_wave(
     let metadata: RecordingMetadata = serde_json::from_slice(&bytes)
         .map_err(|error| recording_error(format!("invalid recording provenance: {error}")))?;
     if metadata.format != "maac.recording"
-        || metadata.version != if requested_uid.is_some() { 2 } else { 1 }
-        || metadata.backend != BACKEND
+        || metadata.version
+            != if monitor {
+                3
+            } else if requested_uid.is_some() {
+                2
+            } else {
+                1
+            }
+        || metadata.backend != if monitor { MONITOR_BACKEND } else { BACKEND }
+        || if monitor {
+            !requested_uid.is_some_and(|uid| {
+                metadata
+                    .monitoring
+                    .as_ref()
+                    .is_some_and(|monitoring| monitoring.matches_request(uid))
+            }) || metadata.input_device.hardware_rate_hz != Some(f64::from(RATE))
+        } else {
+            metadata.monitoring.is_some()
+        }
         || metadata.requested_duration_seconds != duration
         || metadata.delivered.encoding != "ieee_f32le"
         || metadata.delivered.rate_hz != RATE

@@ -13,6 +13,8 @@ const RATE: u32 = 48_000;
 const MAX_METADATA_BYTES: usize = 16 * 1024;
 #[cfg(any(target_os = "macos", all(test, unix)))]
 const BACKEND: &str = "macos-audioqueue/1";
+#[cfg(any(target_os = "macos", all(test, unix)))]
+const MONITOR_BACKEND: &str = "macos-auhal/1";
 const CHILD_ARGUMENT: &str = "--maac-private-recording-child";
 
 #[derive(Debug)]
@@ -21,6 +23,7 @@ pub(crate) struct RecordRequest {
     pub output_dir: PathBuf,
     pub profile: ProfileArg,
     pub input_device: Option<String>,
+    pub monitor: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -30,6 +33,8 @@ pub(crate) struct RecordResult {
     pub status: &'static str,
     pub backend: &'static str,
     pub input_device: InputDevice,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub monitoring: Option<Monitoring>,
     pub frames: u64,
     pub sample_rate: u32,
     pub channels: u16,
@@ -67,6 +72,19 @@ struct RecordingMetadata {
     latency: Latency,
     continuity: Continuity,
     data_sha256: String,
+    #[serde(
+        default,
+        deserialize_with = "nonnull_monitoring",
+        skip_serializing_if = "Option::is_none"
+    )]
+    monitoring: Option<Monitoring>,
+}
+
+#[cfg(any(target_os = "macos", all(test, unix)))]
+fn nonnull_monitoring<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Monitoring>, D::Error> {
+    Monitoring::deserialize(deserializer).map(Some)
 }
 
 #[cfg(any(target_os = "macos", all(test, unix)))]
@@ -101,7 +119,21 @@ impl RecordingMetadata {
                 detected_discontinuities: 0,
             },
             data_sha256: digest,
+            monitoring: None,
         }
+    }
+
+    fn for_monitor(
+        duration: u32,
+        device: InputDevice,
+        digest: String,
+        monitoring: Monitoring,
+    ) -> Self {
+        let mut metadata = Self::for_capture(duration, device, digest);
+        metadata.version = 3;
+        metadata.backend = MONITOR_BACKEND.into();
+        metadata.monitoring = Some(monitoring);
+        metadata
     }
 
     fn bounded_bytes(&self) -> Result<Vec<u8>, CliError> {
@@ -134,6 +166,53 @@ pub(crate) struct InputDevice {
     uid: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     hardware_rate_hz: Option<f64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Monitoring {
+    output_device: MonitorOutputDevice,
+    input_channel: u32,
+    output_channels: Vec<u32>,
+    gain: f32,
+    clip_policy: String,
+    clock_policy: String,
+    first_render_sample_time: f64,
+    first_render_host_time_ticks: u64,
+    host_timebase_numer: u32,
+    host_timebase_denom: u32,
+    latency: MonitorLatency,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct MonitorOutputDevice {
+    selection: String,
+    uid: String,
+    channels: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct MonitorLatency {
+    device_buffer_frames: u32,
+    #[serde(deserialize_with = "required_nullable_u32")]
+    reported_input_device_frames: Option<u32>,
+    #[serde(deserialize_with = "required_nullable_u32")]
+    reported_output_device_frames: Option<u32>,
+    #[serde(deserialize_with = "required_nullable_u32")]
+    reported_input_safety_offset_frames: Option<u32>,
+    #[serde(deserialize_with = "required_nullable_u32")]
+    reported_output_safety_offset_frames: Option<u32>,
+    application_buffer_frames: u32,
+    #[serde(deserialize_with = "required_nullable_u32")]
+    measured_round_trip_frames: Option<u32>,
+}
+
+fn required_nullable_u32<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<u32>, D::Error> {
+    Option::<u32>::deserialize(deserializer)
 }
 
 #[cfg(any(target_os = "macos", all(test, unix)))]
@@ -172,6 +251,12 @@ fn recording_error(message: impl Into<String>) -> CliError {
 }
 
 fn preflight(request: &RecordRequest) -> Result<(), CliError> {
+    if request.monitor && request.input_device.is_none() {
+        return Err(CliError::new(
+            "E_USAGE",
+            "--monitor requires --input-device with an exact UID",
+        ));
+    }
     if request
         .input_device
         .as_ref()
@@ -252,7 +337,7 @@ pub(crate) fn private_child(args: &[OsString]) -> Option<i32> {
     #[cfg(target_os = "macos")]
     {
         let result = (|| {
-            if args.len() != 4 && args.len() != 6 {
+            if !matches!(args.len(), 4 | 6 | 7) {
                 return Err(recording_error("invalid private capture request"));
             }
             let duration = args[2]
@@ -260,7 +345,11 @@ pub(crate) fn private_child(args: &[OsString]) -> Option<i32> {
                 .and_then(|arg| arg.parse::<u32>().ok())
                 .filter(|duration| (1..=1800).contains(duration))
                 .ok_or_else(|| recording_error("invalid private capture duration"))?;
-            let uid = if args.len() == 6 {
+            let monitor = args.len() == 7;
+            if monitor && args[6] != "--monitor" {
+                return Err(recording_error("invalid private monitoring request"));
+            }
+            let uid = if args.len() >= 6 {
                 if args[4] != "--input-device" {
                     return Err(recording_error("invalid private capture selector"));
                 }
@@ -273,7 +362,7 @@ pub(crate) fn private_child(args: &[OsString]) -> Option<i32> {
             } else {
                 None
             };
-            native::capture(duration, Path::new(&args[3]), uid)
+            native::capture(duration, Path::new(&args[3]), uid, monitor)
         })();
         match result {
             Ok(()) => {
@@ -297,6 +386,8 @@ pub(crate) fn private_child(args: &[OsString]) -> Option<i32> {
 
 #[cfg(any(target_os = "macos", all(test, unix)))]
 mod managed;
+#[cfg(any(target_os = "macos", all(test, unix)))]
+mod monitor;
 #[cfg(target_os = "macos")]
 mod native;
 #[cfg(any(target_os = "macos", all(test, unix)))]
@@ -320,6 +411,7 @@ pub(crate) struct InputDeviceInfo {
     pub uid: String,
     pub name: String,
     pub input_channels: u32,
+    pub output_channels: u32,
     pub is_default: bool,
     pub hardware_rate_hz: Option<f64>,
     pub available: bool,

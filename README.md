@@ -115,8 +115,9 @@ archive history. Try the [synthetic take example](examples/take-comp.maac);
 macOS. Bounded [microphone recording](docs/recording.md) creates an editable
 project with retained capture provenance. [Input selection](docs/input-devices.md)
 lists devices with `maac inputs` and selects exact UIDs with `record --input-device`.
-Monitoring, low-latency transport,
-and physical-device production acceptance remain open.
+[Live input monitoring](docs/input-monitoring.md) is opt-in with `record --monitor`
+on an explicitly selected 48 kHz duplex device. Backing-track transport,
+latency-aligned overdubbing, and physical-device production acceptance remain open.
 
 ## Quick start
 

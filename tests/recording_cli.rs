@@ -27,6 +27,7 @@ fn recording_help_and_usage_require_an_explicit_bounded_capture() {
         "--output-dir",
         "--profile",
         "--input-device",
+        "--monitor",
     ] {
         assert!(help.contains(option), "missing {option}: {help}");
     }
@@ -75,6 +76,64 @@ fn recording_help_and_usage_require_an_explicit_bounded_capture() {
             "option={option}"
         );
     }
+}
+
+#[test]
+fn monitoring_requires_an_explicit_route_before_microphone_access() {
+    // The existing destination is an independent interlock against capture if
+    // argument dependency checking regresses.
+    let root = tempfile::tempdir().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_maac"))
+        .args([
+            "--json",
+            "record",
+            "--duration-seconds",
+            "1",
+            "--monitor",
+            "--output-dir",
+        ])
+        .arg(root.path())
+        .output()
+        .unwrap();
+    assert_eq!(error(output)["code"], "E_USAGE");
+    assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
+}
+
+#[test]
+fn monitoring_preserves_destination_and_resource_preflight() {
+    let root = tempfile::tempdir().unwrap();
+    let sentinel = root.path().join("sentinel");
+    std::fs::write(&sentinel, b"preserve").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_maac"))
+        .args([
+            "--json",
+            "record",
+            "--duration-seconds",
+            "1",
+            "--monitor",
+            "--input-device=opaque route UID",
+            "--output-dir",
+        ])
+        .arg(root.path())
+        .output()
+        .unwrap();
+    assert_eq!(error(output)["code"], "E_OUTPUT_EXISTS");
+    let output = Command::new(env!("CARGO_BIN_EXE_maac"))
+        .args([
+            "--json",
+            "record",
+            "--duration-seconds",
+            "232",
+            "--monitor",
+            "--input-device=opaque route UID",
+            "--output-dir",
+        ])
+        .arg(root.path().join("over-budget"))
+        .output()
+        .unwrap();
+    assert_eq!(error(output)["code"], "E_RESOURCE_LIMIT");
+    assert_eq!(std::fs::read(sentinel).unwrap(), b"preserve");
+    assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
 }
 
 #[test]

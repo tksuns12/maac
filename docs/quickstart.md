@@ -129,5 +129,7 @@ maac play new-take --disk-media
 The OS must authorize microphone access. The command captures a fixed duration
 from the default input, then creates a new editable project with its original
 WAV retained. It delivers 48 kHz mono; Ctrl-C aborts without saving a partial
-take. Add `--input-device UID` to select an exact listed input. See
-[recording](recording.md) for device, provenance, and acceptance limits.
+take. Add `--input-device UID` to select an exact listed input. For headphones
+on that same device, add `--monitor` when it supports both input and output at
+48 kHz; see [live input monitoring](input-monitoring.md) for routing and gain.
+See [recording](recording.md) for device, provenance, and acceptance limits.

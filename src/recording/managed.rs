@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use super::{
     output_parent, preflight, recording_error, stream, CliError, ProfileArg, RecordFailure,
-    RecordRequest, RecordResult, BACKEND, CHILD_ARGUMENT, RATE,
+    RecordRequest, RecordResult, BACKEND, CHILD_ARGUMENT, MONITOR_BACKEND, RATE,
 };
 
 const MAX_DIAGNOSTIC_BYTES: usize = 64 * 1024;
@@ -312,6 +312,9 @@ fn prepare_and_publish(
     if let Some(uid) = &request.input_device {
         capture.arg("--input-device").arg(uid);
     }
+    if request.monitor {
+        capture.arg("--monitor");
+    }
     redirect(&mut capture, &capture_stdout, &capture_stderr)?;
     signals.check()?;
     let phase = wave.with_extension("status");
@@ -319,10 +322,11 @@ fn prepare_and_publish(
         .wait(signals, Some((&phase, request.duration_seconds)))?;
     check_child(&capture_stdout, status, "capture")?;
     signals.check()?;
-    let metadata = stream::validate_wave(
+    let metadata = stream::validate_wave_request(
         &wave,
         request.duration_seconds,
         request.input_device.as_deref(),
+        request.monitor,
         || signals.check().map_err(|failure| *failure.error),
     )?;
     signals.check()?;
@@ -367,14 +371,21 @@ fn prepare_and_publish(
         ok: true,
         command: "record",
         status: "completed",
-        backend: BACKEND,
+        backend: if request.monitor {
+            MONITOR_BACKEND
+        } else {
+            BACKEND
+        },
         input_device: metadata.input_device,
+        monitoring: metadata.monitoring,
         frames: metadata.delivered.frames,
         sample_rate: RATE,
         channels: 1,
         format: "float32",
         output: request.output_dir.display().to_string(),
-        recording_format: if metadata.version == 2 {
+        recording_format: if metadata.version == 3 {
+            "maac.recording/3"
+        } else if metadata.version == 2 {
             "maac.recording/2"
         } else {
             "maac.recording/1"

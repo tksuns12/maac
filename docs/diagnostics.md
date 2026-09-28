@@ -57,6 +57,10 @@ supervises a renderer child and the fixed macOS system player; unsupported hosts
 return `E_CAPABILITY` before rendering. The separate [`record`](recording.md)
 command requests microphone authorization and captures through the macOS native
 audio API; it creates a new retained-import project only after capture succeeds.
+Opt-in `record --monitor` requires an explicit input UID (`E_USAGE` if omitted).
+A missing duplex route, unsupported native rate, or detected device/callback
+failure returns `E_RECORDING` and publishes no partial project. See
+[monitoring](input-monitoring.md) for routing and clock limits.
 
 A hit onset must schedule before the score-end frame. If a physically pre-end
 onset rounds to that frame, compilation returns `E_INTERVAL`; move the onset

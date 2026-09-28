@@ -35,8 +35,12 @@ permission, then select one with `record --input-device UID`. Without that flag,
 the default input is selected once and pinned for the recording. The command
 does not silently move to another input if the device changes or disappears.
 Changing the system default preference alone does not stop a still-valid pinned
-input. It supplies no stereo/multichannel mode, monitoring, backing
-track playback, overdub alignment, or automatic take-group editing.
+input. Optional [live monitoring](input-monitoring.md) requires `--monitor`
+and an explicit UID for a duplex device already running at 48 kHz. It records
+input channel 1 dry while routing that channel to the same device's first two
+outputs at fixed reduced gain. Unmonitored capture retains the system format
+conversion behavior described above. The command supplies no stereo/multichannel
+mode, backing track playback, overdub alignment, or automatic take-group editing.
 
 ## Project and recording provenance
 
@@ -50,8 +54,10 @@ disk-media path. The published project contains:
 
 Recording provenance is a bounded JSON record in the WAV's `maac` RIFF chunk.
 Default selection uses `maac.recording/1`; explicit UID selection uses
-`maac.recording/2`, with the same fields and an explicit selection policy. The
-[selection contract](input-devices.md) binds the recorded UID to the request.
+`maac.recording/2`, with the same fields and an explicit selection policy.
+Monitored explicit-device capture uses `maac.recording/3`, adding its route and
+gain policy. The [selection contract](input-devices.md) binds the recorded UID
+to the request.
 The record identifies the selected input, requested
 duration, delivered format/frame count, sample-data hash, capture origin, and
 failure policy. Input latency is unknown and applied compensation is zero.
@@ -99,9 +105,11 @@ over-budget request fails before microphone access. Use the same profile when
 reopening a project that requires it.
 
 `--json` emits one terminal result with the output path, frame count, sample
-rate, channel count, selected input UID, backend `macos-audioqueue/1`, recording
-format `maac.recording/1` or `/2`, and retained WAV digest. Completion means capture and validated
-project publication succeeded. It does not measure audible quality, physical
+rate, channel count, selected input UID, backend, recording
+format `maac.recording/1`, `/2`, or `/3`, and retained WAV digest. Unmonitored
+capture uses `macos-audioqueue/1`; monitored capture uses `macos-auhal/1`.
+Completion means capture and validated project publication succeeded. It does
+not measure audible quality, physical
 input latency, or synchronization. Other platforms return `E_CAPABILITY`.
 This command belongs to the process CLI; the public `Command` enum and
 `execute*` embedding interfaces retain their existing contracts.
@@ -111,5 +119,6 @@ This command belongs to the process CLI; the public `Command` enum and
 The [verification record](verification.md) separates synthetic lifecycle and
 archive evidence from any actual microphone test. Device permission, physical
 capture quality, and latency-aligned production acceptance require a deliberate
-hardware session. Monitoring, low-latency transport, multiple capture lanes,
-overdubbing, and recovery remain [roadmap](end-to-end-production-plan.md) gates.
+hardware session. Audible monitoring acceptance, backing-track transport,
+multiple capture lanes, overdubbing, and recovery remain
+[roadmap](end-to-end-production-plan.md) gates.

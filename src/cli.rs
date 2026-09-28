@@ -3109,10 +3109,11 @@ fn parse_cli_with_process_options(
     command = command.subcommand(
         clap::Command::new("record")
             .about("Record a macOS input device into a new retained media project")
-            .after_help("Captures exactly the requested duration as 48000 Hz mono Float32. The input device is selected once and pinned. Omit --input-device to select the system default; use maac inputs to find exact UIDs. Microphone permission is requested before capture. Press Ctrl-C to abort and remove private files without publishing a project.")
+            .after_help("Captures exactly the requested duration as 48000 Hz mono Float32. The input device is selected once and pinned. Omit --input-device to select the system default; use maac inputs to find exact UIDs. --monitor requires an explicit UID for one duplex device already at 48000 Hz; it records dry input channel 1 and monitors it to output channels 1/2 (one if mono) at fixed gain 0.125. Microphone permission is requested before capture. Press Ctrl-C to abort and remove private files without publishing a project.")
             .arg(Arg::new("duration-seconds").long("duration-seconds").value_name("N").required(true).value_parser(clap::value_parser!(u32).range(1..=1800)).help("required whole seconds of delivered input (1..1800)"))
             .arg(Arg::new("output-dir").long("output-dir").value_name("NEW").required(true).value_parser(clap::value_parser!(PathBuf)).help("new project directory; parent must already exist"))
             .arg(Arg::new("input-device").long("input-device").value_name("UID").help("exact input device UID from maac inputs; no fallback if unavailable"))
+            .arg(Arg::new("monitor").long("monitor").action(ArgAction::SetTrue).requires("input-device").help("monitor input channel 1 on the same 48000 Hz duplex device at fixed gain 0.125"))
             .arg(Arg::new("profile").long("profile").default_value("default").value_parser(clap::value_parser!(ProfileArg)).help("finite execution-work allowance for the resulting project")),
     );
     command = command.subcommand(
@@ -3217,6 +3218,7 @@ fn parse_cli_with_process_options(
                     .get_one::<ProfileArg>("profile")
                     .expect("profile has a default"),
                 input_device: record.get_one::<String>("input-device").cloned(),
+                monitor: record.get_flag("monitor"),
             },
             json: matches.get_flag("json"),
         });
@@ -3382,10 +3384,11 @@ fn run_inputs(json: bool) -> i32 {
             } else {
                 for device in result.devices {
                     println!(
-                        "{:?}: {:?} ({} input channels{}{})",
+                        "{:?}: {:?} ({} input channels, {} output channels{}{})",
                         device.uid,
                         device.name,
                         device.input_channels,
+                        device.output_channels,
                         if device.is_default { ", default" } else { "" },
                         if device.available {
                             ""

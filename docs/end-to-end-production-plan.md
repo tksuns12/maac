@@ -16,7 +16,7 @@ complete professional-production product.
 | Phase 1: end-to-end inventory | Complete as a bounded reference inventory | Keep the [lifecycle inventory](end-to-end-lifecycle-inventory.md) aligned with implemented slices and open gates. |
 | Phase 2: reset-correct excerpts | Complete for bounded final-WAV ranges | No claim of realtime seeking, speed-up, or arbitrary DSP-state restoration. |
 | Phase 3: media/import/packaging | In progress; bounded WAV crop import, opt-in retained-original verification, opt-in file-backed WAV import and verification up to the native PCM disk-media limit, archive checkpoints, multiple selected retained WAV imports, explicit whole-output and independent native-effect-group freeze reuse, opt-in partial reuse of eligible group members, bounded independent-branch gain/pan edit reuse, journaled local-source transactions, and opt-in verified native processor context implemented | Add external processor dependency/state packaging, overlapping frozen graph branches, broader selective invalidation, and remaining media and reopen coverage. |
-| Phase 4: capture/playback/comping | Partial foundations: source-preserving Protocol 2 edits of disk-backed audio clips, bounded take membership with a shared physical origin, synchronized microphone-file lanes, explicit comp selection with conflicts, inverses, and archive reopen, macOS rendered playback, bounded recording with retained provenance, and input-device listing/selection | Add physical-device acceptance, low-latency transport and monitoring, broader revision workflows, and representative listening acceptance. |
+| Phase 4: capture/playback/comping | Partial foundations: source-preserving Protocol 2 edits of disk-backed audio clips, bounded take membership with a shared physical origin, synchronized microphone-file lanes, explicit comp selection with conflicts, inverses, and archive reopen, macOS rendered playback, bounded recording with retained provenance, input-device listing/selection, and opt-in same-device monitoring | Add physical-device and monitoring acceptance, backing-track transport, broader revision workflows, and representative listening acceptance. |
 | Phase 5: open processors and hosting | Partial foundations only | Generic rendering and executable native external hosting remain deferred. |
 | Phase 6: mix/master/release/reopen | Not complete | Pass the representative production, invalidation, clean-reopen, listening, and producer gates. |
 
@@ -277,7 +277,7 @@ plans through the existing pipeline and auditions the complete Float32 output
 using macOS's system-default player. It supports source disk media and the
 existing work profiles, with SIGINT/SIGTERM child termination and private-file
 cleanup. This provides offline audition with render-before-play delay. Capture
-hardware acceptance, monitoring, output-device selection, low-latency transport,
+hardware acceptance, playback output-device selection, low-latency backing-track transport,
 and listening acceptance remain open.
 
 The bounded [`maac record`](recording.md) path captures a required whole-second
@@ -289,7 +289,11 @@ archive tests are separate from microphone permission/device acceptance.
 [`maac inputs`](input-devices.md) now lists recording inputs without capture
 permission, and `record --input-device UID` selects an exact device with
 version 2 provenance; default selection retains version 1. Unknown or changed
-devices fail explicitly. Monitoring, multichannel input, and latency-aligned
+devices fail explicitly. The opt-in [`record --monitor`](input-monitoring.md)
+path records dry input channel 1 and monitors it at reduced gain through outputs
+on the same explicitly selected 48 kHz duplex device. It uses one logical Core
+Audio device clock and retains version 3 route provenance. Hardware monitoring
+acceptance, backing-track transport, multichannel input, and latency-aligned
 overdubbing remain open.
 
 ### 5. Open samplers, processors, libraries, and plugin contracts

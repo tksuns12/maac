@@ -1,5 +1,7 @@
 //! Bounded discovery and selection, shared by native capture and read-only listing.
-use super::{recording_error, CliError, InputDevice, InputDeviceInfo, RecordingMetadata};
+use super::{
+    recording_error, CliError, InputDevice, InputDeviceInfo, Monitoring, RecordingMetadata, RATE,
+};
 use std::collections::BTreeSet;
 
 const ATTEMPTS: usize = 3;
@@ -41,6 +43,7 @@ fn inspect(provider: &mut impl Provider) -> Result<Vec<ResolvedInput>, CliError>
                 || info.name.len() > 4096
                 || info.input_channels == 0
                 || info.input_channels > MAX_CHANNELS
+                || info.output_channels > MAX_CHANNELS
                 || info
                     .hardware_rate_hz
                     .is_some_and(|rate| !rate.is_finite() || rate <= 0.0)
@@ -102,10 +105,26 @@ pub(super) fn revalidate(
     provider: &mut impl Provider,
     selected: &ResolvedInput,
 ) -> Result<(), CliError> {
+    revalidate_route(provider, selected, false)
+}
+
+pub(super) fn revalidate_monitor(
+    provider: &mut impl Provider,
+    selected: &ResolvedInput,
+) -> Result<(), CliError> {
+    revalidate_route(provider, selected, true)
+}
+
+fn revalidate_route(
+    provider: &mut impl Provider,
+    selected: &ResolvedInput,
+    monitor: bool,
+) -> Result<(), CliError> {
     let actual = resolve(provider, Some(&selected.info.uid))?;
     if actual.object != selected.object
         || actual.info.hardware_rate_hz != selected.info.hardware_rate_hz
         || actual.info.input_channels != selected.info.input_channels
+        || (monitor && actual.info.output_channels != selected.info.output_channels)
     {
         return Err(recording_error(
             "selected microphone disappeared or changed before capture",
@@ -142,6 +161,38 @@ pub(super) fn prepare_and_authorize(
     authorize()?;
     revalidate(provider, &selected)?;
     Ok((selected, provenance))
+}
+
+pub(super) fn prepare_monitor_and_authorize(
+    provider: &mut impl Provider,
+    duration: u32,
+    uid: &str,
+    prepare: impl FnOnce(&ResolvedInput) -> Result<Monitoring, CliError>,
+    authorize: impl FnOnce() -> Result<(), CliError>,
+) -> Result<(ResolvedInput, InputDevice, Monitoring), CliError> {
+    let selected = resolve(provider, Some(uid))?;
+    if selected.info.output_channels == 0 || selected.info.hardware_rate_hz != Some(f64::from(RATE))
+    {
+        return Err(recording_error(
+            "monitor requires one duplex input device already running at 48000 Hz",
+        ));
+    }
+    let provenance = InputDevice {
+        selection: "explicit-uid".into(),
+        uid: selected.info.uid.clone(),
+        hardware_rate_hz: selected.info.hardware_rate_hz,
+    };
+    let monitoring = prepare(&selected)?;
+    RecordingMetadata::for_monitor(
+        duration,
+        provenance.clone(),
+        format!("sha256:{}", "0".repeat(64)),
+        monitoring.reserve_anchor_bytes(),
+    )
+    .bounded_bytes()?;
+    authorize()?;
+    revalidate_monitor(provider, &selected)?;
+    Ok((selected, provenance, monitoring))
 }
 
 pub(super) enum ReadFailure {
@@ -275,6 +326,7 @@ mod tests {
             uid: uid.into(),
             name: "Same display name".into(),
             input_channels: 2,
+            output_channels: 2,
             is_default: false,
             hardware_rate_hz: Some(44_100.0),
             available: true,
@@ -472,6 +524,146 @@ mod tests {
             .message
             .contains("bounded envelope")
         );
+        assert!(!authorized.get());
+    }
+
+    fn monitoring(selected: &ResolvedInput) -> Monitoring {
+        use super::super::MonitorLatency;
+        Monitoring::initial(
+            &selected.info.uid,
+            selected.info.output_channels,
+            MonitorLatency {
+                device_buffer_frames: 256,
+                reported_input_device_frames: None,
+                reported_output_device_frames: None,
+                reported_input_safety_offset_frames: None,
+                reported_output_safety_offset_frames: None,
+                application_buffer_frames: 0,
+                measured_round_trip_frames: None,
+            },
+            1,
+            1,
+        )
+    }
+
+    #[test]
+    fn monitor_eligibility_and_bounded_metadata_fail_before_permission() {
+        let mut eligible = state();
+        eligible.info.get_mut(&1).unwrap().hardware_rate_hz = Some(48_000.0);
+        let mut no_output = eligible.clone();
+        no_output.info.get_mut(&1).unwrap().output_channels = 0;
+        let mut oversized = eligible.clone();
+        oversized.info.get_mut(&1).unwrap().output_channels = 4097;
+        let mut escaped = eligible.clone();
+        let uid = "\u{1}".repeat(4096);
+        escaped.info.get_mut(&1).unwrap().uid = uid.clone();
+        for (state, requested) in [
+            (state(), "z-input"),
+            (no_output, "z-input"),
+            (oversized, "z-input"),
+            (escaped, uid.as_str()),
+        ] {
+            let authorized = Cell::new(false);
+            assert!(prepare_monitor_and_authorize(
+                &mut Fake::one(state),
+                1,
+                requested,
+                |selected| Ok(monitoring(selected)),
+                || {
+                    authorized.set(true);
+                    Ok(())
+                }
+            )
+            .is_err());
+            assert!(!authorized.get());
+        }
+        let authorized = Cell::new(false);
+        assert!(prepare_monitor_and_authorize(
+            &mut Fake::one(eligible.clone()),
+            1,
+            "z-input",
+            |_| Err(recording_error("buffer size or property invalid")),
+            || {
+                authorized.set(true);
+                Ok(())
+            }
+        )
+        .is_err());
+        assert!(!authorized.get());
+        let (selected, provenance, _) = prepare_monitor_and_authorize(
+            &mut Fake::one(eligible.clone()),
+            1,
+            "z-input",
+            |selected| Ok(monitoring(selected)),
+            || {
+                authorized.set(true);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(authorized.get());
+        assert_eq!(provenance.selection, "explicit-uid");
+        let mut changed = eligible.clone();
+        changed.info.get_mut(&1).unwrap().output_channels = 1;
+        assert!(prepare_monitor_and_authorize(
+            &mut Fake::new(vec![eligible.clone(), eligible, changed.clone(), changed]),
+            1,
+            "z-input",
+            |selected| Ok(monitoring(selected)),
+            || Ok(())
+        )
+        .is_err());
+        assert_eq!(selected.info.output_channels, 2);
+    }
+
+    #[test]
+    fn monitor_reserves_actual_timestamp_width_before_permission() {
+        let mut eligible = state();
+        eligible.info.get_mut(&1).unwrap().hardware_rate_hz = Some(48_000.0);
+        let uid = (1..=1365)
+            .find_map(|count| {
+                let uid = "\u{1}".repeat(count);
+                let input = InputDevice {
+                    selection: "explicit-uid".into(),
+                    uid: uid.clone(),
+                    hardware_rate_hz: Some(48_000.0),
+                };
+                let mut selected = ResolvedInput {
+                    object: 1,
+                    info: info(&uid),
+                };
+                selected.info.hardware_rate_hz = Some(48_000.0);
+                let monitoring = monitoring(&selected);
+                let initial = RecordingMetadata::for_monitor(
+                    1,
+                    input.clone(),
+                    format!("sha256:{}", "0".repeat(64)),
+                    monitoring.clone(),
+                )
+                .bounded_bytes();
+                let reserved = RecordingMetadata::for_monitor(
+                    1,
+                    input,
+                    format!("sha256:{}", "0".repeat(64)),
+                    monitoring.reserve_anchor_bytes(),
+                )
+                .bounded_bytes();
+                (initial.is_ok() && reserved.is_err()).then_some(uid)
+            })
+            .expect("legal UID exists at timestamp-envelope boundary");
+        eligible.info.get_mut(&1).unwrap().uid = uid.clone();
+        let authorized = Cell::new(false);
+        assert!(prepare_monitor_and_authorize(
+            &mut Fake::one(eligible),
+            1,
+            &uid,
+            |selected| Ok(monitoring(selected)),
+            || {
+                authorized.set(true);
+                Ok(())
+            }
+        )
+        .is_err());
         assert!(!authorized.get());
     }
 

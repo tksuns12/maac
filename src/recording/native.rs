@@ -31,6 +31,9 @@ const CURRENT_DEVICE: u32 = fourcc(b"aqcd");
 const STREAM_DESCRIPTION: u32 = fourcc(b"aqft");
 const GLOBAL: u32 = fourcc(b"glob");
 const INPUT: u32 = fourcc(b"inpt");
+const OUTPUT: u32 = fourcc(b"outp");
+#[path = "duplex.rs"]
+mod duplex;
 const UID: u32 = fourcc(b"uid ");
 const ALIVE: u32 = fourcc(b"livn");
 const NOMINAL_RATE: u32 = fourcc(b"nsrt");
@@ -303,41 +306,24 @@ pub(super) fn capture(
     duration: u32,
     wave: &Path,
     requested_uid: Option<&str>,
+    monitor: bool,
 ) -> Result<(), CliError> {
+    if monitor {
+        return duplex::capture(
+            duration,
+            wave,
+            requested_uid
+                .ok_or_else(|| recording_error("monitor requires an explicit input UID"))?,
+        );
+    }
     // Resolve before authorization. This choice survives a long permission
     // prompt; a changed or removed device fails instead of selecting a fallback.
     let mut authorized = None;
-    let (selected, provenance) = devices::prepare_and_authorize(
-        &mut NativeProvider,
-        duration,
-        requested_uid,
-        || {
-            // SAFETY: the shim runs real TCC authorization and returns only a status.
-            if unsafe { maac_microphone_authorize() } != 0 {
-                return Err(CliError::new("E_PERMISSION", "microphone access is denied or restricted; enable MaaC or its launching application in macOS Privacy & Security > Microphone"));
-            }
-            let authorization_finished = Instant::now();
-            let mut lifecycle = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .open(wave.with_extension("status"))
-                .map_err(|error| {
-                    CliError::new(
-                        "E_IO",
-                        format!("cannot create recording lifecycle marker: {error}"),
-                    )
-                })?;
-            lifecycle.write_all(b"authorized").map_err(|error| {
-                CliError::new(
-                    "E_IO",
-                    format!("cannot update recording lifecycle marker: {error}"),
-                )
-            })?;
-            authorized = Some((lifecycle, authorization_finished));
+    let (selected, provenance) =
+        devices::prepare_and_authorize(&mut NativeProvider, duration, requested_uid, || {
+            authorized = Some(authorize(wave)?);
             Ok(())
-        },
-    )?;
+        })?;
     let device = selected.object;
     let uid = selected.info.uid.clone();
     let rate = selected
@@ -515,6 +501,32 @@ pub(super) fn capture(
         ));
     }
     sink.finish(duration, provenance)
+}
+
+fn authorize(wave: &Path) -> Result<(std::fs::File, Instant), CliError> {
+    // SAFETY: the shim runs real TCC authorization and returns only a status.
+    if unsafe { maac_microphone_authorize() } != 0 {
+        return Err(CliError::new("E_PERMISSION", "microphone access is denied or restricted; enable MaaC or its launching application in macOS Privacy & Security > Microphone"));
+    }
+    let authorization_finished = Instant::now();
+    let mut lifecycle = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(wave.with_extension("status"))
+        .map_err(|error| {
+            CliError::new(
+                "E_IO",
+                format!("cannot create recording lifecycle marker: {error}"),
+            )
+        })?;
+    lifecycle.write_all(b"authorized").map_err(|error| {
+        CliError::new(
+            "E_IO",
+            format!("cannot update recording lifecycle marker: {error}"),
+        )
+    })?;
+    Ok((lifecycle, authorization_finished))
 }
 
 fn status(value: i32, operation: &str) -> Result<(), CliError> {
@@ -733,6 +745,11 @@ impl Provider for NativeProvider {
             uid,
             name,
             input_channels: channels,
+            output_channels: devices::parse_channels(&variable_property(
+                object,
+                STREAM_CONFIGURATION,
+                OUTPUT,
+            )?)?,
             is_default: false,
             hardware_rate_hz: rate,
             available: available != 0,

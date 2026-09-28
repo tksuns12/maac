@@ -13,7 +13,9 @@ maac record --input-device='EXACT UID FROM THE LIST' \
 The command lists input devices only. It does not change system preferences,
 select a playback output, or start monitoring. Recording still delivers the
 [bounded mono 48 kHz Float32 stream](recording.md), even when the selected
-hardware advertises more input channels or a different nominal rate.
+hardware advertises more input channels or a different nominal rate. Optional
+[live monitoring](input-monitoring.md) instead requires a selected duplex
+device already at 48 kHz; `output_channels` helps identify a candidate.
 
 ## Device listing
 
@@ -26,6 +28,7 @@ Each entry contains:
 | `uid` | Exact Core Audio identifier accepted by `record --input-device` |
 | `name` | Display name; it is not a selector and need not be unique |
 | `input_channels` | Advertised input-channel count, not the recorded channel count |
+| `output_channels` | Advertised output-channel count on this same device; zero means no duplex monitoring route |
 | `is_default` | Whether this input matches the inspected system-default input |
 | `hardware_rate_hz` | Observed nominal rate; may be null for an unavailable input |
 | `available` | Reported device-alive state, not microphone permission or proof that capture will work |
@@ -72,6 +75,7 @@ example if authorization is denied or the device becomes unavailable.
 | --- | --- | --- |
 | Omitted selector | `maac.recording/1` | `input_device.selection="system-default"` and the resolved UID |
 | Explicit UID | `maac.recording/2` | `input_device.selection="explicit-uid"` and the exact requested/resolved UID |
+| Explicit UID with `--monitor` | `maac.recording/3` | Exact input UID plus the same-device monitor route and gain policy |
 
 Version 2 keeps the version 1 field layout and changes the version and selection
 policy. The supervisor requires the captured UID to match the explicit request
@@ -89,5 +93,6 @@ hardware identity or measured latency certificates.
 Synthetic tests verify lookup, request binding, metadata compatibility, and
 failure paths. Read-only native enumeration can be checked without recording
 sound. Actual explicit-device capture still requires deliberate microphone
-acceptance. Monitoring, output-device selection, multichannel capture, shared
-capture/playback clocks, and latency-aligned overdubbing remain separate work.
+acceptance. The opt-in monitoring path uses one logical device clock. Separate
+output-device selection, multichannel capture, and latency-aligned overdubbing
+remain separate work.

@@ -202,6 +202,127 @@ fn explicit_provenance_requires_v2_and_exact_request_binding() {
     .is_err());
 }
 
+fn monitor_reference(path: &Path, uid: &str, channels: u32) {
+    use super::{MonitorLatency, Monitoring};
+    let mut sink = WaveSink::create(path, 1).unwrap();
+    let mut time = 200.0;
+    while !sink.complete() {
+        sink.accept(&chunk(time, CHUNK_FRAMES)).unwrap();
+        time += CHUNK_FRAMES as f64;
+    }
+    let mut monitoring = Monitoring::initial(
+        uid,
+        channels,
+        MonitorLatency {
+            device_buffer_frames: 256,
+            reported_input_device_frames: Some(10),
+            reported_output_device_frames: Some(12),
+            reported_input_safety_offset_frames: None,
+            reported_output_safety_offset_frames: Some(8),
+            application_buffer_frames: 0,
+            measured_round_trip_frames: None,
+        },
+        125,
+        3,
+    );
+    monitoring.first_render_sample_time = 200.0;
+    monitoring.first_render_host_time_ticks = 12345;
+    let device = InputDevice {
+        selection: "explicit-uid".into(),
+        uid: uid.into(),
+        hardware_rate_hz: Some(48_000.0),
+    };
+    sink.finish_with_monitor(1, device, Some(monitoring))
+        .unwrap();
+}
+
+#[test]
+fn monitored_v3_provenance_requires_exact_backend_uid_route_clock_and_unknown_latency() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("monitor.wav");
+    let uid = " monitor UID 한글\n";
+    monitor_reference(&path, uid, 4);
+    let metadata = stream::validate_wave_request(&path, 1, Some(uid), true, || Ok(())).unwrap();
+    assert_eq!(metadata.version, 3);
+    assert_eq!(metadata.backend, super::MONITOR_BACKEND);
+    assert_eq!(metadata.monitoring.unwrap().output_channels, [1, 2]);
+    assert!(stream::validate_wave_request(&path, 1, Some(uid), false, || Ok(())).is_err());
+    assert!(stream::validate_wave_request(&path, 1, Some("wrong"), true, || Ok(())).is_err());
+    assert!(stream::validate_wave_request(&path, 1, None, true, || Ok(())).is_err());
+    let clean = fs::read(&path).unwrap();
+    for (pointer, value) in [
+        ("/version", serde_json::json!(2)),
+        ("/backend", serde_json::json!(super::BACKEND)),
+        ("/monitoring/output_device/uid", serde_json::json!("wrong")),
+        (
+            "/monitoring/output_device/selection",
+            serde_json::json!("system-default"),
+        ),
+        ("/monitoring/output_device/channels", serde_json::json!(1)),
+        ("/monitoring/output_channels", serde_json::json!([2, 1])),
+        ("/monitoring/input_channel", serde_json::json!(2)),
+        ("/monitoring/gain", serde_json::json!(0.25)),
+        ("/monitoring/clip_policy", serde_json::json!("none")),
+        (
+            "/monitoring/clock_policy",
+            serde_json::json!("independent-clocks"),
+        ),
+        (
+            "/monitoring/first_render_sample_time",
+            serde_json::json!(9_007_199_254_740_992.0),
+        ),
+        (
+            "/monitoring/first_render_host_time_ticks",
+            serde_json::json!(0),
+        ),
+        ("/monitoring/host_timebase_denom", serde_json::json!(0)),
+        (
+            "/monitoring/latency/device_buffer_frames",
+            serde_json::json!(2049),
+        ),
+        (
+            "/monitoring/latency/application_buffer_frames",
+            serde_json::json!(1),
+        ),
+        (
+            "/monitoring/latency/measured_round_trip_frames",
+            serde_json::json!(0),
+        ),
+        (
+            "/input_device/hardware_rate_hz",
+            serde_json::json!(44_100.0),
+        ),
+        ("/monitoring", Value::Null),
+    ] {
+        fs::write(&path, &clean).unwrap();
+        edit_provenance(&path, |metadata| {
+            *metadata.pointer_mut(pointer).unwrap() = value
+        });
+        assert!(
+            stream::validate_wave_request(&path, 1, Some(uid), true, || Ok(())).is_err(),
+            "accepted forged {pointer}"
+        );
+    }
+    fs::write(&path, &clean).unwrap();
+    edit_provenance(&path, |metadata| {
+        metadata["monitoring"]["latency"]
+            .as_object_mut()
+            .unwrap()
+            .remove("measured_round_trip_frames");
+    });
+    assert!(stream::validate_wave_request(&path, 1, Some(uid), true, || Ok(())).is_err());
+    let mono = root.path().join("mono.wav");
+    monitor_reference(&mono, uid, 1);
+    assert_eq!(
+        stream::validate_wave_request(&mono, 1, Some(uid), true, || Ok(()))
+            .unwrap()
+            .monitoring
+            .unwrap()
+            .output_channels,
+        [1]
+    );
+}
+
 #[test]
 fn budget_preflight_matches_generated_mono_clip_boundary() {
     let root = tempfile::tempdir().unwrap();
@@ -210,6 +331,7 @@ fn budget_preflight_matches_generated_mono_clip_boundary() {
         output_dir: root.path().join("out"),
         profile: ProfileArg::Default,
         input_device: None,
+        monitor: false,
     };
     super::preflight(&request).unwrap();
     request.duration_seconds = 232;
@@ -408,6 +530,72 @@ fn supervisor_rejects_fallback_and_wrong_uid_before_retained_import() {
     fixture.clean();
 }
 
+#[test]
+fn monitored_supervisor_forwards_opt_in_and_preserves_bound_dry_v3_archive() {
+    let fixture = Fixture::new();
+    let uid = "duplex UID 한글";
+    fs::remove_file(fixture.path("reference.wav")).unwrap();
+    monitor_reference(&fixture.path("reference.wav"), uid, 4);
+    fs::write(fixture.path("requested-uid"), uid).unwrap();
+    fs::write(fixture.path("requested-monitor"), b"").unwrap();
+    let output = finish(fixture.spawn());
+    assert!(output.status.success(), "{:?}", fixture.result());
+    let result = fixture.result();
+    assert_eq!(result["backend"], super::MONITOR_BACKEND);
+    assert_eq!(result["recording_format"], "maac.recording/3");
+    assert_eq!(result["monitoring"]["gain"], 0.125);
+    assert_eq!(
+        result["monitoring"]["output_channels"],
+        serde_json::json!([1, 2])
+    );
+    let args = fs::read(fixture.path("capture-args")).unwrap();
+    let args: Vec<_> = args
+        .split(|byte| *byte == 0)
+        .filter(|arg| !arg.is_empty())
+        .collect();
+    assert_eq!(args[3], b"--input-device");
+    assert_eq!(args[4], uid.as_bytes());
+    assert_eq!(args[5], b"--monitor");
+    let retained = fixture.path("output/original.wav");
+    stream::validate_wave_request(&retained, 1, Some(uid), true, || Ok(())).unwrap();
+    assert!(hound::WavReader::open(retained)
+        .unwrap()
+        .samples::<f32>()
+        .all(|sample| sample.unwrap() == 0.25));
+    assert_archive_roundtrip(&fixture, Some(uid));
+}
+
+#[test]
+fn monitored_supervisor_rejects_downgrade_or_wrong_route_before_import() {
+    for forged in [false, true] {
+        let fixture = Fixture::new();
+        let uid = "duplex-input";
+        fs::remove_file(fixture.path("reference.wav")).unwrap();
+        if forged {
+            monitor_reference(&fixture.path("reference.wav"), uid, 2);
+            edit_provenance(&fixture.path("reference.wav"), |metadata| {
+                metadata["monitoring"]["gain"] = serde_json::json!(1.0)
+            });
+        } else {
+            reference_device(
+                &fixture.path("reference.wav"),
+                InputDevice {
+                    selection: "explicit-uid".into(),
+                    uid: uid.into(),
+                    hardware_rate_hz: Some(48_000.0),
+                },
+            );
+        }
+        fs::write(fixture.path("requested-uid"), uid).unwrap();
+        fs::write(fixture.path("requested-monitor"), b"").unwrap();
+        assert!(!finish(fixture.spawn()).status.success());
+        assert_eq!(fixture.result()["code"], "E_RECORDING");
+        assert!(!fixture.path("import-result.json").exists());
+        assert!(!fixture.path("output").exists());
+        fixture.clean();
+    }
+}
+
 fn assert_archive_roundtrip(fixture: &Fixture, requested_uid: Option<&str>) {
     let project = fixture.path("output");
     assert_eq!(fs::read_dir(&project).unwrap().count(), 4);
@@ -453,7 +641,14 @@ fn assert_archive_roundtrip(fixture: &Fixture, requested_uid: Option<&str>) {
     .unwrap();
     assert_eq!(fs::read(restored.join("original.wav")).unwrap(), original);
     crate::media_import::verify_retained_import_disk(&restored).unwrap();
-    stream::validate_wave(&restored.join("original.wav"), 1, requested_uid, || Ok(())).unwrap();
+    stream::validate_wave_request(
+        &restored.join("original.wav"),
+        1,
+        requested_uid,
+        fixture.path("requested-monitor").exists(),
+        || Ok(()),
+    )
+    .unwrap();
     fixture.clean();
 }
 
@@ -693,6 +888,7 @@ fn supervisor_helper() {
         output_dir: root.join("output"),
         profile: ProfileArg::Default,
         input_device: fs::read_to_string(root.join("requested-uid")).ok(),
+        monitor: root.join("requested-monitor").exists(),
     };
     let before = signal_actions();
     let result = managed::run_with(

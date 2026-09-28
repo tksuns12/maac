@@ -835,6 +835,58 @@ was invoked. Physical capture, monitoring, latency/clock alignment, listening
 acceptance, and non-macOS execution remain unverified. This is a library and
 focused CLI gate, not a full all-targets test-suite refresh.
 
+## Same-device live input monitoring (2026-09-28)
+
+The opt-in `record --input-device UID --monitor` path uses one AUHAL instance
+on an explicitly selected 48 kHz duplex device. It records input channel 1 dry,
+monitors it at gain 0.125 with clamping on the first one or two outputs, and
+retains `maac.recording/3` route and timing provenance. See the
+[monitoring contract](input-monitoring.md). Existing unmonitored recording keeps
+the AudioQueue backend and v1/v2 provenance.
+
+| Gate | Command or check | Result |
+| --- | --- | --- |
+| Final library and adjacent CLI gate | `cargo test --lib --test recording_cli --test playback_cli --test cli --test cli_bundle --test cli_execution_profiles --test media_import_cli --test disk_media_cli --test archive_retained_cli --locked --offline --quiet` | Passed after final source edits: 399 active library tests, 3 existing ignored; 9 recording, 4 playback, 3 CLI, 7 bundle CLI, 3 execution-profile, 9 media-import, 3 disk-media, and 7 retained-archive CLI tests |
+| Focused recording gate | `cargo test --lib recording:: --locked --offline --quiet` | Passed: 43 tests, also included in the final library gate |
+| Strict lint | `cargo clippy --all-targets --locked --offline -- -D warnings` | Passed after final source edits |
+| Formatting and whitespace | `cargo fmt --all -- --check`; `git diff --check` | Passed |
+| Independent native ABI check | `xcrun clang -x c -std=c11 -fsyntax-only -` with installed SDK headers and static assertions | Passed: AudioComponentDescription, AudioBuffer/List, callback struct, timestamp, stream format, timebase, and new selector/scope/flag layouts and identities |
+| Native debug metadata smoke | JSON/human `inputs`, monitor help, bounded field checks | Passed: empty sandbox inventory; outside the sandbox, one available default input with one input channel, zero output channels, and nominal 48 kHz; no capture or files created |
+| Optimized build | `cargo build --release --locked --offline --quiet` | Passed |
+| Release binary checks | Native framework links, embedded microphone purpose, help, and six unmonitored/monitored usage/destination/work preflight failures | Passed without microphone access; existing sentinel preserved and no capture files created |
+| Native release metadata smoke | JSON/human `inputs` and help outside the sandbox | Passed with the same input/output channel counts and rate; no capture or files created |
+
+Synthetic checks cover:
+
+- Dry sample preservation, gain/clamp behavior, channel mapping, variable bounded
+  callbacks, exact target-frame trimming, and silent final excess.
+- The native render callback with an injected input pull, including bus and
+  timestamp identity, scratch alignment, native pull failure, and real output
+  zeroing when a failure is latched after routing.
+- Preservation of signed-zero PCM bits and rejection of nonfinite samples even
+  when the input render call supplies a silence hint.
+- Timestamp gaps, malformed/oversized buffers, overlap, ring overflow, stopping,
+  and detected route changes without opening an audio device.
+- Stop → uninitialize → dispose ordering, each teardown failure, late callback
+  failure, and retained callback storage if disposal fails.
+- Preauthorization duplex/rate eligibility and bounded metadata encoding with
+  worst-case timestamp space reserved.
+- Request-bound v3 backend, UID, channel route, gain, clock, and latency fields;
+  forged or downgraded metadata fails before retained import.
+- Monitored retained import, archive create/verify/unpack, and reopened original
+  WAV/provenance verification. Existing unmonitored lifecycle tests also pass.
+
+Independent review found and resolved late-failure output clearing, timestamp
+encoding headroom, and input silence-hint handling before the final gate.
+No remaining actionable review findings were reported.
+
+Read-only enumeration was the only actual-device operation. The available input
+has no outputs and therefore is not eligible for this same-device monitoring
+path. No microphone authorization, capture, or monitor playback was invoked.
+Audible routing, physical round-trip latency, final audible-frame delivery, and
+non-macOS execution remain unverified. This is a library and adjacent CLI gate,
+not a full all-targets test-suite refresh or production listening acceptance.
+
 ## Historical naming cleanup
 
 The current tree uses MaaC consistently in the specification, grammar, schema,
