@@ -2,15 +2,15 @@
 
 **Snapshot:** 2026-09-28
 
-**Audience:** contributors planning the next MaaC lifecycle gates. Use this
+**Audience:** contributors inspecting existing MaaC lifecycle capabilities. Use this
 inventory to identify which bounded paths exist and what evidence is still
 needed before claiming a complete production workflow.
 
-This is an implementation inventory, not a product-readiness statement. The
-accepted direction is for a person to compose, record or import, edit, arrange,
-mix, deliver, archive, and reopen a project with an open toolchain. The current
-implementation is a narrower offline foundation. See the
-[roadmap](end-to-end-production-plan.md) for sequencing and acceptance gates,
+This is an implementation inventory, not a product-readiness statement or the
+active language backlog. The broader compose-through-reopen product proposal
+is deferred. See the [language plan](language-specification-plan.md#current-priorities)
+for active sequencing, the [broader product roadmap](end-to-end-production-plan.md)
+for deferred lifecycle gates,
 the [capability matrix](capabilities.md) for implemented scope, and
 [release readiness](release-readiness.md) for publication status.
 
@@ -33,7 +33,7 @@ production readiness.
 
 ## Lifecycle map
 
-| Lifecycle area | Status | Current boundary and evidence | Next gate |
+| Lifecycle area | Status | Current boundary and evidence | Possible product follow-up (deferred) |
 | --- | --- | --- | --- |
 | Authoring and offline composition | supported | MaaC source can express finite note and hit patterns, explicit arrangements, tempo and meter, a bounded set of instruments and processors, and reset-state offline rendering. The implementation remains a subset of the specification. See [capabilities](capabilities.md), the [Core Audio audit](core-audio-conformance-audit.md), and [release readiness](release-readiness.md). | Expand only against separately accepted contracts; retain explicit unsupported-feature errors. |
 | Sample-kit input | supported | Core kits consume pinned raw float32 mono/stereo PCM at native rate for one-shot hits, with interpolation and natural tails. This is not a pitched sampled-instrument library. See [capabilities](capabilities.md), the [kit contract](core-kit.md), and [kit validation](core-kit-validation.md). | Add pinned sampled instruments, articulation maps, and larger open sound-library coverage under Phase 5. |
@@ -80,7 +80,11 @@ production readiness.
   with recorded audio, multiple takes, comping, mix/master changes, invalidation,
   and a fresh offline reopen.
 
-## Next acceptance gates
+## Deferred product acceptance gates
+
+These are broader workflow evaluations if that product track resumes. They do
+not select the next language task. Existing partial implementations in the
+table above must be credited before defining any follow-up slice.
 
 1. **Media and capture:** Give imported and recorded assets explicit format,
    rate, channel, frame, source, and provenance identities. Add bounded disk or
@@ -102,6 +106,6 @@ production readiness.
    representative workload. Automated structure, replay, metering, and file
    checks do not replace this gate.
 
-These gates follow the [end-to-end production plan](end-to-end-production-plan.md).
+These deferred gates follow the [end-to-end production plan](end-to-end-production-plan.md).
 The inventory records concrete bounded evidence to guide that work; it does not
 declare the full lifecycle complete.

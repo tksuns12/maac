@@ -116,8 +116,9 @@ macOS. Bounded [microphone recording](docs/recording.md) creates an editable
 project with retained capture provenance. [Input selection](docs/input-devices.md)
 lists devices with `maac inputs` and selects exact UIDs with `record --input-device`.
 [Live input monitoring](docs/input-monitoring.md) is opt-in with `record --monitor`
-on an explicitly selected 48 kHz duplex device. Backing-track transport,
-latency-aligned overdubbing, and physical-device production acceptance remain open.
+on an explicitly selected 48 kHz duplex device. These are optional host tools;
+further device integration, backing-track transport, and hardware acceptance
+are deferred while language/specification work takes priority.
 
 ## Quick start
 
@@ -208,11 +209,12 @@ the declarative musical core, reusable libraries, engine extensions, and tools.
 
 Read the [quick start](docs/quickstart.md), [authoring tutorial](docs/tutorial.md),
 [CLI and library reference](docs/reference.md), and [capability matrix](docs/capabilities.md).
-The [end-to-end production plan](docs/end-to-end-production-plan.md) records the
-accepted direction for completing production with MaaC and an open ecosystem.
-The accepted initial surface is CLI-first with playback and recording tools;
-visual GUI work is deferred beyond the initial workflow. Its proposed
-milestones remain subject to separate contracts and evidence.
+The [language specification and conformance plan](docs/language-specification-plan.md#current-priorities)
+owns active priorities: portable musical meaning, reusable source data,
+interchange, and evidence for stated conformance boundaries.
+The [end-to-end production plan](docs/end-to-end-production-plan.md) preserves
+the deferred broader-product proposal. Device capture, monitoring, transport,
+and host integration are optional tooling, not language-completeness gates.
 The [pitch guide](docs/pitch-expression.md) and [gain guide](docs/gain-expression.md)
 demonstrate independent bends, swells, and fades on overlapping `core.sine/1` voices.
 The [instrument pitch guide](docs/instrument-pitch.md) applies independent bends

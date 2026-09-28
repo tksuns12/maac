@@ -4,6 +4,12 @@ The foundation implements a bounded subset of MaaC/1. It does **not** claim
 full Document, Performance, Core Audio, or Locked Render conformance. The language
 specification remains authoritative; this page describes the implementation scope.
 
+This inventory includes language behavior, reference-runtime algorithms, and
+optional process tools. Its rows are not a language-completeness checklist.
+The [language specification and conformance plan](language-specification-plan.md#current-priorities)
+owns active priorities; device capture, monitoring, playback, and external
+hosting belong to a deferred host/tooling track.
+
 The [Core Audio conformance audit](core-audio-conformance-audit.md) records
 processor coverage, confirmed discrepancies, and remaining profile obligations.
 Coverage of every reference processor identifier is not a full-profile claim.
@@ -31,6 +37,7 @@ Coverage of every reference processor identifier is not a full-profile claim.
 | Modulation | Top-level typed control modulation of continuous sample-rate, note-on/note-off, and instrument reset parameters, score/seconds LFOs and automated constants; instrument feed-forward graph modulation, ADSR, voice phase, and shared-LFO reset capture, and sample-wise through-zero linear FM; no oversampling |
 | Built-in instruments | 24 stereo exports in `std/basic/1.0.0` with four common controls; three separate `std/acoustic/1.0.0` guitars with six controls; exact-version CLI/Rust discovery |
 | Local dependencies | Explicit namespace aliases, transitive declaring-file resolution, SHA-256 source/WAV pins, project containment |
+| Musical library reuse | Pinned pattern, curve, and tuning exports resolve with namespaced dependencies and source provenance; `maac.module-source/1` packages their source/asset closure. Older normative library prose still needs reconciliation; see the active language plan. |
 | Wavetables | Explicit mono WAV cycles, cyclic interpolation, adjacent-frame morphing and harmonic-limited banks |
 | Regions | Named score intervals retained as non-rendering metadata |
 | Render | Reset-state offline rendering at 48 kHz, score-end releases, explicit tail, and reset-correct WAV excerpts that still execute through the complete plan |
@@ -40,7 +47,7 @@ Coverage of every reference processor identifier is not a full-profile claim.
 | Native production | Project-level EQ, linked peak compression with external sidechains, eight-delay reverb; required `maac.production/1` |
 | Named deliveries | Complete-graph master/stem capture; 44.1/48/96 kHz conversion; final-artifact loudness/sample-peak/experimental true-peak analysis |
 | Interchange | Independently validated standalone plans: version 1 legacy, version 2 embedded graph/data/provenance, version 3 exact ramp timing recipes, version 4 embedded audio assets and kit nodes, version 5 rate clips, version 6 warp-rate clips, version 7 core control modulation |
-| Native archive | `maac archive create/patch/verify/unpack` captures exact source/media closures. Versions 2–3 add linear checkpoints and retained original WAV imports; version 4 retains and explicitly reuses a verified whole-output freeze; version 5 journals an explicit entry edit and inverse; version 6 retains multiple WAV imports; version 7 journals a direct library edit; version 8 freezes and explicitly substitutes one native effect output, allowing bounded gain/pan edits on branches that cannot feed it in new freezes; version 9 groups independent native effect outputs, with opt-in partial reuse of eligible members; version 10 journals a bounded group of direct library edits with one generated entry repin transaction; version 11 journals edits to shared and transitive local sources with exact pin propagation; version 12 optionally retains verified native processor context. Older versions remain readable. External processor dependencies/state, broader invalidation, and overlapping frozen graph branches remain Phase 3 work. |
+| Native archive | `maac archive create/patch/verify/unpack` captures exact source/media closures. Versions 2–3 add linear checkpoints and retained original WAV imports; version 4 retains and explicitly reuses a verified whole-output freeze; version 5 journals an explicit entry edit and inverse; version 6 retains multiple WAV imports; version 7 journals a direct library edit; version 8 freezes and explicitly substitutes one native effect output, allowing bounded gain/pan edits on branches that cannot feed it in new freezes; version 9 groups independent native effect outputs, with opt-in partial reuse of eligible members; version 10 journals a bounded group of direct library edits with one generated entry repin transaction; version 11 journals edits to shared and transitive local sources with exact pin propagation; version 12 optionally retains verified native processor context. Older versions remain readable. External processor dependencies/state, broader invalidation, and overlapping frozen graph branches remain deferred product-track work. |
 
 The normative [generic interchange v1 field contract](generic-interchange.md),
 [generic schema](../interchange.schema.json), and [L4 corpus](../conformance/l4/)

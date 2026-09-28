@@ -1,13 +1,16 @@
 # MaaC language specification and conformance plan
 
-Status: L1, L2, L3, L4, and L5 are addressed 2026-09-13 for their bounded
+**Status:** active language/specification roadmap; scope reset 2026-09-28.
+This plan owns current priorities. The [broader production
+plan](end-to-end-production-plan.md) is deferred; device integration and
+full-application readiness do not determine language completeness.
+
+**Historical baseline:** L1, L2, L3, L4, and L5 are addressed 2026-09-13 for their bounded
 contracts and evidence. L1 authority and the L5 metric and bound are
 **RESOLVED**. L4 is committed at `e948ce7`. Later bounded runtime slices add
 reusable source modules, generic lock verification/construction, strict external
 descriptor and dependency discovery, and MIDI loss reporting; generic rendering
-and executable native external hosting remain deferred. The [end-to-end
-production plan](end-to-end-production-plan.md#current-execution-status) owns
-the current product-roadmap status.
+and executable native external hosting remain deferred.
 Baseline: A1–A4 are addressed at
 `b19ae2884fbfad2dbf5efb1526a1eff8f5452d9d`. This plan records specification
 priorities. The adopted authored-state decision and the scoped L1 semantic
@@ -30,6 +33,112 @@ The ordered priorities were L1 first, followed by the bounded L2 and L3
 clarification slices, L4 interchange work, and L5 corpus consolidation.
 Conformance vectors accompany every slice. The bounded L1–L5 work is addressed;
 future obligations remain separate from these completed slices.
+
+## Current priorities
+
+**Reader and action:** contributors selecting the next language task should
+start with P1 below, retain already implemented behavior, and state separately
+what is specified, implemented, and proven by conformance evidence. This
+roadmap correction changes no grammar, normative semantics, runtime API, or
+conformance-profile claim.
+
+### Scope and ownership
+
+| Track | In scope | Completion evidence |
+| --- | --- | --- |
+| Language and libraries — active | Musical meaning, units and clocks, finite reusable data, reference ownership, source identity, exact edits, and explicit capability requirements | Consistent normative contract, independent expected outcomes, compatibility review, and tests at the public language boundary |
+| Portable interchange — active when required by a selected language slice | Pins, dependency/state descriptions, authored-versus-derived identity, losses, and refusal semantics | Round-trip and tamper/refusal vectors that identify exactly what is preserved |
+| Reference runtime — supporting | Implementing and checking the selected declared subset under explicit limits | Scoped compiler/renderer evidence; no inference of full-profile conformance from processor coverage |
+| Host/application tooling — deferred | Device discovery, microphone capture, monitoring, live transport, hardware latency calibration, GUI, and executable plugin hosting | Separate product/hardware contracts and acceptance, outside language completion |
+
+An asset's source frame and declared origin are portable data. Measuring a
+microphone's latency or routing its monitor signal is host work. Likewise,
+describing processor state/dependencies is an interchange concern; loading an
+executable plugin is a host concern. No language slice requires a microphone,
+audio output device, or DAW session to establish its semantic results.
+
+### Ordered work
+
+| Priority | Work | Evidence for the gap | Acceptance boundary |
+| --- | --- | --- | --- |
+| P1 — next | Reconcile the existing musical-library contract | The normative [instrument/library contract](instruments.md#documents-and-dependencies) restricts libraries to imports, instruments, presets, and wavetables, while the implementation accepts pattern/curve/tuning exports and the [module artifact contract](musical-module-artifact.md#contract) requires them | One consistent contract for existing musical exports, fixed accepted/rejected semantic vectors, and compatibility evidence; no new export feature |
+| P2 — after P1 | Map Document and Performance obligations to public-boundary evidence | L1–L5 are bounded slices; the [capability declaration](capabilities.md) still disclaims complete profiles and the [Core Audio audit](core-audio-conformance-audit.md) does not prove inherited obligations exhaustively | A requirement-to-contract/vector/API matrix classifying each obligation as evidenced within limits, specified-only, unsupported, or unverified; select the first demonstrated discrepancy for a bounded fix |
+| P3 — evidence-selected | Close a demonstrated semantic, validation, or interchange discrepancy from that matrix | A missing test, missing public path, and inconsistent semantics are different gaps and must not be conflated | A reproducing independent expected vector, compatible contract or implementation correction, and proof at the declared boundary |
+
+P2/P3 are not a blanket promise to implement every profile, renderer algorithm,
+or external receiver. Unsupported capabilities must remain explicit. The
+existing L1–L5 corpus is retained; its completed status is not reset and no L6
+conformance level is introduced by this roadmap.
+
+### P1 handoff: musical-library contract reconciliation
+
+The next slice documents and verifies the reusable musical data that already
+works. It must resolve the contradiction between the incorporated normative
+library contract and the existing module/export path, with semantic review
+before changing normative text. Implementation behavior is evidence to inspect,
+not automatic authority over the specification.
+
+The contract must settle:
+
+1. Permitted library declarations and exported kinds, including patterns,
+   curves, and tunings; validation of all exports, including unused ones.
+2. Resolution of nested references in their declaring library, qualified import
+   aliases, dependency closure, and rejection of accidental caller-name capture.
+3. Composition-owned tempo, meter, tracks, placement, and automation bindings;
+   importing reusable material must not replace those choices.
+4. Alias-qualified source provenance versus expanded occurrence addresses,
+   authored revision identity, and derived execution identity.
+5. Exact pin/refusal behavior and module export/check/unpack compatibility.
+
+Acceptance uses existing `check_bundle`, compilation, and `ModuleArtifact`
+public boundaries. Fixed fixtures must cover two consumers of one pinned motif
+and curve under different caller contexts, nested/aliased dependencies, explicit
+tuning, source mapping and occurrence identity, an altered pin, an invalid
+unused export, and module round-trip identity. Existing musical-library and
+module-artifact tests are starting evidence; add only missing semantic vectors
+after comparing their coverage with the reconciled contract.
+
+Do not add import syntax, a registry, direct artifact imports, pattern
+parameters, tempo exports, linked sections, or device behavior in P1. Success
+is a consistent language/library contract with scoped evidence, not a new
+sampler, editor, host, or full-profile declaration.
+
+### Credited work and optional proposals
+
+Pinned pattern/curve/tuning reuse and the bounded F1 module artifact already
+exist. Exact transactional editing/normalization, generic lock construction
+and verification, descriptor/dependency inspection, MIDI loss reporting, and
+the take/comp extension also have bounded implementations. Their limits remain
+in the capability matrix; do not reintroduce them as wholly missing features.
+
+Occurrence-local expression variants that preserve shared source edits are an
+optional language-design candidate. Current materialization intentionally
+creates an independent copy. A different sharing model needs a separate
+ownership, precedence, identity, and compatibility decision; it is not a defect
+merely because the current contract lacks it. Multi-lane move/duplicate helpers
+belong first to tools over existing transactions. Pitched samplers,
+preserve-pitch warp algorithms, additional receiver adapters, and executable
+hosting each need their own scoped proposal; none is the automatic next task.
+
+The [production-language research memo](professional-production-language-review.md)
+is background, not a competing ordered backlog. Its historical adoption and
+listening experiments do not gate this plan.
+
+### Evidence for this roadmap reset
+
+On 2026-09-28, inspection identified the library declaration contradiction
+above. The existing `musical_library`, `module_artifact`, `module_cli`, and
+`editing_bundle` test targets were run with Cargo's locked/offline settings:
+27 tests passed. Added documentation links and anchors were checked. This
+supports the inventory correction; it does not complete P1, amend normative
+semantics, or establish a full conformance profile. No runtime code or device
+behavior changed in this roadmap reset.
+
+## Completed specification slices
+
+The L1–L5 sections below preserve the decisions and evidence of their original
+slices. Historical statements about omitted runtime work describe that slice's
+acceptance; consult current priorities and the capability matrix for later work.
 
 ## L1 — identity and edit consistency
 
@@ -298,15 +407,13 @@ professional music production. It does not create L6 or alter L1–L5 status;
 the bounded F1 artifact slice is implemented, while broader F1/package work
 remains outside the accepted L1–L5 scope.
 
-## End-to-end production direction
+## Deferred broader-product direction
 
-The latest accepted product direction is for MaaC and an open ecosystem to
-support complete production from composition through archive and reopen. The
-non-normative [end-to-end production plan](end-to-end-production-plan.md)
-records the proposed capability boundaries and dependency-ranked roadmap. It
-does not change L1–L5 status or approve new language, runtime, processor, or
-editor scope. The accepted initial surface is CLI-first with playback and
-recording tools; visual GUI work is deferred beyond the initial workflow.
+The non-normative [end-to-end production plan](end-to-end-production-plan.md)
+preserves the earlier composition-through-reopen application proposal and its
+existing tooling evidence. Further capture, monitoring, backing-track transport,
+hardware alignment, and host integration are deferred. They do not change
+L1–L5 status or block the language priorities above.
 
 ## Completion rule
 

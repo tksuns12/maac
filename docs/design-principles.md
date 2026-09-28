@@ -38,10 +38,14 @@ advertises which it accepts; its defined behavior determines the sound response.
 For example, an opted-in instrument graph can map pressure to brightness without
 adding a brightness rule to every note or changing other instruments.
 
-Current library documents support instruments, presets, and wavetables, not
-pattern or tempo exports. Broader reuse is a design direction, not a claim that
-those exports already work. Released library versions retain their defined
-content and sound behavior; changes require a new version.
+The implementation supports instruments, presets, wavetables, and pinned
+pattern, curve, and tuning exports. The bounded [musical module
+artifact](musical-module-artifact.md) packages existing musical exports and
+their closure. Tempo-map exports remain unsupported: the importing composition
+owns its tempo. The [active language plan](language-specification-plan.md#current-priorities)
+tracks reconciliation of older library-contract prose with the implemented
+musical exports. Released library versions retain their defined content and
+sound behavior; changes require a new version.
 
 ## Give new algorithms explicit engine boundaries
 
@@ -85,3 +89,17 @@ finite execution and resource bounds, and observable acceptance criteria.
 Distinguish new language semantics from implementing an already specified
 feature. Preserve a path for tools to inspect and edit the resulting music
 without interpreting a general-purpose program.
+
+## Separate language completion from host features
+
+Device enumeration, microphone permission, capture, monitoring, audio-device
+selection, live transport, and plugin loading belong to host/application tools.
+They can produce or consume MaaC data, but their presence does not establish
+language conformance and their absence does not create a syntax requirement.
+Portable asset identity, authored timing/origin, processor state descriptions,
+and explicit failure or loss semantics remain language/interchange concerns.
+
+The [language specification and conformance plan](language-specification-plan.md#current-priorities)
+sets the current work order. Full-profile claims require evidence for the
+selected normative obligations; hardware listening and producer acceptance
+belong to separately scoped product evaluations.

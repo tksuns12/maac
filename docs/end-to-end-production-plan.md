@@ -1,15 +1,23 @@
 # MaaC end-to-end production plan
 
-**Status:** accepted product direction; non-normative capability roadmap; dated
-2026-09-13. The current execution status below was reconciled on 2026-09-28.
+**Status:** deferred broader-product roadmap; non-normative. Originally dated
+2026-09-13; scope corrected on 2026-09-28.
+
+The active development sequence is the [language specification and conformance
+plan](language-specification-plan.md#current-priorities). This document preserves
+the broader production proposal and its implementation history. Its device,
+transport, host, GUI, and listening gates are not requirements for MaaC language
+completeness and do not select the next implementation task. Existing tooling
+remains available; further host integration is deferred.
 
 ## Current execution status
 
-This table is the canonical progress view for the end-to-end roadmap. “Complete”
-always means complete within the stated bounded contract; it does not imply a
-complete professional-production product.
+This table records progress within the deferred end-to-end product proposal.
+“Complete” means complete within the stated bounded contract; it does not imply
+either full language conformance or a complete professional-production product.
+The final column lists possible follow-up work if that product track is resumed.
 
-| Area | Status | Next gate or boundary |
+| Area | Status | Deferred product gate or boundary |
 | --- | --- | --- |
 | Playable foundation | Complete within the bounded implementation plan | Keep the automated foundation and release gates green. |
 | Language/conformance L1–L5 | Addressed for the bounded slices | Do not expand this into a full-profile or cross-platform identity claim. |
@@ -73,11 +81,13 @@ archive milestone remains incomplete.
 
 The [lifecycle inventory](end-to-end-lifecycle-inventory.md), [capability matrix](capabilities.md), [Core Audio audit](core-audio-conformance-audit.md),
 and [current verification record](verification.md) provide supporting evidence;
-this table owns the roadmap status and sequencing.
+this table preserves product-track status. Active sequencing belongs to the
+language plan.
 
 ## Capability
 
-MaaC should become a self-complete production environment: a person can
+The broader product proposal would make MaaC a self-complete production
+environment: a person could
 compose, record or import, edit, arrange, design sounds, mix, master, deliver,
 archive, and reopen a project using MaaC and an open library and processor
 ecosystem. The project source, its render-affecting state, and its pinned
@@ -85,10 +95,11 @@ dependencies remain authoritative throughout that lifecycle. A DAW handoff is
 an optional interoperability path. A paid or proprietary DAW is not a required
 part of the product's completion path.
 
-This direction is accepted at the product level. The CLI-first surface with
-playback and recording tools is accepted for the initial workflow. The
-architecture, milestones, wire formats, and processor ABI remain proposals
-requiring contracts; device and host integration choices remain open. The current
+The earlier product direction included CLI playback and recording tools. That
+direction no longer governs active development: the current priority is the
+language, its specification, and conformance. Further product architecture,
+milestones, wire formats, and processor ABI remain deferred proposals requiring
+separate scope decisions. The current
 [capability matrix](capabilities.md), [design principles](design-principles.md),
 and [Core Audio audit](core-audio-conformance-audit.md) describe a bounded
 foundation; source descriptions and retained plans do not yet establish a
@@ -180,7 +191,9 @@ The common interfaces are:
 
 ## Dependency-ranked roadmap
 
-The sequence is a dependency order; parallel work remains possible.
+The following sequence is retained for the deferred product track. It is not
+the active language backlog. Within that track, the sequence is a dependency
+order; parallel work remains possible.
 Source/archive completeness and processor contracts are shared long-term
 foundations, while the excerpt can proceed independently. Dynamic hosting should
 not precede native open sounds or symbolic note handoff.
@@ -350,12 +363,12 @@ slices.
 The remaining product decisions include package licensing/notices,
 recording/device scope, media/checkpoints, processor state/ABI, sandbox and
 permissions, and optional DAW/MIDI/DAWproject profiles. The
-initial surface is accepted as CLI-first with playback and recording tools;
-visual GUI work is deferred beyond that workflow. These are not blockers to the
-accepted direction, but each must be resolved before its implementation slice.
+earlier CLI-first surface included playback and recording tools. All further
+device/host/GUI work is deferred; these decisions do not block language work.
 
-The immediate handoff after excerpt acceptance is the practical media/import and
-playback/capture contract work. In parallel, maintain the end-to-end inventory
-and define the dependency-complete archive contract. Do not describe the
-excerpt as completing end-to-end production; completion requires the full
-workflow and the workload, reopen, listening, and producer gates above.
+The immediate handoff is now the language plan's
+[current priorities](language-specification-plan.md#current-priorities).
+Retain this inventory and the existing device implementation evidence, without
+advancing capture, monitoring, backing-track transport, or hardware acceptance
+as automatic prerequisites. Any later resumption of the broader product track
+must explicitly select its scope and acceptance gates.

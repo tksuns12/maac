@@ -7,8 +7,10 @@ bounded implementation subset, not a full conformance profile.
 
 Specification completeness and interoperability priorities are tracked in the
 [language specification and conformance plan](language-specification-plan.md).
-The current end-to-end product sequence and progress status are tracked in the
-[end-to-end production plan](end-to-end-production-plan.md#current-execution-status).
+That plan also owns [active sequencing](language-specification-plan.md#current-priorities).
+The [end-to-end production plan](end-to-end-production-plan.md#current-execution-status)
+preserves the deferred broader-product track; its hardware and host gates do
+not determine language completeness.
 This implementation plan remains focused on the existing playable foundation
 and its implementation acceptance boundary.
 
