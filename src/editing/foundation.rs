@@ -221,6 +221,26 @@ impl BundleEditContext {
         &self.source_path
     }
 
+    /// Prepare an atomic Protocol 2 copy of one placement's complete pattern
+    /// occurrences, including private imported curve and tuning dependencies.
+    pub fn prepare_materialize_instance(
+        &self,
+        document: &AuthoredDocument,
+        placement_id: &str,
+        new_pattern_id: &str,
+    ) -> EditResult<super::MaterializeInstancePlan> {
+        self.validate_document(document.tree())?;
+        let (_, libraries) = self.resolved_candidate(document.tree())?;
+        super::materialize::prepare(
+            self,
+            document,
+            &libraries.resolved_document().to_syntax_json_value(),
+            libraries.pattern_source_paths(),
+            placement_id,
+            new_pattern_id,
+        )
+    }
+
     fn candidate_bundle(&self, authored: &Value) -> EditResult<crate::bundle::SourceBundle> {
         let mut bundle = self.bundle.clone();
         let source = super::source::authored_source(authored)?;
@@ -540,9 +560,22 @@ impl EditContext for BundleEditContext {
         let descriptors =
             crate::compiler::instrument_descriptors_for_editing(&resolved, &libraries, &document)
                 .map_err(map_diagnostics)?;
-        crate::semantic::validate_source_document_profile(&document, &descriptors)
-            .map_err(map_diagnostics)?;
-        validate_occurrence_targets(&document.to_syntax_json_value())
+        crate::semantic::validate_source_document_profile(&document, &descriptors).map_err(
+            |diagnostics| {
+                if self.source_path == self.bundle.entry {
+                    map_local_diagnostics(diagnostics)
+                } else {
+                    map_diagnostics(diagnostics)
+                }
+            },
+        )?;
+        validate_occurrence_targets(&document.to_syntax_json_value()).map_err(|error| {
+            if self.source_path == self.bundle.entry {
+                error
+            } else {
+                error.without_source_mapping()
+            }
+        })
     }
 
     fn normalize_object(
@@ -600,6 +633,25 @@ impl EditContext for BundleEditContext {
 }
 
 impl FoundationEditContext {
+    /// Prepare an atomic Protocol 2 copy of one placement's complete pattern
+    /// occurrences. The source document is unchanged until the plan is applied.
+    pub fn prepare_materialize_instance(
+        &self,
+        document: &AuthoredDocument,
+        placement_id: &str,
+        new_pattern_id: &str,
+    ) -> EditResult<super::MaterializeInstancePlan> {
+        self.validate_document(document.tree())?;
+        super::materialize::prepare(
+            self,
+            document,
+            document.tree(),
+            &BTreeMap::new(),
+            placement_id,
+            new_pattern_id,
+        )
+    }
+
     /// Validate and compute the label-retaining N(A) view used by editing
     /// preconditions. This is not the execution-hash projection.
     pub fn normalize_document(&self, document: &AuthoredDocument) -> EditResult<Value> {
@@ -615,7 +667,7 @@ impl EditContext for FoundationEditContext {
         reject_unsupported_capabilities(&document)?;
         let instruments = BTreeMap::new();
         crate::semantic::validate_source_document_profile(&document, &instruments)
-            .map_err(map_diagnostics)?;
+            .map_err(map_local_diagnostics)?;
         validate_occurrence_targets(authored)
     }
 
@@ -728,6 +780,12 @@ fn normalize_plain_object(object: &Value, meter: &MeterMap, seed: &Value) -> Edi
 }
 
 fn map_diagnostics(diagnostics: Diagnostics) -> EditError {
+    // Resolution, descriptors and artifact checks can diagnose another source
+    // with an unqualified path. No original-source correspondence is proven.
+    map_local_diagnostics(diagnostics).without_source_mapping()
+}
+
+fn map_local_diagnostics(diagnostics: Diagnostics) -> EditError {
     let diagnostic = diagnostics
         .into_vec()
         .into_iter()
@@ -739,12 +797,8 @@ fn map_diagnostics(diagnostics: Diagnostics) -> EditError {
                 None,
             )
         });
-    EditError {
-        code: diagnostic.code_str().to_owned(),
-        message: diagnostic.message,
-        object_path: diagnostic.object_path,
-        field_path: diagnostic.field_path,
-    }
+    EditError::new(diagnostic.code_str(), diagnostic.message)
+        .at(&diagnostic.object_path, &diagnostic.field_path)
 }
 
 fn reject_unsupported_capabilities(document: &Document) -> EditResult<()> {

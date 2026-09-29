@@ -5,11 +5,18 @@
 //! No general MaaC semantic context or source-text editor is supplied here.
 //! Consequently this API alone does not establish Document conformance.
 
+// Source locations and provenance bring this diagnostic to 128 bytes. Keep
+// the established by-value EditResult and the shared Option<Span> API rather
+// than boxing every error solely for the lint's size threshold.
+#![allow(clippy::result_large_err)]
+
 mod foundation;
+mod materialize;
 mod source;
 mod wire;
 
 pub use foundation::{BundleEditContext, FoundationEditContext};
+pub use materialize::{MaterializeInstancePlan, MaterializedEventMapping};
 pub use source::SourceDocument;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -30,13 +37,40 @@ const MAX_WORK_BYTES: usize = 256 * 1024 * 1024;
 pub type Path = Vec<String>;
 pub type EditResult<T> = Result<T, EditError>;
 
-/// A typed-tree diagnostic. There is no source span without a text mapping.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+/// An editing diagnostic, optionally located in the caller's original source.
+///
+/// Construct errors with [`EditError::new`] and [`EditError::at`]. Typed-tree
+/// boundaries have no source span; [`SourceDocument`] supplies one when the
+/// diagnostic has a proven correspondence to the original UTF-8 text.
+#[derive(Clone, Debug, Serialize)]
 pub struct EditError {
     pub code: String,
     pub message: String,
     pub object_path: Path,
     pub field_path: Path,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub span: Option<crate::Span>,
+    #[serde(skip)]
+    location: ErrorLocation,
+}
+
+impl PartialEq for EditError {
+    fn eq(&self, other: &Self) -> bool {
+        self.code == other.code
+            && self.message == other.message
+            && self.object_path == other.object_path
+            && self.field_path == other.field_path
+            && self.span == other.span
+    }
+}
+
+impl Eq for EditError {}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ErrorLocation {
+    Current,
+    Base,
+    Unknown,
 }
 
 impl EditError {
@@ -46,12 +80,34 @@ impl EditError {
             message: message.into(),
             object_path: Vec::new(),
             field_path: Vec::new(),
+            span: None,
+            location: ErrorLocation::Current,
         }
     }
 
     pub fn at(mut self, object: &[String], field: &[String]) -> Self {
         self.object_path = object.to_vec();
         self.field_path = field.to_vec();
+        if self.location == ErrorLocation::Base {
+            self.location = ErrorLocation::Current;
+        }
+        self
+    }
+
+    fn in_base(mut self) -> Self {
+        if self.location == ErrorLocation::Current {
+            self.location = ErrorLocation::Base;
+        }
+        self
+    }
+
+    /// Suppress source-path mapping when this diagnostic's source ownership is
+    /// unknown or belongs to another file. Host contexts must use this for
+    /// dependency diagnostics whose paths could collide with the edited source.
+    /// Later calls to [`Self::at`] retain this policy.
+    pub fn without_source_mapping(mut self) -> Self {
+        self.span = None;
+        self.location = ErrorLocation::Unknown;
         self
     }
 }
@@ -229,6 +285,8 @@ pub struct EditImpact {
 /// with E_CAPABILITY. Returning the input unchanged is not a general normalizer.
 /// All expectation methods receive the immutable original authored base, even
 /// after a candidate rename, meter edit, deletion or insertion.
+/// Error paths refer to that method's authored input. Dependency diagnostics
+/// with foreign or uncertain ownership must use [`EditError::without_source_mapping`].
 pub trait EditContext {
     /// Validate the complete source meaning: references, types, required fields,
     /// temporal/pattern/override/writer/causality constraints and dependencies.
@@ -299,6 +357,15 @@ pub fn apply_transaction(
     transaction: &Transaction,
     context: &impl EditContext,
 ) -> EditResult<AppliedTransaction> {
+    apply_transaction_with_locations(document, transaction, context, |error, _| error)
+}
+
+fn apply_transaction_with_locations(
+    document: &mut AuthoredDocument,
+    transaction: &Transaction,
+    context: &impl EditContext,
+    locate: impl Fn(EditError, &BTreeMap<Path, Path>) -> EditError,
+) -> EditResult<AppliedTransaction> {
     let encoded = transaction.to_json()?;
     let transaction = Transaction::from_json(&encoded)?;
     if transaction.base_revision != document.revision {
@@ -312,16 +379,19 @@ pub fn apply_transaction(
         encoded.len(),
         transaction.operations.len(),
     )?;
-    context.validate_document(&document.tree)?;
     let base = &document.tree;
     let mut candidate = base.clone();
     let mut identities: BTreeMap<Path, Path> = object_paths(base)
         .into_keys()
         .map(|path| (path.clone(), path))
         .collect();
+    context
+        .validate_document(&document.tree)
+        .map_err(|error| locate(error, &identities))?;
     let mut renames = Vec::new();
     for operation in &transaction.operations {
-        apply_one(base, &mut candidate, &mut identities, operation, context)?;
+        apply_one(base, &mut candidate, &mut identities, operation, context)
+            .map_err(|error| locate(error, &identities))?;
         if let Operation::RenameId { object, new_id } = operation {
             let mut to = object.clone();
             *to.last_mut().expect("validated nonempty path") = new_id.clone();
@@ -335,11 +405,15 @@ pub fn apply_transaction(
         wire::bounded_encoding(&candidate, MAX_DOCUMENT_BYTES)?;
         wire::document(&mut candidate)?;
     }
-    context.validate_document(&candidate)?;
+    context
+        .validate_document(&candidate)
+        .map_err(|error| locate(error, &identities))?;
     let next = AuthoredDocument::from_value(candidate)?;
     let inverse = make_inverse(base, &next)?;
     let mut impact = impact(base, &next.tree, renames);
-    context.refine_impact(base, &next.tree, &mut impact)?;
+    context
+        .refine_impact(base, &next.tree, &mut impact)
+        .map_err(|error| locate(error.without_source_mapping(), &identities))?;
     let diagnostics = if impact.renamed_identities.is_empty() {
         Vec::new()
     } else {
@@ -572,9 +646,12 @@ fn apply_one(
                     error("E_CONFLICT", "precondition has no surviving base identity")
                         .at(object, &[])
                 })?;
-                let mut actual =
-                    context.normalize_object(base, base_path, object_at(base, base_path)?)?;
-                let mut expected = context.normalize_object(base, base_path, expected)?;
+                let mut actual = context
+                    .normalize_object(base, base_path, object_at(base, base_path)?)
+                    .map_err(EditError::in_base)?;
+                let mut expected = context
+                    .normalize_object(base, base_path, expected)
+                    .map_err(EditError::in_base)?;
                 wire::typed_object(&mut actual)?;
                 wire::typed_object(&mut expected)?;
                 if actual != expected {
@@ -614,7 +691,6 @@ fn apply_one(
             let mut new_path = parent.to_vec();
             new_path.push(new_id.clone());
             rewrite_references(candidate, object, &new_path);
-            context.rewrite_structural_references(&before, candidate, object, &new_path)?;
             let moved: Vec<_> = identities
                 .iter()
                 .filter(|(path, _)| path.starts_with(object))
@@ -626,6 +702,7 @@ fn apply_one(
                 .collect();
             identities.retain(|path, _| !path.starts_with(object));
             identities.extend(moved);
+            context.rewrite_structural_references(&before, candidate, object, &new_path)?;
         }
     }
     Ok(())

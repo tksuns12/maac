@@ -123,6 +123,8 @@ fn normalized_object(object: &Value) -> Value {
     result
 }
 
+// This fixture uses the public by-value editing diagnostic, including its span.
+#[allow(clippy::result_large_err)]
 fn all_references_exist(value: &Value, root: &Value) -> EditResult<()> {
     if value["t"] == "ref" {
         let id = value["path"][0].as_str().unwrap();

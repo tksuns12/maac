@@ -286,10 +286,37 @@ fn instrument_bundle_expression_and_production_paths() {
             .collect(),
         ..combined.clone()
     };
-    assert!(maac::compiler::compile_bundle(&old_combined)
-        .unwrap_err()
-        .to_string()
-        .contains("normalization is not defined for object kind `expression`"));
+    check_bundle_versioned(&combined).unwrap();
+    let VersionedPlan::V3(combined_plan) = compile_bundle_versioned(&combined).unwrap() else {
+        panic!()
+    };
+    assert!(matches!(
+        &combined_plan.events[0].kind,
+        maac::plan::EventKind::Note {
+            gain_expression: Some(_),
+            ..
+        }
+    ));
+    let combined_identity = combined_plan
+        .production
+        .as_ref()
+        .unwrap()
+        .execution_identity
+        .as_ref()
+        .unwrap();
+    combined_identity.validate().unwrap();
+    let step_plan = maac::compiler::compile_bundle(&old_combined).unwrap();
+    assert_ne!(
+        combined_identity.execution_hash,
+        step_plan
+            .production
+            .as_ref()
+            .unwrap()
+            .execution_identity
+            .as_ref()
+            .unwrap()
+            .execution_hash
+    );
     let text = text.replace(" expression e { kind = gain; curve = &gain; }", "");
     let mut bundle = SourceBundle::new("main.maac", text);
     bundle

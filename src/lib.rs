@@ -38,6 +38,7 @@ mod plan_artifact;
 mod warp_clip;
 pub use plan_artifact::{
     MessageAdapterCapability, PerformanceDispatch, PerformanceDispatchKind, PlanArtifact,
+    WindowedEvent,
 };
 mod core_control;
 pub mod plan_v3;

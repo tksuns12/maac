@@ -20,6 +20,8 @@ language.
 | `maac instruments [NAME] --library ID` | Select an exact built-in version for catalog listing or named detail |
 | `maac instruments --libraries` | List embedded library identities, reserved source paths and hashes |
 | `maac patch SOURCE PATCH.json -o OUTPUT [--project-root ROOT] [--force]` | Apply one Protocol 2 transaction with source-preserving projection; structured results include the new revision, inverse patch, impact, and diagnostics |
+| `maac materialize-instance INPUT PLACEMENT --pattern NEW_ID -o OUTPUT [--project-root ROOT] [--force]` | Give one placement private pattern occurrences; return the edit, inverse, and complete original-to-new event/source mapping |
+| `maac query-events INPUT --start-q Q --end-q Q [--plan] [--project-root ROOT] [--profile default\|song]` | Return complete resolved events intersecting an exact half-open score window; `--plan` treats input as retained JSON |
 | `maac hash FILE` | Print the `sha256:` pin for the file's exact bytes without writing a file |
 
 
@@ -35,6 +37,20 @@ semantically validated before publication. `-o` is required; an existing destina
 preserved unless `--force` is explicit. The source projector uses parser spans, so
 unrelated comments and formatting are copied byte-for-byte. Unknown processor/extension
 contracts still require a host-provided implementation rather than being guessed.
+
+[`materialize-instance`](materialize-instance.md) copies all repeated and nested
+occurrences of the selected placement into private source patterns, preserving
+exact musical transforms and remapping its existing overrides. Inserts remain
+placement-local and occur once. The operation uses the same revision, validation,
+inverse, and atomic output rules as `patch`. Its structured result retains the
+address correspondence; structural identity changes can affect identity-derived
+render behavior, so byte-identical audio is not promised.
+
+[`query-events`](windowed-event-query.md) selects events from a fully validated
+resolved performance. Bounds are exact global quarter-note coordinates; notes
+retain complete gates and source mappings, even when only their middle falls in
+the requested window. The command reads source or a retained plan and writes no
+output file. Use `--json` for complete event payloads.
 
 `--json` selects structured command results and diagnostics. `--force` permits
 replacing an existing output. Render/build accept `--format float32` (default)
@@ -73,11 +89,11 @@ recursive or ancestor search. `-o` remains required where shown, and relative
 outputs remain relative to the process cwd. Explicit filenames retain their
 existing behavior; `render`/`hash` do not discover `main.maac`.
 
-`--profile` is per-command on check/compile/build/render/deliver/play/record, not a language
+`--profile` is per-command on check/compile/build/render/deliver/play/record/query-events, not a language
 conformance declaration. Default work remains 500,000,000; explicit `song`
 permits at most 10,000,000,000 work units with every other bound unchanged.
 Composition `check` includes this budget validation. Large retained plans need
-explicit song selection on render; source/plan data cannot select an allowance.
+explicit song selection on render or query-events; source/plan data cannot select an allowance.
 
 `check`, `compile`, and `build` resolve hash-pinned imports and wavetable assets
 before compilation. Exact `builtin` imports resolve from the executable, with
@@ -245,6 +261,7 @@ use the additive artifact APIs. They also accept older plans and retain their be
 | --- | --- |
 | `maac::compile_bundle_artifact` / `maac::check_bundle_artifact` | Compile or check bundles with native hits, arranged clips, embedded audio assets and core modulation |
 | `PlanArtifact::from_json` / `PlanArtifact::to_json` | Independently validate and load/encode opaque standalone artifacts |
+| `PlanArtifact::query_events_score_window` | Validate and return complete owned `WindowedEvent` records whose score gates or point onsets intersect a half-open score window |
 | `maac::render_artifact` / `DspEngine::new_artifact` | Render or prepare versions 1–7 |
 | `dsp::render_ports_artifact_with_limits` | Capture selected ports from the complete graph |
 | `export::write_wav_artifact` / `export::render_wav_to_path_artifact` | Export with existing encoding and atomic publication rules |
@@ -257,6 +274,9 @@ The artifact's representation is private; inspect `version()`, `output()`,
 `Processor` remain unchanged. The CLI automatically selects the artifact APIs.
 For embedded CLI use, `cli::execute_artifact` returns an opaque
 `ArtifactCommandResult` with `base()`, `hits()` and `audio_clips()` accessors;
+`query-events` data is available through `score_window()` and
+`queried_events()`. The legacy `cli::execute` returns `E_USAGE` for this
+command because its `CommandResult` has no query payload.
 `cli::execute` and `CommandResult` retain their existing contracts. JSON adds
 `hits` and `audio_clips` only when positive, and `notes` counts actual notes.
 Use `format_human_artifact` to format

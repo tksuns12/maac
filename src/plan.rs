@@ -4125,7 +4125,7 @@ impl<'a> PlanView<'a> {
             finite_engine_rational(&edge.amount, "modulations.amount")?;
             edges.push((edge.from.node.clone(), edge.target.node.clone()));
         }
-        detect_cycle(self.nodes, &edges)
+        validate_same_sample_graph(self.nodes.iter().map(|node| node.id.as_str()), &edges)
     }
 
     fn validate_events(
@@ -5926,9 +5926,14 @@ fn port_descriptor(node: NodeView<'_>, port: &str, input: bool) -> Option<PortDe
     }
 }
 
-fn detect_cycle(nodes: NodeSlice<'_>, edges: &[(String, String)]) -> Result<(), PlanError> {
-    let mut indegree: HashMap<&str, usize> =
-        nodes.iter().map(|node| (node.id.as_str(), 0)).collect();
+/// Check an already resolved same-sample dependency graph without requiring a
+/// performance plan. Callers remove dependencies broken by processor causality.
+pub(crate) fn validate_same_sample_graph<'a>(
+    nodes: impl Iterator<Item = &'a str>,
+    edges: &[(String, String)],
+) -> Result<(), PlanError> {
+    let mut indegree: HashMap<&str, usize> = nodes.map(|id| (id, 0)).collect();
+    let node_count = indegree.len();
     let mut outgoing: HashMap<&str, Vec<&str>> = HashMap::new();
     for (from, to) in edges {
         if from == to {
@@ -5958,7 +5963,7 @@ fn detect_cycle(nodes: NodeSlice<'_>, edges: &[(String, String)]) -> Result<(), 
             }
         }
     }
-    if visited != nodes.len() {
+    if visited != node_count {
         return Err(err(
             "E_ALGEBRAIC_LOOP",
             "connections",

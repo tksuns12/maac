@@ -59,6 +59,26 @@ semantic invalidity is allowed between operations. Structural and resource
 limits still apply to those intermediates. A failure in any gate, including
 inverse construction, leaves the caller's document and revision unchanged.
 
+Foundation and bundle contexts check same-sample graph causality during document
+validation. Foundation whole-document normalization uses that validation as well.
+Audio connections and modulation dependencies both
+participate; an explicit `core.delay/1` of at least one frame breaks its incoming
+audio dependency. An invalid final cycle fails with `E_ALGEBRAIC_LOOP` before
+source projection or CLI publication, including replacement with `--force`.
+This check does not expand a performance or render audio, so supported
+Document-only message editing remains available. The bounded regression evidence
+is recorded under [P3](document-performance-evidence.md#p3-acceptance).
+
+## Original-source diagnostics
+
+`EditError` has an optional original-source UTF-8 byte span. `SourceDocument`
+retains parser spans and maps known local paths through surviving base identities
+to original authored values or objects. Reconstructed and synthesized offsets
+are discarded; missing/new paths and uncertain source ownership remain unlocated.
+CLI patch errors preserve code/path and forward this span to human and JSON output.
+The [P7 contract](editing-diagnostics.md) records unknown-provenance behavior,
+atomic refusal, public struct compatibility, and verification evidence.
+
 ## The semantic boundary must not be stubbed
 
 The context must provide all of the following, within its declared supported
@@ -84,6 +104,12 @@ Unknown required capabilities must fail with `E_CAPABILITY`, not be guessed.
 The editing kernel itself performs no file access, network access or rendering.
 
 ## Inverses and impact
+
+The [materialization helper](materialize-instance.md) prepares an ordinary
+Protocol 2 transaction that gives one placement independent repeated/nested
+occurrences. Both foundation and bundle contexts expose it; the caller can apply
+the prepared transaction through `SourceDocument::apply` and retain its complete
+event/source correspondence. This adds no transaction opcode or source syntax.
 
 Every committed transaction returns a serializable Protocol 2 inverse based on
 the final authored revision. The inverse stores complete prior values via

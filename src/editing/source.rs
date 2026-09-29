@@ -5,8 +5,9 @@ use std::collections::BTreeMap;
 use serde_json::Value as JsonValue;
 
 use super::{
-    apply_one, apply_transaction, object_paths, wire, AppliedTransaction, AuthoredDocument,
-    EditContext, EditError, EditResult, Operation, Path, Transaction,
+    apply_one, apply_transaction_with_locations, object_paths, wire, AppliedTransaction,
+    AuthoredDocument, EditContext, EditError, EditResult, ErrorLocation, Operation, Path,
+    Transaction,
 };
 use crate::diagnostic::Span;
 use crate::syntax::{Document, Field, Object, Value as SyntaxValue, ValueKind};
@@ -27,8 +28,10 @@ pub struct SourceDocument {
 impl SourceDocument {
     pub fn parse(source: impl Into<String>) -> EditResult<Self> {
         let source = source.into();
-        let parsed = crate::syntax::parse(&source).map_err(diagnostics_error)?;
-        let authored = AuthoredDocument::from_document(&parsed)?;
+        let parsed = crate::syntax::parse(&source)
+            .map_err(|diagnostics| source_diagnostics_error(diagnostics, &source))?;
+        let authored = AuthoredDocument::from_document(&parsed)
+            .map_err(|error| locate_original(error, &source, &parsed, None))?;
         Ok(Self { source, authored })
     }
 
@@ -58,7 +61,16 @@ impl SourceDocument {
     ) -> EditResult<AppliedTransaction> {
         let original = self.authored.clone();
         let mut committed = original.clone();
-        let result = apply_transaction(&mut committed, transaction, context)?;
+        let original_syntax = crate::syntax::parse(&self.source)
+            .map_err(|diagnostics| source_diagnostics_error(diagnostics, &self.source))?;
+        let result = apply_transaction_with_locations(
+            &mut committed,
+            transaction,
+            context,
+            |error, identities| {
+                locate_original(error, &self.source, &original_syntax, Some(identities))
+            },
+        )?;
 
         let base = original.tree();
         let mut replay = base.clone();
@@ -71,7 +83,8 @@ impl SourceDocument {
         for operation in &transaction.operations {
             let parsed = crate::syntax::parse(&text).map_err(diagnostics_error)?;
             let before = replay.clone();
-            apply_one(base, &mut replay, &mut identities, operation, context)?;
+            apply_one(base, &mut replay, &mut identities, operation, context)
+                .map_err(EditError::without_source_mapping)?;
             wire::bounded_encoding(&replay, super::MAX_DOCUMENT_BYTES)?;
             wire::document(&mut replay)?;
             text = project_operation(&text, &parsed, &before, &replay, operation)?;
@@ -105,6 +118,48 @@ impl SourceDocument {
         self.authored = committed;
         Ok(result)
     }
+}
+
+// Only this boundary owns original-source offsets. Projection reparses below
+// operate on private, edited text and must not expose those offsets as original.
+fn source_diagnostics_error(diagnostics: crate::Diagnostics, source: &str) -> EditError {
+    let span = diagnostics.first().and_then(|diagnostic| diagnostic.span);
+    let mut error = diagnostics_error(diagnostics);
+    error.span = span.filter(|span| source.get(span.start..span.end).is_some());
+    error
+}
+
+fn locate_original(
+    mut error: EditError,
+    source: &str,
+    parsed: &Document,
+    identities: Option<&BTreeMap<Path, Path>>,
+) -> EditError {
+    // Never trust offsets from a typed-tree context or synthesized bundle.
+    error.span = None;
+    let original_path = match error.location {
+        ErrorLocation::Unknown => return error,
+        ErrorLocation::Base => Some(&error.object_path),
+        ErrorLocation::Current => match identities {
+            Some(identities) => identities.get(&error.object_path),
+            None => Some(&error.object_path),
+        },
+    };
+    let span = original_path
+        .and_then(|path| syntax_object(parsed, path).ok())
+        .and_then(|object| {
+            if error.field_path.is_empty() {
+                Some(object.span)
+            } else {
+                // Missing/defaulted leaves have no authored value range. Do not
+                // guess a parent record or object span for them.
+                syntax_field(object, &error.field_path)
+                    .ok()
+                    .map(|field| field.value.span)
+            }
+        });
+    error.span = span.filter(|span| source.get(span.start..span.end).is_some());
+    error
 }
 
 fn diagnostics_error(diagnostics: crate::Diagnostics) -> EditError {

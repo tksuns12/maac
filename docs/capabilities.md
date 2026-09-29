@@ -22,6 +22,8 @@ its execution record distinguishes inspected evidence from freshly run gates.
 | Source | UTF-8, span-aware parsing, exact rational quantities, comments and source text retained in the parsed document |
 | Patterns | Finite notes and hits, nested uses, repetition, stretching, cents transposition for notes, cut and spill |
 | Arrangement | Explicit tracks and placements, stable occurrence addresses, final-state overrides, deletion and inserts |
+| Event query | [Exact score-window selection](windowed-event-query.md) on validated resolved artifacts, returning complete note gates or point events with source addresses, payloads, physical offsets and scheduled frames; source queries use full bounded compilation |
+| Instance materialization | Explicit [private copies of a whole placement](materialize-instance.md), including repeated/nested occurrences and curve/tuning dependencies; complete event/source correspondence, atomic edits and inverses; structural identity changes are reported |
 | Time | Step and linear-in-score tempo maps, meter maps, global `bar` positions, independent physical offsets, certified ceiling scheduling |
 | Pitch | Letter pitches, `key`, `degree`, `ratio`, Hz/kHz, explicit tunings |
 | Per-note pitch | `core.sine/1` and reusable mono/stereo instruments (basic, acoustic, custom); cents curves; normalized, seconds and score clocks; step/linear interpolation and gate-end release holding |

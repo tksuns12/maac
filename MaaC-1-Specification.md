@@ -443,7 +443,17 @@ For example, `bass_main/7/n2` denotes repetition 7, zero-based, of leaf n2 in th
 
 Adding an unrelated note does not renumber existing event addresses. Changing count preserves the addresses of surviving repetitions. Moving a note, changing its pitch, or changing its label does not change its identity. Moving a leaf to a different containing pattern is a structural change and must update or reject dependent instance edits.
 
-An expansion query returns source addresses and the complete event interval, even when the query intersects only its middle. It must not shorten a sounding note just because the user queried a narrow window.
+An expansion query over global score coordinates uses a half-open window
+`[start_q, end_q)` within the project score; an empty window returns no events.
+A note is included when its final score gate intersects the window
+(`score_on_q < end_q` and `score_off_q > start_q`). A hit or message is included
+when `start_q <= score_on_q < end_q`. Final gates include inherited cuts and
+occurrence overrides; deleted events are absent and placement inserts are
+included at their final coordinates. Each returned event retains its structural
+address, source mapping, and complete interval, even when the query intersects
+only its middle. The query does not shorten a sounding note. Physical offsets,
+scheduled frames, and instrument release tails do not alter score-window
+membership.
 
 ## 11. Instance overrides and inserts
 

@@ -117,7 +117,61 @@ fn large_source_requires_explicit_song_at_every_cli_boundary_and_retained_render
     let checked = success(root, &["check", "--profile", "song"]);
     assert_eq!(checked["notes"], 1000);
     assert_eq!(checked["frames"], 12000);
+    failure(
+        root,
+        &[
+            "query-events",
+            "main.maac",
+            "--start-q",
+            "0",
+            "--end-q",
+            "0",
+        ],
+        "E_RESOURCE_LIMIT",
+    );
+    let source_query = success(
+        root,
+        &[
+            "query-events",
+            "main.maac",
+            "--profile",
+            "song",
+            "--start-q",
+            "0",
+            "--end-q",
+            "0",
+        ],
+    );
+    assert_eq!(source_query["events"], serde_json::json!([]));
     success(root, &["compile", "--profile", "song", "-o", "song.json"]);
+    failure(
+        root,
+        &[
+            "query-events",
+            "song.json",
+            "--plan",
+            "--start-q",
+            "0",
+            "--end-q",
+            "0",
+        ],
+        "E_RESOURCE_LIMIT",
+    );
+    let retained_query = success(
+        root,
+        &[
+            "query-events",
+            "song.json",
+            "--plan",
+            "--profile",
+            "song",
+            "--start-q",
+            "0",
+            "--end-q",
+            "0",
+        ],
+    );
+    assert_eq!(retained_query["events"], serde_json::json!([]));
     success(
         root,
         &[

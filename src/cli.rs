@@ -26,7 +26,7 @@ use crate::media_import::{self, ImportedWav, WavImportRange};
 use crate::plan::{Plan, PlanError, PlanLimits, PortRef};
 use crate::plan_v3::VersionedPlan;
 use crate::syntax::{parse, Document};
-use crate::{ModuleArtifact, PlanArtifact, MAX_MODULE_ARTIFACT_JSON_BYTES};
+use crate::{ModuleArtifact, PlanArtifact, WindowedEvent, MAX_MODULE_ARTIFACT_JSON_BYTES};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -118,6 +118,36 @@ pub enum Command {
         #[arg(long, value_enum, default_value_t = ProfileArg::Default)]
         profile: ProfileArg,
     },
+    /// Query complete resolved events intersecting an exact half-open score window.
+    QueryEvents {
+        /// Source file/project directory, or a plan JSON file when --plan is set.
+        input: PathBuf,
+        /// Interpret INPUT as a retained performance-plan JSON file.
+        #[arg(long, conflicts_with = "project_root")]
+        plan: bool,
+        /// Root used to resolve project-relative imports and assets.
+        #[arg(long)]
+        project_root: Option<PathBuf>,
+        /// Finite execution-work allowance for source compilation.
+        #[arg(long, value_enum, default_value_t = ProfileArg::Default)]
+        profile: ProfileArg,
+        /// Inclusive exact score-window start in quarter-note units.
+        #[arg(
+            long = "start-q",
+            value_name = "RATIONAL",
+            required = true,
+            allow_hyphen_values = true
+        )]
+        start_q: String,
+        /// Exclusive exact score-window end in quarter-note units.
+        #[arg(
+            long = "end-q",
+            value_name = "RATIONAL",
+            required = true,
+            allow_hyphen_values = true
+        )]
+        end_q: String,
+    },
     /// Apply one Protocol 2 transaction to source-preserving MaaC text.
     Patch {
         input: PathBuf,
@@ -126,6 +156,21 @@ pub enum Command {
         output: PathBuf,
         #[arg(long)]
         force: bool,
+        #[arg(long)]
+        project_root: Option<PathBuf>,
+    },
+    /// Materialize one placement as independently editable local patterns.
+    MaterializeInstance {
+        input: PathBuf,
+        placement: String,
+        /// ID for the new wrapper pattern.
+        #[arg(long)]
+        pattern: String,
+        #[arg(short = 'o', long)]
+        output: PathBuf,
+        #[arg(long)]
+        force: bool,
+        /// Root used to resolve project-relative imports and assets.
         #[arg(long)]
         project_root: Option<PathBuf>,
     },
@@ -424,6 +469,10 @@ pub struct ArtifactCommandResult {
     end_frame: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     edit: Option<crate::editing::AppliedTransaction>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    materialization: Option<MaterializationReport>,
+    #[serde(flatten, skip_serializing_if = "Option::is_none")]
+    windowed_query: Option<WindowedQueryReport>,
     #[serde(flatten, skip_serializing_if = "Option::is_none")]
     archive_patch: Option<ArchivePatchReport>,
     #[serde(flatten, skip_serializing_if = "Option::is_none")]
@@ -432,6 +481,30 @@ pub struct ArtifactCommandResult {
     archive_group_patch: Option<ArchiveGroupPatchReport>,
     #[serde(flatten, skip_serializing_if = "Option::is_none")]
     archive_graph_patch: Option<ArchiveGraphPatchReport>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct WindowedQueryReport {
+    window: ScoreWindow,
+    events: Vec<WindowedEvent>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct ScoreWindow {
+    #[serde(with = "crate::plan::rational_serde")]
+    start_q: crate::exact::Rational,
+    #[serde(with = "crate::plan::rational_serde")]
+    end_q: crate::exact::Rational,
+}
+
+/// Complete result-side correspondence for a materialize-instance command.
+/// Callers that need to retain the mapping should retain this result.
+#[derive(Clone, Debug, Serialize)]
+pub struct MaterializationReport {
+    pub placement: String,
+    pub pattern: String,
+    pub mappings: Vec<crate::editing::MaterializedEventMapping>,
+    pub diagnostics: Vec<crate::editing::EditError>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -524,6 +597,19 @@ impl ArtifactCommandResult {
     }
     pub fn edit(&self) -> Option<&crate::editing::AppliedTransaction> {
         self.edit.as_ref()
+    }
+    pub fn materialization(&self) -> Option<&MaterializationReport> {
+        self.materialization.as_ref()
+    }
+    pub fn score_window(&self) -> Option<(&crate::exact::Rational, &crate::exact::Rational)> {
+        self.windowed_query
+            .as_ref()
+            .map(|query| (&query.window.start_q, &query.window.end_q))
+    }
+    pub fn queried_events(&self) -> Option<&[crate::WindowedEvent]> {
+        self.windowed_query
+            .as_ref()
+            .map(|query| query.events.as_slice())
     }
 }
 fn is_zero(value: &usize) -> bool {
@@ -763,7 +849,7 @@ impl CliError {
     }
 
     pub fn from_edit(error: crate::editing::EditError) -> Self {
-        let mut result = Self::new(error.code, error.message);
+        let mut result = Self::new(error.code, error.message).with_span(error.span);
         let mut path = error.object_path.join(".");
         if !error.field_path.is_empty() {
             if !path.is_empty() {
@@ -810,6 +896,12 @@ impl std::error::Error for CliError {}
 /// Execute one parsed CLI request without printing. This is convenient for
 /// embedding and gives the binary a single output policy for human/JSON modes.
 pub fn execute(command: &Command) -> Result<CommandResult, CliError> {
+    if matches!(command, Command::QueryEvents { .. }) {
+        return Err(CliError::new(
+            "E_USAGE",
+            "query-events requires execute_artifact to return its window and events",
+        ));
+    }
     execute_impl(
         command,
         PlanCapability::Legacy,
@@ -847,6 +939,8 @@ pub fn execute_artifact_with_range(
         start_frame: range.map(|range| range.start_frame),
         end_frame: range.map(|range| range.end_frame),
         edit: counts.edit,
+        materialization: counts.materialization,
+        windowed_query: counts.windowed_query,
         archive_patch: counts.archive_patch,
         archive_import_patch: counts.archive_import_patch,
         archive_group_patch: counts.archive_group_patch,
@@ -870,6 +964,8 @@ fn execute_disk_media(
             start_frame: None,
             end_frame: None,
             edit: None,
+            materialization: None,
+            windowed_query: None,
             archive_patch: None,
             archive_import_patch: None,
             archive_group_patch: None,
@@ -946,6 +1042,8 @@ fn execute_disk_media(
             start_frame: None,
             end_frame: None,
             edit: Some(edit),
+            materialization: None,
+            windowed_query: None,
             archive_patch: None,
             archive_import_patch: None,
             archive_group_patch: None,
@@ -982,6 +1080,8 @@ fn execute_disk_media(
         start_frame: None,
         end_frame: None,
         edit: None,
+        materialization: None,
+        windowed_query: None,
         archive_patch: None,
         archive_import_patch: None,
         archive_group_patch: None,
@@ -1054,6 +1154,8 @@ struct EventCounts {
     hits: usize,
     audio_clips: usize,
     edit: Option<crate::editing::AppliedTransaction>,
+    materialization: Option<MaterializationReport>,
+    windowed_query: Option<WindowedQueryReport>,
     archive_patch: Option<ArchivePatchReport>,
     archive_import_patch: Option<ArchiveImportPatchReport>,
     archive_group_patch: Option<ArchiveGroupPatchReport>,
@@ -1216,6 +1318,57 @@ fn execute_impl(
                 "build", &input, output, wav_format, stats,
             ))
         }
+        Command::QueryEvents {
+            input,
+            plan,
+            project_root,
+            profile,
+            start_q,
+            end_q,
+        } => {
+            let start_q = parse_query_rational(start_q, "--start-q")?;
+            let end_q = parse_query_rational(end_q, "--end-q")?;
+            let limits = profile.limits();
+            let (resolved_input, events) = if *plan {
+                let artifact = PlanArtifact::from_json_with_limits(&read_bounded(input)?, &limits)
+                    .map_err(CliError::from_plan)?;
+                let events = artifact
+                    .query_events_score_window_with_limits(&start_q, &end_q, &limits)
+                    .map_err(CliError::from_plan)?;
+                (input.clone(), events)
+            } else {
+                let (resolved_input, root) =
+                    resolve_source_input(Some(input), project_root.as_deref());
+                let bundle = load_source_bundle(&resolved_input, root.as_deref())?;
+                let artifact = compiler::compile_bundle_artifact_with_limits(&bundle, &limits)
+                    .map_err(|error| CliError::from_diagnostics(&error))?;
+                let events = artifact
+                    .query_events_score_window_with_limits(&start_q, &end_q, &limits)
+                    .map_err(CliError::from_plan)?;
+                (resolved_input, events)
+            };
+            counts.windowed_query = Some(WindowedQueryReport {
+                window: ScoreWindow { start_q, end_q },
+                events,
+            });
+            Ok(CommandResult {
+                ok: true,
+                command: "query-events".into(),
+                input: resolved_input.display().to_string(),
+                output: None,
+                format: None,
+                notes: None,
+                frames: None,
+                digest: None,
+                exports: None,
+                catalog: None,
+                instrument: None,
+                library: None,
+                libraries: None,
+                delivery: None,
+                freeze: None,
+            })
+        }
         Command::Deliver {
             input,
             delivery,
@@ -1354,6 +1507,59 @@ fn execute_impl(
                 apply_source_patch(input, patch, output, *force, &bundle, &context)?;
             counts.edit = Some(applied);
             Ok(result)
+        }
+        Command::MaterializeInstance {
+            input,
+            placement,
+            pattern,
+            output,
+            force,
+            project_root,
+        } => {
+            let (resolved_input, root) = resolve_source_input(Some(input), project_root.as_deref());
+            let bundle = load_source_bundle(&resolved_input, root.as_deref())?;
+            let context =
+                crate::editing::BundleEditContext::new(&bundle).map_err(CliError::from_edit)?;
+            let source = bundle.sources.get(&bundle.entry).ok_or_else(|| {
+                CliError::new(
+                    "E_REFERENCE",
+                    "resolved materialization source is missing from bundle",
+                )
+            })?;
+            let mut document = crate::editing::SourceDocument::parse(source.clone())
+                .map_err(CliError::from_edit)?;
+            let plan = context
+                .prepare_materialize_instance(document.authored(), placement, pattern)
+                .map_err(CliError::from_edit)?;
+            let applied = document
+                .apply(&plan.transaction, &context)
+                .map_err(CliError::from_edit)?;
+            export::atomic_write(output, document.source().as_bytes(), *force)
+                .map_err(CliError::from_export)?;
+            counts.edit = Some(applied.clone());
+            counts.materialization = Some(MaterializationReport {
+                placement: plan.placement,
+                pattern: plan.pattern,
+                mappings: plan.mappings,
+                diagnostics: plan.diagnostics,
+            });
+            Ok(CommandResult {
+                ok: true,
+                command: "materialize-instance".into(),
+                input: input.display().to_string(),
+                output: Some(output.display().to_string()),
+                format: Some("maac.edit/2".into()),
+                notes: None,
+                frames: None,
+                digest: Some(applied.new_revision),
+                exports: None,
+                catalog: None,
+                instrument: None,
+                library: None,
+                libraries: None,
+                delivery: None,
+                freeze: None,
+            })
         }
         Command::Hash { input } => {
             let bytes = read_bounded(input)?;
@@ -2394,6 +2600,17 @@ fn resolve_source_input(
     (entry, project_root.map(Path::to_path_buf).or(implicit_root))
 }
 
+fn parse_query_rational(value: &str, option: &str) -> Result<crate::exact::Rational, CliError> {
+    crate::parse_rational(value).map_err(|error| {
+        let code = match &error {
+            crate::exact::RationalError::InvalidSyntax => "E_SYNTAX",
+            crate::exact::RationalError::ZeroDenominator => "E_RANGE",
+            crate::exact::RationalError::ResourceLimit => "E_RESOURCE_LIMIT",
+        };
+        CliError::new(code, format!("invalid {option}: {error}"))
+    })
+}
+
 fn load_source_bundle(input: &Path, project_root: Option<&Path>) -> Result<SourceBundle, CliError> {
     let entry = fs::canonicalize(input).map_err(|error| {
         CliError::new(
@@ -2943,7 +3160,47 @@ pub fn format_human(result: &CommandResult) -> String {
 }
 /// Format an artifact-aware result with actual note, hit, and audio clip counts.
 pub fn format_human_artifact(result: &ArtifactCommandResult) -> String {
-    format_human_with_counts(result.base(), result.hits(), result.audio_clips())
+    if let Some(query) = &result.windowed_query {
+        let mut message = format!(
+            "query-events {} [{}q, {}q) ({} events)",
+            result.base().input,
+            query.window.start_q,
+            query.window.end_q,
+            query.events.len()
+        );
+        for event in &query.events {
+            let source_path = if event.source.path.is_empty() {
+                event.source.object.clone()
+            } else {
+                event.source.path.join("/")
+            };
+            let score = match &event.score_off_q {
+                Some(off) => format!("{}..{}", event.score_on_q, off),
+                None => event.score_on_q.to_string(),
+            };
+            let frames = match event.off_frame {
+                Some(off) => format!("{}..{}", event.on_frame, off),
+                None => event.on_frame.to_string(),
+            };
+            message.push_str(&format!(
+                "\n  {} | {} | score={}q | frames={}",
+                event.address, source_path, score, frames
+            ));
+        }
+        return message;
+    }
+    let mut message = format_human_with_counts(result.base(), result.hits(), result.audio_clips());
+    if let Some(materialization) = result.materialization() {
+        for diagnostic in &materialization.diagnostics {
+            if diagnostic.code.starts_with('W') {
+                message.push_str(&format!(
+                    "\nwarning {}: {}",
+                    diagnostic.code, diagnostic.message
+                ));
+            }
+        }
+    }
+    message
 }
 fn format_human_with_counts(result: &CommandResult, hits: usize, audio_clips: usize) -> String {
     if let Some(delivery) = &result.delivery {

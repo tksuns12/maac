@@ -399,6 +399,8 @@ impl Normalizer<'_> {
                 | "region"
                 | "note"
                 | "hit"
+                | "message"
+                | "expression"
                 | "use"
                 | "override"
                 | "insert"
@@ -484,6 +486,14 @@ impl Normalizer<'_> {
             "hit" => {
                 for (name, value) in [
                     ("velocity", number(1)),
+                    ("onset_offset", quantity(0, 1, Unit::S)),
+                    ("order", number(0)),
+                ] {
+                    fields.entry(name).or_insert(value);
+                }
+            }
+            "message" => {
+                for (name, value) in [
                     ("onset_offset", quantity(0, 1, Unit::S)),
                     ("order", number(0)),
                 ] {

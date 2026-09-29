@@ -3,9 +3,9 @@
 //! This module intentionally stops at the source graph boundary.  It checks
 //! every declaration, including declarations that are not reachable from the
 //! project output, resolves the typed references needed by the compiler, and
-//! exposes the validated syntax tree through a small read-only API.  Event
-//! expansion, sample scheduling, DSP, and same-sample graph validation belong
-//! to later plan/renderer stages.
+//! exposes the validated syntax tree through a small read-only API. Document
+//! editing also checks same-sample causality before committing. Event expansion,
+//! sample scheduling, and DSP belong to later plan/renderer stages.
 
 use crate::plan_v7::{ControlClock, LfoConfig, LfoWave, ModulationV7, NodeV7, ProcessorV7};
 use num_integer::Integer;
@@ -292,6 +292,55 @@ impl SourceGraph {
     pub fn resolve_text(&self, text: &str) -> Option<&ReferenceTarget> {
         self.references.get(text)
     }
+
+    fn validate_causality(&self) -> Result<(), Diagnostics> {
+        let mut edges = Vec::new();
+        for connection in self.objects_of_kind("connect") {
+            let from = connection
+                .field("from")
+                .and_then(|field| field.value.reference())
+                .and_then(|reference| self.resolve(reference));
+            let to = connection
+                .field("to")
+                .and_then(|field| field.value.reference())
+                .and_then(|reference| self.resolve(reference));
+            if let (
+                Some(ReferenceTarget::Port {
+                    node: from,
+                    kind: PortKind::Audio,
+                    ..
+                }),
+                Some(ReferenceTarget::Port { node: to, .. }),
+            ) = (from, to)
+            {
+                // Source validation guarantees a delay's frame count is a
+                // positive integer. Its input therefore affects later samples.
+                if self
+                    .node(to)
+                    .is_none_or(|node| node.processor != ProcessorKind::Delay)
+                {
+                    edges.push((from.clone(), to.clone()));
+                }
+            }
+        }
+        edges.extend(
+            self.modulations
+                .iter()
+                .map(|edge| (edge.from.node.clone(), edge.target.node.clone())),
+        );
+        let nodes = self
+            .nodes
+            .keys()
+            .chain(self.kit_nodes.keys())
+            .chain(self.audio_clips.keys())
+            .chain(self.control_nodes.keys())
+            .map(String::as_str);
+        crate::plan::validate_same_sample_graph(nodes, &edges).map_err(|error| {
+            let mut diagnostics = Diagnostics::new();
+            diagnostics.push(error.diagnostic());
+            diagnostics
+        })
+    }
 }
 
 /// Validate a parsed source document against the foundation source profile.
@@ -408,11 +457,12 @@ pub(crate) fn validate_source_with_control_profile(
 /// Validate every currently understood core source shape for Document editing.
 /// Message declarations are admitted and validated here without claiming that
 /// the performance compiler or renderer can execute their receiver protocol.
+/// The complete routing and modulation graph must obey same-sample causality.
 pub(crate) fn validate_source_document_profile(
     document: &Document,
     instruments: &BTreeMap<String, InstrumentNodeDescriptor>,
 ) -> Result<SourceGraph, Diagnostics> {
-    validate_source_profile(
+    let graph = validate_source_profile(
         document,
         instruments,
         SourceProfile {
@@ -423,7 +473,9 @@ pub(crate) fn validate_source_document_profile(
             controls: true,
             messages: true,
         },
-    )
+    )?;
+    graph.validate_causality()?;
+    Ok(graph)
 }
 
 fn validate_source_profile(

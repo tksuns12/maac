@@ -36,9 +36,14 @@ future obligations remain separate from these completed slices.
 
 ## Current priorities
 
-**Reader and action:** P1 and P2 are addressed within their bounded scopes; P2's
-[evidence map](document-performance-evidence.md) selects final edit graph
-validation as P3. Contributors should retain implemented behavior and state separately
+**Reader and action:** P1, P2, P3, P4, P5, P6, and P7 are addressed within their
+bounded scopes. P5 adds exact score-window queries over validated resolved
+performances; P6 corrects execution normalization for existing expression and
+message events. P7 retains proven original-source UTF-8 byte ranges in editing
+and CLI patch diagnostics.
+P2's [evidence map](document-performance-evidence.md) identified the final edit
+graph validation discrepancy corrected by P3. P4 implements the specified
+`materialize-instance` authoring operation. Contributors should retain implemented behavior and state separately
 what is specified, implemented, and proven by conformance evidence. This
 roadmap does not authorize unrelated grammar, runtime API, or profile changes.
 P1's normative clarification and scoped evidence are recorded separately.
@@ -64,7 +69,11 @@ audio output device, or DAW session to establish its semantic results.
 | --- | --- | --- | --- |
 | P1 — addressed 2026-09-28 | Reconcile the existing musical-library contract | The older declaration inventory excluded implemented pattern/curve/tuning exports. The [amended contract](instruments.md#reusable-musical-declarations) now defines ownership, caller context, validation, and identity consistently with the existing module path | [52 scoped tests and semantic review](musical-library-contract-validation.md); no new runtime/export feature or wire format |
 | P2 — addressed 2026-09-28 | Map Document and Performance obligations to public-boundary evidence | The [requirement/evidence map](document-performance-evidence.md) separates bounded runtime evidence, static vectors, unsupported behavior, unverified obligations and demonstrated failures | 29 requirement groups, 250 passing scoped tests, independent semantic review, and a reproduced final edit-validation discrepancy; no complete-profile claim |
-| P3 — next | Reject same-sample graph cycles before an edit commits or publishes source | A valid gain graph can be edited into a self-cycle through foundation/bundle contexts and CLI patch; subsequent compilation rejects it with `E_ALGEBRAIC_LOOP` | [Public regression and compatibility requirements](document-performance-evidence.md#p3-acceptance): atomic refusal, no output publication, valid explicit-delay feedback, final-state validation, and preserved Document-only editing |
+| P3 — addressed 2026-09-28 | Reject same-sample graph cycles before an edit commits or publishes source | Shared Document validation now rejects the P2 self-cycle with `E_ALGEBRAIC_LOOP` before foundation/bundle edits commit or CLI patch publishes | [Nine new public regressions and compatibility evidence](document-performance-evidence.md#p3-correction): atomic refusal, output preservation, valid explicit-delay feedback, modulation cycles, final-state repair, and preserved Document-only editing |
+| P4 — addressed 2026-09-28 | Materialize a selected placement as independent editable source | Foundation/bundle preparation APIs and CLI `materialize-instance` now implement §11's explicit copy and source-address mapping | [20 focused tests, independent review, and the full 1,428-test gate](materialize-instance.md#verification): private repeated/nested occurrences, exact transforms and reference ownership, complete mapping, atomic source edits/inverses, and CLI publication |
+| P5 — addressed 2026-09-28 | Query expanded events over an exact score window | §10 promises full event intervals and source addresses for intersecting notes, but [P04](document-performance-evidence.md#performance-obligations) had no public narrow-window query evidence | [Score-window contract and scoped verification](windowed-event-query.md#verification): public artifact query and CLI, fixed interval/address vectors, full validation, and bounded resource behavior; no lazy-expansion claim |
+| P6 — addressed 2026-09-29 | Normalize existing expression children and message events for execution identity | Valid expression and message compositions compiled outside production but failed at execution normalization when production identity was attached; the [D09 map](document-performance-evidence.md#document-obligations) left complete normalization unverified | [Bounded correction and verification](execution-event-normalization.md#verification): identity vectors, production compilation, artifact/P5 query compatibility, atomic edit regression, unchanged unsupported receiver behavior, and the complete Cargo-built Rust test inventory |
+| P7 — addressed 2026-09-29 | Preserve available original-source locations in editing and CLI patch errors | [D14](document-performance-evidence.md#document-obligations) left span preservation through `EditError` unverified | [Original-source diagnostic contract and verification](editing-diagnostics.md): parser spans, authored value/record/child locations, surviving rename identity, conservative unknown provenance, atomic refusal, CLI code/path/location, and public API compatibility |
 
 P2/P3 are not a blanket promise to implement every profile, renderer algorithm,
 or external receiver. Unsupported capabilities must remain explicit. The
@@ -114,9 +123,10 @@ the take/comp extension also have bounded implementations. Their limits remain
 in the capability matrix; do not reintroduce them as wholly missing features.
 
 Occurrence-local expression variants that preserve shared source edits are an
-optional language-design candidate. The specified materialization operation
-creates an independent copy; [P2's evidence map](document-performance-evidence.md#performance-obligations)
-does not establish an integrated public implementation of that operation.
+optional language-design candidate. The [materialization operation](materialize-instance.md)
+creates independent copies through public editing APIs and the CLI; P4's tests
+extend [P2's evidence map](document-performance-evidence.md#performance-obligations)
+with execution evidence for that specified operation.
 A different sharing model needs a separate
 ownership, precedence, identity, and compatibility decision; it is not a defect
 merely because the current contract lacks it. Multi-lane move/duplicate helpers

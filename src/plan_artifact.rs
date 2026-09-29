@@ -1,6 +1,9 @@
 //! Opaque, independently validated standalone plan artifacts.
 
-use crate::plan::{err, EventKind, OutputSettings, PlanError, PlanLimits, PlanView, PortRef};
+use crate::plan::{
+    err, EventKind, OutputSettings, PlanError, PlanLimits, PlanView, PortRef, Rational,
+    SourceMapping,
+};
 use crate::plan_v3::VersionedPlan;
 use crate::plan_v4::PlanV4;
 use serde::{Deserialize, Serialize};
@@ -38,6 +41,29 @@ pub struct PerformanceDispatch {
     pub address: String,
     pub target: PortRef,
     pub dispatch: PerformanceDispatchKind,
+}
+
+/// A complete, owned event selected by a score window. A sounding note keeps
+/// its original score interval and scheduled frames even when only part of its
+/// interval overlaps the query.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct WindowedEvent {
+    pub address: String,
+    pub source: SourceMapping,
+    pub target: PortRef,
+    pub kind: EventKind,
+    #[serde(with = "crate::plan::rational_serde")]
+    pub score_on_q: Rational,
+    #[serde(with = "crate::plan::optional_rational_serde")]
+    pub score_off_q: Option<Rational>,
+    #[serde(with = "crate::plan::rational_serde")]
+    pub onset_offset_seconds: Rational,
+    #[serde(with = "crate::plan::rational_serde")]
+    pub release_offset_seconds: Rational,
+    pub release_velocity: f64,
+    pub on_frame: u64,
+    pub off_frame: Option<u64>,
+    pub order: i32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -282,6 +308,76 @@ impl PlanArtifact {
     pub fn event_count(&self) -> usize {
         self.view().events().len()
     }
+    /// Return events intersecting the exact half-open score window
+    /// `[start_q, end_q)`. Notes are selected by gate overlap; hits and
+    /// messages are selected by onset. An empty window returns no events.
+    pub fn query_events_score_window(
+        &self,
+        start_q: &Rational,
+        end_q: &Rational,
+    ) -> Result<Vec<WindowedEvent>, PlanError> {
+        self.query_events_score_window_with_limits(start_q, end_q, &PlanLimits::default())
+    }
+    /// Query with an explicit validation and rational-size budget.
+    pub fn query_events_score_window_with_limits(
+        &self,
+        start_q: &Rational,
+        end_q: &Rational,
+        limits: &PlanLimits,
+    ) -> Result<Vec<WindowedEvent>, PlanError> {
+        let limits = limits.bounded();
+        let view = self.view();
+        view.validate_performance_with_limits(&limits)?;
+        check_query_rational(start_q, &limits, "score_window.start_q")?;
+        check_query_rational(end_q, &limits, "score_window.end_q")?;
+        if start_q > end_q
+            || start_q < &view.output.score_start_q
+            || end_q > &view.output.score_end_q
+        {
+            return Err(err(
+                "E_INTERVAL",
+                "score_window",
+                "score window must lie within the score and have nonnegative duration",
+            ));
+        }
+        if start_q == end_q {
+            return Ok(Vec::new());
+        }
+
+        let mut events = view
+            .events()
+            .filter(|event| match event.kind {
+                EventKind::Note { .. } => {
+                    event.score_on_q < end_q
+                        && event.score_off_q.as_ref().is_some_and(|off| off > start_q)
+                }
+                EventKind::Hit { .. } | EventKind::Message { .. } => {
+                    start_q <= event.score_on_q && event.score_on_q < end_q
+                }
+            })
+            .map(|event| WindowedEvent {
+                address: event.address.clone(),
+                source: event.source.clone(),
+                target: event.target.clone(),
+                kind: event.kind.clone(),
+                score_on_q: event.score_on_q.clone(),
+                score_off_q: event.score_off_q.clone(),
+                onset_offset_seconds: event.onset_offset_seconds.clone(),
+                release_offset_seconds: event.release_offset_seconds.clone(),
+                release_velocity: event.release_velocity,
+                on_frame: event.on_frame,
+                off_frame: event.off_frame,
+                order: event.order,
+            })
+            .collect::<Vec<_>>();
+        events.sort_by(|left, right| {
+            left.on_frame
+                .cmp(&right.on_frame)
+                .then_with(|| left.order.cmp(&right.order))
+                .then_with(|| left.address.as_bytes().cmp(right.address.as_bytes()))
+        });
+        Ok(events)
+    }
     pub(crate) fn view(&self) -> PlanView<'_> {
         match &self.inner {
             ArtifactVersion::Existing(VersionedPlan::Legacy(plan)) => plan.view(),
@@ -320,6 +416,29 @@ fn check_bytes(bytes: &[u8], limits: &PlanLimits) -> Result<(), PlanError> {
             "E_RESOURCE_LIMIT",
             "json",
             "plan JSON exceeds byte allowance",
+        ));
+    }
+    Ok(())
+}
+fn check_query_rational(
+    value: &Rational,
+    limits: &PlanLimits,
+    path: &str,
+) -> Result<(), PlanError> {
+    if value.denom().sign() != num_bigint::Sign::Plus {
+        return Err(err(
+            "E_NONFINITE",
+            path,
+            "rational denominator must be positive",
+        ));
+    }
+    if value.numer().magnitude().bits() > limits.max_rational_bits
+        || value.denom().magnitude().bits() > limits.max_rational_bits
+    {
+        return Err(err(
+            "E_RESOURCE_LIMIT",
+            path,
+            "rational numerator or denominator exceeds the plan bit limit",
         ));
     }
     Ok(())
