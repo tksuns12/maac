@@ -51,8 +51,9 @@ Try `maac build examples/audio-clips.maac --project-root . -o audio-clips.wav`.
 [Warp-rate clips](docs/warp-rate.md) map source frames to musical anchors using
 `mode = warp_rate`. Playback follows the tempo map, changing pitch with speed,
 including tempo changes during the tail. Version 6 plans retain the exact warp
-recipe. This implements existing language semantics; preserve-pitch stretching
-remains an explicit extension capability.
+recipe. `mode = warp_preserve` with `processor = "core.stretch.ola/1"` keeps the
+recorded pitch through the core overlap-add reference stretch; module-asset
+stretchers remain an explicit extension capability.
 Try `maac build examples/warp-rate.maac --project-root . -o warp-rate.wav`.
 
 [Core fader](docs/core-fader.md) provides explicit dB gain with sample-rate

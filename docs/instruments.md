@@ -16,7 +16,7 @@ processors, graph DAG rules, and frozen basic-library bytes.
 A library MUST have exactly one `library` declaration and no `project`.
 A composition has one `project` and no `library`. In addition to its `library`
 declaration, a library permits only top-level `import`, `instrument`, `preset`,
-`wavetable`, `pattern`, `curve`, and `tuning` declarations. The six definition
+`wavetable`, `sample`, `pattern`, `curve`, and `tuning` declarations. The seven definition
 kinds are directly exported by their authored IDs; `library` and `import`
 declarations are metadata and dependency bindings, not exports. Child objects
 retain the rules of their enclosing definition kind. Compositions may declare
@@ -233,6 +233,7 @@ is rejected, including mixed audio/modulation cycles.
 | --- | --- | --- |
 | `synth.sine/1`, `synth.saw/1`, `synth.square/1`, `synth.triangle/1` | `ratio` (1; −64…64), `frequency` (0 Hz; −24000…24000 Hz), `phase` (0; 0…1), `level` (1; 0…16) | Mono |
 | `synth.wavetable/1` | Oscillator parameters plus `position` (0; 0…1); required `config.table = &wavetable` | Mono |
+| `synth.sample/1` | `ratio`, `frequency`, and `level` as for oscillators (no `phase`); required `config.zones` (see [Samples](#samples)) | Mono |
 | `synth.noise/1` | `level` (1; 0…16); optional nonzero unsigned 32-bit `config.seed` (1831565813) | Mono |
 | `synth.adsr/1` | `attack` (0 s), `decay` (0 s), `sustain` (1; 0…1), `release` (0 s); times 0…1800 s | Mono control signal |
 | `synth.timbre/1` | No inputs, parameters, or configuration; voice-only | Mono per-note timbre signal (zero when absent) |
@@ -385,6 +386,47 @@ first frame and 1 selects the last; intermediate positions interpolate adjacent
 frames. Phase interpolation wraps the last sample to the first. Harmonic banks
 retain DC and supported harmonics without inferred normalization. Resolved raw
 samples are embedded in plans; original WAV files are unnecessary to render.
+
+## Samples
+
+```maac
+sample piano_c4 {
+  path = "piano-c4.wav";
+  hash = "sha256:<64 lowercase hex digits>";
+  root = C4;
+  loop = [12000frame, 36000frame];
+}
+```
+
+A `sample` declaration pins one finite mono PCM (8/16/24/32-bit) or float32
+WAV. Unlike a wavetable, the WAV sample rate is the recorded playback rate.
+`root` is a spelled pitch or `key(n)` with key 0 through 127. It names the key
+at which the sample plays at its recorded rate. The optional `loop = [a frame,
+b frame]` is a forward sustain loop with `0 <= a < b <= frames`. Samples share
+the embedded-sample budget (262,144 frames in total) with wavetables and are
+embedded in plans with their provenance. At most 64 samples may be declared.
+
+A voice-only `synth.sample/1` node selects samples with
+`config.zones = [{ sample = &s; low = <pitch>; high = <pitch>; }, ...]`.
+There are 1 through 128 zones. Their inclusive key ranges are listed in
+ascending, non-overlapping order, and each zone names a `sample` export by the
+same reference rules as `config.table`. At the voice's first rendered frame,
+the note frequency `f` (including any initial pitch expression, before node
+`ratio` and `frequency`) selects the zone with
+`low - 1/2 <= 69 + 12*log2(f/440) < high + 1/2`. A note in no zone fails with
+`E_RANGE`. It is never silently skipped or mapped to the nearest zone.
+
+Playback starts at frame 0. Each output frame reads the core linear
+interpolation at the current position and multiplies it by `level`, then
+advances the position by `(f*ratio + frequency) / root_hz *
+wav_rate / 48000`. Here `f` includes the current pitch expression, so bends
+stay continuous, and `root_hz = 440*2^((root-69)/12)`. The playback frequency
+must be positive. Inside a loop, reaching `b` wraps to `a + (position - a) mod
+(b - a)`, and the right neighbour of frame `b-1` is frame `a`, so the loop keeps
+sounding through release. Without a loop, values past the recording are zero.
+The voice still lives until its amplitude envelope finishes. No crossfade,
+velocity layer, normalization, or resampling filter is inferred. See the
+[sample vectors](../tests/sample_instrument.rs).
 
 ## Rust and interchange boundaries
 

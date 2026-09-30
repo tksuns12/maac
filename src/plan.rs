@@ -2772,9 +2772,12 @@ impl<'a> PlanView<'a> {
                     .saturating_add(count(&program.voice))
                     .saturating_add(program.shared.as_ref().map_or(0, count))
             });
-            let raw_samples = resources.wavetables.iter().fold(0usize, |total, table| {
-                total.saturating_add(table.samples.len())
-            });
+            let raw_samples = resources
+                .wavetables
+                .iter()
+                .map(|table| table.samples.len())
+                .chain(resources.samples.iter().map(|sample| sample.samples.len()))
+                .fold(0usize, usize::saturating_add);
             if resources.programs.len() > limits.max_instrument_programs
                 || graph_nodes > limits.max_graph_nodes
                 || graph_edges > limits.max_graph_edges
@@ -2851,6 +2854,8 @@ impl<'a> PlanView<'a> {
                 .len()
                 .saturating_add(resources.wavetables.len())
                 .saturating_add(resources.wavetable_sources.len())
+                .saturating_add(resources.samples.len())
+                .saturating_add(resources.sample_sources.len())
                 .saturating_add(resources.source_files.len())
                 .saturating_add(resources.dependencies.len())
                 .saturating_add(resources.libraries.len())
@@ -3222,6 +3227,14 @@ impl<'a> PlanView<'a> {
                         if let crate::graph::GraphProcessor::Wavetable { table } = &node.processor {
                             count_string(table, format!("{node_path}.processor.table"))?;
                         }
+                        if let crate::graph::GraphProcessor::Sample { zones } = &node.processor {
+                            for (zone_index, zone) in zones.iter().enumerate() {
+                                count_string(
+                                    &zone.sample,
+                                    format!("{node_path}.processor.zones[{zone_index}].sample"),
+                                )?;
+                            }
+                        }
                         for name in node.params.keys() {
                             count_string(name, format!("{node_path}.params"))?;
                         }
@@ -3258,6 +3271,17 @@ impl<'a> PlanView<'a> {
             }
             for (index, table) in resources.wavetables.iter().enumerate() {
                 count_string(&table.id, format!("instruments.wavetables[{index}].id"))?;
+            }
+            for (index, sample) in resources.samples.iter().enumerate() {
+                count_string(&sample.id, format!("instruments.samples[{index}].id"))?;
+            }
+            for (index, source) in resources.sample_sources.iter().enumerate() {
+                let prefix = format!("instruments.sample_sources[{index}]");
+                count_string(&source.sample, format!("{prefix}.sample"))?;
+                count_string(&source.file, format!("{prefix}.file"))?;
+                count_string(&source.object, format!("{prefix}.object"))?;
+                count_string(&source.path, format!("{prefix}.path"))?;
+                count_string(&source.hash, format!("{prefix}.hash"))?;
             }
             for (index, source) in resources.wavetable_sources.iter().enumerate() {
                 let prefix = format!("instruments.wavetable_sources[{index}]");

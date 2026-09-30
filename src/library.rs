@@ -16,6 +16,7 @@ use crate::graph::{
     MAX_TOTAL_GRAPH_EDGES, MAX_TOTAL_GRAPH_NODES,
 };
 use crate::plan::{Connection, PlanError, PortRef, SourceSpan};
+use crate::sample_instrument::{InstrumentSample, SampleSource, SampleZone};
 use crate::syntax::{Document, Field, Object, Reference, Unit, Value, ValueKind};
 use crate::wavetable::Wavetable;
 
@@ -29,6 +30,12 @@ pub const DEFAULT_INSTANCE_VOICES: u32 = 64;
 pub const MAX_INSTANCE_VOICES: u32 = 4_096;
 
 type ExportKey = (String, String);
+
+/// Resource declarations a graph node's config may reference, by export key.
+struct ResourceExports {
+    tables: BTreeMap<ExportKey, usize>,
+    samples: BTreeMap<ExportKey, usize>,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -65,6 +72,8 @@ pub struct LibrarySet {
     pub programs: Vec<InstrumentProgram>,
     pub wavetables: Vec<Wavetable>,
     pub wavetable_sources: Vec<WavetableSource>,
+    pub samples: Vec<InstrumentSample>,
+    pub sample_sources: Vec<SampleSource>,
     pub metadata: Vec<LibraryMetadata>,
     entry_document: Document,
     resolved_document: Document,
@@ -85,7 +94,17 @@ impl LibrarySet {
         let metadata = validate_documents(bundle)?;
         let instrument_keys = export_keys(bundle, "instrument");
         let wavetable_keys = export_keys(bundle, "wavetable");
+        let sample_keys = export_keys(bundle, "sample");
         preflight(bundle, instrument_keys.len(), wavetable_keys.len())?;
+        if sample_keys.len() > crate::sample_instrument::MAX_LIBRARY_SAMPLE_DECLARATIONS {
+            return Err(simple_error(
+                DiagnosticCode::ResourceLimit,
+                format!(
+                    "sample declarations exceed {}",
+                    crate::sample_instrument::MAX_LIBRARY_SAMPLE_DECLARATIONS
+                ),
+            ));
+        }
 
         let program_exports = instrument_keys
             .iter()
@@ -93,12 +112,17 @@ impl LibrarySet {
             .enumerate()
             .map(|(index, key)| (key, index))
             .collect::<BTreeMap<_, _>>();
-        let table_exports = wavetable_keys
-            .iter()
-            .cloned()
-            .enumerate()
-            .map(|(index, key)| (key, index))
-            .collect::<BTreeMap<_, _>>();
+        let index_keys = |keys: &[ExportKey]| {
+            keys.iter()
+                .cloned()
+                .enumerate()
+                .map(|(index, key)| (key, index))
+                .collect::<BTreeMap<_, _>>()
+        };
+        let exports = ResourceExports {
+            tables: index_keys(&wavetable_keys),
+            samples: index_keys(&sample_keys),
+        };
 
         let mut wavetables = Vec::with_capacity(wavetable_keys.len());
         let mut wavetable_sources = Vec::with_capacity(wavetable_keys.len());
@@ -123,6 +147,22 @@ impl LibrarySet {
             wavetables.push(table);
             wavetable_sources.push(source);
         }
+        // Pitched samples share the embedded-sample budget with wavetables.
+        let mut samples = Vec::with_capacity(sample_keys.len());
+        let mut sample_sources = Vec::with_capacity(sample_keys.len());
+        for (index, (file, object_id)) in sample_keys.iter().enumerate() {
+            let object = &bundle.documents[file].objects[object_id];
+            let (sample, source) = lower_sample(bundle, file, object, format!("sample_{index}"))?;
+            sample_count = sample_count.saturating_add(sample.samples.len());
+            if sample_count > MAX_LIBRARY_SAMPLES {
+                return Err(simple_error(
+                    DiagnosticCode::ResourceLimit,
+                    format!("embedded wavetable and sample frames exceed {MAX_LIBRARY_SAMPLES}"),
+                ));
+            }
+            samples.push(sample);
+            sample_sources.push(source);
+        }
 
         let mut programs = Vec::with_capacity(instrument_keys.len());
         for (index, (file, object_id)) in instrument_keys.iter().enumerate() {
@@ -131,7 +171,7 @@ impl LibrarySet {
                 file,
                 &bundle.documents[file].objects[object_id],
                 format!("program_{index}"),
-                &table_exports,
+                &exports,
             )?);
         }
 
@@ -150,6 +190,8 @@ impl LibrarySet {
             programs,
             wavetables,
             wavetable_sources,
+            samples,
+            sample_sources,
             metadata,
             entry_document: documents.entry,
             resolved_document: documents.musical,
@@ -282,7 +324,7 @@ fn resolve_entry_document(bundle: &ResolvedBundle) -> Result<ResolvedEntryDocume
     entry_document.objects.retain(|_, object| {
         !matches!(
             object.kind.as_str(),
-            "library" | "import" | "instrument" | "preset" | "wavetable"
+            "library" | "import" | "instrument" | "preset" | "wavetable" | "sample"
         )
     });
 
@@ -713,6 +755,7 @@ fn validate_documents(bundle: &ResolvedBundle) -> Result<Vec<LibraryMetadata>, D
                         | "instrument"
                         | "preset"
                         | "wavetable"
+                        | "sample"
                         | "pattern"
                         | "curve"
                         | "tuning"
@@ -859,12 +902,202 @@ fn lower_wavetable(
     ))
 }
 
+/// Lower a `sample` declaration: a mono WAV with a 12-TET root key and an
+/// optional forward sustain loop in sample frames.
+fn lower_sample(
+    bundle: &ResolvedBundle,
+    file: &str,
+    object: &Object,
+    id: String,
+) -> Result<(InstrumentSample, SampleSource), Diagnostics> {
+    exact_fields(
+        object,
+        &["hash", "loop", "path", "root"],
+        &["hash", "path", "root"],
+        file,
+    )?;
+    no_children(object, file)?;
+    let declared_path = string_field(object, "path", file)?;
+    let asset_path = normalize_file_reference(file, &declared_path)?;
+    let bytes = bundle.assets.get(&asset_path).ok_or_else(|| {
+        object_error(
+            DiagnosticCode::Asset,
+            file,
+            object,
+            format!("resolved asset `{asset_path}` is missing"),
+        )
+    })?;
+    let root = object.field("root").expect("required field checked");
+    let root_key = key_value(&root.value, file, object, root)?;
+    let loop_frames = object
+        .field("loop")
+        .map(|field| {
+            let ValueKind::List(items) = &field.value.kind else {
+                return Err(field_error(
+                    DiagnosticCode::Unit,
+                    file,
+                    object,
+                    field,
+                    "loop requires [start frame, end frame]",
+                ));
+            };
+            let frame = |value: &Value| match &value.kind {
+                ValueKind::Quantity {
+                    value,
+                    unit: Unit::Frame,
+                } if value.is_integer() => value.to_integer().to_u64().ok_or_else(|| {
+                    field_error(
+                        DiagnosticCode::Range,
+                        file,
+                        object,
+                        field,
+                        "loop frames must be nonnegative integers",
+                    )
+                }),
+                _ => Err(field_error(
+                    DiagnosticCode::Unit,
+                    file,
+                    object,
+                    field,
+                    "loop endpoints require integer frames",
+                )),
+            };
+            match items.as_slice() {
+                [start, end] => Ok([frame(start)?, frame(end)?]),
+                _ => Err(field_error(
+                    DiagnosticCode::Range,
+                    file,
+                    object,
+                    field,
+                    "loop requires exactly two frame endpoints",
+                )),
+            }
+        })
+        .transpose()?;
+    let sample = InstrumentSample::from_wav(id.clone(), bytes, root_key, loop_frames)
+        .map_err(|error| plan_diagnostics(error, file, object))?;
+    Ok((
+        sample,
+        SampleSource {
+            sample: id,
+            file: file.to_owned(),
+            object: object.id.clone(),
+            path: asset_path,
+            hash: string_field(object, "hash", file)?,
+        },
+    ))
+}
+
+/// A 12-TET key given as a spelled pitch (`C4`) or `key(n)`.
+fn key_value(
+    value: &Value,
+    file: &str,
+    object: &Object,
+    field: &Field,
+) -> Result<i64, Diagnostics> {
+    let key = match &value.kind {
+        ValueKind::Symbol(text) => crate::music::Pitch::parse_spelled(text)
+            .ok()
+            .and_then(|pitch| pitch.key_index()),
+        ValueKind::Call { function, args } if function == "key" && args.len() == 1 => {
+            match &args[0].kind {
+                ValueKind::Number(number) if number.is_integer() => number.to_integer().to_i64(),
+                _ => None,
+            }
+        }
+        _ => None,
+    };
+    let key = key.ok_or_else(|| {
+        field_error(
+            DiagnosticCode::Unit,
+            file,
+            object,
+            field,
+            format!("{} requires a spelled pitch or key(n)", field.name),
+        )
+    })?;
+    if !(0..=crate::sample_instrument::MAX_SAMPLE_KEY).contains(&key) {
+        return Err(field_error(
+            DiagnosticCode::Range,
+            file,
+            object,
+            field,
+            format!(
+                "{} must be key 0 through {}",
+                field.name,
+                crate::sample_instrument::MAX_SAMPLE_KEY
+            ),
+        ));
+    }
+    Ok(key)
+}
+
+/// Lower `zones = [{ sample = &s; low = <pitch>; high = <pitch>; }, ...]`.
+fn lower_sample_zones(
+    bundle: &ResolvedBundle,
+    file: &str,
+    object: &Object,
+    field: &Field,
+    exports: &ResourceExports,
+) -> Result<Vec<SampleZone>, Diagnostics> {
+    let ValueKind::List(items) = &field.value.kind else {
+        return Err(field_error(
+            DiagnosticCode::Unit,
+            file,
+            object,
+            field,
+            "zones requires a list of zone records",
+        ));
+    };
+    let mut zones = Vec::with_capacity(items.len());
+    for item in items {
+        let ValueKind::Record(record) = &item.kind else {
+            return Err(field_error(
+                DiagnosticCode::Unit,
+                file,
+                object,
+                field,
+                "each zone must be a record",
+            ));
+        };
+        let names = record.keys().map(String::as_str).collect::<BTreeSet<_>>();
+        if names != BTreeSet::from(["high", "low", "sample"]) {
+            return Err(field_error(
+                DiagnosticCode::UnknownField,
+                file,
+                object,
+                field,
+                "zone records contain exactly sample, low, and high",
+            ));
+        }
+        let sample_field = &record["sample"];
+        let key = resolve_export_key(bundle, file, expect_reference(sample_field, file, object)?)?;
+        let index = exports.samples.get(&key).ok_or_else(|| {
+            field_error(
+                DiagnosticCode::Reference,
+                file,
+                object,
+                sample_field,
+                "zone sample does not name a sample export",
+            )
+        })?;
+        zones.push(SampleZone {
+            sample: format!("sample_{index}"),
+            low_key: key_value(&record["low"].value, file, object, &record["low"])?,
+            high_key: key_value(&record["high"].value, file, object, &record["high"])?,
+        });
+    }
+    crate::sample_instrument::validate_zones(&zones, "zones", |_| true)
+        .map_err(|error| plan_diagnostics(error, file, object))?;
+    Ok(zones)
+}
+
 fn lower_instrument(
     bundle: &ResolvedBundle,
     file: &str,
     object: &Object,
     id: String,
-    table_exports: &BTreeMap<ExportKey, usize>,
+    exports: &ResourceExports,
 ) -> Result<InstrumentProgram, Diagnostics> {
     exact_fields(object, &["channels"], &["channels"], file)?;
     let declared_channels = integer_field(object, "channels", file, 1, 2)? as u8;
@@ -896,10 +1129,10 @@ fn lower_instrument(
             ));
         }
     }
-    let voice = lower_graph(bundle, file, voices[0], GraphStage::Voice, table_exports)?;
+    let voice = lower_graph(bundle, file, voices[0], GraphStage::Voice, exports)?;
     let shared_graph = shared
         .first()
-        .map(|graph| lower_graph(bundle, file, graph, GraphStage::Shared, table_exports))
+        .map(|graph| lower_graph(bundle, file, graph, GraphStage::Shared, exports))
         .transpose()?;
     let mut graph_names = BTreeMap::from([(voices[0].id.as_str(), GraphStage::Voice)]);
     if let Some(graph) = shared.first() {
@@ -949,7 +1182,7 @@ fn lower_graph(
     file: &str,
     graph: &Object,
     stage: GraphStage,
-    table_exports: &BTreeMap<ExportKey, usize>,
+    exports: &ResourceExports,
 ) -> Result<GraphProgram, Diagnostics> {
     let allowed = if stage == GraphStage::Voice {
         &["amplitude", "channels", "output"][..]
@@ -970,7 +1203,7 @@ fn lower_graph(
     let channels = integer_field(graph, "channels", file, 1, 2)? as u8;
     let mut nodes = Vec::new();
     for node in graph.children.values().filter(|child| child.kind == "node") {
-        nodes.push(lower_graph_node(bundle, file, node, stage, table_exports)?);
+        nodes.push(lower_graph_node(bundle, file, node, stage, exports)?);
     }
     let mut connections = Vec::new();
     for edge in graph
@@ -1066,7 +1299,7 @@ fn lower_graph_node(
     file: &str,
     object: &Object,
     stage: GraphStage,
-    table_exports: &BTreeMap<ExportKey, usize>,
+    exports: &ResourceExports,
 ) -> Result<GraphNode, Diagnostics> {
     exact_fields(object, &["config", "params", "type"], &["type"], file)?;
     no_children(object, file)?;
@@ -1120,7 +1353,7 @@ fn lower_graph_node(
             let config = exact_record(config, &["table"], file, object, &identity)?;
             let field = &config["table"];
             let key = resolve_export_key(bundle, file, expect_reference(field, file, object)?)?;
-            let index = table_exports.get(&key).ok_or_else(|| {
+            let index = exports.tables.get(&key).ok_or_else(|| {
                 field_error(
                     DiagnosticCode::Reference,
                     file,
@@ -1131,6 +1364,12 @@ fn lower_graph_node(
             })?;
             GraphProcessor::Wavetable {
                 table: format!("table_{index}"),
+            }
+        }
+        "synth.sample/1" => {
+            let config = exact_record(config, &["zones"], file, object, &identity)?;
+            GraphProcessor::Sample {
+                zones: lower_sample_zones(bundle, file, object, &config["zones"], exports)?,
             }
         }
         _ => {

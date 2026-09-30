@@ -54,6 +54,11 @@ pub enum GraphProcessor {
     Pluck { seed: u32 },
     #[serde(rename = "synth.wavetable/1")]
     Wavetable { table: String },
+    /// Pitched playback of embedded samples chosen by key zone.
+    #[serde(rename = "synth.sample/1")]
+    Sample {
+        zones: Vec<crate::sample_instrument::SampleZone>,
+    },
     #[serde(rename = "synth.adsr/1")]
     Adsr,
     #[serde(rename = "synth.timbre/1")]
@@ -91,6 +96,10 @@ enum GraphProcessorWire {
     Pluck { seed: u32 },
     #[serde(rename = "synth.wavetable/1")]
     Wavetable { table: String },
+    #[serde(rename = "synth.sample/1")]
+    Sample {
+        zones: Vec<crate::sample_instrument::SampleZone>,
+    },
     #[serde(rename = "synth.adsr/1")]
     Adsr {},
     #[serde(rename = "synth.timbre/1")]
@@ -130,6 +139,7 @@ impl<'de> Deserialize<'de> for GraphProcessor {
             }
             GraphProcessorWire::Pluck { seed } => Self::Pluck { seed },
             GraphProcessorWire::Wavetable { table } => Self::Wavetable { table },
+            GraphProcessorWire::Sample { zones } => Self::Sample { zones },
             GraphProcessorWire::Adsr {} => Self::Adsr,
             GraphProcessorWire::Timbre {} => Self::Timbre,
             GraphProcessorWire::Pressure {} => Self::Pressure,
@@ -153,6 +163,7 @@ impl GraphProcessor {
             Self::Noise { .. } => "synth.noise/1",
             Self::Pluck { .. } => "synth.pluck/1",
             Self::Wavetable { .. } => "synth.wavetable/1",
+            Self::Sample { .. } => "synth.sample/1",
             Self::Adsr => "synth.adsr/1",
             Self::Timbre => "synth.timbre/1",
             Self::Pressure => "synth.pressure/1",
@@ -201,6 +212,7 @@ impl GraphProcessor {
                 | Self::Noise { .. }
                 | Self::Pluck { .. }
                 | Self::Wavetable { .. }
+                | Self::Sample { .. }
                 | Self::Adsr
                 | Self::Timbre
                 | Self::Pressure
@@ -512,6 +524,9 @@ pub fn parameter_descriptor(processor: &GraphProcessor, name: &str) -> Option<Pa
         GraphProcessor::Wavetable { .. } => oscillator().or_else(|| {
             (name == "position").then(|| dimensionless(ParameterRate::Sample, 0, 0, 1))
         }),
+        // Oscillator frequency controls without a phase: playback starts at
+        // the first sample frame.
+        GraphProcessor::Sample { .. } => (name != "phase").then(oscillator).flatten(),
         GraphProcessor::Pluck { .. } => match name {
             "ratio" => {
                 let mut result = dimensionless(ParameterRate::Sample, 1, 0, 8);
@@ -1083,6 +1098,12 @@ fn validate_processor(
         | GraphProcessor::HighPass { channels }
         | GraphProcessor::Mix { channels } => validate_channels(*channels, path)?,
         GraphProcessor::Wavetable { table } => validate_identifier(table, format!("{path}.table"))?,
+        GraphProcessor::Sample { zones } => {
+            for (index, zone) in zones.iter().enumerate() {
+                validate_identifier(&zone.sample, format!("{path}.zones[{index}].sample"))?;
+            }
+            crate::sample_instrument::validate_zones(zones, &path, |_| true)?;
+        }
         _ => {}
     }
     Ok(())

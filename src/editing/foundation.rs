@@ -805,7 +805,7 @@ fn reject_unsupported_capabilities(document: &Document) -> EditResult<()> {
     for object in document.objects.values() {
         if matches!(
             object.kind.as_str(),
-            "extension" | "import" | "library" | "instrument" | "preset" | "wavetable"
+            "extension" | "import" | "library" | "instrument" | "preset" | "wavetable" | "sample"
         ) {
             return Err(EditError::new(
                 "E_CAPABILITY",
@@ -1195,6 +1195,15 @@ fn normalize_node_fields(fields: &mut Map<String, Value>, project_seed: &Value) 
                     ("phase", number(0, 1)),
                     ("level", number(1, 1)),
                     ("position", number(0, 1)),
+                ] {
+                    params.entry(name).or_insert(value);
+                }
+            }
+            "synth.sample/1" => {
+                for (name, value) in [
+                    ("ratio", number(1, 1)),
+                    ("frequency", quantity(0, 1, Unit::Hz)),
+                    ("level", number(1, 1)),
                 ] {
                     params.entry(name).or_insert(value);
                 }

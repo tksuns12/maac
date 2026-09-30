@@ -10,6 +10,16 @@ use crate::{
 use num_traits::{Signed, ToPrimitive, Zero};
 use std::cmp::Ordering;
 
+/// §14.3 core reference stretch for `warp_preserve`: Hann-windowed
+/// overlap-add at 50% overlap, grains read at the source's original rate.
+pub(crate) const CORE_STRETCH_OLA: &str = "core.stretch.ola/1";
+
+/// OLA hop in output frames: 20 ms (`floor(rate / 50)`), at least one frame.
+/// Each grain spans two hops.
+pub(crate) fn ola_hop(rate_hz: u32) -> u64 {
+    u64::from(rate_hz / 50).max(1)
+}
+
 fn error(code: &str, message: &str) -> PlanError {
     PlanError {
         code: code.into(),
@@ -33,6 +43,14 @@ fn recipe(
     output: &OutputSettings,
     asset_frames: u64,
 ) -> Result<Recipe, PlanError> {
+    if let Some(stretch) = &clip.stretch {
+        if stretch != CORE_STRETCH_OLA {
+            return Err(error(
+                "E_CAPABILITY",
+                "warp_preserve stretch processor is not supported",
+            ));
+        }
+    }
     if output.sample_rate_hz == 0
         || clip.source_start_frame >= clip.source_end_frame
         || clip.source_end_frame > asset_frames
@@ -330,6 +348,45 @@ impl PreparedWarpClip {
     }
     pub(crate) fn gain_at(&self, frame: u64) -> f64 {
         self.envelope.gain_at(frame)
+    }
+
+    /// Warped source coordinate at `frame`, clamped into the transport.
+    fn clamped_coordinate(&self, frame: u64) -> f64 {
+        let frame = frame.clamp(self.start_frame, self.end_frame - 1);
+        let (index, fraction) = self
+            .coordinate(frame)
+            .expect("clamped frame lies inside the transport");
+        index as f64 + fraction
+    }
+
+    /// The two `core.stretch.ola/1` grains covering `frame`, as (source
+    /// coordinate, window weight). Grain `k` starts at `start + k*hop`, spans
+    /// `2*hop` frames with window `sin^2(pi*i/(2*hop))`, and reads the source
+    /// at `step` frames per output frame from the warp coordinate at its
+    /// centre. The two weights at any frame sum to one.
+    pub(crate) fn preserve_grains(
+        &self,
+        frame: u64,
+        hop: u64,
+        step: f64,
+    ) -> Option<[(f64, f64); 2]> {
+        if frame < self.start_frame || frame >= self.end_frame {
+            return None;
+        }
+        let relative = frame - self.start_frame;
+        let k = relative / hop;
+        let offset = relative - k * hop;
+        let angle = std::f64::consts::FRAC_PI_2 * offset as f64 / hop as f64;
+        let grain = |centre: u64, weight: f64| {
+            let centre = centre.clamp(self.start_frame, self.end_frame - 1);
+            let coordinate =
+                self.clamped_coordinate(centre) + (frame as f64 - centre as f64) * step;
+            (coordinate, weight)
+        };
+        Some([
+            grain(self.start_frame + (k + 1) * hop, angle.sin().powi(2)),
+            grain(self.start_frame + k * hop, angle.cos().powi(2)),
+        ])
     }
 }
 

@@ -11,6 +11,7 @@ use crate::graph::{
 };
 use crate::library::{LibraryMetadata, WavetableSource, MAX_LIBRARY_METADATA_BYTES};
 use crate::plan::PlanError;
+use crate::sample_instrument::{InstrumentSample, SampleSource};
 use crate::wavetable::Wavetable;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -20,6 +21,12 @@ pub struct InstrumentResources {
     pub programs: Vec<InstrumentProgram>,
     pub wavetables: Vec<Wavetable>,
     pub wavetable_sources: Vec<WavetableSource>,
+    /// Embedded `sample` declarations for `synth.sample/1`. Absent in plans
+    /// without samples, so earlier resource payloads are byte-identical.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub samples: Vec<InstrumentSample>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sample_sources: Vec<SampleSource>,
     pub source_files: Vec<SourceIdentity>,
     pub dependencies: Vec<DependencyIdentity>,
     pub libraries: Vec<LibraryMetadata>,
@@ -32,11 +39,14 @@ impl InstrumentResources {
         if self.programs.len() > MAX_GRAPH_PROGRAMS
             || self.source_files.len() > MAX_BUNDLE_SOURCES
             || self.wavetables.len() > crate::library::MAX_LIBRARY_WAVETABLES
+            || self.samples.len() > crate::sample_instrument::MAX_LIBRARY_SAMPLE_DECLARATIONS
             || self
                 .programs
                 .len()
                 .saturating_add(self.wavetables.len())
                 .saturating_add(self.wavetable_sources.len())
+                .saturating_add(self.samples.len())
+                .saturating_add(self.sample_sources.len())
                 .saturating_add(self.source_files.len())
                 .saturating_add(self.dependencies.len())
                 .saturating_add(self.libraries.len())
@@ -65,9 +75,13 @@ impl InstrumentResources {
                 .saturating_add(graph_edges(&program.voice))
                 .saturating_add(program.shared.as_ref().map_or(0, graph_edges))
         });
-        let raw_samples = self.wavetables.iter().fold(0usize, |total, table| {
-            total.saturating_add(table.samples.len())
-        });
+        // Wavetables and pitched samples share one embedded-sample budget.
+        let raw_samples = self
+            .wavetables
+            .iter()
+            .map(|table| table.samples.len())
+            .chain(self.samples.iter().map(|sample| sample.samples.len()))
+            .fold(0usize, usize::saturating_add);
         if total_nodes > MAX_TOTAL_GRAPH_NODES
             || total_edges > MAX_TOTAL_GRAPH_EDGES
             || raw_samples > MAX_EMBEDDED_SAMPLES
@@ -218,11 +232,67 @@ impl InstrumentResources {
                 "every embedded wavetable requires exactly one provenance record",
             ));
         }
+        let mut sample_ids = BTreeSet::new();
+        for (index, sample) in self.samples.iter().enumerate() {
+            let path = format!("instruments.samples[{index}]");
+            validate_identifier(&sample.id, format!("{path}.id"))?;
+            if !sample_ids.insert(sample.id.as_str()) {
+                return Err(error(
+                    "E_DUPLICATE_ID",
+                    format!("{path}.id"),
+                    "duplicate sample ID",
+                ));
+            }
+            sample
+                .validate()
+                .map_err(|error| contextualize(error, &path))?;
+        }
+        let mut sourced_samples = BTreeSet::new();
+        for (index, source) in self.sample_sources.iter().enumerate() {
+            let path = format!("instruments.sample_sources[{index}]");
+            validate_identifier(&source.sample, format!("{path}.sample"))?;
+            if !sample_ids.contains(source.sample.as_str())
+                || !sourced_samples.insert(source.sample.as_str())
+            {
+                return Err(error(
+                    "E_REFERENCE",
+                    format!("{path}.sample"),
+                    "sample provenance must name each embedded sample exactly once",
+                ));
+            }
+            validate_path(&source.file, format!("{path}.file"))?;
+            if !source_by_path.contains_key(source.file.as_str()) {
+                return Err(error(
+                    "E_REFERENCE",
+                    format!("{path}.file"),
+                    "sample declaring file has no source identity",
+                ));
+            }
+            validate_identifier(&source.object, format!("{path}.object"))?;
+            validate_path(&source.path, format!("{path}.path"))?;
+            validate_hash(&source.hash, format!("{path}.hash"))?;
+        }
+        if sourced_samples.len() != sample_ids.len() {
+            return Err(error(
+                "E_REFERENCE",
+                "instruments.sample_sources",
+                "every embedded sample requires exactly one provenance record",
+            ));
+        }
         for (program_index, program) in self.programs.iter().enumerate() {
             for (stage, graph) in std::iter::once(("voice", &program.voice))
                 .chain(program.shared.as_ref().map(|graph| ("shared", graph)))
             {
                 for (node_index, node) in graph.nodes.iter().enumerate() {
+                    if let GraphProcessor::Sample { zones } = &node.processor {
+                        crate::sample_instrument::validate_zones(
+                            zones,
+                            &format!(
+                                "instruments.programs[{program_index}].{stage}.nodes[{node_index}].processor"
+                            ),
+                            |id| sample_ids.contains(id),
+                        )?;
+                    }
                     if let GraphProcessor::Wavetable { table } = &node.processor {
                         if !table_ids.contains(table.as_str()) {
                             return Err(error(

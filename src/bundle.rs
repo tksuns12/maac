@@ -553,7 +553,7 @@ pub(crate) fn discover_document_references(
     for object in document.objects.values() {
         match object.kind.as_str() {
             "import" => imports.push(exact_import_reference(source_path, object)?),
-            "wavetable" => {
+            "wavetable" | "sample" => {
                 assets.push(asset_reference(source_path, object)?);
             }
             "asset"
@@ -681,6 +681,8 @@ fn pinned_fields(
         path,
         if object.kind == "import" {
             "import path"
+        } else if object.kind == "sample" {
+            "sample path"
         } else {
             "wavetable path"
         },

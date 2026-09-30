@@ -137,6 +137,10 @@ pub(crate) struct WarpClip {
     pub track: Option<String>,
     pub start_frame: u64,
     pub end_frame: u64,
+    /// `warp_preserve` stretch identity. Absent means `warp_rate`; readers
+    /// that do not know this field reject the plan instead of rate warping.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stretch: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

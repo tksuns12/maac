@@ -1234,7 +1234,13 @@ fn execute_impl(
                     .filter(|object| {
                         matches!(
                             object.kind.as_str(),
-                            "instrument" | "preset" | "wavetable" | "pattern" | "curve" | "tuning"
+                            "instrument"
+                                | "preset"
+                                | "wavetable"
+                                | "sample"
+                                | "pattern"
+                                | "curve"
+                                | "tuning"
                         )
                     })
                     .count();

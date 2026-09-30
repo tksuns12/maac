@@ -363,6 +363,11 @@ impl SourceGraph {
     }
 }
 
+/// Audio modes that place a clip through a musical warp map.
+pub(crate) fn is_warp_mode(mode: Option<&str>) -> bool {
+    matches!(mode, Some("warp_rate" | "warp_preserve"))
+}
+
 /// Index of the first edge, in source order, that lies on a directed cycle:
 /// its source is reachable again from its destination.
 fn first_cycle_edge(edges: &[(String, String)]) -> Option<usize> {
@@ -3702,14 +3707,53 @@ impl<'a> Validator<'a> {
         }
     }
 
+    /// §14.3: warp_preserve requires an explicit stretch processor. Only the
+    /// core reference algorithm is executable; a module asset or unknown
+    /// identity is refused, never replaced by rate warping.
+    fn validate_stretch_processor(&mut self, object: &Object, path: &[String]) {
+        let Some(field) = object.field("processor") else {
+            self.push(
+                DiagnosticCode::Range,
+                "warp_preserve requires a stretch processor",
+                Some(object.span),
+                path.to_vec(),
+                vec!["processor".into()],
+            );
+            return;
+        };
+        match &field.value.kind {
+            ValueKind::String(id) if id == crate::warp_clip::CORE_STRETCH_OLA => {}
+            ValueKind::String(id) => self.push(
+                DiagnosticCode::Capability,
+                format!("stretch processor `{id}` is not supported"),
+                Some(field.value.span),
+                path.to_vec(),
+                vec!["processor".into()],
+            ),
+            ValueKind::Reference(_) => self.push(
+                DiagnosticCode::Capability,
+                "module-asset stretch processors are an unsupported extension",
+                Some(field.value.span),
+                path.to_vec(),
+                vec!["processor".into()],
+            ),
+            _ => self.push_type(
+                field,
+                path,
+                "processor",
+                "a stretch identifier or module asset",
+            ),
+        }
+    }
+
     fn validate_audio_transport(&mut self, object: &Object, path: &[String]) {
-        let warp = self.allow_warp
-            && object.field("mode").and_then(|f| f.value.as_symbol()) == Some("warp_rate");
-        if !warp && object.field("mode").and_then(|f| f.value.as_symbol()) != Some("rate") {
+        let mode = object.field("mode").and_then(|f| f.value.as_symbol());
+        let warp = self.allow_warp && is_warp_mode(mode);
+        if !warp && mode != Some("rate") {
             self.push(
                 DiagnosticCode::Capability,
                 if self.allow_warp {
-                    "only rate and warp_rate audio modes are supported"
+                    "only rate, warp_rate, and warp_preserve audio modes are supported"
                 } else {
                     "only rate audio mode is supported"
                 },
@@ -3719,23 +3763,25 @@ impl<'a> Validator<'a> {
             );
             return;
         }
-        for &name in if warp {
-            &["speed", "reverse", "processor"][..]
-        } else {
-            &["warp", "processor"][..]
-        } {
+        let preserve = mode == Some("warp_preserve");
+        let forbidden: &[&str] = match (warp, preserve) {
+            (true, true) => &["speed", "reverse"],
+            (true, false) => &["speed", "reverse", "processor"],
+            (false, _) => &["warp", "processor"],
+        };
+        for &name in forbidden {
             if let Some(field) = object.field(name) {
                 self.push(
                     DiagnosticCode::Range,
-                    format!(
-                        "{} audio forbids {name}",
-                        if warp { "warp_rate" } else { "rate" }
-                    ),
+                    format!("{} audio forbids {name}", mode.unwrap_or("rate")),
                     Some(field.span),
                     path.to_vec(),
                     vec![name.into()],
                 );
             }
+        }
+        if preserve {
+            self.validate_stretch_processor(object, path);
         }
         let Some(asset_id) = object
             .field("asset")
@@ -3991,12 +4037,16 @@ impl<'a> Validator<'a> {
             self.expect_object_ref(field, "track", &["track"], path);
         }
         if let Some(field) = object.field("processor") {
-            self.expect_object_ref(field, "processor", &["asset"], path);
+            // Core stretch identities are strings; the extension form names a
+            // module asset. `validate_stretch_processor` owns warp_preserve.
+            if !matches!(field.value.kind, ValueKind::String(_)) {
+                self.expect_object_ref(field, "processor", &["asset"], path);
+            }
         }
         if let Some(field) = object.field("warp") {
             // The native profile checks its bounded tuple list in one pass.
             if !(self.allow_warp
-                && object.field("mode").and_then(|f| f.value.as_symbol()) == Some("warp_rate"))
+                && is_warp_mode(object.field("mode").and_then(|f| f.value.as_symbol())))
             {
                 self.validate_pair_list(field, path, "warp");
             }

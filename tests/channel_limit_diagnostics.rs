@@ -435,6 +435,8 @@ fn instrument_resources(channels: u8) -> InstrumentResources {
         }],
         wavetables: Vec::new(),
         wavetable_sources: Vec::new(),
+        samples: Vec::new(),
+        sample_sources: Vec::new(),
         source_files: vec![SourceIdentity {
             path: "score.maac".into(),
             hash: format!("sha256:{}", "1".repeat(64)),

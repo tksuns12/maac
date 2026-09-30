@@ -2,8 +2,10 @@
 
 Implemented and [validated](warp-rate-validation.md). This contract implements MaaC/1 §14.3 using the
 existing `audio` object syntax and the shared tempo map. It adds no general
-computation or new authoring syntax. Asset conversion remains external tooling;
-preserve-pitch stretching remains an explicit unsupported extension.
+computation or new authoring syntax. Asset conversion remains external tooling.
+Preserve-pitch stretching is available through the core reference stretch (see
+[`warp_preserve`](#preserve-pitch-warping)); module-asset stretchers remain an
+explicit unsupported extension.
 
 Try the [runnable example](../examples/warp-rate.maac):
 
@@ -28,8 +30,7 @@ Local q and integer source frames both strictly increase. Its first pair is
 `(0q,a frame)` and its final pair is `(Lq,b frame)`, with `L > 0`.
 Physical-time warp anchors and fractional frame anchors are invalid.
 Authored `speed`, `reverse`, and `processor` fields are forbidden, including
-values that would otherwise be defaults. `warp_preserve` fails with
-`E_CAPABILITY`; it never falls back to rate warping.
+values that would otherwise be defaults.
 
 For reset origin `O=T(score.start)`, engine rate `R`, and output frame `n`,
 the local score position is `q=T^-1(O+n/R)-at`. Linear interpolation of the
@@ -148,3 +149,24 @@ PCM are compared with the committed rate-mode executable. Final verification
 includes formatting, Clippy, the full normal test suite, all three explicit
 metering audits, release/install, Python/specification/SRC checks, and independent
 Sol Max review. Automated checks do not assert human listening acceptance.
+
+## Preserve-pitch warping
+
+`mode = warp_preserve` uses the same fields, recipe, schedule, gain, and fades
+as `warp_rate`, and additionally requires `processor`. The only executable value
+is the core reference stretch `processor = "core.stretch.ola/1"`, defined
+normatively in MaaC/1 §14.3. It overlap-adds Hann-windowed grains with a
+20 ms hop (`floor(R/50)` frames) and 40 ms grains. Each grain is positioned by
+the warp coordinate at its centre and read at the asset's original rate,
+`asset.rate/R` source frames per output frame. A constant warp slope equal to
+that rate reproduces `warp_rate` exactly. Any other slope keeps the recorded
+pitch while the grain positions follow the warp and tempo maps. No latency is
+added, and the transport start, duration, and channels are unchanged.
+
+A module-asset `processor` or an unknown identifier fails with
+`E_CAPABILITY`. A missing `processor` is `E_RANGE`. `speed` and `reverse` remain
+forbidden. Nothing ever falls back to rate warping. Plans record the identity
+as the optional `stretch` field of the warp clip. It is absent for
+`warp_rate`, so existing plans are unchanged, and a reader that does not know
+the field rejects the plan instead of rate warping it. See the
+[preserve-pitch vectors](../tests/warp_preserve.rs).

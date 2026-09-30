@@ -51,7 +51,7 @@ An implementation states its profiles and its supported extension identifiers. A
 The normative [reusable library and instrument contract](docs/instruments.md)
 defines this repository's local-library extension: library documents,
 hash-pinned imports, reusable patterns, curves and tunings, instruments,
-presets, explicit WAV wavetables, and versioned `synth.* /1` voice/shared
+presets, explicit WAV wavetables, zoned pitched WAV samples, and versioned `synth.* /1` voice/shared
 processors. It specifies declaration and namespace rules, musical reference
 ownership, public control interfaces, synthesis behavior, and resource limits.
 Importing musical definitions retains the consuming composition's tempo,
@@ -603,7 +603,17 @@ The last local q determines transport duration through the project's tempo map. 
 
 In `warp_rate`, that source coordinate feeds the core interpolator. Pitch changes with instantaneous playback rate, including changes caused by the tempo map. `speed` and `reverse` are forbidden in warp modes.
 
-In `warp_preserve`, an additional `processor` reference names a module asset whose required descriptor defines the stretch algorithm, settings, latency, initialization, and output contract. The source mapping is still explicit, but exact waveform output depends on that pinned module. The module must return the declared source channel count and the requested output transport duration. It must handle any internal lookahead without changing the declared transport start. This is an extension capability, not a promise that all time-stretch algorithms sound alike. Unsupported preserve-pitch warping is an error, never an automatic fallback to rate warping.
+In `warp_preserve`, an additional required `processor` field selects the stretch algorithm. It is either the string identifier of a core stretch algorithm or a reference to a module asset. A referenced module's required descriptor defines the stretch algorithm, settings, latency, initialization, and output contract. The source mapping is still explicit, but exact waveform output depends on that pinned module. The module must return the declared source channel count and the requested output transport duration. It must handle any internal lookahead without changing the declared transport start. The module form is an extension capability, not a promise that all time-stretch algorithms sound alike. An unknown identifier or an unsupported module is `E_CAPABILITY`. Unsupported preserve-pitch warping is an error, never an automatic fallback to rate warping. `speed` and `reverse` remain forbidden.
+
+The core reference stretch is `processor = "core.stretch.ola/1"`: overlap-add of Hann-windowed grains at the source's original rate. It is fully specified here, so every conforming renderer produces the same samples up to floating-point evaluation. Like the core interpolator, it is a reference, not a claim of high-end quality. It introduces no latency and never changes the transport start, duration, or channel count. Its definition:
+
+- Let `R` be the output sample rate, `S` and `E` the transport's first and past-last engine frames, and `u(n)` the warped source coordinate that `warp_rate` would use at frame `n`, measured from the source interval start.
+- The hop is `H = max(1, floor(R/50))` frames and the step is `r = asset.rate / R` source frames per output frame.
+- For `S <= n < E`, let `k = floor((n-S)/H)` and `i = n - S - k*H`. Frame `n` is covered by two grains, centred at `c1 = S + (k+1)*H` and `c0 = S + k*H`, with weights `w1 = sin^2(pi*i/(2H))` and `w0 = cos^2(pi*i/(2H))`. The weights sum to one.
+- Each centre is clamped to `[S, E-1]`, giving `m`. That grain reads source coordinate `u(m) + (n-m)*r` with the core linear interpolation over the source interval. Samples outside the interval, including at negative coordinates, are zero.
+- The frame's value is `w1*x1 + w0*x0`, multiplied by `gain` and the fades as in the other modes. The signal is zero outside `[S, E)`.
+
+With a constant warp slope of `r`, both grains read `u(n)`, so the output equals `warp_rate` exactly. Otherwise each grain plays the source at its original rate, so pitch is preserved while the grain positions follow the warp map and the tempo map.
 
 ## 15. Nodes, ports, and connections
 

@@ -21,6 +21,7 @@ use crate::plan_v5::AudioClip;
 use crate::plan_v6::WarpClip;
 use crate::plan_v7::LfoConfig;
 use crate::production_identity::canonical_json_bytes;
+use crate::sample_instrument::SampleSource;
 
 pub(crate) const MAX_NATIVE_PROCESSOR_CONTEXT_BYTES: usize = 4 * 1024 * 1024;
 const FORMAT: &str = "maac.archive-processors";
@@ -122,6 +123,21 @@ impl NativeProcessor {
 struct InstrumentBinding {
     program: InstrumentProgram,
     wavetables: Vec<WavetableBinding>,
+    /// Absent for instruments without `synth.sample/1` nodes, so earlier
+    /// context records are unchanged.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    samples: Vec<SampleBinding>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SampleBinding {
+    source: SampleSource,
+    rate_hz: u32,
+    root_key: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    loop_frames: Option<[u64; 2]>,
+    sample_count: usize,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -374,9 +390,43 @@ fn bind_instrument(view: &PlanView<'_>, id: &str) -> Result<InstrumentBinding, D
             sample_count: table.samples.len(),
         });
     }
+    let sample_ids: BTreeSet<&str> = program
+        .voice
+        .nodes
+        .iter()
+        .chain(program.shared.iter().flat_map(|graph| graph.nodes.iter()))
+        .flat_map(|node| match &node.processor {
+            GraphProcessor::Sample { zones } => {
+                zones.iter().map(|zone| zone.sample.as_str()).collect()
+            }
+            _ => Vec::new(),
+        })
+        .collect();
+    let mut samples = Vec::new();
+    for id in sample_ids {
+        let sample = resources.samples.iter().find(|sample| sample.id == id);
+        let source = resources
+            .sample_sources
+            .iter()
+            .find(|source| source.sample == id);
+        let (Some(sample), Some(source)) = (sample, source) else {
+            return Err(fail(
+                DiagnosticCode::Reference,
+                format!("sample `{id}` or its source is missing"),
+            ));
+        };
+        samples.push(SampleBinding {
+            source: source.clone(),
+            rate_hz: sample.rate_hz,
+            root_key: sample.root_key,
+            loop_frames: sample.loop_frames,
+            sample_count: sample.samples.len(),
+        });
+    }
     Ok(InstrumentBinding {
         program,
         wavetables,
+        samples,
     })
 }
 
@@ -558,6 +608,50 @@ fn validate_record(record: &ContextRecord) -> Result<(), Diagnostics> {
                     return Err(fail(
                         DiagnosticCode::Reference,
                         "instrument wavetable binding is incomplete",
+                    ));
+                }
+                let mut sample_ids = BTreeSet::new();
+                for sample in &binding.samples {
+                    if !sample_ids.insert(sample.source.sample.as_str())
+                        || sample.source.file.is_empty()
+                        || sample.source.object.is_empty()
+                        || sample.source.path.is_empty()
+                        || sample.rate_hz == 0
+                        || !(0..=crate::sample_instrument::MAX_SAMPLE_KEY)
+                            .contains(&sample.root_key)
+                        || sample.sample_count == 0
+                        || sample.sample_count > crate::graph::MAX_EMBEDDED_SAMPLES
+                        || sample.loop_frames.is_some_and(|[start, end]| {
+                            start >= end || end > sample.sample_count as u64
+                        })
+                    {
+                        return Err(fail(DiagnosticCode::Range, "invalid sample binding"));
+                    }
+                    validate_hash_pin(&sample.source.hash, "sample hash")?;
+                }
+                let required_samples: BTreeSet<&str> = binding
+                    .program
+                    .voice
+                    .nodes
+                    .iter()
+                    .chain(
+                        binding
+                            .program
+                            .shared
+                            .iter()
+                            .flat_map(|graph| graph.nodes.iter()),
+                    )
+                    .flat_map(|graph_node| match &graph_node.processor {
+                        GraphProcessor::Sample { zones } => {
+                            zones.iter().map(|zone| zone.sample.as_str()).collect()
+                        }
+                        _ => Vec::new(),
+                    })
+                    .collect();
+                if required_samples != sample_ids {
+                    return Err(fail(
+                        DiagnosticCode::Reference,
+                        "instrument sample binding is incomplete",
                     ));
                 }
             }

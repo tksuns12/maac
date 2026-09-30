@@ -269,12 +269,18 @@ impl<'a> DspEngine<'a> {
                     Arc::new(TableBank::new(wavetable).map_err(RenderError::Plan)?),
                 );
             }
+            let samples = resources
+                .samples
+                .iter()
+                .map(|sample| (sample.id.clone(), Arc::new(sample.clone())))
+                .collect::<BTreeMap<_, _>>();
             for program in &resources.programs {
                 instrument_programs.insert(
                     program.id.clone(),
-                    Arc::new(CompiledInstrument::compile_validated(
+                    Arc::new(CompiledInstrument::compile_with_samples(
                         program,
                         &table_banks,
+                        &samples,
                     )?),
                 );
             }
@@ -333,12 +339,19 @@ impl<'a> DspEngine<'a> {
                     let timing = timing
                         .as_ref()
                         .ok_or_else(|| RenderError::RenderState("clip timing missing".into()))?;
-                    let prepared = PreparedTransport::Warp(crate::warp_clip::prepare_clip(
-                        clip,
-                        timing,
-                        plan.output,
-                        sample.frames(),
-                    )?);
+                    let warp =
+                        crate::warp_clip::prepare_clip(clip, timing, plan.output, sample.frames())?;
+                    let prepared = if clip.stretch.is_some() {
+                        // prepare_clip admitted only the core OLA identity.
+                        PreparedTransport::Preserve {
+                            warp,
+                            hop: crate::warp_clip::ola_hop(plan.output.sample_rate_hz),
+                            step: f64::from(sample.rate_hz())
+                                / f64::from(plan.output.sample_rate_hz),
+                        }
+                    } else {
+                        PreparedTransport::Warp(warp)
+                    };
                     let slice = sample.owned_slice(
                         clip.source_start_frame,
                         clip.source_end_frame,
@@ -1665,6 +1678,13 @@ fn apply_modulation_to_parameter(nodes: &mut [NodeState], edge: &ModulationRunti
 enum PreparedTransport {
     Rate(PreparedAudioClip),
     Warp(crate::warp_clip::PreparedWarpClip),
+    /// `warp_preserve` through `core.stretch.ola/1`: grains advance `step`
+    /// source frames per output frame, so pitch follows the source rate.
+    Preserve {
+        warp: crate::warp_clip::PreparedWarpClip,
+        hop: u64,
+        step: f64,
+    },
 }
 impl PreparedTransport {
     fn coordinate(&self, frame: u64) -> Option<(u64, f64)> {
@@ -1673,14 +1693,29 @@ impl PreparedTransport {
             Self::Warp(prepared) => prepared
                 .coordinate(frame)
                 .map(|(index, fraction)| (index as u64, fraction)),
+            Self::Preserve { .. } => unreachable!("preserve transports render grains"),
         }
     }
     fn gain_at(&self, frame: u64) -> f64 {
         match self {
             Self::Rate(prepared) => prepared.gain_at(frame),
-            Self::Warp(prepared) => prepared.gain_at(frame),
+            Self::Warp(prepared) | Self::Preserve { warp: prepared, .. } => prepared.gain_at(frame),
         }
     }
+}
+
+/// Core linear interpolation of a sliced source at a possibly negative or
+/// out-of-range coordinate, with zeros outside the slice.
+fn interpolate_signed(slice: &OwnedAudioSlice, coordinate: f64, channel: usize) -> Result<f64> {
+    if coordinate < -1. {
+        return Ok(0.);
+    }
+    if coordinate < 0. {
+        // z[-1] is zero, so only the right neighbour contributes.
+        return Ok((coordinate + 1.) * slice.interpolate(0, 0., channel)?);
+    }
+    let index = coordinate.floor();
+    Ok(slice.interpolate(index as u64, coordinate - index, channel)?)
 }
 
 /// Stateless transport evaluated from the absolute output frame after preparation.
@@ -1692,6 +1727,31 @@ struct AudioRuntime {
 impl AudioRuntime {
     fn render_frame(&self, frame: u64) -> Result<[f64; 2]> {
         let mut output = [0.; 2];
+        if let PreparedTransport::Preserve { warp, hop, step } = &self.prepared {
+            if let Some(grains) = warp.preserve_grains(frame, *hop, *step) {
+                let gain = warp.gain_at(frame);
+                for (channel, sample) in output
+                    .iter_mut()
+                    .enumerate()
+                    .take(usize::from(self.slice.channels()))
+                {
+                    let mut sum = 0.;
+                    for (coordinate, weight) in grains {
+                        sum += weight * interpolate_signed(&self.slice, coordinate, channel)?;
+                    }
+                    *sample = sum * gain;
+                    if !sample.is_finite() {
+                        return Err(crate::plan::err(
+                            "E_NONFINITE",
+                            "nodes.audio",
+                            "audio clip produced a nonfinite sample",
+                        )
+                        .into());
+                    }
+                }
+            }
+            return Ok(output);
+        }
         if let Some((index, fraction)) = self.prepared.coordinate(frame) {
             let gain = self.prepared.gain_at(frame);
             for (channel, sample) in output

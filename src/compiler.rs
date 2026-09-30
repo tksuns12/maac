@@ -685,10 +685,11 @@ impl<'a> Compiler<'a> {
         let has_audio = uses_audio_profile(self.document);
         let has_warp = self.document.objects.values().any(|object| {
             object.kind == "audio"
-                && object
-                    .field("mode")
-                    .and_then(|field| field.value.as_symbol())
-                    == Some("warp_rate")
+                && crate::semantic::is_warp_mode(
+                    object
+                        .field("mode")
+                        .and_then(|field| field.value.as_symbol()),
+                )
         });
         let graph = crate::semantic::validate_source_document_profile(
             self.document,
@@ -809,6 +810,9 @@ impl<'a> Compiler<'a> {
                     "fade_out",
                     "fade_shape",
                     "track",
+                    // warp_preserve's stretch; semantic validation owns
+                    // where it is permitted.
+                    "processor",
                 ][..],
                 "modulate" if uses_control_profile(self.document) => {
                     &["from", "target", "amount", "label"][..]
@@ -3530,12 +3534,12 @@ impl<'a> Compiler<'a> {
         // Expansion keeps only curve identities; bound the aggregate before cloning points.
         let mut point_count = 0usize;
         let warp_counts = self.audio_clips.values().filter_map(|source| {
-            if source
-                .object
-                .field("mode")
-                .and_then(|field| field.value.as_symbol())
-                != Some("warp_rate")
-            {
+            if !crate::semantic::is_warp_mode(
+                source
+                    .object
+                    .field("mode")
+                    .and_then(|field| field.value.as_symbol()),
+            ) {
                 return None;
             }
             match &source.object.field("warp")?.value.kind {
@@ -3832,11 +3836,12 @@ impl<'a> Compiler<'a> {
         self.audio_clips
             .values()
             .filter(|source| {
-                source
-                    .object
-                    .field("mode")
-                    .and_then(|field| field.value.as_symbol())
-                    == Some("warp_rate")
+                crate::semantic::is_warp_mode(
+                    source
+                        .object
+                        .field("mode")
+                        .and_then(|field| field.value.as_symbol()),
+                )
             })
             .map(|source| {
                 let object = &source.object;
@@ -3961,6 +3966,12 @@ impl<'a> Compiler<'a> {
                                 .transpose()?,
                             start_frame: 0,
                             end_frame: 0,
+                            // Source validation admits only the core stretch
+                            // identity; plan validation checks it again.
+                            stretch: match object.field("processor").map(|f| &f.value.kind) {
+                                Some(ValueKind::String(id)) => Some(id.clone()),
+                                _ => None,
+                            },
                         }),
                     },
                 })
@@ -4763,6 +4774,8 @@ fn prepare_instrument_compiler<'a>(
         programs: libraries.programs,
         wavetables: libraries.wavetables,
         wavetable_sources: libraries.wavetable_sources,
+        samples: libraries.samples,
+        sample_sources: libraries.sample_sources,
         source_files: resolved.source_files.clone(),
         dependencies: resolved.dependencies.clone(),
         libraries: libraries.metadata,
@@ -4883,7 +4896,7 @@ fn has_library_syntax(document: &Document) -> bool {
     document.objects.values().any(|object| {
         matches!(
             object.kind.as_str(),
-            "library" | "instrument" | "preset" | "wavetable"
+            "library" | "instrument" | "preset" | "wavetable" | "sample"
         ) || (object.kind == "node" && object.field("instrument").is_some())
     })
 }

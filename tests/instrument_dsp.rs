@@ -387,6 +387,8 @@ fn instrument_plan(program: InstrumentProgram, frames: u64) -> Plan {
             programs: vec![program],
             wavetables: Vec::new(),
             wavetable_sources: Vec::new(),
+            samples: Vec::new(),
+            sample_sources: Vec::new(),
             source_files: vec![SourceIdentity {
                 path: "test.maac".into(),
                 hash: format!("sha256:{}", "a".repeat(64)),

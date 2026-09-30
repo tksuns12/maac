@@ -61,6 +61,7 @@ mod production_eq;
 pub mod production_identity;
 mod production_reverb;
 mod recording;
+pub mod sample_instrument;
 pub mod semantic;
 pub mod stdlib;
 pub mod syntax;

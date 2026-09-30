@@ -513,6 +513,9 @@ fn deliver_concrete(
         "instrument_dependencies":view.instruments.as_ref().map(|resources| &resources.dependencies),
         "source_files":view.instruments.as_ref().map(|resources| &resources.source_files),
         "wavetable_sources":view.instruments.as_ref().map(|resources| &resources.wavetable_sources)});
+    if let Some(resources) = view.instruments.filter(|r| !r.sample_sources.is_empty()) {
+        dependencies["sample_sources"] = json!(resources.sample_sources);
+    }
     if let Some(assets) = view.audio_assets {
         dependencies["audio_assets"] = json!(assets.iter().map(|asset| (asset.id.clone(),
             json!({"hash":asset.hash,"format":asset.format,"rate_hz":asset.rate_hz,"channels":asset.channels,"frames":asset.frames})))

@@ -360,6 +360,8 @@ fn instrument_resources() -> InstrumentResources {
         }],
         wavetables: Vec::new(),
         wavetable_sources: Vec::new(),
+        samples: Vec::new(),
+        sample_sources: Vec::new(),
         source_files: vec![maac::bundle::SourceIdentity {
             path: "fixture.maac".into(),
             hash: sha256_digest(source),

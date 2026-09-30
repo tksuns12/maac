@@ -250,6 +250,8 @@ fn add_instrument(v: &mut Value) {
         programs: vec![program],
         wavetables: vec![],
         wavetable_sources: vec![],
+        samples: Vec::new(),
+        sample_sources: Vec::new(),
         source_files: vec![maac::bundle::SourceIdentity {
             path: "retained.maac".into(),
             hash: maac::bundle::sha256_digest(b"manual retained fixture"),

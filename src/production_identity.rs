@@ -408,6 +408,7 @@ impl Normalizer<'_> {
                 | "instrument"
                 | "preset"
                 | "wavetable"
+                | "sample"
                 | "voice"
                 | "shared"
                 | "control"

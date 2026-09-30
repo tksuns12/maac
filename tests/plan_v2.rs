@@ -67,6 +67,8 @@ fn resources() -> InstrumentResources {
         programs: vec![program()],
         wavetables: Vec::new(),
         wavetable_sources: Vec::new(),
+        samples: Vec::new(),
+        sample_sources: Vec::new(),
         source_files: vec![
             SourceIdentity {
                 path: "score.maac".into(),

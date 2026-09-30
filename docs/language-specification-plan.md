@@ -37,12 +37,13 @@ future obligations remain separate from these completed slices.
 
 ## Current priorities
 
-**Reader and action:** P1–P10 are addressed within their
+**Reader and action:** P1–P12 are addressed within their
 bounded scopes. P5 adds exact score-window queries over validated resolved
 performances; P6 corrects execution normalization for existing expression and
 message events. P7 retains proven original-source UTF-8 byte ranges in editing
 and CLI patch diagnostics. P8 closes §19 region semantics; P9 proves normalizer agreement; P10 meets
-the §23 diagnostic location contract.
+the §23 diagnostic location contract. P11 executes `warp_preserve`; P12 adds
+pitched sample instruments.
 P2's [evidence map](document-performance-evidence.md) identified the final edit
 graph validation discrepancy corrected by P3. P4 implements the specified
 `materialize-instance` authoring operation. Contributors should retain implemented behavior and state separately
@@ -79,6 +80,8 @@ audio output device, or DAW session to establish its semantic results.
 | P8 — addressed 2026-09-30 | Close §19 region semantics | [D06](document-performance-evidence.md#document-obligations) left reversed/outside spans, overlap/nesting and nonacoustic behavior unverified; `validate_source` skipped range checks on `bar(b,u)` endpoints | Closed §19 rules in the specification, `bar` lowering through the project meter in `validate_source`, and [nine public region vector groups](../tests/regions.rs): accepted boundary/overlap/nesting, refusals in `q` and `bar` form, top-level-only placement, bit-identical events and audio, execution-hash span/label roles, and atomic span edits |
 | P9 — addressed 2026-09-30 | Prove editing and execution normalization agree | [D09](document-performance-evidence.md#document-obligations) left complete core normalization unverified; the only agreement vector was a single sine node | [Differential vectors](../tests/normalization_agreement.rs) over every core kind and compile-profile processor, omitted versus explicit defaults and equivalent spellings; unreachable tuning defaults removed. LFO/constant/modulate and unknown extensions stay outside this claim |
 | P10 — addressed 2026-09-30 | Meet the §23 location contract for every source code | [D14](document-performance-evidence.md#document-obligations) left comprehensive diagnostics unverified | Normative §23 path rules, a [21-code public catalog](../tests/diagnostic_catalog.rs), and location corrections in the parser, semantic validator and compiler; codes unchanged |
+| P11 — addressed 2026-09-30 | Execute §14.3 `warp_preserve` with a core reference stretch | [P07](document-performance-evidence.md#performance-obligations) listed `warp_preserve` as unsupported; §14.3 allowed only module-asset stretchers | Normative `core.stretch.ola/1` (Hann overlap-add, 20 ms hop, grains at the original rate), optional plan `stretch` field, and [six public vectors](../tests/warp_preserve.rs); module-asset and unknown stretchers stay `E_CAPABILITY` with no rate-warp fallback |
+| P12 — addressed 2026-09-30 | Add pitched sample instruments | [P07](document-performance-evidence.md#performance-obligations) listed pitched sample instruments as unsupported; `core.kit/1` is hit-only | Local-library `sample` declarations and the voice-graph [`synth.sample/1`](instruments.md#samples) processor: key zones, rate-converted pitched playback with continuous bends, forward sustain loops, shared embedded-sample budget, provenance and archive binding, and [seven public vectors](../tests/sample_instrument.rs) |
 
 P2/P3 are not a blanket promise to implement every profile, renderer algorithm,
 or external receiver. Unsupported capabilities must remain explicit. The
