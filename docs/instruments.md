@@ -520,5 +520,7 @@ graph limits and enforce them before allocation or rendering. Existing exact
 arithmetic, event, output duration, and mono/stereo limits remain applicable.
 
 Hosted discovery, registries, executable plugins, GUI editing, real-time audio,
-feedback, recorded-sample instruments, and human listening approval are outside
-this implementation. Listening evidence is recorded separately from tests.
+and feedback are outside this implementation. Recorded-sample instruments are
+the [samples](#samples) above. Listening evidence is recorded separately from
+tests; the only record so far is the informal
+[showcase approval](showcase-listening.md).

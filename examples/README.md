@@ -322,3 +322,23 @@ calculate the library hash again, and update the import pin in
 
 Automated checks establish deterministic, finite, nonsilent output and a
 PCM-safe peak for this fixture. No human listening approval is claimed.
+
+# Feature showcase
+
+[`showcase/showcase.maac`](showcase/showcase.maac) is a 53-second tour of the
+pitched sampler, sustain loops, velocity layers, key crossfades, asset-backed
+samples, and `warp_rate` versus `warp_preserve` on one recorded phrase. The
+score header lists each section's timing. All sounds are synthesized by
+[`generate.py`](showcase/generate.py), which also writes the score from
+`showcase.maac.in` with the sample hashes.
+
+```sh
+maac build examples/showcase/showcase.maac --project-root . --disk-media --profile song -o showcase.wav --format pcm16
+```
+
+Both flags are required: without `--disk-media` the plan exceeds its JSON
+byte limit, and the default profile's sample execution work is too small.
+When rendered, the first phrase note measured 440 Hz at the original speed,
+220 Hz and 880 Hz under `warp_rate`, and 420 Hz and 430 Hz under
+`warp_preserve`. Nothing clipped. The owner's informal listening approval is
+recorded in the [showcase listening record](../docs/showcase-listening.md).

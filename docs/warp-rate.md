@@ -149,6 +149,9 @@ PCM are compared with the committed rate-mode executable. Final verification
 includes formatting, Clippy, the full normal test suite, all three explicit
 metering audits, release/install, Python/specification/SRC checks, and independent
 Sol Max review. Automated checks do not assert human listening acceptance.
+The owner's informal approval of the [showcase render](showcase-listening.md),
+which includes `warp_rate` and `warp_preserve` sections, is the only listening
+record; it does not judge stretcher quality section by section.
 
 ## Preserve-pitch warping
 
