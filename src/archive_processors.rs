@@ -399,7 +399,7 @@ fn bind_instrument(view: &PlanView<'_>, id: &str) -> Result<InstrumentBinding, D
         .iter()
         .chain(program.shared.iter().flat_map(|graph| graph.nodes.iter()))
         .flat_map(|node| match &node.processor {
-            GraphProcessor::Sample { zones } => {
+            GraphProcessor::Sample { zones, .. } => {
                 zones.iter().map(|zone| zone.sample.as_str()).collect()
             }
             _ => Vec::new(),
@@ -652,7 +652,7 @@ fn validate_record(record: &ContextRecord) -> Result<(), Diagnostics> {
                             .flat_map(|graph| graph.nodes.iter()),
                     )
                     .flat_map(|graph_node| match &graph_node.processor {
-                        GraphProcessor::Sample { zones } => {
+                        GraphProcessor::Sample { zones, .. } => {
                             zones.iter().map(|zone| zone.sample.as_str()).collect()
                         }
                         _ => Vec::new(),

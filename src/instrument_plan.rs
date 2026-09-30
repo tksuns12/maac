@@ -284,7 +284,7 @@ impl InstrumentResources {
                 .chain(program.shared.as_ref().map(|graph| ("shared", graph)))
             {
                 for (node_index, node) in graph.nodes.iter().enumerate() {
-                    if let GraphProcessor::Sample { zones } = &node.processor {
+                    if let GraphProcessor::Sample { zones, .. } = &node.processor {
                         crate::sample_instrument::validate_zones(
                             zones,
                             &format!(

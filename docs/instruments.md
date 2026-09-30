@@ -432,26 +432,65 @@ b frame]` is a forward sustain loop with `0 <= a < b <= frames`. WAV samples
 share the embedded-sample budget (262,144 frames in total) with wavetables and
 are embedded in plans with their provenance. At most 64 samples may be declared.
 
-A voice-only `synth.sample/1` node selects samples with
-`config.zones = [{ sample = &s; low = <pitch>; high = <pitch>; }, ...]`.
-There are 1 through 128 zones. Their inclusive key ranges are listed in
-ascending, non-overlapping order, and each zone names a `sample` export by the
-same reference rules as `config.table`. At the voice's first rendered frame,
-the note frequency `f` (including any initial pitch expression, before node
-`ratio` and `frequency`) selects the zone with
-`low - 1/2 <= 69 + 12*log2(f/440) < high + 1/2`. A note in no zone fails with
-`E_RANGE`. It is never silently skipped or mapped to the nearest zone.
+A voice-only `synth.sample/1` node selects samples with 1 through 128 zones:
 
-Playback starts at frame 0. Each output frame reads the core linear
-interpolation at the current position and multiplies it by `level`, then
-advances the position by `(f*ratio + frequency) / root_hz *
-wav_rate / 48000`. Here `f` includes the current pitch expression, so bends
+```maac
+config = {
+  fade_shape = equal_power;
+  zones = [
+    { sample = &soft_c4; low = C3; high = F4; velocity = [0, 3/5]; velocity_fade = [0, 1/5]; },
+    { sample = &hard_c4; low = C3; high = F4; velocity = [2/5, 1]; velocity_fade = [1/5, 0]; key_fade = [0, 3]; },
+    { sample = &hard_g4; low = D4; high = C6; key_fade = [3, 0]; }
+  ];
+};
+```
+
+Each zone names a `sample` export, by the same reference rules as
+`config.table`, and an inclusive key range `low`..`high`. It may also give:
+
+- `velocity = [v0, v1]`: a layer with `0 <= v0 < v1 <= 1`, covering `[v0, v1)`
+  plus velocity 1 when `v1 = 1`. The default is `[0, 1]`.
+- `key_fade = [l, h]`: nonnegative fade widths in semitones, measured inward
+  from the low and high key edges. Their sum is at most the zone's key count.
+- `velocity_fade = [l, h]`: the same for the velocity edges, with a sum of at
+  most `v1 - v0`.
+
+Fades default to `[0, 0]`, which is a hard edge. Zones may be listed in any
+order and may overlap. The node's optional `fade_shape` is `linear` (the
+default) or `equal_power`. The editing and execution views expand all of these
+defaults.
+
+At the voice's first rendered frame, the note fixes the zones it plays. Its
+frequency `f` (including any initial pitch expression, before node `ratio` and
+`frequency`) gives the key position `k = 69 + 12*log2(f/440)`. Its note-on
+velocity is `v`. For each axis, a zone's gain is:
+
+- zero outside the axis interval. On the key axis that interval is
+  `[low - 1/2, high + 1/2)`;
+- otherwise `min(1, (x - a)/l, (b - x)/h)` over the axis interval `[a, b)`,
+  where a zero width omits its term;
+- mapped through `sin(pi*g/2)` when `fade_shape = equal_power`.
+
+A zone's gain is its key gain times its velocity gain. Every zone with a
+positive gain plays its own sample at that fixed gain, and the node output is
+the sum in zone order. Two zones that overlap by exactly their facing fade
+widths therefore crossfade, and overlapping zones without fades stack. A note
+whose zones all have zero gain fails with `E_RANGE`. It is never silently
+skipped or mapped to the nearest zone. Voice amplitude still multiplies by the
+note velocity, as for every instrument.
+
+Each playing zone starts at frame 0 of its sample. Each output frame reads
+the core linear interpolation at the zone's current position, weights it by the
+zone gain, and multiplies the sum by `level`. Each zone then advances its
+position by `(f*ratio + frequency) / root_hz * wav_rate / 48000`, using its own
+sample's root and recorded rate. Here `f` includes the current pitch expression, so bends
 stay continuous, and `root_hz = 440*2^((root-69)/12)`. The playback frequency
 must be positive. Inside a loop, reaching `b` wraps to `a + (position - a) mod
 (b - a)`, and the right neighbour of frame `b-1` is frame `a`, so the loop keeps
 sounding through release. Without a loop, values past the recording are zero.
 The voice still lives until its amplitude envelope finishes. No crossfade,
-velocity layer, normalization, or resampling filter is inferred. See the
+layer, normalization, or resampling filter is inferred beyond the declared
+zones. See the
 [sample vectors](../tests/sample_instrument.rs).
 
 ## Rust and interchange boundaries

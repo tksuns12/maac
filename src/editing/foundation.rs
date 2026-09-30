@@ -1200,6 +1200,7 @@ fn normalize_node_fields(fields: &mut Map<String, Value>, project_seed: &Value) 
                 }
             }
             "synth.sample/1" => {
+                crate::sample_instrument::expand_config_defaults(&mut config);
                 for (name, value) in [
                     ("ratio", number(1, 1)),
                     ("frequency", quantity(0, 1, Unit::Hz)),

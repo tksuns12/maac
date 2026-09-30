@@ -682,6 +682,9 @@ impl Normalizer<'_> {
                         | GraphProcessor::Lfo
                         | GraphProcessor::Pan
                 );
+                if let GraphProcessor::Sample { .. } = &node.processor {
+                    crate::sample_instrument::expand_config_defaults(&mut config);
+                }
                 if let GraphProcessor::Noise { seed } | GraphProcessor::Pluck { seed } =
                     &node.processor
                 {

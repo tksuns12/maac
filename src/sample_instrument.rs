@@ -12,6 +12,9 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+use num_traits::{One, Signed, ToPrimitive, Zero};
+
+use crate::exact::Rational;
 use crate::plan::PlanError;
 
 /// Declarations per library set, matching the wavetable declaration limit.
@@ -62,13 +65,58 @@ pub struct SampleSource {
     pub hash: String,
 }
 
-/// Inclusive key range `[low_key, high_key]` played by one embedded sample.
+/// Inclusive key range `[low_key, high_key]` played by one sample, with an
+/// optional velocity layer and per-edge crossfade widths.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SampleZone {
     pub sample: String,
     pub low_key: i64,
     pub high_key: i64,
+    /// Velocity layer `[low, high)`; `high = 1` includes velocity 1.
+    /// Absent means the whole range `[0, 1]`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub velocity: Option<SamplePair>,
+    /// Fade widths in semitones inward from the low and high key edges.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_fade: Option<SamplePair>,
+    /// Fade widths inward from the low and high velocity edges.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub velocity_fade: Option<SamplePair>,
+}
+
+/// An exact `[low, high]` pair of dimensionless rationals.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SamplePair {
+    #[serde(with = "crate::plan::rational_serde")]
+    pub low: Rational,
+    #[serde(with = "crate::plan::rational_serde")]
+    pub high: Rational,
+}
+
+impl SamplePair {
+    fn f64s(&self) -> (f64, f64) {
+        (
+            self.low.to_f64().unwrap_or(f64::NAN),
+            self.high.to_f64().unwrap_or(f64::NAN),
+        )
+    }
+}
+
+/// Crossfade curve applied to each axis gain of a sample zone.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SampleFadeShape {
+    #[default]
+    Linear,
+    EqualPower,
+}
+
+impl SampleFadeShape {
+    pub fn is_linear(&self) -> bool {
+        *self == Self::Linear
+    }
 }
 
 fn error(code: &str, path: impl Into<String>, message: impl Into<String>) -> PlanError {
@@ -331,7 +379,8 @@ impl SamplePlayback {
     }
 }
 
-/// Validate a node's zones against the embedded sample identifiers.
+/// Validate a node's zones against the embedded sample identifiers. Zones
+/// may overlap: every zone containing a note plays at its crossfade gain.
 pub fn validate_zones(
     zones: &[SampleZone],
     path: &str,
@@ -348,7 +397,6 @@ pub fn validate_zones(
             format!("sample nodes require 1 through {MAX_SAMPLE_ZONES} zones"),
         ));
     }
-    let mut previous_high = None;
     for (index, zone) in zones.iter().enumerate() {
         let zone_path = format!("{path}.zones[{index}]");
         if !key_in_range(zone.low_key)
@@ -361,14 +409,32 @@ pub fn validate_zones(
                 format!("zone keys must satisfy 0 <= low <= high <= {MAX_SAMPLE_KEY}"),
             ));
         }
-        if previous_high.is_some_and(|high| zone.low_key <= high) {
+        let (v0, v1) = velocity_bounds(zone);
+        if v0.is_negative() || v0 >= v1 || v1 > Rational::one() {
             return Err(error(
                 "E_RANGE",
-                zone_path,
-                "zones must be listed in ascending, non-overlapping key order",
+                format!("{zone_path}.velocity"),
+                "zone velocity must satisfy 0 <= low < high <= 1",
             ));
         }
-        previous_high = Some(zone.high_key);
+        let key_span = Rational::from_integer((zone.high_key - zone.low_key + 1).into());
+        for (fade, span, name) in [
+            (&zone.key_fade, key_span, "key_fade"),
+            (&zone.velocity_fade, &v1 - &v0, "velocity_fade"),
+        ] {
+            if let Some(fade) = fade {
+                if fade.low.is_negative()
+                    || fade.high.is_negative()
+                    || &fade.low + &fade.high > span
+                {
+                    return Err(error(
+                        "E_RANGE",
+                        format!("{zone_path}.{name}"),
+                        format!("{name} widths must be nonnegative and fit inside the zone"),
+                    ));
+                }
+            }
+        }
         if !known(&zone.sample) {
             return Err(error(
                 "E_REFERENCE",
@@ -380,16 +446,106 @@ pub fn validate_zones(
     Ok(())
 }
 
-/// The zone whose keys contain the nearest 12-TET key position of
-/// `frequency_hz`: `low - 1/2 <= 69 + 12*log2(f/440) < high + 1/2`.
-pub fn zone_for<'a>(
-    zones: impl IntoIterator<Item = &'a SampleZone>,
+fn velocity_bounds(zone: &SampleZone) -> (Rational, Rational) {
+    zone.velocity.as_ref().map_or_else(
+        || (Rational::zero(), Rational::one()),
+        |pair| (pair.low.clone(), pair.high.clone()),
+    )
+}
+
+/// Gain of one axis: zero outside `[a, b)`, rising over `fade_low` from `a`
+/// and falling over `fade_high` towards `b`, the lower of the two ramps.
+fn axis_gain(
+    x: f64,
+    a: f64,
+    b: f64,
+    inside: bool,
+    fades: (f64, f64),
+    shape: SampleFadeShape,
+) -> f64 {
+    if !inside {
+        return 0.0;
+    }
+    let (fade_low, fade_high) = fades;
+    let mut gain: f64 = 1.0;
+    if fade_low > 0.0 {
+        gain = gain.min((x - a) / fade_low);
+    }
+    if fade_high > 0.0 {
+        gain = gain.min((b - x) / fade_high);
+    }
+    let gain = gain.clamp(0.0, 1.0);
+    match shape {
+        SampleFadeShape::Linear => gain,
+        SampleFadeShape::EqualPower => (std::f64::consts::FRAC_PI_2 * gain).sin(),
+    }
+}
+
+/// Every zone that plays a note, with its gain. The key position is the
+/// nearest 12-TET position `69 + 12*log2(f/440)`; a zone's key axis covers
+/// `[low - 1/2, high + 1/2)` and its velocity axis `[v0, v1)`, including
+/// velocity 1 when `v1 = 1`. The gain is the product of both axis gains.
+pub fn zone_gains(
+    zones: &[SampleZone],
     frequency_hz: f64,
-) -> Option<usize> {
+    velocity: f64,
+    shape: SampleFadeShape,
+) -> Vec<(usize, f64)> {
     let position = 69.0 + 12.0 * (frequency_hz / 440.0).log2();
-    zones.into_iter().position(|zone| {
-        position >= zone.low_key as f64 - 0.5 && position < zone.high_key as f64 + 0.5
-    })
+    zones
+        .iter()
+        .enumerate()
+        .filter_map(|(index, zone)| {
+            let (a, b) = (zone.low_key as f64 - 0.5, zone.high_key as f64 + 0.5);
+            let key_fades = zone.key_fade.as_ref().map_or((0.0, 0.0), SamplePair::f64s);
+            let key = axis_gain(
+                position,
+                a,
+                b,
+                position >= a && position < b,
+                key_fades,
+                shape,
+            );
+            let (v0, v1) = velocity_bounds(zone);
+            let (v0, top) = (v0.to_f64().unwrap_or(f64::NAN), v1.is_one());
+            let v1 = v1.to_f64().unwrap_or(f64::NAN);
+            let inside = velocity >= v0 && (velocity < v1 || (top && velocity == v1));
+            let velocity_fades = zone
+                .velocity_fade
+                .as_ref()
+                .map_or((0.0, 0.0), SamplePair::f64s);
+            let gain = key * axis_gain(velocity, v0, v1, inside, velocity_fades, shape);
+            (gain > 0.0).then_some((index, gain))
+        })
+        .collect()
+}
+
+/// Expand `synth.sample/1` config defaults in a normalized typed record:
+/// `fade_shape = linear` and, per zone, `velocity = [0, 1]` and zero
+/// `key_fade`/`velocity_fade`. Shared by the editing and execution views.
+pub(crate) fn expand_config_defaults(config: &mut serde_json::Map<String, serde_json::Value>) {
+    use serde_json::json;
+    let number = |n: i64| json!({"t": "number", "n": n.to_string(), "d": "1"});
+    let pair = |low: i64, high: i64| json!({"t": "list", "items": [number(low), number(high)]});
+    config
+        .entry("fade_shape")
+        .or_insert_with(|| json!({"t": "symbol", "v": "linear"}));
+    if let Some(items) = config
+        .get_mut("zones")
+        .and_then(|zones| zones.get_mut("items"))
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        for zone in items {
+            if let Some(fields) = zone
+                .get_mut("fields")
+                .and_then(serde_json::Value::as_object_mut)
+            {
+                fields.entry("velocity").or_insert_with(|| pair(0, 1));
+                fields.entry("key_fade").or_insert_with(|| pair(0, 0));
+                fields.entry("velocity_fade").or_insert_with(|| pair(0, 0));
+            }
+        }
+    }
 }
 
 fn wav_error(source: hound::Error) -> PlanError {

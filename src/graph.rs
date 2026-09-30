@@ -58,6 +58,11 @@ pub enum GraphProcessor {
     #[serde(rename = "synth.sample/1")]
     Sample {
         zones: Vec<crate::sample_instrument::SampleZone>,
+        #[serde(
+            default,
+            skip_serializing_if = "crate::sample_instrument::SampleFadeShape::is_linear"
+        )]
+        fade_shape: crate::sample_instrument::SampleFadeShape,
     },
     #[serde(rename = "synth.adsr/1")]
     Adsr,
@@ -99,6 +104,8 @@ enum GraphProcessorWire {
     #[serde(rename = "synth.sample/1")]
     Sample {
         zones: Vec<crate::sample_instrument::SampleZone>,
+        #[serde(default)]
+        fade_shape: crate::sample_instrument::SampleFadeShape,
     },
     #[serde(rename = "synth.adsr/1")]
     Adsr {},
@@ -139,7 +146,7 @@ impl<'de> Deserialize<'de> for GraphProcessor {
             }
             GraphProcessorWire::Pluck { seed } => Self::Pluck { seed },
             GraphProcessorWire::Wavetable { table } => Self::Wavetable { table },
-            GraphProcessorWire::Sample { zones } => Self::Sample { zones },
+            GraphProcessorWire::Sample { zones, fade_shape } => Self::Sample { zones, fade_shape },
             GraphProcessorWire::Adsr {} => Self::Adsr,
             GraphProcessorWire::Timbre {} => Self::Timbre,
             GraphProcessorWire::Pressure {} => Self::Pressure,
@@ -1098,7 +1105,7 @@ fn validate_processor(
         | GraphProcessor::HighPass { channels }
         | GraphProcessor::Mix { channels } => validate_channels(*channels, path)?,
         GraphProcessor::Wavetable { table } => validate_identifier(table, format!("{path}.table"))?,
-        GraphProcessor::Sample { zones } => {
+        GraphProcessor::Sample { zones, .. } => {
             for (index, zone) in zones.iter().enumerate() {
                 validate_identifier(&zone.sample, format!("{path}.zones[{index}].sample"))?;
             }

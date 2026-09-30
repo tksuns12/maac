@@ -7,7 +7,7 @@ use crate::graph::{
     InstrumentProgram, ParameterRate, ParameterSpec, MAX_GRAPH_NODES,
 };
 use crate::plan::{GainExpression, PitchExpression, PressureExpression, TimbreExpression};
-use crate::sample_instrument::{SamplePlayback, SampleZone};
+use crate::sample_instrument::{SampleFadeShape, SamplePlayback, SampleZone};
 use crate::synth::{Adsr, Oscillator, Waveform};
 use crate::wavetable::TableBank;
 use num_traits::ToPrimitive;
@@ -75,7 +75,7 @@ enum ProcessorCode {
     Noise(u32),
     Pluck(u32),
     Wavetable(Arc<TableBank>),
-    Sample(Vec<(SampleZone, Arc<SamplePlayback>)>),
+    Sample(Arc<CompiledSampleNode>),
     Adsr,
     Lfo,
     Timbre,
@@ -85,6 +85,22 @@ enum ProcessorCode {
     HighPass(usize),
     Mix(usize),
     Pan,
+}
+
+/// A `synth.sample/1` node's zones, bound sample data, and fade curve.
+#[derive(Debug)]
+struct CompiledSampleNode {
+    zones: Vec<SampleZone>,
+    playbacks: Vec<Arc<SamplePlayback>>,
+    fade_shape: SampleFadeShape,
+}
+
+/// One sounding zone of a sample voice with its fixed gain and position.
+#[derive(Clone, Debug)]
+struct SampleLayer {
+    zone: usize,
+    gain: f64,
+    position: f64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -167,10 +183,11 @@ enum ProcessorState {
     Wavetable {
         phase: f64,
     },
-    /// The zone is chosen at the voice's first rendered frame.
+    /// Layers are chosen at the voice's first rendered frame from the note
+    /// frequency and the note-on velocity captured here.
     Sample {
-        zone: Option<usize>,
-        position: f64,
+        velocity: f64,
+        layers: Option<Vec<SampleLayer>>,
     },
     Adsr(Adsr),
     Lfo(Oscillator),
@@ -390,7 +407,7 @@ impl InstrumentRuntime {
             pressure_expression,
             on_frame: frame,
             released: false,
-            graph: GraphState::new_voice(&self.program.voice, &self.controls, frame)?,
+            graph: GraphState::new_voice(&self.program.voice, &self.controls, frame, velocity)?,
         };
         if self.program.voice.has_note_on_modulations {
             let (pitch_hz, timbre, pressure) = voice.expression_inputs(frame, self.rate)?;
@@ -620,19 +637,30 @@ impl VoiceState {
 }
 
 impl GraphState {
-    fn new_voice(graph: &CompiledGraph, controls: &[f64], frame: u64) -> Result<Self> {
-        Self::new(graph, controls, Some(frame))
+    fn new_voice(
+        graph: &CompiledGraph,
+        controls: &[f64],
+        frame: u64,
+        velocity: f64,
+    ) -> Result<Self> {
+        Self::new(graph, controls, Some(frame), velocity)
     }
 
     fn new_shared(graph: &CompiledGraph, controls: &[f64], rate: f64) -> Result<Self> {
-        let mut state = Self::new(graph, controls, None)?;
+        // Shared graphs contain no velocity-sensitive (voice-only) nodes.
+        let mut state = Self::new(graph, controls, None, 0.0)?;
         if graph.has_reset_modulations {
             state.capture_reset(graph, controls, rate)?;
         }
         Ok(state)
     }
 
-    fn new(graph: &CompiledGraph, controls: &[f64], on_frame: Option<u64>) -> Result<Self> {
+    fn new(
+        graph: &CompiledGraph,
+        controls: &[f64],
+        on_frame: Option<u64>,
+        velocity: f64,
+    ) -> Result<Self> {
         let mut nodes = Vec::with_capacity(graph.nodes.len());
         for node in &graph.nodes {
             let mut params = node.base_params.clone();
@@ -648,8 +676,8 @@ impl GraphState {
                 }
                 ProcessorCode::Wavetable(_) => ProcessorState::Wavetable { phase: params[2] },
                 ProcessorCode::Sample(_) => ProcessorState::Sample {
-                    zone: None,
-                    position: 0.0,
+                    velocity,
+                    layers: None,
                 },
                 ProcessorCode::Adsr => ProcessorState::Adsr(Adsr::new(
                     on_frame.unwrap_or(0),
@@ -1245,31 +1273,7 @@ fn process_graph_node(
                 *phase = (*phase + frequency / rate).rem_euclid(1.0);
             }
         }
-        (ProcessorCode::Sample(zones), ProcessorState::Sample { zone, position }) => {
-            let selected = match *zone {
-                Some(selected) => selected,
-                None => {
-                    let selected = crate::sample_instrument::zone_for(
-                        zones.iter().map(|(zone, _)| zone),
-                        pitch_hz,
-                    )
-                    .ok_or_else(|| {
-                        RenderError::Plan(crate::plan::err(
-                            "E_RANGE",
-                            "instruments.sample",
-                            format!(
-                                "note frequency {pitch_hz} Hz is outside every zone of sample node {}",
-                                compiled.id
-                            ),
-                        ))
-                    })?;
-                    if commit {
-                        *zone = Some(selected);
-                    }
-                    selected
-                }
-            };
-            let sample = &zones[selected].1;
+        (ProcessorCode::Sample(node), ProcessorState::Sample { velocity, layers }) => {
             let frequency = pitch_hz * params[0] + params[1];
             validate_frequency(frequency)?;
             if frequency <= 0.0 {
@@ -1278,11 +1282,53 @@ fn process_graph_node(
                     compiled.id
                 )));
             }
-            output[0] = sample.value(*position).map_err(RenderError::Plan)? * params[2];
+            let mut chosen = None;
+            let current = match layers {
+                Some(current) => current,
+                None => {
+                    let gains = crate::sample_instrument::zone_gains(
+                        &node.zones,
+                        pitch_hz,
+                        *velocity,
+                        node.fade_shape,
+                    );
+                    if gains.is_empty() {
+                        return Err(RenderError::Plan(crate::plan::err(
+                            "E_RANGE",
+                            "instruments.sample",
+                            format!(
+                                "note at {pitch_hz} Hz and velocity {velocity} is outside every zone of sample node {}",
+                                compiled.id
+                            ),
+                        )));
+                    }
+                    chosen.insert(
+                        gains
+                            .into_iter()
+                            .map(|(zone, gain)| SampleLayer {
+                                zone,
+                                gain,
+                                position: 0.0,
+                            })
+                            .collect::<Vec<_>>(),
+                    )
+                }
+            };
+            let mut sum = 0.0;
+            for layer in current.iter_mut() {
+                let playback = &node.playbacks[layer.zone];
+                sum += layer.gain * playback.value(layer.position).map_err(RenderError::Plan)?;
+                if commit {
+                    let recorded = playback.sample();
+                    let step = frequency / recorded.root_hz() * f64::from(recorded.rate_hz) / rate;
+                    layer.position = playback.advance(layer.position, step);
+                }
+            }
+            output[0] = sum * params[2];
             if commit {
-                let recorded = sample.sample();
-                let step = frequency / recorded.root_hz() * f64::from(recorded.rate_hz) / rate;
-                *position = sample.advance(*position, step);
+                if let Some(chosen) = chosen {
+                    *layers = Some(chosen);
+                }
             }
         }
         (ProcessorCode::Adsr, ProcessorState::Adsr(envelope)) => {
@@ -1492,22 +1538,23 @@ fn compile_processor(
                 RenderError::RenderState(format!("wavetable {table} has no prebuilt table bank"))
             })?),
         ),
-        GraphProcessor::Sample { zones } => (
+        GraphProcessor::Sample { zones, fade_shape } => (
             &["ratio", "frequency", "level"],
-            ProcessorCode::Sample(
-                zones
+            ProcessorCode::Sample(Arc::new(CompiledSampleNode {
+                zones: zones.clone(),
+                playbacks: zones
                     .iter()
                     .map(|zone| {
-                        let sample = samples.get(&zone.sample).cloned().ok_or_else(|| {
+                        samples.get(&zone.sample).cloned().ok_or_else(|| {
                             RenderError::RenderState(format!(
                                 "sample {} is not embedded",
                                 zone.sample
                             ))
-                        })?;
-                        Ok((zone.clone(), sample))
+                        })
                     })
                     .collect::<Result<_>>()?,
-            ),
+                fade_shape: *fade_shape,
+            })),
         ),
         GraphProcessor::Adsr => (
             &["attack", "decay", "sustain", "release"],

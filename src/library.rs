@@ -1180,13 +1180,20 @@ fn lower_sample_zones(
             ));
         };
         let names = record.keys().map(String::as_str).collect::<BTreeSet<_>>();
-        if names != BTreeSet::from(["high", "low", "sample"]) {
+        let optional = BTreeSet::from(["key_fade", "velocity", "velocity_fade"]);
+        if !["high", "low", "sample"]
+            .iter()
+            .all(|name| names.contains(name))
+            || names
+                .iter()
+                .any(|name| !matches!(*name, "high" | "low" | "sample") && !optional.contains(name))
+        {
             return Err(field_error(
                 DiagnosticCode::UnknownField,
                 file,
                 object,
                 field,
-                "zone records contain exactly sample, low, and high",
+                "zone records contain sample, low, and high, and optionally velocity, key_fade, and velocity_fade",
             ));
         }
         let sample_field = &record["sample"];
@@ -1200,15 +1207,60 @@ fn lower_sample_zones(
                 "zone sample does not name a sample export",
             )
         })?;
+        let pair = |name: &str| {
+            record
+                .get(name)
+                .map(|pair_field| number_pair(pair_field, file, object))
+                .transpose()
+        };
         zones.push(SampleZone {
             sample: format!("sample_{index}"),
             low_key: key_value(&record["low"].value, file, object, &record["low"])?,
             high_key: key_value(&record["high"].value, file, object, &record["high"])?,
+            velocity: pair("velocity")?,
+            key_fade: pair("key_fade")?,
+            velocity_fade: pair("velocity_fade")?,
         });
     }
     crate::sample_instrument::validate_zones(&zones, "zones", |_| true)
         .map_err(|error| plan_diagnostics(error, file, object))?;
     Ok(zones)
+}
+
+/// A `[low, high]` list of two exact dimensionless numbers.
+fn number_pair(
+    field: &Field,
+    file: &str,
+    object: &Object,
+) -> Result<crate::sample_instrument::SamplePair, Diagnostics> {
+    match &field.value.kind {
+        ValueKind::List(items) => match items.as_slice() {
+            [Value {
+                kind: ValueKind::Number(low),
+                ..
+            }, Value {
+                kind: ValueKind::Number(high),
+                ..
+            }] => Ok(crate::sample_instrument::SamplePair {
+                low: low.clone(),
+                high: high.clone(),
+            }),
+            _ => Err(field_error(
+                DiagnosticCode::Unit,
+                file,
+                object,
+                field,
+                format!("{} requires two dimensionless numbers", field.name),
+            )),
+        },
+        _ => Err(field_error(
+            DiagnosticCode::Unit,
+            file,
+            object,
+            field,
+            format!("{} requires [low, high]", field.name),
+        )),
+    }
 }
 
 fn lower_instrument(
@@ -1486,9 +1538,35 @@ fn lower_graph_node(
             }
         }
         "synth.sample/1" => {
-            let config = exact_record(config, &["zones"], file, object, &identity)?;
+            let config = match config {
+                Some(config) if config.contains_key("fade_shape") => exact_record(
+                    Some(config),
+                    &["fade_shape", "zones"],
+                    file,
+                    object,
+                    &identity,
+                )?,
+                config => exact_record(config, &["zones"], file, object, &identity)?,
+            };
+            let fade_shape = match config.get("fade_shape") {
+                None => crate::sample_instrument::SampleFadeShape::Linear,
+                Some(field) => match field.value.as_symbol() {
+                    Some("linear") => crate::sample_instrument::SampleFadeShape::Linear,
+                    Some("equal_power") => crate::sample_instrument::SampleFadeShape::EqualPower,
+                    _ => {
+                        return Err(field_error(
+                            DiagnosticCode::Range,
+                            file,
+                            object,
+                            field,
+                            "fade_shape must be linear or equal_power",
+                        ))
+                    }
+                },
+            };
             GraphProcessor::Sample {
                 zones: lower_sample_zones(bundle, file, object, &config["zones"], exports)?,
+                fade_shape,
             }
         }
         _ => {

@@ -3242,7 +3242,8 @@ impl<'a> PlanView<'a> {
                         if let crate::graph::GraphProcessor::Wavetable { table } = &node.processor {
                             count_string(table, format!("{node_path}.processor.table"))?;
                         }
-                        if let crate::graph::GraphProcessor::Sample { zones } = &node.processor {
+                        if let crate::graph::GraphProcessor::Sample { zones, .. } = &node.processor
+                        {
                             for (zone_index, zone) in zones.iter().enumerate() {
                                 count_string(
                                     &zone.sample,

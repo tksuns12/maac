@@ -259,8 +259,33 @@ fn invalid_declarations_and_zones_are_refused() {
         ),
         (
             "root = A4;",
-            "{ sample = &tone; low = key(0); high = key(64); }, { sample = &tone; low = key(64); high = key(127); }",
+            "{ sample = &tone; low = key(0); high = key(127); velocity = [1/2, 1/2]; }",
             DiagnosticCode::Range,
+        ),
+        (
+            "root = A4;",
+            "{ sample = &tone; low = key(0); high = key(127); velocity = [0, 2]; }",
+            DiagnosticCode::Range,
+        ),
+        (
+            "root = A4;",
+            "{ sample = &tone; low = key(60); high = key(61); key_fade = [2, 1]; }",
+            DiagnosticCode::Range,
+        ),
+        (
+            "root = A4;",
+            "{ sample = &tone; low = key(0); high = key(127); velocity = [0, 1/2]; velocity_fade = [1/4, 1/2]; }",
+            DiagnosticCode::Range,
+        ),
+        (
+            "root = A4;",
+            "{ sample = &tone; low = key(0); high = key(127); velocity_fade = [-1/4, 0]; }",
+            DiagnosticCode::Range,
+        ),
+        (
+            "root = A4;",
+            "{ sample = &tone; low = key(0); high = key(127); velocity = 1; }",
+            DiagnosticCode::Unit,
         ),
         (
             "root = A4;",
@@ -446,4 +471,128 @@ fn asset_backed_sample_refusals() {
     wire["instruments"]["samples"][0]["asset"]["frames"] = 479.into();
     let error = maac::PlanArtifact::from_json(&serde_json::to_vec(&wire).unwrap()).unwrap_err();
     assert_eq!(error.code, "E_ASSET", "{error:?}");
+}
+
+/// Constant-valued samples make zone gains directly observable.
+fn constant(name: &'static str, value: f32) -> Sample<'static> {
+    Sample {
+        name,
+        values: vec![value; 48_000],
+        rate: 48_000,
+        extra: "root = A4;",
+    }
+}
+
+fn first_frame(samples: &[Sample<'_>], zones: &str, note: &str, fade: &str) -> f64 {
+    let mut bundle = bundle(
+        samples,
+        zones,
+        &format!("note n {{ at = 0q; dur = 1q; {note} }}"),
+    );
+    if !fade.is_empty() {
+        let source = bundle.sources["main.maac"].replace(
+            "config = { zones = [",
+            &format!("config = {{ fade_shape = {fade}; zones = ["),
+        );
+        bundle.sources.insert("main.maac".into(), source);
+    }
+    audio(&compile_bundle(&bundle).unwrap())[10]
+}
+
+#[test]
+fn velocity_layers_choose_samples_by_note_velocity() {
+    let samples = [constant("soft", 0.25), constant("loud", 0.75)];
+    let zones = "{ sample = &soft; low = key(0); high = key(127); velocity = [0, 1/2]; }, \
+                 { sample = &loud; low = key(0); high = key(127); velocity = [1/2, 1]; }";
+    // Voice amplitude is the envelope times velocity, so divide it out.
+    let soft = first_frame(&samples, zones, "pitch = A4; velocity = 3/10;", "");
+    assert!((soft / 0.3 - 0.25).abs() < 1e-12, "{soft}");
+    let loud = first_frame(&samples, zones, "pitch = A4; velocity = 1/2;", "");
+    assert!((loud / 0.5 - 0.75).abs() < 1e-12, "{loud}");
+    let top = first_frame(&samples, zones, "pitch = A4; velocity = 1;", "");
+    assert!((top - 0.75).abs() < 1e-12, "{top}");
+}
+
+#[test]
+fn key_crossfades_sum_complementary_gains() {
+    let samples = [constant("low", 1.0), constant("high", 0.5)];
+    // Keys 60..64 overlap; each zone fades across the 5-semitone overlap.
+    let zones = "{ sample = &low; low = key(0); high = key(64); key_fade = [0, 5]; }, \
+                 { sample = &high; low = key(60); high = key(127); key_fade = [5, 0]; }";
+    for (key, low_gain) in [(59, 1.0), (60, 0.9), (62, 0.5), (64, 0.1), (65, 0.0)] {
+        let note = format!("pitch = key({key});");
+        let value = first_frame(&samples, zones, &note, "");
+        let expected = low_gain * 1.0 + (1.0 - low_gain) * 0.5;
+        assert!((value - expected).abs() < 1e-12, "key {key}: {value}");
+        let equal = first_frame(&samples, zones, &note, "equal_power");
+        let shape = |x: f64| (std::f64::consts::FRAC_PI_2 * x).sin();
+        let expected = shape(low_gain) * 1.0 + shape(1.0 - low_gain) * 0.5;
+        assert!((equal - expected).abs() < 1e-12, "key {key}: {equal}");
+    }
+}
+
+#[test]
+fn velocity_crossfades_and_unfaded_overlaps_stack() {
+    let samples = [constant("soft", 1.0), constant("loud", 0.5)];
+    let zones = "{ sample = &soft; low = key(0); high = key(127); velocity = [0, 3/5]; velocity_fade = [0, 1/5]; }, \
+                 { sample = &loud; low = key(0); high = key(127); velocity = [2/5, 1]; velocity_fade = [1/5, 0]; }";
+    let value = first_frame(&samples, zones, "pitch = A4; velocity = 1/2;", "");
+    // Velocity 1/2 is halfway through the [2/5, 3/5) crossfade.
+    assert!((value / 0.5 - 0.75).abs() < 1e-12, "{value}");
+
+    let stacked = "{ sample = &soft; low = key(0); high = key(127); }, \
+                   { sample = &loud; low = key(60); high = key(80); }";
+    let value = first_frame(&samples, stacked, "pitch = A4;", "");
+    assert!((value - 1.5).abs() < 1e-12, "{value}");
+}
+
+#[test]
+fn fade_shape_must_be_known() {
+    let samples = [constant("low", 1.0)];
+    let mut bundle = bundle(
+        &samples,
+        "{ sample = &low; low = key(0); high = key(127); }",
+        "note n { at = 0q; dur = 1q; pitch = A4; }",
+    );
+    let source = bundle.sources["main.maac"].replace(
+        "config = { zones = [",
+        "config = { fade_shape = cubic; zones = [",
+    );
+    bundle.sources.insert("main.maac".into(), source);
+    assert!(codes(&bundle).contains(&DiagnosticCode::Range));
+}
+
+#[test]
+fn zone_defaults_do_not_change_execution_identity() {
+    let identity = |zones: &str, fade: &str| {
+        let bundle = bundle(
+            &[constant("low", 1.0)],
+            zones,
+            "note n { at = 0q; dur = 1q; pitch = A4; }",
+        );
+        let mut source = bundle.sources["main.maac"].clone();
+        if !fade.is_empty() {
+            source = source.replace(
+                "config = { zones = [",
+                &format!("config = {{ fade_shape = {fade}; zones = ["),
+            );
+        }
+        let mut bundle = bundle;
+        bundle.sources.insert("main.maac".into(), source.clone());
+        let plan = compile_bundle(&bundle).unwrap();
+        maac::production_identity::execution_identity(&maac::parse(&source).unwrap(), &plan)
+            .unwrap()
+            .execution_hash
+    };
+    let omitted = identity("{ sample = &low; low = key(0); high = key(127); }", "");
+    let explicit = identity(
+        "{ sample = &low; low = key(0); high = key(127); velocity = [0, 1]; key_fade = [0, 0]; velocity_fade = [0, 0]; }",
+        "linear",
+    );
+    assert_eq!(omitted, explicit);
+    let layered = identity(
+        "{ sample = &low; low = key(0); high = key(127); velocity = [0, 1/2]; }",
+        "",
+    );
+    assert_ne!(omitted, layered);
 }
