@@ -443,12 +443,6 @@ impl Normalizer<'_> {
                     .entry("requires")
                     .or_insert_with(|| json!({"t":"list","items":[]}));
             }
-            "tuning" => {
-                fields.entry("reference_index").or_insert_with(|| number(0));
-                fields
-                    .entry("reference_frequency")
-                    .or_insert_with(|| quantity(440, 1, Unit::Hz));
-            }
             "note" => {
                 for (name, value) in [
                     ("velocity", number(1)),

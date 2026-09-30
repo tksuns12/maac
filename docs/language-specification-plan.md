@@ -37,11 +37,12 @@ future obligations remain separate from these completed slices.
 
 ## Current priorities
 
-**Reader and action:** P1, P2, P3, P4, P5, P6, and P7 are addressed within their
+**Reader and action:** P1–P10 are addressed within their
 bounded scopes. P5 adds exact score-window queries over validated resolved
 performances; P6 corrects execution normalization for existing expression and
 message events. P7 retains proven original-source UTF-8 byte ranges in editing
-and CLI patch diagnostics.
+and CLI patch diagnostics. P8 closes §19 region semantics; P9 proves normalizer agreement; P10 meets
+the §23 diagnostic location contract.
 P2's [evidence map](document-performance-evidence.md) identified the final edit
 graph validation discrepancy corrected by P3. P4 implements the specified
 `materialize-instance` authoring operation. Contributors should retain implemented behavior and state separately
@@ -75,6 +76,9 @@ audio output device, or DAW session to establish its semantic results.
 | P5 — addressed 2026-09-28 | Query expanded events over an exact score window | §10 promises full event intervals and source addresses for intersecting notes, but [P04](document-performance-evidence.md#performance-obligations) had no public narrow-window query evidence | [Score-window contract and scoped verification](windowed-event-query.md#verification): public artifact query and CLI, fixed interval/address vectors, full validation, and bounded resource behavior; no lazy-expansion claim |
 | P6 — addressed 2026-09-29 | Normalize existing expression children and message events for execution identity | Valid expression and message compositions compiled outside production but failed at execution normalization when production identity was attached; the [D09 map](document-performance-evidence.md#document-obligations) left complete normalization unverified | [Bounded correction and verification](execution-event-normalization.md#verification): identity vectors, production compilation, artifact/P5 query compatibility, atomic edit regression, unchanged unsupported receiver behavior, and the complete Cargo-built Rust test inventory |
 | P7 — addressed 2026-09-29 | Preserve available original-source locations in editing and CLI patch errors | [D14](document-performance-evidence.md#document-obligations) left span preservation through `EditError` unverified | [Original-source diagnostic contract and verification](editing-diagnostics.md): parser spans, authored value/record/child locations, surviving rename identity, conservative unknown provenance, atomic refusal, CLI code/path/location, and public API compatibility |
+| P8 — addressed 2026-09-30 | Close §19 region semantics | [D06](document-performance-evidence.md#document-obligations) left reversed/outside spans, overlap/nesting and nonacoustic behavior unverified; `validate_source` skipped range checks on `bar(b,u)` endpoints | Closed §19 rules in the specification, `bar` lowering through the project meter in `validate_source`, and [nine public region vector groups](../tests/regions.rs): accepted boundary/overlap/nesting, refusals in `q` and `bar` form, top-level-only placement, bit-identical events and audio, execution-hash span/label roles, and atomic span edits |
+| P9 — addressed 2026-09-30 | Prove editing and execution normalization agree | [D09](document-performance-evidence.md#document-obligations) left complete core normalization unverified; the only agreement vector was a single sine node | [Differential vectors](../tests/normalization_agreement.rs) over every core kind and compile-profile processor, omitted versus explicit defaults and equivalent spellings; unreachable tuning defaults removed. LFO/constant/modulate and unknown extensions stay outside this claim |
+| P10 — addressed 2026-09-30 | Meet the §23 location contract for every source code | [D14](document-performance-evidence.md#document-obligations) left comprehensive diagnostics unverified | Normative §23 path rules, a [21-code public catalog](../tests/diagnostic_catalog.rs), and location corrections in the parser, semantic validator and compiler; codes unchanged |
 
 P2/P3 are not a blanket promise to implement every profile, renderer algorithm,
 or external receiver. Unsupported capabilities must remain explicit. The

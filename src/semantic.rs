@@ -17,6 +17,7 @@ use num_traits::{One, ToPrimitive, Zero};
 
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Diagnostics, Span};
 use crate::graph::{GraphUnit, ParameterRate, ParameterSpec};
+use crate::music::{MeterMap, MeterPoint, MusicErrorCode};
 use crate::plan::{EqMode, Processor};
 use crate::plan_v4::{KitSampleRef, NodeV4, ProcessorV4};
 use crate::syntax::{Document, Field, Object, Reference, Unit, Value, ValueKind};
@@ -293,8 +294,11 @@ impl SourceGraph {
         self.references.get(text)
     }
 
-    fn validate_causality(&self) -> Result<(), Diagnostics> {
+    pub(crate) fn validate_causality(&self) -> Result<(), Diagnostics> {
         let mut edges = Vec::new();
+        // The source object responsible for each same-sample edge, so a cycle
+        // is reported at an authored `connect`/`modulate`, not a plan path.
+        let mut owners: Vec<(&str, Option<Span>, &str)> = Vec::new();
         for connection in self.objects_of_kind("connect") {
             let from = connection
                 .field("from")
@@ -320,14 +324,23 @@ impl SourceGraph {
                     .is_none_or(|node| node.processor != ProcessorKind::Delay)
                 {
                     edges.push((from.clone(), to.clone()));
+                    owners.push((
+                        connection.id.as_str(),
+                        connection.field("to").map(|field| field.span),
+                        "to",
+                    ));
                 }
             }
         }
-        edges.extend(
-            self.modulations
-                .iter()
-                .map(|edge| (edge.from.node.clone(), edge.target.node.clone())),
-        );
+        for edge in &self.modulations {
+            edges.push((edge.from.node.clone(), edge.target.node.clone()));
+            let source = self.document.object(&edge.id);
+            owners.push((
+                edge.id.as_str(),
+                source.and_then(|object| object.field("from").map(|field| field.span)),
+                "from",
+            ));
+        }
         let nodes = self
             .nodes
             .keys()
@@ -336,11 +349,40 @@ impl SourceGraph {
             .chain(self.control_nodes.keys())
             .map(String::as_str);
         crate::plan::validate_same_sample_graph(nodes, &edges).map_err(|error| {
+            let mut diagnostic = error.diagnostic();
+            if let Some(index) = first_cycle_edge(&edges) {
+                let (id, span, field) = owners[index];
+                diagnostic.object_path = vec![id.to_owned()];
+                diagnostic.field_path = vec![field.to_owned()];
+                diagnostic.span = span.or(diagnostic.span);
+            }
             let mut diagnostics = Diagnostics::new();
-            diagnostics.push(error.diagnostic());
+            diagnostics.push(diagnostic);
             diagnostics
         })
     }
+}
+
+/// Index of the first edge, in source order, that lies on a directed cycle:
+/// its source is reachable again from its destination.
+fn first_cycle_edge(edges: &[(String, String)]) -> Option<usize> {
+    let mut outgoing: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for (from, to) in edges {
+        outgoing.entry(from).or_default().push(to);
+    }
+    edges.iter().position(|(from, to)| {
+        let mut seen = BTreeSet::new();
+        let mut stack = vec![to.as_str()];
+        while let Some(node) = stack.pop() {
+            if node == from {
+                return true;
+            }
+            if seen.insert(node) {
+                stack.extend(outgoing.get(node).into_iter().flatten().copied());
+            }
+        }
+        false
+    })
 }
 
 /// Validate a parsed source document against the foundation source profile.
@@ -574,6 +616,7 @@ struct Validator<'a> {
     diagnostics: Diagnostics,
     project_id: Option<String>,
     project_score: Option<(BigRational, BigRational)>,
+    project_meter: Option<MeterMap>,
     project_rate_hz: Option<BigRational>,
     nodes: BTreeMap<String, NodeDescriptor>,
     kit_nodes: BTreeMap<String, NodeV4>,
@@ -606,6 +649,7 @@ impl<'a> Validator<'a> {
             diagnostics: Diagnostics::new(),
             project_id: None,
             project_score: None,
+            project_meter: None,
             project_rate_hz: None,
             nodes: BTreeMap::new(),
             kit_nodes: BTreeMap::new(),
@@ -999,6 +1043,7 @@ impl<'a> Validator<'a> {
             ],
             &[],
         );
+        self.project_meter = self.resolve_project_meter(object);
         let score = object.field("score").and_then(|field| {
             let items = match &field.value.kind {
                 ValueKind::List(items) if items.len() == 2 => items,
@@ -1502,8 +1547,11 @@ impl<'a> Validator<'a> {
                 _ => self.validate_misplaced_child(child, path),
             }
             if let Some(length) = &length {
+                // Pattern-local onsets are q-only; `bar` is reported by the
+                // child's own validator, never lowered through the meter here.
                 if let Some(at) = child
                     .field("at")
+                    .filter(|field| matches!(field.value.kind, ValueKind::Quantity { .. }))
                     .and_then(|field| self.position_q_value(&field.value, &child_path, "at"))
                 {
                     if at >= *length {
@@ -4008,17 +4056,9 @@ impl<'a> Validator<'a> {
             );
             return;
         }
-        if !visiting.insert(id.to_owned()) {
-            self.push(
-                DiagnosticCode::PatternCycle,
-                "pattern reference graph contains a cycle",
-                self.document.object(id).map(|o| o.span),
-                vec![id.into()],
-                vec!["pattern".into()],
-            );
-            return;
-        }
-        let targets: Vec<String> = self
+        visiting.insert(id.to_owned());
+        // (use child ID, `pattern` field span, referenced pattern ID)
+        let targets: Vec<(String, Span, String)> = self
             .document
             .object(id)
             .map(|pattern| {
@@ -4027,14 +4067,25 @@ impl<'a> Validator<'a> {
                     .values()
                     .filter(|child| child.kind == "use")
                     .filter_map(|child| {
-                        child
-                            .field("pattern")
-                            .and_then(|field| ref_object_id(&field.value))
+                        let field = child.field("pattern")?;
+                        let target = ref_object_id(&field.value)?;
+                        Some((child.id.clone(), field.span, target))
                     })
                     .collect()
             })
             .unwrap_or_default();
-        for target in targets {
+        for (use_id, span, target) in targets {
+            if visiting.contains(&target) {
+                // Report the `use` whose reference closes the cycle.
+                self.push(
+                    DiagnosticCode::PatternCycle,
+                    format!("pattern reference graph contains a cycle through `{target}`"),
+                    Some(span),
+                    vec![id.to_owned(), use_id],
+                    vec!["pattern".into()],
+                );
+                continue;
+            }
             if self
                 .document
                 .object(&target)
@@ -4524,8 +4575,11 @@ impl<'a> Validator<'a> {
             } => Some(value.clone()),
             ValueKind::Call { function, args } if function == "bar" => {
                 if args.len() == 2 {
-                    self.number_value(&args[0], path, name);
-                    self.number_value(&args[1], path, name);
+                    let bar = self.number_value(&args[0], path, name);
+                    let unit = self.number_value(&args[1], path, name);
+                    if let (Some(bar), Some(unit)) = (bar, unit) {
+                        return self.lower_bar(&bar, &unit, value, path, name);
+                    }
                 } else {
                     self.push(
                         DiagnosticCode::Range,
@@ -4616,6 +4670,105 @@ impl<'a> Validator<'a> {
 
     fn number(&mut self, field: &Field, path: &[String], name: &str) -> Option<BigRational> {
         self.number_value(&field.value, path, name)
+    }
+
+    /// Build the project's meter map when every point is well formed, so
+    /// global `bar(b,u)` positions can be range-checked like `q` positions.
+    /// Malformed meters are reported by `validate_meter` and leave bars
+    /// unresolved here.
+    fn resolve_project_meter(&self, project: &Object) -> Option<MeterMap> {
+        let ValueKind::Reference(reference) = &project.field("meter")?.value.kind else {
+            return None;
+        };
+        let [id] = reference.path.as_slice() else {
+            return None;
+        };
+        let meter = self.document.objects.get(id)?;
+        if meter.kind != "meter" {
+            return None;
+        }
+        let ValueKind::List(points) = &meter.field("points")?.value.kind else {
+            return None;
+        };
+        let mut resolved = Vec::with_capacity(points.len());
+        for point in points {
+            let ValueKind::Tuple(items) = &point.kind else {
+                return None;
+            };
+            let [position, numerator, denominator] = items.as_slice() else {
+                return None;
+            };
+            let ValueKind::Quantity {
+                value: position,
+                unit: Unit::Q,
+            } = &position.kind
+            else {
+                return None;
+            };
+            let small = |value: &Value| match &value.kind {
+                ValueKind::Number(number) if number.is_integer() => number.to_integer().to_u32(),
+                _ => None,
+            };
+            resolved.push(MeterPoint::new(
+                position.clone(),
+                small(numerator)?,
+                small(denominator)?,
+            ));
+        }
+        MeterMap::new(resolved).ok()
+    }
+
+    fn lower_bar(
+        &mut self,
+        bar: &BigRational,
+        unit: &BigRational,
+        value: &Value,
+        path: &[String],
+        name: &str,
+    ) -> Option<BigRational> {
+        if !bar.is_integer() {
+            self.push(
+                DiagnosticCode::Range,
+                "bar number must be an integer",
+                Some(value.span),
+                path.to_vec(),
+                vec![name.into()],
+            );
+            return None;
+        }
+        let Some(bar) = bar.to_integer().to_i64() else {
+            self.push(
+                DiagnosticCode::ResourceLimit,
+                "bar number exceeds the signed 64-bit bound",
+                Some(value.span),
+                path.to_vec(),
+                vec![name.into()],
+            );
+            return None;
+        };
+        let meter = self.project_meter.as_ref()?;
+        match meter.bar_to_q(bar, unit) {
+            Ok(position) => Some(position),
+            Err(error) => {
+                let code = match error.code {
+                    MusicErrorCode::Tempo => DiagnosticCode::Tempo,
+                    MusicErrorCode::MeterBoundary => DiagnosticCode::MeterBoundary,
+                    MusicErrorCode::Capability => DiagnosticCode::Capability,
+                    MusicErrorCode::Nonfinite => DiagnosticCode::Nonfinite,
+                    MusicErrorCode::ResourceLimit => DiagnosticCode::ResourceLimit,
+                    MusicErrorCode::TimePrecision => DiagnosticCode::TimePrecision,
+                    MusicErrorCode::Range | MusicErrorCode::Pitch => DiagnosticCode::Range,
+                };
+                self.push(
+                    code,
+                    error.message,
+                    Some(value.span),
+                    path.to_vec(),
+                    vec![name.into()],
+                );
+                None
+            }
+        }
     }
 
     fn number_value(&mut self, value: &Value, path: &[String], name: &str) -> Option<BigRational> {
@@ -5007,11 +5160,42 @@ impl<'a> Validator<'a> {
         object_path: Vec<String>,
         field_path: Vec<String>,
     ) {
+        let (object_path, field_path) = self.split_source_path(object_path, field_path);
         self.diagnostics.push(
             Diagnostic::error(code, message, span)
                 .object_path(object_path)
                 .field_path(field_path),
         );
+    }
+
+    /// Keep only authored object/child IDs in the object path. Trailing
+    /// segments that name fields or list positions move to the field path.
+    fn split_source_path(
+        &self,
+        object_path: Vec<String>,
+        field_path: Vec<String>,
+    ) -> (Vec<String>, Vec<String>) {
+        let Some(mut object) = object_path
+            .first()
+            .and_then(|id| self.document.objects.get(id))
+        else {
+            return (object_path, field_path);
+        };
+        let mut matched = 1;
+        while let Some(child) = object_path
+            .get(matched)
+            .and_then(|id| object.children.get(id))
+        {
+            object = child;
+            matched += 1;
+        }
+        if matched == object_path.len() {
+            return (object_path, field_path);
+        }
+        let mut object_path = object_path;
+        let mut moved = object_path.split_off(matched);
+        moved.extend(field_path);
+        (object_path, moved)
     }
 }
 

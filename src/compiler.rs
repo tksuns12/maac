@@ -80,6 +80,38 @@ fn plan_error(error: crate::plan::PlanError) -> Diagnostics {
     diagnostics
 }
 
+/// Plan validation addresses a resolved event as `events[i]`. Report such a
+/// failure at the authored object that produced the event instead.
+fn plan_event_index(error: &crate::plan::PlanError) -> Option<usize> {
+    let rest = error.path.strip_prefix("events[")?;
+    rest[..rest.find(']')?].parse().ok()
+}
+
+fn event_plan_error(error: crate::plan::PlanError, source: Option<&SourceMapping>) -> Diagnostics {
+    let mut diagnostic = error.diagnostic();
+    if let Some(source) = source {
+        diagnostic.object_path = source.path.clone();
+        diagnostic.field_path.clear();
+        if let Some(span) = source.span {
+            diagnostic.span = Some(Span::new(span.start, span.end));
+        }
+    }
+    let mut diagnostics = Diagnostics::new();
+    diagnostics.push(diagnostic);
+    diagnostics
+}
+
+macro_rules! plan_error_in {
+    ($events:expr) => {
+        |error: crate::plan::PlanError| {
+            let source = plan_event_index(&error)
+                .and_then(|index| $events.get(index))
+                .map(|event| &event.source);
+            event_plan_error(error, source)
+        }
+    };
+}
+
 fn event_diagnostic(
     code: DiagnosticCode,
     message: impl Into<String>,
@@ -346,7 +378,8 @@ struct PatternDef {
 
 #[derive(Clone, Debug)]
 struct OverrideDef {
-    span: Span,
+    id: String,
+    event_span: Span,
     event: String,
     delete: bool,
     set: BTreeMap<String, Value>,
@@ -558,11 +591,14 @@ impl<'a> Compiler<'a> {
         // SourceGraph owns the source schema and declaration/reference checks.
         // Keep this call ahead of lowering so malformed unused declarations
         // cannot disappear during expansion.
+        // Same-sample cycles are reported at their authored connect/modulate
+        // here, before plan validation can only name the plan collection.
         crate::semantic::validate_source_with_tempo_profile(
             self.document,
             &self.instrument_descriptors,
             self.allow_ramps,
-        )?;
+        )?
+        .validate_causality()?;
         self.read_composition(limits)?;
         if self
             .plan_tempo
@@ -574,7 +610,8 @@ impl<'a> Compiler<'a> {
             return Ok(VersionedPlan::V3(plan));
         }
         let plan = self.finish_plan(limits)?;
-        plan.validate_with_limits(limits).map_err(plan_error)?;
+        plan.validate_with_limits(limits)
+            .map_err(plan_error_in!(plan.events))?;
         attach_production(plan, production, original, limits).map(VersionedPlan::Legacy)
     }
 
@@ -2415,7 +2452,8 @@ impl<'a> Compiler<'a> {
                             ));
                         }
                         overrides.push(OverrideDef {
-                            span: child.span,
+                            id: child.id.clone(),
+                            event_span: event_field.span,
                             event,
                             delete,
                             set,
@@ -3064,26 +3102,32 @@ impl<'a> Compiler<'a> {
         let mut override_targets = HashSet::new();
         for override_def in &place.overrides {
             let address = format!("{}/{}", place.id, override_def.event);
+            let target_error = |message: String| {
+                let mut diagnostics = Diagnostics::new();
+                diagnostics.push(
+                    Diagnostic::error(
+                        DiagnosticCode::InstanceTarget,
+                        message,
+                        Some(override_def.event_span),
+                    )
+                    .object_path([place.id.clone(), override_def.id.clone()])
+                    .field_path(["event"]),
+                );
+                diagnostics
+            };
             if !override_targets.insert(address.clone()) {
-                return Err(diagnostics(
-                    DiagnosticCode::InstanceTarget,
-                    "an occurrence may have at most one override",
-                    Some(override_def.span),
+                return Err(target_error(
+                    "an occurrence may have at most one override".into(),
                 ));
             }
             let index = indexes.get(&address).copied().ok_or_else(|| {
-                diagnostics(
-                    DiagnosticCode::InstanceTarget,
-                    format!("override target `{}` does not exist", override_def.event),
-                    Some(override_def.span),
-                )
+                target_error(format!(
+                    "override target `{}` does not exist",
+                    override_def.event
+                ))
             })?;
             if deleted.contains(&address) {
-                return Err(diagnostics(
-                    DiagnosticCode::InstanceTarget,
-                    "override target was already deleted",
-                    Some(override_def.span),
-                ));
+                return Err(target_error("override target was already deleted".into()));
             }
             if override_def.delete {
                 deleted.insert(address.clone());
@@ -3649,13 +3693,14 @@ impl<'a> Compiler<'a> {
             );
         }
         plan.production = production;
-        plan.preflight_with_limits(limits).map_err(plan_error)?;
+        plan.preflight_with_limits(limits)
+            .map_err(plan_error_in!(plan.events))?;
         let timing = TimingContext::new_with_limits(&plan.tempo, &plan.output, limits)
             .map_err(plan_error)?;
         Self::schedule_score_events(&mut plan.output, &mut plan.events, &timing, limits)?;
         plan.view()
             .validate_with_timing(limits, &timing)
-            .map_err(plan_error)?;
+            .map_err(plan_error_in!(plan.events))?;
         Ok(plan)
     }
 
@@ -4004,7 +4049,9 @@ impl<'a> Compiler<'a> {
         }
         plan.production = production;
         let limits = limits.bounded();
-        plan.view().preflight_timing(&limits).map_err(plan_error)?;
+        plan.view()
+            .preflight_timing(&limits)
+            .map_err(plan_error_in!(plan.events))?;
         let timing = TimingContext::new_with_limits(&plan.tempo, &plan.output, &limits)
             .map_err(plan_error)?;
         Self::schedule_score_events(&mut plan.output, &mut plan.events, &timing, &limits)?;
@@ -4043,7 +4090,7 @@ impl<'a> Compiler<'a> {
         }
         plan.view()
             .validate_performance_with_timing(&limits, &timing)
-            .map_err(plan_error)?;
+            .map_err(plan_error_in!(plan.events))?;
         struct ByteBudget(usize);
         impl std::io::Write for ByteBudget {
             fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
@@ -4126,7 +4173,9 @@ impl<'a> Compiler<'a> {
         }
         plan.production = production;
         let limits = limits.bounded();
-        plan.view().preflight_timing(&limits).map_err(plan_error)?;
+        plan.view()
+            .preflight_timing(&limits)
+            .map_err(plan_error_in!(plan.events))?;
         let timing = TimingContext::new_with_limits(&plan.tempo, &plan.output, &limits)
             .map_err(plan_error)?;
         Self::schedule_score_events(&mut plan.output, &mut plan.events, &timing, &limits)?;
@@ -4165,7 +4214,7 @@ impl<'a> Compiler<'a> {
         }
         plan.view()
             .validate_performance_with_timing(&limits, &timing)
-            .map_err(plan_error)?;
+            .map_err(plan_error_in!(plan.events))?;
         struct ByteBudget(usize);
         impl std::io::Write for ByteBudget {
             fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
@@ -4241,7 +4290,9 @@ impl<'a> Compiler<'a> {
         }
         plan.production = production;
         let limits = limits.bounded();
-        plan.view().preflight_timing(&limits).map_err(plan_error)?;
+        plan.view()
+            .preflight_timing(&limits)
+            .map_err(plan_error_in!(plan.events))?;
         let timing = TimingContext::new_with_limits(&plan.tempo, &plan.output, &limits)
             .map_err(plan_error)?;
         Self::schedule_score_events(&mut plan.output, &mut plan.events, &timing, &limits)?;
@@ -4266,7 +4317,7 @@ impl<'a> Compiler<'a> {
         }
         plan.view()
             .validate_performance_with_timing(&limits, &timing)
-            .map_err(plan_error)?;
+            .map_err(plan_error_in!(plan.events))?;
         struct ByteBudget(usize);
         impl std::io::Write for ByteBudget {
             fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
@@ -4341,13 +4392,15 @@ impl<'a> Compiler<'a> {
         }
         plan.production = production;
         let limits = limits.bounded();
-        plan.view().preflight_timing(&limits).map_err(plan_error)?;
+        plan.view()
+            .preflight_timing(&limits)
+            .map_err(plan_error_in!(plan.events))?;
         let timing = TimingContext::new_with_limits(&plan.tempo, &plan.output, &limits)
             .map_err(plan_error)?;
         Self::schedule_score_events(&mut plan.output, &mut plan.events, &timing, &limits)?;
         plan.view()
             .validate_performance_with_timing(&limits, &timing)
-            .map_err(plan_error)?;
+            .map_err(plan_error_in!(plan.events))?;
         // Bound the encoded artifact without constructing another timing context or retaining JSON.
         struct ByteBudget(usize);
         impl std::io::Write for ByteBudget {

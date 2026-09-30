@@ -856,6 +856,8 @@ struct Parser<'a> {
     cursor: usize,
     diagnostics: Diagnostics,
     object_path: Vec<String>,
+    /// Enclosing field names while a field value (and its records) is parsed.
+    field_path: Vec<String>,
 }
 
 impl<'a> Parser<'a> {
@@ -872,6 +874,7 @@ impl<'a> Parser<'a> {
             cursor: 0,
             diagnostics,
             object_path: Vec::new(),
+            field_path: Vec::new(),
         }
     }
 
@@ -925,10 +928,13 @@ impl<'a> Parser<'a> {
                 continue;
             };
             if objects.contains_key(&object.id) {
-                self.push_error(
-                    DiagnosticCode::DuplicateId,
-                    format!("duplicate top-level object ID `{}`", object.id),
-                    Some(object.id_span),
+                self.diagnostics.push(
+                    Diagnostic::error(
+                        DiagnosticCode::DuplicateId,
+                        format!("duplicate top-level object ID `{}`", object.id),
+                        Some(object.id_span),
+                    )
+                    .object_path([object.id.clone()]),
                 );
             } else {
                 objects.insert(object.id.clone(), object);
@@ -981,10 +987,9 @@ impl<'a> Parser<'a> {
             if self.peek_is_identifier(0) && self.peek_kind(1) == Some(TokenKind::Equal) {
                 if let Some(field) = self.parse_field(depth) {
                     if fields.contains_key(&field.name) {
-                        self.push_error(
-                            DiagnosticCode::DuplicateField,
+                        self.push_duplicate_field(
                             format!("duplicate field `{}`", field.name),
-                            Some(field.name_span),
+                            &field,
                         );
                     } else {
                         fields.insert(field.name.clone(), field);
@@ -993,10 +998,15 @@ impl<'a> Parser<'a> {
             } else if self.peek_is_identifier(0) && self.peek_is_identifier(1) {
                 if let Some(child) = self.parse_object(depth + 1) {
                     if children.contains_key(&child.id) {
-                        self.push_error(
-                            DiagnosticCode::DuplicateId,
-                            format!("duplicate child ID `{}`", child.id),
-                            Some(child.id_span),
+                        let mut path = self.object_path.clone();
+                        path.push(child.id.clone());
+                        self.diagnostics.push(
+                            Diagnostic::error(
+                                DiagnosticCode::DuplicateId,
+                                format!("duplicate child ID `{}`", child.id),
+                                Some(child.id_span),
+                            )
+                            .object_path(path),
                         );
                     } else {
                         children.insert(child.id.clone(), child);
@@ -1040,7 +1050,10 @@ impl<'a> Parser<'a> {
         // `depth` is the current object/record nesting level. A composite
         // value at the field belongs to that level; its children increment it
         // in their own parser routines.
-        let value = self.parse_value(depth)?;
+        self.field_path.push(name.clone());
+        let value = self.parse_value(depth);
+        self.field_path.pop();
+        let value = value?;
         let semi = self.expect_kind(TokenKind::Semi, "after field value")?;
         Some(Field {
             name,
@@ -1218,10 +1231,9 @@ impl<'a> Parser<'a> {
                 continue;
             };
             if fields.contains_key(&field.name) {
-                self.push_error(
-                    DiagnosticCode::DuplicateField,
+                self.push_duplicate_field(
                     format!("duplicate record field `{}`", field.name),
-                    Some(field.name_span),
+                    &field,
                 );
             } else {
                 fields.insert(field.name.clone(), field);
@@ -1349,8 +1361,25 @@ impl<'a> Parser<'a> {
     }
 
     fn push_error(&mut self, code: DiagnosticCode, message: impl Into<String>, span: Option<Span>) {
-        self.diagnostics
-            .push(Diagnostic::error(code, message, span).object_path(self.object_path.clone()));
+        self.diagnostics.push(
+            Diagnostic::error(code, message, span)
+                .object_path(self.object_path.clone())
+                .field_path(self.field_path.clone()),
+        );
+    }
+
+    fn push_duplicate_field(&mut self, message: String, field: &Field) {
+        let mut field_path = self.field_path.clone();
+        field_path.push(field.name.clone());
+        self.diagnostics.push(
+            Diagnostic::error(
+                DiagnosticCode::DuplicateField,
+                message,
+                Some(field.name_span),
+            )
+            .object_path(self.object_path.clone())
+            .field_path(field_path),
+        );
     }
 
     fn push_rational_error(&mut self, error: RationalError, span: Span) {

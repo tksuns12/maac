@@ -813,6 +813,16 @@ region chorus { span = [16q, 32q]; label = "Chorus"; }
 
 A `region` requires a musical `[start,end]` span with start<end, within the project score. Regions may overlap or nest but do not inherit parameters, alter dynamics, or define automatic transitions. They give tools an exact answer to “which interval is the chorus?” rather than adding a subjective execution layer.
 
+The region rules are closed:
+
+- `span` is required and is a list of exactly two global score positions. Each position is a `q` quantity or `bar(b,u)` (§3.2). A tuple, a scalar, or another unit is a type/unit error.
+- After `bar` lowering, `start < end` must hold, so an empty or reversed span is `E_INTERVAL`. The span must also satisfy `score.start <= start` and `end <= score.end`: a region may start at the score start and end at the score end. Otherwise it is `E_INTERVAL`.
+- `label` is the only other field. It is an optional string with the §20.2 metadata role. Any other field is `E_UNKNOWN_FIELD`.
+- A region is a top-level leaf. It has no children and may not appear inside a pattern, track, or other object.
+- Several regions may have identical, overlapping, or nested spans. No ordering, containment, or priority relation is implied between them.
+- A region contributes a named interval to the performance plan and nothing else. Adding, removing, relabelling, or moving regions leaves resolved events, the processor graph, automation, and rendered samples unchanged.
+- Because a span is authored execution data, it enters the §20.2 execution hash in its lowered `q` form, while its `label` does not.
+
 Display names, source comments, editor zoom, track color, and analysis annotations are not sound. UI state belongs in a sidecar such as `ui.json`, keyed by source IDs. Engraving, slurs, chord symbols, and articulation marks may be preserved as a declared notation extension; they cannot change playback without being lowered to explicit performance data or referring to a specified interpreter.
 
 A chord in core is simultaneous notes. A rest is absent events over a duration. Sustain is represented by actual gate behavior or an explicit receiver-specific controller, not an unexplained “pedal” word. A slur in an engraving extension does not secretly shorten or lengthen notes.
@@ -1113,6 +1123,13 @@ The core execution path performs no automatic gain staging, mastering, denoising
 Validation proceeds through lexical parsing, object/schema validation, reference resolution, dimensional typing, temporal validation, pattern-DAG validation, instance expansion or bounded analysis, destination-capability checks, automation-writer checks, graph-causality checks, dependency verification, and render-profile checks.
 
 Errors must contain a stable code, source object path, relevant field path, source span when available, and an actionable message. A diagnostic may suggest a correction but must not silently apply it.
+
+The source object path lists only authored object and child IDs, from the top-level object to the innermost responsible object. It never contains a field name or a derived collection such as a plan's node, connection, or event list. The field path starts at a field of that object and continues through nested record fields or list positions. For example, a duplicate record field is `["config", "channels"]`, and a bad second tempo point is `["points", "1"]`. It is empty when no single field is responsible. Some conditions are found after derivation, such as a same-sample cycle or a receiver capability checked per resolved event. Those are reported at the authored object that produced the failing item:
+
+- a cycle names the first `connect` or `modulate` on it, in source order;
+- an event failure names the note, hit, or message that produced the event.
+
+A document-level condition, such as `E_VERSION`, has an empty object path.
 
 | Code | Required condition |
 |---|---|
