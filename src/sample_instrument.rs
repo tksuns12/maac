@@ -1,11 +1,14 @@
 //! Pitched sample data and key zones for `synth.sample/1` voice-graph nodes.
 //!
-//! A library `sample` declaration decodes one finite mono WAV, keeps its
-//! sample rate, and records a 12-TET root key and an optional forward sustain
-//! loop. Playback uses the core linear interpolator; no resampler, crossfade,
-//! or normalization is inferred.
+//! A library `sample` declaration either decodes one finite mono WAV into the
+//! plan or names a mono core PCM file that the plan carries as an ordinary
+//! (optionally disk-backed) audio asset. Either way it keeps its sample rate
+//! and records a 12-TET root key and an optional forward sustain loop.
+//! Playback uses the core linear interpolator; no resampler, crossfade, or
+//! normalization is inferred.
 
 use std::io::Cursor;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
@@ -30,8 +33,23 @@ pub struct InstrumentSample {
     /// Forward sustain loop `[start, end)` in sample frames.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub loop_frames: Option<[u64; 2]>,
+    /// Embedded values; empty when the data is a plan audio asset.
     pub samples: Vec<f32>,
+    /// Plan audio asset holding the data instead of `samples`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asset: Option<SampleAsset>,
 }
+
+/// Reference from an asset-backed sample to its mono plan audio asset.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SampleAsset {
+    pub id: String,
+    pub frames: u64,
+}
+
+/// Frames an asset-backed sample may declare: the disk-media byte ceiling.
+pub const MAX_SAMPLE_ASSET_FRAMES: u64 = crate::disk_media::MAX_DISK_MEDIA_TOTAL_BYTES / 4;
 
 /// Provenance of an embedded sample, like a wavetable source.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -150,6 +168,7 @@ impl InstrumentSample {
             root_key,
             loop_frames,
             samples,
+            asset: None,
         };
         sample.validate()?;
         Ok(sample)
@@ -163,19 +182,37 @@ impl InstrumentSample {
                 "sample rate must be positive",
             ));
         }
-        if self.samples.is_empty() || self.samples.len() > crate::graph::MAX_EMBEDDED_SAMPLES {
-            return Err(error(
-                if self.samples.is_empty() {
-                    "E_RANGE"
-                } else {
-                    "E_RESOURCE_LIMIT"
-                },
-                "sample.samples",
-                format!(
-                    "sample must have 1 through {} frames",
-                    crate::graph::MAX_EMBEDDED_SAMPLES
-                ),
-            ));
+        match &self.asset {
+            None if self.samples.is_empty()
+                || self.samples.len() > crate::graph::MAX_EMBEDDED_SAMPLES =>
+            {
+                return Err(error(
+                    if self.samples.is_empty() {
+                        "E_RANGE"
+                    } else {
+                        "E_RESOURCE_LIMIT"
+                    },
+                    "sample.samples",
+                    format!(
+                        "sample must have 1 through {} frames",
+                        crate::graph::MAX_EMBEDDED_SAMPLES
+                    ),
+                ));
+            }
+            None => {}
+            Some(asset) => {
+                crate::plan::validate_identifier(&asset.id, "sample.asset.id")?;
+                if !self.samples.is_empty()
+                    || asset.frames == 0
+                    || asset.frames > MAX_SAMPLE_ASSET_FRAMES
+                {
+                    return Err(error(
+                        "E_RANGE",
+                        "sample.asset",
+                        "an asset-backed sample has no embedded values and 1 or more frames",
+                    ));
+                }
+            }
         }
         if let Some(index) = self.samples.iter().position(|value| !value.is_finite()) {
             return Err(error(
@@ -192,7 +229,7 @@ impl InstrumentSample {
             ));
         }
         if let Some([start, end]) = self.loop_frames {
-            if start >= end || end > self.samples.len() as u64 {
+            if start >= end || end > self.frames() {
                 return Err(error(
                     "E_RANGE",
                     "sample.loop_frames",
@@ -207,32 +244,84 @@ impl InstrumentSample {
         key_hz(self.root_key)
     }
 
-    fn at(&self, index: u64) -> f64 {
-        usize::try_from(index)
-            .ok()
-            .and_then(|index| self.samples.get(index))
-            .map_or(0.0, |value| f64::from(*value))
+    /// Recorded frames, embedded or in the referenced asset.
+    pub fn frames(&self) -> u64 {
+        self.asset
+            .as_ref()
+            .map_or(self.samples.len() as u64, |asset| asset.frames)
+    }
+}
+
+/// Runtime sample data: embedded values or a shared, possibly disk-backed,
+/// mono audio buffer.
+#[derive(Debug)]
+pub(crate) struct SamplePlayback {
+    sample: InstrumentSample,
+    buffer: Option<Arc<crate::audio_buffer::AudioBuffer>>,
+}
+
+impl SamplePlayback {
+    pub(crate) fn embedded(sample: InstrumentSample) -> Self {
+        Self {
+            sample,
+            buffer: None,
+        }
+    }
+
+    /// Bind an asset-backed sample to its validated buffer.
+    pub(crate) fn from_buffer(
+        sample: InstrumentSample,
+        buffer: Arc<crate::audio_buffer::AudioBuffer>,
+    ) -> Result<Self, PlanError> {
+        if buffer.channels() != 1
+            || buffer.rate_hz() != sample.rate_hz
+            || buffer.frames() != sample.frames()
+        {
+            return Err(error(
+                "E_ASSET",
+                "instruments.samples.asset",
+                "sample asset must be mono with the declared rate and frames",
+            ));
+        }
+        Ok(Self {
+            sample,
+            buffer: Some(buffer),
+        })
+    }
+
+    pub(crate) fn sample(&self) -> &InstrumentSample {
+        &self.sample
+    }
+
+    fn at(&self, index: u64) -> Result<f64, PlanError> {
+        if index >= self.sample.frames() {
+            return Ok(0.0);
+        }
+        match &self.buffer {
+            Some(buffer) => buffer.interpolate(index, 0.0, 0),
+            None => Ok(f64::from(self.sample.samples[index as usize])),
+        }
     }
 
     /// Core linear interpolation at a nonnegative source position. Inside a
     /// loop the right neighbour of the last loop frame is the loop start;
     /// otherwise values past the sample are zero.
-    pub fn value(&self, position: f64) -> f64 {
+    pub(crate) fn value(&self, position: f64) -> Result<f64, PlanError> {
         let index = position.floor();
         let fraction = position - index;
         let index = index as u64;
-        let right = match self.loop_frames {
+        let right = match self.sample.loop_frames {
             Some([start, end]) if index + 1 == end => start,
             _ => index + 1,
         };
-        (1.0 - fraction) * self.at(index) + fraction * self.at(right)
+        Ok((1.0 - fraction) * self.at(index)? + fraction * self.at(right)?)
     }
 
     /// Advance a playback position by a positive step, wrapping inside the
     /// sustain loop once it has been reached.
-    pub fn advance(&self, position: f64, step: f64) -> f64 {
+    pub(crate) fn advance(&self, position: f64, step: f64) -> f64 {
         let next = position + step;
-        match self.loop_frames {
+        match self.sample.loop_frames {
             Some([start, end]) if next >= end as f64 => {
                 let (start, end) = (start as f64, end as f64);
                 start + (next - start).rem_euclid(end - start)

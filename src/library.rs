@@ -74,6 +74,8 @@ pub struct LibrarySet {
     pub wavetable_sources: Vec<WavetableSource>,
     pub samples: Vec<InstrumentSample>,
     pub sample_sources: Vec<SampleSource>,
+    /// Plan audio assets holding asset-backed sample data.
+    pub(crate) sample_assets: Vec<crate::audio_asset::AudioAsset>,
     pub metadata: Vec<LibraryMetadata>,
     entry_document: Document,
     resolved_document: Document,
@@ -150,9 +152,14 @@ impl LibrarySet {
         // Pitched samples share the embedded-sample budget with wavetables.
         let mut samples = Vec::with_capacity(sample_keys.len());
         let mut sample_sources = Vec::with_capacity(sample_keys.len());
+        let mut sample_assets = Vec::new();
         for (index, (file, object_id)) in sample_keys.iter().enumerate() {
             let object = &bundle.documents[file].objects[object_id];
-            let (sample, source) = lower_sample(bundle, file, object, format!("sample_{index}"))?;
+            let (sample, source, asset) =
+                lower_sample(bundle, file, object, format!("sample_{index}"))?;
+            sample_assets.extend(asset);
+            // Asset-backed samples are not embedded, so only embedded values
+            // count against the shared budget.
             sample_count = sample_count.saturating_add(sample.samples.len());
             if sample_count > MAX_LIBRARY_SAMPLES {
                 return Err(simple_error(
@@ -192,6 +199,7 @@ impl LibrarySet {
             wavetable_sources,
             samples,
             sample_sources,
+            sample_assets,
             metadata,
             entry_document: documents.entry,
             resolved_document: documents.musical,
@@ -902,31 +910,50 @@ fn lower_wavetable(
     ))
 }
 
-/// Lower a `sample` declaration: a mono WAV with a 12-TET root key and an
-/// optional forward sustain loop in sample frames.
+type LoweredSample = (
+    InstrumentSample,
+    SampleSource,
+    Option<crate::audio_asset::AudioAsset>,
+);
+
+/// Lower a `sample` declaration: a mono WAV, or with `format` a mono core PCM
+/// file carried as a plan audio asset, plus a 12-TET root key and an optional
+/// forward sustain loop in sample frames.
 fn lower_sample(
     bundle: &ResolvedBundle,
     file: &str,
     object: &Object,
     id: String,
-) -> Result<(InstrumentSample, SampleSource), Diagnostics> {
-    exact_fields(
-        object,
-        &["hash", "loop", "path", "root"],
-        &["hash", "path", "root"],
-        file,
-    )?;
+) -> Result<LoweredSample, Diagnostics> {
+    let native = object.field("format").is_some();
+    if native {
+        exact_fields(
+            object,
+            &["format", "frames", "hash", "loop", "path", "rate", "root"],
+            &["format", "frames", "hash", "path", "rate", "root"],
+            file,
+        )?;
+    } else {
+        exact_fields(
+            object,
+            &["hash", "loop", "path", "root"],
+            &["hash", "path", "root"],
+            file,
+        )?;
+    }
     no_children(object, file)?;
     let declared_path = string_field(object, "path", file)?;
     let asset_path = normalize_file_reference(file, &declared_path)?;
-    let bytes = bundle.assets.get(&asset_path).ok_or_else(|| {
-        object_error(
+    let bytes = bundle.assets.get(&asset_path);
+    let disk = bundle.disk_assets.get(&asset_path);
+    if bytes.is_none() && disk.is_none() {
+        return Err(object_error(
             DiagnosticCode::Asset,
             file,
             object,
             format!("resolved asset `{asset_path}` is missing"),
-        )
-    })?;
+        ));
+    }
     let root = object.field("root").expect("required field checked");
     let root_key = key_value(&root.value, file, object, root)?;
     let loop_frames = object
@@ -974,18 +1001,110 @@ fn lower_sample(
             }
         })
         .transpose()?;
-    let sample = InstrumentSample::from_wav(id.clone(), bytes, root_key, loop_frames)
+    let hash = string_field(object, "hash", file)?;
+    let source = SampleSource {
+        sample: id.clone(),
+        file: file.to_owned(),
+        object: object.id.clone(),
+        path: asset_path,
+        hash: hash.clone(),
+    };
+    if !native {
+        let bytes = bytes.ok_or_else(|| {
+            object_error(
+                DiagnosticCode::Capability,
+                file,
+                object,
+                "WAV samples are embedded and cannot be disk media; declare a core PCM format",
+            )
+        })?;
+        let sample = InstrumentSample::from_wav(id, bytes, root_key, loop_frames)
+            .map_err(|error| plan_diagnostics(error, file, object))?;
+        return Ok((sample, source, None));
+    }
+
+    let format = string_field(object, "format", file)?;
+    if format != crate::audio_asset::CORE_AUDIO_FORMAT {
+        return Err(field_error(
+            DiagnosticCode::Asset,
+            file,
+            object,
+            object.field("format").expect("required field checked"),
+            format!(
+                "sample format must be `{}`",
+                crate::audio_asset::CORE_AUDIO_FORMAT
+            ),
+        ));
+    }
+    let rate_field = object.field("rate").expect("required field checked");
+    let rate_hz = match &rate_field.value.kind {
+        ValueKind::Quantity {
+            value,
+            unit: Unit::Hz,
+        } if value.is_integer() => value.to_integer().to_u32().filter(|rate| *rate > 0),
+        _ => None,
+    }
+    .ok_or_else(|| {
+        field_error(
+            DiagnosticCode::Unit,
+            file,
+            object,
+            rate_field,
+            "rate requires a positive integer Hz quantity",
+        )
+    })?;
+    let frames_field = object.field("frames").expect("required field checked");
+    let frames = match &frames_field.value.kind {
+        ValueKind::Number(value) if value.is_integer() => value.to_integer().to_u64(),
+        _ => None,
+    }
+    .ok_or_else(|| {
+        field_error(
+            DiagnosticCode::Range,
+            file,
+            object,
+            frames_field,
+            "frames requires a nonnegative integer",
+        )
+    })?;
+    // Asset ids share the plan's audio-asset namespace with composition
+    // assets; the reserved `__` prefix keeps them apart.
+    let asset_id = format!("__{id}");
+    let asset = crate::audio_asset::AudioAsset {
+        id: asset_id.clone(),
+        format,
+        rate_hz,
+        channels: 1,
+        frames,
+        hash,
+        bytes: bytes.cloned().unwrap_or_default(),
+        disk: disk.cloned(),
+    };
+    // Report asset mismatches at the declaration, not the plan asset path.
+    asset.validate().map_err(|error| {
+        let mut relocated = Diagnostics::new();
+        for mut diagnostic in plan_diagnostics(error, file, object) {
+            diagnostic.object_path = vec![object.id.clone()];
+            diagnostic.field_path.clear();
+            relocated.push(diagnostic);
+        }
+        relocated
+    })?;
+    let sample = InstrumentSample {
+        id,
+        rate_hz,
+        root_key,
+        loop_frames,
+        samples: Vec::new(),
+        asset: Some(crate::sample_instrument::SampleAsset {
+            id: asset_id,
+            frames,
+        }),
+    };
+    sample
+        .validate()
         .map_err(|error| plan_diagnostics(error, file, object))?;
-    Ok((
-        sample,
-        SampleSource {
-            sample: id,
-            file: file.to_owned(),
-            object: object.id.clone(),
-            path: asset_path,
-            hash: string_field(object, "hash", file)?,
-        },
-    ))
+    Ok((sample, source, Some(asset)))
 }
 
 /// A 12-TET key given as a spelled pitch (`C4`) or `key(n)`.

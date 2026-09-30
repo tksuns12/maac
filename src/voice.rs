@@ -7,7 +7,7 @@ use crate::graph::{
     InstrumentProgram, ParameterRate, ParameterSpec, MAX_GRAPH_NODES,
 };
 use crate::plan::{GainExpression, PitchExpression, PressureExpression, TimbreExpression};
-use crate::sample_instrument::{InstrumentSample, SampleZone};
+use crate::sample_instrument::{SamplePlayback, SampleZone};
 use crate::synth::{Adsr, Oscillator, Waveform};
 use crate::wavetable::TableBank;
 use num_traits::ToPrimitive;
@@ -75,7 +75,7 @@ enum ProcessorCode {
     Noise(u32),
     Pluck(u32),
     Wavetable(Arc<TableBank>),
-    Sample(Vec<(SampleZone, Arc<InstrumentSample>)>),
+    Sample(Vec<(SampleZone, Arc<SamplePlayback>)>),
     Adsr,
     Lfo,
     Timbre,
@@ -200,7 +200,7 @@ impl CompiledInstrument {
     pub(crate) fn compile_with_samples(
         program: &InstrumentProgram,
         tables: &BTreeMap<String, Arc<TableBank>>,
-        samples: &BTreeMap<String, Arc<InstrumentSample>>,
+        samples: &BTreeMap<String, Arc<SamplePlayback>>,
     ) -> Result<Self> {
         let mut voice = compile_graph(&program.voice, GraphStage::Voice, tables, samples)?;
         let mut shared = program
@@ -1278,9 +1278,10 @@ fn process_graph_node(
                     compiled.id
                 )));
             }
-            output[0] = sample.value(*position) * params[2];
+            output[0] = sample.value(*position).map_err(RenderError::Plan)? * params[2];
             if commit {
-                let step = frequency / sample.root_hz() * f64::from(sample.rate_hz) / rate;
+                let recorded = sample.sample();
+                let step = frequency / recorded.root_hz() * f64::from(recorded.rate_hz) / rate;
                 *position = sample.advance(*position, step);
             }
         }
@@ -1350,7 +1351,7 @@ fn compile_graph(
     graph: &GraphProgram,
     stage: GraphStage,
     tables: &BTreeMap<String, Arc<TableBank>>,
-    samples: &BTreeMap<String, Arc<InstrumentSample>>,
+    samples: &BTreeMap<String, Arc<SamplePlayback>>,
 ) -> Result<CompiledGraph> {
     let indices: HashMap<&str, usize> = graph
         .nodes
@@ -1472,7 +1473,7 @@ fn compile_graph(
 fn compile_processor(
     processor: &GraphProcessor,
     tables: &BTreeMap<String, Arc<TableBank>>,
-    samples: &BTreeMap<String, Arc<InstrumentSample>>,
+    samples: &BTreeMap<String, Arc<SamplePlayback>>,
 ) -> Result<(&'static [&'static str], ProcessorCode)> {
     const OSCILLATOR: &[&str] = &["ratio", "frequency", "phase", "level"];
     Ok(match processor {

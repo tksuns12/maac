@@ -221,27 +221,13 @@ impl PlanError {
     }
 
     pub fn diagnostic(&self) -> Diagnostic {
+        // Plan-local aliases fold into their §23 code; every other stable
+        // code maps to itself, and unknown plan codes are range failures.
         let code = match self.code.as_str() {
-            "E_VERSION" => DiagnosticCode::Version,
-            "E_SYNTAX" | "E_RATIONAL" => DiagnosticCode::Syntax,
-            "E_DUPLICATE_ID" => DiagnosticCode::DuplicateId,
-            "E_DUPLICATE_FIELD" => DiagnosticCode::DuplicateField,
-            "E_UNKNOWN_FIELD" => DiagnosticCode::UnknownField,
-            "E_UNKNOWN_KIND" => DiagnosticCode::UnknownKind,
-            "E_REFERENCE" => DiagnosticCode::Reference,
-            "E_RANGE" => DiagnosticCode::Range,
-            "E_TEMPO" => DiagnosticCode::Tempo,
-            "E_INTERVAL" => DiagnosticCode::Interval,
-            "E_TIME_PRECISION" => DiagnosticCode::TimePrecision,
-            "E_SUBSAMPLE_NOTE" => DiagnosticCode::SubsampleNote,
-            "E_AUTOMATION_WRITER" => DiagnosticCode::AutomationWriter,
-            "E_CAPABILITY" => DiagnosticCode::Capability,
-            "E_PORT_TYPE" => DiagnosticCode::PortType,
-            "E_ALGEBRAIC_LOOP" => DiagnosticCode::AlgebraicLoop,
-            "E_VOICE_LIMIT" => DiagnosticCode::VoiceLimit,
-            "E_NONFINITE" => DiagnosticCode::Nonfinite,
-            "E_RESOURCE_LIMIT" => DiagnosticCode::ResourceLimit,
-            _ => DiagnosticCode::Range,
+            "E_RATIONAL" => DiagnosticCode::Syntax,
+            "E_PORT_CARDINALITY" => DiagnosticCode::PortType,
+            "E_RATIONAL_LIMIT" => DiagnosticCode::ResourceLimit,
+            code => DiagnosticCode::from_code(code).unwrap_or(DiagnosticCode::Range),
         };
         let mut diagnostic = Diagnostic::error(code, self.message.clone(), self.span);
         if !self.path.is_empty() {
@@ -2298,6 +2284,35 @@ impl<'a> PlanView<'a> {
         }
         if let Some(resources) = &self.instruments {
             resources.validate()?;
+            // Asset-backed samples name a mono plan audio asset whose rate
+            // and frame count equal the sample's declaration.
+            for (index, sample) in resources.samples.iter().enumerate() {
+                let Some(reference) = &sample.asset else {
+                    continue;
+                };
+                let asset = self
+                    .audio_assets
+                    .unwrap_or(&[])
+                    .iter()
+                    .find(|asset| asset.id == reference.id)
+                    .ok_or_else(|| {
+                        err(
+                            "E_REFERENCE",
+                            format!("instruments.samples[{index}].asset.id"),
+                            "sample asset does not exist in audio_assets",
+                        )
+                    })?;
+                if asset.channels != 1
+                    || asset.rate_hz != sample.rate_hz
+                    || asset.frames != reference.frames
+                {
+                    return Err(err(
+                        "E_ASSET",
+                        format!("instruments.samples[{index}].asset"),
+                        "sample asset must be mono with the declared rate and frames",
+                    ));
+                }
+            }
         }
         // Structural/resource limits are cheap and must run before any exact
         // clock integration.  Tempo validation still precedes output/event

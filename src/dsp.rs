@@ -260,6 +260,14 @@ impl<'a> DspEngine<'a> {
         let channels = usize::from(plan.output.channels);
         let tempo = TempoRuntime::new(&plan, timing.as_ref())?;
 
+        let mut kit_samples = BTreeMap::new();
+        for asset in plan.audio_assets.unwrap_or(&[]) {
+            let buffer = match storage_mode {
+                AudioStorageMode::Memory => KitSample::from_asset(asset)?,
+                AudioStorageMode::Disk => KitSample::from_asset_disk(asset)?,
+            };
+            kit_samples.insert(asset.id.clone(), Arc::new(buffer));
+        }
         let mut table_banks = BTreeMap::new();
         let mut instrument_programs = BTreeMap::new();
         if let Some(resources) = &plan.instruments {
@@ -269,11 +277,27 @@ impl<'a> DspEngine<'a> {
                     Arc::new(TableBank::new(wavetable).map_err(RenderError::Plan)?),
                 );
             }
-            let samples = resources
-                .samples
-                .iter()
-                .map(|sample| (sample.id.clone(), Arc::new(sample.clone())))
-                .collect::<BTreeMap<_, _>>();
+            // Asset-backed samples share the plan's audio buffers, including
+            // disk-backed storage; embedded samples carry their own values.
+            let mut samples = BTreeMap::new();
+            for sample in &resources.samples {
+                let playback = match &sample.asset {
+                    None => crate::sample_instrument::SamplePlayback::embedded(sample.clone()),
+                    Some(asset) => {
+                        let buffer = kit_samples.get(&asset.id).cloned().ok_or_else(|| {
+                            RenderError::RenderState(format!(
+                                "sample {} asset {} is missing",
+                                sample.id, asset.id
+                            ))
+                        })?;
+                        crate::sample_instrument::SamplePlayback::from_buffer(
+                            sample.clone(),
+                            buffer,
+                        )?
+                    }
+                };
+                samples.insert(sample.id.clone(), Arc::new(playback));
+            }
             for program in &resources.programs {
                 instrument_programs.insert(
                     program.id.clone(),
@@ -286,14 +310,6 @@ impl<'a> DspEngine<'a> {
             }
         }
 
-        let mut kit_samples = BTreeMap::new();
-        for asset in plan.audio_assets.unwrap_or(&[]) {
-            let buffer = match storage_mode {
-                AudioStorageMode::Memory => KitSample::from_asset(asset)?,
-                AudioStorageMode::Disk => KitSample::from_asset_disk(asset)?,
-            };
-            kit_samples.insert(asset.id.clone(), Arc::new(buffer));
-        }
         let node_indices: HashMap<String, usize> = plan
             .nodes
             .iter()

@@ -221,8 +221,16 @@ fn load_bundle_in_root_mode(
                 )));
             }
             let file = contained_file(root, &target, "asset", DiagnosticCode::Asset)?;
+            // Core PCM audio assets and core PCM `sample` declarations can be
+            // disk media; WAV samples and wavetables are always embedded.
+            let native_format = |object: &crate::syntax::Object| {
+                object
+                    .field("format")
+                    .and_then(|field| field.value.as_string())
+                    == Some(crate::audio_asset::CORE_AUDIO_FORMAT)
+            };
             let is_native_pcm = disk_media
-                && asset
+                && (asset
                     .alias
                     .strip_prefix("asset:")
                     .and_then(|id| document.objects.get(id))
@@ -231,11 +239,13 @@ fn load_bundle_in_root_mode(
                             .field("kind")
                             .and_then(|field| field.value.as_symbol())
                             == Some("audio")
-                            && object
-                                .field("format")
-                                .and_then(|field| field.value.as_string())
-                                == Some(crate::audio_asset::CORE_AUDIO_FORMAT)
-                    });
+                            && native_format(object)
+                    })
+                    || asset
+                        .alias
+                        .strip_prefix("sample:")
+                        .and_then(|id| document.objects.get(id))
+                        .is_some_and(|object| object.kind == "sample" && native_format(object)));
             if is_native_pcm {
                 let snapshot = crate::disk_media::DiskAsset::snapshot(file, &target, &asset.hash)?;
                 let total = disk_assets.values().fold(

@@ -138,6 +138,9 @@ struct SampleBinding {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     loop_frames: Option<[u64; 2]>,
     sample_count: usize,
+    /// Plan audio asset holding an asset-backed sample's data.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    asset: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -420,7 +423,9 @@ fn bind_instrument(view: &PlanView<'_>, id: &str) -> Result<InstrumentBinding, D
             rate_hz: sample.rate_hz,
             root_key: sample.root_key,
             loop_frames: sample.loop_frames,
-            sample_count: sample.samples.len(),
+            sample_count: usize::try_from(sample.frames())
+                .map_err(|_| fail(DiagnosticCode::ResourceLimit, "sample frame count overflow"))?,
+            asset: sample.asset.as_ref().map(|asset| asset.id.clone()),
         });
     }
     Ok(InstrumentBinding {
@@ -620,7 +625,12 @@ fn validate_record(record: &ContextRecord) -> Result<(), Diagnostics> {
                         || !(0..=crate::sample_instrument::MAX_SAMPLE_KEY)
                             .contains(&sample.root_key)
                         || sample.sample_count == 0
-                        || sample.sample_count > crate::graph::MAX_EMBEDDED_SAMPLES
+                        || sample.sample_count as u64
+                            > if sample.asset.is_some() {
+                                crate::sample_instrument::MAX_SAMPLE_ASSET_FRAMES
+                            } else {
+                                crate::graph::MAX_EMBEDDED_SAMPLES as u64
+                            }
                         || sample.loop_frames.is_some_and(|[start, end]| {
                             start >= end || end > sample.sample_count as u64
                         })

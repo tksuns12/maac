@@ -84,6 +84,44 @@ pub enum DiagnosticCode {
 }
 
 impl DiagnosticCode {
+    /// Every stable code, in declaration order.
+    pub const ALL: [Self; 27] = [
+        Self::Syntax,
+        Self::DuplicateId,
+        Self::DuplicateField,
+        Self::UnknownField,
+        Self::UnknownKind,
+        Self::Reference,
+        Self::Unit,
+        Self::Range,
+        Self::Tempo,
+        Self::MeterBoundary,
+        Self::Interval,
+        Self::TimePrecision,
+        Self::SubsampleNote,
+        Self::PatternCycle,
+        Self::InstanceTarget,
+        Self::AutomationWriter,
+        Self::Capability,
+        Self::PortType,
+        Self::AlgebraicLoop,
+        Self::Asset,
+        Self::Hash,
+        Self::VoiceLimit,
+        Self::RenderState,
+        Self::Nonfinite,
+        Self::Conflict,
+        Self::ResourceLimit,
+        Self::Version,
+    ];
+
+    /// The code whose stable string is `code`, if any.
+    pub fn from_code(code: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|candidate| candidate.as_str() == code)
+    }
+
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Syntax => "E_SYNTAX",

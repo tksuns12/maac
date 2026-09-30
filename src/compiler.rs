@@ -487,6 +487,8 @@ struct Compiler<'a> {
     nodes: Vec<Node>,
     kit_nodes: BTreeMap<String, NodeV4>,
     audio_assets: Vec<AudioAsset>,
+    /// Plan audio assets for asset-backed `sample` declarations.
+    sample_assets: Vec<AudioAsset>,
     control_nodes: BTreeMap<String, NodeV7>,
     modulations: Vec<ModulationV7>,
     audio_clips: BTreeMap<String, crate::semantic::AudioClipSource>,
@@ -540,6 +542,7 @@ impl<'a> Compiler<'a> {
             nodes: Vec::new(),
             kit_nodes: BTreeMap::new(),
             audio_assets: Vec::new(),
+            sample_assets: Vec::new(),
             control_nodes: BTreeMap::new(),
             modulations: Vec::new(),
             audio_clips: BTreeMap::new(),
@@ -564,12 +567,14 @@ impl<'a> Compiler<'a> {
         descriptors: BTreeMap<String, InstrumentNodeDescriptor>,
         resources: InstrumentResources,
         pattern_source_paths: BTreeMap<String, Vec<String>>,
+        sample_assets: Vec<AudioAsset>,
     ) -> Self {
         Self {
             instrument_instances: instances,
             instrument_descriptors: descriptors,
             instrument_resources: Some(resources),
             pattern_source_paths,
+            sample_assets,
             ..Self::new(document)
         }
     }
@@ -588,6 +593,13 @@ impl<'a> Compiler<'a> {
         production: Option<crate::production_data::ProductionSettings>,
         original: &Document,
     ) -> CResult<VersionedPlan> {
+        if !self.sample_assets.is_empty() {
+            return Err(diagnostics(
+                DiagnosticCode::Capability,
+                "asset-backed samples require a version 4 or later plan artifact",
+                None,
+            ));
+        }
         // SourceGraph owns the source schema and declaration/reference checks.
         // Keep this call ahead of lowering so malformed unused declarations
         // cannot disappear during expansion.
@@ -720,6 +732,23 @@ impl<'a> Compiler<'a> {
                 bytes: bytes.cloned().unwrap_or_default(),
                 disk: disk.cloned(),
             });
+        }
+        for asset in std::mem::take(&mut self.sample_assets) {
+            if self
+                .audio_assets
+                .iter()
+                .any(|existing| existing.id == asset.id)
+            {
+                return Err(diagnostics(
+                    DiagnosticCode::DuplicateId,
+                    format!(
+                        "audio asset ID `{}` is reserved for an asset-backed sample",
+                        asset.id
+                    ),
+                    None,
+                ));
+            }
+            self.audio_assets.push(asset);
         }
         self.read_composition(limits)?;
         if has_controls {
@@ -4769,6 +4798,7 @@ fn prepare_instrument_compiler<'a>(
         );
         instances.insert(node.id.clone(), instance);
     }
+    let sample_assets = libraries.sample_assets;
     let resources = InstrumentResources {
         entry_source: resolved.entry.clone(),
         programs: libraries.programs,
@@ -4786,6 +4816,7 @@ fn prepare_instrument_compiler<'a>(
         descriptors,
         resources,
         pattern_source_paths,
+        sample_assets,
     ))
 }
 
@@ -5088,10 +5119,12 @@ fn compile_resolved_artifact(
     original: &Document,
 ) -> CResult<PlanArtifact> {
     let document = libraries.resolved_document();
+    // Asset-backed samples need the plan's audio assets (version 4 or later).
     if !uses_kit_profile(&document)
         && !uses_audio_profile(&document)
         && !uses_control_profile(&document)
         && !uses_message_profile(&document)
+        && libraries.sample_assets.is_empty()
     {
         return compile_resolved_versioned(resolved, libraries, limits, production, original)
             .map(PlanArtifact::from);

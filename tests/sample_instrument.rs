@@ -328,3 +328,122 @@ fn sample_nodes_are_voice_only_and_have_no_phase() {
     let found = codes(&bundle);
     assert!(found.contains(&DiagnosticCode::Capability), "{found:?}");
 }
+
+fn pcm(values: &[f32]) -> Vec<u8> {
+    values
+        .iter()
+        .flat_map(|value| value.to_le_bytes())
+        .collect()
+}
+
+/// The tone bundle with its sample declared as a mono core PCM asset.
+fn native_bundle(values: &[f32], declared_frames: usize, notes: &str) -> SourceBundle {
+    let mut bundle = tone_bundle(notes);
+    let bytes = pcm(values);
+    let wav_decl = bundle.sources["main.maac"]
+        .lines()
+        .find(|line| line.starts_with("sample tone"))
+        .unwrap()
+        .to_owned();
+    let native_decl = format!(
+        "sample tone {{ path = \"tone.pcm\"; hash = \"{}\"; format = \"pcm_f32le_interleaved/1\"; rate = 24000Hz; frames = {declared_frames}; root = A4; }}",
+        sha256_digest(&bytes)
+    );
+    let source = bundle.sources["main.maac"].replace(&wav_decl, &native_decl);
+    bundle.sources.insert("main.maac".into(), source);
+    bundle.assets = BTreeMap::from([("tone.pcm".into(), bytes)]);
+    bundle
+}
+
+fn artifact_audio(artifact: &maac::PlanArtifact) -> Vec<f64> {
+    let mut output = Vec::new();
+    maac::render_artifact(artifact, |frame| {
+        output.extend_from_slice(frame);
+        Ok(())
+    })
+    .unwrap();
+    output
+}
+
+#[test]
+fn asset_backed_samples_render_like_embedded_ones() {
+    use maac::compiler::compile_bundle_artifact;
+    let notes = "note n { at = 0q; dur = 1q; pitch = A4; }";
+    let embedded = compile_bundle_artifact(&tone_bundle(notes)).unwrap();
+    let native = compile_bundle_artifact(&native_bundle(&tone(), 480, notes)).unwrap();
+
+    let wire: serde_json::Value = serde_json::from_slice(&native.to_json().unwrap()).unwrap();
+    let sample = &wire["instruments"]["samples"][0];
+    assert_eq!(sample["asset"]["id"], "__sample_0");
+    assert_eq!(sample["asset"]["frames"], 480);
+    assert_eq!(sample["samples"], serde_json::json!([]));
+    assert!(wire["audio_assets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|asset| asset["id"] == "__sample_0" && asset["channels"] == 1));
+
+    assert_eq!(artifact_audio(&native), artifact_audio(&embedded));
+    let reloaded = maac::PlanArtifact::from_json(&native.to_json().unwrap()).unwrap();
+    assert_eq!(artifact_audio(&reloaded), artifact_audio(&embedded));
+}
+
+#[test]
+fn asset_backed_samples_are_not_limited_by_the_embedded_budget() {
+    use maac::compiler::compile_bundle_artifact;
+    // 300,000 frames exceed the 262,144-frame embedded budget.
+    let long: Vec<f32> = (0..300_000).map(|j| ((j % 100) as f32) / 100.0).collect();
+    let native = compile_bundle_artifact(&native_bundle(
+        &long,
+        long.len(),
+        "note n { at = 0q; dur = 4q; pitch = A5; }",
+    ))
+    .unwrap();
+    let out = artifact_audio(&native);
+    // A5 plays the 24 kHz recording one source frame per output frame.
+    for frame in [0usize, 99, 150_000, 191_999] {
+        assert!((out[frame] - f64::from(long[frame])).abs() < 1e-12);
+    }
+}
+
+#[test]
+fn asset_backed_sample_refusals() {
+    use maac::compiler::compile_bundle_artifact;
+    let notes = "note n { at = 0q; dur = 1q; pitch = A4; }";
+    // Version 2 plans cannot carry audio assets.
+    let bundle = native_bundle(&tone(), 480, notes);
+    assert!(codes(&bundle).contains(&DiagnosticCode::Capability));
+
+    // Declared frames must match the exact bytes.
+    let wrong = native_bundle(&tone(), 479, notes);
+    let error = compile_bundle_artifact(&wrong).unwrap_err();
+    assert!(
+        error.iter().any(|d| d.code == DiagnosticCode::Asset),
+        "{error:?}"
+    );
+
+    // A composition asset may not take a reserved sample asset ID.
+    let mut clash = native_bundle(&tone(), 480, notes);
+    let bytes = pcm(&[0.0; 4]);
+    let source = clash.sources["main.maac"].replace(
+        "node keys",
+        &format!(
+            "asset __sample_0 {{ kind = audio; path = \"other.pcm\"; hash = \"{}\"; format = \"pcm_f32le_interleaved/1\"; rate = 48000Hz; channels = 1; frames = 4; }}\nnode keys",
+            sha256_digest(&bytes)
+        ),
+    );
+    clash.sources.insert("main.maac".into(), source);
+    clash.assets.insert("other.pcm".into(), bytes);
+    let error = compile_bundle_artifact(&clash).unwrap_err();
+    assert!(
+        error.iter().any(|d| d.code == DiagnosticCode::DuplicateId),
+        "{error:?}"
+    );
+
+    // A plan whose sample points at a mismatched asset does not load.
+    let artifact = compile_bundle_artifact(&native_bundle(&tone(), 480, notes)).unwrap();
+    let mut wire: serde_json::Value = serde_json::from_slice(&artifact.to_json().unwrap()).unwrap();
+    wire["instruments"]["samples"][0]["asset"]["frames"] = 479.into();
+    let error = maac::PlanArtifact::from_json(&serde_json::to_vec(&wire).unwrap()).unwrap_err();
+    assert_eq!(error.code, "E_ASSET", "{error:?}");
+}

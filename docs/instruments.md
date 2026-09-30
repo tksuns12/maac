@@ -400,11 +400,37 @@ sample piano_c4 {
 
 A `sample` declaration pins one finite mono PCM (8/16/24/32-bit) or float32
 WAV. Unlike a wavetable, the WAV sample rate is the recorded playback rate.
+Alternatively, it pins a mono core PCM file:
+
+```maac
+sample piano_c4 {
+  path = "piano-c4.pcm";
+  hash = "sha256:<64 lowercase hex digits>";
+  format = "pcm_f32le_interleaved/1";
+  rate = 48000Hz;
+  frames = 2400000;
+  root = C4;
+}
+```
+
+With `format`, the fields `rate` and `frames` are required, the bytes must be
+exactly `frames * 4`, and the sample is carried as an ordinary plan audio
+asset instead of embedded values. Asset-backed samples:
+
+- follow the core audio-asset rules: 16 MiB inline in total, or with
+  `--disk-media` a private disk snapshot of up to 1 GiB;
+- do not count against the embedded-sample budget;
+- render identically to the same values in a WAV;
+- require a version 4 or later plan artifact, so the version 2 plan API refuses
+  them with `E_CAPABILITY`.
+
+Their plan asset ID is reserved as `__<sample id>`, for example `__sample_0`. A
+composition asset that uses such an ID is `E_DUPLICATE_ID`.
 `root` is a spelled pitch or `key(n)` with key 0 through 127. It names the key
 at which the sample plays at its recorded rate. The optional `loop = [a frame,
-b frame]` is a forward sustain loop with `0 <= a < b <= frames`. Samples share
-the embedded-sample budget (262,144 frames in total) with wavetables and are
-embedded in plans with their provenance. At most 64 samples may be declared.
+b frame]` is a forward sustain loop with `0 <= a < b <= frames`. WAV samples
+share the embedded-sample budget (262,144 frames in total) with wavetables and
+are embedded in plans with their provenance. At most 64 samples may be declared.
 
 A voice-only `synth.sample/1` node selects samples with
 `config.zones = [{ sample = &s; low = <pitch>; high = <pitch>; }, ...]`.
