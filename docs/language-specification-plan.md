@@ -9,8 +9,9 @@ full-application readiness do not determine language completeness.
 contracts and evidence. L1 authority and the L5 metric and bound are
 **RESOLVED**. L4 is committed at `e948ce7`. Later bounded runtime slices add
 reusable source modules, generic lock verification/construction, strict external
-descriptor and dependency discovery, and MIDI loss reporting; generic rendering
-and executable native external hosting remain deferred.
+descriptor and dependency discovery, MIDI loss reporting, bounded built-in/core
+generic rendering, an explicit native external ABI host, and a single-generator
+external render bridge; mixed external/core graph execution remains deferred.
 Baseline: A1–A4 are addressed at
 `b19ae2884fbfad2dbf5efb1526a1eff8f5452d9d`. This plan records specification
 priorities. The adopted authored-state decision and the scoped L1 semantic
@@ -331,17 +332,16 @@ Sol recovery executor for schema, corpus, checker, and tests; independent
 semantic/specification and harness review passed, and root owns integration.
 The original L4 slice left production Rust and runtime verification unchanged.
 Subsequent work added the `maac::generic_lock` runtime verifier, the
-`maac::external` strict external-descriptor/dependency-discovery boundary, and
-`maac::generic_lock_generation`, which deterministically constructs canonical v1
-Config, RenderInput, and Lock artifacts from already-resolved typed context and
-exact bytes. Generic rendering and executable native external ABI hosting remain
-deferred. These later runtime slices do not turn the historical L4 schema/corpus
+`maac::external` strict external-descriptor/dependency-discovery boundary, and the
+`maac::generic_lock_generation` and `maac::generic_lock_normalization` typed
+generators, which deterministically construct canonical v1 Config, RenderInput, and
+Lock artifacts from already-resolved typed context and exact bytes.
+`maac::generic_render` now renders already-resolved built-in/core `Plan` contexts after pre-render verification, with a concrete host identity and null block schedule. `maac::external_host` and `maac::external_native` subsequently add an explicit executable native ABI boundary; a bounded single output-only external-generator render bridge is now implemented; general mixed external-node graph integration remains deferred. These later runtime slices do not turn the historical L4 schema/corpus
 slice into a full Locked Render conformance claim. The historical L4 slice itself
 did not claim full Rust/build or remote-CI gates. Status
 is **addressed 2026-09-13** for this bounded contract/schema/corpus/checker
-slice. Strict descriptor and loss-report contracts now have bounded runtime
-implementations; executable native ABI hosting and generic rendering remain
-separate follow-ups. See the
+slice. Strict external descriptor/discovery support and bounded interchange loss reporting
+were added in later L4 runtime slices; bounded built-in/core generic rendering and an explicit native ABI host boundary were added subsequently, while mixed external/core DAG execution remains a separate follow-up. See the
 [L4 portable-interchange decision](l4-portable-interchange-decision.md) for
 the accepted direction and scope boundary.
 
@@ -396,8 +396,9 @@ cross-platform, and listening gates. Runtime normalizer/editor behavior was late
 implemented for the bounded language contexts. Generic lock verification and
 construction, strict external descriptor/dependency discovery, and the versioned
 `maac.interchange-loss-report` contract with its bounded MIDI 1.0 SMF adapter now
-exist; generic rendering, executable native ABI hosting, notation, and DAW-session
-adapters remain separate work. L5 is addressed for this bounded contract, corpus, checker, index, and runtime-evidence slice; it makes
+exist, as do bounded built-in/core generic rendering, an explicit native ABI host,
+and a single-generator external render bridge; mixed external/core graph execution,
+notation, and DAW-session adapters remain separate work. L5 is addressed for this bounded contract, corpus, checker, index, and runtime-evidence slice; it makes
 no full-profile, universal-tolerance, or cross-platform bit-identity claim.
 
 **Acceptance, dependencies, status.** L5 follows L4 and consolidates or

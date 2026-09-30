@@ -60,25 +60,22 @@ define an additive lock/configuration/render-input family. The existing
 production and instrument identity formats remain unchanged. The static
 checker and focused tests cover the fixed schema/corpus relationships, and
 independent semantic and harness reviews are complete for this bounded slice.
-Generic Locked Render verification is exposed through `maac::generic_lock` for the
-v1 lock family. It validates the complete lock envelope and verifies caller-resolved
-execution, dependency, processor, engine, output, and evidence bytes without guessing
-unknown contracts. `maac::generic_lock_generation` deterministically constructs the
-canonical v1 Config, RenderInput, and Lock artifacts from an already-resolved typed
-context and exact bytes, including optional evidence while keeping evidence outside
-the render key. Strict external descriptor parsing and owner-scoped locked dependency
-discovery are exposed through `maac::external`; neither boundary loads or executes
-external module bytes.
+Generic Locked Render generation and verification are exposed through
+`maac::generic_lock_generation`, `maac::generic_lock_normalization`, and
+`maac::generic_lock` for the v1 lock family. Both generators deterministically construct
+canonical Config, RenderInput, render-key, and Lock artifacts from typed caller-resolved
+context and exact bytes, keeping optional evidence outside the render key; the verifier
+independently validates the complete lock envelope without guessing unknown contracts.
+Strict external descriptor parsing and owner-scoped locked dependency discovery are
+implemented by `maac::external`.
+`maac::generic_render` can execute a verified lock against an already-resolved built-in/core `Plan`; it requires the renderer's concrete engine identity, rejects non-null block schedules and external/state-pinned processors with `E_CAPABILITY`, renders from reset through the full locked interval, then applies crop/channel order and returns raw `pcm_f32le_interleaved/1` evidence. `maac::external_host` and `maac::external_native` separately provide an explicit executable external-host boundary and the published `maac.native-c-abi/1` + `maac.native-dylib-adapter/1` Unix dynamic-library contract. A separate `maac::generic_external_render` path now proves end-to-end locked execution for exactly one output-only external audio generator under an explicitly block-independent adapter, with zero technical latency, static parameters only, all parameters resolved, reset-origin streaming, crop/channel selection, and evidence verification. Mixed external/core graphs, external inputs/events, and parameter automation remain deferred, so this is not full Locked Render conformance.
 Section 25 loss reporting and the initial MIDI 1.0 SMF adapter are implemented through
 `maac::interchange`; notation and DAW-session adapters remain separate work.
 
 Message performance is resolved into retained transport events, including exact protocol/bytes, certified frames, and §6.1 dispatch ordering. Hosts must explicitly advertise a matching protocol for each target through `PlanArtifact::performance_dispatches`; the built-in Core Audio renderer has no raw-message adapter and therefore still returns `E_CAPABILITY`. Other recognized deferred execution features fail with `E_CAPABILITY`:
 other processors, pitched sample instruments,
-preserve-pitch audio warping, external plug-ins and other extensions. Generic rendering,
-executable native external ABI hosting, notation/DAW adapters, GUI and real-time playback
-are outside this release's interfaces. Generic lock construction/verification and strict
-external descriptor discovery are available only as the bounded offline/runtime APIs
-described above; they do not provide generic DSP execution. The bounded MIDI 1.0 SMF adapter is an
+preserve-pitch audio warping and other extensions. The published native external ABI can be hosted explicitly, but general mixed external-node graph integration, subprocess/sandbox hosting, notation/DAW adapters, GUI and real-time
+playback are outside this release's interfaces. The bounded MIDI 1.0 SMF adapter is an
 offline interchange export and does not provide live MIDI device transport.
 Protocol 2 transactional editing is implemented through `maac::editing` and `maac patch` for
 core compositions, hash-pinned local/built-in imports, reusable library sources and the recognized

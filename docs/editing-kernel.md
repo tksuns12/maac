@@ -219,9 +219,9 @@ take collections, and comp selection remain separate roadmap work.
 
 Further precision in impact reporting can extend beyond pattern/place dependencies to
 processor/asset/dependency-region analysis where a host can prove a smaller invalidation. External
-processor ABIs/descriptors that are not executed by this runtime, generic rendering and executable
-external hosting, and additional interchange adapters remain separate capability work; bounded lock
-generation and dependency discovery are implemented separately. The editor preserves
+processor execution within edited graphs and additional interchange adapters remain separate
+capability work; bounded lock generation, dependency discovery, generic rendering, and native ABI
+hosting are implemented separately. The editor preserves
 its explicit `E_CAPABILITY` boundary rather than inventing semantics for them. Broader formatting
 fixtures for unusually complex inserted/deleted subtrees are useful robustness coverage but are not
 required for Protocol 2 semantic correctness.

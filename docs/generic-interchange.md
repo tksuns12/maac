@@ -9,14 +9,19 @@ identities and does not change the source syntax/tree, retained-plan formats,
 or DSP/rendering algorithms. A generic runtime lock verifier is implemented by `maac::generic_lock`: it validates
 the closed v1 wire, ordering, digests, cross-pins, timing, evidence shape, and can
 verify the lock against caller-supplied resolved execution/dependency/processor/engine
-context and exact bytes. `maac::generic_lock_generation` constructs canonical Config,
-RenderInput, and Lock artifacts from caller-resolved typed context and exact closure
-bytes, including deterministic ordering, all v1 cross-pins, `execution_hash`,
-`render_key`, and optional output evidence; the generated lock is independently parsed
-and verified. `maac::external` adds a strict MaaC/1 §17 external-processor descriptor
-wire, verifies the complete owner-scoped locked dependency closure, and exposes explicit
-host ABI/adapter/permission authorization. Executable ABI invocation and a generic
-renderer remain separate follow-ups.
+context and exact bytes. `maac::external` now adds a strict MaaC/1 §17
+external-processor descriptor wire, verifies the complete owner-scoped locked
+dependency closure, and exposes explicit host ABI/adapter/permission authorization.
+`maac::generic_lock_generation` and `maac::generic_lock_normalization` each
+deterministically construct canonical Config, RenderInput, and Lock artifacts from
+caller-resolved typed context and exact bytes, including all v1 cross-pins,
+`execution_hash`, `render_key`, and optional output evidence; the generated lock is
+independently parsed and verified.
+`maac::generic_render` adds a bounded renderer for an already-resolved `Plan`: it first
+verifies the lock inputs, requires the concrete host engine identity, accepts only the
+understood built-in/core processor set and the block-independent null-schedule contract,
+executes from reset through `render_frames`, then applies crop/channel order and emits raw
+`pcm_f32le_interleaved/1` plus evidence. A separate `maac::external_host` boundary now supports explicitly registered executable ABI adapters, and `maac::external_native` implements the published Unix `maac.native-c-abi/1` / `maac.native-dylib-adapter/1` dynamic-library contract. The core `Plan` renderer still rejects external nodes. A separate `maac::generic_external_render` boundary supports one already-resolved output-only external audio generator with zero technical latency and static parameters only, using a null schedule only when the registered adapter explicitly guarantees block independence; all descriptor parameters must be resolved before instantiation. This does not reconstruct a graph from lock JSON.
 
 ## Common wire rules
 
@@ -346,9 +351,8 @@ block schedule, crop/channel order, closure bytes, and optional PCM/file evidenc
 The Rust `maac::external` boundary now parses the strict §17 descriptor wire,
 discovers and verifies complete processor-owned locked dependency closures, and
 requires explicit host capability authorization without executing module bytes.
-The Rust `maac::generic_lock_generation` boundary deterministically constructs
-canonical v1 Config, RenderInput, and Lock artifacts from a typed resolved context,
-checks dependency pins and strict external descriptor compatibility, and round-trips
-the result through the independent validator/verifier. Generic rendering and
-executable ABI invocation remain separate work; construction and verification alone
-do not establish full Locked Render conformance.
+The Rust `maac::generic_lock_generation` and `maac::generic_lock_normalization`
+boundaries each generate canonical v1 Config, RenderInput, render-key, and Lock
+artifacts from typed resolved context, check dependency pins and strict external
+descriptor compatibility, independently round-trip them through the validator/verifier,
+and keep optional output evidence out of the render key. Bounded built-in/core rendering is provided by `maac::generic_render`; explicit native ABI invocation is provided separately by `maac::external_host` and `maac::external_native`. A bounded single-generator external render bridge now exists; mixed external/core DAG execution, external inputs/events, and automated external parameters remain separate work.

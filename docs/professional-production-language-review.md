@@ -60,8 +60,9 @@ they are not wholly missing language features.
 
 Runtime normalization/editing, generic lock construction and verification,
 strict descriptor/dependency inspection, and bounded MIDI 1.0 SMF export with
-loss reports also exist. Generic rendering, executable external hosting, and
-broader receiver adapters remain separately scoped. Disk-media paths support
+loss reports also exist, as do bounded built-in/core generic rendering and an
+explicit native ABI host. Mixed external/core graph execution and broader
+receiver adapters remain separately scoped. Disk-media paths support
 bounded external native PCM and retained imports; they are not general-purpose
 streaming. Reset-correct excerpts can render from reset and crop the result;
 a faster seek/checkpoint interface is optional implementation work, not an

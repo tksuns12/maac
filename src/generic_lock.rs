@@ -227,7 +227,7 @@ impl GenericLock {
     pub fn validate(&self) -> Result<()> {
         validate_lock(&self.value)
     }
-    pub fn verify(&self, context: &LockVerificationContext) -> Result<VerifiedLock> {
+    pub fn verify_inputs(&self, context: &LockVerificationContext) -> Result<VerifiedLock> {
         self.validate()?;
         let v = obj(&self.value, "lock")?;
         let execution = sha_uri(
@@ -245,71 +245,6 @@ impl GenericLock {
         verify_processors(v, context)?;
         verify_engine(v, context)?;
         verify_output(v, context)?;
-        let evidence = v.get("evidence").expect("validated");
-        let mut pcm_ok = false;
-        let mut file_ok = false;
-        if !evidence.is_null() {
-            let e = obj(evidence, "evidence")?;
-            let pcm = context.pcm.as_ref().ok_or_else(|| {
-                LockError::new(
-                    "E_EVIDENCE",
-                    "lock contains PCM evidence but caller supplied no PCM",
-                )
-            })?;
-            if e["pcm_sha256"] != sha_uri(pcm)
-                || u(&e["pcm_bytes"], "pcm_bytes")? != pcm.len() as u64
-            {
-                return Err(LockError::new(
-                    "E_EVIDENCE",
-                    "PCM evidence hash/length mismatch",
-                ));
-            }
-            let out = obj(&v["output"], "output")?;
-            let crop = arr(&out["crop"], "crop")?;
-            let frames = u(&crop[1], "crop end")?
-                .checked_sub(u(&crop[0], "crop start")?)
-                .ok_or_else(|| LockError::new("E_TIMING", "evidence crop is reversed"))?;
-            let channels = u64::try_from(arr(&out["channel_order"], "channel_order")?.len())
-                .map_err(|_| LockError::new("E_RESOURCE_LIMIT", "channel count overflows u64"))?;
-            let expected_bytes = frames
-                .checked_mul(channels)
-                .and_then(|value| value.checked_mul(4))
-                .ok_or_else(|| LockError::new("E_RESOURCE_LIMIT", "PCM byte length overflows"))?;
-            if u64::try_from(pcm.len()).ok() != Some(expected_bytes) {
-                return Err(LockError::new(
-                    "E_EVIDENCE",
-                    "PCM byte length differs from crop × channels × 4",
-                ));
-            }
-            for chunk in pcm.chunks_exact(4) {
-                if !f32::from_le_bytes(chunk.try_into().unwrap()).is_finite() {
-                    return Err(LockError::new(
-                        "E_EVIDENCE",
-                        "PCM contains nonfinite binary32",
-                    ));
-                }
-            }
-            pcm_ok = true;
-            if !e["file"].is_null() {
-                let f = obj(&e["file"], "evidence.file")?;
-                let bytes = context.file.as_ref().ok_or_else(|| {
-                    LockError::new(
-                        "E_EVIDENCE",
-                        "file evidence present but caller supplied no file",
-                    )
-                })?;
-                if f["sha256"] != sha_uri(bytes)
-                    || u(&f["bytes"], "file.bytes")? != bytes.len() as u64
-                    || bytes != pcm
-                {
-                    return Err(LockError::new(
-                        "E_EVIDENCE",
-                        "file evidence hash/length mismatch",
-                    ));
-                }
-                file_ok = true;
-            }
-        }
         let out = obj(&v["output"], "output")?;
         let crop = arr(&out["crop"], "crop")?;
         Ok(VerifiedLock {
@@ -317,9 +252,86 @@ impl GenericLock {
             render_key: self.render_key().into(),
             crop: (u(&crop[0], "crop")?, u(&crop[1], "crop")?),
             channels: arr(&out["channel_order"], "channel_order")?.len(),
-            pcm_verified: pcm_ok,
-            file_verified: file_ok,
+            pcm_verified: false,
+            file_verified: false,
         })
+    }
+
+    pub fn verify_evidence(&self, pcm: Option<&[u8]>, file: Option<&[u8]>) -> Result<(bool, bool)> {
+        self.validate()?;
+        let v = obj(&self.value, "lock")?;
+        let evidence = v.get("evidence").expect("validated");
+        if evidence.is_null() {
+            return Ok((false, false));
+        }
+        let e = obj(evidence, "evidence")?;
+        let pcm = pcm.ok_or_else(|| {
+            LockError::new(
+                "E_EVIDENCE",
+                "lock contains PCM evidence but caller supplied no PCM",
+            )
+        })?;
+        if e["pcm_sha256"] != sha_uri(pcm) || u(&e["pcm_bytes"], "pcm_bytes")? != pcm.len() as u64 {
+            return Err(LockError::new(
+                "E_EVIDENCE",
+                "PCM evidence hash/length mismatch",
+            ));
+        }
+        let out = obj(&v["output"], "output")?;
+        let crop = arr(&out["crop"], "crop")?;
+        let frames = u(&crop[1], "crop end")?
+            .checked_sub(u(&crop[0], "crop start")?)
+            .ok_or_else(|| LockError::new("E_TIMING", "evidence crop is reversed"))?;
+        let channels = u64::try_from(arr(&out["channel_order"], "channel_order")?.len())
+            .map_err(|_| LockError::new("E_RESOURCE_LIMIT", "channel count overflows u64"))?;
+        let expected_bytes = frames
+            .checked_mul(channels)
+            .and_then(|value| value.checked_mul(4))
+            .ok_or_else(|| LockError::new("E_RESOURCE_LIMIT", "PCM byte length overflows"))?;
+        if u64::try_from(pcm.len()).ok() != Some(expected_bytes) {
+            return Err(LockError::new(
+                "E_EVIDENCE",
+                "PCM byte length differs from crop × channels × 4",
+            ));
+        }
+        for chunk in pcm.chunks_exact(4) {
+            if !f32::from_le_bytes(chunk.try_into().unwrap()).is_finite() {
+                return Err(LockError::new(
+                    "E_EVIDENCE",
+                    "PCM contains nonfinite binary32",
+                ));
+            }
+        }
+        let mut file_ok = false;
+        if !e["file"].is_null() {
+            let f = obj(&e["file"], "evidence.file")?;
+            let bytes = file.ok_or_else(|| {
+                LockError::new(
+                    "E_EVIDENCE",
+                    "file evidence present but caller supplied no file",
+                )
+            })?;
+            if f["sha256"] != sha_uri(bytes)
+                || u(&f["bytes"], "file.bytes")? != bytes.len() as u64
+                || bytes != pcm
+            {
+                return Err(LockError::new(
+                    "E_EVIDENCE",
+                    "file evidence hash/length mismatch",
+                ));
+            }
+            file_ok = true;
+        }
+        Ok((true, file_ok))
+    }
+
+    pub fn verify(&self, context: &LockVerificationContext) -> Result<VerifiedLock> {
+        let mut verified = self.verify_inputs(context)?;
+        let (pcm_verified, file_verified) =
+            self.verify_evidence(context.pcm.as_deref(), context.file.as_deref())?;
+        verified.pcm_verified = pcm_verified;
+        verified.file_verified = file_verified;
+        Ok(verified)
     }
 }
 
