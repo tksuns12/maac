@@ -61,8 +61,8 @@ production and instrument identity formats remain unchanged. The static
 checker and focused tests cover the fixed schema/corpus relationships, and
 independent semantic and harness reviews are complete for this bounded slice.
 Generic Locked Render generation and verification are exposed through
-`maac::generic_lock_generation`, `maac::generic_lock_normalization`, and
-`maac::generic_lock` for the v1 lock family. Both generators deterministically construct
+`maac::generic_lock_normalization` and `maac::generic_lock` for the v1 lock family.
+The single generator, `generate_generic_lock`, deterministically constructs
 canonical Config, RenderInput, render-key, and Lock artifacts from typed caller-resolved
 context and exact bytes, keeping optional evidence outside the render key; the verifier
 independently validates the complete lock envelope without guessing unknown contracts.

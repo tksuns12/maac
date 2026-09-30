@@ -12,11 +12,13 @@ verify the lock against caller-supplied resolved execution/dependency/processor/
 context and exact bytes. `maac::external` now adds a strict MaaC/1 §17
 external-processor descriptor wire, verifies the complete owner-scoped locked
 dependency closure, and exposes explicit host ABI/adapter/permission authorization.
-`maac::generic_lock_generation` and `maac::generic_lock_normalization` each
-deterministically construct canonical Config, RenderInput, and Lock artifacts from
+`maac::generic_lock_normalization::generate_generic_lock` deterministically
+constructs canonical Config, RenderInput, and Lock artifacts from
 caller-resolved typed context and exact bytes, including all v1 cross-pins,
 `execution_hash`, `render_key`, and optional output evidence; the generated lock is
-independently parsed and verified.
+independently parsed and verified. Generation failures use the same codes as
+lock verification for the same condition (for example `E_SCHEMA` for a partial
+processor identity group, `E_CLOSURE` for an unproven null block schedule).
 `maac::generic_render` adds a bounded renderer for an already-resolved `Plan`: it first
 verifies the lock inputs, requires the concrete host engine identity, accepts only the
 understood built-in/core processor set and the block-independent null-schedule contract,
@@ -351,8 +353,7 @@ block schedule, crop/channel order, closure bytes, and optional PCM/file evidenc
 The Rust `maac::external` boundary now parses the strict §17 descriptor wire,
 discovers and verifies complete processor-owned locked dependency closures, and
 requires explicit host capability authorization without executing module bytes.
-The Rust `maac::generic_lock_generation` and `maac::generic_lock_normalization`
-boundaries each generate canonical v1 Config, RenderInput, render-key, and Lock
+The Rust `maac::generic_lock_normalization` boundary generates canonical v1 Config, RenderInput, render-key, and Lock
 artifacts from typed resolved context, check dependency pins and strict external
 descriptor compatibility, independently round-trip them through the validator/verifier,
 and keep optional output evidence out of the render key. Bounded built-in/core rendering is provided by `maac::generic_render`; explicit native ABI invocation is provided separately by `maac::external_host` and `maac::external_native`. A bounded single-generator external render bridge now exists; mixed external/core DAG execution, external inputs/events, and automated external parameters remain separate work.

@@ -3,6 +3,9 @@
 //! Callers supply an already-resolved semantic context and exact closure bytes.
 //! This module owns canonical envelope construction, ordering, digests, cross-pins,
 //! and optional evidence construction. It performs no filesystem or network discovery.
+//! Every failure uses the code that `GenericLock` verification reports for the
+//! same condition, and each generated lock is independently verified before it
+//! is returned.
 
 use std::collections::BTreeMap;
 
@@ -16,11 +19,12 @@ use crate::generic_lock::{
 };
 use crate::production_identity::canonical_json_bytes;
 
-#[derive(Clone, Debug)]
-pub struct ResolvedAsset {
-    pub kind: String,
-    pub bytes: Vec<u8>,
-}
+/// Exact asset bytes and kind, keyed by source path in the build context.
+pub type ResolvedAsset = ExpectedAsset;
+/// The understood host engine and its block-schedule contract.
+pub type ResolvedEngine = ExpectedEngine;
+/// The normalized output selection and raw output contract.
+pub type ResolvedOutput = ExpectedOutput;
 
 #[derive(Clone, Debug)]
 pub struct ResolvedProcessor {
@@ -30,34 +34,13 @@ pub struct ResolvedProcessor {
     pub adapter_id: Option<String>,
     pub state_hash: Option<String>,
     /// Normalized node.config record only, with understood defaults expanded.
+    /// The generator constructs the surrounding maac.generic-config envelope.
     pub normalized_config: Value,
     pub latency_frames: u64,
     pub determinism: String,
 }
 
-#[derive(Clone, Debug)]
-pub struct ResolvedEngine {
-    pub implementation_id: String,
-    pub build_id: String,
-    pub platform_id: String,
-    pub architecture_id: String,
-    pub numerical_mode_id: String,
-    pub sample_rate: u64,
-    pub block_schedule: Option<Vec<u64>>,
-    pub block_independent: bool,
-}
-
-#[derive(Clone, Debug)]
-pub struct ResolvedOutput {
-    pub port: Value,
-    pub score: [Value; 2],
-    pub tail: Value,
-    pub render_frames: u64,
-    pub crop: (u64, u64),
-    pub channel_order: Vec<u64>,
-}
-
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OutputEvidence {
     pub pcm: Vec<u8>,
     pub file: Option<Vec<u8>>,
@@ -71,6 +54,8 @@ pub struct GenericLockBuildContext {
     pub processors: BTreeMap<Vec<String>, ResolvedProcessor>,
     pub engine: ResolvedEngine,
     pub output: ResolvedOutput,
+    /// Optional rendered output. Evidence is recorded in the lock but never
+    /// enters the render key.
     pub evidence: Option<OutputEvidence>,
 }
 
@@ -126,8 +111,52 @@ fn processor_slot<'a>(
     })
 }
 
+fn validate_digest(value: &str, field: &str) -> Result<(), LockError> {
+    let valid = value.len() == 71
+        && value.starts_with("sha256:")
+        && value[7..]
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
+    if valid {
+        Ok(())
+    } else {
+        Err(error(
+            "E_SCHEMA",
+            format!("{field} is not a canonical SHA-256 URI"),
+        ))
+    }
+}
+
+/// Check the processor identity group and pin formats before any closure
+/// comparison, so a malformed pin is a schema error rather than a digest one.
+fn validate_processor_shape(processor: &ResolvedProcessor) -> Result<(), LockError> {
+    let group = [
+        processor.implementation_hash.is_some(),
+        processor.descriptor_hash.is_some(),
+        processor.adapter_id.is_some(),
+    ];
+    if group.iter().any(|present| *present) && !group.iter().all(|present| *present) {
+        return Err(error(
+            "E_SCHEMA",
+            "processor implementation/descriptor/adapter identity must be all null or all nonnull",
+        ));
+    }
+    for (value, field) in [
+        (&processor.implementation_hash, "implementation_hash"),
+        (&processor.descriptor_hash, "descriptor_hash"),
+        (&processor.state_hash, "state_hash"),
+    ] {
+        if let Some(value) = value {
+            validate_digest(value, field)?;
+        }
+    }
+    Ok(())
+}
+
+/// Cross-pin one processor dependency slot: a pinned slot needs matching
+/// bytes, and bytes without a pin are an unexpected closure member.
 fn require_pin(
-    supplied: &Option<String>,
+    supplied: Option<&String>,
     actual: Option<&Vec<u8>>,
     label: &str,
 ) -> Result<Value, LockError> {
@@ -194,43 +223,43 @@ pub fn generate_generic_lock(
     dependencies.sort_by(|a, b| a.0.cmp(&b.0));
 
     let mut configs = BTreeMap::new();
+    let mut config_values = BTreeMap::new();
     let mut processors = Vec::new();
     for (node, processor) in &context.processors {
+        validate_processor_shape(processor)?;
+        let slot = |name: &str| processor_slot(&context.dependencies, node, name);
         let implementation_hash = require_pin(
-            &processor.implementation_hash,
-            processor_slot(&context.dependencies, node, "implementation"),
+            processor.implementation_hash.as_ref(),
+            slot("implementation"),
             "processor implementation",
         )?;
         let descriptor_hash = require_pin(
-            &processor.descriptor_hash,
-            processor_slot(&context.dependencies, node, "descriptor"),
+            processor.descriptor_hash.as_ref(),
+            slot("descriptor"),
             "processor descriptor",
         )?;
+        // The adapter is identified by ID rather than digest, but its bytes
+        // are still a required (external) or forbidden (core) closure slot.
+        match (&processor.adapter_id, slot("adapter")) {
+            (Some(_), None) => {
+                return Err(error(
+                    "E_REFERENCE",
+                    "processor adapter is identified but its dependency bytes are missing",
+                ))
+            }
+            (None, Some(_)) => {
+                return Err(error(
+                    "E_CLOSURE",
+                    "processor adapter dependency is present for a core processor",
+                ))
+            }
+            _ => {}
+        }
         let state_hash = require_pin(
-            &processor.state_hash,
-            processor_slot(&context.dependencies, node, "state"),
+            processor.state_hash.as_ref(),
+            slot("state"),
             "processor state",
         )?;
-
-        let has_adapter_bytes = processor_slot(&context.dependencies, node, "adapter").is_some();
-        if processor.adapter_id.is_some() != has_adapter_bytes {
-            return Err(error(
-                "E_CLOSURE",
-                "processor adapter identity and dependency closure disagree",
-            ));
-        }
-        let identity_group_is_core = processor.implementation_hash.is_none()
-            && processor.descriptor_hash.is_none()
-            && processor.adapter_id.is_none();
-        let identity_group_is_external = processor.implementation_hash.is_some()
-            && processor.descriptor_hash.is_some()
-            && processor.adapter_id.is_some();
-        if !identity_group_is_core && !identity_group_is_external {
-            return Err(error(
-                "E_CAPABILITY",
-                "processor implementation/descriptor/adapter identity must be all-null or all-present",
-            ));
-        }
 
         let config = json!({
             "format": "maac.generic-config",
@@ -242,6 +271,7 @@ pub fn generate_generic_lock(
         let config_bytes = canon(&config)?;
         let config_digest = sha_uri(&config_bytes);
         configs.insert(node.clone(), config_bytes);
+        config_values.insert(node.clone(), config.clone());
 
         processors.push((
             canonical_path_key(node)?,
@@ -261,18 +291,14 @@ pub fn generate_generic_lock(
     }
     processors.sort_by(|a, b| a.0.cmp(&b.0));
 
+    // Block-schedule positivity, sum, and block-independence are enforced by
+    // lock parsing and verification below, with the verifier's own codes.
     let block_schedule = context
         .engine
         .block_schedule
         .as_ref()
         .map(|blocks| Value::Array(blocks.iter().copied().map(u).collect()))
         .unwrap_or(Value::Null);
-    if context.engine.block_schedule.is_none() && !context.engine.block_independent {
-        return Err(error(
-            "E_CAPABILITY",
-            "null block schedule requires a proven block-independent contract",
-        ));
-    }
     let engine = json!({
         "implementation_id": context.engine.implementation_id,
         "build_id": context.engine.build_id,
@@ -331,36 +357,14 @@ pub fn generate_generic_lock(
     lock.insert("evidence".into(), evidence);
     let lock = GenericLock::from_value(Value::Object(lock))?;
 
-    discover_external_processors(&lock, &context.dependencies)
-        .map_err(|e| error(e.code, e.message))?;
-
     let verification = LockVerificationContext {
         execution_preimage: context.execution_preimage.clone(),
-        assets: context
-            .assets
-            .iter()
-            .map(|(path, asset)| {
-                (
-                    path.clone(),
-                    ExpectedAsset {
-                        kind: asset.kind.clone(),
-                        bytes: asset.bytes.clone(),
-                    },
-                )
-            })
-            .collect(),
+        assets: context.assets.clone(),
         dependencies: context.dependencies.clone(),
         processors: context
             .processors
             .iter()
             .map(|(node, processor)| {
-                let config = lock.value()["processors"]
-                    .as_array()
-                    .expect("validated processors")
-                    .iter()
-                    .find(|entry| entry["node"] == serde_json::to_value(node).unwrap())
-                    .expect("generated processor exists")["config"]
-                    .clone();
                 (
                     node.clone(),
                     ExpectedProcessor {
@@ -369,35 +373,30 @@ pub fn generate_generic_lock(
                         descriptor_hash: processor.descriptor_hash.clone(),
                         adapter_id: processor.adapter_id.clone(),
                         state_hash: processor.state_hash.clone(),
-                        config,
+                        config: config_values[node].clone(),
                         latency_frames: processor.latency_frames,
                         determinism: processor.determinism.clone(),
                     },
                 )
             })
             .collect(),
-        engine: ExpectedEngine {
-            implementation_id: context.engine.implementation_id.clone(),
-            build_id: context.engine.build_id.clone(),
-            platform_id: context.engine.platform_id.clone(),
-            architecture_id: context.engine.architecture_id.clone(),
-            numerical_mode_id: context.engine.numerical_mode_id.clone(),
-            sample_rate: context.engine.sample_rate,
-            block_schedule: context.engine.block_schedule.clone(),
-            block_independent: context.engine.block_independent,
-        },
-        output: ExpectedOutput {
-            port: context.output.port.clone(),
-            score: context.output.score.clone(),
-            tail: context.output.tail.clone(),
-            render_frames: context.output.render_frames,
-            crop: context.output.crop,
-            channel_order: context.output.channel_order.clone(),
-        },
+        engine: context.engine.clone(),
+        output: context.output.clone(),
         pcm: context.evidence.as_ref().map(|e| e.pcm.clone()),
         file: context.evidence.as_ref().and_then(|e| e.file.clone()),
     };
     lock.verify(&verification)?;
+
+    // Descriptor bytes are interchange dependencies, not MaaC source, so a
+    // malformed descriptor is a schema failure of the lock closure.
+    discover_external_processors(&lock, &context.dependencies).map_err(|e| {
+        let code = if e.code == "E_SYNTAX" {
+            "E_SCHEMA"
+        } else {
+            e.code
+        };
+        error(code, e.message)
+    })?;
 
     Ok(GeneratedGenericLock {
         configs,

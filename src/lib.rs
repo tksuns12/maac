@@ -22,7 +22,6 @@ pub mod external_native;
 pub(crate) mod freeze;
 pub mod generic_external_render;
 pub mod generic_lock;
-pub mod generic_lock_generation;
 pub mod generic_lock_normalization;
 pub mod generic_render;
 pub mod graph;

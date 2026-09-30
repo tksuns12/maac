@@ -4,10 +4,11 @@ use std::path::PathBuf;
 
 use maac::generic_lock::{
     DependencyIdentity, ExpectedAsset, ExpectedEngine, ExpectedOutput, ExpectedProcessor,
-    GenericLock, LockVerificationContext,
+    GenericLock, LockError, LockVerificationContext,
 };
-use maac::generic_lock_generation::{
-    GenericLockBuilder, GenericLockGenerationContext, OutputEvidence, ResolvedProcessor,
+use maac::generic_lock_normalization::{
+    generate_generic_lock, GeneratedGenericLock, GenericLockBuildContext, OutputEvidence,
+    ResolvedProcessor,
 };
 use maac::production_identity::canonical_json_bytes;
 use serde_json::{json, Value};
@@ -164,9 +165,10 @@ fn dependency(owner: Option<Vec<&str>>, role: &[&str]) -> DependencyIdentity {
     }
 }
 
-fn minimal_context() -> GenericLockGenerationContext {
+fn minimal_context() -> GenericLockBuildContext {
     let lock = value("canonical/minimal-lock.json");
-    GenericLockGenerationContext {
+    GenericLockBuildContext {
+        evidence: None,
         execution_preimage: value("preimages/minimal-execution.json"),
         assets: BTreeMap::new(),
         dependencies: BTreeMap::from([(
@@ -181,7 +183,7 @@ fn minimal_context() -> GenericLockGenerationContext {
                 descriptor_hash: None,
                 adapter_id: None,
                 state_hash: None,
-                config: lock["processors"][0]["config"]["config"].clone(),
+                normalized_config: lock["processors"][0]["config"]["config"].clone(),
                 latency_frames: 0,
                 determinism: "declared_deterministic".into(),
             },
@@ -308,10 +310,11 @@ fn external_dependencies(transitive_beta: bool) -> BTreeMap<DependencyIdentity, 
     ])
 }
 
-fn external_context(transitive_beta: bool) -> GenericLockGenerationContext {
+fn external_context(transitive_beta: bool) -> GenericLockBuildContext {
     let lock = value("canonical/external-ramp-lock.json");
     let processor = &lock["processors"][0];
-    GenericLockGenerationContext {
+    GenericLockBuildContext {
+        evidence: None,
         execution_preimage: value("preimages/ramp-execution.json"),
         assets: external_assets(),
         dependencies: external_dependencies(transitive_beta),
@@ -323,7 +326,7 @@ fn external_context(transitive_beta: bool) -> GenericLockGenerationContext {
                 descriptor_hash: Some(sha_uri(&strict_descriptor_bytes())),
                 adapter_id: processor["adapter_id"].as_str().map(str::to_owned),
                 state_hash: processor["state_hash"].as_str().map(str::to_owned),
-                config: processor["config"]["config"].clone(),
+                normalized_config: processor["config"]["config"].clone(),
                 latency_frames: 2,
                 determinism: "declared_deterministic".into(),
             },
@@ -352,9 +355,19 @@ fn external_context(transitive_beta: bool) -> GenericLockGenerationContext {
     }
 }
 
+/// Generate with optional output evidence attached to a copy of the context.
+fn build(
+    context: &GenericLockBuildContext,
+    evidence: Option<&OutputEvidence>,
+) -> Result<GeneratedGenericLock, LockError> {
+    let mut context = context.clone();
+    context.evidence = evidence.cloned();
+    generate_generic_lock(&context)
+}
+
 fn verification_context(
-    generated: &maac::generic_lock_generation::GeneratedGenericLock,
-    context: &GenericLockGenerationContext,
+    generated: &GeneratedGenericLock,
+    context: &GenericLockBuildContext,
     evidence: Option<&OutputEvidence>,
 ) -> LockVerificationContext {
     let processors = context
@@ -369,7 +382,7 @@ fn verification_context(
                     descriptor_hash: processor.descriptor_hash.clone(),
                     adapter_id: processor.adapter_id.clone(),
                     state_hash: processor.state_hash.clone(),
-                    config: generated.config(node).unwrap().clone(),
+                    config: serde_json::from_slice(&generated.configs[node]).unwrap(),
                     latency_frames: processor.latency_frames,
                     determinism: processor.determinism.clone(),
                 },
@@ -391,18 +404,18 @@ fn verification_context(
 #[test]
 fn minimal_generation_matches_all_canonical_artifacts() {
     let context = minimal_context();
-    let generated = GenericLockBuilder::new(&context).build().unwrap();
+    let generated = build(&context, None).unwrap();
 
     assert_eq!(
-        generated.config_bytes(&["sine".into()]).unwrap().unwrap(),
+        generated.configs[&["sine".to_string()][..]].clone(),
         read("canonical/minimal-config.json")
     );
     assert_eq!(
-        generated.render_input_bytes().unwrap(),
+        generated.render_input_bytes.clone(),
         read("canonical/minimal-render-input.json")
     );
     assert_eq!(
-        generated.lock_bytes().unwrap(),
+        generated.lock_bytes.clone(),
         read("canonical/minimal-lock.json")
     );
 }
@@ -410,11 +423,11 @@ fn minimal_generation_matches_all_canonical_artifacts() {
 #[test]
 fn external_generation_preserves_order_schedule_channels_and_closure() {
     let context = external_context(false);
-    let generated = GenericLockBuilder::new(&context).build().unwrap();
+    let generated = build(&context, None).unwrap();
 
     let expected = expected_external_value(false);
     assert_eq!(
-        generated.config_bytes(&["fx".into()]).unwrap().unwrap(),
+        generated.configs[&["fx".to_string()][..]].clone(),
         canonical_json_bytes(&expected["processors"][0]["config"]).unwrap()
     );
     let mut expected_render_input = expected.as_object().unwrap().clone();
@@ -425,15 +438,15 @@ fn external_generation_preserves_order_schedule_channels_and_closure() {
         Value::String("maac.generic-render-input".into()),
     );
     assert_eq!(
-        generated.render_input_bytes().unwrap(),
+        generated.render_input_bytes.clone(),
         canonical_json_bytes(&Value::Object(expected_render_input)).unwrap()
     );
     assert_eq!(
-        generated.lock_bytes().unwrap(),
+        generated.lock_bytes.clone(),
         canonical_json_bytes(&expected).unwrap()
     );
 
-    let lock = generated.lock().value();
+    let lock = generated.lock.value();
     assert_eq!(
         lock["output"]["channel_order"],
         serde_json::json!(["1", "0"])
@@ -451,8 +464,8 @@ fn canonical_dependency_order_is_not_btreemap_identity_order() {
     let first_map_key = context.dependencies.keys().next().unwrap();
     assert!(first_map_key.owner.is_none());
 
-    let generated = GenericLockBuilder::new(&context).build().unwrap();
-    let dependencies = generated.lock().value()["dependencies"].as_array().unwrap();
+    let generated = build(&context, None).unwrap();
+    let dependencies = generated.lock.value()["dependencies"].as_array().unwrap();
     assert!(dependencies.first().unwrap()["owner"].is_array());
     assert!(dependencies.last().unwrap()["owner"].is_null());
 
@@ -464,28 +477,20 @@ fn canonical_dependency_order_is_not_btreemap_identity_order() {
     let mut reordered_context = external_context(false);
     reordered_context.dependencies = rebuilt;
     assert_eq!(
-        GenericLockBuilder::new(&reordered_context)
-            .build()
-            .unwrap()
-            .lock_bytes()
-            .unwrap(),
-        generated.lock_bytes().unwrap()
+        build(&reordered_context, None).unwrap().lock_bytes.clone(),
+        generated.lock_bytes.clone()
     );
 }
 
 #[test]
 fn transitive_imported_auxiliary_and_same_byte_slots_are_retained() {
-    let normal = GenericLockBuilder::new(&external_context(false))
-        .build()
-        .unwrap();
+    let normal = build(&external_context(false), None).unwrap();
     let transitive_context = external_context(true);
-    let transitive = GenericLockBuilder::new(&transitive_context)
-        .build()
-        .unwrap();
+    let transitive = build(&transitive_context, None).unwrap();
 
     let expected = expected_external_value(true);
     assert_eq!(
-        transitive.lock_bytes().unwrap(),
+        transitive.lock_bytes.clone(),
         canonical_json_bytes(&expected).unwrap()
     );
     let mut expected_render_input = expected.as_object().unwrap().clone();
@@ -496,14 +501,12 @@ fn transitive_imported_auxiliary_and_same_byte_slots_are_retained() {
         Value::String("maac.generic-render-input".into()),
     );
     assert_eq!(
-        transitive.render_input_bytes().unwrap(),
+        transitive.render_input_bytes.clone(),
         canonical_json_bytes(&Value::Object(expected_render_input)).unwrap()
     );
-    assert_ne!(normal.lock().render_key(), transitive.lock().render_key());
+    assert_ne!(normal.lock.render_key(), transitive.lock.render_key());
 
-    let deps = transitive.lock().value()["dependencies"]
-        .as_array()
-        .unwrap();
+    let deps = transitive.lock.value()["dependencies"].as_array().unwrap();
     let shared_hash = "sha256:88aaa241d93be0e3fcd96902dd9b5bd02f0dd4cada32a3b4f6d820bc0a517276";
     assert_eq!(
         deps.iter()
@@ -515,9 +518,7 @@ fn transitive_imported_auxiliary_and_same_byte_slots_are_retained() {
 
 #[test]
 fn external_state_present_and_state_null_are_both_explicit() {
-    GenericLockBuilder::new(&external_context(false))
-        .build()
-        .unwrap();
+    build(&external_context(false), None).unwrap();
 
     let mut context = external_context(false);
     context
@@ -529,9 +530,9 @@ fn external_state_present_and_state_null_are_both_explicit() {
         .dependencies
         .remove(&dependency(Some(vec!["fx"]), &["processor", "state"]));
     context.assets.remove(&vec!["state_asset".into()]);
-    let generated = GenericLockBuilder::new(&context).build().unwrap();
-    assert!(generated.lock().value()["processors"][0]["state_hash"].is_null());
-    assert!(!generated.lock().value()["dependencies"]
+    let generated = build(&context, None).unwrap();
+    assert!(generated.lock.value()["processors"][0]["state_hash"].is_null());
+    assert!(!generated.lock.value()["dependencies"]
         .as_array()
         .unwrap()
         .iter()
@@ -544,10 +545,7 @@ fn missing_mismatched_and_tampered_external_inputs_fail_explicitly() {
     missing
         .dependencies
         .remove(&dependency(Some(vec!["fx"]), &["processor", "descriptor"]));
-    assert_eq!(
-        GenericLockBuilder::new(&missing).build().unwrap_err().code,
-        "E_REFERENCE"
-    );
+    assert_eq!(build(&missing, None).unwrap_err().code, "E_REFERENCE");
 
     let mut tampered = external_context(false);
     *tampered
@@ -557,10 +555,7 @@ fn missing_mismatched_and_tampered_external_inputs_fail_explicitly() {
             &["processor", "implementation"],
         ))
         .unwrap() = b"tampered implementation".to_vec();
-    assert_eq!(
-        GenericLockBuilder::new(&tampered).build().unwrap_err().code,
-        "E_DIGEST"
-    );
+    assert_eq!(build(&tampered, None).unwrap_err().code, "E_DIGEST");
 
     let mut mismatch = external_context(false);
     mismatch
@@ -568,33 +563,27 @@ fn missing_mismatched_and_tampered_external_inputs_fail_explicitly() {
         .get_mut(&vec!["fx".into()])
         .unwrap()
         .processor_type = "fixture.other/1".into();
-    assert_eq!(
-        GenericLockBuilder::new(&mismatch).build().unwrap_err().code,
-        "E_CAPABILITY"
-    );
+    assert_eq!(build(&mismatch, None).unwrap_err().code, "E_CAPABILITY");
 }
 
 #[test]
 fn evidence_is_output_only_and_does_not_change_render_key() {
     let context = minimal_context();
-    let plain = GenericLockBuilder::new(&context).build().unwrap();
+    let plain = build(&context, None).unwrap();
     let pcm = read("evidence/minimal.pcm");
     let evidence = OutputEvidence {
         pcm: pcm.clone(),
         file: None,
     };
-    let with_pcm = GenericLockBuilder::new(&context)
-        .evidence(&evidence)
-        .build()
-        .unwrap();
+    let with_pcm = build(&context, Some(&evidence)).unwrap();
 
-    assert_eq!(plain.lock().render_key(), with_pcm.lock().render_key());
+    assert_eq!(plain.lock.render_key(), with_pcm.lock.render_key());
     assert_eq!(
-        plain.render_input_bytes().unwrap(),
-        with_pcm.render_input_bytes().unwrap()
+        plain.render_input_bytes.clone(),
+        with_pcm.render_input_bytes.clone()
     );
     assert_eq!(
-        with_pcm.lock_bytes().unwrap(),
+        with_pcm.lock_bytes.clone(),
         read("canonical/minimal-evidence-pcm-lock.json")
     );
 
@@ -602,13 +591,10 @@ fn evidence_is_output_only_and_does_not_change_render_key() {
         pcm: pcm.clone(),
         file: Some(pcm),
     };
-    let with_file = GenericLockBuilder::new(&context)
-        .evidence(&with_file_evidence)
-        .build()
-        .unwrap();
-    assert_eq!(plain.lock().render_key(), with_file.lock().render_key());
+    let with_file = build(&context, Some(&with_file_evidence)).unwrap();
+    assert_eq!(plain.lock.render_key(), with_file.lock.render_key());
     assert_eq!(
-        with_file.lock_bytes().unwrap(),
+        with_file.lock_bytes.clone(),
         read("canonical/minimal-evidence-file-lock.json")
     );
 }
@@ -616,14 +602,14 @@ fn evidence_is_output_only_and_does_not_change_render_key() {
 #[test]
 fn generation_parse_and_independent_verify_round_trip() {
     let context = external_context(false);
-    let generated = GenericLockBuilder::new(&context).build().unwrap();
-    let bytes = generated.lock_bytes().unwrap();
+    let generated = build(&context, None).unwrap();
+    let bytes = generated.lock_bytes.clone();
     let parsed = GenericLock::from_json(&bytes).unwrap();
     let verified = parsed
         .verify(&verification_context(&generated, &context, None))
         .unwrap();
 
-    assert_eq!(verified.render_key, generated.lock().render_key());
+    assert_eq!(verified.render_key, generated.lock.render_key());
     assert_eq!(verified.crop, (0, 32_302));
     assert_eq!(verified.channels, 2);
 }
@@ -632,13 +618,7 @@ fn generation_parse_and_independent_verify_round_trip() {
 fn timing_and_evidence_bounds_fail_without_guessing() {
     let mut bad_schedule = external_context(false);
     bad_schedule.engine.block_schedule = Some(vec![16_000, 16_301]);
-    assert_eq!(
-        GenericLockBuilder::new(&bad_schedule)
-            .build()
-            .unwrap_err()
-            .code,
-        "E_TIMING"
-    );
+    assert_eq!(build(&bad_schedule, None).unwrap_err().code, "E_TIMING");
 
     let context = minimal_context();
     let short = OutputEvidence {
@@ -646,11 +626,7 @@ fn timing_and_evidence_bounds_fail_without_guessing() {
         file: None,
     };
     assert_eq!(
-        GenericLockBuilder::new(&context)
-            .evidence(&short)
-            .build()
-            .unwrap_err()
-            .code,
+        build(&context, Some(&short)).unwrap_err().code,
         "E_EVIDENCE"
     );
 
@@ -664,11 +640,7 @@ fn timing_and_evidence_bounds_fail_without_guessing() {
         file: None,
     };
     assert_eq!(
-        GenericLockBuilder::new(&context)
-            .evidence(&nonfinite)
-            .build()
-            .unwrap_err()
-            .code,
+        build(&context, Some(&nonfinite)).unwrap_err().code,
         "E_EVIDENCE"
     );
 }

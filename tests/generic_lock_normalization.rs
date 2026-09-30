@@ -542,9 +542,10 @@ fn evidence_is_optional_and_never_changes_render_key() {
 fn block_schedule_and_core_config_fail_explicitly_when_invalid() {
     let mut context = minimal_context();
     context.engine.block_independent = false;
+    // Same code as lock verification for an unproven null schedule.
     assert_eq!(
         generate_generic_lock(&context).unwrap_err().code,
-        "E_CAPABILITY"
+        "E_CLOSURE"
     );
 
     let mut context = minimal_context();
@@ -565,4 +566,47 @@ fn config_digest_is_exact_section20_canonical_json_hash() {
     let processor = &generated.lock.value()["processors"][0];
     let config_bytes = canonical_json_bytes(&processor["config"]).unwrap();
     assert_eq!(processor["config_digest"], digest(&config_bytes));
+}
+
+#[test]
+fn generation_failures_use_the_lock_verifier_codes() {
+    let fx = vec!["fx".to_string()];
+    let sine = vec!["sine".to_string()];
+    let slot = |owner: &[String], role: &str| DependencyIdentity {
+        owner: Some(owner.to_vec()),
+        role: vec!["processor".into(), role.into()],
+    };
+    let code = |context: &GenericLockBuildContext| generate_generic_lock(context).unwrap_err().code;
+
+    // A partial identity group is a schema violation, as in a parsed lock.
+    let mut partial = external_context(false);
+    partial.processors.get_mut(&fx).unwrap().adapter_id = None;
+    assert_eq!(code(&partial), "E_SCHEMA");
+
+    // A malformed pin is rejected before any digest comparison.
+    let mut malformed = external_context(false);
+    malformed
+        .processors
+        .get_mut(&fx)
+        .unwrap()
+        .implementation_hash = Some("sha256:XYZ".into());
+    assert_eq!(code(&malformed), "E_SCHEMA");
+
+    // External adapters need their bytes; core processors must not carry them.
+    let mut missing_adapter = external_context(false);
+    missing_adapter.dependencies.remove(&slot(&fx, "adapter"));
+    assert_eq!(code(&missing_adapter), "E_REFERENCE");
+    let mut core_adapter = minimal_context();
+    core_adapter
+        .dependencies
+        .insert(slot(&sine, "adapter"), b"adapter".to_vec());
+    assert_eq!(code(&core_adapter), "E_CLOSURE");
+
+    // Schedule shape is judged by lock parsing and verification.
+    let mut zero_block = minimal_context();
+    zero_block.engine.block_schedule = Some(vec![0, zero_block.output.render_frames]);
+    assert_eq!(code(&zero_block), "E_SCHEMA");
+    let mut short = minimal_context();
+    short.engine.block_schedule = Some(vec![short.output.render_frames - 1]);
+    assert_eq!(code(&short), "E_TIMING");
 }

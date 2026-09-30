@@ -337,8 +337,8 @@ semantic/specification and harness review passed, and root owns integration.
 The original L4 slice left production Rust and runtime verification unchanged.
 Subsequent work added the `maac::generic_lock` runtime verifier, the
 `maac::external` strict external-descriptor/dependency-discovery boundary, and the
-`maac::generic_lock_generation` and `maac::generic_lock_normalization` typed
-generators, which deterministically construct canonical v1 Config, RenderInput, and
+typed generator (originally two parallel modules, consolidated on 2026-09-30 into
+`maac::generic_lock_normalization`), which deterministically constructs canonical v1 Config, RenderInput, and
 Lock artifacts from already-resolved typed context and exact bytes.
 `maac::generic_render` now renders already-resolved built-in/core `Plan` contexts after pre-render verification, with a concrete host identity and null block schedule. `maac::external_host` and `maac::external_native` subsequently add an explicit executable native ABI boundary; a bounded single output-only external-generator render bridge is now implemented; general mixed external-node graph integration remains deferred. These later runtime slices do not turn the historical L4 schema/corpus
 slice into a full Locked Render conformance claim. The historical L4 slice itself
