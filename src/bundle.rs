@@ -553,6 +553,9 @@ pub(crate) fn discover_document_references(
     for object in document.objects.values() {
         match object.kind.as_str() {
             "import" => imports.push(exact_import_reference(source_path, object)?),
+            // A sample that plays a composition audio asset pins no file of
+            // its own; the asset declaration pins it.
+            "sample" if object.field("asset").is_some() => {}
             "wavetable" | "sample" => {
                 assets.push(asset_reference(source_path, object)?);
             }

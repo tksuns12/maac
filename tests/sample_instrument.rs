@@ -932,3 +932,134 @@ fn channel_defaults_do_not_change_execution_identity() {
     assert_eq!(omitted, identity("channels = 1;", ""));
     assert_eq!(omitted, identity("", "channels = 1;"));
 }
+
+/// The tone bundle with its sample playing a composition audio asset
+/// declared next to it, in place of the sample's own file.
+fn reused_bundle(notes: &str, asset_extra: &str, sample_fields: &str) -> SourceBundle {
+    let mut bundle = tone_bundle(notes);
+    let bytes = pcm(&tone());
+    let wav_decl = bundle.sources["main.maac"]
+        .lines()
+        .find(|line| line.starts_with("sample tone"))
+        .unwrap()
+        .to_owned();
+    let declarations = format!(
+        "asset tone_pcm {{ kind = audio; path = \"tone.pcm\"; hash = \"{}\"; format = \"pcm_f32le_interleaved/1\"; rate = 24000Hz; channels = 1; frames = 480; {asset_extra} }}\n\
+         sample tone {{ {sample_fields} }}",
+        sha256_digest(&bytes)
+    );
+    let source = bundle.sources["main.maac"].replace(&wav_decl, &declarations);
+    bundle.sources.insert("main.maac".into(), source);
+    bundle.assets = BTreeMap::from([("tone.pcm".into(), bytes)]);
+    bundle
+}
+
+const REUSE: &str = "asset = &tone_pcm; root = A4;";
+
+#[test]
+fn samples_can_play_a_composition_asset() {
+    use maac::compiler::compile_bundle_artifact;
+    let notes = "note n { at = 0q; dur = 1q; pitch = A4; }";
+    let reused = compile_bundle_artifact(&reused_bundle(notes, "", REUSE)).unwrap();
+    let wire: serde_json::Value = serde_json::from_slice(&reused.to_json().unwrap()).unwrap();
+    // The plan carries the recording once, under the composition's ID.
+    let assets = wire["audio_assets"].as_array().unwrap();
+    assert_eq!(assets.len(), 1, "{assets:?}");
+    assert_eq!(assets[0]["id"], "tone_pcm");
+    let sample = &wire["instruments"]["samples"][0];
+    assert_eq!(sample["asset"]["id"], "tone_pcm");
+    assert_eq!(sample["rate_hz"], 24_000);
+    assert_eq!(wire["instruments"]["sample_sources"][0]["path"], "tone.pcm");
+
+    // It plays exactly like the same values in the sample's own PCM file.
+    let own = compile_bundle_artifact(&native_bundle(&tone(), 480, notes)).unwrap();
+    assert_eq!(artifact_audio(&reused), artifact_audio(&own));
+    let reloaded = maac::PlanArtifact::from_json(&reused.to_json().unwrap()).unwrap();
+    assert_eq!(artifact_audio(&reloaded), artifact_audio(&own));
+}
+
+#[test]
+fn clips_and_samples_share_one_asset() {
+    use maac::compiler::compile_bundle_artifact;
+    let mut bundle = reused_bundle("note n { at = 0q; dur = 1q; pitch = A4; }", "", REUSE);
+    let source = bundle.sources["main.maac"]
+        .replace("output = &keys:out;", "output = &mix:out;")
+        .replace(
+            "node keys",
+            "audio clip { asset = &tone_pcm; at = 2q; source = [0frame, 480frame]; mode = rate; }\n\
+             node mix { type = \"core.sum/1\"; config = { channels = 1; }; }\n\
+             connect played { from = &keys:out; to = &mix:in; }\n\
+             connect clipped { from = &clip:out; to = &mix:in; }\n\
+             node keys",
+        );
+    bundle.sources.insert("main.maac".into(), source);
+    let artifact = compile_bundle_artifact(&bundle).unwrap_or_else(|e| panic!("{e:?}"));
+    let wire: serde_json::Value = serde_json::from_slice(&artifact.to_json().unwrap()).unwrap();
+    assert_eq!(wire["audio_assets"].as_array().unwrap().len(), 1);
+    let out = artifact_audio(&artifact);
+    // The note plays the tone at its recorded rate from frame 0, and the
+    // clip plays it again at 2q (96,000 frames), also at its recorded rate.
+    for k in 0..400 {
+        let expected = f64::from(tone()[k]);
+        assert!(
+            (out[2 * k] - expected).abs() < 1e-12,
+            "note frame {}",
+            2 * k
+        );
+        assert!(
+            (out[96_000 + 2 * k] - expected).abs() < 1e-12,
+            "clip frame {}",
+            2 * k
+        );
+    }
+}
+
+#[test]
+fn sample_asset_references_are_checked() {
+    use maac::compiler::compile_bundle_artifact;
+    let notes = "note n { at = 0q; dur = 1q; pitch = A4; }";
+    let refused = |bundle: SourceBundle| {
+        compile_bundle_artifact(&bundle)
+            .expect_err("bundle must be refused")
+            .into_iter()
+            .map(|diagnostic| diagnostic.code)
+            .collect::<Vec<_>>()
+    };
+    for (fields, code) in [
+        ("asset = &missing; root = A4;", DiagnosticCode::Reference),
+        // Only audio assets can be played, not other declarations.
+        ("asset = &clock; root = A4;", DiagnosticCode::Reference),
+        // The asset supplies the file, rate, channels and frames.
+        (
+            "asset = &tone_pcm; root = A4; path = \"tone.pcm\";",
+            DiagnosticCode::UnknownField,
+        ),
+        (
+            "asset = &tone_pcm; root = A4; channels = 1;",
+            DiagnosticCode::UnknownField,
+        ),
+        ("asset = &tone_pcm;", DiagnosticCode::UnknownField),
+        (
+            "asset = &tone_pcm; root = A4; loop = [0frame, 481frame];",
+            DiagnosticCode::Range,
+        ),
+    ] {
+        let found = refused(reused_bundle(notes, "", fields));
+        assert!(found.contains(&code), "{fields}: {found:?}");
+    }
+
+    // A stereo asset needs a stereo sample node.
+    let mut stereo = reused_bundle(notes, "", REUSE);
+    let wide = pcm(&tone().iter().flat_map(|v| [*v, -*v]).collect::<Vec<_>>());
+    let source = stereo.sources["main.maac"]
+        .replace(&sha256_digest(&pcm(&tone())), &sha256_digest(&wide))
+        .replace("channels = 1; frames = 480;", "channels = 2; frames = 480;");
+    stereo.sources.insert("main.maac".into(), source);
+    stereo.assets.insert("tone.pcm".into(), wide);
+    let found = refused(stereo);
+    assert!(found.contains(&DiagnosticCode::PortType), "{found:?}");
+
+    // Version 2 plans cannot carry the shared asset.
+    let found = codes(&reused_bundle(notes, "", REUSE));
+    assert!(found.contains(&DiagnosticCode::Capability), "{found:?}");
+}

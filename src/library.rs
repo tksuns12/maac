@@ -296,6 +296,12 @@ impl LibrarySet {
         self.resolved_document.clone()
     }
 
+    /// Whether any sample plays a plan audio asset, its own or a
+    /// composition's, so the plan must carry audio assets.
+    pub(crate) fn has_asset_samples(&self) -> bool {
+        self.samples.iter().any(|sample| sample.asset.is_some())
+    }
+
     pub(crate) fn pattern_source_paths(&self) -> &BTreeMap<String, Vec<String>> {
         &self.pattern_source_paths
     }
@@ -920,17 +926,21 @@ type LoweredSample = (
     Option<crate::audio_asset::AudioAsset>,
 );
 
-/// Lower a `sample` declaration: a mono or stereo WAV, or with `format` a mono
-/// or stereo core PCM file carried as a plan audio asset, plus a 12-TET root
-/// key and an optional forward sustain loop in sample frames.
+/// Lower a `sample` declaration: a mono or stereo WAV, with `format` a mono
+/// or stereo core PCM file carried as a plan audio asset, or with `asset` a
+/// composition audio asset. Each form adds a 12-TET root key and an optional
+/// forward sustain loop in sample frames.
 fn lower_sample(
     bundle: &ResolvedBundle,
     file: &str,
     object: &Object,
     id: String,
 ) -> Result<LoweredSample, Diagnostics> {
-    let native = object.field("format").is_some();
-    if native {
+    let reused = object.field("asset").is_some();
+    let native = !reused && object.field("format").is_some();
+    if reused {
+        exact_fields(object, &["asset", "loop", "root"], &["asset", "root"], file)?;
+    } else if native {
         exact_fields(
             object,
             &[
@@ -948,18 +958,6 @@ fn lower_sample(
         )?;
     }
     no_children(object, file)?;
-    let declared_path = string_field(object, "path", file)?;
-    let asset_path = normalize_file_reference(file, &declared_path)?;
-    let bytes = bundle.assets.get(&asset_path);
-    let disk = bundle.disk_assets.get(&asset_path);
-    if bytes.is_none() && disk.is_none() {
-        return Err(object_error(
-            DiagnosticCode::Asset,
-            file,
-            object,
-            format!("resolved asset `{asset_path}` is missing"),
-        ));
-    }
     let root = object.field("root").expect("required field checked");
     let root_key = key_value(&root.value, file, object, root)?;
     let loop_frames = object
@@ -1007,6 +1005,21 @@ fn lower_sample(
             }
         })
         .transpose()?;
+    if reused {
+        return lower_asset_sample(bundle, file, object, id, root_key, loop_frames);
+    }
+    let declared_path = string_field(object, "path", file)?;
+    let asset_path = normalize_file_reference(file, &declared_path)?;
+    let bytes = bundle.assets.get(&asset_path);
+    let disk = bundle.disk_assets.get(&asset_path);
+    if bytes.is_none() && disk.is_none() {
+        return Err(object_error(
+            DiagnosticCode::Asset,
+            file,
+            object,
+            format!("resolved asset `{asset_path}` is missing"),
+        ));
+    }
     let hash = string_field(object, "hash", file)?;
     let source = SampleSource {
         sample: id.clone(),
@@ -1116,6 +1129,124 @@ fn lower_sample(
         .validate()
         .map_err(|error| plan_diagnostics(error, file, object))?;
     Ok((sample, source, Some(asset)))
+}
+
+/// Lower `sample { asset = &a; ... }`. The sample takes its rate, channels,
+/// frames and provenance from an audio asset declared in the same
+/// composition document and plays that asset's plan data, so the plan
+/// carries the recording once however many clips, kits and samples use it.
+fn lower_asset_sample(
+    bundle: &ResolvedBundle,
+    file: &str,
+    object: &Object,
+    id: String,
+    root_key: i64,
+    loop_frames: Option<[u64; 2]>,
+) -> Result<LoweredSample, Diagnostics> {
+    let field = object.field("asset").expect("required field checked");
+    let reference = expect_reference(field, file, object)?;
+    let asset = match (reference.path.as_slice(), &reference.port) {
+        ([name], None) => bundle
+            .documents
+            .get(file)
+            .and_then(|document| document.objects.get(name)),
+        _ => None,
+    }
+    .filter(|asset| {
+        asset.kind == "asset"
+            && asset.field("kind").and_then(|kind| kind.value.as_symbol()) == Some("audio")
+    })
+    .ok_or_else(|| {
+        field_error(
+            DiagnosticCode::Reference,
+            file,
+            object,
+            field,
+            "sample asset must name an audio asset declared in the same composition document",
+        )
+    })?;
+    // The composition validates the asset itself; this reads only what the
+    // sample needs from it.
+    let required = |name: &str| {
+        asset.field(name).ok_or_else(|| {
+            object_error(
+                DiagnosticCode::UnknownField,
+                file,
+                asset,
+                format!("audio asset requires field `{name}`"),
+            )
+        })
+    };
+    for name in ["path", "hash", "format", "rate", "channels", "frames"] {
+        required(name)?;
+    }
+    if string_field(asset, "format", file)? != crate::audio_asset::CORE_AUDIO_FORMAT {
+        return Err(field_error(
+            DiagnosticCode::Asset,
+            file,
+            object,
+            field,
+            format!(
+                "sample asset format must be `{}`",
+                crate::audio_asset::CORE_AUDIO_FORMAT
+            ),
+        ));
+    }
+    let rate_field = required("rate")?;
+    let rate_hz = match &rate_field.value.kind {
+        ValueKind::Quantity {
+            value,
+            unit: Unit::Hz,
+        } if value.is_integer() => value.to_integer().to_u32().filter(|rate| *rate > 0),
+        _ => None,
+    }
+    .ok_or_else(|| {
+        field_error(
+            DiagnosticCode::Unit,
+            file,
+            asset,
+            rate_field,
+            "rate requires a positive integer Hz quantity",
+        )
+    })?;
+    let frames_field = required("frames")?;
+    let frames = match &frames_field.value.kind {
+        ValueKind::Number(value) if value.is_integer() => value.to_integer().to_u64(),
+        _ => None,
+    }
+    .ok_or_else(|| {
+        field_error(
+            DiagnosticCode::Range,
+            file,
+            asset,
+            frames_field,
+            "frames requires a nonnegative integer",
+        )
+    })?;
+    let channels = integer_field(asset, "channels", file, 1, 2)? as u8;
+    let source = SampleSource {
+        sample: id.clone(),
+        file: file.to_owned(),
+        object: object.id.clone(),
+        path: normalize_file_reference(file, &string_field(asset, "path", file)?)?,
+        hash: string_field(asset, "hash", file)?,
+    };
+    let sample = InstrumentSample {
+        id,
+        rate_hz,
+        channels,
+        root_key,
+        loop_frames,
+        samples: Vec::new(),
+        asset: Some(crate::sample_instrument::SampleAsset {
+            id: asset.id.clone(),
+            frames,
+        }),
+    };
+    sample
+        .validate()
+        .map_err(|error| plan_diagnostics(error, file, object))?;
+    Ok((sample, source, None))
 }
 
 /// A 12-TET key given as a spelled pitch (`C4`) or `key(n)`.

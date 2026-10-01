@@ -640,7 +640,11 @@ impl<'a> Compiler<'a> {
         production: Option<crate::production_data::ProductionSettings>,
         original: &Document,
     ) -> CResult<VersionedPlan> {
-        if !self.sample_assets.is_empty() {
+        if self
+            .instrument_resources
+            .as_ref()
+            .is_some_and(|resources| resources.samples.iter().any(|s| s.asset.is_some()))
+        {
             return Err(diagnostics(
                 DiagnosticCode::Capability,
                 "asset-backed samples require a version 4 or later plan artifact",
@@ -5641,7 +5645,7 @@ fn compile_resolved_artifact(
         && !uses_audio_profile(&document)
         && !uses_control_profile(&document)
         && !uses_message_profile(&document)
-        && libraries.sample_assets.is_empty()
+        && !libraries.has_asset_samples()
     {
         return compile_resolved_versioned(resolved, libraries, limits, production, original)
             .map(PlanArtifact::from);

@@ -429,6 +429,26 @@ The execution view expands the omitted `channels = 1`. Asset-backed samples:
 
 Their plan asset ID is reserved as `__<sample id>`, for example `__sample_0`. A
 composition asset that uses such an ID is `E_DUPLICATE_ID`.
+
+A sample declared in a composition document may instead play one of that
+document's audio assets:
+
+```maac
+asset piano_c4_pcm {
+  kind = audio; path = "piano-c4.pcm"; hash = "sha256:<64 lowercase hex digits>";
+  format = "pcm_f32le_interleaved/1"; rate = 48000Hz; channels = 2; frames = 2400000;
+}
+sample piano_c4 { asset = &piano_c4_pcm; root = C4; }
+```
+
+Its only fields are `asset`, `root` and the optional `loop`. It takes its rate,
+channels, frames and provenance from the asset, and the plan carries the
+recording once, under the asset's own ID, however many clips, kits and samples
+play it. The reference must be a local `&id` naming an `asset` with
+`kind = audio` in the same document; anything else is `E_REFERENCE`. A library
+document declares no assets, so its samples cannot use this form. Such a sample
+is asset-backed: it follows the rules above, including the version 4 plan
+requirement and `--disk-media`.
 `root` is a spelled pitch or `key(n)` with key 0 through 127. It names the key
 at which the sample plays at its recorded rate. The optional `loop = [a frame,
 b frame]` is a forward sustain loop with `0 <= a < b <= frames`. WAV samples
