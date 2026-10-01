@@ -118,9 +118,13 @@ pub(crate) enum ProcessorV7 {
     WarpRate {
         clip: Box<WarpClip>,
     },
+    Clips {
+        channels: u8,
+        clips: Vec<ClipEntry>,
+    },
 }
 
-use crate::plan_v6::WarpClip;
+use crate::plan_v6::{ClipEntry, WarpClip};
 
 impl From<NodeV6> for NodeV7 {
     fn from(node: NodeV6) -> Self {
@@ -137,6 +141,7 @@ impl From<NodeV6> for NodeV7 {
             },
             ProcessorV6::Audio { clip } => ProcessorV7::Audio { clip },
             ProcessorV6::WarpRate { clip } => ProcessorV7::WarpRate { clip },
+            ProcessorV6::Clips { channels, clips } => ProcessorV7::Clips { channels, clips },
         };
         Self {
             id: node.id,

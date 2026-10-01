@@ -631,7 +631,9 @@ impl Normalizer<'_> {
                     let unit = match node.processor {
                         ProcessorView::Constant => None,
                         ProcessorView::Lfo(_) => return Err(error("LFO cannot carry parameters")),
-                        ProcessorView::Audio(_) | ProcessorView::WarpRate(_) => {
+                        ProcessorView::Audio(_)
+                        | ProcessorView::WarpRate(_)
+                        | ProcessorView::Clips { .. } => {
                             return Err(error("audio transports cannot carry node parameters"))
                         }
                         ProcessorView::Kit { .. } => None,

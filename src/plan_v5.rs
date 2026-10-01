@@ -108,6 +108,11 @@ pub(crate) enum ProcessorV5 {
     Audio {
         clip: Box<AudioClip>,
     },
+    /// Rate-clip occurrences only; warp entries need version 6 or later.
+    Clips {
+        channels: u8,
+        clips: Vec<crate::plan_v6::ClipEntry>,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

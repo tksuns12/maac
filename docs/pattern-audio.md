@@ -81,22 +81,49 @@ Editing tools treat audio occurrences as occurrences:
 The bundle artifact path compiles audio leaves. It selects a version 5 plan
 for rate leaves, and version 6 (or 7 with controls) when any leaf warps. The
 single-document and version 2/3 plan APIs refuse them with `E_CAPABILITY`, as
-they refuse top-level audio. Each placement output becomes a `core.sum/1` plan
-node with the placement's ID. Each surviving occurrence becomes an ordinary
-clip node:
+they refuse top-level audio.
 
-- **Clip node:** `__clip_<place>_<k>`, in expansion order, then inserts.
-- **Connection:** `__route_<place>_<k>`, to the placement's `in` port.
-- **Clip `source` mapping:** names the leaf and its pattern path.
-- **Clip `track`:** the placement's track.
+Each placement with an audio output becomes one `clips` plan node with the
+placement's ID and channel count. The node has no inputs and no parameters.
+Its `clips` list holds one member per surviving occurrence, in expansion
+order, then inserts. Each member is an ordinary rate (`audio`) or `warp_rate`
+clip record:
 
-A source declaration that uses a reserved ID is `E_DUPLICATE_ID`.
+- **Member `source` mapping:** names the leaf and its pattern path.
+- **Member `track`:** the placement's track.
+- **Member frames:** each member carries its own certified active interval.
 
-Every occurrence is a plan node, so the plan node limit (256 in total,
-including all other nodes) bounds the number of occurrences. Every warped
-occurrence also counts its anchors against the shared warp point budget.
+```json
+{"id": "loops", "processor": {"kind": "clips", "channels": 1, "clips": [
+  {"kind": "audio", "clip": {"asset": "tone", "at": {"q": "0/1"}, "...": "..."}},
+  {"kind": "audio", "clip": {"asset": "tone", "at": {"q": "2/1"}, "...": "..."}}
+]}}
+```
+
+The node's output is the sum of its members, added in list order from zero.
+A member contributes exact zeros outside its active interval. The output
+equals routing each member as a separate clip node into one `core.sum/1`
+node in the same order. A placement whose every occurrence was deleted keeps
+an empty, silent `clips` node, so connections to its `out` port stay valid.
+
+Plan validation checks every member as it checks a standalone clip. It also
+checks that every member has the node's channel count (`E_PORT_TYPE`). A
+version 5 plan may hold only rate members; a warp member is `E_VERSION`.
+
+A placement uses one of the 256 plan nodes, whatever its occurrence count.
+Occurrences are bounded instead by:
+
+- the 4 MiB plan JSON limit, shared with inline asset bytes. A rate member
+  takes about 400 bytes, so a plan holds roughly 10,000 occurrences;
+- the execution work budget, which charges each member for its active frames
+  plus a fixed lookup cost;
+- the shared warp point budget, which counts every warped member's anchors.
+
 Occurrences are transports, not events. Score-window queries, event counts,
 and event dispatch do not include them.
+
+The renderer indexes members by fixed 4,096-frame output buckets. Each frame
+visits only the members whose interval touches its bucket.
 
 ## Limits
 

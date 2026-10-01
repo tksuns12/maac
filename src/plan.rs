@@ -21,6 +21,8 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::fmt;
 
+/// Clip-set renderers index members by fixed output-frame buckets.
+pub(crate) const CLIP_BUCKET_FRAMES: u64 = 4096;
 pub const LEGACY_PLAN_VERSION: u32 = 1;
 pub const PLAN_VERSION: u32 = 2;
 
@@ -1781,6 +1783,11 @@ pub(crate) enum ProcessorView<'a> {
     Constant,
     Audio(&'a crate::plan_v5::AudioClip),
     WarpRate(&'a crate::plan_v6::WarpClip),
+    /// Pattern audio occurrences summed into one output.
+    Clips {
+        channels: u8,
+        clips: &'a [crate::plan_v6::ClipEntry],
+    },
     Core(&'a Processor),
     Kit {
         channels: u8,
@@ -1803,7 +1810,53 @@ struct AudioTransportView<'a> {
     start_frame: u64,
     end_frame: u64,
 }
+/// One rate or warp transport, standalone or inside a `clips` node.
+#[derive(Clone, Copy)]
+pub(crate) enum ClipRef<'a> {
+    Audio(&'a crate::plan_v5::AudioClip),
+    WarpRate(&'a crate::plan_v6::WarpClip),
+}
+impl<'a> From<&'a crate::plan_v6::ClipEntry> for ClipRef<'a> {
+    fn from(entry: &'a crate::plan_v6::ClipEntry) -> Self {
+        match entry {
+            crate::plan_v6::ClipEntry::Audio { clip } => Self::Audio(clip),
+            crate::plan_v6::ClipEntry::WarpRate { clip } => Self::WarpRate(clip),
+        }
+    }
+}
+impl<'a> ClipRef<'a> {
+    pub(crate) fn source(self) -> &'a SourceMapping {
+        match self {
+            Self::Audio(clip) => &clip.source,
+            Self::WarpRate(clip) => &clip.source,
+        }
+    }
+    fn transport(self) -> AudioTransportView<'a> {
+        match self {
+            Self::Audio(clip) => ProcessorView::Audio(clip),
+            Self::WarpRate(clip) => ProcessorView::WarpRate(clip),
+        }
+        .audio_transport()
+        .expect("clip references are transports")
+    }
+}
 impl<'a> ProcessorView<'a> {
+    /// Every audio transport this processor plays, in summing order.
+    pub(crate) fn clips(self) -> Vec<ClipRef<'a>> {
+        match self {
+            Self::Audio(clip) => vec![ClipRef::Audio(clip)],
+            Self::WarpRate(clip) => vec![ClipRef::WarpRate(clip)],
+            Self::Clips { clips, .. } => clips.iter().map(ClipRef::from).collect(),
+            _ => Vec::new(),
+        }
+    }
+    /// Audio clip, warp clip or clip-set node: no inputs, parameters or events.
+    pub(crate) fn is_transport(self) -> bool {
+        matches!(
+            self,
+            Self::Audio(_) | Self::WarpRate(_) | Self::Clips { .. }
+        )
+    }
     fn audio_transport(self) -> Option<AudioTransportView<'a>> {
         let view = match self {
             Self::Audio(clip) => AudioTransportView {
@@ -1851,7 +1904,8 @@ impl<'a> ProcessorView<'a> {
             | Self::Constant
             | Self::Kit { .. }
             | Self::Audio(_)
-            | Self::WarpRate(_) => Err(err(
+            | Self::WarpRate(_)
+            | Self::Clips { .. } => Err(err(
                 "E_CAPABILITY",
                 "nodes.processor",
                 "non-core processor is not supported at this boundary yet",
@@ -1920,6 +1974,10 @@ impl<'a> From<&'a crate::plan_v5::NodeV5> for NodeView<'a> {
                 samples,
             },
             crate::plan_v5::ProcessorV5::Audio { clip } => ProcessorView::Audio(clip),
+            crate::plan_v5::ProcessorV5::Clips { channels, clips } => ProcessorView::Clips {
+                channels: *channels,
+                clips,
+            },
         };
         Self {
             id: &node.id,
@@ -1943,6 +2001,10 @@ impl<'a> From<&'a crate::plan_v6::NodeV6> for NodeView<'a> {
                 samples,
             },
             crate::plan_v6::ProcessorV6::Audio { clip } => ProcessorView::Audio(clip),
+            crate::plan_v6::ProcessorV6::Clips { channels, clips } => ProcessorView::Clips {
+                channels: *channels,
+                clips,
+            },
             crate::plan_v6::ProcessorV6::WarpRate { clip } => ProcessorView::WarpRate(clip),
         };
         Self {
@@ -1969,6 +2031,10 @@ impl<'a> From<&'a crate::plan_v7::NodeV7> for NodeView<'a> {
                 samples,
             },
             crate::plan_v7::ProcessorV7::Audio { clip } => ProcessorView::Audio(clip),
+            crate::plan_v7::ProcessorV7::Clips { channels, clips } => ProcessorView::Clips {
+                channels: *channels,
+                clips,
+            },
             crate::plan_v7::ProcessorV7::WarpRate { clip } => ProcessorView::WarpRate(clip),
         };
         Self {
@@ -2334,8 +2400,8 @@ impl<'a> PlanView<'a> {
                 )?;
             }
         }
-        for node in self.nodes {
-            if let ProcessorView::Audio(clip) = node.processor {
+        for clip in self.nodes.iter().flat_map(|node| node.processor.clips()) {
+            if let ClipRef::Audio(clip) = clip {
                 let asset = self
                     .audio_assets
                     .unwrap_or(&[])
@@ -2360,8 +2426,8 @@ impl<'a> PlanView<'a> {
                 )?;
             }
         }
-        for node in self.nodes {
-            if let ProcessorView::WarpRate(clip) = node.processor {
+        for clip in self.nodes.iter().flat_map(|node| node.processor.clips()) {
+            if let ClipRef::WarpRate(clip) = clip {
                 let asset = self
                     .audio_assets
                     .unwrap_or(&[])
@@ -2443,9 +2509,7 @@ impl<'a> PlanView<'a> {
             params.entry("value".into()).or_insert_with(zero);
             return Ok(params);
         }
-        if let ProcessorView::Lfo(_) | ProcessorView::Audio(_) | ProcessorView::WarpRate(_) =
-            node.processor
-        {
+        if matches!(node.processor, ProcessorView::Lfo(_)) || node.processor.is_transport() {
             return Ok(node.params.clone());
         }
         if let ProcessorView::Kit { .. } = node.processor {
@@ -2489,8 +2553,13 @@ impl<'a> PlanView<'a> {
         // Conservative segment traversal units; each certified operation additionally
         // has the tempo evaluator's fixed refinement and logarithm-series caps.
 
-        let warp_work = self.nodes.iter().fold(0u64, |total, node| {
-            if let ProcessorView::WarpRate(clip) = node.processor {
+        let clips = self
+            .nodes
+            .iter()
+            .flat_map(|node| node.processor.clips())
+            .collect::<Vec<_>>();
+        let warp_work = clips.iter().fold(0u64, |total, clip| {
+            if let ClipRef::WarpRate(clip) = clip {
                 total.saturating_add(
                     (clip.warp.len() as u64)
                         .saturating_add(self.tempo.points.len() as u64)
@@ -2504,19 +2573,7 @@ impl<'a> PlanView<'a> {
             .saturating_add(1)
             .saturating_mul(
                 8u64.saturating_add(8u64.saturating_mul(self.events().len() as u64))
-                    .saturating_add(
-                        16u64.saturating_mul(
-                            self.nodes
-                                .iter()
-                                .filter(|n| {
-                                    matches!(
-                                        n.processor,
-                                        ProcessorView::Audio(_) | ProcessorView::WarpRate(_)
-                                    )
-                                })
-                                .count() as u64,
-                        ),
-                    )
+                    .saturating_add(16u64.saturating_mul(clips.len() as u64))
                     .saturating_add(
                         3u64.saturating_mul(
                             (self.tempo.points.len() as u64)
@@ -2675,8 +2732,8 @@ impl<'a> PlanView<'a> {
                     }
                 });
         let mut warp_points = 0usize;
-        for node in self.nodes {
-            if let ProcessorView::WarpRate(clip) = node.processor {
+        for clip in self.nodes.iter().flat_map(|node| node.processor.clips()) {
+            if let ClipRef::WarpRate(clip) = clip {
                 if clip.warp.len() > 4096 {
                     return Err(err(
                         "E_RESOURCE_LIMIT",
@@ -2760,13 +2817,13 @@ impl<'a> PlanView<'a> {
         let kit_objects = self.nodes.iter().fold(assets.len(), |total, node| {
             total.saturating_add(match node.processor {
                 ProcessorView::Kit { samples, .. } => samples.len(),
-                ProcessorView::WarpRate(clip) => 4usize
-                    .saturating_add(clip.source.path.len())
-                    .saturating_add(usize::from(clip.source.span.is_some())),
-                ProcessorView::Audio(clip) => 4usize
-                    .saturating_add(clip.source.path.len())
-                    .saturating_add(usize::from(clip.source.span.is_some())),
-                _ => 0,
+                processor => processor.clips().into_iter().fold(0usize, |total, clip| {
+                    total.saturating_add(
+                        4usize
+                            .saturating_add(clip.source().path.len())
+                            .saturating_add(usize::from(clip.source().span.is_some())),
+                    )
+                }),
             })
         });
         let mut resource_objects = 0usize;
@@ -3092,7 +3149,7 @@ impl<'a> PlanView<'a> {
             }
         }
         for node in self.nodes {
-            if let Some(clip) = node.processor.audio_transport() {
+            for clip in node.processor.clips().into_iter().map(ClipRef::transport) {
                 if std::iter::once(node.id)
                     .chain([clip.asset, &clip.source.object])
                     .chain(clip.source.path.iter())
@@ -3631,7 +3688,7 @@ impl<'a> PlanView<'a> {
                 }
                 continue;
             }
-            if let Some(clip) = node.processor.audio_transport() {
+            if node.processor.is_transport() {
                 if !node.params.is_empty() {
                     return Err(err(
                         "E_UNKNOWN_FIELD",
@@ -3639,6 +3696,37 @@ impl<'a> PlanView<'a> {
                         "audio clips have no parameters",
                     ));
                 }
+                if let ProcessorView::Clips { channels, clips } = node.processor {
+                    validate_channel_count(
+                        channels,
+                        limits,
+                        format!("nodes.{}.processor.channels", node.id),
+                        "clip set channels",
+                    )?;
+                    if self.version < 6
+                        && clips
+                            .iter()
+                            .any(|clip| matches!(clip, crate::plan_v6::ClipEntry::WarpRate { .. }))
+                    {
+                        return Err(err(
+                            "E_VERSION",
+                            format!("nodes.{}.processor.clips", node.id),
+                            "warp clips require plan version 6 or later",
+                        ));
+                    }
+                    if clips
+                        .iter()
+                        .any(|clip| ClipRef::from(clip).transport().channels != channels)
+                    {
+                        return Err(err(
+                            "E_PORT_TYPE",
+                            format!("nodes.{}.processor.clips", node.id),
+                            "every clip in a clip set has the set's channel count",
+                        ));
+                    }
+                }
+            }
+            for clip in node.processor.clips().into_iter().map(ClipRef::transport) {
                 validate_channel_count(
                     clip.channels,
                     limits,
@@ -3684,6 +3772,8 @@ impl<'a> PlanView<'a> {
                         "clip speed must be positive and gain/fades nonnegative",
                     ));
                 }
+            }
+            if node.processor.is_transport() {
                 continue;
             }
             if let ProcessorView::Kit {
@@ -4216,7 +4306,8 @@ impl<'a> PlanView<'a> {
                         ProcessorView::Lfo(_)
                         | ProcessorView::Constant
                         | ProcessorView::Audio(_)
-                        | ProcessorView::WarpRate(_) => false,
+                        | ProcessorView::WarpRate(_)
+                        | ProcessorView::Clips { .. } => false,
                     }) && event.target.port == "events"
                 };
             if !target_accepts {
@@ -4652,7 +4743,7 @@ impl<'a> PlanView<'a> {
                     "automation node does not exist",
                 )
             })?;
-            if let ProcessorView::Audio(_) | ProcessorView::WarpRate(_) = node.processor {
+            if node.processor.is_transport() {
                 return Err(err(
                     "E_REFERENCE",
                     "automation.target",
@@ -5073,41 +5164,52 @@ impl<'a> PlanView<'a> {
         };
         let mut work = 0u64;
         for node in self.nodes {
-            let Some(clip) = node.processor.audio_transport() else {
+            let clips = node.processor.clips();
+            let Some(first) = clips.first() else {
                 continue;
             };
-            let phase_cost = if let ProcessorView::WarpRate(warp) = node.processor {
-                let segments = warp
-                    .warp
-                    .len()
-                    .checked_add(self.tempo.points.len())
-                    .ok_or_else(overflow)?;
-                let search = if segments <= 1 {
-                    0
-                } else {
-                    usize::BITS - (segments - 1).leading_zeros()
-                };
-                96 + u64::from(search)
-            } else {
-                32
-            };
-            let active = clip
-                .end_frame
-                .min(self.output.total_frames)
-                .checked_sub(clip.start_frame)
-                .ok_or_else(overflow)?;
+            // Each transport node writes every output frame once; a clip set
+            // also visits each member for its bucketed active window.
             let base = self
                 .output
                 .total_frames
-                .checked_mul(4 + u64::from(clip.channels))
+                .checked_mul(4 + u64::from(first.transport().channels))
                 .ok_or_else(overflow)?;
-            let cost = active
-                .checked_mul(phase_cost + 8 * u64::from(clip.channels))
-                .ok_or_else(overflow)?;
-            work = work
-                .checked_add(base)
-                .and_then(|n| n.checked_add(cost))
-                .ok_or_else(overflow)?;
+            work = work.checked_add(base).ok_or_else(overflow)?;
+            // A bucket visit outside the member's interval is one range test.
+            let lookup = if matches!(node.processor, ProcessorView::Clips { .. }) {
+                2 * CLIP_BUCKET_FRAMES * 4
+            } else {
+                0
+            };
+            for reference in clips {
+                let clip = reference.transport();
+                let phase_cost = if let ClipRef::WarpRate(warp) = reference {
+                    let segments = warp
+                        .warp
+                        .len()
+                        .checked_add(self.tempo.points.len())
+                        .ok_or_else(overflow)?;
+                    let search = if segments <= 1 {
+                        0
+                    } else {
+                        usize::BITS - (segments - 1).leading_zeros()
+                    };
+                    96 + u64::from(search)
+                } else {
+                    32
+                };
+                let active = clip
+                    .end_frame
+                    .min(self.output.total_frames)
+                    .checked_sub(clip.start_frame)
+                    .ok_or_else(overflow)?;
+                let cost = active
+                    .checked_mul(phase_cost + 8 * u64::from(clip.channels))
+                    .and_then(|n| n.checked_add(lookup))
+                    .ok_or_else(overflow)?;
+                work = work.checked_add(cost).ok_or_else(overflow)?;
+            }
         }
         Ok(work)
     }
@@ -5212,6 +5314,7 @@ impl<'a> PlanView<'a> {
                     | ProcessorView::Kit { .. }
                     | ProcessorView::Audio(_)
                     | ProcessorView::WarpRate(_)
+                    | ProcessorView::Clips { .. }
             ) {
                 continue;
             }
@@ -5858,6 +5961,13 @@ fn port_descriptor(node: NodeView<'_>, port: &str, input: bool) -> Option<PortDe
         return (!input && port == "out").then_some(PortDescriptor {
             kind: PortKind::Audio,
             channels: clip.channels,
+            summing: false,
+        });
+    }
+    if let ProcessorView::Clips { channels, .. } = node.processor {
+        return (!input && port == "out").then_some(PortDescriptor {
+            kind: PortKind::Audio,
+            channels,
             summing: false,
         });
     }

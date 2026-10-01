@@ -107,6 +107,8 @@ hit. The record retains the exact start recipe, source interval, speed,
 reverse, gain, fades, source identity, optional track grouping metadata and
 certified active frame bounds. Clip node `params` is empty. V4 rejects audio
 transport records; earlier readers reject V5 rather than reinterpret it.
+[Pattern audio](pattern-audio.md#plans) groups these records as members of one
+`clips` node per placement.
 
 Public artifact loading, encoding, rendering and export independently validate
 the complete payload. Retained plans render and deliver without original

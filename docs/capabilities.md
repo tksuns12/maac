@@ -100,8 +100,8 @@ Tracks may group clips without an event target; grouping creates no routing.
 The [warp-rate contract](warp-rate.md) adds ordered musical source-frame anchors
 through the full tempo map, including the tail. Preserve-pitch warping uses the
 core reference stretch. [Pattern audio leaves](pattern-audio.md) place rate and
-warp clips inside patterns, summed at an explicit placement `out` port; each
-occurrence counts as a plan node.
+warp clips inside patterns, summed at an explicit placement `out` port. Each
+placement is one plan node, however many occurrences it holds.
 The [native archive contract](editable-archive.md) defines portable source
 closure capture and verification for current and selected historical
 checkpoints. It preserves authored text and local dependencies, including

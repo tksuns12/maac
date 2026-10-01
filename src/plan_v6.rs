@@ -113,6 +113,19 @@ pub(crate) enum ProcessorV6 {
     WarpRate {
         clip: Box<WarpClip>,
     },
+    Clips {
+        channels: u8,
+        clips: Vec<ClipEntry>,
+    },
+}
+
+/// One occurrence inside a `clips` node: an ordinary rate or warp clip,
+/// summed with the node's other occurrences in list order.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum ClipEntry {
+    Audio { clip: Box<AudioClip> },
+    WarpRate { clip: Box<WarpClip> },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -165,6 +178,7 @@ impl From<NodeV5> for NodeV6 {
                 samples,
             },
             ProcessorV5::Audio { clip } => ProcessorV6::Audio { clip },
+            ProcessorV5::Clips { channels, clips } => ProcessorV6::Clips { channels, clips },
         };
         Self {
             id: node.id,

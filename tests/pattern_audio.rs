@@ -100,7 +100,7 @@ fn repeated_placement_matches_top_level_clips() {
 }
 
 #[test]
-fn plan_names_reserved_clip_nodes_and_a_placement_sum() {
+fn each_placement_is_one_clip_set_node() {
     let artifact = compiled(
         "pattern loop { length = 2q; audio hit { asset = &tone; at = 0q; source = [0frame, 4800frame]; mode = rate; } }\n\
          place loops { pattern = &loop; track = &clips; at = 0q; count = 2; }\n\
@@ -109,21 +109,131 @@ fn plan_names_reserved_clip_nodes_and_a_placement_sum() {
     let wire: Value = serde_json::from_slice(&artifact.to_json().unwrap()).unwrap();
     assert_eq!(wire["version"], 5);
     let nodes = wire["nodes"].as_array().unwrap();
-    let node = |id: &str| nodes.iter().find(|node| node["id"] == id).unwrap();
-    assert_eq!(node("loops")["processor"]["processor"]["kind"], "sum");
-    for (k, at) in [(0, "0/1"), (1, "2/1")] {
-        let clip = &node(&format!("__clip_loops_{k}"))["processor"]["clip"];
+    assert_eq!(nodes.len(), 2, "only `loops` and `out`: {nodes:?}");
+    let set = &nodes.iter().find(|node| node["id"] == "loops").unwrap()["processor"];
+    assert_eq!(set["kind"], "clips");
+    assert_eq!(set["channels"], 1);
+    let members = set["clips"].as_array().unwrap();
+    assert_eq!(members.len(), 2);
+    for (member, at) in members.iter().zip(["0/1", "2/1"]) {
+        assert_eq!(member["kind"], "audio");
+        let clip = &member["clip"];
         assert_eq!(clip["at"]["q"], at);
         assert_eq!(clip["track"], "clips");
         assert_eq!(clip["source"]["object"], "hit");
         assert_eq!(clip["source"]["path"], serde_json::json!(["loop", "hit"]));
     }
-    let routes = wire["connections"].as_array().unwrap();
-    assert!(routes
-        .iter()
-        .any(|c| c["id"] == "__route_loops_1" && c["to"]["node"] == "loops"));
+    assert_eq!(wire["connections"].as_array().unwrap().len(), 1);
+    assert_eq!(artifact.audio_clip_count(), 2);
     // The retained plan reloads and renders without its source.
     PlanArtifact::from_json(&artifact.to_json().unwrap()).unwrap();
+}
+
+#[test]
+fn occurrences_are_not_bounded_by_the_plan_node_limit() {
+    // 1,024 occurrences, four times the 256-node plan limit, in one node.
+    let body = "pattern tick { length = 1/128q; audio a { asset = &tone; at = 0q; source = [0frame, 480frame]; mode = rate; gain = 1/4; } }\n\
+                pattern bar { length = 8q; use ticks { pattern = &tick; at = 0q; count = 1024; } }\n\
+                place p1 { pattern = &bar; track = &clips; at = 0q; }\n\
+                connect route { from = &p1:out; to = &out:in; }";
+    let artifact = compiled(body);
+    assert_eq!(artifact.audio_clip_count(), 1024);
+    let samples = render(body);
+    // Onsets every 7.8125 ms overlap each 10 ms slice, so the sum at a frame
+    // where two members sound is twice one member's sample.
+    assert!(samples.iter().any(|sample| *sample != 0.));
+    let one = 0.5 * 1. / FRAMES as f64 * 0.25;
+    assert!((samples[0] - one).abs() < 1e-9, "{}", samples[0]);
+}
+
+#[test]
+fn clip_sets_render_bit_identically_across_bucket_boundaries() {
+    // Members start just before, on and after the 4,096-frame bucket edges.
+    let leaves: String = [4095, 4096, 4097, 8191, 12_288]
+        .iter()
+        .enumerate()
+        .map(|(n, frame)| {
+            format!(
+                "audio a{n} {{ asset = &tone; at = {frame}/48000q; source = [0frame, 4800frame]; mode = rate; }}\n"
+            )
+        })
+        .collect();
+    let placed = render(&format!(
+        "pattern cell {{ length = 1q; {leaves} }}\n\
+         place p1 {{ pattern = &cell; track = &clips; at = 0q; }}\n\
+         connect route {{ from = &p1:out; to = &out:in; }}"
+    ));
+    let mut expected_body = String::from("node mix { type = \"core.sum/1\"; config = { channels = 1; }; }\nconnect mixed { from = &mix:out; to = &out:in; }\n");
+    for (n, frame) in [4095, 4096, 4097, 8191, 12_288].iter().enumerate() {
+        expected_body.push_str(&format!(
+            "audio c{n} {{ asset = &tone; at = {frame}/48000q; source = [0frame, 4800frame]; mode = rate; }}\nconnect r{n} {{ from = &c{n}:out; to = &mix:in; }}\n"
+        ));
+    }
+    let expected = render(&expected_body);
+    assert_eq!(placed.len(), expected.len());
+    for (n, (x, y)) in placed.iter().zip(&expected).enumerate() {
+        assert_eq!(x.to_bits(), y.to_bits(), "frame {n}: {x} vs {y}");
+    }
+}
+
+#[test]
+fn a_placement_with_every_occurrence_deleted_is_silent() {
+    let samples = render(
+        "pattern cell { length = 1q; audio a { asset = &tone; at = 0q; source = [0frame, 4800frame]; mode = rate; } }\n\
+         place p1 { pattern = &cell; track = &clips; at = 0q; override gone { event = \"0/a\"; delete = true; } }\n\
+         connect route { from = &p1:out; to = &out:in; }",
+    );
+    assert!(samples.iter().all(|sample| *sample == 0.));
+}
+
+#[test]
+fn retained_clip_sets_are_validated() {
+    let artifact = compiled(
+        "pattern cell { length = 1q; audio a { asset = &tone; at = 0q; source = [0frame, 4800frame]; mode = rate; } }\n\
+         place p1 { pattern = &cell; track = &clips; at = 0q; count = 2; }\n\
+         connect route { from = &p1:out; to = &out:in; }",
+    );
+    let wire: Value = serde_json::from_slice(&artifact.to_json().unwrap()).unwrap();
+    let index = wire["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .position(|node| node["id"] == "p1")
+        .unwrap();
+    let load = |edit: &dyn Fn(&mut Value)| {
+        let mut wire = wire.clone();
+        edit(&mut wire["nodes"][index]);
+        PlanArtifact::from_json(&serde_json::to_vec(&wire).unwrap())
+            .unwrap_err()
+            .code
+    };
+    assert_eq!(
+        load(&|node| node["processor"]["channels"] = 2.into()),
+        "E_PORT_TYPE"
+    );
+    assert_eq!(
+        load(&|node| node["params"] = serde_json::json!({"level": "1/1"})),
+        "E_UNKNOWN_FIELD"
+    );
+    assert_eq!(
+        load(&|node| node["processor"]["clips"][0]["clip"]["start_frame"] = 7.into()),
+        "E_INTERVAL"
+    );
+    // A version 5 plan cannot carry warp members.
+    let warp = load(&|node| {
+        let member = &mut node["processor"]["clips"][0];
+        member["kind"] = "warp_rate".into();
+        let clip = member["clip"].as_object_mut().unwrap();
+        clip.remove("at");
+        clip.remove("speed");
+        clip.remove("reverse");
+        clip.insert("at_q".into(), "0/1".into());
+        clip.insert(
+            "warp".into(),
+            serde_json::json!([{"q": "0/1", "source_frame": 0}, {"q": "1/10", "source_frame": 4800}]),
+        );
+    });
+    assert_eq!(warp, "E_VERSION");
 }
 
 #[test]
@@ -209,7 +319,7 @@ fn placements_mix_events_and_audio() {
         .map(|event| event["address"].as_str().unwrap())
         .collect();
     assert_eq!(addresses, ["p1/0/n", "p1/1/n"]);
-    assert_eq!(wire["nodes"].as_array().unwrap().len(), 5);
+    assert_eq!(wire["nodes"].as_array().unwrap().len(), 3);
 }
 
 #[test]
@@ -293,13 +403,6 @@ fn placement_output_and_overrides_are_checked() {
         let found = codes(&with(set));
         assert!(found.contains(&code), "{set}: {found:?}");
     }
-
-    // Reserved expansion IDs cannot be taken by source declarations.
-    let found = codes(&format!(
-        "{}\nnode __clip_p1_0 {{ type = \"core.sum/1\"; config = {{ channels = 1; }}; }}",
-        with("gain = 1/2;")
-    ));
-    assert!(found.contains(&DiagnosticCode::DuplicateId), "{found:?}");
 }
 
 #[test]
@@ -469,13 +572,14 @@ fn checked_in_example_builds_its_occurrences() {
             .unwrap();
     let artifact = compile_bundle_artifact(&bundle).unwrap();
     let wire: Value = serde_json::from_slice(&artifact.to_json().unwrap()).unwrap();
-    let clips = wire["nodes"]
+    let groove = wire["nodes"]
         .as_array()
         .unwrap()
         .iter()
-        .filter(|node| node["id"].as_str().unwrap().starts_with("__clip_groove_"))
-        .count();
+        .find(|node| node["id"] == "groove")
+        .unwrap();
     // Four bars of twelve leaves, one deleted, one inserted.
-    assert_eq!(clips, 48);
+    assert_eq!(groove["processor"]["clips"].as_array().unwrap().len(), 48);
+    assert_eq!(artifact.audio_clip_count(), 48);
     assert_eq!(wire["events"].as_array().unwrap().len(), 0);
 }

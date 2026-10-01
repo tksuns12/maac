@@ -348,57 +348,30 @@ impl<'a> DspEngine<'a> {
                     NodeState::new_control(node.id.clone(), ControlRuntime::Constant),
                     None,
                 ),
-                ProcessorView::WarpRate(clip) => {
-                    let sample = kit_samples
-                        .get(&clip.asset)
-                        .ok_or_else(|| RenderError::RenderState("clip asset missing".into()))?;
-                    let timing = timing
-                        .as_ref()
-                        .ok_or_else(|| RenderError::RenderState("clip timing missing".into()))?;
-                    let warp =
-                        crate::warp_clip::prepare_clip(clip, timing, plan.output, sample.frames())?;
-                    let prepared = if clip.stretch.is_some() {
-                        // prepare_clip admitted only the core OLA identity.
-                        PreparedTransport::Preserve {
-                            warp,
-                            hop: crate::warp_clip::ola_hop(plan.output.sample_rate_hz),
-                            step: f64::from(sample.rate_hz())
-                                / f64::from(plan.output.sample_rate_hz),
-                        }
-                    } else {
-                        PreparedTransport::Warp(warp)
-                    };
-                    let slice = sample.owned_slice(
-                        clip.source_start_frame,
-                        clip.source_end_frame,
-                        false,
-                    )?;
+                ProcessorView::Audio(_) | ProcessorView::WarpRate(_) => {
+                    let clip = node.processor.clips()[0];
+                    let runtime =
+                        prepare_transport(clip, &kit_samples, timing.as_ref(), plan.output)?;
                     (
-                        NodeState::new_audio(node.id.clone(), AudioRuntime { slice, prepared }),
+                        NodeState::new_audio(node.id.clone(), TransportRuntime::Single(runtime)),
                         None,
                     )
                 }
-                ProcessorView::Audio(clip) => {
-                    let sample = kit_samples
-                        .get(&clip.asset)
-                        .ok_or_else(|| RenderError::RenderState("clip asset missing".into()))?;
-                    let timing = timing
-                        .as_ref()
-                        .ok_or_else(|| RenderError::RenderState("clip timing missing".into()))?;
-                    let prepared = PreparedTransport::Rate(prepare_clip(
-                        clip,
-                        timing,
-                        plan.output,
-                        sample.rate_hz(),
-                        sample.frames(),
-                    )?);
-                    let slice = sample.owned_slice(
-                        clip.source_start_frame,
-                        clip.source_end_frame,
-                        clip.reverse,
-                    )?;
+                ProcessorView::Clips { channels, .. } => {
+                    let members = node
+                        .processor
+                        .clips()
+                        .into_iter()
+                        .map(|clip| {
+                            prepare_transport(clip, &kit_samples, timing.as_ref(), plan.output)
+                        })
+                        .collect::<Result<Vec<_>>>()?;
+                    let set = ClipSetRuntime::new(members, plan.output.total_frames);
                     (
-                        NodeState::new_audio(node.id.clone(), AudioRuntime { slice, prepared }),
+                        NodeState::new_audio(
+                            node.id.clone(),
+                            TransportRuntime::Set { channels, set },
+                        ),
                         None,
                     )
                 }
@@ -1734,6 +1707,122 @@ fn interpolate_signed(slice: &OwnedAudioSlice, coordinate: f64, channel: usize) 
     Ok(slice.interpolate(index as u64, coordinate - index, channel)?)
 }
 
+/// Prepare one rate or warp transport against the plan's shared asset buffers.
+fn prepare_transport(
+    clip: crate::plan::ClipRef<'_>,
+    buffers: &BTreeMap<String, Arc<KitSample>>,
+    timing: Option<&TimingContext>,
+    output: &crate::plan::OutputSettings,
+) -> Result<AudioRuntime> {
+    let timing = timing.ok_or_else(|| RenderError::RenderState("clip timing missing".into()))?;
+    match clip {
+        crate::plan::ClipRef::WarpRate(clip) => {
+            let sample = buffers
+                .get(&clip.asset)
+                .ok_or_else(|| RenderError::RenderState("clip asset missing".into()))?;
+            let warp = crate::warp_clip::prepare_clip(clip, timing, output, sample.frames())?;
+            let prepared = if clip.stretch.is_some() {
+                // prepare_clip admitted only the core OLA identity.
+                PreparedTransport::Preserve {
+                    warp,
+                    hop: crate::warp_clip::ola_hop(output.sample_rate_hz),
+                    step: f64::from(sample.rate_hz()) / f64::from(output.sample_rate_hz),
+                }
+            } else {
+                PreparedTransport::Warp(warp)
+            };
+            let slice =
+                sample.owned_slice(clip.source_start_frame, clip.source_end_frame, false)?;
+            Ok(AudioRuntime { slice, prepared })
+        }
+        crate::plan::ClipRef::Audio(clip) => {
+            let sample = buffers
+                .get(&clip.asset)
+                .ok_or_else(|| RenderError::RenderState("clip asset missing".into()))?;
+            let prepared = PreparedTransport::Rate(prepare_clip(
+                clip,
+                timing,
+                output,
+                sample.rate_hz(),
+                sample.frames(),
+            )?);
+            let slice =
+                sample.owned_slice(clip.source_start_frame, clip.source_end_frame, clip.reverse)?;
+            Ok(AudioRuntime { slice, prepared })
+        }
+    }
+}
+
+/// A standalone clip, or a clip set summing its members in list order.
+#[derive(Debug)]
+enum TransportRuntime {
+    Single(AudioRuntime),
+    Set { channels: u8, set: ClipSetRuntime },
+}
+impl TransportRuntime {
+    fn channels(&self) -> usize {
+        match self {
+            Self::Single(audio) => usize::from(audio.slice.channels()),
+            Self::Set { channels, .. } => usize::from(*channels),
+        }
+    }
+    fn render_frame(&self, frame: u64) -> Result<[f64; 2]> {
+        match self {
+            Self::Single(audio) => audio.render_frame(frame),
+            Self::Set { set, .. } => set.render_frame(frame),
+        }
+    }
+}
+
+/// Clip-set members indexed by the fixed output-frame buckets their active
+/// intervals touch. Members outside their interval render exact zeros, so
+/// skipping them leaves the list-order sum unchanged.
+#[derive(Debug)]
+struct ClipSetRuntime {
+    members: Vec<AudioRuntime>,
+    buckets: Vec<Vec<u32>>,
+}
+impl ClipSetRuntime {
+    fn new(members: Vec<AudioRuntime>, total_frames: u64) -> Self {
+        let size = crate::plan::CLIP_BUCKET_FRAMES;
+        let mut buckets = vec![Vec::new(); usize::try_from(total_frames / size + 1).unwrap_or(0)];
+        for (index, member) in members.iter().enumerate() {
+            let (start, end) = member.active();
+            let end = end.min(total_frames);
+            if start >= end {
+                continue;
+            }
+            for bucket in (start / size)..=((end - 1) / size) {
+                buckets[bucket as usize].push(index as u32);
+            }
+        }
+        Self { members, buckets }
+    }
+    fn render_frame(&self, frame: u64) -> Result<[f64; 2]> {
+        let mut output = [0.; 2];
+        let Some(bucket) = self
+            .buckets
+            .get((frame / crate::plan::CLIP_BUCKET_FRAMES) as usize)
+        else {
+            return Ok(output);
+        };
+        for &index in bucket {
+            let sample = self.members[index as usize].render_frame(frame)?;
+            output[0] += sample[0];
+            output[1] += sample[1];
+        }
+        if !output.iter().all(|sample| sample.is_finite()) {
+            return Err(crate::plan::err(
+                "E_NONFINITE",
+                "nodes.clips",
+                "clip set produced a nonfinite sum",
+            )
+            .into());
+        }
+        Ok(output)
+    }
+}
+
 /// Stateless transport evaluated from the absolute output frame after preparation.
 #[derive(Debug)]
 struct AudioRuntime {
@@ -1741,6 +1830,15 @@ struct AudioRuntime {
     prepared: PreparedTransport,
 }
 impl AudioRuntime {
+    /// Output frames `[start, end)` outside which this transport is silent.
+    fn active(&self) -> (u64, u64) {
+        match &self.prepared {
+            PreparedTransport::Rate(prepared) => (prepared.start_frame, prepared.end_frame),
+            PreparedTransport::Warp(warp) | PreparedTransport::Preserve { warp, .. } => {
+                (warp.start_frame, warp.end_frame)
+            }
+        }
+    }
     fn render_frame(&self, frame: u64) -> Result<[f64; 2]> {
         let mut output = [0.; 2];
         if let PreparedTransport::Preserve { warp, hop, step } = &self.prepared {
@@ -1955,7 +2053,7 @@ struct NodeState {
     control: Option<ControlRuntime>,
     control_value: f64,
     kit: Option<KitRuntime>,
-    audio: Option<AudioRuntime>,
+    audio: Option<TransportRuntime>,
     base_params: BTreeMap<String, f64>,
     current_params: BTreeMap<String, f64>,
     automations: BTreeMap<String, AutomationBinding>,
@@ -2145,8 +2243,8 @@ impl NodeState {
         })
     }
 
-    fn new_audio(id: String, audio: AudioRuntime) -> Self {
-        let channels = usize::from(audio.slice.channels());
+    fn new_audio(id: String, audio: TransportRuntime) -> Self {
+        let channels = audio.channels();
         Self {
             id,
             processor: RuntimeProcessor::Audio,
@@ -3010,7 +3108,10 @@ fn build_automations(
                 }
                 ProcessorView::Kit { .. } => 1.0,
                 ProcessorView::Constant => 0.0,
-                ProcessorView::Lfo(_) | ProcessorView::Audio(_) | ProcessorView::WarpRate(_) => {
+                ProcessorView::Lfo(_)
+                | ProcessorView::Audio(_)
+                | ProcessorView::WarpRate(_)
+                | ProcessorView::Clips { .. } => {
                     return Err(crate::plan::err(
                         "E_CAPABILITY",
                         "nodes.audio",

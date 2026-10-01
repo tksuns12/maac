@@ -1,6 +1,6 @@
 //! Interchange adapters and explicit MaaC/1 §25 loss reporting.
 
-use crate::plan::{EventKind, Interpolation, ProcessorView, Rational};
+use crate::plan::{EventKind, Interpolation, Rational};
 use crate::PlanArtifact;
 use num_traits::ToPrimitive;
 use serde::de::{self, MapAccess, SeqAccess, Visitor};
@@ -486,12 +486,7 @@ pub fn export_midi1_smf(
     let audio_nodes = view
         .nodes
         .iter()
-        .filter(|node| {
-            matches!(
-                node.processor,
-                ProcessorView::Audio(_) | ProcessorView::WarpRate(_)
-            )
-        })
+        .filter(|node| node.processor.is_transport())
         .map(|node| vec![node.id.clone()])
         .collect::<Vec<_>>();
     if !audio_nodes.is_empty() || view.audio_assets.is_some_and(|assets| !assets.is_empty()) {

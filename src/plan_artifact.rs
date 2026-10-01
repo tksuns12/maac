@@ -282,13 +282,8 @@ impl PlanArtifact {
         self.view()
             .nodes
             .iter()
-            .filter(|node| {
-                matches!(
-                    node.processor,
-                    crate::plan::ProcessorView::Audio(_) | crate::plan::ProcessorView::WarpRate(_)
-                )
-            })
-            .count()
+            .map(|node| node.processor.clips().len())
+            .sum()
     }
     pub(crate) fn from_v7(plan: crate::plan_v7::PlanV7) -> Self {
         Self {

@@ -37,7 +37,7 @@ use crate::plan::{
 use crate::plan_artifact::PlanArtifact;
 use crate::plan_v4::{NodeV4, PlanV4, ProcessorV4};
 use crate::plan_v5::{AudioClip, AudioFadeShape, NodeV5, PlanV5, ProcessorV5};
-use crate::plan_v6::{NodeV6, PlanV6, ProcessorV6, WarpAnchor, WarpClip};
+use crate::plan_v6::{ClipEntry, NodeV6, PlanV6, ProcessorV6, WarpAnchor, WarpClip};
 use crate::semantic::InstrumentNodeDescriptor;
 use crate::syntax::{Document, Field, Object, Reference, Unit, Value, ValueKind};
 
@@ -363,11 +363,11 @@ enum LeafTransport {
         stretch: Option<String>,
     },
 }
-/// One expanded audio leaf, lowered to a reserved clip node feeding its
-/// placement's `core.sum/1` output node.
+/// One expanded audio leaf, lowered to a member of its placement's clip-set
+/// node.
 #[derive(Clone, Debug)]
 struct PatternClip {
-    id: String,
+    place: String,
     track: String,
     event: ExpandedEvent,
 }
@@ -3113,65 +3113,26 @@ impl<'a> Compiler<'a> {
     }
 
     /// Move expanded audio leaves out of the event list. Each placement with
-    /// audio becomes a `core.sum/1` node with the placement's ID, fed by one
-    /// reserved `__clip_<place>_<k>` node per surviving instance.
+    /// audio becomes one clip-set node with the placement's ID, whose members
+    /// are its surviving instances in expansion order, then inserts.
     fn collect_pattern_clips(&mut self) -> CResult<()> {
         let (audio, events): (Vec<_>, Vec<_>) = std::mem::take(&mut self.events)
             .into_iter()
             .partition(|event| matches!(event.kind, ExpandedKind::Audio(_)));
         self.events = events;
-        let reserved = |compiler: &Self, id: &str, span: Span| -> CResult<()> {
-            if id.len() > crate::plan::PlanLimits::MAX_ID_BYTES {
-                return Err(diagnostics(
-                    DiagnosticCode::ResourceLimit,
-                    format!("reserved pattern clip ID `{id}` exceeds the ID length limit"),
-                    Some(span),
-                ));
-            }
-            if compiler.document.object(id).is_some() {
-                return Err(diagnostics(
-                    DiagnosticCode::DuplicateId,
-                    format!("ID `{id}` is reserved for an expanded pattern audio leaf"),
-                    Some(span),
-                ));
-            }
-            Ok(())
-        };
         let places = self.places.clone();
         let mut placed = 0;
         for place in &places {
-            let Some(&channels) = self.place_outputs.get(&place.id) else {
+            if !self.place_outputs.contains_key(&place.id) {
                 continue;
-            };
-            self.nodes.push(
-                Node::new(place.id.clone(), Processor::Sum { channels }).map_err(plan_error)?,
-            );
+            }
             let prefix = format!("{}/", place.id);
-            for (k, event) in audio
+            for event in audio
                 .iter()
                 .filter(|event| event.address.starts_with(&prefix))
-                .enumerate()
             {
-                let id = format!("__clip_{}_{k}", place.id);
-                let route = format!("__route_{}_{k}", place.id);
-                reserved(self, &id, event.source_span)?;
-                reserved(self, &route, event.source_span)?;
-                self.connections.push(
-                    Connection::new(
-                        route,
-                        PortRef {
-                            node: id.clone(),
-                            port: "out".into(),
-                        },
-                        PortRef {
-                            node: place.id.clone(),
-                            port: "in".into(),
-                        },
-                    )
-                    .map_err(plan_error)?,
-                );
                 self.pattern_clips.push(PatternClip {
-                    id,
+                    place: place.id.clone(),
                     track: place.track.clone(),
                     event: event.clone(),
                 });
@@ -3188,76 +3149,131 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    /// Lower expanded pattern audio to ordinary rate or warp clip nodes at
-    /// their final score positions.
+    /// Lower expanded pattern audio to one clip-set node per placement, whose
+    /// members are ordinary rate or warp clips at their final score positions.
     fn lower_pattern_clips(&self) -> CResult<Vec<NodeV6>> {
-        self.pattern_clips
+        // A placement whose occurrences were all deleted keeps a silent output.
+        let mut nodes: Vec<NodeV6> = self
+            .places
             .iter()
-            .map(|clip| {
-                let ExpandedKind::Audio(audio) = &clip.event.kind else {
-                    unreachable!("only audio leaves are collected as pattern clips")
-                };
-                let channels = self
-                    .audio_assets
-                    .iter()
-                    .find(|asset| asset.id == audio.asset)
-                    .map(|asset| asset.channels)
-                    .ok_or_else(|| {
-                        diagnostics(
-                            DiagnosticCode::Reference,
-                            "pattern audio asset does not exist",
-                            Some(clip.event.source_span),
-                        )
-                    })?;
-                let processor = match &audio.transport {
-                    LeafTransport::Rate { speed, reverse } => ProcessorV6::Audio {
-                        clip: Box::new(AudioClip {
-                            asset: audio.asset.clone(),
-                            channels,
-                            at: AutomationAnchor::Score {
-                                q: clip.event.score_on_q.clone(),
-                            },
-                            source_start_frame: audio.source_start_frame,
-                            source_end_frame: audio.source_end_frame,
-                            speed: speed.clone(),
-                            reverse: *reverse,
-                            gain: audio.gain.clone(),
-                            fade_in_seconds: audio.fade_in_seconds.clone(),
-                            fade_out_seconds: audio.fade_out_seconds.clone(),
-                            fade_shape: audio.fade_shape,
-                            source: clip.event.source.clone(),
-                            track: Some(clip.track.clone()),
-                            start_frame: 0,
-                            end_frame: 0,
-                        }),
-                    },
-                    LeafTransport::Warp { warp, stretch } => ProcessorV6::WarpRate {
-                        clip: Box::new(WarpClip {
-                            asset: audio.asset.clone(),
-                            channels,
-                            at_q: clip.event.score_on_q.clone(),
-                            source_start_frame: audio.source_start_frame,
-                            source_end_frame: audio.source_end_frame,
-                            warp: warp.clone(),
-                            gain: audio.gain.clone(),
-                            fade_in_seconds: audio.fade_in_seconds.clone(),
-                            fade_out_seconds: audio.fade_out_seconds.clone(),
-                            fade_shape: audio.fade_shape,
-                            source: clip.event.source.clone(),
-                            track: Some(clip.track.clone()),
-                            start_frame: 0,
-                            end_frame: 0,
-                            stretch: stretch.clone(),
-                        }),
-                    },
-                };
-                Ok(NodeV6 {
-                    id: clip.id.clone(),
+            .filter_map(|place| {
+                let channels = *self.place_outputs.get(&place.id)?;
+                Some(NodeV6 {
+                    id: place.id.clone(),
                     params: BTreeMap::new(),
-                    processor,
+                    processor: ProcessorV6::Clips {
+                        channels,
+                        clips: Vec::new(),
+                    },
                 })
             })
-            .collect()
+            .collect();
+        for clip in &self.pattern_clips {
+            let ExpandedKind::Audio(audio) = &clip.event.kind else {
+                unreachable!("only audio leaves are collected as pattern clips")
+            };
+            let channels = self
+                .audio_assets
+                .iter()
+                .find(|asset| asset.id == audio.asset)
+                .map(|asset| asset.channels)
+                .ok_or_else(|| {
+                    diagnostics(
+                        DiagnosticCode::Reference,
+                        "pattern audio asset does not exist",
+                        Some(clip.event.source_span),
+                    )
+                })?;
+            let entry = match &audio.transport {
+                LeafTransport::Rate { speed, reverse } => ClipEntry::Audio {
+                    clip: Box::new(AudioClip {
+                        asset: audio.asset.clone(),
+                        channels,
+                        at: AutomationAnchor::Score {
+                            q: clip.event.score_on_q.clone(),
+                        },
+                        source_start_frame: audio.source_start_frame,
+                        source_end_frame: audio.source_end_frame,
+                        speed: speed.clone(),
+                        reverse: *reverse,
+                        gain: audio.gain.clone(),
+                        fade_in_seconds: audio.fade_in_seconds.clone(),
+                        fade_out_seconds: audio.fade_out_seconds.clone(),
+                        fade_shape: audio.fade_shape,
+                        source: clip.event.source.clone(),
+                        track: Some(clip.track.clone()),
+                        start_frame: 0,
+                        end_frame: 0,
+                    }),
+                },
+                LeafTransport::Warp { warp, stretch } => ClipEntry::WarpRate {
+                    clip: Box::new(WarpClip {
+                        asset: audio.asset.clone(),
+                        channels,
+                        at_q: clip.event.score_on_q.clone(),
+                        source_start_frame: audio.source_start_frame,
+                        source_end_frame: audio.source_end_frame,
+                        warp: warp.clone(),
+                        gain: audio.gain.clone(),
+                        fade_in_seconds: audio.fade_in_seconds.clone(),
+                        fade_out_seconds: audio.fade_out_seconds.clone(),
+                        fade_shape: audio.fade_shape,
+                        source: clip.event.source.clone(),
+                        track: Some(clip.track.clone()),
+                        start_frame: 0,
+                        end_frame: 0,
+                        stretch: stretch.clone(),
+                    }),
+                },
+            };
+            let node = nodes
+                .iter_mut()
+                .find(|node| node.id == clip.place)
+                .expect("every collected clip has a placement output");
+            if let ProcessorV6::Clips { clips, .. } = &mut node.processor {
+                clips.push(entry);
+            }
+        }
+        Ok(nodes)
+    }
+
+    /// Fix the output frames of every clip-set member against final timing.
+    fn schedule_clip_entries(
+        clips: &mut [ClipEntry],
+        assets: &[crate::audio_asset::AudioAsset],
+        timing: &TimingContext,
+        output: &OutputSettings,
+    ) -> CResult<()> {
+        for entry in clips {
+            let asset_id = match entry {
+                ClipEntry::Audio { clip } => &clip.asset,
+                ClipEntry::WarpRate { clip } => &clip.asset,
+            };
+            let asset = assets
+                .iter()
+                .find(|asset| asset.id == *asset_id)
+                .ok_or_else(|| {
+                    diagnostics(DiagnosticCode::Reference, "clip asset does not exist", None)
+                })?;
+            match entry {
+                ClipEntry::Audio { clip } => {
+                    (clip.start_frame, clip.end_frame) = crate::audio_clip::schedule_clip(
+                        clip,
+                        timing,
+                        output,
+                        asset.rate_hz,
+                        asset.frames,
+                    )
+                    .map_err(plan_error)?;
+                }
+                ClipEntry::WarpRate { clip } => {
+                    (clip.start_frame, clip.end_frame) =
+                        crate::warp_clip::schedule_clip(clip, timing, output, asset.frames)
+                            .map_err(plan_error)?;
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Compute bounded expansion work and emitted-note count without walking
@@ -4599,6 +4615,11 @@ impl<'a> Compiler<'a> {
                         .map_err(plan_error)?;
             }
         }
+        for node in &mut plan.nodes {
+            if let ProcessorV7::Clips { clips, .. } = &mut node.processor {
+                Self::schedule_clip_entries(clips, &plan.audio_assets, &timing, &plan.output)?;
+            }
+        }
         plan.view()
             .validate_performance_with_timing(&limits, &timing)
             .map_err(plan_error_in!(plan.events))?;
@@ -4724,6 +4745,11 @@ impl<'a> Compiler<'a> {
                         .map_err(plan_error)?;
             }
         }
+        for node in &mut plan.nodes {
+            if let ProcessorV6::Clips { clips, .. } = &mut node.processor {
+                Self::schedule_clip_entries(clips, &plan.audio_assets, &timing, &plan.output)?;
+            }
+        }
         plan.view()
             .validate_performance_with_timing(&limits, &timing)
             .map_err(plan_error_in!(plan.events))?;
@@ -4766,13 +4792,13 @@ impl<'a> Compiler<'a> {
         nodes.extend(self.kit_nodes.values().cloned().map(NodeV5::from));
         nodes.extend(self.lower_audio_clips()?);
         for node in self.lower_pattern_clips()? {
-            let ProcessorV6::Audio { clip } = node.processor else {
-                unreachable!("warp leaves select a version 6 or later plan")
+            let ProcessorV6::Clips { channels, clips } = node.processor else {
+                unreachable!("pattern audio lowers to clip sets")
             };
             nodes.push(NodeV5 {
                 id: node.id,
                 params: node.params,
-                processor: ProcessorV5::Audio { clip },
+                processor: ProcessorV5::Clips { channels, clips },
             });
         }
         nodes.sort_by(|a, b| a.id.cmp(&b.id));
@@ -4818,6 +4844,11 @@ impl<'a> Compiler<'a> {
         let timing = TimingContext::new_with_limits(&plan.tempo, &plan.output, &limits)
             .map_err(plan_error)?;
         Self::schedule_score_events(&mut plan.output, &mut plan.events, &timing, &limits)?;
+        for node in &mut plan.nodes {
+            if let ProcessorV5::Clips { clips, .. } = &mut node.processor {
+                Self::schedule_clip_entries(clips, &plan.audio_assets, &timing, &plan.output)?;
+            }
+        }
         for node in &mut plan.nodes {
             if let ProcessorV5::Audio { clip } = &mut node.processor {
                 let asset = plan
@@ -5137,6 +5168,9 @@ impl<'a> Compiler<'a> {
             if let ProcessorV4::Kit { channels, .. } = node.processor {
                 return Ok(channels);
             }
+        }
+        if let Some(&channels) = self.place_outputs.get(&self.output.node) {
+            return Ok(channels);
         }
         let node = self
             .nodes

@@ -91,6 +91,10 @@ enum NativeProcessor {
     WarpRate {
         clip: Box<WarpClip>,
     },
+    Clips {
+        channels: u8,
+        clips: Vec<crate::plan_v6::ClipEntry>,
+    },
     Kit {
         channels: u8,
         voices: u32,
@@ -106,6 +110,7 @@ impl NativeProcessor {
             Self::Constant {} => "constant",
             Self::Audio { .. } => "audio",
             Self::WarpRate { .. } => "warp_rate",
+            Self::Clips { .. } => "clips",
             Self::Kit { .. } => "kit",
         }
     }
@@ -189,6 +194,24 @@ impl NativeProcessorContext {
                         clip: Box::new(clip),
                     }
                 }
+                ProcessorView::Clips { channels, clips } => NativeProcessor::Clips {
+                    channels,
+                    clips: clips
+                        .iter()
+                        .cloned()
+                        .map(|mut entry| {
+                            match &mut entry {
+                                crate::plan_v6::ClipEntry::Audio { clip } => {
+                                    clip.source.span = None
+                                }
+                                crate::plan_v6::ClipEntry::WarpRate { clip } => {
+                                    clip.source.span = None
+                                }
+                            }
+                            entry
+                        })
+                        .collect(),
+                },
                 ProcessorView::Kit {
                     channels,
                     voices,
@@ -694,6 +717,17 @@ fn validate_record(record: &ContextRecord) -> Result<(), Diagnostics> {
         }
         if let NativeProcessor::WarpRate { clip } = &node.processor {
             if clip.source.span.is_some() {
+                return Err(fail(
+                    DiagnosticCode::Range,
+                    "processor context contains a source span",
+                ));
+            }
+        }
+        if let NativeProcessor::Clips { clips, .. } = &node.processor {
+            if clips
+                .iter()
+                .any(|entry| crate::plan::ClipRef::from(entry).source().span.is_some())
+            {
                 return Err(fail(
                     DiagnosticCode::Range,
                     "processor context contains a source span",
