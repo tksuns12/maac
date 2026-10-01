@@ -1,0 +1,5754 @@
+{
+ "schema": "maac.lexical-corpus/1",
+ "oracle": "grammar.lark (Lark LALR) with the check_spec.py syntax transformer; identifier bytes > 128 are E_RESOURCE_LIMIT",
+ "cases": [
+  {
+   "id": "header/minimal",
+   "source": "maac 1;",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {}
+    }
+   }
+  },
+  {
+   "id": "header/leading-whitespace-and-comments",
+   "source": " \t\n// c\n/* b */ maac 1;",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {}
+    }
+   }
+  },
+  {
+   "id": "header/leading-zero-version",
+   "source": "maac 01;",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {}
+    }
+   }
+  },
+  {
+   "id": "header/version-2",
+   "source": "maac 2;",
+   "expected": {
+    "error": "E_VERSION"
+   }
+  },
+  {
+   "id": "header/version-0",
+   "source": "maac 0;",
+   "expected": {
+    "error": "E_VERSION"
+   }
+  },
+  {
+   "id": "header/signed-version",
+   "source": "maac +1;",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "header/fraction-version",
+   "source": "maac 1/1;",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "header/missing-semicolon",
+   "source": "maac 1 thing t {}",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "header/joined-version",
+   "source": "maac1;",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "header/tab-separator",
+   "source": "maac\t1;",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {}
+    }
+   }
+  },
+  {
+   "id": "header/comment-separator",
+   "source": "maac/* c */1;",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {}
+    }
+   }
+  },
+  {
+   "id": "header/keyword-prefix",
+   "source": "maacx 1;",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "header/uppercase-keyword",
+   "source": "MAAC 1;",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "header/missing",
+   "source": "thing t {}",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "header/empty-source",
+   "source": "",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "header/twice",
+   "source": "maac 1; maac 1;",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "identifier/object-id/letter",
+   "source": "maac 1; thing a {}",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "a": {
+       "kind": "thing",
+       "fields": {},
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "identifier/kind/letter",
+   "source": "maac 1; a t {}",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "a",
+       "fields": {},
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "identifier/field/letter",
+   "source": "maac 1; thing t { a = 1; }",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "a": {
+         "t": "number",
+         "n": "1",
+         "d": "1"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "identifier/object-id/underscore",
+   "source": "maac 1; thing _ {}",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "_": {
+       "kind": "thing",
+       "fields": {},
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "identifier/kind/underscore",
+   "source": "maac 1; _ t {}",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "_",
+       "fields": {},
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "identifier/field/underscore",
+   "source": "maac 1; thing t { _ = 1; }",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "_": {
+         "t": "number",
+         "n": "1",
+         "d": "1"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "identifier/object-id/underscore-digits",
+   "source": "maac 1; thing _9 {}",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "_9": {
+       "kind": "thing",
+       "fields": {},
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "identifier/kind/underscore-digits",
+   "source": "maac 1; _9 t {}",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "_9",
+       "fields": {},
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "identifier/field/underscore-digits",
+   "source": "maac 1; thing t { _9 = 1; }",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "_9": {
+         "t": "number",
+         "n": "1",
+         "d": "1"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "identifier/object-id/mixed-case",
+   "source": "maac 1; thing AbC_z9 {}",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "AbC_z9": {
+       "kind": "thing",
+       "fields": {},
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "identifier/kind/mixed-case",
+   "source": "maac 1; AbC_z9 t {}",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "AbC_z9",
+       "fields": {},
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "identifier/field/mixed-case",
+   "source": "maac 1; thing t { AbC_z9 = 1; }",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "AbC_z9": {
+         "t": "number",
+         "n": "1",
+         "d": "1"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "identifier/object-id/keyword-maac",
+   "source": "maac 1; thing maac {}",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "maac": {
+       "kind": "thing",
+       "fields": {},
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "identifier/kind/keyword-maac",
+   "source": "maac 1; maac t {}",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "maac",
+       "fields": {},
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "identifier/field/keyword-maac",
+   "source": "maac 1; thing t { maac = 1; }",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "maac": {
+         "t": "number",
+         "n": "1",
+         "d": "1"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "identifier/object-id/keyword-true",
+   "source": "maac 1; thing true {}",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "true": {
+       "kind": "thing",
+       "fields": {},
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "identifier/kind/keyword-true",
+   "source": "maac 1; true t {}",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "true",
+       "fields": {},
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "identifier/field/keyword-true",
+   "source": "maac 1; thing t { true = 1; }",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "true": {
+         "t": "number",
+         "n": "1",
+         "d": "1"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "identifier/object-id/keyword-false",
+   "source": "maac 1; thing false {}",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "false": {
+       "kind": "thing",
+       "fields": {},
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "identifier/kind/keyword-false",
+   "source": "maac 1; false t {}",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "false",
+       "fields": {},
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "identifier/field/keyword-false",
+   "source": "maac 1; thing t { false = 1; }",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "false": {
+         "t": "number",
+         "n": "1",
+         "d": "1"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "identifier/object-id/max-length",
+   "source": "maac 1; thing xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx {}",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx": {
+       "kind": "thing",
+       "fields": {},
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "identifier/kind/max-length",
+   "source": "maac 1; xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx t {}",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+       "fields": {},
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "identifier/field/max-length",
+   "source": "maac 1; thing t { xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx = 1; }",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx": {
+         "t": "number",
+         "n": "1",
+         "d": "1"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "identifier/object-id/over-max-length",
+   "source": "maac 1; thing xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx {}",
+   "expected": {
+    "error": "E_RESOURCE_LIMIT"
+   }
+  },
+  {
+   "id": "identifier/kind/over-max-length",
+   "source": "maac 1; xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx t {}",
+   "expected": {
+    "error": "E_RESOURCE_LIMIT"
+   }
+  },
+  {
+   "id": "identifier/field/over-max-length",
+   "source": "maac 1; thing t { xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx = 1; }",
+   "expected": {
+    "error": "E_RESOURCE_LIMIT"
+   }
+  },
+  {
+   "id": "identifier/object-id/leading-digit",
+   "source": "maac 1; thing 9a {}",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "identifier/field/leading-digit",
+   "source": "maac 1; thing t { 9a = 1; }",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "identifier/object-id/hyphen",
+   "source": "maac 1; thing a-b {}",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "identifier/field/hyphen",
+   "source": "maac 1; thing t { a-b = 1; }",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "identifier/object-id/dot",
+   "source": "maac 1; thing a.b {}",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "identifier/field/dot",
+   "source": "maac 1; thing t { a.b = 1; }",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "identifier/object-id/non-ascii",
+   "source": "maac 1; thing café {}",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "identifier/field/non-ascii",
+   "source": "maac 1; thing t { café = 1; }",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "identifier/object-id/dollar",
+   "source": "maac 1; thing a$ {}",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "identifier/field/dollar",
+   "source": "maac 1; thing t { a$ = 1; }",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "identifier/case-sensitive-ids",
+   "source": "maac 1; thing a {} thing A {}",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "a": {
+       "kind": "thing",
+       "fields": {},
+       "children": {}
+      },
+      "A": {
+       "kind": "thing",
+       "fields": {},
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "identifier/object-id/pitch",
+   "source": "maac 1; thing C4 {}",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "C4": {
+       "kind": "thing",
+       "fields": {},
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "identifier/field/pitch",
+   "source": "maac 1; thing t { C4 = 1; }",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "C4": {
+         "t": "number",
+         "n": "1",
+         "d": "1"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "identifier/record-field/pitch",
+   "source": "maac 1; thing t { v = { C4 = 1; }; }",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "record",
+         "fields": {
+          "C4": {
+           "t": "number",
+           "n": "1",
+           "d": "1"
+          }
+         }
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "identifier/reference/pitch",
+   "source": "maac 1; thing t { v = &C4; }",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "ref",
+         "path": [
+          "C4"
+         ],
+         "port": null
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "identifier/object-id/flat-pitch",
+   "source": "maac 1; thing Bb3 {}",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "Bb3": {
+       "kind": "thing",
+       "fields": {},
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "identifier/field/flat-pitch",
+   "source": "maac 1; thing t { Bb3 = 1; }",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "Bb3": {
+         "t": "number",
+         "n": "1",
+         "d": "1"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "identifier/record-field/flat-pitch",
+   "source": "maac 1; thing t { v = { Bb3 = 1; }; }",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "record",
+         "fields": {
+          "Bb3": {
+           "t": "number",
+           "n": "1",
+           "d": "1"
+          }
+         }
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "identifier/reference/flat-pitch",
+   "source": "maac 1; thing t { v = &Bb3; }",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "ref",
+         "path": [
+          "Bb3"
+         ],
+         "port": null
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "identifier/object-id/unit-q",
+   "source": "maac 1; thing q {}",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "q": {
+       "kind": "thing",
+       "fields": {},
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "identifier/field/unit-q",
+   "source": "maac 1; thing t { q = 1; }",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "q": {
+         "t": "number",
+         "n": "1",
+         "d": "1"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "identifier/record-field/unit-q",
+   "source": "maac 1; thing t { v = { q = 1; }; }",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "record",
+         "fields": {
+          "q": {
+           "t": "number",
+           "n": "1",
+           "d": "1"
+          }
+         }
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "identifier/reference/unit-q",
+   "source": "maac 1; thing t { v = &q; }",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "ref",
+         "path": [
+          "q"
+         ],
+         "port": null
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "identifier/object-id/unit-ms",
+   "source": "maac 1; thing ms {}",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "ms": {
+       "kind": "thing",
+       "fields": {},
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "identifier/field/unit-ms",
+   "source": "maac 1; thing t { ms = 1; }",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "ms": {
+         "t": "number",
+         "n": "1",
+         "d": "1"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "identifier/record-field/unit-ms",
+   "source": "maac 1; thing t { v = { ms = 1; }; }",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "record",
+         "fields": {
+          "ms": {
+           "t": "number",
+           "n": "1",
+           "d": "1"
+          }
+         }
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "identifier/reference/unit-ms",
+   "source": "maac 1; thing t { v = &ms; }",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "ref",
+         "path": [
+          "ms"
+         ],
+         "port": null
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "identifier/object-id/unit-frame",
+   "source": "maac 1; thing frame {}",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "frame": {
+       "kind": "thing",
+       "fields": {},
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "identifier/field/unit-frame",
+   "source": "maac 1; thing t { frame = 1; }",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "frame": {
+         "t": "number",
+         "n": "1",
+         "d": "1"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "identifier/record-field/unit-frame",
+   "source": "maac 1; thing t { v = { frame = 1; }; }",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "record",
+         "fields": {
+          "frame": {
+           "t": "number",
+           "n": "1",
+           "d": "1"
+          }
+         }
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "identifier/reference/unit-frame",
+   "source": "maac 1; thing t { v = &frame; }",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "ref",
+         "path": [
+          "frame"
+         ],
+         "port": null
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "identifier/object-id/sharp-pitch",
+   "source": "maac 1; thing C#4 {}",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "identifier/field/sharp-pitch",
+   "source": "maac 1; thing t { C#4 = 1; }",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "identifier/reference/sharp-pitch",
+   "source": "maac 1; thing t { v = &C#4; }",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "identifier/object-id/signed-pitch",
+   "source": "maac 1; thing C-1 {}",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "identifier/field/signed-pitch",
+   "source": "maac 1; thing t { C-1 = 1; }",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "identifier/reference/signed-pitch",
+   "source": "maac 1; thing t { v = &C-1; }",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "identifier/record-field/true",
+   "source": "maac 1; thing t { v = { true = 1; }; }",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "record",
+         "fields": {
+          "true": {
+           "t": "number",
+           "n": "1",
+           "d": "1"
+          }
+         }
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "identifier/reference/true",
+   "source": "maac 1; thing t { v = &true; }",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "ref",
+         "path": [
+          "true"
+         ],
+         "port": null
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "identifier/call/true",
+   "source": "maac 1; thing t { v = true(1); }",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "identifier/record-field/maac",
+   "source": "maac 1; thing t { v = { maac = 1; }; }",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "record",
+         "fields": {
+          "maac": {
+           "t": "number",
+           "n": "1",
+           "d": "1"
+          }
+         }
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "identifier/reference/maac",
+   "source": "maac 1; thing t { v = &maac; }",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "ref",
+         "path": [
+          "maac"
+         ],
+         "port": null
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "identifier/call/maac",
+   "source": "maac 1; thing t { v = maac(1); }",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "call",
+         "fn": "maac",
+         "args": [
+          {
+           "t": "number",
+           "n": "1",
+           "d": "1"
+          }
+         ]
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "number/unsigned/integer",
+   "source": "maac 1;\nthing t { v = 7; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "number",
+         "n": "7",
+         "d": "1"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "number/unsigned/zero",
+   "source": "maac 1;\nthing t { v = 0; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "number",
+         "n": "0",
+         "d": "1"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "number/unsigned/leading-zeros",
+   "source": "maac 1;\nthing t { v = 007; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "number",
+         "n": "7",
+         "d": "1"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "number/unsigned/decimal",
+   "source": "maac 1;\nthing t { v = 0.10; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "number",
+         "n": "1",
+         "d": "10"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "number/unsigned/decimal-trailing-zeros",
+   "source": "maac 1;\nthing t { v = 2.500; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "number",
+         "n": "5",
+         "d": "2"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "number/unsigned/fraction",
+   "source": "maac 1;\nthing t { v = 3/4; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "number",
+         "n": "3",
+         "d": "4"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "number/unsigned/fraction-unreduced",
+   "source": "maac 1;\nthing t { v = 6/8; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "number",
+         "n": "3",
+         "d": "4"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "number/unsigned/fraction-zero-numerator",
+   "source": "maac 1;\nthing t { v = 0/5; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "number",
+         "n": "0",
+         "d": "1"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "number/unsigned/large-integer",
+   "source": "maac 1;\nthing t { v = 123456789012345678901234567890; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "number",
+         "n": "123456789012345678901234567890",
+         "d": "1"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "number/plus/integer",
+   "source": "maac 1;\nthing t { v = +7; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "number",
+         "n": "7",
+         "d": "1"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "number/plus/zero",
+   "source": "maac 1;\nthing t { v = +0; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "number",
+         "n": "0",
+         "d": "1"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "number/plus/leading-zeros",
+   "source": "maac 1;\nthing t { v = +007; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "number",
+         "n": "7",
+         "d": "1"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "number/plus/decimal",
+   "source": "maac 1;\nthing t { v = +0.10; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "number",
+         "n": "1",
+         "d": "10"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "number/plus/decimal-trailing-zeros",
+   "source": "maac 1;\nthing t { v = +2.500; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "number",
+         "n": "5",
+         "d": "2"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "number/plus/fraction",
+   "source": "maac 1;\nthing t { v = +3/4; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "number",
+         "n": "3",
+         "d": "4"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "number/plus/fraction-unreduced",
+   "source": "maac 1;\nthing t { v = +6/8; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "number",
+         "n": "3",
+         "d": "4"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "number/plus/fraction-zero-numerator",
+   "source": "maac 1;\nthing t { v = +0/5; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "number",
+         "n": "0",
+         "d": "1"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "number/plus/large-integer",
+   "source": "maac 1;\nthing t { v = +123456789012345678901234567890; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "number",
+         "n": "123456789012345678901234567890",
+         "d": "1"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "number/minus/integer",
+   "source": "maac 1;\nthing t { v = -7; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "number",
+         "n": "-7",
+         "d": "1"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "number/minus/zero",
+   "source": "maac 1;\nthing t { v = -0; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "number",
+         "n": "0",
+         "d": "1"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "number/minus/leading-zeros",
+   "source": "maac 1;\nthing t { v = -007; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "number",
+         "n": "-7",
+         "d": "1"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "number/minus/decimal",
+   "source": "maac 1;\nthing t { v = -0.10; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "number",
+         "n": "-1",
+         "d": "10"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "number/minus/decimal-trailing-zeros",
+   "source": "maac 1;\nthing t { v = -2.500; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "number",
+         "n": "-5",
+         "d": "2"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "number/minus/fraction",
+   "source": "maac 1;\nthing t { v = -3/4; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "number",
+         "n": "-3",
+         "d": "4"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "number/minus/fraction-unreduced",
+   "source": "maac 1;\nthing t { v = -6/8; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "number",
+         "n": "-3",
+         "d": "4"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "number/minus/fraction-zero-numerator",
+   "source": "maac 1;\nthing t { v = -0/5; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "number",
+         "n": "0",
+         "d": "1"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "number/minus/large-integer",
+   "source": "maac 1;\nthing t { v = -123456789012345678901234567890; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "number",
+         "n": "-123456789012345678901234567890",
+         "d": "1"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "number/invalid/leading-dot",
+   "source": "maac 1;\nthing t { v = .5; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "number/invalid/trailing-dot",
+   "source": "maac 1;\nthing t { v = 5.; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "number/invalid/zero-denominator",
+   "source": "maac 1;\nthing t { v = 1/0; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "number/invalid/leading-zero-denominator",
+   "source": "maac 1;\nthing t { v = 1/01; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "number/invalid/signed-denominator",
+   "source": "maac 1;\nthing t { v = 1/-2; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "number/invalid/decimal-fraction",
+   "source": "maac 1;\nthing t { v = 1.5/2; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "number/invalid/fraction-decimal-denominator",
+   "source": "maac 1;\nthing t { v = 1/2.5; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "number/invalid/exponent",
+   "source": "maac 1;\nthing t { v = 1e3; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "number/invalid/exponent-decimal",
+   "source": "maac 1;\nthing t { v = 1.0e3; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "number/invalid/underscore-separator",
+   "source": "maac 1;\nthing t { v = 1_000; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "number/invalid/hex",
+   "source": "maac 1;\nthing t { v = 0x10; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "number/invalid/double-sign",
+   "source": "maac 1;\nthing t { v = --1; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "number/invalid/sign-space",
+   "source": "maac 1;\nthing t { v = - 1; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "number/invalid/fraction-spaces",
+   "source": "maac 1;\nthing t { v = 1 / 2; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "number/invalid/double-decimal-point",
+   "source": "maac 1;\nthing t { v = 1.2.3; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "number/word/nan",
+   "source": "maac 1;\nthing t { v = NaN; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "symbol",
+         "v": "NaN"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "number/word/infinity",
+   "source": "maac 1;\nthing t { v = inf; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "symbol",
+         "v": "inf"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "number/word/negative-infinity",
+   "source": "maac 1;\nthing t { v = -inf; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "quantity/frame/integer",
+   "source": "maac 1;\nthing t { v = 4frame; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "quantity",
+         "n": "4",
+         "d": "1",
+         "u": "frame"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "quantity/frame/decimal",
+   "source": "maac 1;\nthing t { v = 1.5frame; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "quantity",
+         "n": "3",
+         "d": "2",
+         "u": "frame"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "quantity/frame/fraction",
+   "source": "maac 1;\nthing t { v = -1/3frame; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "quantity",
+         "n": "-1",
+         "d": "3",
+         "u": "frame"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "quantity/frame/space-before-unit",
+   "source": "maac 1;\nthing t { v = 4 frame; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "quantity",
+         "n": "4",
+         "d": "1",
+         "u": "frame"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "quantity/frame/uppercase",
+   "source": "maac 1;\nthing t { v = 4FRAME; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "quantity/frame/doubled",
+   "source": "maac 1;\nthing t { v = 4frameframe; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "quantity/frame/bare-unit",
+   "source": "maac 1;\nthing t { v = frame; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "symbol",
+         "v": "frame"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "quantity/bpm/integer",
+   "source": "maac 1;\nthing t { v = 4bpm; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "quantity",
+         "n": "4",
+         "d": "1",
+         "u": "bpm"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "quantity/bpm/decimal",
+   "source": "maac 1;\nthing t { v = 1.5bpm; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "quantity",
+         "n": "3",
+         "d": "2",
+         "u": "bpm"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "quantity/bpm/fraction",
+   "source": "maac 1;\nthing t { v = -1/3bpm; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "quantity",
+         "n": "-1",
+         "d": "3",
+         "u": "bpm"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "quantity/bpm/space-before-unit",
+   "source": "maac 1;\nthing t { v = 4 bpm; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "quantity",
+         "n": "4",
+         "d": "1",
+         "u": "bpm"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "quantity/bpm/uppercase",
+   "source": "maac 1;\nthing t { v = 4BPM; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "quantity/bpm/doubled",
+   "source": "maac 1;\nthing t { v = 4bpmbpm; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "quantity/bpm/bare-unit",
+   "source": "maac 1;\nthing t { v = bpm; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "symbol",
+         "v": "bpm"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "quantity/kHz/integer",
+   "source": "maac 1;\nthing t { v = 4kHz; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "quantity",
+         "n": "4",
+         "d": "1",
+         "u": "kHz"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "quantity/kHz/decimal",
+   "source": "maac 1;\nthing t { v = 1.5kHz; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "quantity",
+         "n": "3",
+         "d": "2",
+         "u": "kHz"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "quantity/kHz/fraction",
+   "source": "maac 1;\nthing t { v = -1/3kHz; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "quantity",
+         "n": "-1",
+         "d": "3",
+         "u": "kHz"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "quantity/kHz/space-before-unit",
+   "source": "maac 1;\nthing t { v = 4 kHz; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "quantity",
+         "n": "4",
+         "d": "1",
+         "u": "kHz"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "quantity/kHz/uppercase",
+   "source": "maac 1;\nthing t { v = 4KHZ; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "quantity/kHz/doubled",
+   "source": "maac 1;\nthing t { v = 4kHzkHz; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "quantity/kHz/bare-unit",
+   "source": "maac 1;\nthing t { v = kHz; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "symbol",
+         "v": "kHz"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "quantity/Hz/integer",
+   "source": "maac 1;\nthing t { v = 4Hz; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "quantity",
+         "n": "4",
+         "d": "1",
+         "u": "Hz"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "quantity/Hz/decimal",
+   "source": "maac 1;\nthing t { v = 1.5Hz; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "quantity",
+         "n": "3",
+         "d": "2",
+         "u": "Hz"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "quantity/Hz/fraction",
+   "source": "maac 1;\nthing t { v = -1/3Hz; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "quantity",
+         "n": "-1",
+         "d": "3",
+         "u": "Hz"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "quantity/Hz/space-before-unit",
+   "source": "maac 1;\nthing t { v = 4 Hz; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "quantity",
+         "n": "4",
+         "d": "1",
+         "u": "Hz"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "quantity/Hz/uppercase",
+   "source": "maac 1;\nthing t { v = 4HZ; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "quantity/Hz/doubled",
+   "source": "maac 1;\nthing t { v = 4HzHz; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "quantity/Hz/bare-unit",
+   "source": "maac 1;\nthing t { v = Hz; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "symbol",
+         "v": "Hz"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "quantity/ms/integer",
+   "source": "maac 1;\nthing t { v = 4ms; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "quantity",
+         "n": "4",
+         "d": "1",
+         "u": "ms"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "quantity/ms/decimal",
+   "source": "maac 1;\nthing t { v = 1.5ms; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "quantity",
+         "n": "3",
+         "d": "2",
+         "u": "ms"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "quantity/ms/fraction",
+   "source": "maac 1;\nthing t { v = -1/3ms; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "quantity",
+         "n": "-1",
+         "d": "3",
+         "u": "ms"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "quantity/ms/space-before-unit",
+   "source": "maac 1;\nthing t { v = 4 ms; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "quantity",
+         "n": "4",
+         "d": "1",
+         "u": "ms"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "quantity/ms/uppercase",
+   "source": "maac 1;\nthing t { v = 4MS; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "quantity/ms/doubled",
+   "source": "maac 1;\nthing t { v = 4msms; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "quantity/ms/bare-unit",
+   "source": "maac 1;\nthing t { v = ms; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "symbol",
+         "v": "ms"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "quantity/ct/integer",
+   "source": "maac 1;\nthing t { v = 4ct; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "quantity",
+         "n": "4",
+         "d": "1",
+         "u": "ct"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "quantity/ct/decimal",
+   "source": "maac 1;\nthing t { v = 1.5ct; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "quantity",
+         "n": "3",
+         "d": "2",
+         "u": "ct"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "quantity/ct/fraction",
+   "source": "maac 1;\nthing t { v = -1/3ct; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "quantity",
+         "n": "-1",
+         "d": "3",
+         "u": "ct"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "quantity/ct/space-before-unit",
+   "source": "maac 1;\nthing t { v = 4 ct; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "quantity",
+         "n": "4",
+         "d": "1",
+         "u": "ct"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "quantity/ct/uppercase",
+   "source": "maac 1;\nthing t { v = 4CT; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "quantity/ct/doubled",
+   "source": "maac 1;\nthing t { v = 4ctct; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "quantity/ct/bare-unit",
+   "source": "maac 1;\nthing t { v = ct; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "symbol",
+         "v": "ct"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "quantity/dB/integer",
+   "source": "maac 1;\nthing t { v = 4dB; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "quantity",
+         "n": "4",
+         "d": "1",
+         "u": "dB"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "quantity/dB/decimal",
+   "source": "maac 1;\nthing t { v = 1.5dB; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "quantity",
+         "n": "3",
+         "d": "2",
+         "u": "dB"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "quantity/dB/fraction",
+   "source": "maac 1;\nthing t { v = -1/3dB; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "quantity",
+         "n": "-1",
+         "d": "3",
+         "u": "dB"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "quantity/dB/space-before-unit",
+   "source": "maac 1;\nthing t { v = 4 dB; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "quantity",
+         "n": "4",
+         "d": "1",
+         "u": "dB"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "quantity/dB/uppercase",
+   "source": "maac 1;\nthing t { v = 4DB; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "quantity/dB/doubled",
+   "source": "maac 1;\nthing t { v = 4dBdB; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "quantity/dB/bare-unit",
+   "source": "maac 1;\nthing t { v = dB; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "symbol",
+         "v": "dB"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "quantity/q/integer",
+   "source": "maac 1;\nthing t { v = 4q; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "quantity",
+         "n": "4",
+         "d": "1",
+         "u": "q"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "quantity/q/decimal",
+   "source": "maac 1;\nthing t { v = 1.5q; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "quantity",
+         "n": "3",
+         "d": "2",
+         "u": "q"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "quantity/q/fraction",
+   "source": "maac 1;\nthing t { v = -1/3q; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "quantity",
+         "n": "-1",
+         "d": "3",
+         "u": "q"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "quantity/q/space-before-unit",
+   "source": "maac 1;\nthing t { v = 4 q; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "quantity",
+         "n": "4",
+         "d": "1",
+         "u": "q"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "quantity/q/uppercase",
+   "source": "maac 1;\nthing t { v = 4Q; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "quantity/q/doubled",
+   "source": "maac 1;\nthing t { v = 4qq; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "quantity/q/bare-unit",
+   "source": "maac 1;\nthing t { v = q; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "symbol",
+         "v": "q"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "quantity/s/integer",
+   "source": "maac 1;\nthing t { v = 4s; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "quantity",
+         "n": "4",
+         "d": "1",
+         "u": "s"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "quantity/s/decimal",
+   "source": "maac 1;\nthing t { v = 1.5s; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "quantity",
+         "n": "3",
+         "d": "2",
+         "u": "s"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "quantity/s/fraction",
+   "source": "maac 1;\nthing t { v = -1/3s; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "quantity",
+         "n": "-1",
+         "d": "3",
+         "u": "s"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "quantity/s/space-before-unit",
+   "source": "maac 1;\nthing t { v = 4 s; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "quantity",
+         "n": "4",
+         "d": "1",
+         "u": "s"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "quantity/s/uppercase",
+   "source": "maac 1;\nthing t { v = 4S; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "quantity/s/doubled",
+   "source": "maac 1;\nthing t { v = 4ss; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "quantity/s/bare-unit",
+   "source": "maac 1;\nthing t { v = s; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "symbol",
+         "v": "s"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "quantity/invalid/lowercase-hz",
+   "source": "maac 1;\nthing t { v = 4hz; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "quantity/invalid/lowercase-khz",
+   "source": "maac 1;\nthing t { v = 4khz; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "quantity/invalid/uppercase-db",
+   "source": "maac 1;\nthing t { v = 4DB; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "quantity/invalid/unknown-unit",
+   "source": "maac 1;\nthing t { v = 4px; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "quantity/invalid/unit-then-digit",
+   "source": "maac 1;\nthing t { v = 4q2; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "quantity/invalid/ms-prefix-of-identifier",
+   "source": "maac 1;\nthing t { v = 4msx; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "quantity/invalid/s-prefix-of-identifier",
+   "source": "maac 1;\nthing t { v = 4sec; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "quantity/invalid/q-prefix-of-identifier",
+   "source": "maac 1;\nthing t { v = 4quarter; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "pitch/letter/A",
+   "source": "maac 1;\nthing t { v = A4; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "symbol",
+         "v": "A4"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "pitch/letter/B",
+   "source": "maac 1;\nthing t { v = B4; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "symbol",
+         "v": "B4"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "pitch/letter/C",
+   "source": "maac 1;\nthing t { v = C4; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "symbol",
+         "v": "C4"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "pitch/letter/D",
+   "source": "maac 1;\nthing t { v = D4; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "symbol",
+         "v": "D4"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "pitch/letter/E",
+   "source": "maac 1;\nthing t { v = E4; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "symbol",
+         "v": "E4"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "pitch/letter/F",
+   "source": "maac 1;\nthing t { v = F4; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "symbol",
+         "v": "F4"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "pitch/letter/G",
+   "source": "maac 1;\nthing t { v = G4; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "symbol",
+         "v": "G4"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "pitch/accidental/sharp",
+   "source": "maac 1;\nthing t { v = C#4; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "symbol",
+         "v": "C#4"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "pitch/accidental/double-sharp",
+   "source": "maac 1;\nthing t { v = C##4; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "symbol",
+         "v": "C##4"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "pitch/accidental/flat",
+   "source": "maac 1;\nthing t { v = Cb4; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "symbol",
+         "v": "Cb4"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "pitch/accidental/double-flat",
+   "source": "maac 1;\nthing t { v = Cbb4; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "symbol",
+         "v": "Cbb4"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "pitch/negative-octave",
+   "source": "maac 1;\nthing t { v = C-1; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "symbol",
+         "v": "C-1"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "pitch/plus-octave",
+   "source": "maac 1;\nthing t { v = C+4; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "symbol",
+         "v": "C+4"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "pitch/multi-digit-octave",
+   "source": "maac 1;\nthing t { v = C10; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "symbol",
+         "v": "C10"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "pitch/sharp-negative-octave",
+   "source": "maac 1;\nthing t { v = B#-1; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "symbol",
+         "v": "B#-1"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "pitch/flat-negative-octave",
+   "source": "maac 1;\nthing t { v = Cb-1; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "symbol",
+         "v": "Cb-1"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "pitch/other/triple-sharp",
+   "source": "maac 1;\nthing t { v = C###4; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "pitch/other/triple-flat",
+   "source": "maac 1;\nthing t { v = Cbbb4; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "symbol",
+         "v": "Cbbb4"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "pitch/other/mixed-accidentals",
+   "source": "maac 1;\nthing t { v = C#b4; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "pitch/other/missing-octave",
+   "source": "maac 1;\nthing t { v = C#; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "pitch/other/letter-h",
+   "source": "maac 1;\nthing t { v = H4; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "symbol",
+         "v": "H4"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "pitch/other/lowercase",
+   "source": "maac 1;\nthing t { v = c4; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "symbol",
+         "v": "c4"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "pitch/other/trailing-letter",
+   "source": "maac 1;\nthing t { v = C4x; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "symbol",
+         "v": "C4x"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "pitch/other/trailing-underscore",
+   "source": "maac 1;\nthing t { v = C4_; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "symbol",
+         "v": "C4_"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "pitch/other/flat-trailing-letter",
+   "source": "maac 1;\nthing t { v = Bb3y; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "symbol",
+         "v": "Bb3y"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "pitch/other/sharp-trailing-letter",
+   "source": "maac 1;\nthing t { v = C#4x; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "pitch/other/signed-trailing-letter",
+   "source": "maac 1;\nthing t { v = C-1x; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "pitch/other/sign-without-octave",
+   "source": "maac 1;\nthing t { v = C-; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "pitch/other/bare-letter",
+   "source": "maac 1;\nthing t { v = C; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "symbol",
+         "v": "C"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "string/empty",
+   "source": "maac 1;\nthing t { v = \"\"; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "string",
+         "v": ""
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "string/plain",
+   "source": "maac 1;\nthing t { v = \"hello\"; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "string",
+         "v": "hello"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "string/unicode",
+   "source": "maac 1;\nthing t { v = \"café ♪\"; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "string",
+         "v": "café ♪"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "string/escape-quote",
+   "source": "maac 1;\nthing t { v = \"a\\\"b\"; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "string",
+         "v": "a\"b"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "string/escape-backslash",
+   "source": "maac 1;\nthing t { v = \"a\\\\b\"; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "string",
+         "v": "a\\b"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "string/escape-slash",
+   "source": "maac 1;\nthing t { v = \"a\\/b\"; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "string",
+         "v": "a/b"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "string/escape-b",
+   "source": "maac 1;\nthing t { v = \"\\b\"; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "string",
+         "v": "\b"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "string/escape-f",
+   "source": "maac 1;\nthing t { v = \"\\f\"; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "string",
+         "v": "\f"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "string/escape-n",
+   "source": "maac 1;\nthing t { v = \"\\n\"; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "string",
+         "v": "\n"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "string/escape-r",
+   "source": "maac 1;\nthing t { v = \"\\r\"; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "string",
+         "v": "\r"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "string/escape-t",
+   "source": "maac 1;\nthing t { v = \"\\t\"; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "string",
+         "v": "\t"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "string/escape-unicode-lower",
+   "source": "maac 1;\nthing t { v = \"é\"; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "string",
+         "v": "é"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "string/escape-unicode-upper",
+   "source": "maac 1;\nthing t { v = \"é\"; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "string",
+         "v": "é"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "string/escape-null",
+   "source": "maac 1;\nthing t { v = \"\\u0000\"; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "string",
+         "v": "\u0000"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "string/surrogate-pair",
+   "source": "maac 1;\nthing t { v = \"🎵\"; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "string",
+         "v": "🎵"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "string/delete-character",
+   "source": "maac 1;\nthing t { v = \"\"; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "string",
+         "v": ""
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "string/comment-markers",
+   "source": "maac 1;\nthing t { v = \"// /* */\"; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "string",
+         "v": "// /* */"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "string/invalid/unterminated",
+   "source": "maac 1;\nthing t { v = \"abc; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "string/invalid/escape-x",
+   "source": "maac 1;\nthing t { v = \"\\x41\"; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "string/invalid/escape-single-quote",
+   "source": "maac 1;\nthing t { v = '\\''; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "string/invalid/short-unicode-escape",
+   "source": "maac 1;\nthing t { v = \"\\u12\"; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "string/invalid/non-hex-unicode-escape",
+   "source": "maac 1;\nthing t { v = \"\\u12g4\"; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "string/invalid/lone-high-surrogate",
+   "source": "maac 1;\nthing t { v = \"\\ud800\"; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "string/invalid/lone-low-surrogate",
+   "source": "maac 1;\nthing t { v = \"\\udc00\"; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "string/invalid/reversed-surrogates",
+   "source": "maac 1;\nthing t { v = \"\\udfb5\\ud83c\"; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "string/invalid/raw-tab",
+   "source": "maac 1;\nthing t { v = \"a\tb\"; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "string/invalid/raw-newline",
+   "source": "maac 1;\nthing t { v = \"a\nb\"; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "string/invalid/raw-nul",
+   "source": "maac 1;\nthing t { v = \"a\u0000b\"; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "string/invalid/single-quotes",
+   "source": "maac 1;\nthing t { v = 'abc'; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "string/invalid/trailing-backslash",
+   "source": "maac 1;\nthing t { v = \"abc\\\"; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "boolean/true",
+   "source": "maac 1;\nthing t { v = true; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "boolean",
+         "v": true
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "boolean/false",
+   "source": "maac 1;\nthing t { v = false; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "boolean",
+         "v": false
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "boolean/capitalized",
+   "source": "maac 1;\nthing t { v = True; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "symbol",
+         "v": "True"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "boolean/prefix",
+   "source": "maac 1;\nthing t { v = trueish; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "symbol",
+         "v": "trueish"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "boolean/underscore-suffix",
+   "source": "maac 1;\nthing t { v = false_; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "symbol",
+         "v": "false_"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "reference/single",
+   "source": "maac 1;\nthing t { v = &a; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "ref",
+         "path": [
+          "a"
+         ],
+         "port": null
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "reference/child",
+   "source": "maac 1;\nthing t { v = &a.b; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "ref",
+         "path": [
+          "a",
+          "b"
+         ],
+         "port": null
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "reference/deep",
+   "source": "maac 1;\nthing t { v = &a.b.c.d; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "ref",
+         "path": [
+          "a",
+          "b",
+          "c",
+          "d"
+         ],
+         "port": null
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "reference/port",
+   "source": "maac 1;\nthing t { v = &a:out; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "ref",
+         "path": [
+          "a"
+         ],
+         "port": "out"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "reference/child-port",
+   "source": "maac 1;\nthing t { v = &a.b:out; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "ref",
+         "path": [
+          "a",
+          "b"
+         ],
+         "port": "out"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "reference/params",
+   "source": "maac 1;\nthing t { v = &a.params.level; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "ref",
+         "path": [
+          "a",
+          "params",
+          "level"
+         ],
+         "port": null
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "reference/space-after-ampersand",
+   "source": "maac 1;\nthing t { v = & a; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "ref",
+         "path": [
+          "a"
+         ],
+         "port": null
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "reference/space-around-dot",
+   "source": "maac 1;\nthing t { v = &a . b; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "ref",
+         "path": [
+          "a",
+          "b"
+         ],
+         "port": null
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "reference/space-around-colon",
+   "source": "maac 1;\nthing t { v = &a : out; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "ref",
+         "path": [
+          "a"
+         ],
+         "port": "out"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "reference/invalid/bare-ampersand",
+   "source": "maac 1;\nthing t { v = &; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "reference/invalid/trailing-dot",
+   "source": "maac 1;\nthing t { v = &a.; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "reference/invalid/empty-port",
+   "source": "maac 1;\nthing t { v = &a:; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "reference/invalid/two-ports",
+   "source": "maac 1;\nthing t { v = &a:b:c; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "reference/invalid/leading-digit",
+   "source": "maac 1;\nthing t { v = &1a; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "reference/invalid/dot-after-port",
+   "source": "maac 1;\nthing t { v = &a:b.c; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "reference/invalid/double-ampersand",
+   "source": "maac 1;\nthing t { v = &&a; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "reference/invalid/string-path",
+   "source": "maac 1;\nthing t { v = &\"a\"; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "compound/call/empty",
+   "source": "maac 1;\nthing t { v = f(); }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "call",
+         "fn": "f",
+         "args": []
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "compound/call/one",
+   "source": "maac 1;\nthing t { v = key(60); }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "call",
+         "fn": "key",
+         "args": [
+          {
+           "t": "number",
+           "n": "60",
+           "d": "1"
+          }
+         ]
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "compound/call/trailing-comma",
+   "source": "maac 1;\nthing t { v = key(60,); }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "call",
+         "fn": "key",
+         "args": [
+          {
+           "t": "number",
+           "n": "60",
+           "d": "1"
+          }
+         ]
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "compound/call/two",
+   "source": "maac 1;\nthing t { v = degree(7, &t); }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "call",
+         "fn": "degree",
+         "args": [
+          {
+           "t": "number",
+           "n": "7",
+           "d": "1"
+          },
+          {
+           "t": "ref",
+           "path": [
+            "t"
+           ],
+           "port": null
+          }
+         ]
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "compound/call/nested",
+   "source": "maac 1;\nthing t { v = ratio(3/2, 440Hz); }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "call",
+         "fn": "ratio",
+         "args": [
+          {
+           "t": "number",
+           "n": "3",
+           "d": "2"
+          },
+          {
+           "t": "quantity",
+           "n": "440",
+           "d": "1",
+           "u": "Hz"
+          }
+         ]
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "compound/call/unknown-name",
+   "source": "maac 1;\nthing t { v = random(); }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "call",
+         "fn": "random",
+         "args": []
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "compound/call/space-before-paren",
+   "source": "maac 1;\nthing t { v = key (60); }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "call",
+         "fn": "key",
+         "args": [
+          {
+           "t": "number",
+           "n": "60",
+           "d": "1"
+          }
+         ]
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "compound/list/empty",
+   "source": "maac 1;\nthing t { v = []; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "list",
+         "items": []
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "compound/list/one",
+   "source": "maac 1;\nthing t { v = [1]; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "list",
+         "items": [
+          {
+           "t": "number",
+           "n": "1",
+           "d": "1"
+          }
+         ]
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "compound/list/trailing-comma",
+   "source": "maac 1;\nthing t { v = [1,]; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "list",
+         "items": [
+          {
+           "t": "number",
+           "n": "1",
+           "d": "1"
+          }
+         ]
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "compound/list/mixed",
+   "source": "maac 1;\nthing t { v = [1, 2q, \"s\", &r, C4, (1, 2), [3], { a = 1; }]; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "list",
+         "items": [
+          {
+           "t": "number",
+           "n": "1",
+           "d": "1"
+          },
+          {
+           "t": "quantity",
+           "n": "2",
+           "d": "1",
+           "u": "q"
+          },
+          {
+           "t": "string",
+           "v": "s"
+          },
+          {
+           "t": "ref",
+           "path": [
+            "r"
+           ],
+           "port": null
+          },
+          {
+           "t": "symbol",
+           "v": "C4"
+          },
+          {
+           "t": "tuple",
+           "items": [
+            {
+             "t": "number",
+             "n": "1",
+             "d": "1"
+            },
+            {
+             "t": "number",
+             "n": "2",
+             "d": "1"
+            }
+           ]
+          },
+          {
+           "t": "list",
+           "items": [
+            {
+             "t": "number",
+             "n": "3",
+             "d": "1"
+            }
+           ]
+          },
+          {
+           "t": "record",
+           "fields": {
+            "a": {
+             "t": "number",
+             "n": "1",
+             "d": "1"
+            }
+           }
+          }
+         ]
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "compound/list/nested",
+   "source": "maac 1;\nthing t { v = [[[]]]; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "list",
+         "items": [
+          {
+           "t": "list",
+           "items": [
+            {
+             "t": "list",
+             "items": []
+            }
+           ]
+          }
+         ]
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "compound/tuple/two",
+   "source": "maac 1;\nthing t { v = (1, 2); }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "tuple",
+         "items": [
+          {
+           "t": "number",
+           "n": "1",
+           "d": "1"
+          },
+          {
+           "t": "number",
+           "n": "2",
+           "d": "1"
+          }
+         ]
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "compound/tuple/trailing-comma",
+   "source": "maac 1;\nthing t { v = (1, 2,); }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "tuple",
+         "items": [
+          {
+           "t": "number",
+           "n": "1",
+           "d": "1"
+          },
+          {
+           "t": "number",
+           "n": "2",
+           "d": "1"
+          }
+         ]
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "compound/tuple/three",
+   "source": "maac 1;\nthing t { v = (0q, 120bpm, step); }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "tuple",
+         "items": [
+          {
+           "t": "quantity",
+           "n": "0",
+           "d": "1",
+           "u": "q"
+          },
+          {
+           "t": "quantity",
+           "n": "120",
+           "d": "1",
+           "u": "bpm"
+          },
+          {
+           "t": "symbol",
+           "v": "step"
+          }
+         ]
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "compound/record/empty",
+   "source": "maac 1;\nthing t { v = {}; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "record",
+         "fields": {}
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "compound/record/one",
+   "source": "maac 1;\nthing t { v = { a = 1; }; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "record",
+         "fields": {
+          "a": {
+           "t": "number",
+           "n": "1",
+           "d": "1"
+          }
+         }
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "compound/record/nested",
+   "source": "maac 1;\nthing t { v = { a = { b = [1]; }; }; }\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "record",
+         "fields": {
+          "a": {
+           "t": "record",
+           "fields": {
+            "b": {
+             "t": "list",
+             "items": [
+              {
+               "t": "number",
+               "n": "1",
+               "d": "1"
+              }
+             ]
+            }
+           }
+          }
+         }
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "compound/invalid/call/only-comma",
+   "source": "maac 1;\nthing t { v = f(,); }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "compound/invalid/call/double-comma",
+   "source": "maac 1;\nthing t { v = f(1,,2); }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "compound/invalid/call/leading-comma",
+   "source": "maac 1;\nthing t { v = f(,1); }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "compound/invalid/call/unclosed",
+   "source": "maac 1;\nthing t { v = f(1; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "compound/invalid/call/reference-name",
+   "source": "maac 1;\nthing t { v = &f(1); }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "compound/invalid/list/only-comma",
+   "source": "maac 1;\nthing t { v = [,]; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "compound/invalid/list/double-comma",
+   "source": "maac 1;\nthing t { v = [1,,2]; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "compound/invalid/list/unclosed",
+   "source": "maac 1;\nthing t { v = [1, 2; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "compound/invalid/list/semicolon-separator",
+   "source": "maac 1;\nthing t { v = [1; 2]; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "compound/invalid/tuple/single",
+   "source": "maac 1;\nthing t { v = (1); }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "compound/invalid/tuple/single-trailing-comma",
+   "source": "maac 1;\nthing t { v = (1,); }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "compound/invalid/tuple/empty",
+   "source": "maac 1;\nthing t { v = (); }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "compound/invalid/record/missing-semicolon",
+   "source": "maac 1;\nthing t { v = { a = 1 }; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "compound/invalid/record/comma-separator",
+   "source": "maac 1;\nthing t { v = { a = 1, b = 2 }; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "compound/invalid/record/duplicate-field",
+   "source": "maac 1;\nthing t { v = { a = 1; a = 2; }; }\n",
+   "expected": {
+    "error": "E_DUPLICATE_FIELD"
+   }
+  },
+  {
+   "id": "compound/invalid/record/bare-value",
+   "source": "maac 1;\nthing t { v = { 1; }; }\n",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "trivia/line-comment-at-end-without-newline",
+   "source": "maac 1; thing t {} // end",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {},
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "trivia/line-comment-between-tokens",
+   "source": "maac 1; thing t { v // c\n = 1; }",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "number",
+         "n": "1",
+         "d": "1"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "trivia/block-comment-between-tokens",
+   "source": "maac 1; thing t { v /* c */ = /* d */ 1; }",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "number",
+         "n": "1",
+         "d": "1"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "trivia/block-comment-multiline",
+   "source": "maac 1; /* a\nb\n*/ thing t {}",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {},
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "trivia/block-comment-with-stars",
+   "source": "maac 1; /** a * b **/ thing t {}",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {},
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "trivia/comment-markers-in-string",
+   "source": "maac 1; thing t { v = \"/* not a comment\"; }",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "string",
+         "v": "/* not a comment"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "trivia/tabs-and-crlf",
+   "source": "maac 1;\r\n\tthing t {\r\n\tv = 1;\r\n}\r\n",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "number",
+         "n": "1",
+         "d": "1"
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "trivia/form-feed",
+   "source": "maac 1;\fthing t {}",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {},
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "trivia/no-whitespace",
+   "source": "maac 1;thing t{v=1;w=[1,2];}",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "number",
+         "n": "1",
+         "d": "1"
+        },
+        "w": {
+         "t": "list",
+         "items": [
+          {
+           "t": "number",
+           "n": "1",
+           "d": "1"
+          },
+          {
+           "t": "number",
+           "n": "2",
+           "d": "1"
+          }
+         ]
+        }
+       },
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "trivia/invalid/nested-block-comment",
+   "source": "maac 1; /* a /* b */ c */ thing t {}",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "trivia/invalid/unterminated-block-comment",
+   "source": "maac 1; thing t {} /* open",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "trivia/invalid/lone-slash",
+   "source": "maac 1; / thing t {}",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "trivia/invalid/hash-comment",
+   "source": "maac 1; # c\nthing t {}",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "trivia/invalid/vertical-tab",
+   "source": "maac 1;\u000bthing t {}",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "trivia/invalid/non-breaking-space",
+   "source": "maac 1; thing t {}",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "structure/empty-object",
+   "source": "maac 1; thing t {}",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {},
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "structure/nested-objects",
+   "source": "maac 1; thing t { child c { grand g { v = 1; } } }",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {},
+       "children": {
+        "c": {
+         "kind": "child",
+         "fields": {},
+         "children": {
+          "g": {
+           "kind": "grand",
+           "fields": {
+            "v": {
+             "t": "number",
+             "n": "1",
+             "d": "1"
+            }
+           },
+           "children": {}
+          }
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "structure/fields-and-children",
+   "source": "maac 1; thing t { v = 1; child c {} w = 2; }",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {
+        "v": {
+         "t": "number",
+         "n": "1",
+         "d": "1"
+        },
+        "w": {
+         "t": "number",
+         "n": "2",
+         "d": "1"
+        }
+       },
+       "children": {
+        "c": {
+         "kind": "child",
+         "fields": {},
+         "children": {}
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "structure/many-top-level",
+   "source": "maac 1; a x {} b y {} c z {}",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "x": {
+       "kind": "a",
+       "fields": {},
+       "children": {}
+      },
+      "y": {
+       "kind": "b",
+       "fields": {},
+       "children": {}
+      },
+      "z": {
+       "kind": "c",
+       "fields": {},
+       "children": {}
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "structure/same-child-id-under-different-parents",
+   "source": "maac 1; thing t { c k {} } thing u { c k {} }",
+   "expected": {
+    "syntax": {
+     "version": 1,
+     "objects": {
+      "t": {
+       "kind": "thing",
+       "fields": {},
+       "children": {
+        "k": {
+         "kind": "c",
+         "fields": {},
+         "children": {}
+        }
+       }
+      },
+      "u": {
+       "kind": "thing",
+       "fields": {},
+       "children": {
+        "k": {
+         "kind": "c",
+         "fields": {},
+         "children": {}
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "structure/invalid/semicolon-after-object",
+   "source": "maac 1; thing t {};",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "structure/invalid/missing-object-id",
+   "source": "maac 1; thing {}",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "structure/invalid/missing-field-semicolon",
+   "source": "maac 1; thing t { v = 1 }",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "structure/invalid/missing-field-value",
+   "source": "maac 1; thing t { v = ; }",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "structure/invalid/field-at-top-level",
+   "source": "maac 1; v = 1;",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "structure/invalid/unclosed-object",
+   "source": "maac 1; thing t {",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "structure/invalid/extra-close-brace",
+   "source": "maac 1; thing t {} }",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "structure/invalid/colon-field",
+   "source": "maac 1; thing t { v: 1; }",
+   "expected": {
+    "error": "E_SYNTAX"
+   }
+  },
+  {
+   "id": "structure/invalid/duplicate-field",
+   "source": "maac 1; thing t { v = 1; v = 2; }",
+   "expected": {
+    "error": "E_DUPLICATE_FIELD"
+   }
+  },
+  {
+   "id": "structure/invalid/duplicate-top-level-id",
+   "source": "maac 1; a x {} b x {}",
+   "expected": {
+    "error": "E_DUPLICATE_ID"
+   }
+  },
+  {
+   "id": "structure/invalid/duplicate-child-id",
+   "source": "maac 1; thing t { c k {} d k {} }",
+   "expected": {
+    "error": "E_DUPLICATE_ID"
+   }
+  },
+  {
+   "id": "structure/invalid/field-child-collision",
+   "source": "maac 1; thing t { k = 1; c k {} }",
+   "expected": {
+    "error": "E_DUPLICATE_ID"
+   }
+  },
+  {
+   "id": "structure/invalid/child-field-collision",
+   "source": "maac 1; thing t { c k {} k = 1; }",
+   "expected": {
+    "error": "E_DUPLICATE_ID"
+   }
+  }
+ ]
+}

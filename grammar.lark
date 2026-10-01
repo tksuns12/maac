@@ -1,5 +1,5 @@
 // Executable surface grammar. Object field/type semantics are in the spec.
-start: "maac" INT ";" object*
+start: _MAAC INT ";" object*
 object: IDENT IDENT "{" member* "}"
 ?member: field | object
 field: IDENT "=" value ";"
@@ -23,7 +23,10 @@ list_value: "[" [value ("," value)* [","]] "]"
 tuple_value: "(" value "," value ("," value)* [","] ")"
 record: "{" field* "}"
 UNIT.3: "frame" | "bpm" | "kHz" | "Hz" | "ms" | "ct" | "dB" | "q" | "s"
-PITCH.2: /[A-G](?:\#{1,2}|b{1,2})?[+-]?[0-9]+/
+// Keyword and pitch tokens end at an identifier boundary, so `maac1` and
+// `C4x` remain single identifiers.
+_MAAC: /maac(?![A-Za-z0-9_])/
+PITCH.2: /[A-G](?:\#{1,2}|b{1,2})?[+-]?[0-9]+(?![A-Za-z0-9_])/
 NUMBER: /[+-]?(?:[0-9]+\/[1-9][0-9]*|[0-9]+\.[0-9]+|[0-9]+)/
 INT: /[0-9]+/
 IDENT: /[A-Za-z_][A-Za-z0-9_]*/

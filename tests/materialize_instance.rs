@@ -397,7 +397,7 @@ place play {pattern=&riff;track=&notes;at=0q;}
 fn repeated_empty_patterns_and_extra_wrapper_depth_are_bounded_before_copying() {
     for body in [
         "pattern empty {length=1q;} place play {pattern=&empty;track=&notes;at=0q;count=1000000000;}",
-        "pattern empty {length=1q;} pattern nested {length=1q;use u {pattern=&empty;count=1024;}} place play {pattern=&nested;track=&notes;at=0q;}",
+        "pattern empty {length=1q;} pattern nested {length=1q;use u {pattern=&empty;at=0q;count=1024;}} place play {pattern=&nested;track=&notes;at=0q;}",
     ] {
         let document = SourceDocument::parse(source(body)).unwrap();
         assert_eq!(FoundationEditContext.prepare_materialize_instance(document.authored(), "play", "copy").unwrap_err().code, "E_RESOURCE_LIMIT");
@@ -405,7 +405,7 @@ fn repeated_empty_patterns_and_extra_wrapper_depth_are_bounded_before_copying() 
     let mut body = "pattern p0 {length=1q;}".to_owned();
     for index in 1..64 {
         body.push_str(&format!(
-            "pattern p{index} {{length=1q;use u {{pattern=&p{};}}}}",
+            "pattern p{index} {{length=1q;use u {{pattern=&p{};at=0q;}}}}",
             index - 1
         ));
     }

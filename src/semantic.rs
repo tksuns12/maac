@@ -1064,6 +1064,7 @@ impl<'a> Validator<'a> {
             ],
             &[],
         );
+        self.reject_children(object, &path);
         self.project_meter = self.resolve_project_meter(object);
         let score = object.field("score").and_then(|field| {
             let items = match &field.value.kind {
@@ -1257,9 +1258,13 @@ impl<'a> Validator<'a> {
                 );
                 continue;
             }
-            let Some(position) =
-                self.quantity_value(&items[0], &[Unit::Q], &point_path, "tempo point position")
-            else {
+            let Some(position) = self.quantity_at(
+                &items[0],
+                &[Unit::Q],
+                &point_path,
+                &[index.to_string()],
+                "tempo point position",
+            ) else {
                 continue;
             };
             if let Some(previous) = &previous {
@@ -1274,8 +1279,13 @@ impl<'a> Validator<'a> {
                 }
             }
             previous = Some(position.clone());
-            let Some(bpm) = self.quantity_value(&items[1], &[Unit::Bpm], &point_path, "tempo BPM")
-            else {
+            let Some(bpm) = self.quantity_at(
+                &items[1],
+                &[Unit::Bpm],
+                &point_path,
+                &[index.to_string()],
+                "tempo BPM",
+            ) else {
                 continue;
             };
             if bpm <= BigRational::zero() {
@@ -1354,9 +1364,13 @@ impl<'a> Validator<'a> {
                 );
                 continue;
             }
-            let Some(position) =
-                self.quantity_value(&items[0], &[Unit::Q], &point_path, "meter point position")
-            else {
+            let Some(position) = self.quantity_at(
+                &items[0],
+                &[Unit::Q],
+                &point_path,
+                &[index.to_string()],
+                "meter point position",
+            ) else {
                 continue;
             };
             if index == 0 && !position.is_zero() {
@@ -1380,12 +1394,20 @@ impl<'a> Validator<'a> {
                 }
             }
             previous = Some(position.clone());
-            let Some(numerator) = self.integer_value(&items[1], &point_path, "meter numerator")
-            else {
+            let Some(numerator) = self.integer_at(
+                &items[1],
+                &point_path,
+                &[index.to_string()],
+                "meter numerator",
+            ) else {
                 continue;
             };
-            let Some(denominator) = self.integer_value(&items[2], &point_path, "meter denominator")
-            else {
+            let Some(denominator) = self.integer_at(
+                &items[2],
+                &point_path,
+                &[index.to_string()],
+                "meter denominator",
+            ) else {
                 continue;
             };
             if numerator <= BigRational::zero()
@@ -1398,7 +1420,7 @@ impl<'a> Validator<'a> {
                     "meter numerator and denominator must be positive integers",
                     Some(point.span),
                     path.to_vec(),
-                    vec!["points".into()],
+                    vec!["points".into(), index.to_string()],
                 );
             } else if !denominator
                 .numer()
@@ -1484,8 +1506,13 @@ impl<'a> Validator<'a> {
             }
             let mut previous: Option<BigRational> = None;
             for (index, item) in items.iter().enumerate() {
-                let Some(value) = self.quantity_value(item, &[Unit::Ct], path, "tuning step")
-                else {
+                let Some(value) = self.quantity_at(
+                    item,
+                    &[Unit::Ct],
+                    path,
+                    &["steps".into(), index.to_string()],
+                    "tuning step",
+                ) else {
                     continue;
                 };
                 if index == 0 && !value.is_zero() {
@@ -1698,7 +1725,7 @@ impl<'a> Validator<'a> {
         self.check_schema(
             object,
             path,
-            &["pattern"],
+            &["pattern", "at"],
             &[
                 "pattern",
                 "at",
@@ -1846,6 +1873,9 @@ impl<'a> Validator<'a> {
             self.push_type(field, path, "set", "a record");
             return;
         };
+        // §23: replacements report at `["set", name]`; `push` moves the
+        // trailing `set` into the field path.
+        let set_path = field_path(path, "set");
         for (name, replacement) in fields {
             if !(matches!(
                 name.as_str(),
@@ -1876,15 +1906,20 @@ impl<'a> Validator<'a> {
             }
             match name.as_str() {
                 "key" | "protocol" => {
-                    self.expect_string(replacement, path, name);
+                    self.expect_string(replacement, &set_path, name);
                 }
                 "bytes" => {
                     let ValueKind::List(items) = &replacement.value.kind else {
-                        self.push_type_value(&replacement.value, path, "a list of byte integers");
+                        self.push_type_value(
+                            &replacement.value,
+                            &field_path(&set_path, name),
+                            "a list of byte integers",
+                        );
                         continue;
                     };
-                    for item in items {
-                        if let Some(value) = self.integer_value(item, path, "message byte") {
+                    for (index, item) in items.iter().enumerate() {
+                        let at = ["set".to_owned(), "bytes".to_owned(), index.to_string()];
+                        if let Some(value) = self.integer_at(item, path, &at, "message byte") {
                             if value < BigRational::zero()
                                 || value > BigRational::from_integer(BigInt::from(255))
                             {
@@ -1901,7 +1936,7 @@ impl<'a> Validator<'a> {
                 }
                 "at" | "dur" => {
                     if let Some(value) =
-                        self.quantity_value(&replacement.value, &[Unit::Q], path, name)
+                        self.quantity_value(&replacement.value, &[Unit::Q], &set_path, name)
                     {
                         if name == "dur" && value <= BigRational::zero()
                             || name == "at" && value < BigRational::zero()
@@ -1918,17 +1953,17 @@ impl<'a> Validator<'a> {
                 }
                 "velocity" | "release_velocity" => self.validate_unit_range_value(
                     &replacement.value,
-                    path,
+                    &set_path,
                     name,
                     BigRational::zero(),
                     BigRational::one(),
                 ),
                 "onset_offset" | "release_offset" => {
-                    self.validate_seconds_value(&replacement.value, path, name);
+                    self.validate_seconds_value(&replacement.value, &set_path, name);
                 }
                 "gain"
                     if self
-                        .number_value(&replacement.value, path, name)
+                        .number_value(&replacement.value, &set_path, name)
                         .is_some_and(|gain| gain < BigRational::zero()) =>
                 {
                     self.push(
@@ -1941,7 +1976,7 @@ impl<'a> Validator<'a> {
                 }
                 "fade_in" | "fade_out"
                     if self
-                        .quantity_value(&replacement.value, &[Unit::S, Unit::Ms], path, name)
+                        .quantity_value(&replacement.value, &[Unit::S, Unit::Ms], &set_path, name)
                         .is_some_and(|fade| fade < BigRational::zero()) =>
                 {
                     self.push(
@@ -1967,12 +2002,20 @@ impl<'a> Validator<'a> {
                     );
                 }
                 "order" if !matches!(replacement.value.kind, ValueKind::Number(_)) => {
-                    self.push_type_value(&replacement.value, path, "integer order");
+                    self.push_type_value(
+                        &replacement.value,
+                        &field_path(&set_path, name),
+                        "integer order",
+                    );
                 }
                 "order" => {}
-                "pitch" => self.validate_pitch_value(&replacement.value, path),
+                "pitch" => self.validate_pitch_value(&replacement.value, &set_path),
                 "label" if !matches!(replacement.value.kind, ValueKind::String(_)) => {
-                    self.push_type_value(&replacement.value, path, "string label");
+                    self.push_type_value(
+                        &replacement.value,
+                        &field_path(&set_path, name),
+                        "string label",
+                    );
                 }
                 "label" => {}
                 _ => {}
@@ -2071,12 +2114,15 @@ impl<'a> Validator<'a> {
                 );
                 continue;
             }
+            let at = ["points".to_owned(), index.to_string()];
             let position = match clock {
-                Some("score") => self.quantity_value(&items[0], &[Unit::Q], path, "curve position"),
-                Some("seconds") => {
-                    self.quantity_value(&items[0], &[Unit::S, Unit::Ms], path, "curve position")
+                Some("score") => {
+                    self.quantity_at(&items[0], &[Unit::Q], path, &at, "curve position")
                 }
-                Some("normalized") => self.number_value(&items[0], path, "curve position"),
+                Some("seconds") => {
+                    self.quantity_at(&items[0], &[Unit::S, Unit::Ms], path, &at, "curve position")
+                }
+                Some("normalized") => self.number_at(&items[0], path, &at, "curve position"),
                 _ => None,
             };
             if let Some(position) = position {
@@ -2308,6 +2354,7 @@ impl<'a> Validator<'a> {
             ],
             &[],
         );
+        self.reject_children(object, path);
         let Some(type_field) = object.field("type") else {
             return;
         };
@@ -2676,13 +2723,15 @@ impl<'a> Validator<'a> {
                 );
             }
         }
+        // Config values report at `["config", name]`.
+        let config_path = field_path(path, "config");
         let channels = config
             .get("channels")
-            .and_then(|f| self.bounded_integer(f, path, "channels", 1, 2));
+            .and_then(|f| self.bounded_integer(f, &config_path, "channels", 1, 2));
         let voices = match config.get("voices") {
             Some(field) => self.bounded_integer(
                 field,
-                path,
+                &config_path,
                 "voices",
                 1,
                 u64::from(crate::plan::PlanLimits::MAX_VOICES),
@@ -2856,12 +2905,15 @@ impl<'a> Validator<'a> {
                 continue;
             }
             if processor == ProcessorKind::Noise && name == "seed" {
-                if let Some(seed) = self.bounded_integer(field, path, name, 0, u64::MAX) {
+                if let Some(seed) =
+                    self.bounded_integer(field, &field_path(path, "config"), name, 0, u64::MAX)
+                {
                     result.insert(name.clone(), BigRational::from_integer(seed.into()));
                 }
                 continue;
             }
-            let Some(value) = self.number_value(&field.value, path, name) else {
+            let at = ["config".to_owned(), name.clone()];
+            let Some(value) = self.number_at(&field.value, path, &at, name) else {
                 continue;
             };
             if value <= BigRational::zero() || !is_integer(&value) {
@@ -3068,6 +3120,8 @@ impl<'a> Validator<'a> {
         };
         let mut result = BTreeMap::new();
         for (name, field) in fields {
+            // §23: a parameter's field path is `["params", name]`.
+            let at = ["params".to_owned(), name.clone()];
             if !allowed.contains(&name.as_str()) {
                 self.push(
                     DiagnosticCode::UnknownField,
@@ -3080,7 +3134,7 @@ impl<'a> Validator<'a> {
             }
             let valid = match (processor, name.as_str()) {
                 (ProcessorKind::Sine, "attack" | "release") => self
-                    .quantity(field, &[Unit::S, Unit::Ms], path, name)
+                    .quantity_at(&field.value, &[Unit::S, Unit::Ms], path, &at, name)
                     .is_some_and(|v| {
                         if v < BigRational::zero() {
                             self.push(
@@ -3099,10 +3153,12 @@ impl<'a> Validator<'a> {
                     self.number_nonnegative(field, path, name)
                 }
                 (ProcessorKind::Fader, "level") => {
-                    self.quantity(field, &[Unit::Db], path, name).is_some()
+                    self
+                    .quantity_at(&field.value, &[Unit::Db], path, &at, name)
+                    .is_some()
                 }
                 (ProcessorKind::OnePole, "cutoff") => self
-                    .quantity(field, &[Unit::Hz, Unit::KHz], path, name)
+                    .quantity_at(&field.value, &[Unit::Hz, Unit::KHz], path, &at, name)
                     .is_some_and(|v| {
                         if v <= BigRational::zero() {
                             self.push(
@@ -3131,7 +3187,7 @@ impl<'a> Validator<'a> {
                         }
                     }),
                 (ProcessorKind::Pan, "pan") => {
-                    self.number_value(&field.value, path, name).is_some()
+                    self.number_at(&field.value, path, &at, name).is_some()
                 }
                 (ProcessorKind::Instrument, _) => false,
                 _ => false,
@@ -3265,8 +3321,9 @@ impl<'a> Validator<'a> {
                 self.push_type(field, path, "bytes", "a list of byte integers");
                 return;
             };
-            for item in items {
-                if let Some(value) = self.integer_value(item, path, "message byte") {
+            for (index, item) in items.iter().enumerate() {
+                let at = ["bytes".to_owned(), index.to_string()];
+                if let Some(value) = self.integer_at(item, path, &at, "message byte") {
                     if value < BigRational::zero()
                         || value > BigRational::from_integer(BigInt::from(255))
                     {
@@ -4108,45 +4165,55 @@ impl<'a> Validator<'a> {
             invalid(self, "warp requires at least two anchors");
             return;
         }
-        let mut previous: Option<(&BigRational, u64)> = None;
+        let mut previous: Option<(BigRational, u64)> = None;
         for (index, point) in points.iter().enumerate() {
-            let ValueKind::Tuple(pair) = &point.kind else {
-                invalid(self, "warp anchors must be tuples");
-                return;
+            // Each anchor reports at its own list position, `["warp", i]`.
+            let at = ["warp".to_owned(), index.to_string()];
+            let anchor = |this: &mut Self, code: DiagnosticCode, message: &str| {
+                this.push(code, message, Some(point.span), path.to_vec(), at.to_vec());
             };
-            let [Value {
-                kind:
-                    ValueKind::Quantity {
-                        value: q,
-                        unit: Unit::Q,
-                    },
-                ..
-            }, Value {
-                kind:
-                    ValueKind::Quantity {
-                        value: frame,
-                        unit: Unit::Frame,
-                    },
-                ..
-            }] = pair.as_slice()
-            else {
-                invalid(
+            let ValueKind::Tuple(pair) = &point.kind else {
+                anchor(
                     self,
-                    "warp anchors require local q and integer source frames",
+                    DiagnosticCode::Unit,
+                    "warp anchors must be (local q, source frame) tuples",
                 );
                 return;
             };
-            let Some(frame) = is_integer(frame)
+            let [local, source] = pair.as_slice() else {
+                anchor(
+                    self,
+                    DiagnosticCode::Range,
+                    "warp anchors have exactly a local q and a source frame",
+                );
+                return;
+            };
+            let Some(q) = self.quantity_at(local, &[Unit::Q], path, &at, "warp local position")
+            else {
+                return;
+            };
+            let Some(frame) =
+                self.quantity_at(source, &[Unit::Frame], path, &at, "warp source frame")
+            else {
+                return;
+            };
+            let Some(frame) = is_integer(&frame)
                 .then(|| frame.to_integer().to_u64())
                 .flatten()
             else {
-                invalid(self, "warp frames must be nonnegative u64 integers");
+                anchor(
+                    self,
+                    DiagnosticCode::Range,
+                    "warp frames must be nonnegative u64 integers",
+                );
                 return;
             };
             if (index == 0 && (!q.is_zero() || frame != a))
-                || previous.is_some_and(|(previous_q, previous_frame)| {
-                    q <= previous_q || frame <= previous_frame
-                })
+                || previous
+                    .as_ref()
+                    .is_some_and(|(previous_q, previous_frame)| {
+                        &q <= previous_q || frame <= *previous_frame
+                    })
                 || (index + 1 == points.len() && frame != b)
             {
                 invalid(
@@ -4181,9 +4248,10 @@ impl<'a> Validator<'a> {
             let valid = self.validate_pair(field, path, "source");
             if valid {
                 if let ValueKind::List(items) = &field.value.kind {
-                    for item in items {
+                    for (index, item) in items.iter().enumerate() {
+                        let at = ["source".to_owned(), index.to_string()];
                         if let Some(frame) =
-                            self.quantity_value(item, &[Unit::Frame], path, "source frame")
+                            self.quantity_at(item, &[Unit::Frame], path, &at, "source frame")
                         {
                             if frame < BigRational::zero() || !is_integer(&frame) {
                                 self.push(
@@ -4894,6 +4962,20 @@ impl<'a> Validator<'a> {
         path: &[String],
         name: &str,
     ) -> Option<BigRational> {
+        self.quantity_at(value, units, path, &[name.to_owned()], name)
+    }
+
+    /// `quantity_value` for a list item or nested value: diagnostics name
+    /// `what` and carry the explicit §23 `field_path`, such as `["points", "1"]`.
+    fn quantity_at(
+        &mut self,
+        value: &Value,
+        units: &[Unit],
+        path: &[String],
+        field_path: &[String],
+        what: &str,
+    ) -> Option<BigRational> {
+        let name = what;
         let ValueKind::Quantity {
             value: number,
             unit,
@@ -4904,7 +4986,7 @@ impl<'a> Validator<'a> {
                 format!("{name} requires an explicit unit"),
                 Some(value.span),
                 path.to_vec(),
-                vec![name.into()],
+                field_path.to_vec(),
             );
             return None;
         };
@@ -4934,7 +5016,7 @@ impl<'a> Validator<'a> {
                 ),
                 Some(value.span),
                 path.to_vec(),
-                vec![name.into()],
+                field_path.to_vec(),
             );
             return None;
         }
@@ -5045,13 +5127,24 @@ impl<'a> Validator<'a> {
     }
 
     fn number_value(&mut self, value: &Value, path: &[String], name: &str) -> Option<BigRational> {
+        self.number_at(value, path, &[name.to_owned()], name)
+    }
+
+    /// `number_value` reporting at an explicit field path.
+    fn number_at(
+        &mut self,
+        value: &Value,
+        path: &[String],
+        field_path: &[String],
+        what: &str,
+    ) -> Option<BigRational> {
         let ValueKind::Number(number) = &value.kind else {
             self.push(
                 DiagnosticCode::Unit,
-                format!("{name} requires a dimensionless number"),
+                format!("{what} requires a dimensionless number"),
                 Some(value.span),
                 path.to_vec(),
-                vec![name.into()],
+                field_path.to_vec(),
             );
             return None;
         };
@@ -5074,15 +5167,22 @@ impl<'a> Validator<'a> {
         }
     }
 
-    fn integer_value(&mut self, value: &Value, path: &[String], name: &str) -> Option<BigRational> {
-        let number = self.number_value(value, path, name)?;
+    /// `integer_value` reporting at an explicit field path.
+    fn integer_at(
+        &mut self,
+        value: &Value,
+        path: &[String],
+        field_path: &[String],
+        what: &str,
+    ) -> Option<BigRational> {
+        let number = self.number_at(value, path, field_path, what)?;
         if !is_integer(&number) {
             self.push(
                 DiagnosticCode::Range,
-                format!("{name} must be an integer"),
+                format!("{what} must be an integer"),
                 Some(value.span),
                 path.to_vec(),
-                vec![name.into()],
+                field_path.to_vec(),
             );
             None
         } else {
@@ -5091,7 +5191,7 @@ impl<'a> Validator<'a> {
     }
 
     fn number_nonnegative(&mut self, field: &Field, path: &[String], name: &str) -> bool {
-        self.number_value(&field.value, path, name)
+        self.number_at(&field.value, path, &["params".into(), name.into()], name)
             .is_some_and(|value| {
                 if value < BigRational::zero() {
                     self.push(
@@ -5149,7 +5249,9 @@ impl<'a> Validator<'a> {
                 }
             }
             ValueKind::Call { function, args } if function == "key" => {
-                if args.len() != 1 || !matches!(args[0].kind, ValueKind::Number(_)) {
+                // §3.2: an integer twelve-tone key index.
+                if !matches!(args.as_slice(), [Value { kind: ValueKind::Number(key), .. }] if is_integer(key))
+                {
                     self.push(
                         DiagnosticCode::Range,
                         "key() requires one integer argument",
@@ -5177,6 +5279,24 @@ impl<'a> Validator<'a> {
                         path.to_vec(),
                         vec!["pitch".into()],
                     );
+                } else if let [Value {
+                    kind: ValueKind::Number(ratio),
+                    ..
+                }, Value {
+                    kind: ValueKind::Quantity { value: base, .. },
+                    ..
+                }] = args.as_slice()
+                {
+                    // §3.2: a positive ratio times a positive frequency.
+                    if ratio <= &BigRational::zero() || base <= &BigRational::zero() {
+                        self.push(
+                            DiagnosticCode::Range,
+                            "ratio() requires a positive ratio and positive frequency",
+                            Some(value.span),
+                            path.to_vec(),
+                            vec!["pitch".into()],
+                        );
+                    }
                 }
             }
             ValueKind::Call { function, args } if function == "degree" => {

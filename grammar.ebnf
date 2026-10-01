@@ -29,5 +29,7 @@ string     = ? JSON-compatible quoted string; no unpaired surrogate values ? ;
    The only valid document version is 1. Identifier length <= 128 ASCII bytes.
    Symbols true/false are reserved as booleans in value positions.
    Unit suffixes and pitch tokens take lexical precedence in value positions.
+   A pitch token, like the `maac` keyword, ends at an identifier boundary:
+   `C4x` is the identifier symbol `C4x`, and `maac1` is not a header.
    Field validity, constructor arity, dimensions, IDs, and references are typed
    by the specification rather than by this context-free grammar. *)

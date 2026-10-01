@@ -853,10 +853,8 @@ impl Pitch {
         let letter = chars
             .next()
             .ok_or_else(|| MusicError::pitch("empty pitch spelling"))?;
-        if !matches!(
-            letter.to_ascii_uppercase(),
-            'A' | 'B' | 'C' | 'D' | 'E' | 'F' | 'G'
-        ) {
+        // §7: the letter is an uppercase `[A-G]`; `c4` is not a pitch.
+        if !matches!(letter, 'A'..='G') {
             return Err(MusicError::pitch(
                 "pitch spelling must begin with A through G",
             ));
