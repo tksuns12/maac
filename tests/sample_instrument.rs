@@ -302,28 +302,31 @@ fn invalid_declarations_and_zones_are_refused() {
         assert!(found.contains(&code), "{extra} {zones}: {found:?}");
     }
 
-    let stereo = {
+    // Mono and stereo WAVs decode; three or more channels are refused.
+    let wav = |channels: u16| {
         let mut bytes = Cursor::new(Vec::new());
         {
             let mut writer = hound::WavWriter::new(
                 &mut bytes,
                 hound::WavSpec {
-                    channels: 2,
+                    channels,
                     sample_rate: 48_000,
                     bits_per_sample: 16,
                     sample_format: hound::SampleFormat::Int,
                 },
             )
             .unwrap();
-            for _ in 0..8 {
+            for _ in 0..12 {
                 writer.write_sample(0_i16).unwrap();
             }
             writer.finalize().unwrap();
         }
         bytes.into_inner()
     };
+    let stereo = InstrumentSample::from_wav("stereo", &wav(2), 60, None).unwrap();
+    assert_eq!((stereo.channels, stereo.frames()), (2, 6));
     assert_eq!(
-        InstrumentSample::from_wav("stereo", &stereo, 60, None)
+        InstrumentSample::from_wav("surround", &wav(3), 60, None)
             .unwrap_err()
             .code,
         "E_RANGE"
@@ -595,4 +598,337 @@ fn zone_defaults_do_not_change_execution_identity() {
         "",
     );
     assert_ne!(omitted, layered);
+}
+
+/// A two-channel binary32 WAV interleaving `left` and `right`.
+fn stereo_wav(left: &[f32], right: &[f32], rate: u32) -> Vec<u8> {
+    let mut bytes = Cursor::new(Vec::new());
+    {
+        let mut writer = hound::WavWriter::new(
+            &mut bytes,
+            hound::WavSpec {
+                channels: 2,
+                sample_rate: rate,
+                bits_per_sample: 32,
+                sample_format: hound::SampleFormat::Float,
+            },
+        )
+        .unwrap();
+        for (l, r) in left.iter().zip(right) {
+            writer.write_sample(*l).unwrap();
+            writer.write_sample(*r).unwrap();
+        }
+        writer.finalize().unwrap();
+    }
+    bytes.into_inner()
+}
+
+/// One stereo sample: per-channel values, rate, and declaration extras.
+struct StereoSample<'a> {
+    name: &'a str,
+    left: Vec<f32>,
+    right: Vec<f32>,
+    rate: u32,
+    extra: &'a str,
+}
+
+impl StereoSample<'_> {
+    fn channel(&self, right: bool) -> Sample<'_> {
+        Sample {
+            name: self.name,
+            values: if right { &self.right } else { &self.left }.clone(),
+            rate: self.rate,
+            extra: self.extra,
+        }
+    }
+}
+
+/// The mono test bundle widened to a stereo instrument, voice and sample node.
+fn stereo_bundle(samples: &[StereoSample<'_>], zones: &str, notes: &str) -> SourceBundle {
+    let mut bundle = bundle(
+        &samples
+            .iter()
+            .map(|sample| sample.channel(false))
+            .collect::<Vec<_>>(),
+        zones,
+        notes,
+    );
+    let mut source = bundle.sources["main.maac"]
+        .replace(
+            "  channels = 1;\n  voice v {\n    channels = 1;",
+            "  channels = 2;\n  voice v {\n    channels = 2;",
+        )
+        .replace("config = { zones = [", "config = { channels = 2; zones = [");
+    for sample in samples {
+        let mono = float_wav(&sample.left, sample.rate);
+        let wav = stereo_wav(&sample.left, &sample.right, sample.rate);
+        source = source.replace(&sha256_digest(&mono), &sha256_digest(&wav));
+        bundle.assets.insert(format!("{}.wav", sample.name), wav);
+    }
+    assert!(source.contains("channels = 2; zones"));
+    bundle.sources.insert("main.maac".into(), source);
+    bundle
+}
+
+/// A looped 24 kHz tone and a 48 kHz ramp pair whose channels all differ.
+fn stereo_pair() -> [StereoSample<'static>; 2] {
+    let tone = tone();
+    [
+        StereoSample {
+            name: "low",
+            right: tone.iter().map(|value| -0.5 * value).collect(),
+            left: tone,
+            rate: 24_000,
+            extra: "root = A4; loop = [48frame, 432frame];",
+        },
+        StereoSample {
+            name: "high",
+            left: (0..4_800).map(|j| j as f32 / 4_800.0).collect(),
+            right: (0..4_800).map(|j| 0.25 - j as f32 / 9_600.0).collect(),
+            rate: 48_000,
+            extra: "root = E5;",
+        },
+    ]
+}
+
+/// The two stereo zones crossfade over A4..B4.
+const PAIR_ZONES: &str = "{ sample = &low; low = key(0); high = key(71); key_fade = [0, 3]; }, \
+                          { sample = &high; low = key(69); high = key(127); key_fade = [3, 0]; }";
+const PAIR_NOTES: &str = "note a { at = 0q; dur = 1q; pitch = A4; } \
+                          note b { at = 1q; dur = 1q; pitch = A#4; } \
+                          note c { at = 2q; dur = 2q; pitch = E4; }";
+
+#[test]
+fn stereo_samples_render_each_channel_like_a_mono_sample() {
+    let pair = stereo_pair();
+    let plan = compile_bundle(&stereo_bundle(&pair, PAIR_ZONES, PAIR_NOTES)).unwrap();
+    assert_eq!(plan.output.channels, 2);
+    let resources = plan.instruments.as_ref().unwrap();
+    assert!(resources.samples.iter().all(|sample| sample.channels == 2));
+    let stereo = audio(&plan);
+    for (offset, right) in [(0, false), (1, true)] {
+        let mono = audio(
+            &compile_bundle(&bundle(
+                &pair
+                    .iter()
+                    .map(|sample| sample.channel(right))
+                    .collect::<Vec<_>>(),
+                PAIR_ZONES,
+                PAIR_NOTES,
+            ))
+            .unwrap(),
+        );
+        assert_eq!(stereo.len(), 2 * mono.len());
+        for (frame, value) in mono.iter().enumerate() {
+            // Rate conversion, crossfade gains and the sustain loop are shared
+            // by both channels, so each matches its mono render exactly.
+            assert_eq!(
+                stereo[2 * frame + offset].to_bits(),
+                value.to_bits(),
+                "channel {offset}, frame {frame}"
+            );
+        }
+        assert!(mono.iter().any(|value| *value != 0.0));
+    }
+    // The retained plan reloads and renders the same stereo audio.
+    let loaded = load_plan(&serde_json::to_vec(&plan).unwrap()).unwrap();
+    assert_eq!(audio(&loaded), stereo);
+}
+
+#[test]
+fn stereo_core_pcm_samples_render_like_stereo_wavs() {
+    use maac::compiler::compile_bundle_artifact;
+    let pair = stereo_pair();
+    let wav = stereo_bundle(&pair, PAIR_ZONES, PAIR_NOTES);
+    let mut native = wav.clone();
+    let mut source = native.sources["main.maac"].clone();
+    for sample in &pair {
+        let interleaved: Vec<f32> = sample
+            .left
+            .iter()
+            .zip(&sample.right)
+            .flat_map(|(l, r)| [*l, *r])
+            .collect();
+        let bytes = pcm(&interleaved);
+        let declaration = source
+            .lines()
+            .find(|line| line.starts_with(&format!("sample {} ", sample.name)))
+            .unwrap()
+            .to_owned();
+        source = source.replace(
+            &declaration,
+            &format!(
+                "sample {name} {{ path = \"{name}.pcm\"; hash = \"{hash}\"; format = \"pcm_f32le_interleaved/1\"; rate = {rate}Hz; channels = 2; frames = {frames}; {extra} }}",
+                name = sample.name,
+                hash = sha256_digest(&bytes),
+                rate = sample.rate,
+                frames = sample.left.len(),
+                extra = sample.extra,
+            ),
+        );
+        native.assets.remove(&format!("{}.wav", sample.name));
+        native.assets.insert(format!("{}.pcm", sample.name), bytes);
+    }
+    native.sources.insert("main.maac".into(), source);
+    let native = compile_bundle_artifact(&native).unwrap_or_else(|e| panic!("{e:?}"));
+    let wire: serde_json::Value = serde_json::from_slice(&native.to_json().unwrap()).unwrap();
+    assert!(wire["audio_assets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|asset| asset["id"] == "__sample_0" && asset["channels"] == 2));
+    assert_eq!(wire["instruments"]["samples"][0]["channels"], 2);
+    let embedded = compile_bundle_artifact(&wav).unwrap();
+    assert_eq!(artifact_audio(&native), artifact_audio(&embedded));
+    let reloaded = maac::PlanArtifact::from_json(&native.to_json().unwrap()).unwrap();
+    assert_eq!(artifact_audio(&reloaded), artifact_audio(&embedded));
+}
+
+#[test]
+fn mono_plans_keep_their_bytes() {
+    // Mono samples and nodes carry no `channels` field on the wire.
+    let plan = compile_bundle(&tone_bundle("note n { at = 0q; dur = 1q; pitch = A4; }")).unwrap();
+    let wire = serde_json::to_value(&plan).unwrap();
+    assert!(wire["instruments"]["samples"][0].get("channels").is_none());
+    let nodes = &wire["instruments"]["programs"][0]["voice"]["nodes"];
+    let play = nodes
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["id"] == "play")
+        .unwrap();
+    assert!(play["processor"].get("channels").is_none());
+}
+
+#[test]
+fn stereo_channel_mismatches_are_refused() {
+    let pair = stereo_pair();
+    let stereo = stereo_bundle(&pair, PAIR_ZONES, PAIR_NOTES);
+    let edit = |from: &str, to: &str| {
+        let mut bundle = stereo.clone();
+        let source = bundle.sources["main.maac"].replace(from, to);
+        assert_ne!(source, bundle.sources["main.maac"], "{from}");
+        bundle.sources.insert("main.maac".into(), source);
+        codes(&bundle)
+    };
+    // A mono node cannot play stereo samples.
+    let found = edit("config = { channels = 2; zones", "config = { zones");
+    assert!(found.contains(&DiagnosticCode::PortType), "{found:?}");
+    // A stereo node cannot feed a mono voice output.
+    let found = edit(
+        "  channels = 2;\n  voice v {\n    channels = 2;",
+        "  channels = 1;\n  voice v {\n    channels = 1;",
+    );
+    assert!(found.contains(&DiagnosticCode::PortType), "{found:?}");
+    let found = edit(
+        "config = { channels = 2; zones",
+        "config = { channels = 3; zones",
+    );
+    assert!(found.contains(&DiagnosticCode::Range), "{found:?}");
+
+    // A stereo node cannot play a mono sample.
+    let mut mixed = stereo_bundle(
+        &pair[..1],
+        "{ sample = &low; low = key(0); high = key(127); }",
+        PAIR_NOTES,
+    );
+    let mono = float_wav(&pair[0].left, pair[0].rate);
+    let wav = mixed.assets["low.wav"].clone();
+    let source = mixed.sources["main.maac"].replace(&sha256_digest(&wav), &sha256_digest(&mono));
+    mixed.sources.insert("main.maac".into(), source);
+    mixed.assets.insert("low.wav".into(), mono);
+    let found = codes(&mixed);
+    assert!(found.contains(&DiagnosticCode::PortType), "{found:?}");
+
+    // A retained plan whose node and sample channels disagree does not load.
+    let plan = compile_bundle(&stereo).unwrap();
+    let mut wire = serde_json::to_value(&plan).unwrap();
+    for sample in wire["instruments"]["samples"].as_array_mut().unwrap() {
+        sample["channels"] = 1.into();
+    }
+    let error = load_plan(&serde_json::to_vec(&wire).unwrap()).unwrap_err();
+    assert_eq!(error.code, "E_PORT_TYPE", "{error:?}");
+}
+
+#[test]
+fn stereo_core_pcm_declarations_are_checked() {
+    use maac::compiler::compile_bundle_artifact;
+    let notes = "note n { at = 0q; dur = 1q; pitch = A4; }";
+    let with = |channels: &str| {
+        let mut bundle = native_bundle(&tone(), 480, notes);
+        let source = bundle.sources["main.maac"]
+            .replace("frames = 480;", &format!("{channels} frames = 480;"));
+        bundle.sources.insert("main.maac".into(), source);
+        compile_bundle_artifact(&bundle)
+    };
+    // 480 mono frames of bytes cannot be 480 stereo frames.
+    let error = with("channels = 2;").unwrap_err();
+    assert!(
+        error.iter().any(|d| d.code == DiagnosticCode::Asset),
+        "{error:?}"
+    );
+    let error = with("channels = 3;").unwrap_err();
+    assert!(
+        error.iter().any(|d| d.code == DiagnosticCode::Range),
+        "{error:?}"
+    );
+    with("channels = 1;").unwrap();
+}
+
+#[test]
+fn stereo_values_share_the_embedded_budget() {
+    // The budget counts values, so a stereo frame counts twice.
+    let half = maac::graph::MAX_EMBEDDED_SAMPLES / 2;
+    let fits = stereo_wav(&vec![0.0; half], &vec![0.0; half], 48_000);
+    let sample = InstrumentSample::from_wav("fits", &fits, 69, None).unwrap();
+    assert_eq!(sample.frames(), half as u64);
+    let over = stereo_wav(&vec![0.0; half + 1], &vec![0.0; half + 1], 48_000);
+    assert_eq!(
+        InstrumentSample::from_wav("over", &over, 69, None)
+            .unwrap_err()
+            .code,
+        "E_RESOURCE_LIMIT"
+    );
+}
+
+#[test]
+fn channel_defaults_do_not_change_execution_identity() {
+    use maac::compiler::compile_bundle_artifact;
+    // Execution identity is recorded by a production delivery extension.
+    let identity = |declaration_channels: &str, node_channels: &str| {
+        let mut bundle = native_bundle(&tone(), 480, "note n { at = 0q; dur = 1q; pitch = A4; }");
+        let schema = maac::production_data::SCHEMA_BYTES;
+        let mut source = bundle.sources["main.maac"]
+            .replace(
+                "frames = 480;",
+                &format!("{declaration_channels} frames = 480;"),
+            )
+            .replace(
+                "config = { zones",
+                &format!("config = {{ {node_channels} zones"),
+            )
+            .replace(
+                "output = &keys:out; }",
+                "output = &keys:out; requires = [\"maac.production/1\"]; }",
+            );
+        source.push_str(&format!(
+            "asset schema {{ kind = descriptor; path = \"production.schema.json\"; hash = \"{}\"; }}\n\
+             extension deliveries {{ namespace = \"maac.production/1\"; schema = &schema; render_affecting = true; data = {{ deliveries = {{ release = {{ rate = 48000Hz; resampler = \"maac.src.kaiser/1\"; targets = {{ master = {{ role = master; output = &keys:out; encoding = wav_f32le; dither = {{ type = none; }}; }}; }}; }}; }}; }}; }}\n",
+            sha256_digest(schema)
+        ));
+        bundle.sources.insert("main.maac".into(), source);
+        bundle
+            .assets
+            .insert("production.schema.json".into(), schema.to_vec());
+        let artifact = compile_bundle_artifact(&bundle).unwrap_or_else(|e| panic!("{e:?}"));
+        let wire: serde_json::Value = serde_json::from_slice(&artifact.to_json().unwrap()).unwrap();
+        wire["production"]["execution_identity"]["execution_hash"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let omitted = identity("", "");
+    assert_eq!(omitted, identity("channels = 1;", "channels = 1;"));
+    assert_eq!(omitted, identity("channels = 1;", ""));
+    assert_eq!(omitted, identity("", "channels = 1;"));
 }

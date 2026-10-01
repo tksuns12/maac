@@ -2350,8 +2350,8 @@ impl<'a> PlanView<'a> {
         }
         if let Some(resources) = &self.instruments {
             resources.validate()?;
-            // Asset-backed samples name a mono plan audio asset whose rate
-            // and frame count equal the sample's declaration.
+            // Asset-backed samples name a plan audio asset whose channels,
+            // rate and frame count equal the sample's declaration.
             for (index, sample) in resources.samples.iter().enumerate() {
                 let Some(reference) = &sample.asset else {
                     continue;
@@ -2368,14 +2368,14 @@ impl<'a> PlanView<'a> {
                             "sample asset does not exist in audio_assets",
                         )
                     })?;
-                if asset.channels != 1
+                if asset.channels != sample.channels
                     || asset.rate_hz != sample.rate_hz
                     || asset.frames != reference.frames
                 {
                     return Err(err(
                         "E_ASSET",
                         format!("instruments.samples[{index}].asset"),
-                        "sample asset must be mono with the declared rate and frames",
+                        "sample asset must have the declared channels, rate and frames",
                     ));
                 }
             }

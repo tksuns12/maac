@@ -35,6 +35,8 @@ type ExportKey = (String, String);
 struct ResourceExports {
     tables: BTreeMap<ExportKey, usize>,
     samples: BTreeMap<ExportKey, usize>,
+    /// Channel count of each lowered sample, by export index.
+    sample_channels: Vec<u8>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -121,9 +123,10 @@ impl LibrarySet {
                 .map(|(index, key)| (key, index))
                 .collect::<BTreeMap<_, _>>()
         };
-        let exports = ResourceExports {
+        let mut exports = ResourceExports {
             tables: index_keys(&wavetable_keys),
             samples: index_keys(&sample_keys),
+            sample_channels: Vec::with_capacity(sample_keys.len()),
         };
 
         let mut wavetables = Vec::with_capacity(wavetable_keys.len());
@@ -167,6 +170,7 @@ impl LibrarySet {
                     format!("embedded wavetable and sample frames exceed {MAX_LIBRARY_SAMPLES}"),
                 ));
             }
+            exports.sample_channels.push(sample.channels);
             samples.push(sample);
             sample_sources.push(source);
         }
@@ -916,9 +920,9 @@ type LoweredSample = (
     Option<crate::audio_asset::AudioAsset>,
 );
 
-/// Lower a `sample` declaration: a mono WAV, or with `format` a mono core PCM
-/// file carried as a plan audio asset, plus a 12-TET root key and an optional
-/// forward sustain loop in sample frames.
+/// Lower a `sample` declaration: a mono or stereo WAV, or with `format` a mono
+/// or stereo core PCM file carried as a plan audio asset, plus a 12-TET root
+/// key and an optional forward sustain loop in sample frames.
 fn lower_sample(
     bundle: &ResolvedBundle,
     file: &str,
@@ -929,7 +933,9 @@ fn lower_sample(
     if native {
         exact_fields(
             object,
-            &["format", "frames", "hash", "loop", "path", "rate", "root"],
+            &[
+                "channels", "format", "frames", "hash", "loop", "path", "rate", "root",
+            ],
             &["format", "frames", "hash", "path", "rate", "root"],
             file,
         )?;
@@ -1067,6 +1073,10 @@ fn lower_sample(
             "frames requires a nonnegative integer",
         )
     })?;
+    let channels = match object.field("channels") {
+        None => 1,
+        Some(_) => integer_field(object, "channels", file, 1, 2)? as u8,
+    };
     // Asset ids share the plan's audio-asset namespace with composition
     // assets; the reserved `__` prefix keeps them apart.
     let asset_id = format!("__{id}");
@@ -1074,7 +1084,7 @@ fn lower_sample(
         id: asset_id.clone(),
         format,
         rate_hz,
-        channels: 1,
+        channels,
         frames,
         hash,
         bytes: bytes.cloned().unwrap_or_default(),
@@ -1093,6 +1103,7 @@ fn lower_sample(
     let sample = InstrumentSample {
         id,
         rate_hz,
+        channels,
         root_key,
         loop_frames,
         samples: Vec::new(),
@@ -1152,11 +1163,13 @@ fn key_value(
 }
 
 /// Lower `zones = [{ sample = &s; low = <pitch>; high = <pitch>; }, ...]`.
+/// Every zone sample must have the node's `channels`.
 fn lower_sample_zones(
     bundle: &ResolvedBundle,
     file: &str,
     object: &Object,
     field: &Field,
+    channels: u8,
     exports: &ResourceExports,
 ) -> Result<Vec<SampleZone>, Diagnostics> {
     let ValueKind::List(items) = &field.value.kind else {
@@ -1207,6 +1220,16 @@ fn lower_sample_zones(
                 "zone sample does not name a sample export",
             )
         })?;
+        let found = exports.sample_channels[*index];
+        if found != channels {
+            return Err(field_error(
+                DiagnosticCode::PortType,
+                file,
+                object,
+                sample_field,
+                format!("zone sample has {found} channels but the node has {channels}"),
+            ));
+        }
         let pair = |name: &str| {
             record
                 .get(name)
@@ -1222,7 +1245,7 @@ fn lower_sample_zones(
             velocity_fade: pair("velocity_fade")?,
         });
     }
-    crate::sample_instrument::validate_zones(&zones, "zones", |_| true)
+    crate::sample_instrument::validate_zones(&zones, channels, "zones", |_| Some(channels))
         .map_err(|error| plan_diagnostics(error, file, object))?;
     Ok(zones)
 }
@@ -1538,15 +1561,19 @@ fn lower_graph_node(
             }
         }
         "synth.sample/1" => {
-            let config = match config {
-                Some(config) if config.contains_key("fade_shape") => exact_record(
-                    Some(config),
-                    &["fade_shape", "zones"],
-                    file,
-                    object,
-                    &identity,
-                )?,
-                config => exact_record(config, &["zones"], file, object, &identity)?,
+            // `zones` is required; `channels` and `fade_shape` are optional.
+            let mut expected = vec!["zones"];
+            if let Some(config) = config {
+                expected.extend(
+                    ["channels", "fade_shape"]
+                        .into_iter()
+                        .filter(|name| config.contains_key(*name)),
+                );
+            }
+            let config = exact_record(config, &expected, file, object, &identity)?;
+            let channels = match config.get("channels") {
+                None => 1,
+                Some(field) => integer_value(&field.value, file, object, field, 1, 2)? as u8,
             };
             let fade_shape = match config.get("fade_shape") {
                 None => crate::sample_instrument::SampleFadeShape::Linear,
@@ -1565,7 +1592,15 @@ fn lower_graph_node(
                 },
             };
             GraphProcessor::Sample {
-                zones: lower_sample_zones(bundle, file, object, &config["zones"], exports)?,
+                channels,
+                zones: lower_sample_zones(
+                    bundle,
+                    file,
+                    object,
+                    &config["zones"],
+                    channels,
+                    exports,
+                )?,
                 fade_shape,
             }
         }

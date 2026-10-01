@@ -87,9 +87,11 @@ enum ProcessorCode {
     Pan,
 }
 
-/// A `synth.sample/1` node's zones, bound sample data, and fade curve.
+/// A `synth.sample/1` node's channels, zones, bound sample data, and fade
+/// curve.
 #[derive(Debug)]
 struct CompiledSampleNode {
+    channels: usize,
     zones: Vec<SampleZone>,
     playbacks: Vec<Arc<SamplePlayback>>,
     fade_shape: SampleFadeShape,
@@ -1314,17 +1316,26 @@ fn process_graph_node(
                     )
                 }
             };
-            let mut sum = 0.0;
+            // Every channel reads the same position, so stereo images stay
+            // aligned through bends and loops.
+            let mut sums = [0.0; 2];
             for layer in current.iter_mut() {
                 let playback = &node.playbacks[layer.zone];
-                sum += layer.gain * playback.value(layer.position).map_err(RenderError::Plan)?;
+                for (channel, sum) in sums.iter_mut().enumerate().take(node.channels) {
+                    *sum += layer.gain
+                        * playback
+                            .value(layer.position, channel)
+                            .map_err(RenderError::Plan)?;
+                }
                 if commit {
                     let recorded = playback.sample();
                     let step = frequency / recorded.root_hz() * f64::from(recorded.rate_hz) / rate;
                     layer.position = playback.advance(layer.position, step);
                 }
             }
-            output[0] = sum * params[2];
+            for (output, sum) in output.iter_mut().zip(sums).take(node.channels) {
+                *output = sum * params[2];
+            }
             if commit {
                 if let Some(chosen) = chosen {
                     *layers = Some(chosen);
@@ -1538,9 +1549,14 @@ fn compile_processor(
                 RenderError::RenderState(format!("wavetable {table} has no prebuilt table bank"))
             })?),
         ),
-        GraphProcessor::Sample { zones, fade_shape } => (
+        GraphProcessor::Sample {
+            channels,
+            zones,
+            fade_shape,
+        } => (
             &["ratio", "frequency", "level"],
             ProcessorCode::Sample(Arc::new(CompiledSampleNode {
+                channels: usize::from(*channels),
                 zones: zones.clone(),
                 playbacks: zones
                     .iter()

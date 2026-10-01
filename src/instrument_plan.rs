@@ -284,13 +284,22 @@ impl InstrumentResources {
                 .chain(program.shared.as_ref().map(|graph| ("shared", graph)))
             {
                 for (node_index, node) in graph.nodes.iter().enumerate() {
-                    if let GraphProcessor::Sample { zones, .. } = &node.processor {
+                    if let GraphProcessor::Sample {
+                        channels, zones, ..
+                    } = &node.processor
+                    {
                         crate::sample_instrument::validate_zones(
                             zones,
+                            *channels,
                             &format!(
                                 "instruments.programs[{program_index}].{stage}.nodes[{node_index}].processor"
                             ),
-                            |id| sample_ids.contains(id),
+                            |id| {
+                                self.samples
+                                    .iter()
+                                    .find(|sample| sample.id == id)
+                                    .map(|sample| sample.channels)
+                            },
                         )?;
                     }
                     if let GraphProcessor::Wavetable { table } = &node.processor {

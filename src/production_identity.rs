@@ -478,6 +478,11 @@ impl Normalizer<'_> {
                     fields.entry(name).or_insert(value);
                 }
             }
+            // A core PCM sample is mono unless it declares two channels; a
+            // WAV sample takes its channels from the file.
+            "sample" if object.field("format").is_some() => {
+                fields.entry("channels").or_insert(number(1));
+            }
             "hit" => {
                 for (name, value) in [
                     ("velocity", number(1)),

@@ -233,7 +233,7 @@ is rejected, including mixed audio/modulation cycles.
 | --- | --- | --- |
 | `synth.sine/1`, `synth.saw/1`, `synth.square/1`, `synth.triangle/1` | `ratio` (1; −64…64), `frequency` (0 Hz; −24000…24000 Hz), `phase` (0; 0…1), `level` (1; 0…16) | Mono |
 | `synth.wavetable/1` | Oscillator parameters plus `position` (0; 0…1); required `config.table = &wavetable` | Mono |
-| `synth.sample/1` | `ratio`, `frequency`, and `level` as for oscillators (no `phase`); required `config.zones` (see [Samples](#samples)) | Mono |
+| `synth.sample/1` | `ratio`, `frequency`, and `level` as for oscillators (no `phase`); required `config.zones` and optional `config.channels` (1) (see [Samples](#samples)) | Mono, or stereo with `channels = 2` |
 | `synth.noise/1` | `level` (1; 0…16); optional nonzero unsigned 32-bit `config.seed` (1831565813) | Mono |
 | `synth.adsr/1` | `attack` (0 s), `decay` (0 s), `sustain` (1; 0…1), `release` (0 s); times 0…1800 s | Mono control signal |
 | `synth.timbre/1` | No inputs, parameters, or configuration; voice-only | Mono per-note timbre signal (zero when absent) |
@@ -398,9 +398,10 @@ sample piano_c4 {
 }
 ```
 
-A `sample` declaration pins one finite mono PCM (8/16/24/32-bit) or float32
-WAV. Unlike a wavetable, the WAV sample rate is the recorded playback rate.
-Alternatively, it pins a mono core PCM file:
+A `sample` declaration pins one finite mono or stereo PCM (8/16/24/32-bit) or
+float32 WAV. Unlike a wavetable, the WAV sample rate is the recorded playback
+rate, and the WAV header gives the channel count. Alternatively, it pins a core
+PCM file:
 
 ```maac
 sample piano_c4 {
@@ -413,9 +414,11 @@ sample piano_c4 {
 }
 ```
 
-With `format`, the fields `rate` and `frames` are required, the bytes must be
-exactly `frames * 4`, and the sample is carried as an ordinary plan audio
-asset instead of embedded values. Asset-backed samples:
+With `format`, the fields `rate` and `frames` are required. The optional
+`channels` is 1 (the default) or 2. The bytes must be exactly
+`frames * channels * 4`, interleaved as in every core audio asset, and the
+sample is carried as an ordinary plan audio asset instead of embedded values.
+The execution view expands the omitted `channels = 1`. Asset-backed samples:
 
 - follow the core audio-asset rules: 16 MiB inline in total, or with
   `--disk-media` a private disk snapshot of up to 1 GiB;
@@ -429,13 +432,15 @@ composition asset that uses such an ID is `E_DUPLICATE_ID`.
 `root` is a spelled pitch or `key(n)` with key 0 through 127. It names the key
 at which the sample plays at its recorded rate. The optional `loop = [a frame,
 b frame]` is a forward sustain loop with `0 <= a < b <= frames`. WAV samples
-share the embedded-sample budget (262,144 frames in total) with wavetables and
-are embedded in plans with their provenance. At most 64 samples may be declared.
+share the embedded-sample budget with wavetables and are embedded in plans with
+their provenance. The budget is 262,144 values in total, so a stereo frame
+counts twice. At most 64 samples may be declared.
 
 A voice-only `synth.sample/1` node selects samples with 1 through 128 zones:
 
 ```maac
 config = {
+  channels = 2;
   fade_shape = equal_power;
   zones = [
     { sample = &soft_c4; low = C3; high = F4; velocity = [0, 3/5]; velocity_fade = [0, 1/5]; },
@@ -454,6 +459,12 @@ Each zone names a `sample` export, by the same reference rules as
   from the low and high key edges. Their sum is at most the zone's key count.
 - `velocity_fade = [l, h]`: the same for the velocity edges, with a sum of at
   most `v1 - v0`.
+
+The node's optional `channels` is 1 (the default) or 2 and is its output
+channel count. Every zone's sample must have exactly that many channels;
+otherwise it is `E_PORT_TYPE`. Mono and stereo samples are never mixed, upmixed
+or downmixed in one node. Like every stereo voice-graph signal, a stereo node
+cannot be a modulation source.
 
 Fades default to `[0, 0]`, which is a hard edge. Zones may be listed in any
 order and may overlap. The node's optional `fade_shape` is `linear` (the
@@ -481,7 +492,9 @@ note velocity, as for every instrument.
 
 Each playing zone starts at frame 0 of its sample. Each output frame reads
 the core linear interpolation at the zone's current position, weights it by the
-zone gain, and multiplies the sum by `level`. Each zone then advances its
+zone gain, and multiplies the sum by `level`. A stereo node does this for each
+channel with the same position and gain, so each output channel equals a mono
+node playing that channel of every sample. Each zone then advances its
 position by `(f*ratio + frequency) / root_hz * wav_rate / 48000`, using its own
 sample's root and recorded rate. Here `f` includes the current pitch expression, so bends
 stay continuous, and `root_hz = 440*2^((root-69)/12)`. The playback frequency

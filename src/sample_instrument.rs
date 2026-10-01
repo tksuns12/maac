@@ -1,9 +1,10 @@
 //! Pitched sample data and key zones for `synth.sample/1` voice-graph nodes.
 //!
-//! A library `sample` declaration either decodes one finite mono WAV into the
-//! plan or names a mono core PCM file that the plan carries as an ordinary
-//! (optionally disk-backed) audio asset. Either way it keeps its sample rate
-//! and records a 12-TET root key and an optional forward sustain loop.
+//! A library `sample` declaration either decodes one finite mono or stereo WAV
+//! into the plan or names a mono or stereo core PCM file that the plan carries
+//! as an ordinary (optionally disk-backed) audio asset. Either way it keeps its
+//! sample rate and channel count and records a 12-TET root key and an optional
+//! forward sustain loop.
 //! Playback uses the core linear interpolator; no resampler, crossfade, or
 //! normalization is inferred.
 
@@ -31,19 +32,33 @@ pub const MAX_SAMPLE_KEY: i64 = 127;
 pub struct InstrumentSample {
     pub id: String,
     pub rate_hz: u32,
+    /// 1 (mono) or 2 (stereo). Absent on the wire means mono, so mono
+    /// payloads are unchanged.
+    #[serde(default = "mono", skip_serializing_if = "is_mono")]
+    pub channels: u8,
     /// Key at which the sample plays at its recorded rate.
     pub root_key: i64,
     /// Forward sustain loop `[start, end)` in sample frames.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub loop_frames: Option<[u64; 2]>,
-    /// Embedded values; empty when the data is a plan audio asset.
+    /// Embedded values, interleaved by channel; empty when the data is a plan
+    /// audio asset.
     pub samples: Vec<f32>,
     /// Plan audio asset holding the data instead of `samples`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub asset: Option<SampleAsset>,
 }
 
-/// Reference from an asset-backed sample to its mono plan audio asset.
+fn mono() -> u8 {
+    1
+}
+
+fn is_mono(channels: &u8) -> bool {
+    *channels == 1
+}
+
+/// Reference from an asset-backed sample to its plan audio asset, which has
+/// the sample's channel count.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SampleAsset {
@@ -138,8 +153,8 @@ pub fn key_hz(key: i64) -> f64 {
 }
 
 impl InstrumentSample {
-    /// Decode a finite mono PCM or binary32-float WAV. Unlike a wavetable,
-    /// the WAV sample rate is the recorded playback rate.
+    /// Decode a finite mono or stereo PCM or binary32-float WAV. Unlike a
+    /// wavetable, the WAV sample rate is the recorded playback rate.
     pub fn from_wav(
         id: impl Into<String>,
         bytes: &[u8],
@@ -155,26 +170,34 @@ impl InstrumentSample {
         }
         let mut reader = hound::WavReader::new(Cursor::new(bytes)).map_err(wav_error)?;
         let spec = reader.spec();
-        if spec.channels != 1 {
+        if !matches!(spec.channels, 1 | 2) {
             return Err(error(
                 "E_RANGE",
                 "sample.wav.channels",
-                format!("sample WAV must be mono, found {} channels", spec.channels),
+                format!(
+                    "sample WAV must be mono or stereo, found {} channels",
+                    spec.channels
+                ),
             ));
         }
-        let declared = usize::try_from(reader.duration()).map_err(|_| {
-            error(
-                "E_RESOURCE_LIMIT",
-                "sample.samples",
-                "WAV sample count cannot be represented on this platform",
-            )
-        })?;
+        let channels = spec.channels as u8;
+        // Embedded values are interleaved, so a stereo frame holds two.
+        let declared = usize::try_from(reader.duration())
+            .ok()
+            .and_then(|frames| frames.checked_mul(usize::from(channels)))
+            .ok_or_else(|| {
+                error(
+                    "E_RESOURCE_LIMIT",
+                    "sample.samples",
+                    "WAV sample count cannot be represented on this platform",
+                )
+            })?;
         if declared > crate::graph::MAX_EMBEDDED_SAMPLES {
             return Err(error(
                 "E_RESOURCE_LIMIT",
                 "sample.samples",
                 format!(
-                    "sample has {declared} frames; the embedded limit is {}",
+                    "sample has {declared} values; the embedded limit is {}",
                     crate::graph::MAX_EMBEDDED_SAMPLES
                 ),
             ));
@@ -213,6 +236,7 @@ impl InstrumentSample {
         let sample = Self {
             id: id.into(),
             rate_hz: spec.sample_rate,
+            channels,
             root_key,
             loop_frames,
             samples,
@@ -230,6 +254,24 @@ impl InstrumentSample {
                 "sample rate must be positive",
             ));
         }
+        if !matches!(self.channels, 1 | 2) {
+            return Err(error(
+                "E_RANGE",
+                "sample.channels",
+                "sample channels must be 1 or 2",
+            ));
+        }
+        if !self
+            .samples
+            .len()
+            .is_multiple_of(usize::from(self.channels))
+        {
+            return Err(error(
+                "E_RANGE",
+                "sample.samples",
+                "embedded values must hold whole interleaved frames",
+            ));
+        }
         match &self.asset {
             None if self.samples.is_empty()
                 || self.samples.len() > crate::graph::MAX_EMBEDDED_SAMPLES =>
@@ -242,7 +284,7 @@ impl InstrumentSample {
                     },
                     "sample.samples",
                     format!(
-                        "sample must have 1 through {} frames",
+                        "sample must have 1 through {} values",
                         crate::graph::MAX_EMBEDDED_SAMPLES
                     ),
                 ));
@@ -294,14 +336,15 @@ impl InstrumentSample {
 
     /// Recorded frames, embedded or in the referenced asset.
     pub fn frames(&self) -> u64 {
-        self.asset
-            .as_ref()
-            .map_or(self.samples.len() as u64, |asset| asset.frames)
+        self.asset.as_ref().map_or(
+            (self.samples.len() / usize::from(self.channels.max(1))) as u64,
+            |asset| asset.frames,
+        )
     }
 }
 
 /// Runtime sample data: embedded values or a shared, possibly disk-backed,
-/// mono audio buffer.
+/// audio buffer with the sample's channel count.
 #[derive(Debug)]
 pub(crate) struct SamplePlayback {
     sample: InstrumentSample,
@@ -321,14 +364,14 @@ impl SamplePlayback {
         sample: InstrumentSample,
         buffer: Arc<crate::audio_buffer::AudioBuffer>,
     ) -> Result<Self, PlanError> {
-        if buffer.channels() != 1
+        if buffer.channels() != sample.channels
             || buffer.rate_hz() != sample.rate_hz
             || buffer.frames() != sample.frames()
         {
             return Err(error(
                 "E_ASSET",
                 "instruments.samples.asset",
-                "sample asset must be mono with the declared rate and frames",
+                "sample asset must have the declared channels, rate and frames",
             ));
         }
         Ok(Self {
@@ -341,20 +384,23 @@ impl SamplePlayback {
         &self.sample
     }
 
-    fn at(&self, index: u64) -> Result<f64, PlanError> {
+    fn at(&self, index: u64, channel: usize) -> Result<f64, PlanError> {
         if index >= self.sample.frames() {
             return Ok(0.0);
         }
         match &self.buffer {
-            Some(buffer) => buffer.interpolate(index, 0.0, 0),
-            None => Ok(f64::from(self.sample.samples[index as usize])),
+            Some(buffer) => buffer.interpolate(index, 0.0, channel),
+            None => Ok(f64::from(
+                self.sample.samples[index as usize * usize::from(self.sample.channels) + channel],
+            )),
         }
     }
 
-    /// Core linear interpolation at a nonnegative source position. Inside a
-    /// loop the right neighbour of the last loop frame is the loop start;
-    /// otherwise values past the sample are zero.
-    pub(crate) fn value(&self, position: f64) -> Result<f64, PlanError> {
+    /// Core linear interpolation of one channel at a nonnegative source
+    /// position. Inside a loop the right neighbour of the last loop frame is
+    /// the loop start; otherwise values past the sample are zero. Every
+    /// channel reads the same position.
+    pub(crate) fn value(&self, position: f64, channel: usize) -> Result<f64, PlanError> {
         let index = position.floor();
         let fraction = position - index;
         let index = index as u64;
@@ -362,7 +408,7 @@ impl SamplePlayback {
             Some([start, end]) if index + 1 == end => start,
             _ => index + 1,
         };
-        Ok((1.0 - fraction) * self.at(index)? + fraction * self.at(right)?)
+        Ok((1.0 - fraction) * self.at(index, channel)? + fraction * self.at(right, channel)?)
     }
 
     /// Advance a playback position by a positive step, wrapping inside the
@@ -379,13 +425,23 @@ impl SamplePlayback {
     }
 }
 
-/// Validate a node's zones against the embedded sample identifiers. Zones
-/// may overlap: every zone containing a note plays at its crossfade gain.
+/// Validate a node's zones against the sample identifiers. `channels_of`
+/// returns a known sample's channel count, which must equal the node's
+/// `channels`. Zones may overlap: every zone containing a note plays at its
+/// crossfade gain.
 pub fn validate_zones(
     zones: &[SampleZone],
+    channels: u8,
     path: &str,
-    known: impl Fn(&str) -> bool,
+    channels_of: impl Fn(&str) -> Option<u8>,
 ) -> Result<(), PlanError> {
+    if !matches!(channels, 1 | 2) {
+        return Err(error(
+            "E_RANGE",
+            format!("{path}.channels"),
+            "sample node channels must be 1 or 2",
+        ));
+    }
     if zones.is_empty() || zones.len() > MAX_SAMPLE_ZONES {
         return Err(error(
             if zones.is_empty() {
@@ -435,12 +491,22 @@ pub fn validate_zones(
                 }
             }
         }
-        if !known(&zone.sample) {
-            return Err(error(
-                "E_REFERENCE",
-                format!("{zone_path}.sample"),
-                "zone refers to a missing embedded sample",
-            ));
+        match channels_of(&zone.sample) {
+            None => {
+                return Err(error(
+                    "E_REFERENCE",
+                    format!("{zone_path}.sample"),
+                    "zone refers to a missing embedded sample",
+                ))
+            }
+            Some(found) if found != channels => {
+                return Err(error(
+                    "E_PORT_TYPE",
+                    format!("{zone_path}.sample"),
+                    format!("zone sample has {found} channels but the node has {channels}"),
+                ))
+            }
+            Some(_) => {}
         }
     }
     Ok(())
@@ -521,12 +587,14 @@ pub fn zone_gains(
 }
 
 /// Expand `synth.sample/1` config defaults in a normalized typed record:
-/// `fade_shape = linear` and, per zone, `velocity = [0, 1]` and zero
-/// `key_fade`/`velocity_fade`. Shared by the editing and execution views.
+/// `channels = 1`, `fade_shape = linear` and, per zone, `velocity = [0, 1]`
+/// and zero `key_fade`/`velocity_fade`. Shared by the editing and execution
+/// views.
 pub(crate) fn expand_config_defaults(config: &mut serde_json::Map<String, serde_json::Value>) {
     use serde_json::json;
     let number = |n: i64| json!({"t": "number", "n": n.to_string(), "d": "1"});
     let pair = |low: i64, high: i64| json!({"t": "list", "items": [number(low), number(high)]});
+    config.entry("channels").or_insert_with(|| number(1));
     config
         .entry("fade_shape")
         .or_insert_with(|| json!({"t": "symbol", "v": "linear"}));

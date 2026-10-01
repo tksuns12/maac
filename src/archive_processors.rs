@@ -134,11 +134,22 @@ struct InstrumentBinding {
     samples: Vec<SampleBinding>,
 }
 
+fn mono() -> u8 {
+    1
+}
+
+fn is_mono(channels: &u8) -> bool {
+    *channels == 1
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SampleBinding {
     source: SampleSource,
     rate_hz: u32,
+    /// Absent for mono samples, so earlier context records are unchanged.
+    #[serde(default = "mono", skip_serializing_if = "is_mono")]
+    channels: u8,
     root_key: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     loop_frames: Option<[u64; 2]>,
@@ -444,6 +455,7 @@ fn bind_instrument(view: &PlanView<'_>, id: &str) -> Result<InstrumentBinding, D
         samples.push(SampleBinding {
             source: source.clone(),
             rate_hz: sample.rate_hz,
+            channels: sample.channels,
             root_key: sample.root_key,
             loop_frames: sample.loop_frames,
             sample_count: usize::try_from(sample.frames())
@@ -645,6 +657,7 @@ fn validate_record(record: &ContextRecord) -> Result<(), Diagnostics> {
                         || sample.source.object.is_empty()
                         || sample.source.path.is_empty()
                         || sample.rate_hz == 0
+                        || !matches!(sample.channels, 1 | 2)
                         || !(0..=crate::sample_instrument::MAX_SAMPLE_KEY)
                             .contains(&sample.root_key)
                         || sample.sample_count == 0
@@ -652,7 +665,9 @@ fn validate_record(record: &ContextRecord) -> Result<(), Diagnostics> {
                             > if sample.asset.is_some() {
                                 crate::sample_instrument::MAX_SAMPLE_ASSET_FRAMES
                             } else {
+                                // Embedded stereo frames hold two values.
                                 crate::graph::MAX_EMBEDDED_SAMPLES as u64
+                                    / u64::from(sample.channels.max(1))
                             }
                         || sample.loop_frames.is_some_and(|[start, end]| {
                             start >= end || end > sample.sample_count as u64

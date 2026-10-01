@@ -36,6 +36,14 @@ const MAX_ID_BYTES: usize = 128;
 const MAX_PATH_BYTES: usize = 4_096;
 const MAX_SOURCE_BYTES: usize = 4 * 1024 * 1024;
 
+fn mono() -> u8 {
+    1
+}
+
+fn is_mono(channels: &u8) -> bool {
+    *channels == 1
+}
+
 /// A processor in the version 1 synthesis palette.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind")]
@@ -57,6 +65,10 @@ pub enum GraphProcessor {
     /// Pitched playback of embedded samples chosen by key zone.
     #[serde(rename = "synth.sample/1")]
     Sample {
+        /// Output channels, equal to every zone sample's. Absent on the wire
+        /// means mono, so mono payloads are unchanged.
+        #[serde(skip_serializing_if = "is_mono")]
+        channels: u8,
         zones: Vec<crate::sample_instrument::SampleZone>,
         #[serde(
             default,
@@ -103,6 +115,8 @@ enum GraphProcessorWire {
     Wavetable { table: String },
     #[serde(rename = "synth.sample/1")]
     Sample {
+        #[serde(default = "mono")]
+        channels: u8,
         zones: Vec<crate::sample_instrument::SampleZone>,
         #[serde(default)]
         fade_shape: crate::sample_instrument::SampleFadeShape,
@@ -146,7 +160,15 @@ impl<'de> Deserialize<'de> for GraphProcessor {
             }
             GraphProcessorWire::Pluck { seed } => Self::Pluck { seed },
             GraphProcessorWire::Wavetable { table } => Self::Wavetable { table },
-            GraphProcessorWire::Sample { zones, fade_shape } => Self::Sample { zones, fade_shape },
+            GraphProcessorWire::Sample {
+                channels,
+                zones,
+                fade_shape,
+            } => Self::Sample {
+                channels,
+                zones,
+                fade_shape,
+            },
             GraphProcessorWire::Adsr {} => Self::Adsr,
             GraphProcessorWire::Timbre {} => Self::Timbre,
             GraphProcessorWire::Pressure {} => Self::Pressure,
@@ -188,7 +210,8 @@ impl GraphProcessor {
             Self::Gain { channels }
             | Self::OnePole { channels }
             | Self::HighPass { channels }
-            | Self::Mix { channels } => *channels,
+            | Self::Mix { channels }
+            | Self::Sample { channels, .. } => *channels,
             Self::Pan => 2,
             _ => 1,
         }
@@ -1105,11 +1128,15 @@ fn validate_processor(
         | GraphProcessor::HighPass { channels }
         | GraphProcessor::Mix { channels } => validate_channels(*channels, path)?,
         GraphProcessor::Wavetable { table } => validate_identifier(table, format!("{path}.table"))?,
-        GraphProcessor::Sample { zones, .. } => {
+        GraphProcessor::Sample {
+            channels, zones, ..
+        } => {
+            validate_channels(*channels, format!("{path}.channels"))?;
             for (index, zone) in zones.iter().enumerate() {
                 validate_identifier(&zone.sample, format!("{path}.zones[{index}].sample"))?;
             }
-            crate::sample_instrument::validate_zones(zones, &path, |_| true)?;
+            // Sample channel counts are checked against the plan's resources.
+            crate::sample_instrument::validate_zones(zones, *channels, &path, |_| Some(*channels))?;
         }
         _ => {}
     }
