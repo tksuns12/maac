@@ -353,9 +353,12 @@ impl Builder<'_> {
             .flat_map(|children| children.iter())
         {
             match child["kind"].as_str() {
-                Some("note" | "hit" | "message") => {
+                Some("note" | "hit" | "message" | "audio") => {
                     let mut leaf = child.clone();
-                    self.private_dependencies(&mut leaf, &mut BTreeMap::new())?;
+                    // Audio leaves share their immutable, hash-pinned asset.
+                    if child["kind"] != "audio" {
+                        self.private_dependencies(&mut leaf, &mut BTreeMap::new())?;
+                    }
                     let mut old_path = self
                         .source_paths
                         .get(source_id)
@@ -581,7 +584,9 @@ pub(super) fn prepare(
                     .into_iter()
                     .flat_map(|children| children.iter_mut())
                 {
-                    builder.private_dependencies(leaf, &mut BTreeMap::new())?;
+                    if leaf["kind"] != "audio" {
+                        builder.private_dependencies(leaf, &mut BTreeMap::new())?;
+                    }
                     let address = format!("{placement_id}/{child_id}/{leaf_id}");
                     let path = vec![placement_id.into(), child_id.clone(), leaf_id.clone()];
                     builder.mapping(address.clone(), address, path.clone(), path)?;

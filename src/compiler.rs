@@ -9,7 +9,7 @@ use crate::plan_v3::{
     AutomationAnchor, AutomationV3, PlanV3, ResolvedEventV3, TimingContext, VersionedPlan,
 };
 use crate::plan_v7::{ModulationV7, NodeV7, PlanV7, ProcessorV7};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::convert::TryFrom;
 use std::sync::Arc;
 
@@ -337,6 +337,39 @@ enum LeafKind {
     Note(Box<NoteDef>),
     Hit { key: String },
     Message { protocol: String, bytes: Vec<u8> },
+    Audio(Box<AudioLeaf>),
+}
+/// A pattern or insert `audio` leaf: a transport whose `at` is local.
+/// Expansion scales its warp anchors by the inherited musical stretch.
+#[derive(Clone, Debug)]
+struct AudioLeaf {
+    asset: String,
+    source_start_frame: u64,
+    source_end_frame: u64,
+    transport: LeafTransport,
+    gain: Rational,
+    fade_in_seconds: Rational,
+    fade_out_seconds: Rational,
+    fade_shape: AudioFadeShape,
+}
+#[derive(Clone, Debug)]
+enum LeafTransport {
+    Rate {
+        speed: Rational,
+        reverse: bool,
+    },
+    Warp {
+        warp: Vec<WarpAnchor>,
+        stretch: Option<String>,
+    },
+}
+/// One expanded audio leaf, lowered to a reserved clip node feeding its
+/// placement's `core.sum/1` output node.
+#[derive(Clone, Debug)]
+struct PatternClip {
+    id: String,
+    track: String,
+    event: ExpandedEvent,
 }
 #[derive(Clone, Debug)]
 struct NoteDef {
@@ -424,6 +457,7 @@ enum ExpandedKind {
     Note(Box<ExpandedNote>),
     Hit { key: String },
     Message { protocol: String, bytes: Vec<u8> },
+    Audio(Box<AudioLeaf>),
 }
 #[derive(Clone, Debug)]
 struct ExpandedNote {
@@ -442,12 +476,14 @@ impl ExpandedEvent {
     fn note(&self) -> CResult<&ExpandedNote> {
         match &self.kind {
             ExpandedKind::Note(note) => Ok(note),
-            ExpandedKind::Hit { .. } | ExpandedKind::Message { .. } => Err(event_diagnostic(
-                DiagnosticCode::Capability,
-                "native hits require the sample-kit execution profile",
-                self,
-                &[],
-            )),
+            ExpandedKind::Hit { .. } | ExpandedKind::Message { .. } | ExpandedKind::Audio(_) => {
+                Err(event_diagnostic(
+                    DiagnosticCode::Capability,
+                    "native hits require the sample-kit execution profile",
+                    self,
+                    &[],
+                ))
+            }
         }
     }
 }
@@ -464,7 +500,9 @@ struct ExpansionState<'a> {
     transpose: Rational,
     address: &'a mut Vec<String>,
     inherited_cut_end: Option<Rational>,
-    target: &'a EventTarget,
+    /// `None` for a track without an event target; only audio leaves may
+    /// expand through such a placement.
+    target: Option<&'a EventTarget>,
     depth: usize,
 }
 
@@ -483,6 +521,7 @@ struct Compiler<'a> {
     patterns: BTreeMap<String, PatternDef>,
     pattern_source_paths: BTreeMap<String, Vec<String>>,
     tracks: BTreeMap<String, EventTarget>,
+    track_ids: BTreeSet<String>,
     places: Vec<PlaceDef>,
     nodes: Vec<Node>,
     kit_nodes: BTreeMap<String, NodeV4>,
@@ -492,6 +531,10 @@ struct Compiler<'a> {
     control_nodes: BTreeMap<String, NodeV7>,
     modulations: Vec<ModulationV7>,
     audio_clips: BTreeMap<String, crate::semantic::AudioClipSource>,
+    /// Placement `out` widths from source validation (artifact path only).
+    place_outputs: BTreeMap<String, u8>,
+    pattern_clips: Vec<PatternClip>,
+    allow_audio_leaves: bool,
     connections: Vec<Connection>,
     curves: BTreeMap<String, CurveDef>,
     automations: Vec<AutomationV3>,
@@ -538,6 +581,7 @@ impl<'a> Compiler<'a> {
             patterns: BTreeMap::new(),
             pattern_source_paths: BTreeMap::new(),
             tracks: BTreeMap::new(),
+            track_ids: BTreeSet::new(),
             places: Vec::new(),
             nodes: Vec::new(),
             kit_nodes: BTreeMap::new(),
@@ -546,6 +590,9 @@ impl<'a> Compiler<'a> {
             control_nodes: BTreeMap::new(),
             modulations: Vec::new(),
             audio_clips: BTreeMap::new(),
+            place_outputs: BTreeMap::new(),
+            pattern_clips: Vec::new(),
+            allow_audio_leaves: false,
             connections: Vec::new(),
             curves: BTreeMap::new(),
             automations: Vec::new(),
@@ -672,6 +719,7 @@ impl<'a> Compiler<'a> {
         self.allow_ramps = true;
         self.allow_hits = true;
         self.allow_messages = true;
+        self.allow_audio_leaves = true;
         let has_controls = uses_control_profile(self.document);
         if has_controls {
             let nodes = self
@@ -695,14 +743,16 @@ impl<'a> Compiler<'a> {
             }
         }
         let has_audio = uses_audio_profile(self.document);
-        let has_warp = self.document.objects.values().any(|object| {
-            object.kind == "audio"
+        fn warp(object: &Object) -> bool {
+            (object.kind == "audio"
                 && crate::semantic::is_warp_mode(
                     object
                         .field("mode")
                         .and_then(|field| field.value.as_symbol()),
-                )
-        });
+                ))
+                || object.children.values().any(warp)
+        }
+        let has_warp = self.document.objects.values().any(warp);
         let graph = crate::semantic::validate_source_document_profile(
             self.document,
             &self.instrument_descriptors,
@@ -710,6 +760,7 @@ impl<'a> Compiler<'a> {
         self.control_nodes = graph.control_nodes().clone();
         self.modulations = graph.modulations().to_vec();
         self.audio_clips = graph.audio_clips().clone();
+        self.place_outputs = graph.place_outputs().clone();
         self.kit_nodes = graph.kit_nodes().clone();
         for (id, source) in graph.audio_sources() {
             let path = crate::bundle::normalize_file_reference("package.maac", &source.path)?;
@@ -2115,6 +2166,171 @@ impl<'a> Compiler<'a> {
         })
     }
 
+    fn parse_audio_leaf(&self, object: &Object) -> CResult<LeafDef> {
+        self.check_fields(
+            object,
+            &[
+                "asset",
+                "at",
+                "source",
+                "mode",
+                "speed",
+                "reverse",
+                "gain",
+                "fade_in",
+                "fade_out",
+                "fade_shape",
+                "warp",
+                "processor",
+            ],
+        )?;
+        let asset_field = self.field(object, "asset")?;
+        let asset = self.one_reference(&asset_field.value, object, Some(asset_field))?;
+        let at_field = self.field(object, "at")?;
+        let at = self.q_value(&at_field.value, object, Some(at_field), false)?;
+        if at.is_negative() {
+            return Err(path_diagnostic(
+                DiagnosticCode::Interval,
+                "audio leaf onset must be nonnegative",
+                object,
+                Some(at_field),
+            ));
+        }
+        let frame = |value: &Value, field: &Field| -> CResult<u64> {
+            match &value.kind {
+                ValueKind::Quantity {
+                    value: number,
+                    unit: Unit::Frame,
+                } => bigint_u64(number, Some(value.span)),
+                _ => Err(path_diagnostic(
+                    DiagnosticCode::Unit,
+                    "audio frames must be integer frames",
+                    object,
+                    Some(field),
+                )),
+            }
+        };
+        let source_field = self.field(object, "source")?;
+        let (source_start_frame, source_end_frame) = match &source_field.value.kind {
+            ValueKind::List(frames) if frames.len() == 2 => (
+                frame(&frames[0], source_field)?,
+                frame(&frames[1], source_field)?,
+            ),
+            _ => {
+                return Err(path_diagnostic(
+                    DiagnosticCode::Range,
+                    "source must contain two frame endpoints",
+                    object,
+                    Some(source_field),
+                ))
+            }
+        };
+        let number = |name: &str| -> CResult<Rational> {
+            object
+                .field(name)
+                .map(|field| self.rational_value(&field.value, object, Some(field)))
+                .unwrap_or(Ok(Rational::one()))
+        };
+        let seconds = |name: &str| -> CResult<Rational> {
+            object
+                .field(name)
+                .map(|field| self.seconds_value(&field.value, object, Some(field)))
+                .unwrap_or(Ok(Rational::zero()))
+        };
+        let fade_shape = match object.field("fade_shape") {
+            None => AudioFadeShape::Linear,
+            Some(field) => match self
+                .symbol_value(&field.value, object, Some(field))?
+                .as_str()
+            {
+                "linear" => AudioFadeShape::Linear,
+                "equal_power" => AudioFadeShape::EqualPower,
+                _ => {
+                    return Err(path_diagnostic(
+                        DiagnosticCode::Range,
+                        "unsupported fade shape",
+                        object,
+                        Some(field),
+                    ))
+                }
+            },
+        };
+        let mode_field = self.field(object, "mode")?;
+        let transport = match self
+            .symbol_value(&mode_field.value, object, Some(mode_field))?
+            .as_str()
+        {
+            "rate" => LeafTransport::Rate {
+                speed: number("speed")?,
+                reverse: object
+                    .field("reverse")
+                    .map(|field| self.bool_value(&field.value, object, Some(field)))
+                    .unwrap_or(Ok(false))?,
+            },
+            "warp_rate" | "warp_preserve" => {
+                let warp_field = self.field(object, "warp")?;
+                let ValueKind::List(points) = &warp_field.value.kind else {
+                    return Err(path_diagnostic(
+                        DiagnosticCode::Range,
+                        "warp requires anchors",
+                        object,
+                        Some(warp_field),
+                    ));
+                };
+                let warp = points
+                    .iter()
+                    .map(|point| match &point.kind {
+                        ValueKind::Tuple(pair) if pair.len() == 2 => Ok(WarpAnchor {
+                            q: self.q_value(&pair[0], object, Some(warp_field), false)?,
+                            source_frame: frame(&pair[1], warp_field)?,
+                        }),
+                        _ => Err(path_diagnostic(
+                            DiagnosticCode::Range,
+                            "warp requires (q, frame) pairs",
+                            object,
+                            Some(warp_field),
+                        )),
+                    })
+                    .collect::<CResult<Vec<_>>>()?;
+                // Source validation admits only the core stretch identity.
+                let stretch = match object.field("processor").map(|f| &f.value.kind) {
+                    Some(ValueKind::String(id)) => Some(id.clone()),
+                    _ => None,
+                };
+                LeafTransport::Warp { warp, stretch }
+            }
+            _ => {
+                return Err(path_diagnostic(
+                    DiagnosticCode::Capability,
+                    "unsupported audio mode",
+                    object,
+                    Some(mode_field),
+                ))
+            }
+        };
+        Ok(LeafDef {
+            id: object.id.clone(),
+            span: object.span,
+            at,
+            velocity: Rational::one(),
+            onset_offset: Rational::zero(),
+            order: 0,
+            kind: LeafKind::Audio(Box::new(AudioLeaf {
+                asset,
+                source_start_frame,
+                source_end_frame,
+                transport,
+                gain: object
+                    .field("gain")
+                    .map(|field| self.rational_value(&field.value, object, Some(field)))
+                    .unwrap_or(Ok(Rational::one()))?,
+                fade_in_seconds: seconds("fade_in")?,
+                fade_out_seconds: seconds("fade_out")?,
+                fade_shape,
+            })),
+        })
+    }
+
     fn parse_use(&self, object: &Object) -> CResult<UseDef> {
         self.check_fields(
             object,
@@ -2216,7 +2432,10 @@ impl<'a> Compiler<'a> {
                     "message" if self.allow_messages => {
                         PatternChild::Leaf(Box::new(self.parse_message(child)?))
                     }
-                    "hit" | "message" => {
+                    "audio" if self.allow_audio_leaves => {
+                        PatternChild::Leaf(Box::new(self.parse_audio_leaf(child)?))
+                    }
+                    "hit" | "message" | "audio" => {
                         return Err(path_diagnostic(
                             DiagnosticCode::Capability,
                             format!(
@@ -2364,6 +2583,7 @@ impl<'a> Compiler<'a> {
             .filter(|object| object.kind == "track")
         {
             self.check_fields(object, &["target"])?;
+            self.track_ids.insert(object.id.clone());
             if let Some(target) = object.field("target") {
                 self.tracks.insert(
                     object.id.clone(),
@@ -2505,6 +2725,7 @@ impl<'a> Compiler<'a> {
                         if leaf.kind != "note"
                             && !(self.allow_hits && leaf.kind == "hit")
                             && !(self.allow_messages && leaf.kind == "message")
+                            && !(self.allow_audio_leaves && leaf.kind == "audio")
                         {
                             return Err(path_diagnostic(
                                 DiagnosticCode::Capability,
@@ -2518,6 +2739,8 @@ impl<'a> Compiler<'a> {
                             span: child.span,
                             leaf: if leaf.kind == "hit" {
                                 self.parse_hit(leaf)?
+                            } else if leaf.kind == "audio" {
+                                self.parse_audio_leaf(leaf)?
                             } else if leaf.kind == "message" {
                                 self.parse_message(leaf)?
                             } else {
@@ -2841,13 +3064,14 @@ impl<'a> Compiler<'a> {
                     Some(place.span),
                 ));
             }
-            let target = self.tracks.get(&place.track).cloned().ok_or_else(|| {
-                diagnostics(
+            let target = self.tracks.get(&place.track).cloned();
+            if target.is_none() && !self.track_ids.contains(&place.track) {
+                return Err(diagnostics(
                     DiagnosticCode::Reference,
                     format!("unknown track reference `&{}'", place.track),
                     Some(place.span),
-                )
-            })?;
+                ));
+            }
             if place.count > MAX_EXPANDED_NOTES as u64 {
                 return Err(diagnostics(
                     DiagnosticCode::ResourceLimit,
@@ -2878,14 +3102,162 @@ impl<'a> Compiler<'a> {
                     transpose: place.transpose_cents.clone(),
                     address: &mut address,
                     inherited_cut_end: cut_end,
-                    target: &target,
+                    target: target.as_ref(),
                     depth: 0,
                 };
                 self.expand_pattern(&place.pattern, &mut state)?;
             }
-            self.apply_place_edits(place, &target)?;
+            self.apply_place_edits(place, target.as_ref())?;
+        }
+        self.collect_pattern_clips()
+    }
+
+    /// Move expanded audio leaves out of the event list. Each placement with
+    /// audio becomes a `core.sum/1` node with the placement's ID, fed by one
+    /// reserved `__clip_<place>_<k>` node per surviving instance.
+    fn collect_pattern_clips(&mut self) -> CResult<()> {
+        let (audio, events): (Vec<_>, Vec<_>) = std::mem::take(&mut self.events)
+            .into_iter()
+            .partition(|event| matches!(event.kind, ExpandedKind::Audio(_)));
+        self.events = events;
+        let reserved = |compiler: &Self, id: &str, span: Span| -> CResult<()> {
+            if id.len() > crate::plan::PlanLimits::MAX_ID_BYTES {
+                return Err(diagnostics(
+                    DiagnosticCode::ResourceLimit,
+                    format!("reserved pattern clip ID `{id}` exceeds the ID length limit"),
+                    Some(span),
+                ));
+            }
+            if compiler.document.object(id).is_some() {
+                return Err(diagnostics(
+                    DiagnosticCode::DuplicateId,
+                    format!("ID `{id}` is reserved for an expanded pattern audio leaf"),
+                    Some(span),
+                ));
+            }
+            Ok(())
+        };
+        let places = self.places.clone();
+        let mut placed = 0;
+        for place in &places {
+            let Some(&channels) = self.place_outputs.get(&place.id) else {
+                continue;
+            };
+            self.nodes.push(
+                Node::new(place.id.clone(), Processor::Sum { channels }).map_err(plan_error)?,
+            );
+            let prefix = format!("{}/", place.id);
+            for (k, event) in audio
+                .iter()
+                .filter(|event| event.address.starts_with(&prefix))
+                .enumerate()
+            {
+                let id = format!("__clip_{}_{k}", place.id);
+                let route = format!("__route_{}_{k}", place.id);
+                reserved(self, &id, event.source_span)?;
+                reserved(self, &route, event.source_span)?;
+                self.connections.push(
+                    Connection::new(
+                        route,
+                        PortRef {
+                            node: id.clone(),
+                            port: "out".into(),
+                        },
+                        PortRef {
+                            node: place.id.clone(),
+                            port: "in".into(),
+                        },
+                    )
+                    .map_err(plan_error)?,
+                );
+                self.pattern_clips.push(PatternClip {
+                    id,
+                    track: place.track.clone(),
+                    event: event.clone(),
+                });
+                placed += 1;
+            }
+        }
+        if placed != audio.len() {
+            return Err(diagnostics(
+                DiagnosticCode::PortType,
+                "pattern audio leaves need a placement output with one channel count",
+                audio.first().map(|event| event.source_span),
+            ));
         }
         Ok(())
+    }
+
+    /// Lower expanded pattern audio to ordinary rate or warp clip nodes at
+    /// their final score positions.
+    fn lower_pattern_clips(&self) -> CResult<Vec<NodeV6>> {
+        self.pattern_clips
+            .iter()
+            .map(|clip| {
+                let ExpandedKind::Audio(audio) = &clip.event.kind else {
+                    unreachable!("only audio leaves are collected as pattern clips")
+                };
+                let channels = self
+                    .audio_assets
+                    .iter()
+                    .find(|asset| asset.id == audio.asset)
+                    .map(|asset| asset.channels)
+                    .ok_or_else(|| {
+                        diagnostics(
+                            DiagnosticCode::Reference,
+                            "pattern audio asset does not exist",
+                            Some(clip.event.source_span),
+                        )
+                    })?;
+                let processor = match &audio.transport {
+                    LeafTransport::Rate { speed, reverse } => ProcessorV6::Audio {
+                        clip: Box::new(AudioClip {
+                            asset: audio.asset.clone(),
+                            channels,
+                            at: AutomationAnchor::Score {
+                                q: clip.event.score_on_q.clone(),
+                            },
+                            source_start_frame: audio.source_start_frame,
+                            source_end_frame: audio.source_end_frame,
+                            speed: speed.clone(),
+                            reverse: *reverse,
+                            gain: audio.gain.clone(),
+                            fade_in_seconds: audio.fade_in_seconds.clone(),
+                            fade_out_seconds: audio.fade_out_seconds.clone(),
+                            fade_shape: audio.fade_shape,
+                            source: clip.event.source.clone(),
+                            track: Some(clip.track.clone()),
+                            start_frame: 0,
+                            end_frame: 0,
+                        }),
+                    },
+                    LeafTransport::Warp { warp, stretch } => ProcessorV6::WarpRate {
+                        clip: Box::new(WarpClip {
+                            asset: audio.asset.clone(),
+                            channels,
+                            at_q: clip.event.score_on_q.clone(),
+                            source_start_frame: audio.source_start_frame,
+                            source_end_frame: audio.source_end_frame,
+                            warp: warp.clone(),
+                            gain: audio.gain.clone(),
+                            fade_in_seconds: audio.fade_in_seconds.clone(),
+                            fade_out_seconds: audio.fade_out_seconds.clone(),
+                            fade_shape: audio.fade_shape,
+                            source: clip.event.source.clone(),
+                            track: Some(clip.track.clone()),
+                            start_frame: 0,
+                            end_frame: 0,
+                            stretch: stretch.clone(),
+                        }),
+                    },
+                };
+                Ok(NodeV6 {
+                    id: clip.id.clone(),
+                    params: BTreeMap::new(),
+                    processor,
+                })
+            })
+            .collect()
     }
 
     /// Compute bounded expansion work and emitted-note count without walking
@@ -2954,7 +3326,32 @@ impl<'a> Compiler<'a> {
             &checked_mul(&state.scale, &leaf.at, Some(leaf.span))?,
             Some(leaf.span),
         )?;
+        let target = match (&leaf.kind, state.target) {
+            (_, Some(target)) => target.clone(),
+            // Audio leaves never reach an event port; the placeholder names
+            // the placement output that carries them.
+            (LeafKind::Audio(_), None) => EventTarget {
+                node: state.address[0].clone(),
+                port: "out".into(),
+            },
+            (_, None) => {
+                return Err(diagnostics(
+                    DiagnosticCode::Reference,
+                    "note, hit, and message leaves require a track with an event target",
+                    Some(leaf.span),
+                ))
+            }
+        };
         let kind = match &leaf.kind {
+            LeafKind::Audio(audio) => {
+                let mut audio = audio.clone();
+                if let LeafTransport::Warp { warp, .. } = &mut audio.transport {
+                    for anchor in warp.iter_mut() {
+                        anchor.q = checked_mul(&state.scale, &anchor.q, Some(leaf.span))?;
+                    }
+                }
+                ExpandedKind::Audio(audio)
+            }
             LeafKind::Hit { key } => ExpandedKind::Hit { key: key.clone() },
             LeafKind::Message { protocol, bytes } => ExpandedKind::Message {
                 protocol: protocol.clone(),
@@ -3004,7 +3401,7 @@ impl<'a> Compiler<'a> {
                 }),
             },
             source_span: leaf.span,
-            target: state.target.clone(),
+            target,
             score_on_q,
             velocity: leaf.velocity.clone(),
             onset_offset_seconds: leaf.onset_offset.clone(),
@@ -3122,7 +3519,7 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn apply_place_edits(&mut self, place: &PlaceDef, target: &EventTarget) -> CResult<()> {
+    fn apply_place_edits(&mut self, place: &PlaceDef, target: Option<&EventTarget>) -> CResult<()> {
         let place_prefix = format!("{}/", place.id);
         let indexes: HashMap<String, usize> = self
             .events
@@ -3225,6 +3622,23 @@ impl<'a> Compiler<'a> {
                 return Err(diagnostics(
                     DiagnosticCode::UnknownField,
                     format!("field `{name}` is not valid for a message override"),
+                    Some(value.span),
+                ));
+            }
+            let audio = matches!(self.events[index].kind, ExpandedKind::Audio(_));
+            if audio
+                != matches!(
+                    name.as_str(),
+                    "gain" | "fade_in" | "fade_out" | "fade_shape"
+                )
+                && !matches!(name.as_str(), "at" | "label")
+            {
+                return Err(diagnostics(
+                    DiagnosticCode::UnknownField,
+                    format!(
+                        "field `{name}` is not valid for {} override",
+                        if audio { "an audio" } else { "this" }
+                    ),
                     Some(value.span),
                 ));
             }
@@ -3351,6 +3765,44 @@ impl<'a> Compiler<'a> {
                 "label" => {
                     self.string_value(value, object, None, "label")?;
                 }
+                "gain" | "fade_in" | "fade_out" | "fade_shape" => {
+                    let replacement = match name.as_str() {
+                        "gain" => Some(self.rational_value(value, object, None)?),
+                        "fade_in" | "fade_out" => Some(self.seconds_value(value, object, None)?),
+                        _ => None,
+                    };
+                    if replacement.as_ref().is_some_and(Signed::is_negative) {
+                        return Err(diagnostics(
+                            DiagnosticCode::Range,
+                            format!("audio override `{name}` must be nonnegative"),
+                            Some(value.span),
+                        ));
+                    }
+                    let shape = if name == "fade_shape" {
+                        match self.symbol_value(value, object, None)?.as_str() {
+                            "linear" => Some(AudioFadeShape::Linear),
+                            "equal_power" => Some(AudioFadeShape::EqualPower),
+                            _ => {
+                                return Err(diagnostics(
+                                    DiagnosticCode::Range,
+                                    "unsupported fade shape",
+                                    Some(value.span),
+                                ))
+                            }
+                        }
+                    } else {
+                        None
+                    };
+                    if let ExpandedKind::Audio(audio) = &mut self.events[index].kind {
+                        match (name.as_str(), replacement, shape) {
+                            ("gain", Some(value), _) => audio.gain = value,
+                            ("fade_in", Some(value), _) => audio.fade_in_seconds = value,
+                            ("fade_out", Some(value), _) => audio.fade_out_seconds = value,
+                            (_, _, Some(shape)) => audio.fade_shape = shape,
+                            _ => {}
+                        }
+                    }
+                }
                 _ => {
                     return Err(diagnostics(
                         DiagnosticCode::UnknownField,
@@ -3364,7 +3816,9 @@ impl<'a> Compiler<'a> {
             ExpandedKind::Note(note) => {
                 note.dur_q <= Rational::zero() || !(0.0..=1.0).contains(&note.release_velocity)
             }
-            ExpandedKind::Hit { .. } | ExpandedKind::Message { .. } => false,
+            ExpandedKind::Hit { .. } | ExpandedKind::Message { .. } | ExpandedKind::Audio(_) => {
+                false
+            }
         };
         if invalid_note
             || self.events[index].velocity.is_negative()
@@ -3397,6 +3851,9 @@ impl<'a> Compiler<'a> {
                     protocol: protocol.clone(),
                     bytes: bytes.clone(),
                 })
+            }
+            ExpandedKind::Audio(_) => {
+                unreachable!("pattern audio leaves are collected before event lowering")
             }
         };
         // A source pitch can be above Nyquist when an occurrence
@@ -3576,6 +4033,17 @@ impl<'a> Compiler<'a> {
                 _ => None,
             }
         });
+        // Every expanded pattern warp instance carries its own anchor copy.
+        let warp_counts =
+            warp_counts.chain(self.pattern_clips.iter().filter_map(
+                |clip| match &clip.event.kind {
+                    ExpandedKind::Audio(audio) => match &audio.transport {
+                        LeafTransport::Warp { warp, .. } => Some(warp.len()),
+                        LeafTransport::Rate { .. } => None,
+                    },
+                    _ => None,
+                },
+            ));
         let has_warp_points = warp_counts.clone().any(|count| count != 0);
         for count in warp_counts
             .chain(self.automations.iter().map(|a| a.points.len()))
@@ -3584,7 +4052,9 @@ impl<'a> Compiler<'a> {
                     .iter()
                     .filter_map(|e| match &e.kind {
                         ExpandedKind::Note(note) => Some(note),
-                        ExpandedKind::Hit { .. } | ExpandedKind::Message { .. } => None,
+                        ExpandedKind::Hit { .. }
+                        | ExpandedKind::Message { .. }
+                        | ExpandedKind::Audio(_) => None,
                     })
                     .flat_map(|e| {
                         [
@@ -3639,9 +4109,9 @@ impl<'a> Compiler<'a> {
                         note.release_offset_seconds.clone(),
                         note.release_velocity,
                     ),
-                    ExpandedKind::Hit { .. } | ExpandedKind::Message { .. } => {
-                        (None, Rational::zero(), 0.0)
-                    }
+                    ExpandedKind::Hit { .. }
+                    | ExpandedKind::Message { .. }
+                    | ExpandedKind::Audio(_) => (None, Rational::zero(), 0.0),
                 };
                 Ok(ResolvedEventV3 {
                     address: expanded.address.clone(),
@@ -4035,6 +4505,7 @@ impl<'a> Compiler<'a> {
         );
         nodes.extend(self.lower_audio_clips()?.into_iter().map(NodeV6::from));
         nodes.extend(self.lower_warp_clips()?);
+        nodes.extend(self.lower_pattern_clips()?);
         nodes.sort_by(|a, b| a.id.cmp(&b.id));
         let mut nodes: Vec<NodeV7> = nodes.into_iter().map(NodeV7::from).collect();
         nodes.extend(self.control_nodes.values().cloned());
@@ -4176,6 +4647,7 @@ impl<'a> Compiler<'a> {
         );
         nodes.extend(self.lower_audio_clips()?.into_iter().map(NodeV6::from));
         nodes.extend(self.lower_warp_clips()?);
+        nodes.extend(self.lower_pattern_clips()?);
         nodes.sort_by(|a, b| a.id.cmp(&b.id));
         let mut plan = PlanV6 {
             version: 6,
@@ -4293,6 +4765,16 @@ impl<'a> Compiler<'a> {
             .collect();
         nodes.extend(self.kit_nodes.values().cloned().map(NodeV5::from));
         nodes.extend(self.lower_audio_clips()?);
+        for node in self.lower_pattern_clips()? {
+            let ProcessorV6::Audio { clip } = node.processor else {
+                unreachable!("warp leaves select a version 6 or later plan")
+            };
+            nodes.push(NodeV5 {
+                id: node.id,
+                params: node.params,
+                processor: ProcessorV5::Audio { clip },
+            });
+        }
         nodes.sort_by(|a, b| a.id.cmp(&b.id));
         let mut plan = PlanV5 {
             version: 5,
@@ -4698,6 +5180,7 @@ pub(crate) fn validate_musical_catalog(document: &Document) -> CResult<()> {
     let mut compiler = Compiler::new(document);
     compiler.allow_hits = true;
     compiler.allow_messages = true;
+    compiler.allow_audio_leaves = true;
     compiler.read_tunings()?;
     compiler.read_patterns()?;
     compiler.validate_pattern_graph()?;
@@ -5056,10 +5539,10 @@ fn compile_resolved_versioned(
 }
 
 fn uses_audio_profile(document: &Document) -> bool {
-    document
-        .objects
-        .values()
-        .any(|object| object.kind == "audio")
+    fn visit(object: &Object) -> bool {
+        object.kind == "audio" || object.children.values().any(visit)
+    }
+    document.objects.values().any(visit)
 }
 
 fn uses_control_profile(document: &Document) -> bool {

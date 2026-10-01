@@ -5,8 +5,9 @@ Implemented and validated. See the [validation report](audio-clips-validation.md
 This slice implements MaaC/1 §14.2 using existing source syntax. It adds arranged
 audio to the same finite performance and explicit processing graph as notes and
 hits. Sample preparation remains external tooling. Warp modes, WAV import,
-audio placement inside patterns, automatic looping, implicit crossfades and new
-modulation capabilities are outside this slice.
+automatic looping, implicit crossfades and new modulation capabilities are
+outside this slice. [Pattern audio leaves](pattern-audio.md) reuse this
+transport for clips placed inside patterns.
 
 Try the [runnable example](../examples/audio-clips.maac):
 

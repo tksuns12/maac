@@ -213,7 +213,7 @@ by that extension. Other top-level kinds in a core composition are:
 | `region` | Named score interval, without playback behavior |
 | `extension` | Namespaced data governed by a required external schema |
 
-Nested pattern kinds are `note`, `hit`, `message`, and `use`. A `note` may contain `expression`. A `place` may contain `override` and `insert`. An `insert` contains exactly one `note`, `hit`, or `message`. These nesting locations are exclusive unless an extension schema explicitly adds another location.
+Nested pattern kinds are `note`, `hit`, `message`, `audio` (§9.1), and `use`. A `note` may contain `expression`. A `place` may contain `override` and `insert`. An `insert` contains exactly one `note`, `hit`, `message`, or `audio`. These nesting locations are exclusive unless an extension schema explicitly adds another location.
 
 All objects may carry the optional string field `label`. No other implicit fields exist. The field definitions below specify defaults. Defaults are expanded into the normalized source graph, not silently chosen by a host.
 
@@ -417,9 +417,34 @@ There is no recursive pattern call, mutable counter, implicit global cycle, or i
 
 This boundary is intentional: the core preserves compact reusable structure without requiring a language runtime to discover the resulting music. A future pure-generator profile may be added, but is not claimed by this version.
 
+### 9.1 Audio leaves
+
+An `audio` child of a pattern, or of a placement `insert`, is an audio leaf: a §14 transport that repeats and moves with its pattern.
+
+```maac
+pattern groove {
+  length = 4q;
+  audio kick { asset = &drums; at = 0q; source = [0frame, 24000frame]; mode = rate; }
+  audio fill {
+    asset = &drums; at = 3q; source = [24000frame, 72000frame];
+    mode = warp_rate; warp = [(0q, 24000frame), (1q, 72000frame)];
+  }
+}
+place drums_main { pattern = &groove; track = &drums; at = 0q; count = 8; }
+connect drums_route { from = &drums_main:out; to = &mix:in; }
+```
+
+An audio leaf has the fields of a top-level `audio` object (§14.2, §14.3) except `track`. Its `at` is a nonnegative local q position, not seconds or `bar`, and satisfies `0 <= at < length` like every pattern child.
+
+Expansion places each occurrence at the §9 position `at_parent`; its global transport start is that final score position. Every inherited musical stretch multiplies the local q of each warp anchor, as it multiplies score-clock expression coordinates, so a warped leaf stays aligned to its stretched pattern. Source frames are not changed. A rate-mode leaf's `speed`, `reverse`, and duration are physical and are not stretched. Transposition does not apply to audio leaves, and a `cut` boundary does not truncate them, exactly as for hits; a leaf is shortened by its source slice or warp map. Each occurrence then follows every §14 transport rule, including `O <= S < E`, continuation through the tail, gain and fades, warp endpoints, and stretch-processor refusal.
+
+A placement that reaches at least one audio leaf, through its pattern's `use` graph or its inserts, exposes an audio output port `out`. Its signal is the sum of all the placement's occurrences. All audio leaves reached by one placement must share one channel count; otherwise it is `E_PORT_TYPE`. A placement without audio leaves has no `out` port, and a reference to one is `E_REFERENCE`. The port is connected explicitly; nothing is routed implicitly. The placement's `track` groups its occurrences. A track without an event target suffices when the placement expands no note, hit, or message; otherwise such leaves are `E_REFERENCE`.
+
+Each occurrence has the §10 structured address. An override may delete it or `set` its `at`, `gain`, `fade_in`, `fade_out`, `fade_shape`, or `label`. Replacing any other audio field is `E_UNKNOWN_FIELD`; a different recording or transport is an explicit edit of the leaf or of a materialized copy. Audio occurrences are transports, not events: score-window queries and event dispatch do not return them. A library pattern cannot name a composition's assets, and a library declares none, so an audio leaf in a library export is `E_REFERENCE` where it is used.
+
 ## 10. Tracks, placement, and event identity
 
-A `track` has an optional event `target` port. A track used by a note/hit/message placement requires that target. Tracks may group audio objects without an event target. Tracks do not create mixers, faders, pan laws, or implicit connections.
+A `track` has an optional event `target` port. A track used by a note/hit/message placement requires that target. Tracks may group audio objects, and placements that expand only audio leaves (§9.1), without an event target. Tracks do not create mixers, faders, pan laws, or implicit connections.
 
 ```maac
 track bass { target = &bass_synth:events; }
@@ -470,7 +495,7 @@ override late_note {
 
 Overrides apply **after** all pattern expansion, musical stretch, and transposition. `set.at`, when used, is a musical offset from the placement's global origin, not from the source pattern or the selected repetition. `set.dur` is the final musical duration. `set.pitch` replaces the final pitch without reapplying placement transposition. An override cannot change identity, event kind, destination track, or introduce another source reference.
 
-This final-state rule makes local patches inspectable: replacing the pitch with `C3` means C3, not “C3 and then whatever upstream transposition happens to do.” Allowed replacement fields are the fields of the leaf's kind, except label and order may also be changed. Expression children are not replaced through `set`; they are edited by child-addressed patch operations on a materialized instance variant (see below).
+This final-state rule makes local patches inspectable: replacing the pitch with `C3` means C3, not “C3 and then whatever upstream transposition happens to do.” Allowed replacement fields are the fields of the leaf's kind, except label and order may also be changed. An audio leaf's replacements are limited to those listed in §9.1. Expression children are not replaced through `set`; they are edited by child-addressed patch operations on a materialized instance variant (see below).
 
 An `insert` adds one new leaf to a placement, in placement-local final q coordinates. Its child may include note expression. It is not repeated automatically. The inserted event address is `insert_id/leaf_id`, in a disjoint address form whose first component is an identifier rather than a repetition integer.
 
@@ -562,7 +587,7 @@ Resolution is offline and package-relative by default. Absolute paths, traversal
 
 ### 14.2 Audio objects
 
-An `audio` object is both an arranged transport and an audio-output source, with a port named `out`. It may have an optional `track` reference for grouping. Its signal is connected explicitly, just like a node's output.
+An `audio` object is both an arranged transport and an audio-output source, with a port named `out`. It may have an optional `track` reference for grouping. Its signal is connected explicitly, just like a node's output. The same transport fields also form a pattern audio leaf (§9.1).
 
 ```maac
 audio vocal_clip {

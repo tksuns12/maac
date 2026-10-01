@@ -1,0 +1,68 @@
+maac 1;
+
+// Audio leaves inside patterns (§9.1), reusing the core-kit PCM.
+// Run from the repository root:
+// maac build examples/pattern-audio.maac --project-root . -o pattern-audio.wav
+project demo {
+  score = [0q, 16q];
+  tail = 1/2s;
+  rate = 48000Hz;
+  tempo = &clock;
+  meter = &metre;
+  output = &master:out;
+  requires = ["maac.production/1"];
+}
+// Audio occurrences follow the tempo ramp like notes do.
+tempo clock { points = [(0q, 100bpm, linear), (12q, 132bpm, step)]; }
+meter metre { points = [(0q, 4, 4)]; }
+
+asset kick_sample {
+  kind = audio; path = "examples/sounds/core-kit/kick.pcm";
+  hash = "sha256:b29ea5c52a79d974b5d897530609d0d06a7d6cd315ae2d774340a8322c887b04";
+  format = "pcm_f32le_interleaved/1"; rate = 24000Hz; channels = 1; frames = 4800;
+}
+asset snare_sample {
+  kind = audio; path = "examples/sounds/core-kit/snare.pcm";
+  hash = "sha256:dfedbee9ec071476e09e6ea8e54eb7338cac15629b4c26405eb67cff6ce507ca";
+  format = "pcm_f32le_interleaved/1"; rate = 24000Hz; channels = 1; frames = 2400;
+}
+asset hat_sample {
+  kind = audio; path = "examples/sounds/core-kit/hat.pcm";
+  hash = "sha256:2327a8e3cdfd4c72d8f1e89ea273355ce024f3ea1004985d5f393838e35aadb4";
+  format = "pcm_f32le_interleaved/1"; rate = 48000Hz; channels = 1; frames = 1680;
+}
+
+// Two eighth-note hats; nested below at half and normal speed.
+pattern hats {
+  length = 1q;
+  audio closed { asset = &hat_sample; at = 0q; source = [0frame, 1680frame]; mode = rate; gain = 1/2; }
+  audio off { asset = &hat_sample; at = 1/2q; source = [0frame, 1680frame]; mode = rate; gain = 1/4; }
+}
+pattern bar_loop {
+  length = 4q;
+  audio kick { asset = &kick_sample; at = 0q; source = [0frame, 4800frame]; mode = rate; }
+  audio kick_again { asset = &kick_sample; at = 2q; source = [0frame, 4800frame]; mode = rate; gain = 9/10; }
+  audio snare { asset = &snare_sample; at = 1q; source = [0frame, 2400frame]; mode = rate; gain = 4/5; }
+  // The last beat's snare is warped across half a beat; stretch scales it.
+  audio drag {
+    asset = &snare_sample; at = 3q; source = [0frame, 2400frame];
+    mode = warp_rate; warp = [(0q, 0frame), (1/2q, 2400frame)];
+    fade_out = 20ms;
+  }
+  use pulse { pattern = &hats; at = 0q; count = 4; }
+}
+
+// A targetless track groups the drum occurrences; no event target is needed.
+track drums {}
+place groove {
+  pattern = &bar_loop; track = &drums; at = 0q; count = 4;
+  // Final-occurrence edits: drop one kick, soften one snare, add a crash-like hit.
+  override no_kick { event = "2/kick_again"; delete = true; }
+  override ghost { event = "3/snare"; set = { gain = 1/5; }; }
+  insert last { audio accent { asset = &kick_sample; at = 31/2q; source = [0frame, 4800frame]; mode = rate; speed = 3/2; } }
+}
+
+node room { type = "fx.reverb/1"; config = { channels = 1; }; params = { mix = 1/10; }; }
+node master { type = "core.gain/1"; config = { channels = 1; }; params = { gain = 3/4; }; }
+connect groove_route { from = &groove:out; to = &room:in; }
+connect master_route { from = &room:out; to = &master:in; }

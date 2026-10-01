@@ -216,12 +216,17 @@ pub struct SourceGraph {
     kit_nodes: BTreeMap<String, NodeV4>,
     audio_sources: BTreeMap<String, CoreAudioSource>,
     audio_clips: BTreeMap<String, AudioClipSource>,
+    /// Placements whose patterns contain audio leaves: their `out` width.
+    place_outputs: BTreeMap<String, u8>,
     control_nodes: BTreeMap<String, NodeV7>,
     modulations: Vec<ModulationV7>,
     references: BTreeMap<String, ReferenceTarget>,
 }
 
 impl SourceGraph {
+    pub(crate) fn place_outputs(&self) -> &BTreeMap<String, u8> {
+        &self.place_outputs
+    }
     pub(crate) fn control_nodes(&self) -> &BTreeMap<String, NodeV7> {
         &self.control_nodes
     }
@@ -346,6 +351,7 @@ impl SourceGraph {
             .keys()
             .chain(self.kit_nodes.keys())
             .chain(self.audio_clips.keys())
+            .chain(self.place_outputs.keys())
             .chain(self.control_nodes.keys())
             .map(String::as_str);
         crate::plan::validate_same_sample_graph(nodes, &edges).map_err(|error| {
@@ -550,6 +556,7 @@ fn validate_source_profile(
         kit_nodes: validator.kit_nodes,
         audio_sources: validator.audio_sources,
         audio_clips: validator.audio_clips,
+        place_outputs: validator.place_outputs,
         control_nodes: validator.control_nodes,
         modulations: validator.modulations,
         references: validator.references,
@@ -569,6 +576,9 @@ pub(crate) fn validate_musical_catalog(document: &Document) -> Result<(), Diagno
     validator.allow_ramps = true;
     validator.allow_kits = true;
     validator.allow_messages = true;
+    // Audio leaf assets are resolved later against the composition.
+    validator.allow_audio = true;
+    validator.catalog = true;
     if document.version != 1 {
         validator.push(
             DiagnosticCode::Version,
@@ -611,6 +621,8 @@ pub(crate) fn validate_musical_catalog(document: &Document) -> Result<(), Diagno
 }
 
 struct Validator<'a> {
+    /// Validating reusable musical declarations without composition context.
+    catalog: bool,
     allow_warp: bool,
     allow_controls: bool,
     allow_messages: bool,
@@ -627,6 +639,7 @@ struct Validator<'a> {
     kit_nodes: BTreeMap<String, NodeV4>,
     audio_sources: BTreeMap<String, CoreAudioSource>,
     audio_clips: BTreeMap<String, AudioClipSource>,
+    place_outputs: BTreeMap<String, u8>,
     control_nodes: BTreeMap<String, NodeV7>,
     modulations: Vec<ModulationV7>,
     references: BTreeMap<String, ReferenceTarget>,
@@ -645,6 +658,7 @@ impl<'a> Validator<'a> {
     ) -> Self {
         Self {
             document,
+            catalog: false,
             allow_ramps: false,
             allow_kits: false,
             allow_audio: false,
@@ -660,6 +674,7 @@ impl<'a> Validator<'a> {
             kit_nodes: BTreeMap::new(),
             audio_sources: BTreeMap::new(),
             audio_clips: BTreeMap::new(),
+            place_outputs: BTreeMap::new(),
             control_nodes: BTreeMap::new(),
             modulations: Vec::new(),
             references: BTreeMap::new(),
@@ -766,6 +781,7 @@ impl<'a> Validator<'a> {
             for object in objects.iter().filter(|object| object.kind == "audio") {
                 self.validate_deferred_object(object, std::slice::from_ref(&object.id));
             }
+            self.collect_place_outputs(&objects);
         }
         for object in objects.iter().filter(|object| object.kind == "node") {
             self.validate_node(object, std::slice::from_ref(&object.id));
@@ -1549,6 +1565,7 @@ impl<'a> Validator<'a> {
                 "note" => self.validate_note(child, &child_path),
                 "use" => self.validate_use(child, &child_path),
                 "hit" | "message" => self.validate_deferred_object(child, &child_path),
+                "audio" if self.allow_audio => self.validate_pattern_audio(child, &child_path),
                 _ => self.validate_misplaced_child(child, path),
             }
             if let Some(length) = &length {
@@ -1841,7 +1858,12 @@ impl<'a> Validator<'a> {
                     | "order"
                     | "label"
             ) || (self.allow_kits && name == "key")
-                || (self.allow_messages && matches!(name.as_str(), "protocol" | "bytes")))
+                || (self.allow_messages && matches!(name.as_str(), "protocol" | "bytes"))
+                || (self.allow_audio
+                    && matches!(
+                        name.as_str(),
+                        "gain" | "fade_in" | "fade_out" | "fade_shape"
+                    )))
             {
                 self.push(
                     DiagnosticCode::UnknownField,
@@ -1904,6 +1926,46 @@ impl<'a> Validator<'a> {
                 "onset_offset" | "release_offset" => {
                     self.validate_seconds_value(&replacement.value, path, name);
                 }
+                "gain"
+                    if self
+                        .number_value(&replacement.value, path, name)
+                        .is_some_and(|gain| gain < BigRational::zero()) =>
+                {
+                    self.push(
+                        DiagnosticCode::Range,
+                        "override.set.gain must be nonnegative",
+                        Some(replacement.value.span),
+                        path.to_vec(),
+                        vec!["set".into(), name.clone()],
+                    );
+                }
+                "fade_in" | "fade_out"
+                    if self
+                        .quantity_value(&replacement.value, &[Unit::S, Unit::Ms], path, name)
+                        .is_some_and(|fade| fade < BigRational::zero()) =>
+                {
+                    self.push(
+                        DiagnosticCode::Range,
+                        format!("override.set.{name} must be nonnegative"),
+                        Some(replacement.value.span),
+                        path.to_vec(),
+                        vec!["set".into(), name.clone()],
+                    );
+                }
+                "fade_shape"
+                    if !matches!(
+                        replacement.value.as_symbol(),
+                        Some("linear" | "equal_power")
+                    ) =>
+                {
+                    self.push(
+                        DiagnosticCode::Range,
+                        "override.set.fade_shape must be linear or equal_power",
+                        Some(replacement.value.span),
+                        path.to_vec(),
+                        vec!["set".into(), name.clone()],
+                    );
+                }
                 "order" if !matches!(replacement.value.kind, ValueKind::Number(_)) => {
                     self.push_type_value(&replacement.value, path, "integer order");
                 }
@@ -1923,7 +1985,7 @@ impl<'a> Validator<'a> {
         if object.children.len() != 1 {
             self.push(
                 DiagnosticCode::Range,
-                "insert must contain exactly one note, hit, or message",
+                "insert must contain exactly one note, hit, message, or audio leaf",
                 Some(object.span),
                 path.to_vec(),
                 Vec::new(),
@@ -1935,6 +1997,7 @@ impl<'a> Validator<'a> {
             match child.kind.as_str() {
                 "note" => self.validate_note(child, &child_path),
                 "hit" | "message" => self.validate_deferred_object(child, &child_path),
+                "audio" if self.allow_audio => self.validate_pattern_audio(child, &child_path),
                 _ => self.validate_misplaced_child(child, path),
             }
         }
@@ -2411,12 +2474,17 @@ impl<'a> Validator<'a> {
         if let Some(node) = self.nodes.get(id) {
             return Some(ports_for(node.processor, &node.config));
         }
-        if let Some(clip) = self.audio_clips.get(id) {
+        if let Some(channels) = self
+            .audio_clips
+            .get(id)
+            .map(|clip| clip.channels)
+            .or_else(|| self.place_outputs.get(id).copied())
+        {
             return Some(vec![PortDescriptor {
                 name: "out",
                 direction: PortDirection::Output,
                 kind: PortKind::Audio,
-                channels: u32::from(clip.channels),
+                channels: u32::from(channels),
                 accepts_multiple: false,
                 zero_default: true,
             }]);
@@ -3747,6 +3815,168 @@ impl<'a> Validator<'a> {
     }
 
     fn validate_audio_transport(&mut self, object: &Object, path: &[String]) {
+        if let Some(channels) = self.validate_transport_recipe(object, path) {
+            self.audio_clips.insert(
+                object.id.clone(),
+                AudioClipSource {
+                    channels,
+                    object: object.clone(),
+                },
+            );
+        }
+    }
+
+    /// §9/§14: an `audio` leaf inside a pattern or placement insert. It uses
+    /// the top-level transport fields except `track`, and its `at` is a
+    /// local musical position. The placement's `out` port carries it.
+    fn validate_pattern_audio(&mut self, object: &Object, path: &[String]) {
+        self.check_schema(
+            object,
+            path,
+            &["asset", "at", "source", "mode"],
+            &[
+                "asset",
+                "at",
+                "source",
+                "mode",
+                "speed",
+                "reverse",
+                "gain",
+                "fade_in",
+                "fade_out",
+                "fade_shape",
+                "warp",
+                "processor",
+                "label",
+            ],
+            &[],
+        );
+        if let Some(field) = object.field("at") {
+            match &field.value.kind {
+                ValueKind::Quantity {
+                    value,
+                    unit: Unit::Q,
+                } => {
+                    if *value < BigRational::zero() {
+                        self.push(
+                            DiagnosticCode::Range,
+                            "pattern audio.at must be nonnegative",
+                            Some(field.value.span),
+                            path.to_vec(),
+                            vec!["at".into()],
+                        );
+                    }
+                }
+                _ => self.push(
+                    DiagnosticCode::Unit,
+                    "pattern audio.at must be a local q position",
+                    Some(field.value.span),
+                    path.to_vec(),
+                    vec!["at".into()],
+                ),
+            }
+        }
+        self.validate_audio_shape(object, path);
+        self.reject_children(object, path);
+        if !self.catalog {
+            self.validate_transport_recipe(object, path);
+        }
+    }
+
+    /// Collect each placement's audio leaf widths through its pattern's
+    /// finite `use` graph and its inserts. One width gives the placement an
+    /// `out` port; mixed widths are refused rather than silently remixed.
+    fn collect_place_outputs(&mut self, objects: &[Object]) {
+        fn leaf_width(validator: &Validator<'_>, leaf: &Object) -> Option<u8> {
+            let asset = leaf.field("asset")?.value.reference()?;
+            if asset.path.len() != 1 || asset.port.is_some() {
+                return None;
+            }
+            validator
+                .audio_sources
+                .get(&asset.path[0])
+                .map(|source| source.channels)
+        }
+        fn pattern_widths(
+            validator: &Validator<'_>,
+            id: &str,
+            visiting: &mut BTreeSet<String>,
+            widths: &mut BTreeSet<u8>,
+            found: &mut bool,
+        ) {
+            if !visiting.insert(id.to_owned()) || visiting.len() > crate::syntax::MAX_NESTING_DEPTH
+            {
+                return;
+            }
+            if let Some(pattern) = validator
+                .document
+                .object(id)
+                .filter(|object| object.kind == "pattern")
+            {
+                for child in pattern.children.values() {
+                    match child.kind.as_str() {
+                        "audio" => {
+                            *found = true;
+                            widths.extend(leaf_width(validator, child));
+                        }
+                        "use" => {
+                            if let Some(target) =
+                                child.field("pattern").and_then(|f| ref_object_id(&f.value))
+                            {
+                                pattern_widths(validator, &target, visiting, widths, found);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            visiting.remove(id);
+        }
+        for place in objects.iter().filter(|object| object.kind == "place") {
+            let mut widths = BTreeSet::new();
+            let mut found = false;
+            if let Some(pattern) = place.field("pattern").and_then(|f| ref_object_id(&f.value)) {
+                pattern_widths(
+                    self,
+                    &pattern,
+                    &mut BTreeSet::new(),
+                    &mut widths,
+                    &mut found,
+                );
+            }
+            for leaf in place
+                .children
+                .values()
+                .filter(|child| child.kind == "insert")
+                .flat_map(|insert| insert.children.values())
+                .filter(|leaf| leaf.kind == "audio")
+            {
+                found = true;
+                widths.extend(leaf_width(self, leaf));
+            }
+            if !found {
+                continue;
+            }
+            match widths.len() {
+                0 => {}
+                1 => {
+                    self.place_outputs
+                        .insert(place.id.clone(), *widths.first().unwrap());
+                }
+                _ => self.push(
+                    DiagnosticCode::PortType,
+                    "audio leaves reached by one placement must share a channel count",
+                    Some(place.span),
+                    vec![place.id.clone()],
+                    Vec::new(),
+                ),
+            }
+        }
+    }
+
+    /// Validate an audio transport's mode, asset, source, and warp recipe;
+    /// on success return the asset's channel count.
+    fn validate_transport_recipe(&mut self, object: &Object, path: &[String]) -> Option<u8> {
         let mode = object.field("mode").and_then(|f| f.value.as_symbol());
         let warp = self.allow_warp && is_warp_mode(mode);
         if !warp && mode != Some("rate") {
@@ -3761,7 +3991,7 @@ impl<'a> Validator<'a> {
                 path.to_vec(),
                 vec!["mode".into()],
             );
-            return;
+            return None;
         }
         let preserve = mode == Some("warp_preserve");
         let forbidden: &[&str] = match (warp, preserve) {
@@ -3783,13 +4013,10 @@ impl<'a> Validator<'a> {
         if preserve {
             self.validate_stretch_processor(object, path);
         }
-        let Some(asset_id) = object
+        let asset_id = object
             .field("asset")
             .and_then(|f| f.value.reference())
-            .and_then(|r| (r.path.len() == 1 && r.port.is_none()).then(|| r.path[0].clone()))
-        else {
-            return;
-        };
+            .and_then(|r| (r.path.len() == 1 && r.port.is_none()).then(|| r.path[0].clone()))?;
         let Some(asset) = self.audio_sources.get(&asset_id).cloned() else {
             self.push(
                 DiagnosticCode::Reference,
@@ -3798,17 +4025,17 @@ impl<'a> Validator<'a> {
                 path.to_vec(),
                 vec!["asset".into()],
             );
-            return;
+            return None;
         };
         let Some(Value {
             kind: ValueKind::List(items),
             ..
         }) = object.field("source").map(|f| &f.value)
         else {
-            return;
+            return None;
         };
         if items.len() != 2 {
-            return;
+            return None;
         }
         let frames: Option<Vec<u64>> = items
             .iter()
@@ -3828,7 +4055,7 @@ impl<'a> Validator<'a> {
                 path.to_vec(),
                 vec!["source".into()],
             );
-            return;
+            return None;
         };
         if frames[0] >= frames[1] || frames[1] > asset.frames {
             self.push(
@@ -3838,18 +4065,12 @@ impl<'a> Validator<'a> {
                 path.to_vec(),
                 vec!["source".into()],
             );
-            return;
+            return None;
         }
         if warp {
             self.validate_warp_recipe(object, path, frames[0], frames[1]);
         }
-        self.audio_clips.insert(
-            object.id.clone(),
-            AudioClipSource {
-                channels: asset.channels,
-                object: object.clone(),
-            },
-        );
+        Some(asset.channels)
     }
 
     fn validate_warp_recipe(&mut self, object: &Object, path: &[String], a: u64, b: u64) {
@@ -4181,7 +4402,9 @@ impl<'a> Validator<'a> {
                     kind: object.kind.clone(),
                 },
             );
-            if object.kind == "audio" && self.audio_clips.contains_key(&id) {
+            if (object.kind == "audio" && self.audio_clips.contains_key(&id))
+                || (object.kind == "place" && self.place_outputs.contains_key(&id))
+            {
                 for port in self.node_ports(&id).unwrap_or_default() {
                     self.references.insert(
                         format!("&{id}:{}", port.name),

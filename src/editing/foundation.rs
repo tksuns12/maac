@@ -1444,7 +1444,7 @@ fn resolve_occurrence(root: &Value, place: &Value, address: &str) -> Option<Vec<
         let source_path = vec![pattern_id.clone(), child_id.to_owned()];
         mappings.push((source_path, position));
         match child["kind"].as_str()? {
-            "note" | "hit" | "message" => {
+            "note" | "hit" | "message" | "audio" => {
                 return (position + 1 == segments.len()).then_some(mappings);
             }
             "use" => {
@@ -1754,7 +1754,7 @@ fn enumerate_pattern_occurrences(
         dependencies.push(vec![pattern_id.to_owned()]);
         dependencies.push(vec![pattern_id.to_owned(), child_id.clone()]);
         match child["kind"].as_str()? {
-            "note" | "hit" | "message" => {
+            "note" | "hit" | "message" | "audio" => {
                 address.push(child_id.clone());
                 out.push(EventOccurrence {
                     address: address.join("/"),
@@ -1796,7 +1796,10 @@ fn enumerate_insert_occurrences(
             continue;
         }
         for (leaf_id, leaf) in insert["children"].as_object()? {
-            if !matches!(leaf["kind"].as_str(), Some("note" | "hit" | "message")) {
+            if !matches!(
+                leaf["kind"].as_str(),
+                Some("note" | "hit" | "message" | "audio")
+            ) {
                 continue;
             }
             out.push(EventOccurrence {

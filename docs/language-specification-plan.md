@@ -37,14 +37,14 @@ future obligations remain separate from these completed slices.
 
 ## Current priorities
 
-**Reader and action:** P1–P14 are addressed within their
+**Reader and action:** P1–P15 are addressed within their
 bounded scopes. P5 adds exact score-window queries over validated resolved
 performances; P6 corrects execution normalization for existing expression and
 message events. P7 retains proven original-source UTF-8 byte ranges in editing
 and CLI patch diagnostics. P8 closes §19 region semantics; P9 proves normalizer agreement; P10 meets
 the §23 diagnostic location contract. P11 executes `warp_preserve`; P12 adds
 pitched sample instruments; P13 lets them use disk-backed assets; P14 adds velocity layers and
-crossfades.
+crossfades. P15 places audio clips inside patterns.
 P2's [evidence map](document-performance-evidence.md) identified the final edit
 graph validation discrepancy corrected by P3. P4 implements the specified
 `materialize-instance` authoring operation. Contributors should retain implemented behavior and state separately
@@ -84,6 +84,7 @@ audio output device, or DAW session to establish its semantic results.
 | P11 — addressed 2026-09-30 | Execute §14.3 `warp_preserve` with a core reference stretch | [P07](document-performance-evidence.md#performance-obligations) listed `warp_preserve` as unsupported; §14.3 allowed only module-asset stretchers | Normative `core.stretch.ola/1` (Hann overlap-add, 20 ms hop, grains at the original rate), optional plan `stretch` field, and [six public vectors](../tests/warp_preserve.rs); module-asset and unknown stretchers stay `E_CAPABILITY` with no rate-warp fallback |
 | P12 — addressed 2026-09-30 | Add pitched sample instruments | [P07](document-performance-evidence.md#performance-obligations) listed pitched sample instruments as unsupported; `core.kit/1` is hit-only | Local-library `sample` declarations and the voice-graph [`synth.sample/1`](instruments.md#samples) processor: key zones, rate-converted pitched playback with continuous bends, forward sustain loops, shared embedded-sample budget, provenance and archive binding, and [seven public vectors](../tests/sample_instrument.rs) |
 | P13 — addressed 2026-09-30 | Let samples use disk-backed audio assets | P12 samples were embedded plan values limited to 262,144 frames in total | `sample` declarations with a core PCM `format` lower to ordinary plan audio assets (inline or `--disk-media`), with reserved asset IDs, version 4+ plan routing, plan cross-validation, and [asset](../tests/sample_instrument.rs) and [disk-media CLI](../tests/sample_disk_media_cli.rs) vectors. Plan-error diagnostics now keep every §23 code (such as `E_ASSET` and `E_HASH`) instead of reporting them as `E_RANGE` |
+| P15 — addressed 2026-10-01 | Place audio clips inside patterns | [P07](document-performance-evidence.md#performance-obligations) listed audio placements inside patterns as unsupported; §4 allowed no nested `audio` | Normative [§9.1 audio leaves](../MaaC-1-Specification.md#91-audio-leaves): pattern and insert `audio` leaves with local `at`, stretch-scaled warp anchors, no transposition or cut, an explicit placement `out` port, occurrence overrides limited to timing, gain and fades, and [public vectors](../tests/pattern_audio.rs); see the [contract](pattern-audio.md) |
 | P14 — addressed 2026-09-30 | Add velocity layers and zone crossfades | P12 zones were hard, non-overlapping key ranges with no velocity selection | Optional zone `velocity`, `key_fade`, and `velocity_fade` pairs and node `fade_shape` (linear or equal power); overlapping zones sum at their fixed note-on gains; defaults expand identically in editing and execution views; [public vectors](../tests/sample_instrument.rs) |
 
 P2/P3 are not a blanket promise to implement every profile, renderer algorithm,
@@ -141,9 +142,10 @@ with execution evidence for that specified operation.
 A different sharing model needs a separate
 ownership, precedence, identity, and compatibility decision; it is not a defect
 merely because the current contract lacks it. Multi-lane move/duplicate helpers
-belong first to tools over existing transactions. Pitched samplers,
-preserve-pitch warp algorithms, additional receiver adapters, and executable
-hosting each need their own scoped proposal; none is the automatic next task.
+belong first to tools over existing transactions. Pitched samplers and the
+core preserve-pitch stretch were later addressed as P11–P14. Additional receiver
+adapters, module-asset stretchers, and executable hosting each need their own
+scoped proposal; none is the automatic next task.
 
 The [production-language research memo](professional-production-language-review.md)
 is background, not a competing ordered backlog. Its historical adoption and

@@ -84,8 +84,8 @@ not an exhaustive asset-security or numerical audit.
 
 WAV/AIFF/FLAC importing and preserve-pitch warping are explicitly importer or
 extension capabilities in §14. Their absence is not, by itself, a missing core
-rate-transport implementation. Audio objects inside patterns are not a core
-nesting location under §4. External ABI hosting (§17) is also not another
+rate-transport implementation. Audio leaves inside patterns were later added as
+a §4/§9.1 nesting location; see [pattern audio](pattern-audio.md). External ABI hosting (§17) is also not another
 missing reference processor.
 
 ## Profile obligations beyond the processor catalog

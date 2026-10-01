@@ -98,8 +98,10 @@ profile and its separate native PCM byte budget. The [audio clip contract](audio
 the same clock and graph. Clips remain independent of pattern note/hit events.
 Tracks may group clips without an event target; grouping creates no routing.
 The [warp-rate contract](warp-rate.md) adds ordered musical source-frame anchors
-through the full tempo map, including the tail. Preserve-pitch warping and
-placement inside patterns remain unsupported.
+through the full tempo map, including the tail. Preserve-pitch warping uses the
+core reference stretch. [Pattern audio leaves](pattern-audio.md) place rate and
+warp clips inside patterns, summed at an explicit placement `out` port; each
+occurrence counts as a plan node.
 The [native archive contract](editable-archive.md) defines portable source
 closure capture and verification for current and selected historical
 checkpoints. It preserves authored text and local dependencies, including

@@ -342,3 +342,17 @@ When rendered, the first phrase note measured 440 Hz at the original speed,
 220 Hz and 880 Hz under `warp_rate`, and 420 Hz and 430 Hz under
 `warp_preserve`. Nothing clipped. The owner's informal listening approval is
 recorded in the [showcase listening record](../docs/showcase-listening.md).
+
+# Audio inside patterns
+
+[`pattern-audio.maac`](pattern-audio.maac) builds a one-bar drum loop from
+audio leaves inside patterns, reusing the core-kit PCM. A nested hat pattern
+repeats inside the bar, and a warped snare follows the pattern's musical time.
+The loop plays four times under a tempo ramp, with one deleted kick, one
+softened snare, and one inserted accent. The placement's `out` port is routed
+explicitly through reverb and master gain. See the
+[pattern audio contract](../docs/pattern-audio.md).
+
+```sh
+maac build examples/pattern-audio.maac --project-root . -o pattern-audio.wav
+```
