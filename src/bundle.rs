@@ -588,30 +588,54 @@ pub(crate) fn discover_document_references(
             Some(crate::takes::CAPABILITY | crate::takes::CAPABILITY_V2) => "takes",
             _ => continue,
         };
+        // Reported at the extension's `schema` field, or at the descriptor's
+        // `kind` (§23).
+        let schema = crate::located::Location::object(extension);
+        let schema = match extension.field("schema") {
+            Some(field) => schema.at("schema", field.value.span),
+            None => schema.at("schema", extension.kind_span),
+        };
+        let failure = |at: &crate::located::Location, code: &str, message: String| {
+            let mut diagnostics = Diagnostics::new();
+            diagnostics.push(at.error(code, message));
+            diagnostics
+        };
         let reference = extension
             .field("schema")
             .and_then(|field| field.value.reference())
             .ok_or_else(|| {
-                reference_error(format!("{name} schema requires a descriptor reference"))
+                failure(
+                    &schema,
+                    "E_REFERENCE",
+                    format!("{name} schema requires a descriptor reference"),
+                )
             })?;
         if reference.path.len() != 1 || reference.port.is_some() {
-            return Err(reference_error(format!(
-                "{name} schema must reference a top-level descriptor"
-            )));
+            return Err(failure(
+                &schema,
+                "E_REFERENCE",
+                format!("{name} schema must reference a top-level descriptor"),
+            ));
         }
-        let descriptor = document
-            .objects
-            .get(&reference.path[0])
-            .ok_or_else(|| reference_error(format!("{name} schema descriptor does not exist")))?;
-        if descriptor.kind != "asset"
-            || descriptor
-                .field("kind")
-                .and_then(|field| field.value.as_symbol())
-                != Some("descriptor")
-        {
-            return Err(asset_error(format!(
-                "{name} schema must reference a descriptor asset"
-            )));
+        let descriptor = document.objects.get(&reference.path[0]).ok_or_else(|| {
+            failure(
+                &schema,
+                "E_REFERENCE",
+                format!("{name} schema descriptor does not exist"),
+            )
+        })?;
+        let message = format!("{name} schema must reference a descriptor asset");
+        if descriptor.kind != "asset" {
+            return Err(failure(&schema, "E_ASSET", message));
+        }
+        let kind = descriptor.field("kind");
+        if kind.and_then(|field| field.value.as_symbol()) != Some("descriptor") {
+            let at = crate::located::Location::object(descriptor);
+            let at = match kind {
+                Some(field) => at.at("kind", field.value.span),
+                None => at.at("kind", descriptor.kind_span),
+            };
+            return Err(failure(&at, "E_ASSET", message));
         }
         let mut reference = pinned_fields(source_path, descriptor, DiagnosticCode::Asset)?;
         reference.base = ReferenceBase::PackageRoot;

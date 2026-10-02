@@ -8,10 +8,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use num_traits::{One, ToPrimitive, Zero};
 
 use crate::bundle::{normalize_file_reference, sha256_digest};
-use crate::diagnostic::{DiagnosticCode, Diagnostics};
+use crate::diagnostic::{Diagnostic, Diagnostics};
 use crate::exact::{Rational, MAX_RATIONAL_BITS};
-use crate::plan::PlanError;
-use crate::syntax::{Document, Field, Object, Unit, Value, ValueKind};
+use crate::located::{object_fields, Located, Location, Record};
+use crate::syntax::{Document, Object, Unit, ValueKind};
 
 pub const CAPABILITY: &str = "maac.takes/1";
 pub const CAPABILITY_V2: &str = "maac.takes/2";
@@ -31,17 +31,12 @@ pub fn prepare_document(
 ) -> Result<Document, Diagnostics> {
     prepare(document, assets).map_err(|failure| {
         let mut diagnostics = Diagnostics::new();
-        let mut diagnostic = failure.diagnostic();
-        diagnostic.code = match failure.code.as_str() {
-            "E_ASSET" => DiagnosticCode::Asset,
-            "E_HASH" => DiagnosticCode::Hash,
-            "E_UNIT" => DiagnosticCode::Unit,
-            _ => diagnostic.code,
-        };
-        diagnostics.push(diagnostic);
+        diagnostics.push(failure);
         diagnostics
     })
 }
+
+const NOUN: &str = "take metadata";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Version {
@@ -98,7 +93,10 @@ struct Counts {
     regions: usize,
 }
 
-fn prepare(document: &Document, assets: &BTreeMap<String, Vec<u8>>) -> Result<Document, PlanError> {
+fn prepare(
+    document: &Document,
+    assets: &BTreeMap<String, Vec<u8>>,
+) -> Result<Document, Diagnostic> {
     let extensions: Vec<_> = document
         .objects
         .values()
@@ -111,28 +109,28 @@ fn prepare(document: &Document, assets: &BTreeMap<String, Vec<u8>>) -> Result<Do
         })
         .collect();
     for version in [Version::One, Version::Two] {
-        let count = extensions
+        let mut matching = extensions
             .iter()
-            .filter(|(_, candidate)| *candidate == version)
-            .count();
-        if count > 1 {
-            return Err(error(
+            .filter(|(_, candidate)| *candidate == version);
+        let first = matching.next();
+        if let Some((second, _)) = matching.next() {
+            return Err(Location::object(second).error(
                 "E_CAPABILITY",
-                "takes",
                 "at most one take extension per version is supported",
             ));
         }
-        if count == 0
-            && document
+        if first.is_none() {
+            if let Some(entry) = document
                 .objects
                 .values()
-                .any(|object| object.kind == "project" && requires(object, version.capability()))
-        {
-            return Err(error(
-                "E_CAPABILITY",
-                "takes",
-                "the required take capability needs one take extension",
-            ));
+                .filter(|object| object.kind == "project")
+                .find_map(|project| required_entry(project, version.capability()))
+            {
+                return Err(entry.error(
+                    "E_CAPABILITY",
+                    "the required take capability needs one take extension",
+                ));
+            }
         }
     }
     if extensions.is_empty() {
@@ -147,47 +145,37 @@ fn prepare(document: &Document, assets: &BTreeMap<String, Vec<u8>>) -> Result<Do
     let mut clips = BTreeSet::new();
     let mut prepared = document.clone();
     for (extension, version) in extensions {
-        object_fields(
+        let fields = object_fields(
             extension,
             &["namespace", "schema", "render_affecting", "data"],
+            NOUN,
+            NOUN,
         )?;
-        if field(&extension.fields, "render_affecting")?.kind != ValueKind::Boolean(true) {
-            return Err(error(
-                "E_CAPABILITY",
-                "takes",
-                "take selection must affect rendering",
-            ));
+        let render_affecting = fields.get("render_affecting")?;
+        if render_affecting.value.kind != ValueKind::Boolean(true) {
+            return Err(
+                render_affecting.error("E_CAPABILITY", "take selection must affect rendering")
+            );
         }
         if projects.len() != 1 || !requires(projects[0], version.capability()) {
-            return Err(error(
+            return Err(fields.get("namespace")?.error(
                 "E_CAPABILITY",
-                "project.requires",
                 "takes need one project requiring the matching take capability",
             ));
         }
-        let descriptor = descriptor(document, extension, assets, version)?;
-        let data = record(field(&extension.fields, "data")?)?;
-        exact_fields(data, &["groups"], &[], "takes.data")?;
-        let groups = record(field(data, "groups")?)?;
-        bounded_count(groups.len(), MAX_GROUPS, "takes.groups")?;
+        let descriptor = descriptor(document, &fields, assets, version)?;
+        let data = fields.get("data")?.record()?;
+        data.exact(&["groups"], &[])?;
+        let groups_value = data.get("groups")?;
+        let groups = groups_value.record()?;
+        bounded_count(groups.len(), MAX_GROUPS, &groups_value)?;
         counts.groups += groups.len();
         if counts.groups > MAX_GROUPS {
-            return Err(error(
-                "E_RESOURCE_LIMIT",
-                "takes",
-                "total group count exceeds 64",
-            ));
+            return Err(groups_value.error("E_RESOURCE_LIMIT", "total group count exceeds 64"));
         }
-        for (group_id, group) in groups {
-            identifier(group_id)?;
-            validate_group(
-                document,
-                group_id,
-                &group.value,
-                version,
-                &mut counts,
-                &mut clips,
-            )?;
+        for group in groups.entries() {
+            identifier(group.name, &group.key)?;
+            validate_group(document, &group.value, version, &mut counts, &mut clips)?;
         }
         prepared.objects.remove(&extension.id);
         prepared.objects.remove(&descriptor.id);
@@ -195,85 +183,84 @@ fn prepare(document: &Document, assets: &BTreeMap<String, Vec<u8>>) -> Result<Do
     Ok(prepared)
 }
 
+/// The `project.requires` item naming `capability`, if any.
+fn required_entry<'a>(project: &'a Object, capability: &str) -> Option<Located<'a>> {
+    Record::object(project, "project")
+        .optional("requires")?
+        .items()?
+        .into_iter()
+        .find(|item| item.value.as_string() == Some(capability))
+}
+
 fn validate_group<'a>(
     document: &'a Document,
-    group_id: &str,
-    group: &'a Value,
+    group: &Located<'a>,
     version: Version,
     counts: &mut Counts,
     clips: &mut BTreeSet<&'a str>,
-) -> Result<(), PlanError> {
-    let fields = record(group)?;
-    let path = format!("takes.groups.{group_id}");
-    exact_fields(fields, &["origin", "takes", "regions"], &[], &path)?;
-    let origin = seconds(field(fields, "origin")?)?;
+) -> Result<(), Diagnostic> {
+    let fields = group.record()?;
+    fields.exact(&["origin", "takes", "regions"], &[])?;
+    let origin_value = fields.get("origin")?;
+    let origin = seconds(&origin_value)?;
     if origin < Rational::zero() {
-        return Err(error(
-            "E_RANGE",
-            &path,
-            "capture origin must be nonnegative",
-        ));
+        return Err(origin_value.error("E_RANGE", "capture origin must be nonnegative"));
     }
-    let definitions = record(field(fields, "takes")?)?;
-    bounded_count(definitions.len(), MAX_TAKES, &path)?;
+    let takes_value = fields.get("takes")?;
+    let definitions = takes_value.record()?;
+    bounded_count(definitions.len(), MAX_TAKES, &takes_value)?;
     counts.takes += definitions.len();
     if counts.takes > MAX_TAKES {
-        return Err(error(
-            "E_RESOURCE_LIMIT",
-            "takes",
-            "total take count exceeds 64",
-        ));
+        return Err(takes_value.error("E_RESOURCE_LIMIT", "total take count exceeds 64"));
     }
     let mut takes: BTreeMap<&str, BTreeMap<&str, Take<'_>>> = BTreeMap::new();
     let mut member_assets = BTreeSet::new();
     let mut rate = None;
     let mut channels = BTreeMap::new();
-    for (take_id, definition) in definitions {
-        identifier(take_id)?;
-        let values = record(&definition.value)?;
+    for take in definitions.entries() {
+        identifier(take.name, &take.key)?;
+        let values = take.value.record()?;
         let lanes = match version {
             Version::One => vec![("", values)],
             Version::Two => {
-                exact_fields(values, &["lanes"], &[], &path)?;
-                let lanes = record(field(values, "lanes")?)?;
-                bounded_count(lanes.len(), MAX_LANES, &path)?;
+                values.exact(&["lanes"], &[])?;
+                let lanes_value = values.get("lanes")?;
+                let lanes = lanes_value.record()?;
+                bounded_count(lanes.len(), MAX_LANES, &lanes_value)?;
                 lanes
-                    .iter()
-                    .map(|(id, value)| {
-                        identifier(id)?;
-                        Ok((id.as_str(), record(&value.value)?))
+                    .entries()
+                    .map(|lane| {
+                        identifier(lane.name, &lane.key)?;
+                        Ok((lane.name, lane.value.record()?))
                     })
-                    .collect::<Result<Vec<_>, PlanError>>()?
+                    .collect::<Result<Vec<_>, Diagnostic>>()?
             }
         };
         if let Some(first) = takes.values().next() {
             if !first.keys().copied().eq(lanes.iter().map(|(id, _)| *id)) {
-                return Err(error(
+                return Err(take.value.error(
                     "E_REFERENCE",
-                    &path,
                     "every take must contain the same microphone lanes",
                 ));
             }
         }
         let mut members = BTreeMap::new();
         for (lane_id, values) in lanes {
-            exact_fields(values, &["asset", "source_origin"], &[], &path)?;
-            let asset = top_reference(field(values, "asset")?)?;
+            values.exact(&["asset", "source_origin"], &[])?;
+            let asset_value = values.get("asset")?;
+            let asset = top_reference(&asset_value)?;
             if !member_assets.insert(asset) {
-                return Err(error(
-                    "E_REFERENCE",
-                    &path,
-                    "take members must name distinct assets",
-                ));
+                return Err(
+                    asset_value.error("E_REFERENCE", "take members must name distinct assets")
+                );
             }
-            let metadata = audio_metadata(document, asset)?;
-            let source_origin = frame(field(values, "source_origin")?)?;
+            let metadata = audio_metadata(document, asset, &asset_value)?;
+            let source_value = values.get("source_origin")?;
+            let source_origin = frame(&source_value)?;
             if source_origin >= metadata.frames {
-                return Err(error(
-                    "E_RANGE",
-                    &path,
-                    "take source origin must precede asset end",
-                ));
+                return Err(
+                    source_value.error("E_RANGE", "take source origin must precede asset end")
+                );
             }
             if rate
                 .replace(metadata.rate)
@@ -282,7 +269,7 @@ fn validate_group<'a>(
                     .insert(lane_id, metadata.channels)
                     .is_some_and(|old| old != metadata.channels)
             {
-                return Err(error("E_ASSET", &path, "take files must share a sample rate and each lane must retain its channel count"));
+                return Err(asset_value.error("E_ASSET", "take files must share a sample rate and each lane must retain its channel count"));
             }
             members.insert(
                 lane_id,
@@ -293,41 +280,39 @@ fn validate_group<'a>(
                 },
             );
         }
-        takes.insert(take_id, members);
+        takes.insert(take.name, members);
     }
-    let regions = record(field(fields, "regions")?)?;
-    bounded_count(regions.len(), MAX_REGIONS, &path)?;
+    let regions_value = fields.get("regions")?;
+    let regions = regions_value.record()?;
+    bounded_count(regions.len(), MAX_REGIONS, &regions_value)?;
     counts.regions += regions.len();
     if counts.regions > MAX_REGIONS {
-        return Err(error(
-            "E_RESOURCE_LIMIT",
-            "takes",
-            "total region count exceeds 256",
-        ));
+        return Err(regions_value.error("E_RESOURCE_LIMIT", "total region count exceeds 256"));
     }
     let mut ranges = Vec::with_capacity(regions.len());
-    for (region_id, definition) in regions {
-        identifier(region_id)?;
-        let values = record(&definition.value)?;
-        let path = format!("{path}.regions.{region_id}");
+    for region in regions.entries() {
+        identifier(region.name, &region.key)?;
+        let values = region.value.record()?;
         let clip_field = match version {
             Version::One => "clip",
             Version::Two => "clips",
         };
-        exact_fields(values, &["take", "range", clip_field], &[], &path)?;
-        let take_id = symbol(field(values, "take")?)?;
+        values.exact(&["take", "range", clip_field], &[])?;
+        let take_value = values.get("take")?;
         let selected = takes
-            .get(take_id)
-            .ok_or_else(|| error("E_REFERENCE", &path, "region must select a member take"))?;
-        let (start, end) = frame_range(field(values, "range")?)?;
+            .get(take_value.symbol()?)
+            .ok_or_else(|| take_value.error("E_REFERENCE", "region must select a member take"))?;
+        let range_value = values.get("range")?;
+        let (start, end) = frame_range(&range_value)?;
+        let clips_value = values.get(clip_field)?;
         let bindings = match version {
-            Version::One => vec![("", field(values, "clip")?)],
+            Version::One => vec![("", clips_value.clone())],
             Version::Two => {
-                let bindings = record(field(values, "clips")?)?;
-                bounded_count(bindings.len(), MAX_LANES, &path)?;
+                let bindings = clips_value.record()?;
+                bounded_count(bindings.len(), MAX_LANES, &clips_value)?;
                 bindings
-                    .iter()
-                    .map(|(id, value)| (id.as_str(), &value.value))
+                    .entries()
+                    .map(|binding| (binding.name, binding.value))
                     .collect()
             }
         };
@@ -336,58 +321,47 @@ fn validate_group<'a>(
             .copied()
             .eq(bindings.iter().map(|(id, _)| *id))
         {
-            return Err(error(
+            return Err(clips_value.error(
                 "E_REFERENCE",
-                &path,
                 "region clips must contain every microphone lane exactly once",
             ));
         }
         for (lane_id, reference) in bindings {
             let take = &selected[lane_id];
             let source_start = take.source_origin.checked_add(start).ok_or_else(|| {
-                error("E_RANGE", &path, "selected take source start overflows u64")
+                range_value.error("E_RANGE", "selected take source start overflows u64")
             })?;
-            let source_end = take
-                .source_origin
-                .checked_add(end)
-                .ok_or_else(|| error("E_RANGE", &path, "selected take source end overflows u64"))?;
+            let source_end = take.source_origin.checked_add(end).ok_or_else(|| {
+                range_value.error("E_RANGE", "selected take source end overflows u64")
+            })?;
             if source_end > take.metadata.frames {
-                return Err(error(
-                    "E_RANGE",
-                    &path,
-                    "region exceeds selected take asset",
-                ));
+                return Err(range_value.error("E_RANGE", "region exceeds selected take asset"));
             }
-            let clip_id = top_reference(reference)?;
+            let clip_id = top_reference(&reference)?;
             if !clips.insert(clip_id) {
-                return Err(error(
-                    "E_REFERENCE",
-                    &path,
-                    "each comp region must own a distinct clip",
-                ));
+                return Err(
+                    reference.error("E_REFERENCE", "each comp region must own a distinct clip")
+                );
             }
             let clip = document
                 .objects
                 .get(clip_id)
                 .filter(|object| object.kind == "audio")
                 .ok_or_else(|| {
-                    error(
+                    reference.error(
                         "E_REFERENCE",
-                        &path,
                         "region clip must name a top-level audio object",
                     )
                 })?;
-            validate_clip(clip, take, &origin, start, source_start, source_end, &path)?;
+            validate_clip(clip, take, &origin, start, source_start, source_end)?;
         }
-        ranges.push((start, end));
+        ranges.push((start, end, range_value));
     }
-    ranges.sort_unstable();
-    if ranges.windows(2).any(|pair| pair[1].0 < pair[0].1) {
-        return Err(error(
-            "E_RANGE",
-            &path,
-            "comp regions must not overlap within a group",
-        ));
+    ranges.sort_by_key(|(start, end, _)| (*start, *end));
+    if let Some(pair) = ranges.windows(2).find(|pair| pair[1].0 < pair[0].1) {
+        return Err(pair[1]
+            .2
+            .error("E_RANGE", "comp regions must not overlap within a group"));
     }
     Ok(())
 }
@@ -400,52 +374,37 @@ fn requires(project: &Object, capability: &str) -> bool {
 
 fn descriptor<'a>(
     document: &'a Document,
-    extension: &Object,
+    extension: &Record<'_>,
     assets: &BTreeMap<String, Vec<u8>>,
     version: Version,
-) -> Result<&'a Object, PlanError> {
-    let id = top_reference(field(&extension.fields, "schema")?)?;
+) -> Result<&'a Object, Diagnostic> {
+    let schema = extension.get("schema")?;
+    let id = top_reference(&schema)?;
     let descriptor = document
         .objects
         .get(id)
         .filter(|object| object.kind == "asset")
-        .ok_or_else(|| {
-            error(
-                "E_ASSET",
-                "takes.schema",
-                "schema must reference a descriptor asset",
-            )
-        })?;
-    object_fields(descriptor, &["kind", "path", "hash"])?;
-    if symbol(field(&descriptor.fields, "kind")?)? != "descriptor" {
-        return Err(error(
-            "E_ASSET",
-            "takes.schema",
-            "schema asset must have descriptor kind",
-        ));
+        .ok_or_else(|| schema.error("E_ASSET", "schema must reference a descriptor asset"))?;
+    let fields = object_fields(descriptor, &["kind", "path", "hash"], NOUN, NOUN)?;
+    let kind = fields.get("kind")?;
+    if kind.symbol()? != "descriptor" {
+        return Err(kind.error("E_ASSET", "schema asset must have descriptor kind"));
     }
-    let path =
-        normalize_file_reference("package.maac", string(field(&descriptor.fields, "path")?)?)
-            .map_err(|_| {
-                error(
-                    "E_REFERENCE",
-                    "takes.schema",
-                    "schema path must remain inside the package root",
-                )
-            })?;
-    let supplied = assets.get(&path).ok_or_else(|| {
-        error(
-            "E_ASSET",
-            "takes.schema",
-            "schema bytes are missing from the bundle",
+    let path_value = fields.get("path")?;
+    let path = normalize_file_reference("package.maac", path_value.string()?).map_err(|_| {
+        path_value.error(
+            "E_REFERENCE",
+            "schema path must remain inside the package root",
         )
     })?;
-    if string(field(&descriptor.fields, "hash")?)? != sha256_digest(version.schema())
-        || supplied.as_slice() != version.schema()
+    let supplied = assets
+        .get(&path)
+        .ok_or_else(|| path_value.error("E_ASSET", "schema bytes are missing from the bundle"))?;
+    let hash = fields.get("hash")?;
+    if hash.string()? != sha256_digest(version.schema()) || supplied.as_slice() != version.schema()
     {
-        return Err(error(
+        return Err(hash.error(
             "E_HASH",
-            "takes.schema",
             "schema pin and bytes must match the recognized take schema",
         ));
     }
@@ -463,28 +422,33 @@ struct Take<'a> {
     metadata: AudioMetadata,
 }
 
-fn audio_metadata(document: &Document, id: &str) -> Result<AudioMetadata, PlanError> {
+/// The audio asset `id` that a take member names at `reference`.
+fn audio_metadata(
+    document: &Document,
+    id: &str,
+    reference: &Located<'_>,
+) -> Result<AudioMetadata, Diagnostic> {
     let asset = document
         .objects
         .get(id)
         .filter(|o| o.kind == "asset")
         .ok_or_else(|| {
-            error(
+            reference.error(
                 "E_REFERENCE",
-                "takes.asset",
                 "take asset must name a top-level audio asset",
             )
         })?;
-    if symbol(field(&asset.fields, "kind")?)? != "audio"
-        || string(field(&asset.fields, "format")?)? != crate::audio_asset::CORE_AUDIO_FORMAT
-    {
-        return Err(error(
-            "E_ASSET",
-            "takes.asset",
-            "takes require native core PCM audio assets",
-        ));
+    let fields = Record::object(asset, NOUN);
+    let kind = fields.get("kind")?;
+    if kind.symbol()? != "audio" {
+        return Err(kind.error("E_ASSET", "takes require native core PCM audio assets"));
     }
-    let rate = match &field(&asset.fields, "rate")?.kind {
+    let format = fields.get("format")?;
+    if format.string()? != crate::audio_asset::CORE_AUDIO_FORMAT {
+        return Err(format.error("E_ASSET", "takes require native core PCM audio assets"));
+    }
+    let rate_value = fields.get("rate")?;
+    let rate = match &rate_value.value.kind {
         ValueKind::Quantity {
             value,
             unit: Unit::Hz,
@@ -493,41 +457,25 @@ fn audio_metadata(document: &Document, id: &str) -> Result<AudioMetadata, PlanEr
             value,
             unit: Unit::KHz,
         } => value * integer(1000),
-        _ => {
-            return Err(error(
-                "E_UNIT",
-                "takes.asset.rate",
-                "asset rate requires Hz or kHz",
-            ))
-        }
+        _ => return Err(rate_value.error("E_UNIT", "asset rate requires Hz or kHz")),
     };
     let rate = rate
         .is_integer()
         .then(|| rate.to_integer().to_u32())
         .flatten()
         .filter(|rate| *rate > 0)
-        .ok_or_else(|| {
-            error(
-                "E_RANGE",
-                "takes.asset.rate",
-                "asset rate must be a positive u32 integer",
-            )
-        })?;
-    let channels = number_integer(field(&asset.fields, "channels")?)?;
-    let channels = u8::try_from(channels)
+        .ok_or_else(|| rate_value.error("E_RANGE", "asset rate must be a positive u32 integer"))?;
+    let channels_value = fields.get("channels")?;
+    let channels = u8::try_from(number_integer(&channels_value)?)
         .ok()
         .filter(|n| matches!(n, 1 | 2))
         .ok_or_else(|| {
-            error(
-                "E_CAPABILITY",
-                "takes.asset.channels",
-                "takes support mono or stereo assets",
-            )
+            channels_value.error("E_CAPABILITY", "takes support mono or stereo assets")
         })?;
     Ok(AudioMetadata {
         rate,
         channels,
-        frames: number_integer(field(&asset.fields, "frames")?)?,
+        frames: number_integer(&fields.get("frames")?)?,
     })
 }
 
@@ -538,41 +486,41 @@ fn validate_clip(
     start: u64,
     source_start: u64,
     source_end: u64,
-    path: &str,
-) -> Result<(), PlanError> {
-    if top_reference(field(&clip.fields, "asset")?)? != take.asset {
-        return Err(error(
-            "E_REFERENCE",
-            path,
-            "comp clip asset differs from selected take",
-        ));
+) -> Result<(), Diagnostic> {
+    let fields = Record::object(clip, NOUN);
+    let asset = fields.get("asset")?;
+    if top_reference(&asset)? != take.asset {
+        return Err(asset.error("E_REFERENCE", "comp clip asset differs from selected take"));
     }
-    if symbol(field(&clip.fields, "mode")?)? != "rate"
-        || clip
-            .field("speed")
-            .is_some_and(|f| f.value.kind != ValueKind::Number(Rational::one()))
-        || clip
-            .field("reverse")
-            .is_some_and(|f| f.value.kind != ValueKind::Boolean(false))
+    let playback = "comp clips require rate mode, speed 1 and forward playback";
+    let mode = fields.get("mode")?;
+    if mode.symbol()? != "rate" {
+        return Err(mode.error("E_CAPABILITY", playback));
+    }
+    if let Some(speed) = fields
+        .optional("speed")
+        .filter(|f| f.value.kind != ValueKind::Number(Rational::one()))
     {
-        return Err(error(
-            "E_CAPABILITY",
-            path,
-            "comp clips require rate mode, speed 1 and forward playback",
-        ));
+        return Err(speed.error("E_CAPABILITY", playback));
     }
-    if frame_range(field(&clip.fields, "source")?)? != (source_start, source_end) {
-        return Err(error(
+    if let Some(reverse) = fields
+        .optional("reverse")
+        .filter(|f| f.value.kind != ValueKind::Boolean(false))
+    {
+        return Err(reverse.error("E_CAPABILITY", playback));
+    }
+    let source = fields.get("source")?;
+    if frame_range(&source)? != (source_start, source_end) {
+        return Err(source.error(
             "E_RANGE",
-            path,
             "comp clip source differs from selected take range",
         ));
     }
+    let at = fields.get("at")?;
     let expected_at = origin + integer(start) / integer(u64::from(take.metadata.rate));
-    if seconds(field(&clip.fields, "at")?)? != expected_at {
-        return Err(error(
+    if seconds(&at)? != expected_at {
+        return Err(at.error(
             "E_RANGE",
-            path,
             "comp clip position differs from the shared capture origin",
         ));
     }
@@ -582,17 +530,16 @@ fn validate_clip(
 fn integer(value: u64) -> Rational {
     Rational::from_integer(value.into())
 }
-fn bounded_count(count: usize, max: usize, path: &str) -> Result<(), PlanError> {
+fn bounded_count(count: usize, max: usize, at: &Located<'_>) -> Result<(), Diagnostic> {
     if count == 0 || count > max {
-        return Err(error(
+        return Err(at.error(
             "E_RESOURCE_LIMIT",
-            path,
             "take metadata map is empty or exceeds its count bound",
         ));
     }
     Ok(())
 }
-fn identifier(value: &str) -> Result<(), PlanError> {
+fn identifier(value: &str, key: &Location) -> Result<(), Diagnostic> {
     let mut bytes = value.bytes();
     if value.len() > 128
         || !bytes
@@ -600,133 +547,56 @@ fn identifier(value: &str) -> Result<(), PlanError> {
             .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
         || !bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_')
     {
-        return Err(error(
+        return Err(key.error(
             "E_REFERENCE",
-            "takes.id",
             "identifier must be at most 128 ASCII identifier characters",
         ));
     }
     Ok(())
 }
-fn exact_fields(
-    fields: &BTreeMap<String, Field>,
-    required: &[&str],
-    optional: &[&str],
-    path: &str,
-) -> Result<(), PlanError> {
-    if fields
-        .keys()
-        .any(|name| !required.contains(&name.as_str()) && !optional.contains(&name.as_str()))
-    {
-        return Err(error(
-            "E_UNKNOWN_FIELD",
-            path,
-            "unknown take metadata field",
-        ));
-    }
-    if required.iter().any(|name| !fields.contains_key(*name)) {
-        return Err(error(
-            "E_REFERENCE",
-            path,
-            "missing required take metadata field",
-        ));
-    }
-    Ok(())
-}
-fn object_fields(object: &Object, required: &[&str]) -> Result<(), PlanError> {
-    if !object.children.is_empty() {
-        return Err(error(
-            "E_UNKNOWN_KIND",
-            &object.id,
-            "take metadata objects cannot have children",
-        ));
-    }
-    exact_fields(&object.fields, required, &["label"], &object.id)?;
-    if let Some(label) = object.field("label") {
-        if string(&label.value)?.len() > 4096 {
-            return Err(error(
-                "E_RESOURCE_LIMIT",
-                &object.id,
-                "label exceeds 4096 bytes",
-            ));
-        }
-    }
-    Ok(())
-}
-fn field<'a>(fields: &'a BTreeMap<String, Field>, name: &str) -> Result<&'a Value, PlanError> {
-    fields.get(name).map(|f| &f.value).ok_or_else(|| {
-        error(
-            "E_REFERENCE",
-            "takes",
-            &format!("missing required {name} field"),
-        )
-    })
-}
-fn record(value: &Value) -> Result<&BTreeMap<String, Field>, PlanError> {
-    match &value.kind {
-        ValueKind::Record(fields) => Ok(fields),
-        _ => Err(error("E_RANGE", "takes", "expected record")),
-    }
-}
-fn string(value: &Value) -> Result<&str, PlanError> {
-    value
-        .as_string()
-        .ok_or_else(|| error("E_RANGE", "takes", "expected string"))
-}
-fn symbol(value: &Value) -> Result<&str, PlanError> {
-    value
-        .as_symbol()
-        .ok_or_else(|| error("E_RANGE", "takes", "expected symbol"))
-}
-fn top_reference(value: &Value) -> Result<&str, PlanError> {
+fn top_reference<'a>(value: &Located<'a>) -> Result<&'a str, Diagnostic> {
     let reference = value
+        .value
         .reference()
         .filter(|r| r.path.len() == 1 && r.port.is_none())
         .ok_or_else(|| {
-            error(
+            value.error(
                 "E_REFERENCE",
-                "takes",
                 "reference must name one top-level object without a port",
             )
         })?;
     Ok(&reference.path[0])
 }
-fn number_integer(value: &Value) -> Result<u64, PlanError> {
-    match &value.kind {
+fn number_integer(value: &Located<'_>) -> Result<u64, Diagnostic> {
+    match &value.value.kind {
         ValueKind::Number(number) if number.is_integer() => number.to_integer().to_u64(),
         _ => None,
     }
-    .ok_or_else(|| error("E_RANGE", "takes", "expected dimensionless u64 integer"))
+    .ok_or_else(|| value.error("E_RANGE", "expected dimensionless u64 integer"))
 }
-fn frame(value: &Value) -> Result<u64, PlanError> {
-    match &value.kind {
+fn frame(value: &Located<'_>) -> Result<u64, Diagnostic> {
+    match &value.value.kind {
         ValueKind::Quantity {
             value,
             unit: Unit::Frame,
         } if value.is_integer() => value.to_integer().to_u64(),
         _ => None,
     }
-    .ok_or_else(|| error("E_UNIT", "takes", "expected nonnegative u64 integer frames"))
+    .ok_or_else(|| value.error("E_UNIT", "expected nonnegative u64 integer frames"))
 }
-fn frame_range(value: &Value) -> Result<(u64, u64), PlanError> {
-    let ValueKind::List(values) = &value.kind else {
-        return Err(error("E_RANGE", "takes", "expected two frame endpoints"));
-    };
-    if values.len() != 2 {
-        return Err(error("E_RANGE", "takes", "expected two frame endpoints"));
-    }
-    let (start, end) = (frame(&values[0])?, frame(&values[1])?);
+fn frame_range(value: &Located<'_>) -> Result<(u64, u64), Diagnostic> {
+    let items = value
+        .items()
+        .filter(|items| items.len() == 2)
+        .ok_or_else(|| value.error("E_RANGE", "expected two frame endpoints"))?;
+    let (start, end) = (frame(&items[0])?, frame(&items[1])?);
     if start >= end {
-        return Err(error(
-            "E_RANGE",
-            "takes",
-            "frame range must be nonempty and increasing",
-        ));
+        return Err(value.error("E_RANGE", "frame range must be nonempty and increasing"));
     }
     Ok((start, end))
 }
-fn seconds(value: &Value) -> Result<Rational, PlanError> {
-    let seconds = match &value.kind {
+fn seconds(value: &Located<'_>) -> Result<Rational, Diagnostic> {
+    let seconds = match &value.value.kind {
         ValueKind::Quantity {
             value,
             unit: Unit::S,
@@ -736,34 +606,25 @@ fn seconds(value: &Value) -> Result<Rational, PlanError> {
             unit: Unit::Ms,
         } => value / integer(1000),
         _ => {
-            return Err(error(
+            return Err(value.error(
                 "E_UNIT",
-                "takes",
                 "physical position requires seconds or milliseconds",
             ))
         }
     };
     if seconds.numer().bits() > MAX_RATIONAL_BITS || seconds.denom().bits() > MAX_RATIONAL_BITS {
-        return Err(error(
+        return Err(value.error(
             "E_RESOURCE_LIMIT",
-            "takes",
             "physical position exceeds rational precision bound",
         ));
     }
     Ok(seconds)
 }
-fn error(code: &str, path: &str, message: &str) -> PlanError {
-    PlanError {
-        code: code.into(),
-        path: path.into(),
-        message: message.into(),
-        span: None,
-    }
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::diagnostic::DiagnosticCode;
 
     fn source() -> String {
         format!(
@@ -928,7 +789,7 @@ extension comp {{ namespace="maac.takes/1"; schema=&schema; render_affecting=tru
                 "source_origin=18446744073709551614frame",
             );
         let failure = prepare(&crate::parse(&source).unwrap(), &assets()).unwrap_err();
-        assert_eq!(failure.code, "E_RANGE");
+        assert_eq!(failure.code.as_str(), "E_RANGE");
         assert!(failure.message.contains("overflows u64"));
     }
 
@@ -1001,9 +862,13 @@ extension comp {{ namespace="maac.takes/1"; schema=&schema; render_affecting=tru
 
     #[test]
     fn count_bounds_apply_to_total_maps() {
-        assert!(bounded_count(0, MAX_GROUPS, "test").is_err());
-        assert!(bounded_count(MAX_GROUPS, MAX_GROUPS, "test").is_ok());
-        assert!(bounded_count(MAX_GROUPS + 1, MAX_GROUPS, "test").is_err());
+        let document = crate::parse(&source()).unwrap();
+        let data = Record::object(&document.objects["comp"], NOUN)
+            .get("data")
+            .unwrap();
+        assert!(bounded_count(0, MAX_GROUPS, &data).is_err());
+        assert!(bounded_count(MAX_GROUPS, MAX_GROUPS, &data).is_ok());
+        assert!(bounded_count(MAX_GROUPS + 1, MAX_GROUPS, &data).is_err());
         let mut document = crate::parse(&source()).unwrap();
         let extension = document.objects.get_mut("comp").unwrap();
         let ValueKind::Record(data) = &mut extension.fields.get_mut("data").unwrap().value.kind
@@ -1107,7 +972,7 @@ extension comp {{ namespace="maac.takes/1"; schema=&schema; render_affecting=tru
             document.objects.insert(clip.id.clone(), clip);
         }
         let failure = prepare(&document, &assets()).unwrap_err();
-        assert_eq!(failure.code, "E_RESOURCE_LIMIT");
+        assert_eq!(failure.code.as_str(), "E_RESOURCE_LIMIT");
         assert_eq!(failure.message, "total region count exceeds 256");
     }
 
@@ -1135,7 +1000,7 @@ audio late_room {{ asset=&fourth; at=1/24000s; source=[5frame,7frame]; mode=rate
         assets
     }
 
-    fn grouped_prepare(source: &str) -> Result<Document, PlanError> {
+    fn grouped_prepare(source: &str) -> Result<Document, Diagnostic> {
         prepare(&crate::parse(source).unwrap(), &grouped_assets())
     }
 
@@ -1209,7 +1074,10 @@ audio late_room {{ asset=&fourth; at=1/24000s; source=[5frame,7frame]; mode=rate
         let mut document = crate::parse(&source).unwrap();
         document.objects.remove("comp");
         assert_eq!(
-            prepare(&document, &grouped_assets()).unwrap_err().code,
+            prepare(&document, &grouped_assets())
+                .unwrap_err()
+                .code
+                .as_str(),
             "E_CAPABILITY"
         );
         let mut document = crate::parse(&source).unwrap();
@@ -1217,7 +1085,10 @@ audio late_room {{ asset=&fourth; at=1/24000s; source=[5frame,7frame]; mode=rate
         duplicate.id = "duplicate".into();
         document.objects.insert(duplicate.id.clone(), duplicate);
         assert_eq!(
-            prepare(&document, &grouped_assets()).unwrap_err().code,
+            prepare(&document, &grouped_assets())
+                .unwrap_err()
+                .code
+                .as_str(),
             "E_CAPABILITY"
         );
     }
@@ -1229,7 +1100,7 @@ audio late_room {{ asset=&fourth; at=1/24000s; source=[5frame,7frame]; mode=rate
             .collect::<String>();
         let source = grouped_source().replace("close={asset=&first; source_origin=1frame;};room={asset=&third; source_origin=2frame;};", &extra_lanes);
         assert_eq!(
-            grouped_prepare(&source).unwrap_err().code,
+            grouped_prepare(&source).unwrap_err().code.as_str(),
             "E_RESOURCE_LIMIT"
         );
         let source = grouped_source()
@@ -1239,7 +1110,7 @@ audio late_room {{ asset=&fourth; at=1/24000s; source=[5frame,7frame]; mode=rate
                 "source_origin=18446744073709551614frame;};};}",
             );
         let failure = grouped_prepare(&source).unwrap_err();
-        assert_eq!(failure.code, "E_RANGE");
+        assert_eq!(failure.code.as_str(), "E_RANGE");
         assert!(failure.message.contains("overflows u64"));
     }
 
@@ -1278,18 +1149,19 @@ audio late_room {{ asset=&fourth; at=1/24000s; source=[5frame,7frame]; mode=rate
         };
         requirements.extend(v1.clone());
         let failure = prepare(&grouped, &grouped_assets()).unwrap_err();
-        assert_eq!(failure.code, "E_REFERENCE");
+        assert_eq!(failure.code.as_str(), "E_REFERENCE");
         assert!(failure.message.contains("distinct clip"));
 
         // Simulate previous groups/versions filling each shared counter. The
         // next valid group's addition must fail before any clips are accepted.
         let document = crate::parse(&grouped_source()).unwrap();
-        let ValueKind::Record(data) = &document.objects["comp"].fields["data"].value.kind else {
-            panic!()
-        };
-        let ValueKind::Record(groups) = &data["groups"].value.kind else {
-            panic!()
-        };
+        let group = Record::object(&document.objects["comp"], NOUN)
+            .get("data")
+            .and_then(|data| data.record())
+            .and_then(|data| data.get("groups"))
+            .and_then(|groups| groups.record())
+            .and_then(|groups| groups.get("vocals"))
+            .unwrap();
         for mut counts in [
             Counts {
                 takes: MAX_TAKES,
@@ -1302,14 +1174,13 @@ audio late_room {{ asset=&fourth; at=1/24000s; source=[5frame,7frame]; mode=rate
         ] {
             let failure = validate_group(
                 &document,
-                "vocals",
-                &groups["vocals"].value,
+                &group,
                 Version::Two,
                 &mut counts,
                 &mut BTreeSet::new(),
             )
             .unwrap_err();
-            assert_eq!(failure.code, "E_RESOURCE_LIMIT");
+            assert_eq!(failure.code.as_str(), "E_RESOURCE_LIMIT");
         }
     }
 }

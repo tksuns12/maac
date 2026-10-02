@@ -217,6 +217,13 @@ actually published; no release tag or publication date is asserted here.
 
 ### Fixed
 
+- Production and takes diagnostics now report the authored object, field path
+  and offending text (§23), for example
+  `deliveries` / `data.deliveries.release.targets.main.encoding`, instead of
+  internal paths such as `production.encoding`, `project.requires` or `takes`
+  that named no source object. The engine-rate requirement is reported at
+  `project.rate` while preparing the source. Codes are unchanged.
+
 - Unknown extensions are reported at their own `namespace` field everywhere:
   `E_CAPABILITY` for an unsupported namespace and `E_REFERENCE` for any
   namespace that `project.requires` does not list. Bundle checks previously

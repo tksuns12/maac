@@ -4216,6 +4216,9 @@ impl<'a> Compiler<'a> {
             );
         }
         plan.production = production;
+        if let Some(settings) = &plan.production {
+            settings.check_compiled(&plan.view(), original, limits)?;
+        }
         plan.preflight_with_limits(limits)
             .map_err(plan_error_in!(plan.events))?;
         let timing = TimingContext::new_with_limits(&plan.tempo, &plan.output, limits)
@@ -4579,6 +4582,9 @@ impl<'a> Compiler<'a> {
             );
         }
         plan.production = production;
+        if let Some(settings) = &plan.production {
+            settings.check_compiled(&plan.view(), original, limits)?;
+        }
         let limits = limits.bounded();
         plan.view()
             .preflight_timing(&limits)
@@ -4709,6 +4715,9 @@ impl<'a> Compiler<'a> {
             );
         }
         plan.production = production;
+        if let Some(settings) = &plan.production {
+            settings.check_compiled(&plan.view(), original, limits)?;
+        }
         let limits = limits.bounded();
         plan.view()
             .preflight_timing(&limits)
@@ -4841,6 +4850,9 @@ impl<'a> Compiler<'a> {
             );
         }
         plan.production = production;
+        if let Some(settings) = &plan.production {
+            settings.check_compiled(&plan.view(), original, limits)?;
+        }
         let limits = limits.bounded();
         plan.view()
             .preflight_timing(&limits)
@@ -4948,6 +4960,9 @@ impl<'a> Compiler<'a> {
             );
         }
         plan.production = production;
+        if let Some(settings) = &plan.production {
+            settings.check_compiled(&plan.view(), original, limits)?;
+        }
         let limits = limits.bounded();
         plan.view()
             .preflight_timing(&limits)
@@ -5544,6 +5559,9 @@ fn attach_production(
         );
     }
     plan.production = production;
+    if let Some(settings) = &plan.production {
+        settings.check_compiled(&plan.view(), original, limits)?;
+    }
     if plan.production.is_some() {
         plan.validate_with_limits(limits).map_err(plan_error)?;
     }

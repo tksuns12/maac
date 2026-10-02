@@ -6,10 +6,11 @@ use num_traits::ToPrimitive;
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::bundle::{normalize_file_reference, sha256_digest};
-use crate::diagnostic::Diagnostics;
+use crate::diagnostic::{Diagnostic, Diagnostics};
 use crate::exact::{Rational, MAX_RATIONAL_BITS};
+use crate::located::{object_fields, Located, Location, Record};
 use crate::plan::{Plan, PlanError, PlanLimits, PortRef};
-use crate::syntax::{Document, Field, Object, Unit, Value, ValueKind};
+use crate::syntax::{Document, Unit, ValueKind};
 
 pub const CAPABILITY: &str = "maac.production/1";
 pub const RESAMPLER: &str = "maac.src.kaiser/1";
@@ -237,6 +238,43 @@ impl ProductionSettings {
                     "production.targets",
                     "each delivery requires exactly one master",
                 ));
+            }
+        }
+        Ok(())
+    }
+
+    /// The compiled-graph checks of `validate_for_view`, reported at the
+    /// authored extension (§23) for a plan compiled from `document`.
+    pub(crate) fn check_compiled(
+        &self,
+        plan: &crate::plan::PlanView<'_>,
+        document: &Document,
+        limits: &PlanLimits,
+    ) -> Result<(), Diagnostics> {
+        let Some(extension) = document.objects.get(&self.extension_id) else {
+            return Ok(());
+        };
+        let one = |failure: Diagnostic| {
+            let mut diagnostics = Diagnostics::new();
+            diagnostics.push(failure);
+            diagnostics
+        };
+        self.resource_usage(limits)
+            .map_err(|failure| one(Location::find(extension, &["data"]).plan(failure)))?;
+        for (name, delivery) in &self.deliveries {
+            for (target_name, target) in &delivery.targets {
+                let at = Location::find(
+                    extension,
+                    &["data", "deliveries", name, "targets", target_name, "output"],
+                );
+                let channels = plan
+                    .audio_output_channels(&target.output)
+                    .map_err(|failure| one(at.plan(failure)))?;
+                if !(1..=2).contains(&channels) {
+                    return Err(one(
+                        at.error("E_PORT_TYPE", "target layout must be mono or stereo")
+                    ));
+                }
             }
         }
         Ok(())
@@ -590,48 +628,44 @@ pub fn prepare_document(
     };
     prepare(prepared_takes.as_ref().unwrap_or(document), assets).map_err(|failure| {
         let mut diagnostics = Diagnostics::new();
-        diagnostics.push(failure.diagnostic());
+        diagnostics.push(failure);
         diagnostics
     })
 }
 
+const NOUN: &str = "production";
+
 fn prepare(
     document: &Document,
     assets: &BTreeMap<String, Vec<u8>>,
-) -> Result<(Document, Option<ProductionSettings>), PlanError> {
+) -> Result<(Document, Option<ProductionSettings>), Diagnostic> {
     let extensions: Vec<_> = document
         .objects
         .values()
         .filter(|object| object.kind == "extension")
         .collect();
-    if extensions.is_empty() {
+    let Some(extension) = extensions.first() else {
         return Ok((document.clone(), None));
-    }
-    if extensions.len() != 1 {
-        return Err(error(
+    };
+    if let Some(second) = extensions.get(1) {
+        return Err(Location::object(second).error(
             "E_CAPABILITY",
-            "production",
             "only one recognized production extension is supported",
         ));
     }
-    let extension = extensions[0];
-    object_fields(
+    let fields = object_fields(
         extension,
         &["namespace", "schema", "render_affecting", "data"],
+        NOUN,
+        NOUN,
     )?;
-    if string(field(&extension.fields, "namespace")?)? != CAPABILITY {
-        return Err(error(
-            "E_CAPABILITY",
-            "production.namespace",
-            "unknown required extension",
-        ));
+    let namespace = fields.get("namespace")?;
+    if namespace.string()? != CAPABILITY {
+        return Err(namespace.error("E_CAPABILITY", "unknown required extension"));
     }
-    if field(&extension.fields, "render_affecting")?.kind != ValueKind::Boolean(true) {
-        return Err(error(
-            "E_CAPABILITY",
-            "production.render_affecting",
-            "production must affect rendering",
-        ));
+    let render_affecting = fields.get("render_affecting")?;
+    if render_affecting.value.kind != ValueKind::Boolean(true) {
+        return Err(render_affecting.error("E_CAPABILITY", "production must affect rendering"));
     }
     let projects: Vec<_> = document
         .objects
@@ -639,109 +673,99 @@ fn prepare(
         .filter(|object| object.kind == "project")
         .collect();
     if projects.len() != 1 {
-        return Err(error(
-            "E_REFERENCE",
-            "production",
-            "production needs one project",
-        ));
+        return Err(
+            Location::object(extension).error("E_REFERENCE", "production needs one project")
+        );
     }
-    let project = projects[0];
-    let requires = field(&project.fields, "requires")?;
-    let enabled = match &requires.kind {
-        ValueKind::List(values) => values
+    let project = Record::object(projects[0], "project");
+    let requires = project.get("requires")?;
+    let enabled = requires.items().is_some_and(|items| {
+        items
             .iter()
-            .any(|value| value.as_string() == Some(CAPABILITY)),
-        _ => false,
-    };
+            .any(|item| item.value.as_string() == Some(CAPABILITY))
+    });
     if !enabled {
-        return Err(error(
-            "E_CAPABILITY",
-            "project.requires",
-            "production capability is required",
-        ));
+        return Err(requires.error("E_CAPABILITY", "production capability is required"));
     }
-    let master = output(field(&project.fields, "output")?)?;
-    let schema_ref = field(&extension.fields, "schema")?
+    if let Some(rate) = project.optional("rate") {
+        let hz = match &rate.value.kind {
+            ValueKind::Quantity {
+                value,
+                unit: Unit::Hz,
+            } => Some(value.clone()),
+            ValueKind::Quantity {
+                value,
+                unit: Unit::KHz,
+            } => Some(value * Rational::from_integer(1000.into())),
+            _ => None,
+        };
+        if hz.is_some_and(|hz| hz != Rational::from_integer(48000.into())) {
+            return Err(rate.error("E_CAPABILITY", "production requires a 48000 Hz engine"));
+        }
+    }
+    let master = output(&project.get("output")?)?;
+    let schema = fields.get("schema")?;
+    let schema_ref = schema
+        .value
         .reference()
-        .ok_or_else(|| {
-            error(
-                "E_REFERENCE",
-                "production.schema",
-                "schema requires a descriptor reference",
-            )
-        })?;
+        .ok_or_else(|| schema.error("E_REFERENCE", "schema requires a descriptor reference"))?;
     if schema_ref.path.len() != 1 || schema_ref.port.is_some() {
-        return Err(error(
+        return Err(schema.error(
             "E_REFERENCE",
-            "production.schema",
             "schema reference must name one top-level descriptor",
         ));
     }
-    let descriptor = document.objects.get(&schema_ref.path[0]).ok_or_else(|| {
-        error(
+    let descriptor = document
+        .objects
+        .get(&schema_ref.path[0])
+        .ok_or_else(|| schema.error("E_REFERENCE", "missing schema descriptor"))?;
+    if descriptor.kind != "asset" {
+        return Err(schema.error("E_ASSET", "schema must reference an asset"));
+    }
+    let descriptor_fields = object_fields(descriptor, &["kind", "path", "hash"], NOUN, NOUN)?;
+    let kind = descriptor_fields.get("kind")?;
+    if kind.symbol()? != "descriptor" {
+        return Err(kind.error("E_ASSET", "schema asset must have descriptor kind"));
+    }
+    let path_field = descriptor_fields.get("path")?;
+    let path = normalize_file_reference("package.maac", path_field.string()?).map_err(|_| {
+        path_field.error(
             "E_REFERENCE",
-            "production.schema",
-            "missing schema descriptor",
+            "schema path must remain inside the package root",
         )
     })?;
-    if descriptor.kind != "asset" {
-        return Err(error(
-            "E_ASSET",
-            "production.schema",
-            "schema must reference an asset",
-        ));
-    }
-    object_fields(descriptor, &["kind", "path", "hash"])?;
-    if symbol(field(&descriptor.fields, "kind")?)? != "descriptor" {
-        return Err(error(
-            "E_ASSET",
-            "production.schema",
-            "schema asset must have descriptor kind",
-        ));
-    }
-    let path =
-        normalize_file_reference("package.maac", string(field(&descriptor.fields, "path")?)?)
-            .map_err(|_| {
-                error(
-                    "E_REFERENCE",
-                    "production.schema.path",
-                    "schema path must remain inside the package root",
-                )
-            })?;
     let supplied = assets.get(&path).ok_or_else(|| {
-        error(
-            "E_ASSET",
-            "production.schema",
-            "schema asset bytes are missing from the bundle",
-        )
+        path_field.error("E_ASSET", "schema asset bytes are missing from the bundle")
     })?;
     let expected_hash = sha256_digest(SCHEMA_BYTES);
-    if string(field(&descriptor.fields, "hash")?)? != expected_hash
+    let hash = descriptor_fields.get("hash")?;
+    if hash.string()? != expected_hash
         || supplied.as_slice() != SCHEMA_BYTES
         || sha256_digest(supplied) != expected_hash
     {
-        return Err(error(
+        return Err(hash.error(
             "E_HASH",
-            "production.schema",
             "schema pin and bytes must match the recognized self-contained schema",
         ));
     }
-    let data = record(field(&extension.fields, "data")?)?;
-    exact_fields(data, &["deliveries"], &[])?;
-    let definitions = record(field(data, "deliveries")?)?;
+    let data_value = fields.get("data")?;
+    let data = data_value.record()?;
+    data.exact(&["deliveries"], &[])?;
+    let definitions_value = data.get("deliveries")?;
+    let definitions = definitions_value.record()?;
     if definitions.is_empty() || definitions.len() > MAX_DELIVERIES {
-        return Err(error(
-            "E_RESOURCE_LIMIT",
-            "production.deliveries",
-            "delivery count must be 1 through 64",
-        ));
+        return Err(
+            definitions_value.error("E_RESOURCE_LIMIT", "delivery count must be 1 through 64")
+        );
     }
     let mut deliveries = BTreeMap::new();
-    for (name, definition) in definitions {
-        identifier(name)?;
-        let values = record(&definition.value)?;
-        exact_fields(values, &["rate", "resampler", "targets"], &[])?;
-        let rate = match &field(values, "rate")?.kind {
+    let mut total_targets = 0usize;
+    for definition in definitions.entries() {
+        identifier(definition.name).map_err(|failure| definition.key.plan(failure))?;
+        let values = definition.value.record()?;
+        values.exact(&["rate", "resampler", "targets"], &[])?;
+        let rate_value = values.get("rate")?;
+        let rate = match &rate_value.value.kind {
             ValueKind::Quantity {
                 value,
                 unit: Unit::Hz,
@@ -750,13 +774,7 @@ fn prepare(
                 value,
                 unit: Unit::KHz,
             } => value * Rational::from_integer(1000.into()),
-            _ => {
-                return Err(error(
-                    "E_UNIT",
-                    "production.rate",
-                    "delivery rate requires Hz or kHz",
-                ))
-            }
+            _ => return Err(rate_value.error("E_UNIT", "delivery rate requires Hz or kHz")),
         };
         let rate = if rate.is_integer() {
             rate.to_integer().to_u32()
@@ -764,30 +782,61 @@ fn prepare(
             None
         }
         .ok_or_else(|| {
-            error(
+            rate_value.error(
                 "E_RANGE",
-                "production.rate",
                 "delivery rate must be an exact supported integer",
             )
         })?;
-        let target_values = record(field(values, "targets")?)?;
+        if !matches!(rate, 44100 | 48000 | 96000) {
+            return Err(rate_value.error("E_CAPABILITY", "unsupported delivery rate or resampler"));
+        }
+        let resampler_value = values.get("resampler")?;
+        let resampler = resampler_value.string()?;
+        if resampler != RESAMPLER {
+            return Err(
+                resampler_value.error("E_CAPABILITY", "unsupported delivery rate or resampler")
+            );
+        }
+        let targets_value = values.get("targets")?;
+        let target_values = targets_value.record()?;
         if target_values.is_empty() || target_values.len() > MAX_TARGETS {
-            return Err(error(
-                "E_RESOURCE_LIMIT",
-                "production.targets",
-                "target count must be 1 through 256",
-            ));
+            return Err(
+                targets_value.error("E_RESOURCE_LIMIT", "target count must be 1 through 256")
+            );
+        }
+        total_targets += target_values.len();
+        if total_targets > MAX_TOTAL_TARGETS {
+            return Err(targets_value.error("E_RESOURCE_LIMIT", "total target count exceeds 1024"));
         }
         let mut targets = BTreeMap::new();
-        for (target_id, target) in target_values {
-            identifier(target_id)?;
-            targets.insert(target_id.clone(), parse_target(&target.value)?);
+        let mut masters = 0;
+        for entry in target_values.entries() {
+            identifier(entry.name).map_err(|failure| entry.key.plan(failure))?;
+            let (target, output_value) = parse_target(&entry.value)?;
+            if target.role == Role::Master && target.output != master {
+                return Err(output_value.error("E_REFERENCE", "master must select project.output"));
+            }
+            if document
+                .objects
+                .get(&target.output.node)
+                .is_none_or(|object| !matches!(object.kind.as_str(), "node" | "audio"))
+            {
+                return Err(output_value.error(
+                    "E_REFERENCE",
+                    "target must reference an existing project audio source",
+                ));
+            }
+            masters += usize::from(target.role == Role::Master);
+            targets.insert(entry.name.to_owned(), target);
+        }
+        if masters != 1 {
+            return Err(targets_value.error("E_RANGE", "each delivery requires exactly one master"));
         }
         deliveries.insert(
-            name.clone(),
+            definition.name.to_owned(),
             Delivery {
                 rate,
-                resampler: string(field(values, "resampler")?)?.to_owned(),
+                resampler: resampler.to_owned(),
                 targets,
             },
         );
@@ -798,158 +847,150 @@ fn prepare(
         execution_identity: None,
         deliveries,
     };
-    settings.validate_structure()?;
-    for delivery in settings.deliveries.values() {
-        for target in delivery.targets.values() {
-            if target.role == Role::Master && target.output != master {
-                return Err(error(
-                    "E_REFERENCE",
-                    "production.output",
-                    "master must select project.output",
-                ));
-            }
-            if document
-                .objects
-                .get(&target.output.node)
-                .is_none_or(|object| !matches!(object.kind.as_str(), "node" | "audio"))
-            {
-                return Err(error(
-                    "E_REFERENCE",
-                    "production.output",
-                    "target must reference an existing project audio source",
-                ));
-            }
-        }
-    }
+    // Every structural rule is checked above at its source location; this
+    // shared plan-level check is a backstop.
+    settings
+        .validate_structure()
+        .map_err(|failure| data_value.plan(failure))?;
     let mut prepared = document.clone();
     prepared.objects.remove(&extension.id);
     prepared.objects.remove(&descriptor.id);
     Ok((prepared, Some(settings)))
 }
 
-fn parse_target(value: &Value) -> Result<Target, PlanError> {
-    let fields = record(value)?;
-    exact_fields(
-        fields,
-        &["role", "output", "encoding", "dither"],
-        &["limits"],
-    )?;
-    let role = match symbol(field(fields, "role")?)? {
+/// A target and its located `output` value.
+fn parse_target<'a>(value: &Located<'a>) -> Result<(Target, Located<'a>), Diagnostic> {
+    let fields = value.record()?;
+    fields.exact(&["role", "output", "encoding", "dither"], &["limits"])?;
+    let role_value = fields.get("role")?;
+    let role = match role_value.symbol()? {
         "master" => Role::Master,
         "stem" => Role::Stem,
-        _ => return Err(error("E_RANGE", "production.role", "unknown target role")),
+        _ => return Err(role_value.error("E_RANGE", "unknown target role")),
     };
-    let encoding = match symbol(field(fields, "encoding")?)? {
+    let encoding_value = fields.get("encoding")?;
+    let encoding = match encoding_value.symbol()? {
         "wav_f32le" => Encoding::Float32,
         "wav_pcm16le" => Encoding::Pcm16,
         "wav_pcm24le" => Encoding::Pcm24,
-        _ => {
-            return Err(error(
-                "E_CAPABILITY",
-                "production.encoding",
-                "unsupported encoding",
-            ))
-        }
+        _ => return Err(encoding_value.error("E_CAPABILITY", "unsupported encoding")),
     };
-    let dither_fields = record(field(fields, "dither")?)?;
-    let dither = match symbol(field(dither_fields, "type")?)? {
+    let dither_value = fields.get("dither")?;
+    let dither_fields = dither_value.record()?;
+    let kind = dither_fields.get("type")?;
+    let dither = match kind.symbol()? {
         "none" => {
-            exact_fields(dither_fields, &["type"], &[])?;
+            dither_fields.exact(&["type"], &[])?;
             Dither::None
         }
         "tpdf" => {
-            exact_fields(dither_fields, &["type", "seed"], &[])?;
-            let value = number(field(dither_fields, "seed")?)?;
-            let seed = if value.is_integer() {
-                value.to_integer().to_u64()
+            dither_fields.exact(&["type", "seed"], &[])?;
+            let seed_value = dither_fields.get("seed")?;
+            let seed = number(&seed_value)?;
+            let seed = if seed.is_integer() {
+                seed.to_integer().to_u64()
             } else {
                 None
             }
             .ok_or_else(|| {
-                error(
-                    "E_RANGE",
-                    "production.dither.seed",
-                    "seed must be an unsigned 64-bit integer",
-                )
+                seed_value.error("E_RANGE", "seed must be an unsigned 64-bit integer")
             })?;
             Dither::Tpdf { seed }
         }
-        _ => {
-            return Err(error(
-                "E_CAPABILITY",
-                "production.dither",
-                "unsupported dither",
-            ))
-        }
+        _ => return Err(kind.error("E_CAPABILITY", "unsupported dither")),
     };
+    if encoding == Encoding::Float32 && dither != Dither::None {
+        return Err(dither_value.error("E_CAPABILITY", "Float32 requires explicit none dither"));
+    }
     let limits = fields
-        .get("limits")
-        .map(|field| parse_limits(&field.value))
+        .optional("limits")
+        .map(|limits| parse_limits(&limits))
         .transpose()?;
-    Ok(Target {
-        role,
-        output: output(field(fields, "output")?)?,
-        encoding,
-        dither,
-        limits,
-    })
+    let output_value = fields.get("output")?;
+    Ok((
+        Target {
+            role,
+            output: output(&output_value)?,
+            encoding,
+            dither,
+            limits,
+        },
+        output_value,
+    ))
 }
 
-fn parse_limits(value: &Value) -> Result<Limits, PlanError> {
-    let fields = record(value)?;
-    exact_fields(
-        fields,
-        &[],
-        &["integrated_loudness", "sample_peak", "true_peak"],
-    )?;
-    let integrated_loudness = fields
-        .get("integrated_loudness")
-        .map(|value| {
-            let fields = record(&value.value)?;
-            exact_fields(fields, &["unit"], &["min", "max"])?;
-            Ok(LoudnessLimit {
-                unit: parse_unit(field(fields, "unit")?)?,
-                min: fields
-                    .get("min")
-                    .map(|value| number(&value.value).cloned())
-                    .transpose()?,
-                max: fields
-                    .get("max")
-                    .map(|value| number(&value.value).cloned())
-                    .transpose()?,
-            })
-        })
-        .transpose()?;
-    let peak = |name: &str| -> Result<Option<PeakLimit>, PlanError> {
-        fields
-            .get(name)
+fn parse_limits(value: &Located<'_>) -> Result<Limits, Diagnostic> {
+    let fields = value.record()?;
+    fields.exact(&[], &["integrated_loudness", "sample_peak", "true_peak"])?;
+    let bound = |value: Option<Located<'_>>| -> Result<Option<Rational>, Diagnostic> {
+        value
             .map(|value| {
-                let fields = record(&value.value)?;
-                exact_fields(fields, &["unit", "max"], &[])?;
-                Ok(PeakLimit {
-                    unit: parse_unit(field(fields, "unit")?)?,
-                    max: number(field(fields, "max")?)?.clone(),
-                })
+                let number = number(&value)?.clone();
+                finite_rational(&number).map_err(|failure| value.plan(failure))?;
+                Ok(number)
             })
             .transpose()
     };
-    Ok(Limits {
+    let integrated_loudness = fields
+        .optional("integrated_loudness")
+        .map(|loudness| {
+            let values = loudness.record()?;
+            values.exact(&["unit"], &["min", "max"])?;
+            let unit_value = values.get("unit")?;
+            let unit = parse_unit(&unit_value)?;
+            if unit != LimitUnit::LuFs {
+                return Err(
+                    unit_value.error("E_UNIT", "loudness requires LUFS and at least one bound")
+                );
+            }
+            let min = bound(values.optional("min"))?;
+            let max_value = values.optional("max");
+            let max = bound(max_value.clone())?;
+            match (&min, &max, max_value) {
+                (None, None, _) => {
+                    Err(loudness.error("E_UNIT", "loudness requires LUFS and at least one bound"))
+                }
+                (Some(minimum), Some(maximum), Some(max_value)) if minimum > maximum => {
+                    Err(max_value.error("E_RANGE", "loudness minimum exceeds maximum"))
+                }
+                _ => Ok(LoudnessLimit { unit, min, max }),
+            }
+        })
+        .transpose()?;
+    let peak = |name: &str, expected: LimitUnit| -> Result<Option<PeakLimit>, Diagnostic> {
+        fields
+            .optional(name)
+            .map(|peak| {
+                let values = peak.record()?;
+                values.exact(&["unit", "max"], &[])?;
+                let unit_value = values.get("unit")?;
+                let unit = parse_unit(&unit_value)?;
+                if unit != expected {
+                    return Err(
+                        unit_value.error("E_UNIT", "peak limit has the wrong logarithmic unit")
+                    );
+                }
+                let max = bound(Some(values.get("max")?))?.expect("a present bound");
+                Ok(PeakLimit { unit, max })
+            })
+            .transpose()
+    };
+    let limits = Limits {
         integrated_loudness,
-        sample_peak: peak("sample_peak")?,
-        true_peak: peak("true_peak")?,
-    })
+        sample_peak: peak("sample_peak", LimitUnit::DbFs)?,
+        true_peak: peak("true_peak", LimitUnit::DbTp)?,
+    };
+    // Backstop for the shared plan-level rules checked above.
+    limits.validate().map_err(|failure| value.plan(failure))?;
+    Ok(limits)
 }
 
-fn parse_unit(value: &Value) -> Result<LimitUnit, PlanError> {
-    match symbol(value)? {
+fn parse_unit(value: &Located<'_>) -> Result<LimitUnit, Diagnostic> {
+    match value.symbol()? {
         "LUFS" => Ok(LimitUnit::LuFs),
         "dBFS" => Ok(LimitUnit::DbFs),
         "dBTP" => Ok(LimitUnit::DbTp),
-        _ => Err(error(
-            "E_UNIT",
-            "production.limits",
-            "unsupported logarithmic unit",
-        )),
+        _ => Err(value.error("E_UNIT", "unsupported logarithmic unit")),
     }
 }
 
@@ -988,108 +1029,29 @@ fn finite_rational(value: &Rational) -> Result<(), PlanError> {
     Ok(())
 }
 
-fn object_fields(object: &Object, required: &[&str]) -> Result<(), PlanError> {
-    if !object.children.is_empty() {
-        return Err(error(
-            "E_UNKNOWN_KIND",
-            &object.id,
-            "production objects cannot have children",
-        ));
-    }
-    exact_fields(&object.fields, required, &["label"])?;
-    if let Some(label) = object.fields.get("label") {
-        if string(&label.value)?.len() > 4096 {
-            return Err(error(
-                "E_RESOURCE_LIMIT",
-                &object.id,
-                "label exceeds 4096 bytes",
-            ));
-        }
-    }
-    Ok(())
-}
-fn exact_fields(
-    fields: &BTreeMap<String, Field>,
-    required: &[&str],
-    optional: &[&str],
-) -> Result<(), PlanError> {
-    if fields
-        .keys()
-        .any(|key| !required.contains(&key.as_str()) && !optional.contains(&key.as_str()))
-    {
-        return Err(error(
-            "E_UNKNOWN_FIELD",
-            "production",
-            "unknown production field",
-        ));
-    }
-    if required.iter().any(|key| !fields.contains_key(*key)) {
-        return Err(error(
-            "E_REFERENCE",
-            "production",
-            "missing required production field",
-        ));
-    }
-    Ok(())
-}
-fn field<'a>(fields: &'a BTreeMap<String, Field>, name: &str) -> Result<&'a Value, PlanError> {
-    fields
-        .get(name)
-        .map(|field| &field.value)
-        .ok_or_else(|| error("E_REFERENCE", name, "missing required field"))
-}
-fn record(value: &Value) -> Result<&BTreeMap<String, Field>, PlanError> {
-    if let ValueKind::Record(fields) = &value.kind {
-        Ok(fields)
+fn number<'a>(value: &Located<'a>) -> Result<&'a Rational, Diagnostic> {
+    if let ValueKind::Number(number) = &value.value.kind {
+        Ok(number)
     } else {
-        Err(error("E_RANGE", "production", "expected record"))
+        Err(value.error("E_UNIT", "expected dimensionless exact number"))
     }
 }
-fn string(value: &Value) -> Result<&str, PlanError> {
-    value
-        .as_string()
-        .ok_or_else(|| error("E_RANGE", "production", "expected string"))
-}
-fn symbol(value: &Value) -> Result<&str, PlanError> {
-    value
-        .as_symbol()
-        .ok_or_else(|| error("E_RANGE", "production", "expected symbol"))
-}
-fn number(value: &Value) -> Result<&Rational, PlanError> {
-    if let ValueKind::Number(value) = &value.kind {
-        Ok(value)
-    } else {
-        Err(error(
-            "E_UNIT",
-            "production",
-            "expected dimensionless exact number",
-        ))
-    }
-}
-fn output(value: &Value) -> Result<PortRef, PlanError> {
-    let reference = value.reference().ok_or_else(|| {
-        error(
-            "E_REFERENCE",
-            "production.output",
-            "expected output reference",
-        )
-    })?;
+
+fn output(value: &Located<'_>) -> Result<PortRef, Diagnostic> {
+    let reference = value
+        .value
+        .reference()
+        .ok_or_else(|| value.error("E_REFERENCE", "expected output reference"))?;
     if reference.path.len() != 1 {
-        return Err(error(
-            "E_REFERENCE",
-            "production.output",
-            "output must select a top-level node",
-        ));
+        return Err(value.error("E_REFERENCE", "output must select a top-level node"));
     }
-    let port = reference.port.as_ref().ok_or_else(|| {
-        error(
-            "E_REFERENCE",
-            "production.output",
-            "output requires an explicit port",
-        )
-    })?;
-    PortRef::new(&reference.path[0], port)
+    let port = reference
+        .port
+        .as_ref()
+        .ok_or_else(|| value.error("E_REFERENCE", "output requires an explicit port"))?;
+    PortRef::new(&reference.path[0], port).map_err(|failure| value.plan(failure))
 }
+
 fn error(code: &str, path: &str, message: &str) -> PlanError {
     PlanError {
         code: code.into(),

@@ -30,6 +30,7 @@ pub mod instrument_plan;
 pub mod interchange;
 mod kit;
 pub mod library;
+mod located;
 pub mod media_import;
 mod module_artifact;
 pub mod music;
