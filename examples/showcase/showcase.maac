@@ -15,9 +15,13 @@ maac 1;
 // 62-70q  warp_preserve x2 slower: same pitch (core.stretch.ola/1).
 // 71-73q  warp_preserve x2 faster: same pitch.
 // 74-76q  warp_rate x2 faster: an octave higher.
-// 77-85q  Finale: everything together.
+// 77-79q  Stereo: one stereo recording as an audio clip at its own pitch. Its
+//         strike is on the left and its ring lasts on the right.
+// 79-92q  The same recording as a pitched sampler (sample { asset = ...; }),
+//         then over a stereo pad whose channels are tuned 2.8 Hz apart.
+// 93-101q Finale: everything together.
 project showcase {
-  score = [0q, 85q];
+  score = [0q, 101q];
   tail = 2s;
   rate = 48000Hz;
   tempo = &clock;
@@ -43,6 +47,14 @@ sample hard_c4 {
   format = "pcm_f32le_interleaved/1"; rate = 48000Hz; frames = 48000;
   root = C4; loop = [30176frame, 46736frame];
 }
+
+// Stereo: a WAV pad and a sample that plays a composition audio asset.
+sample wide_c4 { path = "wide.wav"; hash = "sha256:c70899f69b3d207fad092180d19d776fc67cd1cb8bffc8b261def428252bc152"; root = C4; loop = [15000frame, 48855frame]; }
+asset glass {
+  kind = audio; path = "examples/showcase/glass.pcm"; hash = "sha256:2e612fee1985784e106e78adf53a1f2144be729110f0e341a943195f20a5e18a";
+  format = "pcm_f32le_interleaved/1"; rate = 48000Hz; channels = 2; frames = 57600;
+}
+sample glass_a4 { asset = &glass; root = A4; }
 
 instrument keys_inst {
   channels = 1;
@@ -91,15 +103,37 @@ instrument sweep_inst {
   }
 }
 
+instrument pad_inst {
+  channels = 2;
+  voice v {
+    channels = 2; amplitude = &amp; output = &play:out;
+    node amp { type = "synth.adsr/1"; params = { attack = 120ms; decay = 300ms; sustain = 0.9; release = 700ms; }; }
+    node play { type = "synth.sample/1"; config = { channels = 2; zones = [{ sample = &wide_c4; low = key(0); high = key(127); }]; }; params = { level = 0.3; }; }
+  }
+}
+
+instrument glass_inst {
+  channels = 2;
+  voice v {
+    channels = 2; amplitude = &amp; output = &play:out;
+    node amp { type = "synth.adsr/1"; params = { attack = 1ms; decay = 0s; sustain = 1; release = 600ms; }; }
+    node play { type = "synth.sample/1"; config = { channels = 2; zones = [{ sample = &glass_a4; low = key(0); high = key(127); }]; }; params = { level = 0.9; }; }
+  }
+}
+
 node keys { instrument = &keys_inst; }
 node layered { instrument = &layered_inst; }
 node sweep { instrument = &sweep_inst; }
+node pad { instrument = &pad_inst; }
+node glass_keys { instrument = &glass_inst; }
 track keys_track { target = &keys:events; }
 track layered_track { target = &layered:events; }
 track sweep_track { target = &sweep:events; }
+track pad_track { target = &pad:events; }
+track glass_track { target = &glass_keys:events; }
 
 pattern keys_part {
-  length = 85q;
+  length = 101q;
   note m0 { at = 0q; dur = 3/4q; pitch = key(60); velocity = 4/5; }
   note m1 { at = 1q; dur = 3/4q; pitch = key(64); velocity = 4/5; }
   note m2 { at = 2q; dur = 3/4q; pitch = key(67); velocity = 4/5; }
@@ -119,22 +153,22 @@ pattern keys_part {
   note hold2 { at = 12q; dur = 4q; pitch = key(64); velocity = 3/5; }
   note hold3 { at = 12q; dur = 4q; pitch = key(67); velocity = 3/5; }
   note hold4 { at = 12q; dur = 4q; pitch = key(71); velocity = 3/5; }
-  note c77_0 { at = 77q; dur = 2q; pitch = key(57); velocity = 7/10; }
-  note c77_1 { at = 77q; dur = 2q; pitch = key(60); velocity = 7/10; }
-  note c77_2 { at = 77q; dur = 2q; pitch = key(64); velocity = 7/10; }
-  note c79_0 { at = 79q; dur = 2q; pitch = key(53); velocity = 7/10; }
-  note c79_1 { at = 79q; dur = 2q; pitch = key(57); velocity = 7/10; }
-  note c79_2 { at = 79q; dur = 2q; pitch = key(60); velocity = 7/10; }
-  note c81_0 { at = 81q; dur = 2q; pitch = key(55); velocity = 7/10; }
-  note c81_1 { at = 81q; dur = 2q; pitch = key(60); velocity = 7/10; }
-  note c81_2 { at = 81q; dur = 2q; pitch = key(64); velocity = 7/10; }
-  note c83_0 { at = 83q; dur = 2q; pitch = key(55); velocity = 7/10; }
-  note c83_1 { at = 83q; dur = 2q; pitch = key(59); velocity = 7/10; }
-  note c83_2 { at = 83q; dur = 2q; pitch = key(62); velocity = 7/10; }
-  note c83_3 { at = 83q; dur = 2q; pitch = key(67); velocity = 7/10; }
+  note c93_0 { at = 93q; dur = 2q; pitch = key(57); velocity = 7/10; }
+  note c93_1 { at = 93q; dur = 2q; pitch = key(60); velocity = 7/10; }
+  note c93_2 { at = 93q; dur = 2q; pitch = key(64); velocity = 7/10; }
+  note c95_0 { at = 95q; dur = 2q; pitch = key(53); velocity = 7/10; }
+  note c95_1 { at = 95q; dur = 2q; pitch = key(57); velocity = 7/10; }
+  note c95_2 { at = 95q; dur = 2q; pitch = key(60); velocity = 7/10; }
+  note c97_0 { at = 97q; dur = 2q; pitch = key(55); velocity = 7/10; }
+  note c97_1 { at = 97q; dur = 2q; pitch = key(60); velocity = 7/10; }
+  note c97_2 { at = 97q; dur = 2q; pitch = key(64); velocity = 7/10; }
+  note c99_0 { at = 99q; dur = 2q; pitch = key(55); velocity = 7/10; }
+  note c99_1 { at = 99q; dur = 2q; pitch = key(59); velocity = 7/10; }
+  note c99_2 { at = 99q; dur = 2q; pitch = key(62); velocity = 7/10; }
+  note c99_3 { at = 99q; dur = 2q; pitch = key(67); velocity = 7/10; }
 }
 pattern layered_part {
-  length = 85q;
+  length = 101q;
   note v0 { at = 16q; dur = 3/4q; pitch = key(60); velocity = 1/16; }
   note v1 { at = 17q; dur = 3/4q; pitch = key(67); velocity = 2/16; }
   note v2 { at = 18q; dur = 3/4q; pitch = key(60); velocity = 3/16; }
@@ -151,13 +185,13 @@ pattern layered_part {
   note v13 { at = 29q; dur = 3/4q; pitch = key(67); velocity = 14/16; }
   note v14 { at = 30q; dur = 3/4q; pitch = key(60); velocity = 15/16; }
   note v15 { at = 31q; dur = 3/4q; pitch = key(67); velocity = 16/16; }
-  note b77 { at = 77q; dur = 3/2q; pitch = key(45); velocity = 1; }
-  note b79 { at = 79q; dur = 3/2q; pitch = key(41); velocity = 2/5; }
-  note b81 { at = 81q; dur = 3/2q; pitch = key(43); velocity = 1; }
-  note b83 { at = 83q; dur = 3/2q; pitch = key(43); velocity = 7/10; }
+  note b93 { at = 93q; dur = 3/2q; pitch = key(45); velocity = 1; }
+  note b95 { at = 95q; dur = 3/2q; pitch = key(41); velocity = 2/5; }
+  note b97 { at = 97q; dur = 3/2q; pitch = key(43); velocity = 1; }
+  note b99 { at = 99q; dur = 3/2q; pitch = key(43); velocity = 7/10; }
 }
 pattern sweep_part {
-  length = 85q;
+  length = 101q;
   note k0 { at = 64/2q; dur = 1/2q; pitch = key(48); velocity = 3/4; }
   note k1 { at = 65/2q; dur = 1/2q; pitch = key(50); velocity = 3/4; }
   note k2 { at = 66/2q; dur = 1/2q; pitch = key(52); velocity = 3/4; }
@@ -184,9 +218,61 @@ pattern sweep_part {
   note bottom { at = 46q; dur = 2q; pitch = key(48); velocity = 3/4; }
   note top { at = 46q; dur = 2q; pitch = key(84); velocity = 3/4; }
 }
+pattern pad_part {
+  length = 101q;
+  note p84_0 { at = 84q; dur = 2q; pitch = key(57); velocity = 7/10; }
+  note p84_1 { at = 84q; dur = 2q; pitch = key(60); velocity = 7/10; }
+  note p84_2 { at = 84q; dur = 2q; pitch = key(64); velocity = 7/10; }
+  note p86_0 { at = 86q; dur = 2q; pitch = key(53); velocity = 7/10; }
+  note p86_1 { at = 86q; dur = 2q; pitch = key(57); velocity = 7/10; }
+  note p86_2 { at = 86q; dur = 2q; pitch = key(60); velocity = 7/10; }
+  note p88_0 { at = 88q; dur = 2q; pitch = key(55); velocity = 7/10; }
+  note p88_1 { at = 88q; dur = 2q; pitch = key(60); velocity = 7/10; }
+  note p88_2 { at = 88q; dur = 2q; pitch = key(64); velocity = 7/10; }
+  note p90_0 { at = 90q; dur = 2q; pitch = key(55); velocity = 7/10; }
+  note p90_1 { at = 90q; dur = 2q; pitch = key(59); velocity = 7/10; }
+  note p90_2 { at = 90q; dur = 2q; pitch = key(62); velocity = 7/10; }
+  note p93_0 { at = 93q; dur = 2q; pitch = key(57); velocity = 2/5; }
+  note p93_1 { at = 93q; dur = 2q; pitch = key(60); velocity = 2/5; }
+  note p93_2 { at = 93q; dur = 2q; pitch = key(64); velocity = 2/5; }
+  note p95_0 { at = 95q; dur = 2q; pitch = key(53); velocity = 2/5; }
+  note p95_1 { at = 95q; dur = 2q; pitch = key(57); velocity = 2/5; }
+  note p95_2 { at = 95q; dur = 2q; pitch = key(60); velocity = 2/5; }
+  note p97_0 { at = 97q; dur = 2q; pitch = key(55); velocity = 2/5; }
+  note p97_1 { at = 97q; dur = 2q; pitch = key(60); velocity = 2/5; }
+  note p97_2 { at = 97q; dur = 2q; pitch = key(64); velocity = 2/5; }
+  note p99_0 { at = 99q; dur = 2q; pitch = key(55); velocity = 2/5; }
+  note p99_1 { at = 99q; dur = 2q; pitch = key(59); velocity = 2/5; }
+  note p99_2 { at = 99q; dur = 2q; pitch = key(62); velocity = 2/5; }
+  note p99_3 { at = 99q; dur = 2q; pitch = key(67); velocity = 2/5; }
+}
+pattern glass_part {
+  length = 101q;
+  note g0 { at = 79q; dur = 1/2q; pitch = key(69); velocity = 4/5; }
+  note g1 { at = 79.5q; dur = 1/2q; pitch = key(72); velocity = 4/5; }
+  note g2 { at = 80q; dur = 1/2q; pitch = key(76); velocity = 4/5; }
+  note g3 { at = 80.5q; dur = 1/2q; pitch = key(79); velocity = 4/5; }
+  note g4 { at = 81q; dur = 1q; pitch = key(81); velocity = 4/5; }
+  note g5 { at = 82q; dur = 1/2q; pitch = key(79); velocity = 4/5; }
+  note g6 { at = 82.5q; dur = 1/2q; pitch = key(76); velocity = 4/5; }
+  note g7 { at = 83q; dur = 1/2q; pitch = key(74); velocity = 4/5; }
+  note g8 { at = 83.5q; dur = 1/2q; pitch = key(72); velocity = 4/5; }
+  note g9 { at = 84q; dur = 1q; pitch = key(76); velocity = 4/5; }
+  note g10 { at = 85q; dur = 1q; pitch = key(81); velocity = 4/5; }
+  note g11 { at = 86q; dur = 1q; pitch = key(84); velocity = 4/5; }
+  note g12 { at = 87q; dur = 1q; pitch = key(81); velocity = 4/5; }
+  note g13 { at = 88q; dur = 1q; pitch = key(79); velocity = 4/5; }
+  note g14 { at = 89q; dur = 1/2q; pitch = key(76); velocity = 4/5; }
+  note g15 { at = 89.5q; dur = 1/2q; pitch = key(79); velocity = 4/5; }
+  note g16 { at = 90q; dur = 1q; pitch = key(74); velocity = 4/5; }
+  note g17 { at = 91q; dur = 1/2q; pitch = key(71); velocity = 4/5; }
+  note g18 { at = 91.5q; dur = 1/2q; pitch = key(74); velocity = 4/5; }
+}
 place keys_play { pattern = &keys_part; track = &keys_track; at = 0q; }
 place layered_play { pattern = &layered_part; track = &layered_track; at = 0q; }
 place sweep_play { pattern = &sweep_part; track = &sweep_track; at = 0q; }
+place pad_play { pattern = &pad_part; track = &pad_track; at = 0q; }
+place glass_play { pattern = &glass_part; track = &glass_track; at = 0q; }
 
 // Drums from the core-kit example, in the opening and the finale.
 asset kick_sample {
@@ -233,7 +319,7 @@ pattern groove {
   hit hat_eight { at = 7/2q; key = "hat"; velocity = 2/5; }
 }
 place intro_drums { pattern = &groove; track = &drums; at = 0q; count = 3; }
-place finale_drums { pattern = &groove; track = &drums; at = 77q; count = 2; }
+place finale_drums { pattern = &groove; track = &drums; at = 93q; count = 2; }
 
 // One recorded phrase (2.4 s = 4q at 100 bpm), five transports.
 asset phrase {
@@ -267,16 +353,23 @@ audio fast_rate {
   mode = warp_rate; warp = [(0q, 0frame), (2q, 115200frame)];
   gain = 4/5; fade_in = 2ms; fade_out = 20ms; track = &clips;
 }
+audio glass_clip {
+  asset = &glass; at = 77q; source = [0frame, 57600frame]; mode = rate;
+  gain = 1; fade_in = 2ms; fade_out = 20ms; track = &clips;
+}
 audio finale_phrase {
-  asset = &phrase; at = 81q; source = [0frame, 115200frame];
+  asset = &phrase; at = 97q; source = [0frame, 115200frame];
   mode = warp_preserve; processor = "core.stretch.ola/1";
   warp = [(0q, 0frame), (4q, 115200frame)];
   gain = 1/3; fade_in = 2ms; fade_out = 200ms; track = &clips;
 }
 
 node mix { type = "core.sum/1"; config = { channels = 1; }; }
-node room { type = "fx.reverb/1"; config = { channels = 1; }; params = { mix = 3/20; }; }
-node master { type = "core.gain/1"; config = { channels = 1; }; params = { gain = 7/10; }; }
+// The mono mix is copied to both channels; stereo sources join it on the bus.
+node center { type = "core.matrix/1"; config = { inputs = 1; outputs = 2; coefficients = [[1], [1]]; }; }
+node bus { type = "core.sum/1"; config = { channels = 2; }; }
+node room { type = "fx.reverb/1"; config = { channels = 2; }; params = { mix = 3/20; }; }
+node master { type = "core.gain/1"; config = { channels = 2; }; params = { gain = 13/20; }; }
 connect keys_route { from = &keys:out; to = &mix:in; }
 connect layered_route { from = &layered:out; to = &mix:in; }
 connect sweep_route { from = &sweep:out; to = &mix:in; }
@@ -287,5 +380,10 @@ connect slow_preserve_route { from = &slow_preserve:out; to = &mix:in; }
 connect fast_preserve_route { from = &fast_preserve:out; to = &mix:in; }
 connect fast_rate_route { from = &fast_rate:out; to = &mix:in; }
 connect finale_route { from = &finale_phrase:out; to = &mix:in; }
-connect room_route { from = &mix:out; to = &room:in; }
+connect center_route { from = &mix:out; to = &center:in; }
+connect center_bus_route { from = &center:out; to = &bus:in; }
+connect pad_route { from = &pad:out; to = &bus:in; }
+connect glass_route { from = &glass_keys:out; to = &bus:in; }
+connect glass_clip_route { from = &glass_clip:out; to = &bus:in; }
+connect room_route { from = &bus:out; to = &room:in; }
 connect master_route { from = &room:out; to = &master:in; }

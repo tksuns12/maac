@@ -96,8 +96,8 @@ actually published; no release tag or publication date is asserted here.
   `grammar.lark`, spec-derived structure and value-type inventories, the L1
   metadata-role fragment run through the execution projection, a §23
   diagnostic catalog and region vectors.
-- A sampler and warp [feature showcase](examples/showcase/) with a recorded
-  informal [listening approval](docs/showcase-listening.md).
+- A sampler, warp and stereo [feature showcase](examples/showcase/) with
+  recorded informal [listening approvals](docs/showcase-listening.md).
 
 - Native hits and `core.kit/1` one-shot mono/stereo sample playback using existing
   syntax. Pinned raw float32 assets retain their original rate and exact bytes;
@@ -245,8 +245,8 @@ actually published; no release tag or publication date is asserted here.
 - The normative specification remains a design draft and needs
   implementation-driven review before stabilization.
 - Automated finite, non-silent sample measurements and repeatability checks do
-  not establish cross-platform bit identity or human listening quality. One
-  informal owner approval of the showcase render is recorded; a broader
-  listening review is pending.
+  not establish cross-platform bit identity or human listening quality.
+  Informal owner approvals of the mono and stereo showcase renders are
+  recorded; a broader listening review is pending.
 - This is a source-only preparation; generated binaries and rendered audio are
   not included. The starter library includes its small authored wavetable WAV.

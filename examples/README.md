@@ -325,12 +325,12 @@ PCM-safe peak for this fixture. No human listening approval is claimed.
 
 # Feature showcase
 
-[`showcase/showcase.maac`](showcase/showcase.maac) is a 53-second tour of the
-pitched sampler, sustain loops, velocity layers, key crossfades, asset-backed
-samples, and `warp_rate` versus `warp_preserve` on one recorded phrase. The
-score header lists each section's timing. All sounds are synthesized by
-[`generate.py`](showcase/generate.py), which also writes the score from
-`showcase.maac.in` with the sample hashes.
+[`showcase/showcase.maac`](showcase/showcase.maac) is a 63-second stereo tour
+of the pitched sampler, sustain loops, velocity layers, key crossfades,
+asset-backed samples, `warp_rate` versus `warp_preserve` on one recorded phrase,
+and stereo samples. The score header lists each section's timing. All sounds
+are synthesized by [`generate.py`](showcase/generate.py), which also writes the
+score from `showcase.maac.in` with the sample hashes.
 
 ```sh
 maac build examples/showcase/showcase.maac --project-root . --disk-media --profile song -o showcase.wav --format pcm16
@@ -338,10 +338,21 @@ maac build examples/showcase/showcase.maac --project-root . --disk-media --profi
 
 Both flags are required: without `--disk-media` the plan exceeds its JSON
 byte limit, and the default profile's sample execution work is too small.
+
+The mono sections are copied to both channels. The stereo section plays one
+stereo recording, `glass.pcm`, twice: as an audio clip and through
+`sample glass_a4 { asset = &glass; ... }` as a pitched sampler. Its strike is on
+the left and its ring lasts on the right. A stereo WAV pad, `wide.wav`, joins
+it. The pad's channels have periods of 185 and 183 frames, and its loop is
+their least common multiple, 33,855 frames, so it has no seam.
+
 When rendered, the first phrase note measured 440 Hz at the original speed,
 220 Hz and 880 Hz under `warp_rate`, and 420 Hz and 430 Hz under
-`warp_preserve`. Nothing clipped. The owner's informal listening approval is
-recorded in the [showcase listening record](../docs/showcase-listening.md).
+`warp_preserve`. The sampler's first A4 matched the glass clip with a
+correlation of 0.999 in each channel. The pad's channels measured 259.46 Hz and
+262.30 Hz. The peak was 0.904, and nothing clipped. The owner's informal
+listening approvals of the mono and stereo renders are recorded in the
+[showcase listening record](../docs/showcase-listening.md).
 
 # Audio inside patterns
 

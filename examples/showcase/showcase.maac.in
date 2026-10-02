@@ -15,9 +15,13 @@ maac 1;
 // 62-70q  warp_preserve x2 slower: same pitch (core.stretch.ola/1).
 // 71-73q  warp_preserve x2 faster: same pitch.
 // 74-76q  warp_rate x2 faster: an octave higher.
-// 77-85q  Finale: everything together.
+// 77-79q  Stereo: one stereo recording as an audio clip at its own pitch. Its
+//         strike is on the left and its ring lasts on the right.
+// 79-92q  The same recording as a pitched sampler (sample { asset = ...; }),
+//         then over a stereo pad whose channels are tuned 2.8 Hz apart.
+// 93-101q Finale: everything together.
 project showcase {
-  score = [0q, 85q];
+  score = [0q, 101q];
   tail = 2s;
   rate = 48000Hz;
   tempo = &clock;
@@ -43,6 +47,14 @@ sample hard_c4 {
   format = "pcm_f32le_interleaved/1"; rate = 48000Hz; frames = 48000;
   root = C4; loop = [30176frame, 46736frame];
 }
+
+// Stereo: a WAV pad and a sample that plays a composition audio asset.
+sample wide_c4 { path = "wide.wav"; hash = "@WIDE@"; root = C4; loop = [15000frame, 48855frame]; }
+asset glass {
+  kind = audio; path = "@REL@/glass.pcm"; hash = "@GLASS@";
+  format = "pcm_f32le_interleaved/1"; rate = 48000Hz; channels = 2; frames = 57600;
+}
+sample glass_a4 { asset = &glass; root = A4; }
 
 instrument keys_inst {
   channels = 1;
@@ -91,25 +103,55 @@ instrument sweep_inst {
   }
 }
 
+instrument pad_inst {
+  channels = 2;
+  voice v {
+    channels = 2; amplitude = &amp; output = &play:out;
+    node amp { type = "synth.adsr/1"; params = { attack = 120ms; decay = 300ms; sustain = 0.9; release = 700ms; }; }
+    node play { type = "synth.sample/1"; config = { channels = 2; zones = [{ sample = &wide_c4; low = key(0); high = key(127); }]; }; params = { level = 0.3; }; }
+  }
+}
+
+instrument glass_inst {
+  channels = 2;
+  voice v {
+    channels = 2; amplitude = &amp; output = &play:out;
+    node amp { type = "synth.adsr/1"; params = { attack = 1ms; decay = 0s; sustain = 1; release = 600ms; }; }
+    node play { type = "synth.sample/1"; config = { channels = 2; zones = [{ sample = &glass_a4; low = key(0); high = key(127); }]; }; params = { level = 0.9; }; }
+  }
+}
+
 node keys { instrument = &keys_inst; }
 node layered { instrument = &layered_inst; }
 node sweep { instrument = &sweep_inst; }
+node pad { instrument = &pad_inst; }
+node glass_keys { instrument = &glass_inst; }
 track keys_track { target = &keys:events; }
 track layered_track { target = &layered:events; }
 track sweep_track { target = &sweep:events; }
+track pad_track { target = &pad:events; }
+track glass_track { target = &glass_keys:events; }
 
 pattern keys_part {
-  length = 85q;
+  length = 101q;
 @KEYS_NOTES@}
 pattern layered_part {
-  length = 85q;
+  length = 101q;
 @LAYER_NOTES@}
 pattern sweep_part {
-  length = 85q;
+  length = 101q;
 @SWEEP_NOTES@}
+pattern pad_part {
+  length = 101q;
+@PAD_NOTES@}
+pattern glass_part {
+  length = 101q;
+@GLASS_NOTES@}
 place keys_play { pattern = &keys_part; track = &keys_track; at = 0q; }
 place layered_play { pattern = &layered_part; track = &layered_track; at = 0q; }
 place sweep_play { pattern = &sweep_part; track = &sweep_track; at = 0q; }
+place pad_play { pattern = &pad_part; track = &pad_track; at = 0q; }
+place glass_play { pattern = &glass_part; track = &glass_track; at = 0q; }
 
 // Drums from the core-kit example, in the opening and the finale.
 asset kick_sample {
@@ -156,7 +198,7 @@ pattern groove {
   hit hat_eight { at = 7/2q; key = "hat"; velocity = 2/5; }
 }
 place intro_drums { pattern = &groove; track = &drums; at = 0q; count = 3; }
-place finale_drums { pattern = &groove; track = &drums; at = 77q; count = 2; }
+place finale_drums { pattern = &groove; track = &drums; at = 93q; count = 2; }
 
 // One recorded phrase (2.4 s = 4q at 100 bpm), five transports.
 asset phrase {
@@ -190,16 +232,23 @@ audio fast_rate {
   mode = warp_rate; warp = [(0q, 0frame), (2q, 115200frame)];
   gain = 4/5; fade_in = 2ms; fade_out = 20ms; track = &clips;
 }
+audio glass_clip {
+  asset = &glass; at = 77q; source = [0frame, 57600frame]; mode = rate;
+  gain = 1; fade_in = 2ms; fade_out = 20ms; track = &clips;
+}
 audio finale_phrase {
-  asset = &phrase; at = 81q; source = [0frame, 115200frame];
+  asset = &phrase; at = 97q; source = [0frame, 115200frame];
   mode = warp_preserve; processor = "core.stretch.ola/1";
   warp = [(0q, 0frame), (4q, 115200frame)];
   gain = 1/3; fade_in = 2ms; fade_out = 200ms; track = &clips;
 }
 
 node mix { type = "core.sum/1"; config = { channels = 1; }; }
-node room { type = "fx.reverb/1"; config = { channels = 1; }; params = { mix = 3/20; }; }
-node master { type = "core.gain/1"; config = { channels = 1; }; params = { gain = 7/10; }; }
+// The mono mix is copied to both channels; stereo sources join it on the bus.
+node center { type = "core.matrix/1"; config = { inputs = 1; outputs = 2; coefficients = [[1], [1]]; }; }
+node bus { type = "core.sum/1"; config = { channels = 2; }; }
+node room { type = "fx.reverb/1"; config = { channels = 2; }; params = { mix = 3/20; }; }
+node master { type = "core.gain/1"; config = { channels = 2; }; params = { gain = 13/20; }; }
 connect keys_route { from = &keys:out; to = &mix:in; }
 connect layered_route { from = &layered:out; to = &mix:in; }
 connect sweep_route { from = &sweep:out; to = &mix:in; }
@@ -210,5 +259,10 @@ connect slow_preserve_route { from = &slow_preserve:out; to = &mix:in; }
 connect fast_preserve_route { from = &fast_preserve:out; to = &mix:in; }
 connect fast_rate_route { from = &fast_rate:out; to = &mix:in; }
 connect finale_route { from = &finale_phrase:out; to = &mix:in; }
-connect room_route { from = &mix:out; to = &room:in; }
+connect center_route { from = &mix:out; to = &center:in; }
+connect center_bus_route { from = &center:out; to = &bus:in; }
+connect pad_route { from = &pad:out; to = &bus:in; }
+connect glass_route { from = &glass_keys:out; to = &bus:in; }
+connect glass_clip_route { from = &glass_clip:out; to = &bus:in; }
+connect room_route { from = &bus:out; to = &room:in; }
 connect master_route { from = &room:out; to = &master:in; }

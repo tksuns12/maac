@@ -6,8 +6,9 @@ No recordings or third-party samples are used. Run from any directory:
     python3 examples/showcase/generate.py
     maac build examples/showcase/showcase.maac --project-root . -o showcase.wav
 
-WAV samples are embedded in the plan; `.pcm` samples and the phrase are plan
-audio assets, so the build also works with `--disk-media`.
+WAV samples are embedded in the plan; `.pcm` samples, the phrase and the
+stereo glass recording are plan audio assets, so the build also works with
+`--disk-media`.
 """
 import hashlib
 import math
@@ -34,9 +35,13 @@ def digest(raw):
     return "sha256:" + hashlib.sha256(raw).hexdigest()
 
 
-def write_wav(name, samples):
+def interleave(left, right):
+    return [x for pair in zip(left, right) for x in pair]
+
+
+def write_wav(name, samples, channels=1):
     data = struct.pack(f"<{len(samples)}f", *samples)
-    fmt = struct.pack("<HHIIHH", 3, 1, RATE, RATE * 4, 4, 32)
+    fmt = struct.pack("<HHIIHH", 3, channels, RATE, RATE * 4 * channels, 4 * channels, 32)
     raw = (b"RIFF" + struct.pack("<I", 4 + 8 + len(fmt) + 8 + len(data)) + b"WAVE"
            + b"fmt " + struct.pack("<I", len(fmt)) + fmt
            + b"data" + struct.pack("<I", len(data)) + data)
@@ -105,6 +110,46 @@ def high():
     return normalize(out)
 
 
+def stereo_normalize(left, right, peak=0.8):
+    top = max(max(abs(x) for x in left), max(abs(x) for x in right))
+    return [x * peak / top for x in left], [x * peak / top for x in right]
+
+
+def wide():
+    """Stereo C4 pad. The left channel's period is 185 frames and the right's
+    183, so the ears hear 259.5 and 262.3 Hz, with different spectra, evenly
+    around the keys sample's 260.9 Hz. Once both settle, 33,855 frames (their
+    least common multiple) hold whole periods of each channel, so the loop has
+    no seam."""
+    left = [(1, 1.0, .7, 2500), (2, .5, .3, 2000), (3, .4, .25, 1500),
+            (4, .2, .1, 1500), (5, .15, .08, 1000), (6, .1, .05, 1000)]
+    right = [(1, 1.0, .7, 2500), (2, .35, .2, 2000), (3, .5, .3, 1500),
+             (4, .15, .08, 1500), (5, .2, .1, 1000), (7, .08, .04, 1000)]
+    return stereo_normalize(harmonic_tone(185, 50_000, left, 2_400, 15_000),
+                            harmonic_tone(183, 50_000, right, 2_400, 15_000))
+
+
+def glass():
+    """Stereo struck A4 bar, 1.2 s. The bright strike decays quickly on the left
+    and a softer ring lasts on the right, 0.5 ms later, so each note starts on
+    the left and rings out on the right."""
+    f = 440.0
+    frames, fade, delay = 57_600, 9_600, 24
+    left, right = [], []
+    for i in range(frames):
+        t = i / RATE
+        tail = min(1.0, (frames - i) / fade)
+        left.append(min(1.0, i / 24) * tail * (
+            math.exp(-t / .18) * math.sin(2 * math.pi * f * t)
+            + .5 * math.exp(-t / .06) * math.sin(2 * math.pi * 4 * f * t)
+            + .2 * math.exp(-t / .03) * math.sin(2 * math.pi * 10 * f * t)))
+        t = (i - delay) / RATE
+        right.append(0.0 if i < delay else min(1.0, (i - delay) / 24) * tail * (
+            .8 * math.exp(-t / .7) * math.sin(2 * math.pi * f * t)
+            + .15 * math.exp(-t / .25) * math.sin(2 * math.pi * 4 * f * t)))
+    return stereo_normalize(left, right)
+
+
 def phrase():
     """A 2.4 s plucked A-minor arpeggio: eight notes, 0.3 s apart."""
     notes = [69, 72, 76, 81, 79, 76, 72, 76]
@@ -135,6 +180,8 @@ def main():
         "soft": write_pcm("soft", soft()),
         "hard": write_pcm("hard", hard()),
         "phrase": write_pcm("phrase", phrase()),
+        "wide": write_wav("wide", interleave(*wide()), 2),
+        "glass": write_pcm("glass", interleave(*glass())),
     }
     for name, value in h.items():
         print(f"{name}: {value}")
@@ -157,9 +204,21 @@ def main():
     s3 += note("mid", 44, 2, 66, "3/4")
     s3 += note("bottom", 46, 2, 48, "3/4") + note("top", 46, 2, 84, "3/4")
 
-    # Finale (77-85q): chords on the keys, bass on the velocity sampler.
-    chords = [(77, [57, 60, 64]), (79, [53, 57, 60]), (81, [55, 60, 64]), (83, [55, 59, 62, 67])]
+    # Stereo (79-92q): the glass recording as a sampler, then over the pad.
+    tune = [(79, 69, "1/2"), (79.5, 72, "1/2"), (80, 76, "1/2"), (80.5, 79, "1/2"),
+            (81, 81, 1), (82, 79, "1/2"), (82.5, 76, "1/2"), (83, 74, "1/2"),
+            (83.5, 72, "1/2"), (84, 76, 1), (85, 81, 1), (86, 84, 1), (87, 81, 1),
+            (88, 79, 1), (89, 76, "1/2"), (89.5, 79, "1/2"), (90, 74, 1),
+            (91, 71, "1/2"), (91.5, 74, "1/2")]
+    s4 = "".join(note(f"g{i}", at, dur, k, "4/5") for i, (at, k, dur) in enumerate(tune))
+    progression = [[57, 60, 64], [53, 57, 60], [55, 60, 64], [55, 59, 62]]
+    pad = "".join(note(f"p{a}_{i}", a, 2, k, "7/10")
+                  for a, ks in zip([84, 86, 88, 90], progression) for i, k in enumerate(ks))
+
+    # Finale (93-101q): chords on the keys and the pad, bass on the velocity sampler.
+    chords = [(93, [57, 60, 64]), (95, [53, 57, 60]), (97, [55, 60, 64]), (99, [55, 59, 62, 67])]
     s5 = "".join(note(f"c{a}_{i}", a, 2, k, "7/10") for a, ks in chords for i, k in enumerate(ks))
+    pad += "".join(note(f"p{a}_{i}", a, 2, k, "2/5") for a, ks in chords for i, k in enumerate(ks))
     bass = "".join(note(f"b{a}", a, "3/2", ks[0] - 12, v)
                    for (a, ks), v in zip(chords, ["1", "2/5", "1", "7/10"]))
 
@@ -167,7 +226,8 @@ def main():
     for name, value in h.items():
         text = text.replace(f"@{name.upper()}@", value)
     text = (text.replace("@KEYS_NOTES@", s1 + s5).replace("@LAYER_NOTES@", s2 + bass)
-            .replace("@SWEEP_NOTES@", s3).replace("@REL@", REL))
+            .replace("@SWEEP_NOTES@", s3).replace("@GLASS_NOTES@", s4)
+            .replace("@PAD_NOTES@", pad).replace("@REL@", REL))
     (ROOT / "showcase.maac").write_text(text)
 
 
