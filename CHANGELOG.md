@@ -93,7 +93,8 @@ actually published; no release tag or publication date is asserted here.
   contracts, generic interchange, and bounded L1–L5 quantitative conformance
   corpora. The [evidence map](docs/document-performance-evidence.md) records
   public tests, including a grammar-driven lexical corpus checked against
-  `grammar.lark`, spec-derived structure and value-type inventories, a §23
+  `grammar.lark`, spec-derived structure and value-type inventories, the L1
+  metadata-role fragment run through the execution projection, a §23
   diagnostic catalog and region vectors.
 - A sampler and warp [feature showcase](examples/showcase/) with a recorded
   informal [listening approval](docs/showcase-listening.md).
@@ -226,6 +227,10 @@ actually published; no release tag or publication date is asserted here.
   frame duration.
 - `maac module unpack` refuses members that collide on the host filesystem and
   never replaces a destination that appears during publication.
+- Library-extension objects (`library`, `wavetable`, `sample`, `instrument`,
+  `voice`, `connect`, `modulate`, `control`, `preset`, instrument `node`) and
+  `import` accept §4's optional string `label` instead of refusing it, and
+  refuse other label values with `E_UNIT`.
 
 ### Limitations
 

@@ -2105,11 +2105,13 @@ fn exact_fields(
     required: &[&str],
     file: &str,
 ) -> Result<(), Diagnostics> {
+    // Every object may carry the optional string `label` (§4).
+    optional_string_field(object, "label", file)?;
     let allowed = allowed.iter().copied().collect::<BTreeSet<_>>();
     if let Some((name, field)) = object
         .fields
         .iter()
-        .find(|(name, _)| !allowed.contains(name.as_str()))
+        .find(|(name, _)| *name != "label" && !allowed.contains(name.as_str()))
     {
         return Err(field_error(
             DiagnosticCode::UnknownField,

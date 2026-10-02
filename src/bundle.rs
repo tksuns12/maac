@@ -624,12 +624,30 @@ fn exact_import_reference(
     source_path: &str,
     object: &Object,
 ) -> Result<ImportReference, Diagnostics> {
-    let fields: BTreeSet<&str> = object.fields.keys().map(String::as_str).collect();
+    // Every object may carry the optional string `label` (§4).
+    if object
+        .field("label")
+        .is_some_and(|field| field.value.as_string().is_none())
+    {
+        return Err(one_error(
+            DiagnosticCode::Unit,
+            format!(
+                "import `{}` in `{source_path}` label requires a string",
+                object.id
+            ),
+        ));
+    }
+    let fields: BTreeSet<&str> = object
+        .fields
+        .keys()
+        .map(String::as_str)
+        .filter(|name| *name != "label")
+        .collect();
     let expected = BTreeSet::from(["hash", "path"]);
     let builtin = BTreeSet::from(["builtin"]);
     if (fields != expected && fields != builtin) || !object.children.is_empty() {
         return Err(reference_error(format!(
-            "import `{}` in `{source_path}` must contain exactly string fields `path` and `hash`, or only string field `builtin`, and no children",
+            "import `{}` in `{source_path}` must contain exactly string fields `path` and `hash`, or only string field `builtin`, besides an optional `label`, and no children",
             object.id
         )));
     }
