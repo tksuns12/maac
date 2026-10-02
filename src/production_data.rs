@@ -582,6 +582,7 @@ pub fn prepare_document(
     document: &Document,
     assets: &BTreeMap<String, Vec<u8>>,
 ) -> Result<(Document, Option<ProductionSettings>), Diagnostics> {
+    crate::extensions::check(document)?;
     let prepared_takes = if crate::takes::declared(document) {
         Some(crate::takes::prepare_document(document, assets)?)
     } else {

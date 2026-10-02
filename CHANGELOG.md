@@ -217,6 +217,14 @@ actually published; no release tag or publication date is asserted here.
 
 ### Fixed
 
+- Unknown extensions are reported at their own `namespace` field everywhere:
+  `E_CAPABILITY` for an unsupported namespace and `E_REFERENCE` for any
+  namespace that `project.requires` does not list. Bundle checks previously
+  reported them at a production path, and production and takes reported an
+  unlisted namespace with `E_CAPABILITY`. `execution_identity` refuses
+  documents with an unsupported extension namespace instead of hashing them,
+  and `maac::extensions::SUPPORTED` lists the supported identifiers.
+
 - Omitted required `config` on `core.sum/1` and `core.onepole/1` is refused
   during source validation, not only at compilation.
 - Same-sample graph cycles are refused before an edit commits or `maac patch`

@@ -1041,6 +1041,15 @@ impl<'a> Validator<'a> {
                 return;
             }
         }
+        let unsupported_extension = object.kind == "extension"
+            && object
+                .field("namespace")
+                .and_then(|field| field.value.as_string())
+                .is_some_and(|namespace| !crate::extensions::is_supported(namespace));
+        if unsupported_extension {
+            // Reported at its namespace by `validate_extension_shape`.
+            return;
+        }
         self.push(
             DiagnosticCode::Capability,
             format!(
@@ -1164,12 +1173,7 @@ impl<'a> Validator<'a> {
             if let ValueKind::List(items) = &field.value.kind {
                 for item in items {
                     if let ValueKind::String(capability) = &item.kind {
-                        if !matches!(
-                            capability.as_str(),
-                            crate::production_data::CAPABILITY
-                                | crate::takes::CAPABILITY
-                                | crate::takes::CAPABILITY_V2
-                        ) {
+                        if !crate::extensions::is_supported(capability) {
                             self.push(
                                 DiagnosticCode::Capability,
                                 format!("unsupported required capability `{capability}`"),
@@ -4345,6 +4349,17 @@ impl<'a> Validator<'a> {
     fn validate_extension_shape(&mut self, object: &Object, path: &[String]) {
         if let Some(field) = object.field("namespace") {
             self.expect_string(field, path, "namespace");
+        }
+        if path.len() == 1 {
+            for finding in crate::extensions::findings(self.document, object) {
+                self.push(
+                    finding.code,
+                    finding.message,
+                    Some(finding.span),
+                    path.to_vec(),
+                    vec!["namespace".into()],
+                );
+            }
         }
         if let Some(field) = object.field("schema") {
             self.expect_object_ref(field, "schema", &["asset"], path);

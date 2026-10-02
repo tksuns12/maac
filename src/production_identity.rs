@@ -158,6 +158,7 @@ pub(crate) fn execution_identity_for_view(
     if document.version != 1 {
         return Err(error("execution identity supports MaaC/1 only"));
     }
+    reject_unsupported_extensions(document)?;
     let meter = meter_map(document)?;
     let normalizer = Normalizer {
         plan,
@@ -188,6 +189,7 @@ pub(crate) fn normalized_document_for_editing(
     if document.version != 1 {
         return Err(error("editing normalization supports MaaC/1 only"));
     }
+    reject_unsupported_extensions(document)?;
     let meter = meter_map(document)?;
     let normalizer = Normalizer {
         plan,
@@ -249,6 +251,17 @@ fn valid_digest(text: &str) -> bool {
                 .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
     })
 }
+/// §26: a host must not claim semantic normalization of a document whose
+/// extension it does not understand.
+fn reject_unsupported_extensions(document: &Document) -> Result<(), IdentityError> {
+    match crate::extensions::first_unsupported(document) {
+        Some(namespace) => Err(error(format!(
+            "normalization is not defined for unsupported extension namespace `{namespace}`"
+        ))),
+        None => Ok(()),
+    }
+}
+
 fn error(message: impl Into<String>) -> IdentityError {
     IdentityError(message.into())
 }
@@ -902,12 +915,12 @@ place play { pattern=&riff; track=&notes; at=0q; }
     }
 
     #[test]
-    fn complete_extensions_and_unknown_payload_labels_are_never_discarded() {
+    fn complete_extensions_and_payload_labels_are_never_discarded() {
         let base = crate::syntax::parse(SOURCE).unwrap();
         let plan = crate::compiler::compile(&base).unwrap();
-        // Preservation test at the identity boundary: an unknown required
-        // capability would still be rejected by the renderer before execution.
-        let with_extension = format!("{SOURCE} extension ext {{ namespace=\"unknown/1\";schema=&schema;render_affecting=false;data={{deliveries={{release={{limit=-14;}};unused={{limit=-20;}};}};label=\"payload\";}};}}");
+        // Preservation test at the identity boundary: unselected and payload
+        // data stay in the hash. Bundle compilation validates this data.
+        let with_extension = format!("{SOURCE} extension ext {{ namespace=\"maac.production/1\";schema=&schema;render_affecting=true;data={{deliveries={{release={{limit=-14;}};unused={{limit=-20;}};}};label=\"payload\";}};}}");
         let first =
             execution_identity(&crate::syntax::parse(&with_extension).unwrap(), &plan).unwrap();
         for changed in [
@@ -920,6 +933,15 @@ place play { pattern=&riff; track=&notes; at=0q; }
         }
         assert!(first.normalized_source_json.contains("payload"));
         assert!(first.normalized_source_json.contains("unused"));
+    }
+
+    #[test]
+    fn unsupported_extensions_have_no_execution_identity() {
+        let base = crate::syntax::parse(SOURCE).unwrap();
+        let plan = crate::compiler::compile(&base).unwrap();
+        let source = format!("{SOURCE} extension ext {{ namespace=\"unknown/1\";schema=&schema;render_affecting=false;data={{}};}}");
+        let error = execution_identity(&crate::syntax::parse(&source).unwrap(), &plan).unwrap_err();
+        assert!(error.0.contains("`unknown/1`"), "{error}");
     }
 
     #[test]

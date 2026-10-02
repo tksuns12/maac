@@ -17,6 +17,15 @@ The [Document/Performance evidence map](document-performance-evidence.md)
 records scoped language obligations, public boundaries, and fixed test cases;
 its execution record distinguishes inspected evidence from freshly run gates.
 
+**Supported extension identifiers (§1.2):** `maac.production/1`, `maac.takes/1`, `maac.takes/2`
+
+An `extension` with any other namespace, or a namespace that
+`project.requires` does not list, is preserved for Document-only inspection
+(parsing, the authored tree and its revision hash) and refused elsewhere, at its
+`namespace` field: `E_CAPABILITY` for an unsupported namespace and `E_REFERENCE`
+for one missing from `project.requires`. No execution identity is computed for
+it. See the [unknown-extension decision](unknown-extensions-proposal.md).
+
 | Feature | Foundation scope |
 | --- | --- |
 | Source | UTF-8, span-aware parsing, exact rational quantities, comments and source text retained in the parsed document |

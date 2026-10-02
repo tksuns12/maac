@@ -802,6 +802,7 @@ fn map_local_diagnostics(diagnostics: Diagnostics) -> EditError {
 }
 
 fn reject_unsupported_capabilities(document: &Document) -> EditResult<()> {
+    crate::extensions::check(document).map_err(map_local_diagnostics)?;
     for object in document.objects.values() {
         if matches!(
             object.kind.as_str(),

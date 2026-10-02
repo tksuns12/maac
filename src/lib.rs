@@ -16,6 +16,7 @@ pub mod editing;
 pub mod exact;
 pub mod export;
 mod expression;
+pub mod extensions;
 pub mod external;
 pub mod external_host;
 pub mod external_native;
