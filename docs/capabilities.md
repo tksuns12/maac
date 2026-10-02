@@ -20,7 +20,7 @@ its execution record distinguishes inspected evidence from freshly run gates.
 | Feature | Foundation scope |
 | --- | --- |
 | Source | UTF-8, span-aware parsing, exact rational quantities, comments and source text retained in the parsed document |
-| Patterns | Finite notes and hits, nested uses, repetition, stretching, cents transposition for notes, cut and spill |
+| Patterns | Finite notes, hits, messages and [audio leaves](pattern-audio.md), nested uses, repetition, stretching, cents transposition for notes, cut and spill |
 | Arrangement | Explicit tracks and placements, stable occurrence addresses, final-state overrides, deletion and inserts |
 | Event query | [Exact score-window selection](windowed-event-query.md) on validated resolved artifacts, returning complete note gates or point events with source addresses, payloads, physical offsets and scheduled frames; source queries use full bounded compilation |
 | Instance materialization | Explicit [private copies of a whole placement](materialize-instance.md), including repeated/nested occurrences and curve/tuning dependencies; complete event/source correspondence, atomic edits and inverses; structural identity changes are reported |
@@ -74,8 +74,7 @@ Section 25 loss reporting and the initial MIDI 1.0 SMF adapter are implemented t
 `maac::interchange`; notation and DAW-session adapters remain separate work.
 
 Message performance is resolved into retained transport events, including exact protocol/bytes, certified frames, and §6.1 dispatch ordering. Hosts must explicitly advertise a matching protocol for each target through `PlanArtifact::performance_dispatches`; the built-in Core Audio renderer has no raw-message adapter and therefore still returns `E_CAPABILITY`. Other recognized deferred execution features fail with `E_CAPABILITY`:
-other processors, pitched sample instruments,
-preserve-pitch audio warping and other extensions. The published native external ABI can be hosted explicitly, but general mixed external-node graph integration, subprocess/sandbox hosting, notation/DAW adapters, GUI and real-time
+other processors, module-asset stretchers and other extensions. The published native external ABI can be hosted explicitly, but general mixed external-node graph integration, subprocess/sandbox hosting, notation/DAW adapters, GUI and real-time
 playback are outside this release's interfaces. The bounded MIDI 1.0 SMF adapter is an
 offline interchange export and does not provide live MIDI device transport.
 Protocol 2 transactional editing is implemented through `maac::editing` and `maac patch` for

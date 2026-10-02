@@ -11,6 +11,93 @@ actually published; no release tag or publication date is asserted here.
 
 ### Added
 
+- Pitched sample instruments: library `sample` declarations and the voice-only
+  `synth.sample/1` processor play recordings at their recorded rate from a
+  12-TET root key, with forward sustain loops, overlapping key zones, velocity
+  layers, and linear or equal-power key and velocity crossfades. Samples may be
+  mono or stereo. They come from an embedded WAV, a core PCM file carried as a
+  plan audio asset (inline or with `--disk-media`), or a composition audio
+  asset shared with clips and kits. See [samples](docs/instruments.md#samples).
+- Audio clips inside patterns: `audio` leaves in patterns and placement
+  inserts repeat, nest and stretch with their pattern. A placement exposes an
+  explicit `out` port, and overrides may delete an occurrence or change its
+  timing, gain or fades. Each placement is one plan node however many
+  occurrences it holds. See the [pattern audio contract](docs/pattern-audio.md).
+- Arranged audio: top-level `audio` clips in `rate` mode (speed, reverse,
+  musical or physical placement, gain, linear or equal-power fades) and
+  tempo-aware `warp_rate`, plus `warp_preserve` through the core
+  `core.stretch.ola/1` reference stretch. Plan versions 5 and 6 carry them. See
+  the [audio clip](docs/audio-clips.md) and [warp](docs/warp-rate.md) contracts.
+- Core control modulation: `modulate`, `core.lfo/1` and `core.constant/1`,
+  with additive contributions, event-rate and reset-rate capture, and
+  instrument graph modulation including ADSR, voice phase and shared-LFO reset
+  capture. Plan version 7 carries controls. See the
+  [modulation contract](docs/core-modulation.md).
+- Core processors `core.fader/1` (decibel level), `core.matrix/1`,
+  `core.delay/1` (explicit delays permit causal feedback) and the
+  counter-derived reference `core.noise/1`. See [fader](docs/core-fader.md),
+  [matrix](docs/core-matrix.md), [delay](docs/core-delay.md) and
+  [noise](docs/core-noise.md).
+- Message events resolve into retained transport events with exact protocol
+  bytes, certified frames and §6.1 ordering. Hosts dispatch them through
+  `PlanArtifact::performance_dispatches`; the built-in renderer has no
+  raw-message adapter.
+- Protocol 2 transactional editing through `maac::editing` and `maac patch`:
+  source-preserving atomic edits with inverses, bounded edit impact, edits of
+  local and built-in imports and library sources with atomic repinning, and
+  diagnostics carrying original-source byte ranges. See the
+  [editing kernel](docs/editing-kernel.md) and
+  [editing diagnostics](docs/editing-diagnostics.md).
+- `maac materialize-instance` copies a placement into independently editable
+  patterns with a complete source-address mapping. See the
+  [materialization contract](docs/materialize-instance.md).
+- `maac query-events` and `PlanArtifact` score-window queries return complete
+  events intersecting an exact half-open window. See
+  [event queries](docs/windowed-event-query.md).
+- Reusable musical declarations: pinned pattern, curve and tuning exports
+  resolve in their declaring library, and `maac module` exports, validates and
+  unpacks `maac.module-source/1` source modules. See
+  [reusable declarations](docs/instruments.md#reusable-musical-declarations)
+  and the [module artifact](docs/musical-module-artifact.md).
+- Generic interchange: canonical generic Locked Render lock generation and
+  verification, rendering a verified lock for built-in plans, strict external
+  processor descriptors, and the `maac.native-c-abi/1` host for one
+  output-only external generator. See [generic interchange](docs/generic-interchange.md)
+  and the [native ABI](docs/native-external-abi-v1.md).
+- MIDI 1.0 SMF export with explicit loss reports. See
+  [loss reporting](docs/interchange-loss-report.md).
+- `maac render` accepts reset-origin frame bounds for exact WAV excerpts that
+  still execute the complete plan. See [range rendering](docs/render-range.md).
+- Opt-in disk media: `check`, `build` and `patch` accept `--disk-media` to use
+  hash-pinned native PCM up to 1 GiB through private snapshots. See the
+  [disk-media contract](docs/disk-media.md).
+- `maac import-wav` and `maac verify-import` import whole mono or stereo WAVs or
+  frame crops (PCM16/24/32 and float32) into a relocatable project with
+  provenance, optionally retaining the original file. See
+  [WAV import](docs/media-import.md).
+- Native composition archives: `maac archive create/patch/verify/unpack`
+  capture exact source and media closures. Versions 2–12 add checkpoints,
+  retained WAV imports, verified output and native-effect freezes with explicit
+  reuse, journaled entry, library and shared-source edits, and retained native
+  processor context. See the [archive contract](docs/editable-archive.md).
+- Takes and comping through `maac.takes/1` and grouped microphone lanes through
+  `maac.takes/2`. See [takes](docs/takes-and-comping.md) and
+  [grouped takes](docs/grouped-takes.md).
+- macOS process tools: `maac play` renders and auditions through the default
+  output; `maac inputs` lists devices; `maac record` captures bounded 48 kHz
+  mono takes from the default or a UID-selected input, with opt-in duplex
+  monitoring. See [playback](docs/playback.md), [recording](docs/recording.md)
+  and [input monitoring](docs/input-monitoring.md).
+- Language conformance evidence: the specification adds edit protocol 2 with
+  authored revision identity, timing coordinates, tuning and processor input
+  contracts, generic interchange, and bounded L1–L5 quantitative conformance
+  corpora. The [evidence map](docs/document-performance-evidence.md) records
+  public tests, including a grammar-driven lexical corpus checked against
+  `grammar.lark`, spec-derived structure and value-type inventories, a §23
+  diagnostic catalog and region vectors.
+- A sampler and warp [feature showcase](examples/showcase/) with a recorded
+  informal [listening approval](docs/showcase-listening.md).
+
 - Native hits and `core.kit/1` one-shot mono/stereo sample playback using existing
   syntax. Pinned raw float32 assets retain their original rate and exact bytes;
   version 4 plans embed them for standalone rendering and named deliveries.
@@ -95,6 +182,26 @@ actually published; no release tag or publication date is asserted here.
 
 ### Changed
 
+- Source validation is stricter where it was more lenient than the
+  specification. A `use` requires `at`; objects nested in a `project` or a core
+  processor `node` are refused instead of ignored; lowercase pitch spellings
+  such as `c4`, a nonintegral `key()` and a nonpositive `ratio()` are refused;
+  and a warp anchor with the wrong unit is `E_UNIT` rather than `E_RANGE`.
+  Sources that relied on the old behavior now fail validation.
+- Diagnostics report §23 locations: object paths contain only authored IDs, and
+  field paths name the field and list position, such as `["points", "1"]`,
+  `["set", "at"]` or `["params", "level"]`. Codes are unchanged except for the
+  warp anchors above. Tools that matched the earlier labels see new paths.
+- In `grammar.lark`, the `maac` keyword and pitch tokens end at an identifier
+  boundary, matching the Rust parser: `maac1;` is not a header and `C4x` is one
+  symbol.
+- Global `bar(b,u)` positions are lowered through the project meter during
+  source validation, so reversed or out-of-score bar spans fail before
+  compilation.
+- A placement on a track without an event target is accepted when it expands
+  only audio leaves.
+- A caller-tightened channel limit is reported as `E_RESOURCE_LIMIT`;
+  unsupported channel capabilities remain `E_CAPABILITY`.
 - Project `bar(...)` crop coordinates now resolve against the declared meter
   before compilation; a 3/4 bar interval matches its exact q spelling and
   normalized execution identity.
@@ -105,23 +212,36 @@ actually published; no release tag or publication date is asserted here.
 - Project branding, the Rust crate, the installed command, source-file extension,
   and document header use MaaC naming (`maac` / `.maac` / `maac 1;`).
 - The draft `core.noise/1` hash prefix is now `maac-noise-1`, changing its
-  deterministic reference values. The renderer foundation does not implement
-  this processor.
+  deterministic reference values.
+
+### Fixed
+
+- Omitted required `config` on `core.sum/1` and `core.onepole/1` is refused
+  during source validation, not only at compilation.
+- Same-sample graph cycles are refused before an edit commits or `maac patch`
+  publishes source.
+- Execution identity now normalizes expression children and message events, so
+  production compilation accepts them.
+- Sine envelopes stay finite when an attack or release product overflows the
+  frame duration.
+- `maac module unpack` refuses members that collide on the host filesystem and
+  never replaces a destination that appears during publication.
 
 ### Limitations
 
 - The Rust implementation is a foundation subset; it does not claim full
   Document, Performance, Core Audio, or Locked Render conformance.
-- Messages, top-level core modulation,
-  other processors, arranged audio, external plug-ins,
-  transactional editing, MaaC Locked Render dependency-lock manifests
-  (distinct from `Cargo.lock`), MIDI transport, GUI, and real-time playback
-  remain deferred or outside the current interfaces. Recognized deferred
-  features fail explicitly with `E_CAPABILITY`.
+- The built-in renderer has no raw-message adapter, so rendering message
+  events fails with `E_CAPABILITY`. Module-asset stretchers, mixed external and
+  core processor graphs, external inputs, events and automation, unknown
+  extension semantics, live MIDI transport, GUI, and real-time or live DSP
+  playback remain deferred or outside the current interfaces. Recognized
+  deferred features fail explicitly with `E_CAPABILITY`.
 - The normative specification remains a design draft and needs
   implementation-driven review before stabilization.
 - Automated finite, non-silent sample measurements and repeatability checks do
-  not establish cross-platform bit identity or human listening quality. The
+  not establish cross-platform bit identity or human listening quality. One
+  informal owner approval of the showcase render is recorded; a broader
   listening review is pending.
 - This is a source-only preparation; generated binaries and rendered audio are
   not included. The starter library includes its small authored wavetable WAV.
