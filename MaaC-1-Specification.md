@@ -51,7 +51,9 @@ An implementation states its profiles and its supported extension identifiers. A
 The normative [reusable library and instrument contract](docs/instruments.md)
 defines this repository's local-library extension: library documents,
 hash-pinned imports, reusable patterns, curves and tunings, instruments,
-presets, explicit WAV wavetables, zoned pitched WAV samples, and versioned `synth.* /1` voice/shared
+presets, explicit WAV wavetables, zoned pitched samples (mono or stereo WAV,
+core PCM files, or a composition's own audio asset) with velocity layers and
+key/velocity crossfades, and versioned `synth.* /1` voice/shared
 processors. It specifies declaration and namespace rules, musical reference
 ownership, public control interfaces, synthesis behavior, and resource limits.
 Importing musical definitions retains the consuming composition's tempo,
@@ -98,7 +100,7 @@ The recommended source extension is `.maac`. Files are UTF-8. A file begins with
 maac 1;
 ```
 
-Whitespace is insignificant outside strings. `//` starts a line comment. `/* ... */` is a non-nesting block comment. Semicolons terminate fields; object blocks do not require a following semicolon. Strings use JSON string escapes. An identifier matches `[A-Za-z_][A-Za-z0-9_]*` and is case-sensitive. Identifier length is at most 128 ASCII bytes. Unicode may appear in string labels, not identifiers.
+Whitespace is insignificant outside strings. `//` starts a line comment. `/* ... */` is a non-nesting block comment. Semicolons terminate fields; object blocks do not require a following semicolon. Strings use JSON string escapes. An identifier matches `[A-Za-z_][A-Za-z0-9_]*` and is case-sensitive. Identifier length is at most 128 ASCII bytes. Unicode may appear in string labels, not identifiers. The header keyword `maac` and a letter pitch token (§7) end only at an identifier boundary: neither may be followed directly by `[A-Za-z0-9_]`. Thus `maac1;` is not a header, and `C4x` is the identifier symbol `C4x`, not the pitch `C4` followed by `x`.
 
 Numbers are signed integers, finite decimals, or fractions with a strictly positive integer denominator. Decimal syntax requires digits on both sides of a decimal point: use `0.8`, not `.8`. Exponent notation, NaN, infinity, and negative zero in canonical output are forbidden. A fraction such as `1/3q` means `(1/3) × one quarter-note unit`; it does not mean division by a unit-bearing value.
 
@@ -1162,9 +1164,19 @@ Errors must contain a stable code, source object path, relevant field path, sour
 The source object path lists only authored object and child IDs, from the top-level object to the innermost responsible object. It never contains a field name or a derived collection such as a plan's node, connection, or event list. The field path starts at a field of that object and continues through nested record fields or list positions. For example, a duplicate record field is `["config", "channels"]`, and a bad second tempo point is `["points", "1"]`. It is empty when no single field is responsible. Some conditions are found after derivation, such as a same-sample cycle or a receiver capability checked per resolved event. Those are reported at the authored object that produced the failing item:
 
 - a cycle names the first `connect` or `modulate` on it, in source order;
-- an event failure names the note, hit, or message that produced the event.
+- an event failure names the note, hit, or message that produced the event;
+- a recognized extension's check on the compiled graph names the extension
+  field that selected the failing item, such as a delivery target's `output`.
 
 A document-level condition, such as `E_VERSION`, has an empty object path.
+
+Object paths, field paths, and spans are read in the source where the failure
+is found. When that is not the bundle's entry source, the message begins by
+naming it, as in ``source `lib.maac`: …``. A failure about a dependency, such
+as a missing file or a pin that does not match its bytes, is found in the
+source that declares the dependency and is reported at that declaration's
+field: `hash` for a pin mismatch, `path` for a file that is missing or not a
+valid reference.
 
 | Code | Required condition |
 |---|---|
@@ -1226,7 +1238,7 @@ formats or current production/import identities. A receiver requiring protocol
 or mutating the document and must not silently reinterpret or convert its base
 hash.
 
-An `extension` requires `namespace`, an exact versioned identifier string; `schema`, a descriptor-asset reference; `render_affecting`, boolean; and `data`, a record. Its namespace must appear in `project.requires`. A host that does not understand a required extension may preserve it for Document-only inspection but must not claim semantic normalization or faithful rendering of that document. In particular, it must not trust an unknown schema's assertion that arbitrary data is non-rendering merely to omit it from a hash.
+An `extension` requires `namespace`, an exact versioned identifier string; `schema`, a descriptor-asset reference; `render_affecting`, boolean; and `data`, a record. Its namespace must appear in `project.requires`. An extension whose namespace the host does not support is reported with `E_CAPABILITY`, and an extension whose namespace `project.requires` does not list with `E_REFERENCE`, both at the extension's `namespace` field. A host that does not understand a required extension may preserve it for Document-only inspection but must not claim semantic normalization or faithful rendering of that document. In particular, it must not trust an unknown schema's assertion that arbitrary data is non-rendering merely to omit it from a hash.
 
 Extensions may add explicitly namespaced object structures or capabilities only through their published schemas and adapters. They cannot redefine core units, mutate another object's behavior implicitly, shadow core IDs, or grant execution permission. Compatibility is demonstrated by conformance tests, not inferred from a shared filename extension.
 

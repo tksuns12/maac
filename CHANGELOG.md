@@ -183,6 +183,12 @@ actually published; no release tag or publication date is asserted here.
 
 ### Changed
 
+- The specification states rules that were implemented but unwritten: the
+  `maac` keyword and pitch tokens end at an identifier boundary (§2); the
+  library extension's sample forms (§1.3); where diagnostics are located,
+  including compiled-graph extension checks and failures in other sources
+  (§23); and the codes for unsupported or unrequired extension namespaces
+  (§26).
 - Source validation is stricter where it was more lenient than the
   specification. A `use` requires `at`; objects nested in a `project` or a core
   processor `node` are refused instead of ignored; lowercase pitch spellings
@@ -220,8 +226,9 @@ actually published; no release tag or publication date is asserted here.
 - Dependency failures in the entry source (`import`, `sample`, `wavetable` and
   audio `asset` path, hash, missing-file and built-in errors) are reported at
   the declaration's field, for example `tone` / `hash` for a changed WAV, in
-  both in-memory and filesystem loading. Failures inside imported sources
-  still carry no location and name their source in the message.
+  both in-memory and filesystem loading. A failure inside an imported source
+  is located in that source, and its message begins by naming it, as that
+  source's syntax and validation failures already were.
 
 - Production and takes diagnostics now report the authored object, field path
   and offending text (§23), for example

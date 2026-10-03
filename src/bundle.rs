@@ -299,16 +299,19 @@ pub(crate) struct PinnedReference {
     pub alias: String,
     pub path: String,
     pub hash: String,
-    /// Where the entry source declares it; `None` in other sources, whose
-    /// failures name the source in their message instead (§23).
+    /// Where its source declares it (§23); `None` for built-in imports.
     pub declared: Option<Declared>,
 }
 
-/// The `path` and `hash` fields of a dependency declaration.
+/// The `path` and `hash` fields of a dependency declaration, located in the
+/// source that declares it.
 #[derive(Clone, Debug)]
 pub(crate) struct Declared {
     path: Location,
     hash: Location,
+    /// The declaring source when it is not the entry; failures then name it,
+    /// as syntax and validation failures in that source do.
+    source: Option<String>,
 }
 
 impl Declared {
@@ -321,6 +324,7 @@ impl Declared {
         Self {
             path: field("path"),
             hash: field("hash"),
+            source: None,
         }
     }
 }
@@ -332,32 +336,20 @@ pub(crate) fn locate(declared: Option<&Declared>, diagnostics: Diagnostics) -> D
         return diagnostics;
     };
     let mut located = Diagnostics::new();
-    for diagnostic in diagnostics {
-        located.push(
-            if diagnostic.object_path.is_empty() && diagnostic.span.is_none() {
-                if diagnostic.code == DiagnosticCode::Hash {
-                    declared.hash.attach(diagnostic)
-                } else {
-                    declared.path.attach(diagnostic)
-                }
+    for mut diagnostic in diagnostics {
+        if diagnostic.object_path.is_empty() && diagnostic.span.is_none() {
+            if let Some(source) = &declared.source {
+                diagnostic.message = format!("source `{source}`: {}", diagnostic.message);
+            }
+            diagnostic = if diagnostic.code == DiagnosticCode::Hash {
+                declared.hash.attach(diagnostic)
             } else {
-                diagnostic
-            },
-        );
+                declared.path.attach(diagnostic)
+            };
+        }
+        located.push(diagnostic);
     }
     located
-}
-
-/// Drop locations, which would otherwise be read against the entry source.
-fn unlocated(diagnostics: Diagnostics) -> Diagnostics {
-    let mut result = Diagnostics::new();
-    for mut diagnostic in diagnostics {
-        diagnostic.object_path.clear();
-        diagnostic.field_path.clear();
-        diagnostic.span = None;
-        result.push(diagnostic);
-    }
-    result
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -655,8 +647,8 @@ impl Resolver<'_> {
     }
 }
 
-/// Find a source's dependency declarations. Only the entry source's failures
-/// and declarations carry §23 locations.
+/// Find a source's dependency declarations. Failures and declarations are
+/// located in that source; outside the entry, failures also name it (§23).
 pub(crate) fn discover_document_references(
     source_path: &str,
     document: &Document,
@@ -665,18 +657,23 @@ pub(crate) fn discover_document_references(
     match discover(source_path, document) {
         Ok(references) if entry => Ok(references),
         Ok(mut references) => {
+            let name = |declared: &mut Option<Declared>| {
+                if let Some(declared) = declared {
+                    declared.source = Some(source_path.to_owned());
+                }
+            };
             for import in &mut references.imports {
                 if let ImportReference::Local(reference) = import {
-                    reference.declared = None;
+                    name(&mut reference.declared);
                 }
             }
             for asset in &mut references.assets {
-                asset.declared = None;
+                name(&mut asset.declared);
             }
             Ok(references)
         }
         Err(failure) if entry => Err(failure),
-        Err(failure) => Err(unlocated(failure)),
+        Err(failure) => Err(contextualize(failure, &format!("source `{source_path}`"))),
     }
 }
 

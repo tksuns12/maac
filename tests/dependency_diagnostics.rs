@@ -3,9 +3,8 @@
 //! Each case changes one `import`, `sample` or `asset` declaration in a valid
 //! composition, or the files it pins, and requires the first diagnostic to
 //! name that declaration and the `path`, `hash`, `builtin` or `label` field at
-//! fault, with a span over its text. Failures in other sources keep naming
-//! their source in the message and carry no location, because a §23 location
-//! is read against the entry source.
+//! fault, with a span over its text. A failure in another source is located in
+//! that source, and its message begins by naming it.
 
 use std::collections::BTreeMap;
 use std::io::Cursor;
@@ -264,17 +263,22 @@ fn filesystem_loading_locates_entry_dependency_failures() {
 }
 
 #[test]
-fn failures_in_other_sources_stay_unlocated() {
-    // A missing sample file is found while resolving; a malformed import is
-    // found while discovering the library's declarations.
-    for (declaration, code) in [
+fn failures_in_other_sources_are_located_in_that_source() {
+    // As for syntax and validation failures in an imported library, the
+    // location is read in the source the message names. A missing sample file
+    // is found while resolving; a malformed import while discovering.
+    for (declaration, code, field, text) in [
         (
             format!("sample far {{ path = \"far.wav\"; hash = \"{OTHER_HASH}\"; root = A4; }}"),
             "E_ASSET",
+            vec!["path".to_owned()],
+            "\"far.wav\"",
         ),
         (
             "import far { path = \"far.maac\"; }".to_owned(),
             "E_REFERENCE",
+            Vec::new(),
+            "import",
         ),
     ] {
         let library = format!("maac 1;\nlibrary lib {{ version = \"1\"; }}\n{declaration}\n");
@@ -287,10 +291,14 @@ fn failures_in_other_sources_stay_unlocated() {
         let diagnostics = check_bundle_artifact(&bundle(&source, &files)).unwrap_err();
         let first = diagnostics.iter().next().unwrap();
         assert_eq!(first.code.as_str(), code, "{}", first.message);
-        assert!(first.message.contains("lib.maac"), "{}", first.message);
         assert!(
-            first.object_path.is_empty() && first.field_path.is_empty() && first.span.is_none(),
-            "{first:?}"
+            first.message.starts_with("source `lib.maac`: "),
+            "{}",
+            first.message
         );
+        assert_eq!(first.object_path, ["far"]);
+        assert_eq!(first.field_path, field);
+        let span = first.span.expect("a span in the library");
+        assert_eq!(&library[span.start..span.end], text);
     }
 }
