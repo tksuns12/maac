@@ -217,6 +217,12 @@ actually published; no release tag or publication date is asserted here.
 
 ### Fixed
 
+- Dependency failures in the entry source (`import`, `sample`, `wavetable` and
+  audio `asset` path, hash, missing-file and built-in errors) are reported at
+  the declaration's field, for example `tone` / `hash` for a changed WAV, in
+  both in-memory and filesystem loading. Failures inside imported sources
+  still carry no location and name their source in the message.
+
 - Production and takes diagnostics now report the authored object, field path
   and offending text (§23), for example
   `deliveries` / `data.deliveries.release.targets.main.encoding`, instead of

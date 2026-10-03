@@ -56,6 +56,14 @@ impl Location {
         self.diagnostic(code, message)
     }
 
+    /// Place an existing diagnostic here, keeping its code and message.
+    pub(crate) fn attach(&self, mut diagnostic: Diagnostic) -> Diagnostic {
+        diagnostic.object_path = self.object.clone();
+        diagnostic.field_path = self.field.clone();
+        diagnostic.span = Some(self.span);
+        diagnostic
+    }
+
     /// Report a shared plan-level check's code and message here.
     pub(crate) fn plan(&self, failure: PlanError) -> Diagnostic {
         let code = failure.diagnostic().code;

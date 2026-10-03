@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Diagnostics};
+use crate::located::Location;
 use crate::stdlib::{self, BuiltinSource};
 use crate::syntax::{self, Document, Object};
 
@@ -85,7 +86,7 @@ impl SourceBundle {
             let Some(document) = parsed.get(&path) else {
                 continue; // Graph validation supplies the missing-reference context.
             };
-            for import in discover_document_references(&path, document)?.imports {
+            for import in discover_document_references(&path, document, path == entry)?.imports {
                 let target = import.target_path(&path)?;
                 if let ImportReference::Builtin { source, .. } = import {
                     if !sources.contains_key(source.path) {
@@ -140,6 +141,7 @@ impl SourceBundle {
 
         let mut resolver = Resolver {
             bundle: self,
+            entry: &entry,
             sources: &sources,
             parsed: &parsed,
             states: BTreeMap::new(),
@@ -155,7 +157,7 @@ impl SourceBundle {
         resolver.visit(&entry, 0)?;
 
         Ok(ResolvedBundle {
-            entry,
+            entry: entry.clone(),
             documents: resolver.documents,
             imports: resolver.imports,
             assets: resolver.resolved_assets,
@@ -297,6 +299,65 @@ pub(crate) struct PinnedReference {
     pub alias: String,
     pub path: String,
     pub hash: String,
+    /// Where the entry source declares it; `None` in other sources, whose
+    /// failures name the source in their message instead (§23).
+    pub declared: Option<Declared>,
+}
+
+/// The `path` and `hash` fields of a dependency declaration.
+#[derive(Clone, Debug)]
+pub(crate) struct Declared {
+    path: Location,
+    hash: Location,
+}
+
+impl Declared {
+    fn of(object: &Object) -> Self {
+        let at = Location::object(object);
+        let field = |name: &str| match object.field(name) {
+            Some(field) => at.at(name, field.value.span),
+            None => at.at(name, object.kind_span),
+        };
+        Self {
+            path: field("path"),
+            hash: field("hash"),
+        }
+    }
+}
+
+/// Locate unlocated failures about a declaration: hash failures at its `hash`
+/// field, every other failure at its `path` field.
+pub(crate) fn locate(declared: Option<&Declared>, diagnostics: Diagnostics) -> Diagnostics {
+    let Some(declared) = declared else {
+        return diagnostics;
+    };
+    let mut located = Diagnostics::new();
+    for diagnostic in diagnostics {
+        located.push(
+            if diagnostic.object_path.is_empty() && diagnostic.span.is_none() {
+                if diagnostic.code == DiagnosticCode::Hash {
+                    declared.hash.attach(diagnostic)
+                } else {
+                    declared.path.attach(diagnostic)
+                }
+            } else {
+                diagnostic
+            },
+        );
+    }
+    located
+}
+
+/// Drop locations, which would otherwise be read against the entry source.
+fn unlocated(diagnostics: Diagnostics) -> Diagnostics {
+    let mut result = Diagnostics::new();
+    for mut diagnostic in diagnostics {
+        diagnostic.object_path.clear();
+        diagnostic.field_path.clear();
+        diagnostic.span = None;
+        result.push(diagnostic);
+    }
+    result
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -332,7 +393,9 @@ pub(crate) enum ImportReference {
 impl ImportReference {
     fn target_path(&self, declaring_source: &str) -> Result<String, Diagnostics> {
         match self {
-            Self::Local(reference) => reference.target_path(declaring_source),
+            Self::Local(reference) => reference
+                .target_path(declaring_source)
+                .map_err(|failure| locate(reference.declared.as_ref(), failure)),
             Self::Builtin { source, .. } => Ok(source.path.to_owned()),
         }
     }
@@ -341,7 +404,8 @@ impl ImportReference {
         let path = self.target_path(declaring_source)?;
         match self {
             Self::Local(reference) => {
-                validate_hash_pin(&reference.hash, "import hash")?;
+                validate_hash_pin(&reference.hash, "import hash")
+                    .map_err(|failure| locate(reference.declared.as_ref(), failure))?;
                 Ok(PinnedReference { path, ..reference })
             }
             Self::Builtin { alias, source } => Ok(PinnedReference {
@@ -349,6 +413,7 @@ impl ImportReference {
                 alias,
                 path,
                 hash: sha256_digest(source.source.as_bytes()),
+                declared: None,
             }),
         }
     }
@@ -356,6 +421,7 @@ impl ImportReference {
 
 struct Resolver<'a> {
     bundle: &'a SourceBundle,
+    entry: &'a str,
     sources: &'a BTreeMap<String, &'a str>,
     parsed: &'a BTreeMap<String, Document>,
     states: BTreeMap<String, VisitState>,
@@ -379,7 +445,9 @@ fn validate_import_graph(
     entry: &str,
     parsed: &BTreeMap<String, Document>,
 ) -> Result<(), Diagnostics> {
+    #[allow(clippy::too_many_arguments)]
     fn visit(
+        entry: &str,
         path: &str,
         depth: usize,
         parsed: &BTreeMap<String, Document>,
@@ -417,16 +485,38 @@ fn validate_import_graph(
         })?;
         states.insert(path.to_owned(), VisitState::Visiting);
         stack.push(path.to_owned());
-        for import in discover_document_references(path, document)?.imports {
+        for import in discover_document_references(path, document, path == entry)?.imports {
             let import = import.pin(path)?;
-            let target = import.path;
+            let declared = import.declared.as_ref();
+            let target = import.path.clone();
             if !parsed.contains_key(&target) {
-                return Err(reference_error(format!(
-                    "import `{}` in `{path}` refers to missing source `{target}`",
-                    import.alias
-                )));
+                return Err(locate(
+                    declared,
+                    reference_error(format!(
+                        "import `{}` in `{path}` refers to missing source `{target}`",
+                        import.alias
+                    )),
+                ));
             }
-            visit(&target, depth + 1, parsed, states, greatest_depth, stack)?;
+            // A cycle is reported at the import that closes it.
+            if states.get(&target) == Some(&VisitState::Visiting) {
+                let start = stack.iter().position(|item| *item == target).unwrap_or(0);
+                let mut cycle = stack[start..].to_vec();
+                cycle.push(target);
+                return Err(locate(
+                    declared,
+                    reference_error(format!("import cycle detected: {}", cycle.join(" -> "))),
+                ));
+            }
+            visit(
+                entry,
+                &target,
+                depth + 1,
+                parsed,
+                states,
+                greatest_depth,
+                stack,
+            )?;
         }
         stack.pop();
         states.insert(path.to_owned(), VisitState::Complete);
@@ -435,6 +525,7 @@ fn validate_import_graph(
     }
 
     visit(
+        entry,
         entry,
         0,
         parsed,
@@ -470,7 +561,7 @@ impl Resolver<'_> {
                 "imported source `{path}` is missing from the bundle"
             ))
         })?;
-        let references = discover_document_references(path, document)?;
+        let references = discover_document_references(path, document, path == self.entry)?;
         self.states.insert(path.to_owned(), VisitState::Visiting);
         self.stack.push(path.to_owned());
         self.documents.insert(path.to_owned(), document.clone());
@@ -482,19 +573,26 @@ impl Resolver<'_> {
         let mut aliases = BTreeMap::new();
         for import in references.imports {
             let import = import.pin(path)?;
-            let target = import.path;
+            let declared = import.declared.as_ref();
+            let target = import.path.clone();
             let source = self.sources.get(&target).ok_or_else(|| {
-                reference_error(format!(
-                    "import `{}` in `{path}` refers to missing source `{target}`",
-                    import.alias
-                ))
+                locate(
+                    declared,
+                    reference_error(format!(
+                        "import `{}` in `{path}` refers to missing source `{target}`",
+                        import.alias
+                    )),
+                )
             })?;
             let actual = sha256_digest(source.as_bytes());
             if actual != import.hash {
-                return Err(hash_error(format!(
-                    "import `{}` in `{path}` expected `{}`, but `{target}` has `{actual}`",
-                    import.alias, import.hash
-                )));
+                return Err(locate(
+                    declared,
+                    hash_error(format!(
+                        "import `{}` in `{path}` expected `{}`, but `{target}` has `{actual}`",
+                        import.alias, import.hash
+                    )),
+                ));
             }
             aliases.insert(import.alias.clone(), target.clone());
             self.dependencies.push(DependencyIdentity {
@@ -507,32 +605,45 @@ impl Resolver<'_> {
         }
 
         for asset in references.assets {
-            let target = asset.target_path(path)?;
-            validate_hash_pin(&asset.hash, "asset hash")?;
+            let declared = asset.declared.as_ref();
+            let target = asset
+                .target_path(path)
+                .map_err(|failure| locate(declared, failure))?;
+            validate_hash_pin(&asset.hash, "asset hash")
+                .map_err(|failure| locate(declared, failure))?;
             if let Some(snapshot) = self.disk_assets.get(&target) {
                 if snapshot.hash != asset.hash {
-                    return Err(hash_error(format!(
-                        "asset `{}` in `{path}` expected `{}`, but `{target}` has `{}`",
-                        asset.alias, asset.hash, snapshot.hash
-                    )));
+                    return Err(locate(
+                        declared,
+                        hash_error(format!(
+                            "asset `{}` in `{path}` expected `{}`, but `{target}` has `{}`",
+                            asset.alias, asset.hash, snapshot.hash
+                        )),
+                    ));
                 }
                 self.resolved_disk_assets
                     .insert(target, std::sync::Arc::clone(snapshot));
                 continue;
             }
             let bytes = self.bundle.assets.get(&target).ok_or_else(|| {
-                asset_error(format!(
-                    "{} `{}` in `{path}` refers to missing asset `{target}`",
-                    asset.alias.split(':').next().unwrap_or("asset"),
-                    asset.alias.split(':').nth(1).unwrap_or(&asset.alias)
-                ))
+                locate(
+                    declared,
+                    asset_error(format!(
+                        "{} `{}` in `{path}` refers to missing asset `{target}`",
+                        asset.alias.split(':').next().unwrap_or("asset"),
+                        asset.alias.split(':').nth(1).unwrap_or(&asset.alias)
+                    )),
+                )
             })?;
             let actual = sha256_digest(bytes);
             if actual != asset.hash {
-                return Err(hash_error(format!(
-                    "asset `{}` in `{path}` expected `{}`, but `{target}` has `{actual}`",
-                    asset.alias, asset.hash
-                )));
+                return Err(locate(
+                    declared,
+                    hash_error(format!(
+                        "asset `{}` in `{path}` expected `{}`, but `{target}` has `{actual}`",
+                        asset.alias, asset.hash
+                    )),
+                ));
             }
             self.resolved_assets.insert(target, bytes.clone());
         }
@@ -544,10 +655,32 @@ impl Resolver<'_> {
     }
 }
 
+/// Find a source's dependency declarations. Only the entry source's failures
+/// and declarations carry §23 locations.
 pub(crate) fn discover_document_references(
     source_path: &str,
     document: &Document,
+    entry: bool,
 ) -> Result<DocumentReferences, Diagnostics> {
+    match discover(source_path, document) {
+        Ok(references) if entry => Ok(references),
+        Ok(mut references) => {
+            for import in &mut references.imports {
+                if let ImportReference::Local(reference) = import {
+                    reference.declared = None;
+                }
+            }
+            for asset in &mut references.assets {
+                asset.declared = None;
+            }
+            Ok(references)
+        }
+        Err(failure) if entry => Err(failure),
+        Err(failure) => Err(unlocated(failure)),
+    }
+}
+
+fn discover(source_path: &str, document: &Document) -> Result<DocumentReferences, Diagnostics> {
     let mut imports = Vec::new();
     let mut assets = Vec::new();
     for object in document.objects.values() {
@@ -648,13 +781,24 @@ fn exact_import_reference(
     source_path: &str,
     object: &Object,
 ) -> Result<ImportReference, Diagnostics> {
+    let at = Location::object(object);
+    let field_at = |name: &str| match object.field(name) {
+        Some(field) => at.at(name, field.value.span),
+        None => at.at(name, object.kind_span),
+    };
+    let failure = |at: Location, code: &str, message: String| {
+        let mut diagnostics = Diagnostics::new();
+        diagnostics.push(at.error(code, message));
+        diagnostics
+    };
     // Every object may carry the optional string `label` (§4).
     if object
         .field("label")
         .is_some_and(|field| field.value.as_string().is_none())
     {
-        return Err(one_error(
-            DiagnosticCode::Unit,
+        return Err(failure(
+            field_at("label"),
+            "E_UNIT",
             format!(
                 "import `{}` in `{source_path}` label requires a string",
                 object.id
@@ -670,27 +814,40 @@ fn exact_import_reference(
     let expected = BTreeSet::from(["hash", "path"]);
     let builtin = BTreeSet::from(["builtin"]);
     if (fields != expected && fields != builtin) || !object.children.is_empty() {
-        return Err(reference_error(format!(
-            "import `{}` in `{source_path}` must contain exactly string fields `path` and `hash`, or only string field `builtin`, besides an optional `label`, and no children",
-            object.id
-        )));
+        return Err(failure(
+            at.clone(),
+            "E_REFERENCE",
+            format!(
+                "import `{}` in `{source_path}` must contain exactly string fields `path` and `hash`, or only string field `builtin`, besides an optional `label`, and no children",
+                object.id
+            ),
+        ));
     }
     if fields == builtin {
         let id = object
             .field("builtin")
             .and_then(|field| field.value.as_string())
             .ok_or_else(|| {
-                reference_error(format!(
-                    "import `{}` in `{source_path}` requires a string `builtin` field",
-                    object.id
-                ))
+                failure(
+                    field_at("builtin"),
+                    "E_REFERENCE",
+                    format!(
+                        "import `{}` in `{source_path}` requires a string `builtin` field",
+                        object.id
+                    ),
+                )
             })?;
-        validate_path_length(id, "built-in identifier")?;
+        validate_path_length(id, "built-in identifier")
+            .map_err(|failure| attach(&field_at("builtin"), failure))?;
         let source = stdlib::lookup(id).ok_or_else(|| {
-            reference_error(format!(
-                "import `{}` in `{source_path}` refers to unknown built-in library `{id}`",
-                object.id
-            ))
+            failure(
+                field_at("builtin"),
+                "E_REFERENCE",
+                format!(
+                    "import `{}` in `{source_path}` refers to unknown built-in library `{id}`",
+                    object.id
+                ),
+            )
         })?;
         Ok(ImportReference::Builtin {
             alias: object.id.clone(),
@@ -699,6 +856,15 @@ fn exact_import_reference(
     } else {
         pinned_fields(source_path, object, DiagnosticCode::Reference).map(ImportReference::Local)
     }
+}
+
+/// Place every diagnostic at `at`.
+fn attach(at: &Location, diagnostics: Diagnostics) -> Diagnostics {
+    let mut located = Diagnostics::new();
+    for diagnostic in diagnostics {
+        located.push(at.attach(diagnostic));
+    }
+    located
 }
 
 fn asset_reference(source_path: &str, object: &Object) -> Result<PinnedReference, Diagnostics> {
@@ -710,15 +876,19 @@ fn pinned_fields(
     object: &Object,
     code: DiagnosticCode,
 ) -> Result<PinnedReference, Diagnostics> {
+    let declared = Declared::of(object);
     let path = object
         .field("path")
         .and_then(|field| field.value.as_string())
         .ok_or_else(|| {
-            one_error(
-                code,
-                format!(
-                    "{} `{}` in `{source_path}` requires a string `path` field",
-                    object.kind, object.id
+            attach(
+                &declared.path,
+                one_error(
+                    code,
+                    format!(
+                        "{} `{}` in `{source_path}` requires a string `path` field",
+                        object.kind, object.id
+                    ),
                 ),
             )
         })?;
@@ -731,16 +901,20 @@ fn pinned_fields(
         } else {
             "wavetable path"
         },
-    )?;
+    )
+    .map_err(|failure| attach(&declared.path, failure))?;
     let hash = object
         .field("hash")
         .and_then(|field| field.value.as_string())
         .ok_or_else(|| {
-            one_error(
-                code,
-                format!(
-                    "{} `{}` in `{source_path}` requires a string `hash` field",
-                    object.kind, object.id
+            attach(
+                &declared.hash,
+                one_error(
+                    code,
+                    format!(
+                        "{} `{}` in `{source_path}` requires a string `hash` field",
+                        object.kind, object.id
+                    ),
                 ),
             )
         })?;
@@ -753,6 +927,7 @@ fn pinned_fields(
         },
         path: path.to_owned(),
         hash: hash.to_owned(),
+        declared: Some(declared),
     })
 }
 

@@ -9,10 +9,10 @@ use cap_std::fs::{Dir, OpenOptions};
 use cap_std::{ambient_authority, AmbientAuthority};
 
 use crate::bundle::{
-    count_document_objects, discover_document_references, normalize_file_reference, sha256_digest,
-    validate_hash_pin, ImportReference, SourceBundle, MAX_BUNDLE_ASSETS, MAX_BUNDLE_ASSET_BYTES,
-    MAX_BUNDLE_FILE_BYTES, MAX_BUNDLE_SOURCES, MAX_BUNDLE_SOURCE_BYTES, MAX_IMPORT_DEPTH,
-    MAX_SYNTAX_OBJECTS,
+    count_document_objects, discover_document_references, locate, normalize_file_reference,
+    sha256_digest, validate_hash_pin, Declared, ImportReference, SourceBundle, MAX_BUNDLE_ASSETS,
+    MAX_BUNDLE_ASSET_BYTES, MAX_BUNDLE_FILE_BYTES, MAX_BUNDLE_SOURCES, MAX_BUNDLE_SOURCE_BYTES,
+    MAX_IMPORT_DEPTH, MAX_SYNTAX_OBJECTS,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Diagnostics};
 
@@ -110,23 +110,33 @@ fn load_bundle_in_root_mode(
     let mut source_bytes = 0usize;
     let mut asset_bytes = 0usize;
     let mut syntax_objects = 0usize;
-    let mut pending = VecDeque::from([(entry.clone(), 0usize)]);
+    // Each queued source remembers the entry declaration that imported it,
+    // if any, so a missing or mismatched file is reported there (§23).
+    let mut pending = VecDeque::from([(entry.clone(), 0usize, None)]);
     let mut queued = BTreeSet::from([entry.clone()]);
-    let mut expected_source_hashes: BTreeMap<String, Vec<(String, String, String)>> =
-        BTreeMap::new();
+    let mut expected_source_hashes: BTreeMap<String, Vec<ExpectedSource>> = BTreeMap::new();
 
-    while let Some((logical_path, depth)) = pending.pop_front() {
+    while let Some((logical_path, depth, declared)) = pending.pop_front() {
         if sources.len() >= MAX_BUNDLE_SOURCES {
             return Err(resource_error(format!(
                 "bundle contains more than {MAX_BUNDLE_SOURCES} source files"
             )));
         }
-        let file = contained_file(root, &logical_path, "source", DiagnosticCode::Reference)?;
-        let bytes = read_bounded(file, &logical_path, "source")?;
+        let file = contained_file(root, &logical_path, "source", DiagnosticCode::Reference)
+            .map_err(|failure| locate(declared.as_ref(), failure))?;
+        let bytes = read_bounded(file, &logical_path, "source")
+            .map_err(|failure| locate(declared.as_ref(), failure))?;
         source_bytes = checked_total(source_bytes, bytes.len(), MAX_BUNDLE_SOURCE_BYTES, "source")?;
         if let Some(expectations) = expected_source_hashes.get(&logical_path) {
-            for (declaring_source, alias, expected) in expectations {
-                verify_source_hash(&logical_path, &bytes, declaring_source, alias, expected)?;
+            for expected in expectations {
+                verify_source_hash(
+                    &logical_path,
+                    &bytes,
+                    &expected.declaring_source,
+                    &expected.alias,
+                    &expected.hash,
+                )
+                .map_err(|failure| locate(expected.declared.as_ref(), failure))?;
             }
         }
         let source = String::from_utf8(bytes).map_err(|invalid| {
@@ -149,15 +159,18 @@ fn load_bundle_in_root_mode(
                 "bundle contains more than {MAX_SYNTAX_OBJECTS} syntax objects"
             )));
         }
-        let references = discover_document_references(&logical_path, &document)?;
+        let references =
+            discover_document_references(&logical_path, &document, logical_path == entry)?;
         sources.insert(logical_path.clone(), source);
 
         for import in references.imports {
             let ImportReference::Local(import) = import else {
                 continue;
             };
-            validate_hash_pin(&import.hash, "import hash")?;
-            let target = normalize_file_reference(&logical_path, &import.path)?;
+            let declared = import.declared.clone();
+            let located = |failure| locate(declared.as_ref(), failure);
+            validate_hash_pin(&import.hash, "import hash").map_err(located)?;
+            let target = normalize_file_reference(&logical_path, &import.path).map_err(located)?;
             if let Some(loaded) = sources.get(&target) {
                 verify_source_hash(
                     &target,
@@ -165,12 +178,18 @@ fn load_bundle_in_root_mode(
                     &logical_path,
                     &import.alias,
                     &import.hash,
-                )?;
+                )
+                .map_err(located)?;
             }
             expected_source_hashes
                 .entry(target.clone())
                 .or_default()
-                .push((logical_path.clone(), import.alias, import.hash));
+                .push(ExpectedSource {
+                    declaring_source: logical_path.clone(),
+                    alias: import.alias,
+                    hash: import.hash,
+                    declared: declared.clone(),
+                });
             if queued.insert(target.clone()) {
                 let target_depth = depth + 1;
                 if target_depth > MAX_IMPORT_DEPTH {
@@ -183,35 +202,37 @@ fn load_bundle_in_root_mode(
                         "bundle contains more than {MAX_BUNDLE_SOURCES} source files"
                     )));
                 }
-                pending.push_back((target, target_depth));
+                pending.push_back((target, target_depth, declared));
             }
         }
 
         for asset in references.assets {
-            validate_hash_pin(&asset.hash, "asset hash")?;
-            let target = asset.target_path(&logical_path)?;
+            let declared = asset.declared.as_ref();
+            let located = |failure| locate(declared, failure);
+            validate_hash_pin(&asset.hash, "asset hash").map_err(located)?;
+            let target = asset.target_path(&logical_path).map_err(located)?;
             if let Some(snapshot) = disk_assets.get(&target) {
                 if snapshot.hash != asset.hash {
-                    return Err(error(
+                    return Err(located(error(
                         DiagnosticCode::Hash,
                         format!(
                             "asset `{}` in `{logical_path}` expected `{}`, but `{target}` has `{}`",
                             asset.alias, asset.hash, snapshot.hash
                         ),
-                    ));
+                    )));
                 }
                 continue;
             }
             if let Some(bytes) = assets.get(&target) {
                 let actual = sha256_digest(bytes);
                 if actual != asset.hash {
-                    return Err(error(
+                    return Err(located(error(
                         DiagnosticCode::Hash,
                         format!(
                             "asset `{}` in `{logical_path}` expected `{}`, but `{target}` has `{actual}`",
                             asset.alias, asset.hash
                         ),
-                    ));
+                    )));
                 }
                 continue;
             }
@@ -220,7 +241,8 @@ fn load_bundle_in_root_mode(
                     "bundle contains more than {MAX_BUNDLE_ASSETS} assets"
                 )));
             }
-            let file = contained_file(root, &target, "asset", DiagnosticCode::Asset)?;
+            let file =
+                contained_file(root, &target, "asset", DiagnosticCode::Asset).map_err(located)?;
             // Core PCM audio assets and core PCM `sample` declarations can be
             // disk media; WAV samples and wavetables are always embedded.
             let native_format = |object: &crate::syntax::Object| {
@@ -247,7 +269,8 @@ fn load_bundle_in_root_mode(
                         .and_then(|id| document.objects.get(id))
                         .is_some_and(|object| object.kind == "sample" && native_format(object)));
             if is_native_pcm {
-                let snapshot = crate::disk_media::DiskAsset::snapshot(file, &target, &asset.hash)?;
+                let snapshot = crate::disk_media::DiskAsset::snapshot(file, &target, &asset.hash)
+                    .map_err(located)?;
                 let total = disk_assets.values().fold(
                     0u64,
                     |n: u64, asset: &std::sync::Arc<crate::disk_media::DiskAsset>| {
@@ -262,17 +285,17 @@ fn load_bundle_in_root_mode(
                 disk_assets.insert(target, std::sync::Arc::new(snapshot));
                 continue;
             }
-            let bytes = read_bounded(file, &target, "asset")?;
+            let bytes = read_bounded(file, &target, "asset").map_err(located)?;
             asset_bytes = checked_total(asset_bytes, bytes.len(), MAX_BUNDLE_ASSET_BYTES, "asset")?;
             let actual = sha256_digest(&bytes);
             if actual != asset.hash {
-                return Err(error(
+                return Err(located(error(
                     DiagnosticCode::Hash,
                     format!(
                         "asset `{}` in `{logical_path}` expected `{}`, but `{target}` has `{actual}`",
                         asset.alias, asset.hash
                     ),
-                ));
+                )));
             }
             assets.insert(target, bytes);
         }
@@ -297,6 +320,15 @@ pub(crate) fn load_bundle_from_resolved_entry(
     let resolved =
         resolve_contained_path(root, entry_path, "entry source", DiagnosticCode::Reference)?;
     load_bundle_in_root(&resolved, root)
+}
+
+/// An import's pin for a source checked when it is read, and where the entry
+/// declares that import, if it does.
+struct ExpectedSource {
+    declaring_source: String,
+    alias: String,
+    hash: String,
+    declared: Option<Declared>,
 }
 
 fn verify_source_hash(
