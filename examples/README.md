@@ -350,9 +350,13 @@ When rendered, the first phrase note measured 440 Hz at the original speed,
 220 Hz and 880 Hz under `warp_rate`, and 420 Hz and 430 Hz under
 `warp_preserve`. The sampler's first A4 matched the glass clip with a
 correlation of 0.999 in each channel. The pad's channels measured 259.46 Hz and
-262.30 Hz. The peak was 0.904, and nothing clipped. The owner's informal
-listening approvals of the mono and stereo renders are recorded in the
-[showcase listening record](../docs/showcase-listening.md).
+262.30 Hz. The peak is 0.766 (-2.32 dBFS) with a true peak of -2.31 dBTP, and
+nothing clips. `maac analyze` found that the earlier finale reached -0.86
+dBTP, over the -1 dBTP limit, with the keys chords as its loudest source.
+Softening those chords fixed it without changing bars 1–20. The owner's
+informal listening approvals of the mono and stereo renders are recorded in the
+[showcase listening record](../docs/showcase-listening.md); the stereo approval
+predates this change.
 
 # Audio inside patterns
 

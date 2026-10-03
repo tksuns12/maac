@@ -9,7 +9,7 @@ the automated test evidence and do not replace it.
 |---|---|
 | Recorded | 2026-10-02 |
 | Listener | Project owner (tksuns12) |
-| Source | [`examples/showcase/showcase.maac`](../examples/showcase/showcase.maac) as committed with this record |
+| Source | [`examples/showcase/showcase.maac`](../examples/showcase/showcase.maac) at commit `aa15157` |
 | Build | `maac build examples/showcase/showcase.maac --project-root . --disk-media --profile song -o showcase-stereo.wav --format pcm16` |
 | Rendered file | 62.6 s, stereo, 48 kHz, 16-bit PCM WAV, `sha256:71ed6c1ff0670ea5c6ce5e8dbda0c9a9e5c52b66cc4bd01e5dcf773947675aaa` |
 | Playback | Downloaded to an Android phone over the tailnet and played there; whether headphones were used was not stated |
@@ -25,6 +25,22 @@ the automated test evidence and do not replace it.
 - The earlier sections are unchanged, copied to both channels through
   `core.matrix/1`. The reverb is stereo, and the master gain is 0.64 dB lower to
   keep the same headroom.
+
+### Later revision (not listened to)
+
+On 2026-10-04 `maac analyze` measured this render's master true peak at
+-0.86 dBTP, over the -1 dBTP limit. The excess was only in the finale, where
+the keys part was the loudest source. The finale's keys chords were softened
+from velocity 7/10 to 1/2. The current render,
+`sha256:e58ee5b38e561c3a7c8f895d38e332937b7b5c2807b473d3a3128a2b0932c3c3`,
+peaks at -2.31 dBTP:
+
+- bars 1–20 measure exactly as before;
+- bar 24, where the finale begins, changes slightly;
+- the finale is about 0.9 LU quieter.
+
+The approval above covers the earlier render only; nobody has listened to
+the revision yet.
 
 ### Scope
 

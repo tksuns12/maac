@@ -153,19 +153,19 @@ pattern keys_part {
   note hold2 { at = 12q; dur = 4q; pitch = key(64); velocity = 3/5; }
   note hold3 { at = 12q; dur = 4q; pitch = key(67); velocity = 3/5; }
   note hold4 { at = 12q; dur = 4q; pitch = key(71); velocity = 3/5; }
-  note c93_0 { at = 93q; dur = 2q; pitch = key(57); velocity = 7/10; }
-  note c93_1 { at = 93q; dur = 2q; pitch = key(60); velocity = 7/10; }
-  note c93_2 { at = 93q; dur = 2q; pitch = key(64); velocity = 7/10; }
-  note c95_0 { at = 95q; dur = 2q; pitch = key(53); velocity = 7/10; }
-  note c95_1 { at = 95q; dur = 2q; pitch = key(57); velocity = 7/10; }
-  note c95_2 { at = 95q; dur = 2q; pitch = key(60); velocity = 7/10; }
-  note c97_0 { at = 97q; dur = 2q; pitch = key(55); velocity = 7/10; }
-  note c97_1 { at = 97q; dur = 2q; pitch = key(60); velocity = 7/10; }
-  note c97_2 { at = 97q; dur = 2q; pitch = key(64); velocity = 7/10; }
-  note c99_0 { at = 99q; dur = 2q; pitch = key(55); velocity = 7/10; }
-  note c99_1 { at = 99q; dur = 2q; pitch = key(59); velocity = 7/10; }
-  note c99_2 { at = 99q; dur = 2q; pitch = key(62); velocity = 7/10; }
-  note c99_3 { at = 99q; dur = 2q; pitch = key(67); velocity = 7/10; }
+  note c93_0 { at = 93q; dur = 2q; pitch = key(57); velocity = 1/2; }
+  note c93_1 { at = 93q; dur = 2q; pitch = key(60); velocity = 1/2; }
+  note c93_2 { at = 93q; dur = 2q; pitch = key(64); velocity = 1/2; }
+  note c95_0 { at = 95q; dur = 2q; pitch = key(53); velocity = 1/2; }
+  note c95_1 { at = 95q; dur = 2q; pitch = key(57); velocity = 1/2; }
+  note c95_2 { at = 95q; dur = 2q; pitch = key(60); velocity = 1/2; }
+  note c97_0 { at = 97q; dur = 2q; pitch = key(55); velocity = 1/2; }
+  note c97_1 { at = 97q; dur = 2q; pitch = key(60); velocity = 1/2; }
+  note c97_2 { at = 97q; dur = 2q; pitch = key(64); velocity = 1/2; }
+  note c99_0 { at = 99q; dur = 2q; pitch = key(55); velocity = 1/2; }
+  note c99_1 { at = 99q; dur = 2q; pitch = key(59); velocity = 1/2; }
+  note c99_2 { at = 99q; dur = 2q; pitch = key(62); velocity = 1/2; }
+  note c99_3 { at = 99q; dur = 2q; pitch = key(67); velocity = 1/2; }
 }
 pattern layered_part {
   length = 101q;

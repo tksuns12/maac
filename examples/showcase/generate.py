@@ -217,7 +217,9 @@ def main():
 
     # Finale (93-101q): chords on the keys and the pad, bass on the velocity sampler.
     chords = [(93, [57, 60, 64]), (95, [53, 57, 60]), (97, [55, 60, 64]), (99, [55, 59, 62, 67])]
-    s5 = "".join(note(f"c{a}_{i}", a, 2, k, "7/10") for a, ks in chords for i, k in enumerate(ks))
+    # The finale chords are softer than the rest of the keys part: at 7/10 they
+    # pushed the master's true peak over -1 dBTP (`maac analyze`, 2026-10-04).
+    s5 = "".join(note(f"c{a}_{i}", a, 2, k, "1/2") for a, ks in chords for i, k in enumerate(ks))
     pad += "".join(note(f"p{a}_{i}", a, 2, k, "2/5") for a, ks in chords for i, k in enumerate(ks))
     bass = "".join(note(f"b{a}", a, "3/2", ks[0] - 12, v)
                    for (a, ks), v in zip(chords, ["1", "2/5", "1", "7/10"]))
