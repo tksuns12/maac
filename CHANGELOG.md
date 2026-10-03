@@ -11,6 +11,13 @@ actually published; no release tag or publication date is asserted here.
 
 ### Added
 
+- `maac analyze`, listening tools for AI producers. One render measures the
+  project output and every source port that reaches it, per region or bar
+  block: BS.1770-5 loudness, peaks with clipping positions, octave bands,
+  stereo balance, correlation and mono loss, activity, and band shares. The
+  report leads with findings from the `maac.analyze.default/1` profile, names
+  sources and sections by their authored IDs, and can write spectrogram and
+  piano-roll PNGs for a multimodal model. See [the tool notes](docs/analyze.md).
 - Pitched sample instruments: library `sample` declarations and the voice-only
   `synth.sample/1` processor play recordings at their recorded rate from a
   12-TET root key, with forward sustain loops, overlapping key zones, velocity

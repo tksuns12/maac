@@ -1,3 +1,4 @@
+pub mod analyze;
 pub(crate) mod archive;
 pub(crate) mod archive_edit;
 pub(crate) mod archive_history;

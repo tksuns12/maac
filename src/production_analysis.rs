@@ -141,13 +141,13 @@ impl Default for AnalyzerLimits {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct Biquad {
+pub(crate) struct Biquad {
     b: [f64; 3],
     a: [f64; 3],
     history: [f64; 4],
 }
 impl Biquad {
-    fn process(&mut self, x: f64) -> Result<f64, AnalysisError> {
+    pub(crate) fn process(&mut self, x: f64) -> Result<f64, AnalysisError> {
         let [x1, x2, y1, y2] = self.history;
         let mut y = finite(self.b[0] * x)?;
         y = finite(y + finite(self.b[1] * x1)?)?;
@@ -177,6 +177,11 @@ fn transformed(c: [&str; 3], rate: u32) -> [BigRational; 3] {
         &a0 - r(2 * f) * &a1 + r(4 * f * f) * &a2,
     ]
 }
+/// The two-stage BS.1770-5 K-weighting filter for one channel at `rate`.
+pub(crate) fn k_weighting(rate: u32) -> [Biquad; 2] {
+    [biquad(SHELF_B, SHELF_A, rate), biquad(PASS_B, PASS_A, rate)]
+}
+
 fn biquad(b: [&str; 3], a: [&str; 3], rate: u32) -> Biquad {
     let (b, a) = if rate == 48000 {
         (
@@ -258,12 +263,16 @@ const TRUE_PEAK_TAPS: [[f64; 4]; 12] = [
 ];
 
 #[derive(Default)]
-struct Interpolator {
+pub(crate) struct Interpolator {
     history: [[f64; 2]; 12],
     position: usize,
 }
 impl Interpolator {
-    fn push(&mut self, frame: [f64; 2], channels: usize) -> Result<[[f64; 2]; 4], AnalysisError> {
+    pub(crate) fn push(
+        &mut self,
+        frame: [f64; 2],
+        channels: usize,
+    ) -> Result<[[f64; 2]; 4], AnalysisError> {
         self.history[self.position] = frame;
         let mut result = [[0.0; 2]; 4];
         for (p, output) in result.iter_mut().enumerate() {
@@ -467,10 +476,13 @@ fn peak(amplitude: f64, unit: &str) -> Result<PeakMeasurement, AnalysisError> {
         },
     })
 }
-fn loudness(energy: f64) -> Result<f64, AnalysisError> {
+pub(crate) fn loudness(energy: f64) -> Result<f64, AnalysisError> {
     finite(-0.691 + 10.0 * energy.log10())
 }
-fn integrated(energies: &[f64], silence: bool) -> Result<LoudnessMeasurement, AnalysisError> {
+pub(crate) fn integrated(
+    energies: &[f64],
+    silence: bool,
+) -> Result<LoudnessMeasurement, AnalysisError> {
     let unmeasurable = |reason: &str| LoudnessMeasurement {
         status: "unmeasurable".into(),
         unit: "LUFS".into(),

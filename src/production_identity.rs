@@ -768,7 +768,7 @@ fn exact_frequency(value: &Value) -> Result<BigRational, IdentityError> {
         _ => Err(error("ratio requires an exact Hz reference")),
     }
 }
-fn meter_map(document: &Document) -> Result<MeterMap, IdentityError> {
+pub(crate) fn meter_map(document: &Document) -> Result<MeterMap, IdentityError> {
     let project = document
         .objects
         .values()

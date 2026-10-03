@@ -7,6 +7,12 @@ MaaC/1 for checking source, compiling an inspectable performance plan, and
 rendering that plan to WAV. The playable foundation targets offline 48 kHz mono
 or stereo rendering with the bounded [capability set](docs/capabilities.md).
 
+[`maac analyze`](docs/analyze.md) gives an AI producer, or anyone without
+ears on the render, a way to hear it: per-section and per-source loudness,
+peaks, octave bands and stereo measurements, findings named by the authored
+IDs, and spectrogram and piano-roll images. Try
+`maac analyze examples/showcase/showcase.maac --project-root . --disk-media --profile song --images analysis`.
+
 The installed executable includes [24 basic instruments](docs/basic-instruments.md):
 keys, guitars, basses, drums, strings, flute, bell, pad and lead. Import
 `std/basic/1.0.0` without downloading sounds or supplying a library directory.

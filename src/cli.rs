@@ -100,6 +100,31 @@ pub enum Command {
         #[arg(long, value_enum, default_value_t = ProfileArg::Default)]
         profile: ProfileArg,
     },
+    /// Measure a composition for an AI producer: per-section and per-source
+    /// loudness, peaks, octave bands and stereo, findings, and optional images.
+    Analyze {
+        /// Source file/project directory, or a retained performance-plan JSON file.
+        input: Option<PathBuf>,
+        /// Sections: auto (regions, else 4-bar blocks), regions, whole, or bars:N.
+        #[arg(long, default_value = "auto")]
+        section: String,
+        /// Analyse this `node:port` besides the project output; repeat to add
+        /// more (default: every output port that reaches the project output).
+        #[arg(long = "source")]
+        sources: Vec<String>,
+        /// Write spectrogram and piano-roll PNG files to this directory.
+        #[arg(long)]
+        images: Option<PathBuf>,
+        /// Replace existing image files.
+        #[arg(long)]
+        force: bool,
+        /// Root used to resolve project-relative imports and assets.
+        #[arg(long)]
+        project_root: Option<PathBuf>,
+        /// Finite execution-work allowance; other resource limits stay unchanged.
+        #[arg(long, value_enum, default_value_t = ProfileArg::Default)]
+        profile: ProfileArg,
+    },
     /// Render a named master/stem delivery, analyze final WAVs, and publish its manifest.
     Deliver {
         /// Source file/project directory, or a retained performance-plan JSON file.
@@ -473,6 +498,8 @@ pub struct ArtifactCommandResult {
     materialization: Option<MaterializationReport>,
     #[serde(flatten, skip_serializing_if = "Option::is_none")]
     windowed_query: Option<WindowedQueryReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    analysis: Option<Box<crate::analyze::AnalysisReport>>,
     #[serde(flatten, skip_serializing_if = "Option::is_none")]
     archive_patch: Option<ArchivePatchReport>,
     #[serde(flatten, skip_serializing_if = "Option::is_none")]
@@ -941,6 +968,7 @@ pub fn execute_artifact_with_range(
         edit: counts.edit,
         materialization: counts.materialization,
         windowed_query: counts.windowed_query,
+        analysis: counts.analysis,
         archive_patch: counts.archive_patch,
         archive_import_patch: counts.archive_import_patch,
         archive_group_patch: counts.archive_group_patch,
@@ -966,6 +994,7 @@ fn execute_disk_media(
             edit: None,
             materialization: None,
             windowed_query: None,
+            analysis: None,
             archive_patch: None,
             archive_import_patch: None,
             archive_group_patch: None,
@@ -983,6 +1012,12 @@ fn execute_disk_media(
             project_root,
             profile,
             ..
+        }
+        | Command::Analyze {
+            input,
+            project_root,
+            profile,
+            ..
         } => (input.as_deref(), project_root.as_deref(), *profile),
         Command::Patch {
             input,
@@ -996,7 +1031,7 @@ fn execute_disk_media(
         _ => {
             return Err(CliError::new(
                 "E_USAGE",
-                "--disk-media supports check, build, patch, import-wav, and verify-import only",
+                "--disk-media supports check, build, analyze, patch, import-wav, and verify-import only",
             ))
         }
     };
@@ -1044,6 +1079,7 @@ fn execute_disk_media(
             edit: Some(edit),
             materialization: None,
             windowed_query: None,
+            analysis: None,
             archive_patch: None,
             archive_import_patch: None,
             archive_group_patch: None,
@@ -1055,6 +1091,7 @@ fn execute_disk_media(
         .build_with_limits(&limits)
         .map_err(|error| CliError::from_diagnostics(&error))?;
     let (notes, hits, audio_clips) = plan.stats();
+    let mut analysis = None;
     let mut base = match command {
         Command::Check { .. } => CommandResult::check(&entry, notes, plan.output().total_frames),
         Command::Build {
@@ -1067,6 +1104,26 @@ fn execute_disk_media(
             let stats = export::render_wav_to_path_disk_media(&plan, output, wav_format, *force)
                 .map_err(CliError::from_export)?;
             CommandResult::render("build", &entry, output, wav_format, stats)
+        }
+        Command::Analyze {
+            section,
+            sources,
+            images,
+            force,
+            ..
+        } => {
+            let options = analyze_options(section, sources, images, *force)?;
+            let meter = entry_meter(project.bundle());
+            let report =
+                crate::analyze::analyze_disk_media(&plan, meter.as_ref(), &options, &limits)
+                    .map_err(analyze_error)?;
+            let mut result = CommandResult::check(&entry, notes, report.frames);
+            result.command = "analyze".into();
+            result.output = images
+                .as_ref()
+                .map(|directory| directory.display().to_string());
+            analysis = Some(Box::new(report));
+            result
         }
         _ => unreachable!("disk-media command was checked above"),
     };
@@ -1082,11 +1139,96 @@ fn execute_disk_media(
         edit: None,
         materialization: None,
         windowed_query: None,
+        analysis,
         archive_patch: None,
         archive_import_patch: None,
         archive_group_patch: None,
         archive_graph_patch: None,
     })
+}
+
+/// A short text summary: findings first, then the output per section.
+fn format_analysis(input: &str, report: &crate::analyze::AnalysisReport) -> String {
+    let value = |v: Option<f64>| v.map_or("-".to_owned(), |v| format!("{v}"));
+    let mut text = format!(
+        "analyze {input}: {}s, {} sources, {} sections, {} findings",
+        report.seconds,
+        report.sources.len(),
+        report.sections.len(),
+        report.findings.len() + report.findings_omitted
+    );
+    for finding in &report.findings {
+        let place = match (&finding.section, finding.at.as_ref().and_then(|at| at.bar)) {
+            (Some(section), Some(bar)) => format!(" [{section}, bar {bar}]"),
+            (Some(section), None) => format!(" [{section}]"),
+            (None, Some(bar)) => format!(" [bar {bar}]"),
+            (None, None) => String::new(),
+        };
+        text.push_str(&format!(
+            "\n  {} {} {}{}: {}",
+            finding.severity, finding.kind, finding.source, place, finding.message
+        ));
+    }
+    if let Some(output) = report.sources.first() {
+        text.push_str(&format!(
+            "\noutput {}: integrated {} LUFS, max short-term {} LUFS, true peak {} dBTP",
+            output.port,
+            value(output.whole.integrated_lufs),
+            value(output.whole.max_short_term_lufs),
+            value(output.whole.true_peak_dbtp)
+        ));
+        for section in &output.sections {
+            text.push_str(&format!(
+                "\n  {}: short-term {} LUFS, peak {} dBFS, balance {} dB",
+                section.section,
+                value(section.measures.max_short_term_lufs),
+                value(section.measures.sample_peak_dbfs),
+                value(section.measures.stereo.as_ref().and_then(|s| s.balance_db))
+            ));
+        }
+    }
+    for image in &report.images {
+        text.push_str(&format!(
+            "\nimage {} ({}x{})",
+            image.file, image.width, image.height
+        ));
+    }
+    text
+}
+
+fn analyze_options(
+    section: &str,
+    sources: &[String],
+    images: &Option<PathBuf>,
+    force: bool,
+) -> Result<crate::analyze::AnalyzeOptions, CliError> {
+    let sections = crate::analyze::SectionMode::parse(section).map_err(analyze_error)?;
+    let sources = sources
+        .iter()
+        .map(|text| {
+            let text = text.strip_prefix('&').unwrap_or(text);
+            let (node, port) = text.split_once(':').ok_or_else(|| {
+                CliError::new("E_USAGE", format!("--source `{text}` must be node:port"))
+            })?;
+            PortRef::new(node, port).map_err(CliError::from_plan)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(crate::analyze::AnalyzeOptions {
+        sections,
+        sources,
+        images: images.clone(),
+        force,
+    })
+}
+
+fn analyze_error(error: crate::analyze::AnalyzeError) -> CliError {
+    CliError::new(error.code, error.message)
+}
+
+/// The entry composition's meter, for bar positions and bar sections.
+fn entry_meter(bundle: &SourceBundle) -> Option<crate::music::MeterMap> {
+    let source = bundle.sources.get(&bundle.entry)?;
+    crate::analyze::meter_of(&crate::syntax::parse(source).ok()?)
 }
 
 pub(crate) fn execute_disk_media_import(
@@ -1156,6 +1298,7 @@ struct EventCounts {
     edit: Option<crate::editing::AppliedTransaction>,
     materialization: Option<MaterializationReport>,
     windowed_query: Option<WindowedQueryReport>,
+    analysis: Option<Box<crate::analyze::AnalysisReport>>,
     archive_patch: Option<ArchivePatchReport>,
     archive_import_patch: Option<ArchiveImportPatchReport>,
     archive_group_patch: Option<ArchiveGroupPatchReport>,
@@ -1323,6 +1466,42 @@ fn execute_impl(
             Ok(CommandResult::render(
                 "build", &input, output, wav_format, stats,
             ))
+        }
+        Command::Analyze {
+            input,
+            section,
+            sources,
+            images,
+            force,
+            project_root,
+            profile,
+        } => {
+            let limits = profile.limits();
+            let options = analyze_options(section, sources, images, *force)?;
+            let (resolved, root) = resolve_source_input(input.as_deref(), project_root.as_deref());
+            let bytes = read_bounded(&resolved)?;
+            let (plan, meter) = if bytes
+                .iter()
+                .copied()
+                .find(|byte| !byte.is_ascii_whitespace())
+                == Some(b'{')
+            {
+                (capability.decode(&bytes, &limits)?, None)
+            } else {
+                let bundle = load_source_bundle(&resolved, root.as_deref())?;
+                (capability.compile(&bundle, &limits)?, entry_meter(&bundle))
+            };
+            counts.record(&plan);
+            let report = crate::analyze::analyze_artifact(&plan, meter.as_ref(), &options, &limits)
+                .map_err(analyze_error)?;
+            let mut result =
+                CommandResult::check(&resolved, artifact_plan_stats(&plan).0, report.frames);
+            result.command = "analyze".into();
+            result.output = images
+                .as_ref()
+                .map(|directory| directory.display().to_string());
+            counts.analysis = Some(Box::new(report));
+            Ok(result)
         }
         Command::QueryEvents {
             input,
@@ -3166,6 +3345,9 @@ pub fn format_human(result: &CommandResult) -> String {
 }
 /// Format an artifact-aware result with actual note, hit, and audio clip counts.
 pub fn format_human_artifact(result: &ArtifactCommandResult) -> String {
+    if let Some(report) = &result.analysis {
+        return format_analysis(&result.base().input, report);
+    }
     if let Some(query) = &result.windowed_query {
         let mut message = format!(
             "query-events {} [{}q, {}q) ({} events)",
@@ -3436,7 +3618,14 @@ fn parse_cli_with_process_options(
                 .value_parser(clap::value_parser!(u64))
                 .help("exclusive reset-origin engine frame at which an excerpt ends"),
         );
-    for name in ["check", "build", "patch", "import-wav", "verify-import"] {
+    for name in [
+        "check",
+        "build",
+        "analyze",
+        "patch",
+        "import-wav",
+        "verify-import",
+    ] {
         let subcommand = command
             .find_subcommand_mut(name)
             .expect("disk-media command is declared");
@@ -3516,13 +3705,20 @@ fn parse_cli_with_process_options(
         },
         None => None,
     };
-    let disk_media = ["check", "build", "patch", "import-wav", "verify-import"]
-        .iter()
-        .any(|name| {
-            matches
-                .subcommand_matches(name)
-                .is_some_and(|subcommand| subcommand.get_flag("disk-media"))
-        });
+    let disk_media = [
+        "check",
+        "build",
+        "analyze",
+        "patch",
+        "import-wav",
+        "verify-import",
+    ]
+    .iter()
+    .any(|name| {
+        matches
+            .subcommand_matches(name)
+            .is_some_and(|subcommand| subcommand.get_flag("disk-media"))
+    });
     let disk_media_profile = ["patch", "import-wav", "verify-import"]
         .iter()
         .find_map(|name| {

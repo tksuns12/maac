@@ -289,6 +289,18 @@ impl DiskMediaPlan {
         (notes, hits, self.artifact.audio_clip_count())
     }
 
+    pub(crate) fn artifact(&self) -> &PlanArtifact {
+        &self.artifact
+    }
+
+    /// Capture selected ports from one complete disk-backed execution.
+    pub(crate) fn render_ports<F>(&self, ports: &[PortRef], callback: F) -> dsp::Result<()>
+    where
+        F: FnMut(&[Vec<f64>]) -> dsp::Result<()>,
+    {
+        self.engine()?.render_ports(ports, callback)
+    }
+
     pub(crate) fn render<F>(&self, callback: F) -> dsp::Result<()>
     where
         F: FnMut(&[f64]) -> dsp::Result<()>,
