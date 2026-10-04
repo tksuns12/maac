@@ -26,7 +26,7 @@ owner heard, every point of friction, and what to build next.
 - **Parts:** electric-piano comping, finger bass, boom-bap drums, a warm pad,
   and a nylon-guitar melody, all on one swing grid.
 - **Mix and master:** a glue compressor and a fast peak compressor stand in
-  for a limiter.
+  for a limiter. The example has since moved to `fx.limiter/1` (F9).
 - **Delivery:** `maac deliver` passed its checks for a 24-bit dithered master
   at -15.58 LUFS integrated and -2.07 dBTP true peak.
 - **Owner's final verdict:** the timing "locks", the noise is gone, and the
@@ -72,7 +72,7 @@ owner heard, every point of friction, and what to build next.
 | F6 | `analyze` printed loudness values such as -1751 LUFS for decaying tails | Fixed in `default/2` |
 | F7 | Rendering runs at about real time (65 s for 78 s), so each iteration costs over a minute; `analyze` cannot render one section | Gap: iteration speed |
 | F8 | Drums struck on one pitch shared a piano-roll row | Fixed in `default/2` |
-| F9, F10, F16 | There is no limiter. Two compressors stand in for one, the crest factor stays high, and the plucked guitar's attacks pushed the true peak over 0 dBTP until the stand-in was re-tuned | Gap: mastering |
+| F9, F10, F16 | There is no limiter. Two compressors stand in for one, the crest factor stays high, and the plucked guitar's attacks pushed the true peak over 0 dBTP until the stand-in was re-tuned | Fixed: [`fx.limiter/1`](production.md#6-limiter--fxlimiter1). One limiter replaced the stand-in: -14.73 LUFS at -1.10 dBTP against -15.58 LUFS at -2.07 dBTP |
 | F11 | A delivery needs a copied schema file and its hash pin. Its path is project-root relative, while sample paths are source relative | Gap: delivery boilerplate |
 | F12 | Mixed swing and straight grids went unnoticed by every tool; the owner's ears caught them | Fixed: `groove_mismatch` |
 | F13 | A vinyl hiss 27 dB under the music still read as a constant, annoying "sssss" once the compressors lifted quiet passages. The numbers could not show that steady noise is salient | Gap: perception |
@@ -90,7 +90,8 @@ owner heard, every point of friction, and what to build next.
    - character processors (saturation, tape wow and flutter, chorus) for genre
      colour.
 2. **A true-peak limiter (F9, F10, F16).** Mastering to a loudness target
-   should take one setting, not a tuned pair of compressors.
+   should take one setting, not a tuned pair of compressors. Landed as
+   [`fx.limiter/1`](production.md#6-limiter--fxlimiter1) on 2026-10-04.
 3. **Authoring density (F1–F3).** A hand-written track is largely note
    boilerplate. Candidates that keep the core declarative:
    - a chord leaf (several pitches in one note object);

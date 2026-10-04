@@ -62,6 +62,7 @@ pub mod production_data;
 pub mod production_delivery;
 mod production_eq;
 pub mod production_identity;
+mod production_limiter;
 mod production_reverb;
 mod recording;
 pub mod sample_instrument;

@@ -11,6 +11,13 @@ actually published; no release tag or publication date is asserted here.
 
 ### Added
 
+- A native true-peak limiter, `fx.limiter/1`, in the production extension. It
+  drives its input by `gain` into a `ceiling` and looks ahead (1.5 ms by
+  default, declared as technical latency) with the delivery analyzer's
+  four-times true-peak interpolator. Output sample peaks never exceed the
+  ceiling, and tests hold the true-peak overshoot under 0.1 dB. "Late Window"
+  now masters with one limiter in place of two compressors and a calculated
+  gain. See [the limiter contract](docs/production.md#6-limiter--fxlimiter1).
 - An AI producer guide and the T2 trial report: an AI wrote, mixed, mastered
   and delivered "Late Window" ([`examples/lofi`](examples/lofi/)), a 75-second
   lo-fi track, and recorded each point of friction with a ranked list of what

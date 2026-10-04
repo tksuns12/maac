@@ -19,6 +19,7 @@ use crate::plan_artifact::PlanArtifact;
 use crate::plan_v3::{TimingContext, VersionedPlan};
 use crate::production_compressor::{Compressor, CompressorParams};
 use crate::production_eq::Eq;
+use crate::production_limiter::{Limiter, LimiterParams};
 use crate::production_reverb::Reverb;
 use crate::tempo::TimeValue;
 use crate::voice::{CompiledInstrument, InstrumentRuntime};
@@ -1377,7 +1378,8 @@ impl<'a> DspEngine<'a> {
             }
             Processor::Eq { channels, .. }
             | Processor::Compressor { channels, .. }
-            | Processor::Reverb { channels, .. } => {
+            | Processor::Reverb { channels, .. }
+            | Processor::Limiter { channels, .. } => {
                 let channels = usize::from(channels);
                 let main = incoming
                     .iter()
@@ -1434,6 +1436,19 @@ impl<'a> DspEngine<'a> {
                             .as_mut()
                             .ok_or_else(|| RenderError::RenderState("reverb state missing".into()))?
                             .process(&input[..channels], decay, mix)?
+                    }
+                    Processor::Limiter { .. } => {
+                        let params = LimiterParams {
+                            gain: node.current_param("gain"),
+                            ceiling: node.current_param("ceiling"),
+                            release: node.current_param("release"),
+                        };
+                        node.limiter
+                            .as_mut()
+                            .ok_or_else(|| {
+                                RenderError::RenderState("limiter state missing".into())
+                            })?
+                            .process(&input[..channels], params)?
                     }
                     _ => unreachable!(),
                 };
@@ -2064,6 +2079,7 @@ struct NodeState {
     eq: Option<Eq>,
     compressor: Option<Compressor>,
     reverb: Option<Reverb>,
+    limiter: Option<Limiter>,
     noise: Option<NoiseRuntime>,
     matrix: Option<MatrixRuntime>,
     delay: Option<DelayRuntime>,
@@ -2085,6 +2101,7 @@ impl NodeState {
             | Processor::Eq { channels, .. }
             | Processor::Compressor { channels, .. }
             | Processor::Reverb { channels, .. }
+            | Processor::Limiter { channels, .. }
             | Processor::Sum { channels }
             | Processor::Noise { channels, .. } => usize::from(channels),
             Processor::Delay { channels, .. } => usize::from(channels),
@@ -2115,7 +2132,10 @@ impl NodeState {
             | Processor::Noise { .. }
             | Processor::Matrix { .. }
             | Processor::Delay { .. } => {}
-            Processor::Eq { .. } | Processor::Compressor { .. } | Processor::Reverb { .. } => {
+            Processor::Eq { .. }
+            | Processor::Compressor { .. }
+            | Processor::Reverb { .. }
+            | Processor::Limiter { .. } => {
                 for (name, value) in crate::plan::production_defaults(&processor) {
                     base_params.insert(name, rational_f64(&value, "native default")?);
                 }
@@ -2153,6 +2173,15 @@ impl NodeState {
                 predelay_frames as usize,
                 rational_f64(damping, "damping")?,
             )?)
+        } else {
+            None
+        };
+        let limiter = if let Processor::Limiter {
+            channels,
+            lookahead_frames,
+        } = processor
+        {
+            Some(Limiter::new(channels, lookahead_frames)?)
         } else {
             None
         };
@@ -2208,6 +2237,7 @@ impl NodeState {
             eq,
             compressor,
             reverb,
+            limiter,
             noise,
             matrix,
             delay,
@@ -2236,6 +2266,7 @@ impl NodeState {
             eq: None,
             compressor: None,
             reverb: None,
+            limiter: None,
             noise: None,
             matrix: None,
             delay: None,
@@ -2262,6 +2293,7 @@ impl NodeState {
             eq: None,
             compressor: None,
             reverb: None,
+            limiter: None,
             noise: None,
             matrix: None,
             delay: None,
@@ -2292,6 +2324,7 @@ impl NodeState {
             eq: None,
             compressor: None,
             reverb: None,
+            limiter: None,
             noise: None,
             matrix: None,
             delay: None,

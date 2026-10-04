@@ -336,6 +336,7 @@ the core wrapper in versions 4–7:
 {"kind":"fx.eq/1","channels":2,"mode":"peak"}
 {"kind":"fx.compressor/1","channels":2,"sidechain_channels":1}
 {"kind":"fx.reverb/1","channels":2,"predelay_frames":960,"damping":"1/2"}
+{"kind":"fx.limiter/1","channels":2,"lookahead_frames":72}
 ```
 
 EQ mode is `peak`, `low_shelf`, `high_shelf`, `low_pass`, or `high_pass`.
@@ -345,6 +346,8 @@ of 1 or 2 requires exactly one matching `sidechain` connection. Main `in` and
 orders graph execution and participates in cycle checks but does not enter the
 audible sum. Reverb predelay is the exact ceiling of source seconds times
 48000, bounded to 0–12000 frames; damping is a canonical rational in [0,1].
+Limiter lookahead is source seconds times 48000 rounded half up, bounded to
+12–480 frames, and is the node's declared technical latency.
 No mutable filter, detector, or delay state is serialized.
 
 Native parameters live in the ordinary rational `params` map, with applicable
@@ -352,7 +355,7 @@ defaults resolved by the source compiler and renderer. EQ has `frequency` in
 Hz, `q` dimensionless, and `gain` in dB; shelves forbid `q`, and pass filters
 forbid `gain`. Compression has dB `threshold`, `knee`, `makeup`, dimensionless
 `ratio`, and seconds `attack`/`release`. Reverb has seconds `decay` and
-unitless `mix`. All are sampled every frame, retain state during automation and
+unitless `mix`. The limiter has dB `gain` and `ceiling` and seconds `release`. All are sampled every frame, retain state during automation and
 tail, and apply the bounds in the [native contract](production.md).
 Exponential interpolation is rejected for dB parameters even when positive
 endpoints were supplied directly in JSON. Structural config cannot be automated.

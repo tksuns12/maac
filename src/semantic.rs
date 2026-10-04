@@ -42,6 +42,7 @@ pub enum ProcessorKind {
     Eq(EqMode),
     Compressor(Option<u8>),
     Reverb,
+    Limiter,
     Pan,
     Sum,
     Instrument,
@@ -60,6 +61,7 @@ impl ProcessorKind {
             Self::Eq(_) => "fx.eq/1",
             Self::Compressor(_) => "fx.compressor/1",
             Self::Reverb => "fx.reverb/1",
+            Self::Limiter => "fx.limiter/1",
             Self::Pan => "core.pan/1",
             Self::Sum => "core.sum/1",
             Self::Instrument => "instrument",
@@ -2372,7 +2374,7 @@ impl<'a> Validator<'a> {
         }
         if matches!(
             processor_name,
-            "fx.eq/1" | "fx.compressor/1" | "fx.reverb/1"
+            "fx.eq/1" | "fx.compressor/1" | "fx.reverb/1" | "fx.limiter/1"
         ) {
             let required = self.project_id.as_ref().and_then(|id| self.document.object(id)).and_then(|project| project.field("requires")).is_some_and(|field| matches!(&field.value.kind, ValueKind::List(items) if items.iter().any(|item| item.as_string() == Some("maac.production/1"))));
             if !required {
@@ -2393,6 +2395,7 @@ impl<'a> Validator<'a> {
                             sidechain_channels,
                         } => (ProcessorKind::Compressor(sidechain_channels), channels),
                         Processor::Reverb { channels, .. } => (ProcessorKind::Reverb, channels),
+                        Processor::Limiter { channels, .. } => (ProcessorKind::Limiter, channels),
                         _ => unreachable!(),
                     };
                     let params = object
@@ -2891,7 +2894,8 @@ impl<'a> Validator<'a> {
             ProcessorKind::Instrument
             | ProcessorKind::Eq(_)
             | ProcessorKind::Compressor(_)
-            | ProcessorKind::Reverb => &[],
+            | ProcessorKind::Reverb
+            | ProcessorKind::Limiter => &[],
         };
         let mut result = BTreeMap::new();
         for (name, field) in fields {
@@ -3120,7 +3124,8 @@ impl<'a> Validator<'a> {
             ProcessorKind::Instrument
             | ProcessorKind::Eq(_)
             | ProcessorKind::Compressor(_)
-            | ProcessorKind::Reverb => &[],
+            | ProcessorKind::Reverb
+            | ProcessorKind::Limiter => &[],
         };
         let mut result = BTreeMap::new();
         for (name, field) in fields {
@@ -5768,7 +5773,10 @@ fn ports_for(
         return ports;
     }
     match processor {
-        ProcessorKind::Eq(_) | ProcessorKind::Compressor(_) | ProcessorKind::Reverb => {
+        ProcessorKind::Eq(_)
+        | ProcessorKind::Compressor(_)
+        | ProcessorKind::Reverb
+        | ProcessorKind::Limiter => {
             unreachable!()
         }
         ProcessorKind::Sine => vec![
@@ -5944,11 +5952,12 @@ fn parameters_for(processor: ProcessorKind) -> Vec<ParameterDescriptor> {
                     "makeup" => "makeup",
                     "decay" => "decay",
                     "mix" => "mix",
+                    "ceiling" => "ceiling",
                     _ => unreachable!(),
                 },
                 unit: match name.as_str() {
                     "frequency" => ParameterUnit::Hertz,
-                    "gain" | "threshold" | "knee" | "makeup" => ParameterUnit::Decibels,
+                    "gain" | "threshold" | "knee" | "makeup" | "ceiling" => ParameterUnit::Decibels,
                     "attack" | "release" | "decay" => ParameterUnit::Seconds,
                     _ => ParameterUnit::Dimensionless,
                 },
@@ -5958,7 +5967,10 @@ fn parameters_for(processor: ProcessorKind) -> Vec<ParameterDescriptor> {
             .collect();
     }
     match processor {
-        ProcessorKind::Eq(_) | ProcessorKind::Compressor(_) | ProcessorKind::Reverb => {
+        ProcessorKind::Eq(_)
+        | ProcessorKind::Compressor(_)
+        | ProcessorKind::Reverb
+        | ProcessorKind::Limiter => {
             unreachable!()
         }
         ProcessorKind::Sine => vec![
@@ -6048,6 +6060,10 @@ fn native_kind_processor(kind: ProcessorKind) -> Option<Processor> {
             channels: 1,
             predelay_frames: 0,
             damping: BigRational::new(1.into(), 2.into()),
+        },
+        ProcessorKind::Limiter => Processor::Limiter {
+            channels: 1,
+            lookahead_frames: 72,
         },
         _ => return None,
     })
@@ -6242,6 +6258,37 @@ pub(crate) fn production_node(object: &Object) -> Result<crate::plan::Node, Diag
                 &["channels", "predelay", "damping"],
             )
         }
+        "fx.limiter/1" => {
+            // Lookahead is technical latency: 0.25 through 10 ms, rounded to
+            // the nearest 48 kHz frame (12 through 480 frames).
+            let lookahead = config
+                .get("lookahead")
+                .map(|f| number(&f.value, Some(Unit::S), "config.lookahead"))
+                .transpose()?
+                .unwrap_or_else(|| BigRational::new(3.into(), 2000.into()));
+            if lookahead < BigRational::new(1.into(), 4000.into())
+                || lookahead > BigRational::new(1.into(), 100.into())
+            {
+                return Err(error(
+                    DiagnosticCode::Range,
+                    "config.lookahead",
+                    "limiter lookahead must be 0.25 through 10 ms",
+                ));
+            }
+            let frames = (lookahead * BigRational::from_integer(48000.into())
+                + BigRational::new(1.into(), 2.into()))
+            .floor()
+            .to_integer()
+            .to_u32()
+            .unwrap();
+            (
+                Processor::Limiter {
+                    channels,
+                    lookahead_frames: frames,
+                },
+                &["channels", "lookahead"],
+            )
+        }
         _ => {
             return Err(error(
                 DiagnosticCode::Capability,
@@ -6270,7 +6317,7 @@ pub(crate) fn production_node(object: &Object) -> Result<crate::plan::Node, Diag
         }
         let unit = match name.as_str() {
             "frequency" => Some(Unit::Hz),
-            "gain" | "threshold" | "knee" | "makeup" => Some(Unit::Db),
+            "gain" | "threshold" | "knee" | "makeup" | "ceiling" => Some(Unit::Db),
             "attack" | "release" | "decay" => Some(Unit::S),
             _ => None,
         };

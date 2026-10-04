@@ -290,9 +290,9 @@ node room { type = "fx.reverb/1"; config = { channels = 2; predelay = 20ms; damp
 node send_level { type = "core.gain/1"; config = { channels = 2; }; params = { gain = 0.3; }; }
 node warmth { type = "fx.eq/1"; config = { channels = 2; mode = high_shelf; }; params = { frequency = 5000Hz; gain = -5dB; }; }
 node glue { type = "fx.compressor/1"; config = { channels = 2; }; params = { threshold = -26dB; ratio = 3; knee = 6dB; attack = 20ms; release = 200ms; makeup = 4dB; }; }
-// Fast peak control in place of a limiter, which the native set lacks.
-node catch { type = "fx.compressor/1"; config = { channels = 2; }; params = { threshold = -15dB; ratio = 20; knee = 0dB; attack = 3/10ms; release = 60ms; makeup = 0dB; }; }
-node master { type = "core.gain/1"; config = { channels = 2; }; params = { gain = 14/5; }; }
+// Drives the mix to the loudness target under a true-peak ceiling. Its 1.5 ms
+// lookahead is declared latency; the 3 s tail covers it.
+node master { type = "fx.limiter/1"; config = { channels = 2; }; params = { gain = 9.5dB; ceiling = -1.1dB; release = 150ms; }; }
 
 connect keys_bus { from = &keys:out; to = &bus:in; }
 connect bass_bus { from = &bass:out; to = &bus:in; }
@@ -309,7 +309,7 @@ connect room_level { from = &room:out; to = &send_level:in; }
 connect return_bus { from = &send_level:out; to = &bus:in; }
 connect bus_warmth { from = &bus:out; to = &warmth:in; }
 connect warmth_glue { from = &warmth:out; to = &glue:in; }
-connect glue_catch { from = &glue:out; to = &catch:in; }
+connect glue_master { from = &glue:out; to = &master:in; }
 
 // ---------------------------------------------------------------- delivery
 // `maac deliver examples/lofi/lofi.maac --delivery release --output-dir out --profile song`
@@ -328,4 +328,3 @@ extension deliveries {
     }; };
   }; }; };
 }
-connect catch_master { from = &catch:out; to = &master:in; }

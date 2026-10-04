@@ -60,13 +60,19 @@ maac analyze main.maac --images analysis/           # spectrogram and piano roll
 
 - **Routing.** Use `send` buses into `fx.reverb/1` with `mix = 1`, plus a
   return gain.
-- **No limiter.** A native limiter does not exist yet. Use a glue
-  `fx.compressor/1` (ratio 2–3, attack about 20 ms) followed by a fast peak
-  compressor (ratio 20, attack about 0.3 ms, threshold just under the
-  loudest peaks). Then set the final `core.gain/1` arithmetically:
-  `gain change (dB) = target true peak − measured true peak`.
-  Plucked and percussive attacks raise true peaks; re-measure after changing
-  an instrument.
+- **Master.** End the chain with an optional glue `fx.compressor/1` (ratio
+  2–3, attack about 20 ms), then `fx.limiter/1` as the project output. Its
+  `gain` sets the loudness and its `ceiling` caps the true peak. Raising the
+  gain by 1 dB raises the integrated loudness by just under 1 dB until the
+  limiter works hard, so measure, adjust and measure again.
+- **Ceiling margin.** Set the ceiling about 0.1 dB under the delivery's
+  true-peak limit. Dither and integer encoding can lift peaks by a hair: on
+  "Late Window" a −1 dB ceiling measured −0.99999 dBTP and failed a −1 dBTP
+  limit.
+- **Lookahead latency.** The limiter delays its output by its lookahead (1.5
+  ms by default). On the master this is harmless if the `tail` covers it. A
+  stem that must stay aligned with the limited master needs a matching
+  `core.delay/1`.
 - **Noise.** Steady broadband noise, such as hiss, is far more noticeable than
   its loudness suggests, especially after compression. In the trial, hiss 27
   dB under the music still annoyed the listener, so leave it out unless asked.
@@ -94,4 +100,4 @@ ask for a verdict.
 | "A constant sssss in the background" | Low-level steady noise lifted by compression | Not measured yet; avoid steady noise |
 | "The instruments sound tacky" | std/basic synthesized timbres | Not measurable; prefer std/acoustic and darker `brightness` |
 | Lead melody gets lost | Melody 6 dB under the comping | Per-stem `max_short_term_lufs` by region |
-| True peak over the limit after a sound change | Plucked attacks | `true_peak_over`, then re-tune the peak compressor |
+| True peak over the limit after a sound change | Plucked attacks through compressors standing in for a limiter | `true_peak_over`; master through `fx.limiter/1` with its ceiling under the limit |

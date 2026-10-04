@@ -34,7 +34,7 @@ and a single replacement lane in [instance overrides and inserts](../MaaC-1-Spec
 and [curves and parameter automation](../MaaC-1-Specification.md#12-curves-and-parameter-automation).
 Audio transports, explicit warp maps, routing, sidechains, latency, freeze
 invalidation, and production deliveries are also specified, including the
-shared execution and selection rules in [production delivery](production.md#6-shared-execution-timing-and-selection).
+shared execution and selection rules in [production delivery](production.md#7-shared-execution-timing-and-selection).
 The core deliberately rejects implicit humanization, arbitrary computation,
 guessed conversion, and hidden fallback behavior. A proposal should preserve
 those properties rather than make a convenient editor action part of the
@@ -197,7 +197,7 @@ Operationally, the baseline should declare one common audio origin, render
 range and tail, explicit graph taps, and an optional reference mix. Selected
 stems need not sum to the master when shared effects or nonlinear routing are
 present, so tap semantics must be recorded ([production execution and
-selection](production.md#6-shared-execution-timing-and-selection)). The
+selection](production.md#7-shared-execution-timing-and-selection)). The
 manifest is MaaC provenance, not something a DAW may be assumed to interpret;
 the receiver profile must document and test tempo import, instrument setup, and
 manual mapping. MIDI timing or tempo-ramp approximation, same-key overlaps,

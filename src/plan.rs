@@ -706,6 +706,12 @@ pub enum Processor {
         #[serde(with = "rational_serde")]
         damping: Rational,
     },
+    /// A lookahead true-peak limiter; its lookahead is declared latency.
+    #[serde(rename = "fx.limiter/1")]
+    Limiter {
+        channels: u8,
+        lookahead_frames: u32,
+    },
     Pan,
     Sum {
         channels: u8,
@@ -756,6 +762,9 @@ impl Processor {
     pub fn technical_latency_frames(&self) -> u64 {
         match self {
             Self::Delay { frames, .. } => *frames,
+            Self::Limiter {
+                lookahead_frames, ..
+            } => u64::from(*lookahead_frames),
             _ => 0,
         }
     }
@@ -780,6 +789,7 @@ impl Processor {
             Self::Eq { .. } => "fx.eq/1",
             Self::Compressor { .. } => "fx.compressor/1",
             Self::Reverb { .. } => "fx.reverb/1",
+            Self::Limiter { .. } => "fx.limiter/1",
             Self::Pan => "pan",
             Self::Sum { .. } => "sum",
             Self::Instrument { .. } => "instrument",
@@ -811,6 +821,7 @@ impl Processor {
                 "threshold" | "ratio" | "knee" | "attack" | "release" | "makeup"
             ),
             Self::Reverb { .. } => matches!(parameter, "decay" | "mix"),
+            Self::Limiter { .. } => matches!(parameter, "gain" | "ceiling" | "release"),
             Self::Pan => parameter == "pan",
             Self::Sum { .. } => false,
             Self::Instrument { .. } => false,
@@ -3867,6 +3878,27 @@ impl<'a> PlanView<'a> {
                         ));
                     }
                 }
+                Processor::Limiter {
+                    channels,
+                    lookahead_frames,
+                } => {
+                    validate_channel_count(
+                        *channels,
+                        limits,
+                        format!("nodes.{}.processor", node.id),
+                        "processor channels",
+                    )?;
+                    if !(crate::production_limiter::MIN_LOOKAHEAD_FRAMES
+                        ..=crate::production_limiter::MAX_LOOKAHEAD_FRAMES)
+                        .contains(lookahead_frames)
+                    {
+                        return Err(err(
+                            "E_RANGE",
+                            format!("nodes.{}.processor.lookahead_frames", node.id),
+                            "limiter lookahead must be 12 through 480 frames",
+                        ));
+                    }
+                }
                 Processor::OnePole { channels }
                 | Processor::Gain { channels }
                 | Processor::Eq { channels, .. }
@@ -5890,8 +5922,8 @@ fn validate_automation_parameter(
         validate_parameter(processor, name, &point.value, path, sample_rate_hz)?;
         if ((matches!(
             processor,
-            Processor::Eq { .. } | Processor::Compressor { .. }
-        ) && matches!(name, "gain" | "threshold" | "knee" | "makeup"))
+            Processor::Eq { .. } | Processor::Compressor { .. } | Processor::Limiter { .. }
+        ) && matches!(name, "gain" | "threshold" | "knee" | "makeup" | "ceiling"))
             || matches!((processor, name), (Processor::Fader { .. }, "level")))
             && point.shape == Interpolation::Exponential
         {
@@ -6015,7 +6047,9 @@ fn port_descriptor(node: NodeView<'_>, port: &str, input: bool) -> Option<PortDe
         | (Processor::Compressor { channels, .. }, true, "in")
         | (Processor::Compressor { channels, .. }, false, "out")
         | (Processor::Reverb { channels, .. }, true, "in")
-        | (Processor::Reverb { channels, .. }, false, "out") => Some(PortDescriptor {
+        | (Processor::Reverb { channels, .. }, false, "out")
+        | (Processor::Limiter { channels, .. }, true, "in")
+        | (Processor::Limiter { channels, .. }, false, "out") => Some(PortDescriptor {
             kind: PortKind::Audio,
             channels: *channels,
             summing: false,
@@ -6136,6 +6170,7 @@ pub(crate) fn production_defaults(processor: &Processor) -> BTreeMap<String, Rat
             ("makeup", 0, 1),
         ],
         Processor::Reverb { .. } => &[("decay", 3, 2), ("mix", 1, 5)],
+        Processor::Limiter { .. } => &[("gain", 0, 1), ("ceiling", -1, 1), ("release", 1, 10)],
         _ => &[],
     };
     values
@@ -6161,6 +6196,9 @@ pub(crate) fn production_parameter_bounds(
         (Processor::Compressor { .. }, "makeup") => (-24, 24, 1, false),
         (Processor::Reverb { .. }, "decay") => (1, 300, 10, false),
         (Processor::Reverb { .. }, "mix") => (0, 1, 1, false),
+        (Processor::Limiter { .. }, "gain") => (0, 24, 1, false),
+        (Processor::Limiter { .. }, "ceiling") => (-24, 0, 1, false),
+        (Processor::Limiter { .. }, "release") => (1, 5000, 1000, false),
         _ => return None,
     };
     Some((

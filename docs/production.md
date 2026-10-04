@@ -9,8 +9,8 @@ Syntax, schema, and bounded arithmetic
 fixtures provide specification evidence only; they do not establish native
 rendering, SRC, or metering conformance.
 
-The capability adds project-level native `fx.eq/1`, `fx.compressor/1`, and
-`fx.reverb/1` nodes and named master/stem deliveries. It leaves `maac 1`, Core
+The capability adds project-level native `fx.eq/1`, `fx.compressor/1`,
+`fx.reverb/1`, and `fx.limiter/1` nodes and named master/stem deliveries. It leaves `maac 1`, Core
 Audio conformance obligations, the grammar, the generic syntax-tree schema, and
 implemented performance-plan versions unchanged. Expressive instruments,
 multisampling and reusable sections remain separate future work. Bounded take
@@ -84,12 +84,14 @@ validate base values, automation values, and the effective modulated value.
 All arithmetic/state is finite binary64; reject nonfinite input, parameter,
 coefficient, intermediate result, or committed state. There is no silent
 clamping, denormal suppression, normalization, limiting, smoothing, or recovery
-by resetting damaged state. A locked byte-identity claim additionally pins the
+by resetting damaged state; the limiting and final clamp of `fx.limiter/1` are
+its specified processing. A locked byte-identity claim additionally pins the
 math implementation, floating-point environment, and fused-operation policy.
 
 State resets once at the project's reset origin, persists through parameter
 changes and the entire declared tail, and is private to each node instance.
-Technical latency is zero for all three processors. They conservatively declare
+Technical latency is zero for the EQ, compressor, and reverb; the limiter
+declares its lookahead (section 6). All four conservatively declare
 current-sample feedthrough from every main input channel to its corresponding
 output and from all effective parameters to affected outputs. EQ has no
 cross-channel history; compression has linked-channel dependencies. Reverb's
@@ -254,7 +256,84 @@ through frame 1492 and `1/32` at frame 1493 in the real-valued reference:
 allpass feedthrough `1/4` times input/output projection product `1/8`.
 Numerical verification and subsequent listening acceptance are separate gates.
 
-## 6. Shared execution, timing, and selection
+## 6. Limiter — `fx.limiter/1`
+
+A linked lookahead true-peak limiter: it drives its input into a ceiling and
+lowers the gain before each peak arrives. Its only config fields are
+`channels` and `lookahead`.
+
+| Field | Evaluation | Default | Allowed range |
+| --- | --- | --- | --- |
+| `config.lookahead` | Immutable | `1.5ms` | 0.25 through 10 ms |
+| `params.gain` | Every sample | `0dB` | 0 through +24 dB |
+| `params.ceiling` | Every sample | `-1dB` | −24 through 0 dB |
+| `params.release` | Every sample | `100ms` | 1 ms through 5 s |
+
+**Latency.** `L = floor(48000*lookahead + 1/2)` frames, from 12 through 480
+(72 for the default). `L` is the processor's declared technical latency:
+output frame `n` carries input frame `n-L`, and the first `L` output frames
+are silent. As [§15.1](../MaaC-1-Specification.md#151-latency-is-explicit)
+requires, nothing compensates for it. A path that recombines with the limited
+signal, or a stem that must stay sample-aligned with a limited master, needs
+an explicit `core.delay/1` of `L` frames. The project `tail` should cover `L`
+frames, or the last `L` frames of input fall outside the render. The latency
+is not a causality break for graph-cycle analysis.
+
+Number frames `n` from zero at the reset origin. Let `C = 10^(ceiling/20)`,
+evaluated at the current sample. At each frame:
+
+1. **Drive.** `u[n,c] = x[n,c] * 10^(gain/20)` for each channel `c`.
+2. **Detection.** Push `u[n]` through the four-times Annex 2 interpolator of
+   section 10.3: the same coefficients, the same per-channel sum
+   `v[4*n+p] = sum(k=0..11,h[k,p]*u[n-k])`, and zero history at the reset
+   origin. The detected level `d[n]` is the largest of `abs(u[n,c])` and the
+   four `abs(v)` values over all channels, so detection is linked and the
+   stereo image never shifts. If `d[n] > C`, record the detection
+   `(n, r = C/d[n])`.
+3. **Bounds.** Let `R = L-11`. A detection `(j, r)` bounds the gain at frame
+   `n` for `j <= n <= j+L`:
+
+   ```
+   n >= j+R:  b = r
+   otherwise: b = r + (1-r)*(j+R-n)/R
+   ```
+
+   The line falls from 1 at detection to `r` when input frame `j-11`, the
+   earliest frame of the detection's interpolation support, reaches the
+   output, and holds `r` until input frame `j` has passed. A detection with
+   `j+L < n` is discarded.
+4. **Gain.** With `a = exp(-1/(48000*release))` and the previous gain `g'`
+   (1 at the reset origin), `g[n] = min(1, 1-a*(1-g'), every live bound)`.
+   The release term returns the gain toward 1 with e-folding time `release`.
+5. **Output.** `y[n,c] = clamp(u[n-L,c]*g[n], -C, C)`, where `u` before frame
+   zero is zero. The clamp absorbs rounding; at constant parameters the gain
+   already holds every detected sample at or under `C`.
+
+Evaluate the bounds in detection order. Check every driven sample,
+interpolated value, required gain, coefficient, gain, and output for
+finiteness before committing the frame.
+
+**Guarantees.** Output sample magnitudes never exceed the current ceiling.
+Because every frame of a peak's interpolation support is held at the
+required gain, the output's true peak measured by section 10.3 stays at or
+just above the ceiling. The gain still varies inside that support, and the
+interpolator's negative taps can turn the variation into a small overshoot.
+The implementation's tests bound it at 0.1 dB and measure 0.011 dB for noise
+driven 12 dB into a −1 dB ceiling. This is a tested margin, not a
+mathematical guarantee: deliveries that need a true-peak bound should state
+it as a `limits` check, which also covers dither and resampling. A ceiling
+lowered by automation applies to new detections; peaks already in the
+lookahead are only clamped to it.
+
+**State and work.** The delay lines, interpolator histories, detection list,
+and gain reset at the reset origin and persist through the tail. Storage is
+`L*channels` delayed values, `11*channels` interpolator values, and at most
+`L+1` live detections. Per frame the limiter computes 48 multiply-adds per
+channel for detection and evaluates at most `L+1` bounds. The node declares
+current-sample feedthrough from its input and parameters, because the current
+detection enters the current gain computation.
+
+## 7. Shared execution, timing, and selection
 
 All targets in a delivery observe the same complete graph execution. Selecting
 a stem MUST NOT mute other tracks or remove sidechains, shared effects,
@@ -272,7 +351,7 @@ Target frame zero represents the reset origin. All targets use the same full
 interval and declared tail; there is no target-specific crop, reset, inferred
 tail, silence trimming, automatic fade, or gain correction.
 
-## 7. Resampling — `maac.src.kaiser/1`
+## 8. Resampling — `maac.src.kaiser/1`
 
 This identity specifies a centered rational-polyphase Kaiser-windowed sinc
 converter from the 48000 Hz engine stream to a supported delivery rate. At
@@ -333,7 +412,7 @@ stopband errors below `10^-6` for these constants. This is historical feasibilit
 evidence, not a reproduced check in this revision, a certified continuous-
 frequency bound, or renderer conformance.
 
-## 8. Encoding and deterministic dither
+## 9. Encoding and deterministic dither
 
 Write little-endian RIFF/WAVE with mono or stereo ordering inherited from the
 port. `wav_f32le` uses IEEE Float32 format; `wav_pcm16le` and `wav_pcm24le` use
@@ -381,7 +460,7 @@ encoder's symmetric M. Thus encoded PCM16 +32767 meters as 32767/32768, and
 encoded PCM24 +8388607 as 8388607/8388608. Float32 analysis reads the final
 stored Float32 values exactly into binary64.
 
-## 9. Authoritative final-artifact analysis
+## 10. Authoritative final-artifact analysis
 
 The analyzer identity is `maac.analysis.bs1770-5/2`, with the K-weighting,
 gating, and deterministic true-peak profile below. Its normative external
@@ -399,7 +478,7 @@ encoded audio bytes. Historical manifests retain their original analyzer and
 true-peak identities and must not be relabeled as revision 2.
 
 Analyze samples reconstructed from each successfully encoded final artifact,
-after resampling and dither, using the encoding reconstruction in section 8.
+after resampling and dither, using the encoding reconstruction in section 9.
 Analyzing an earlier floating-point buffer is not authoritative. Reset analyzer
 state independently for each complete artifact. Use binary64 nearest ties-to-
 even, ordered multiply then add without FMA/reassociation or denormal flushing;
@@ -408,7 +487,7 @@ rounding mode, and relevant numerical environment. Nonfinite input or internal
 results fail analysis; logarithm of zero is handled by status, never serialized
 as NaN or infinity.
 
-### 9.1 Rate-correct K-weighting
+### 10.1 Rate-correct K-weighting
 
 For each channel, cascade the high-shelf stage then the high-pass stage using
 direct form I, normalized a0, and zero histories. These are the published
@@ -443,7 +522,7 @@ library's approximate filter design. Use the same DFI equation and ascending
 term order as EQ. Mono has one channel weight of 1; stereo has two weights of
 1. Do not duplicate a mono channel or add surround/LFE weights.
 
-### 9.2 Integrated loudness
+### 10.2 Integrated loudness
 
 Let F be the artifact rate. Use exactly `L = 2*F/5` frames per 400 ms block and
 `H = F/10` frames per 100 ms hop (all supported rates make these integers).
@@ -467,7 +546,7 @@ set A is empty, integrated loudness is unmeasurable. Otherwise calculate
 blocks in increasing start-frame order. Gates compare the computed unrounded
 binary64 values, never report/display-rounded decimals.
 
-### 9.3 Sample and true peaks
+### 10.3 Sample and true peaks
 
 Sample peak amplitude is the maximum absolute reconstructed sample over every
 frame and channel, before K-weighting. For a positive maximum P report
@@ -523,7 +602,7 @@ an empty artifact. Checked preflight accounting adds this work to SRC and
 spool work under the caller's delivery budget; this analyzer revision does not
 change those other charges or resource caps.
 
-### 9.4 Statuses and limits
+### 10.4 Statuses and limits
 
 Status names below are JSON strings in machine-readable reports; `null` is a
 JSON null, not a new MaaC source literal. Each peak report contains
@@ -562,7 +641,7 @@ Digital silence passes every finite peak upper bound by its amplitude-zero
 status; do not turn null into zero dB. Limits never invoke automatic gain
 correction, normalization, limiting, or a second export.
 
-## 10. Results and publication
+## 11. Results and publication
 
 Artifact completion and check results are separate. Each target result records
 its IDs, selected port, role, encoding, rate, channels/order, frame count,
@@ -598,7 +677,7 @@ uppercase/mixed-case IDs and long components, independently of target selection.
 The [CLI reference](reference.md) specifies the mapping and collision refusal;
 full source IDs remain authoritative in delivery data and manifests.
 
-## 11. Conformance and implementation gates
+## 12. Conformance and implementation gates
 
 The [complete example](../examples/production.maac) uses the repository as its
 package root; its descriptor asset path `production.schema.json` resolves from
@@ -617,7 +696,7 @@ replace the acceptance gates below.
 [`production-conformance.json`](../production-conformance.json) validate bounded
 syntax/schema and selected semantics and arithmetic. Independent expected
 results cover EQ impulses, compressor knees and time constants, the reverb's
-first wet impulse, symmetric integer quantization and deterministic dither,
+first wet impulse, limiter configuration ranges, symmetric integer quantization and deterministic dither,
 exact delivery frame counts, and the four-times true-peak impulse, adjacent
 samples, silence, and complete tail counts. Invalid cases cover capabilities, units,
 fields, references, sidechains, formats, rates, and limits. These checks do not

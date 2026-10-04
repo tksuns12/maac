@@ -1485,7 +1485,7 @@ impl<'a> Compiler<'a> {
                 self.string_value(&type_field.value, object, Some(type_field), "type")?;
             if matches!(
                 node_type.as_str(),
-                "fx.eq/1" | "fx.compressor/1" | "fx.reverb/1"
+                "fx.eq/1" | "fx.compressor/1" | "fx.reverb/1" | "fx.limiter/1"
             ) {
                 self.nodes
                     .push(crate::semantic::production_node(object).map_err(|error| {
@@ -1750,7 +1750,8 @@ impl<'a> Compiler<'a> {
                 | Processor::Instrument { .. }
                 | Processor::Eq { .. }
                 | Processor::Compressor { .. }
-                | Processor::Reverb { .. } => {}
+                | Processor::Reverb { .. }
+                | Processor::Limiter { .. } => {}
             }
             if let Some(params_value) = self.optional(object, "params") {
                 let params = self.record(params_value, object, object.field("params"))?;
@@ -5215,7 +5216,8 @@ impl<'a> Compiler<'a> {
             }
             | Processor::Eq { channels, .. }
             | Processor::Compressor { channels, .. }
-            | Processor::Reverb { channels, .. } => Ok(channels),
+            | Processor::Reverb { channels, .. }
+            | Processor::Limiter { channels, .. } => Ok(channels),
             Processor::Sine { .. } => Ok(1),
             Processor::Instrument { channels, .. } => Ok(channels),
         }

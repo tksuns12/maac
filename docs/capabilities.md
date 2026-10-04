@@ -162,8 +162,10 @@ and disk-media paths.
 
 The [native production contract](production.md), required capability
 `maac.production/1`, has an **experimental implementation**. Native `fx.eq/1`,
-`fx.compressor/1`, and `fx.reverb/1` support mono/stereo project-level nodes,
-sample automation, private reset state, and explicit tails. Named master/stem
+`fx.compressor/1`, `fx.reverb/1`, and the lookahead true-peak limiter
+`fx.limiter/1` support mono/stereo project-level nodes, sample automation,
+private reset state, and explicit tails. The limiter declares its lookahead as
+technical latency. Named master/stem
 outputs retain sidechain and shared-effect context. Delivery supports 44.1/48/96
 kHz, Float32/PCM24/PCM16 WAV, explicit none/seeded TPDF dither, and measurements
 of the reconstructed final artifact. Failed requested limits retain completed

@@ -262,7 +262,7 @@ const TRUE_PEAK_TAPS: [[f64; 4]; 12] = [
     ],
 ];
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub(crate) struct Interpolator {
     history: [[f64; 2]; 12],
     position: usize,

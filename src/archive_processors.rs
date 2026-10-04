@@ -491,7 +491,8 @@ fn defaults_for(processor: ProcessorView<'_>) -> BTreeMap<String, Rational> {
         ProcessorView::Core(
             processor @ (Processor::Eq { .. }
             | Processor::Compressor { .. }
-            | Processor::Reverb { .. }),
+            | Processor::Reverb { .. }
+            | Processor::Limiter { .. }),
         ) => crate::plan::production_defaults(processor),
         ProcessorView::Kit { .. } => BTreeMap::from([("level".into(), fraction(1, 1))]),
         ProcessorView::Constant => BTreeMap::from([("value".into(), fraction(0, 1))]),

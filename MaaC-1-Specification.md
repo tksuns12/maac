@@ -75,7 +75,8 @@ and user listening acceptance remain separate from this design approval.
 
 The normative [native mixing and delivery contract](docs/production.md) defines
 the explicitly required capability `maac.production/1`: native `fx.eq/1`,
-`fx.compressor/1`, and `fx.reverb/1` nodes, plus named master/stem deliveries,
+`fx.compressor/1`, `fx.reverb/1`, and `fx.limiter/1` nodes, plus named
+master/stem deliveries,
 resampling, encoding, and final-artifact loudness analysis. These processors
 use existing `node` syntax and require no external executable implementation
 asset. Named deliveries use an existing render-affecting `extension` object

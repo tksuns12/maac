@@ -18,7 +18,7 @@ from check_spec import Draft202012Validator, Lark, ToSyntax, fraction, rational
 
 ROOT = Path(__file__).resolve().parent
 CAPABILITY = "maac.production/1"
-NATIVE = {"fx.eq/1", "fx.compressor/1", "fx.reverb/1"}
+NATIVE = {"fx.eq/1", "fx.compressor/1", "fx.reverb/1", "fx.limiter/1"}
 
 
 class Invalid(ValueError):
@@ -137,6 +137,12 @@ def validate(doc, schema):
                 require("sidechain_channels" not in config, "E_SIDECHAIN")
             bounds = {"threshold": ("dB", -120, 24), "ratio": (None, 1, 100), "knee": ("dB", 0, 24), "attack": ("s", 0, 10), "release": ("s", 0, 30), "makeup": ("dB", -24, 24)}
             allowed = set(bounds)
+        elif kind == "fx.limiter/1":
+            require(set(config) <= {"channels", "lookahead"}, "E_FIELD")
+            lookahead = numeric(config.get("lookahead", rational("3/2000", "quantity", "s")), "s")
+            require(Fraction(1, 4000) <= lookahead <= Fraction(1, 100), "E_RANGE")
+            bounds = {"gain": ("dB", 0, 24), "ceiling": ("dB", -24, 0), "release": ("s", Fraction(1, 1000), 5)}
+            allowed = set(bounds)
         else:
             require(set(config) <= {"channels", "predelay", "damping"}, "E_FIELD")
             require(0 <= numeric(config.get("predelay", rational("0", "quantity", "s")), "s") <= Fraction(1, 4), "E_RANGE")
@@ -178,7 +184,7 @@ def validate(doc, schema):
             if path and kinds.get(path[0]) in NATIVE:
                 require(len(path) == 3 and path[1] == "params" and target.get("port") is None, "E_AUTOMATION")
                 kind = kinds[path[0]]
-                allowed = {"fx.eq/1": {"frequency", "q", "gain"}, "fx.compressor/1": {"threshold", "ratio", "knee", "attack", "release", "makeup"}, "fx.reverb/1": {"decay", "mix"}}[kind]
+                allowed = {"fx.eq/1": {"frequency", "q", "gain"}, "fx.compressor/1": {"threshold", "ratio", "knee", "attack", "release", "makeup"}, "fx.reverb/1": {"decay", "mix"}, "fx.limiter/1": {"gain", "ceiling", "release"}}[kind]
                 require(path[2] in allowed, "E_AUTOMATION")
                 if kind == "fx.eq/1":
                     mode = scalar(fields(nodes[path[0]]["fields"]["config"])["mode"])

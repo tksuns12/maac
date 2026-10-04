@@ -637,6 +637,11 @@ impl Normalizer<'_> {
                                 rational(&BigRational::new(1.into(), 2.into()), None)
                             });
                         }
+                        Processor::Limiter { .. } => {
+                            config
+                                .entry("lookahead")
+                                .or_insert_with(|| quantity(3, 2000, Unit::S));
+                        }
                         Processor::Noise { seed, .. } => {
                             config.entry("seed").or_insert_with(|| {
                                 rational(&BigRational::from_integer(BigInt::from(*seed)), None)
@@ -680,6 +685,11 @@ impl Normalizer<'_> {
                                 _ => None,
                             },
                             Processor::Reverb { .. } if name == "decay" => Some(Unit::S),
+                            Processor::Limiter { .. } => match name.as_str() {
+                                "release" => Some(Unit::S),
+                                "gain" | "ceiling" => Some(Unit::Db),
+                                _ => None,
+                            },
                             _ => None,
                         },
                     };
@@ -1072,6 +1082,12 @@ node s {instrument=&sound;}
                 "channels=1;",
                 "decay=1500ms;mix=0.2;",
                 "channels=1;predelay=0ms;damping=0.5;",
+            ),
+            (
+                "fx.limiter/1",
+                "channels=1;",
+                "gain=0dB;ceiling=-1dB;release=100ms;",
+                "channels=1;lookahead=1.5ms;",
             ),
         ] {
             let source = SOURCE.replace("output=&s:out;", "output=&fx:out;requires=[\"maac.production/1\"];")
