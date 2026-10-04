@@ -11,6 +11,11 @@ actually published; no release tag or publication date is asserted here.
 
 ### Added
 
+- An AI producer guide and the T2 trial report: an AI wrote, mixed, mastered
+  and delivered "Late Window" ([`examples/lofi`](examples/lofi/)), a 75-second
+  lo-fi track, and recorded each point of friction with a ranked list of what
+  to build next. See [the guide](docs/ai-producer-guide.md) and
+  [the trial](docs/ai-production-trial.md).
 - `maac analyze`, listening tools for AI producers. One render measures the
   project output and every source port that reaches it, per region or bar
   block: BS.1770-5 loudness, peaks with clipping positions, octave bands,
@@ -190,6 +195,15 @@ actually published; no release tag or publication date is asserted here.
 
 ### Changed
 
+- `maac analyze` uses the `maac.analyze.default/2` findings profile, from the
+  T2 trial:
+  - sources have graph roles (`output`, `bus`, `stem`, `chain`), so a
+    generator before its gain stage is no longer a mix source;
+  - `stereo_imbalance` applies to the output and buses only;
+  - loudness maxima below -70 LUFS are unmeasured;
+  - a new `groove_mismatch` warning reports parts that mix swung and
+    straight off-beats;
+  - single-pitch drum parts get their own piano-roll lanes.
 - The specification states rules that were implemented but unwritten: the
   `maac` keyword and pitch tokens end at an identifier boundary (§2); the
   library extension's sample forms (§1.3); where diagnostics are located,

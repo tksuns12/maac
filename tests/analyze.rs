@@ -180,10 +180,24 @@ connect b { from = &quiet:out; to = &out:in; }"#;
         ports,
         [
             ("out:out", "output"),
-            ("quiet:out", "leaf"),
-            ("s:out", "leaf")
+            ("quiet:out", "stem"),
+            ("s:out", "stem")
         ]
     );
+    // Nothing below the -70 LUFS absolute floor is reported.
+    for source in &report.sources {
+        for section in &source.sections {
+            for value in [
+                section.measures.max_momentary_lufs,
+                section.measures.max_short_term_lufs,
+            ]
+            .into_iter()
+            .flatten()
+            {
+                assert!(value > -70.0, "{} {value}", source.port);
+            }
+        }
+    }
     assert!(kinds(&report).contains(&("silent_source", "quiet:out")));
     let share = report.sources[2].whole.master_share.as_ref().unwrap();
     assert_eq!(share[4], Some(1.0));
@@ -289,4 +303,131 @@ fn the_cli_prints_the_report_as_json() {
     assert!(!bad.status.success());
     let json: serde_json::Value = serde_json::from_slice(&bad.stdout).unwrap();
     assert_eq!(json["code"], "E_USAGE");
+}
+
+#[test]
+fn a_generator_before_its_gain_is_a_chain_not_a_stem() {
+    let chain = r#"node noise { type = "core.noise/1"; config = { channels = 1; }; }
+node hiss { type = "core.gain/1"; config = { channels = 1; }; params = { gain = 0.001; }; }
+node out { type = "core.sum/1"; config = { channels = 1; }; }
+connect a { from = &s:out; to = &out:in; }
+connect b { from = &noise:out; to = &hiss:in; }
+connect c { from = &hiss:out; to = &out:in; }"#;
+    let report = analyze(&source(chain, ""), &AnalyzeOptions::default());
+    let roles: Vec<(&str, &str)> = report
+        .sources
+        .iter()
+        .map(|source| (source.port.as_str(), source.role))
+        .collect();
+    assert_eq!(
+        roles,
+        [
+            ("out:out", "output"),
+            ("hiss:out", "stem"),
+            ("noise:out", "chain"),
+            ("s:out", "stem")
+        ]
+    );
+    assert!(
+        report.findings.iter().all(|f| f.source != "noise:out"),
+        "{:?}",
+        kinds(&report)
+    );
+}
+
+#[test]
+fn panned_stems_are_choices_but_an_unbalanced_mix_is_not() {
+    let chain = r#"node t { type = "core.sine/1"; params = { attack = 0s; release = 0s; level = 0.5; }; }
+node left { type = "core.pan/1"; params = { pan = -0.8; }; }
+node right { type = "core.pan/1"; params = { pan = 0.8; }; }
+node out { type = "core.sum/1"; config = { channels = 2; }; }
+connect a { from = &s:out; to = &left:in; }
+connect b { from = &t:out; to = &right:in; }
+connect c { from = &left:out; to = &out:in; }
+connect d { from = &right:out; to = &out:in; }"#;
+    let extra = "track other { target = &t:events; }\nplace again { pattern = &tone; track = &other; at = 0q; }";
+    let report = analyze(&source(chain, extra), &AnalyzeOptions::default());
+    assert!(
+        report.findings.iter().all(|f| f.kind != "stereo_imbalance"),
+        "{:?}",
+        kinds(&report)
+    );
+    // With only the left source playing, the mix itself is unbalanced.
+    let lopsided = source(chain, "");
+    let report = analyze(&lopsided, &AnalyzeOptions::default());
+    assert_eq!(
+        report
+            .findings
+            .iter()
+            .filter(|f| f.kind == "stereo_imbalance")
+            .map(|f| f.source.as_str())
+            .collect::<Vec<_>>(),
+        ["out:out"]
+    );
+}
+
+/// Two parts: `s` plays `s_beats`, `t` plays `t_beats`, eighth-note gates.
+fn groove(s_beats: &str, t_beats: &str) -> String {
+    let notes = |beats: &str, prefix: &str| {
+        beats
+            .split(',')
+            .enumerate()
+            .map(|(i, at)| {
+                format!(
+                    "note {prefix}{i} {{ at = {at}q; dur = 1/6q; pitch = A4; velocity = 0.5; }}\n"
+                )
+            })
+            .collect::<String>()
+    };
+    let chain = r#"node t { type = "core.sine/1"; params = { attack = 0s; release = 0s; level = 0.5; }; }
+node out { type = "core.sum/1"; config = { channels = 1; }; }
+connect a { from = &s:out; to = &out:in; }
+connect b { from = &t:out; to = &out:in; }"#;
+    source(chain, "")
+        .replace(
+            "pattern tone { length = 8q; note a { at = 0q; dur = 8q; pitch = A4; } }",
+            &format!(
+                "pattern tone {{ length = 8q; {} }}\npattern other {{ length = 8q; {} }}",
+                notes(s_beats, "s"),
+                notes(t_beats, "t")
+            ),
+        )
+        .replace(
+            "place play {",
+            "track second { target = &t:events; }\nplace both { pattern = &other; track = &second; at = 0q; }\nplace play {",
+        )
+}
+
+#[test]
+fn mixed_swing_is_reported_and_one_grid_is_not() {
+    // `s` swings its off-beat eighths; `t` plays them straight.
+    let mixed = groove("0,2/3,1,5/3,2,8/3,3,11/3", "1/2,3/2,5/2,7/2");
+    let dir = tempfile::tempdir().unwrap();
+    let report = analyze(
+        &mixed,
+        &AnalyzeOptions {
+            images: Some(dir.path().to_path_buf()),
+            ..AnalyzeOptions::default()
+        },
+    );
+    let finding = report
+        .findings
+        .iter()
+        .find(|f| f.kind == "groove_mismatch")
+        .expect("a groove mismatch");
+    assert_eq!(finding.severity, "warning");
+    // The part on the grid with fewer onsets is named; on a tie, the swung one.
+    assert_eq!(finding.source, "s:events");
+    assert!(finding.message.contains("`s` (4)") && finding.message.contains("`t` (4)"));
+    // Both parts strike one pitch, so the piano roll draws them in lanes.
+    let roll = report
+        .images
+        .iter()
+        .find(|i| i.kind == "piano_roll")
+        .unwrap();
+    assert_eq!((roll.min_key, roll.max_key), (None, None));
+
+    let swung = groove("0,2/3,1,5/3,2,8/3,3,11/3", "2/3,5/3,8/3,11/3");
+    let report = analyze(&swung, &AnalyzeOptions::default());
+    assert!(report.findings.iter().all(|f| f.kind != "groove_mismatch"));
 }

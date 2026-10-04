@@ -1,0 +1,97 @@
+# AI producer guide
+
+How an AI can produce a finished track with MaaC: write source, render it,
+perceive it through measurements and images, revise, master and deliver.
+Every step below was used in the [T2 production trial](ai-production-trial.md),
+and the pitfalls are ones that trial hit.
+
+You cannot hear your own render. `maac analyze` is your measurement of what
+you would otherwise hear, and the person you work for is the final judge of
+anything a number cannot settle: timbre, annoyance and feel. Ask them to
+listen before you call a track finished.
+
+## 1. Plan before writing
+
+- **Instruments.** Choose them with `maac instruments` and
+  `maac instruments --library std/acoustic/1.0.0`. The std/acoustic guitars
+  are physical models and sound less synthetic than the std/basic flute or
+  bell. All std/basic drums are struck on C2.
+- **Form.** Fix the tempo, the meter and the form in bars. Declare each
+  section as a `region`, so the analysis reports per section by name.
+- **Groove grid.** Choose one grid, straight or swung, for every part, and
+  write it down in a comment. A swung off-beat eighth is `x + 2/3q`; a
+  straight one is `x + 1/2q`. At 90 bpm they are 111 ms apart, which is
+  plainly audible. Mixing them was the trial's worst mistake.
+
+## 2. Write compactly
+
+- Write one-bar chord patterns and assemble progressions with `use`. Place
+  progressions with `count` for repeats.
+- Give each drum its own node, track and pattern, and connect everything to an
+  explicit stereo `core.sum/1` bus.
+- Start levels low. Instruments from different libraries have different
+  `level` scales: in the trial, the nylon guitar needed `level = 0.7` to match
+  an electric piano at `0.11`.
+- Run `maac check` after each edit. Diagnostics name the object and field at
+  fault; fix that field.
+
+## 3. Listen through measurements
+
+```sh
+maac analyze main.maac --section regions --json > analysis.json
+maac analyze main.maac --source master:out --json   # faster, for loudness passes
+maac analyze main.maac --images analysis/           # spectrogram and piano roll
+```
+
+- **Findings first.** Read `findings` before anything else. Fix every `error`
+  and `warning`, or decide that one is intended. For example, a deliberately
+  hard-panned mix triggers `stereo_imbalance`.
+- **Balance.** Compare `max_short_term_lufs` of each `stem` per region. In the
+  trial, a lead melody 6 dB under the comping did not read as a lead, so aim
+  for the lead within about 2 dB of the main accompaniment.
+- **Groove.** A `groove_mismatch` warning means parts disagree about swing.
+  Move every off-beat to the chosen grid.
+- **Images.** Look at the PNGs. The piano roll shows form and register; the
+  spectrogram shows density, low-end build-up and sections.
+- **Duration.** Rendering runs at roughly real time, so batch several edits
+  into one measurement pass.
+
+## 4. Mix and master
+
+- **Routing.** Use `send` buses into `fx.reverb/1` with `mix = 1`, plus a
+  return gain.
+- **No limiter.** A native limiter does not exist yet. Use a glue
+  `fx.compressor/1` (ratio 2–3, attack about 20 ms) followed by a fast peak
+  compressor (ratio 20, attack about 0.3 ms, threshold just under the
+  loudest peaks). Then set the final `core.gain/1` arithmetically:
+  `gain change (dB) = target true peak − measured true peak`.
+  Plucked and percussive attacks raise true peaks; re-measure after changing
+  an instrument.
+- **Noise.** Steady broadband noise, such as hiss, is far more noticeable than
+  its loudness suggests, especially after compression. In the trial, hiss 27
+  dB under the music still annoyed the listener, so leave it out unless asked.
+- **Target.** About -16 to -14 LUFS integrated at no more than -1 dBTP suits
+  streaming; calm genres can sit lower.
+
+## 5. Deliver
+
+Add a `maac.production/1` extension with a delivery, its limits and a pinned
+copy of `production.schema.json`. [`examples/lofi/lofi.maac`](../examples/lofi/lofi.maac)
+shows the shape. Then run:
+
+```sh
+maac deliver main.maac --delivery release --output-dir out --profile song
+```
+
+The manifest's `check_status` must be `pass`. Give the listener the WAV and
+ask for a verdict.
+
+## 6. Pitfalls from the trial
+
+| Symptom from the listener | Cause | Detection |
+| --- | --- | --- |
+| "The melody and the beat keep missing each other" | Some parts swung, others straight | `groove_mismatch`; count onset fractions from `query-events` |
+| "A constant sssss in the background" | Low-level steady noise lifted by compression | Not measured yet; avoid steady noise |
+| "The instruments sound tacky" | std/basic synthesized timbres | Not measurable; prefer std/acoustic and darker `brightness` |
+| Lead melody gets lost | Melody 6 dB under the comping | Per-stem `max_short_term_lufs` by region |
+| True peak over the limit after a sound change | Plucked attacks | `true_peak_over`, then re-tune the peak compressor |

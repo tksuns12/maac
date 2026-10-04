@@ -358,6 +358,28 @@ informal listening approvals of the mono and stereo renders are recorded in the
 [showcase listening record](../docs/showcase-listening.md); the stereo approval
 predates this change.
 
+# Late Window: an AI-produced track
+
+[`lofi/lofi.maac`](lofi/lofi.maac) is a 75-second, 90 bpm lo-fi hip-hop track.
+An AI wrote it directly in MaaC and mixed and mastered it with `maac analyze`
+during the [T2 production trial](../docs/ai-production-trial.md):
+
+- electric-piano comping and a nylon-guitar melody;
+- finger bass, boom-bap drums and a warm pad;
+- every part on one swing grid.
+
+```sh
+maac build examples/lofi/lofi.maac --profile song -o late-window.wav --format pcm16
+maac analyze examples/lofi/lofi.maac --profile song --section regions
+maac deliver examples/lofi/lofi.maac --delivery release --output-dir out --profile song
+```
+
+The release delivery measured -15.58 LUFS and -2.07 dBTP and passed its
+limits. The owner's informal verdicts: the timing locks, the guitar is
+somewhat better than the first version's flute and bell, and the remaining
+std/basic instruments still sound dated. This is not an approval of the
+track's sound.
+
 # Audio inside patterns
 
 [`pattern-audio.maac`](pattern-audio.maac) builds a one-bar drum loop from

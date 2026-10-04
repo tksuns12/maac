@@ -26,13 +26,13 @@ use image::{Mark, Spectrogram};
 use meter::{measures, Block, SourceMeter};
 
 pub const SCHEMA: &str = "maac.analysis-report/1";
-pub const PROFILE: &str = "maac.analyze.default/1";
+pub const PROFILE: &str = "maac.analyze.default/2";
 pub const BANDS: &str = "maac.analyze.octave-bands/1";
 pub const BAND_CENTERS_HZ: [f64; 10] = [
     31.5, 63.0, 125.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 16000.0,
 ];
 
-// Findings profile `maac.analyze.default/1`: stated limits, not taste.
+// Findings profile `maac.analyze.default/2`: stated limits, not taste.
 const TRUE_PEAK_LIMIT_DBTP: f64 = -1.0;
 const LOUDNESS_JUMP_LU: f64 = 6.0;
 const BALANCE_LIMIT_DB: f64 = 3.0;
@@ -47,6 +47,10 @@ const DOMINANCE_BANDS: std::ops::Range<usize> = 2..8;
 const DOMINANCE_BAND_FLOOR_DB: f64 = -12.0;
 const DOMINANCE_MIN_SHARE: f64 = 0.02;
 const MAX_FINDINGS: usize = 50;
+/// A section mixes swing feels when one part plays at least this many
+/// straight off-beat eighths (x + 1/2q) and another this many swung ones
+/// (x + 2/3q).
+const GROOVE_MIN_ONSETS: usize = 4;
 
 /// How the piece is divided into sections.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -179,8 +183,10 @@ pub struct Section {
 pub struct SourceReport {
     /// `node:port`.
     pub port: String,
-    /// `output` (the project output), `bus` (receives other sources), or
-    /// `leaf`.
+    /// `output` (the project output); `bus` (a mix point with two or more
+    /// inputs, or a signal fed from one); `stem` (an independent source
+    /// feeding a mix point or the output); or `chain` (an earlier stage of a
+    /// source, such as a generator before its gain).
     pub role: &'static str,
     pub channels: u8,
     pub whole: Measures,
@@ -478,7 +484,7 @@ fn analyze_view(
             }
         })
         .collect();
-    let (findings, findings_omitted) = findings(&reports, &sections, &positions);
+    let (findings, findings_omitted) = findings(&reports, &sections, &positions, &view);
 
     let images = match &options.images {
         Some(directory) => write_images(
@@ -653,11 +659,41 @@ fn sources(view: &PlanView<'_>, requested: &[PortRef]) -> Result<Vec<Source>, An
             break;
         }
     }
-    let receivers: BTreeSet<&str> = view
-        .connections
-        .iter()
-        .map(|connection| connection.to.node.as_str())
-        .collect();
+    let mut inputs: BTreeMap<&str, usize> = BTreeMap::new();
+    for connection in view.connections {
+        *inputs.entry(connection.to.node.as_str()).or_default() += 1;
+    }
+    let is_mix =
+        |node: &str| node == output.node || inputs.get(node).is_some_and(|count| *count >= 2);
+    // Whether a mix point lies at or upstream of `node`.
+    let fed_from_mix = |node: &str| {
+        let mut seen = BTreeSet::from([node]);
+        let mut pending = vec![node];
+        while let Some(current) = pending.pop() {
+            if current != output.node && is_mix(current) {
+                return true;
+            }
+            for connection in view.connections {
+                if connection.to.node == current && seen.insert(connection.from.node.as_str()) {
+                    pending.push(connection.from.node.as_str());
+                }
+            }
+        }
+        false
+    };
+    let role = |port: &PortRef| -> &'static str {
+        if fed_from_mix(&port.node) {
+            "bus"
+        } else if view
+            .connections
+            .iter()
+            .any(|connection| &connection.from == port && is_mix(&connection.to.node))
+        {
+            "stem"
+        } else {
+            "chain"
+        }
+    };
     let candidates: BTreeSet<PortRef> = if requested.is_empty() {
         view.connections
             .iter()
@@ -675,11 +711,7 @@ fn sources(view: &PlanView<'_>, requested: &[PortRef]) -> Result<Vec<Source>, An
     let mut result = Vec::with_capacity(candidates.len() + 1);
     for (port, role) in
         std::iter::once((output.clone(), "output")).chain(candidates.into_iter().map(|port| {
-            let role = if receivers.contains(port.node.as_str()) {
-                "bus"
-            } else {
-                "leaf"
-            };
+            let role = role(&port);
             (port, role)
         }))
     {
@@ -706,6 +738,94 @@ fn sources(view: &PlanView<'_>, requested: &[PortRef]) -> Result<Vec<Source>, An
     Ok(result)
 }
 
+/// Parts that disagree about swing in one section: some play off-beat eighths
+/// straight (x + 1/2q) while others swing them (x + 2/3q). At 90 bpm the two
+/// positions are 111 ms apart.
+fn groove_findings(
+    view: &PlanView<'_>,
+    sections: &[Section],
+    positions: &PositionMap<'_>,
+) -> Vec<Finding> {
+    let half = Rational::new(1.into(), 2.into());
+    let two_thirds = Rational::new(2.into(), 3.into());
+    let whole = [(None, 0, u64::MAX)];
+    let groups: Vec<(Option<&Section>, u64, u64)> = if sections.is_empty() {
+        whole.to_vec()
+    } else {
+        sections
+            .iter()
+            .map(|s| (Some(s), s.start_frame, s.end_frame))
+            .collect()
+    };
+    let mut found = Vec::new();
+    for (section, start, end) in groups {
+        // Per target node: (straight, swung) off-beat eighths.
+        let mut parts: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+        for event in view.events() {
+            if matches!(event.kind, EventKind::Message { .. })
+                || event.on_frame < start
+                || event.on_frame >= end
+            {
+                continue;
+            }
+            let q = event.score_on_q;
+            let fraction = q - Rational::from_integer(q.floor().to_integer());
+            let counts = parts.entry(event.target.node.clone()).or_default();
+            if fraction == half {
+                counts.0 += 1;
+            } else if fraction == two_thirds {
+                counts.1 += 1;
+            }
+        }
+        let straight: Vec<(&String, usize)> = parts
+            .iter()
+            .filter(|(_, c)| c.0 >= GROOVE_MIN_ONSETS)
+            .map(|(p, c)| (p, c.0))
+            .collect();
+        let swung: Vec<(&String, usize)> = parts
+            .iter()
+            .filter(|(_, c)| c.1 >= GROOVE_MIN_ONSETS)
+            .map(|(p, c)| (p, c.1))
+            .collect();
+        if straight.is_empty() || swung.is_empty() {
+            continue;
+        }
+        let list = |parts: &[(&String, usize)]| {
+            parts
+                .iter()
+                .map(|(part, count)| format!("`{part}` ({count})"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        // Name the part on the grid with fewer onsets.
+        let total = |parts: &[(&String, usize)]| parts.iter().map(|(_, n)| n).sum::<usize>();
+        let minority = if total(&straight) < total(&swung) {
+            &straight
+        } else {
+            &swung
+        };
+        let (part, count) = minority
+            .iter()
+            .max_by_key(|(_, count)| *count)
+            .expect("nonempty");
+        found.push(Finding {
+            kind: "groove_mismatch",
+            severity: "warning",
+            source: format!("{part}:events"),
+            section: section.map(|s| s.id.clone()),
+            at: section.map(|s| positions.at(s.start_frame)),
+            value: *count as f64,
+            threshold: GROOVE_MIN_ONSETS as f64,
+            message: format!(
+                "off-beat eighths are swung in {} but straight in {}",
+                list(&swung),
+                list(&straight)
+            ),
+        });
+    }
+    found
+}
+
 fn severity_rank(severity: &str) -> u8 {
     match severity {
         "error" => 0,
@@ -718,8 +838,9 @@ fn findings(
     reports: &[SourceReport],
     sections: &[Section],
     positions: &PositionMap<'_>,
+    view: &PlanView<'_>,
 ) -> (Vec<Finding>, usize) {
-    let mut found = Vec::new();
+    let mut found = groove_findings(view, sections, positions);
     let output = &reports[0];
     let section_start = |id: &str| {
         sections
@@ -814,7 +935,10 @@ fn findings(
                 .filter_map(|s| s.measures.stereo.as_ref().and_then(key).map(|v| (s, v)))
                 .max_by(|a, b| a.1.abs().total_cmp(&b.1.abs()))
         };
-        if let Some((section, balance)) = worst(&|s: &Stereo| s.balance_db) {
+        // Panning a single stem is a choice; imbalance matters in a mix.
+        if let Some((section, balance)) =
+            worst(&|s: &Stereo| s.balance_db).filter(|_| matches!(report.role, "output" | "bus"))
+        {
             if balance.abs() > BALANCE_LIMIT_DB {
                 found.push(Finding {
                     kind: "stereo_imbalance",
@@ -857,8 +981,8 @@ fn findings(
             }
         }
     }
-    // A leaf that dominates another leaf in a prominent mid band.
-    let leaves: Vec<&SourceReport> = reports.iter().filter(|r| r.role == "leaf").collect();
+    // A stem that dominates another stem in a prominent mid band.
+    let leaves: Vec<&SourceReport> = reports.iter().filter(|r| r.role == "stem").collect();
     for (index, section) in sections.iter().enumerate() {
         let Some(output_bands) = output.sections.get(index).map(|s| &s.measures.bands_db) else {
             continue;
@@ -906,7 +1030,7 @@ fn findings(
             }
         }
     }
-    for report in reports.iter().skip(1) {
+    for report in reports.iter().filter(|r| r.role == "stem") {
         if !report.whole.is_active() {
             found.push(Finding {
                 kind: "silent_source",
@@ -1007,16 +1131,45 @@ fn write_images(
         .enumerate()
         .map(|(index, node)| (node, index))
         .collect();
+    let key_of = |pitch_hz: f64| (69.0 + 12.0 * (pitch_hz / 440.0).log2()).round() as i32;
+    // A part that strikes one pitch at least four times (a synthesized drum)
+    // gets its own lane instead of sharing that pitch's row.
+    let mut pitches: BTreeMap<&str, (BTreeSet<i32>, usize)> = BTreeMap::new();
+    for event in view.events() {
+        if let &EventKind::Note { pitch_hz, .. } = event.kind {
+            let entry = pitches.entry(event.target.node.as_str()).or_default();
+            entry.0.insert(key_of(pitch_hz));
+            entry.1 += 1;
+        }
+    }
+    let drum = |node: &str| {
+        pitches
+            .get(node)
+            .is_some_and(|(keys, n)| keys.len() == 1 && *n >= 4)
+    };
     let mut lanes: BTreeMap<(String, String), usize> = BTreeMap::new();
     let mut marks = Vec::new();
     for event in view.events() {
         let color = targets[event.target.node.as_str()];
         let off = event.off_frame.unwrap_or(event.on_frame + hop);
         match event.kind {
+            &EventKind::Note { .. } if drum(&event.target.node) => {
+                let next = lanes.len();
+                let lane = *lanes
+                    .entry((event.target.node.clone(), String::new()))
+                    .or_insert(next);
+                marks.push(Mark {
+                    on_frame: event.on_frame,
+                    off_frame: event.on_frame + hop,
+                    key: None,
+                    lane,
+                    color,
+                });
+            }
             &EventKind::Note { pitch_hz, .. } if pitch_hz > 0.0 => marks.push(Mark {
                 on_frame: event.on_frame,
                 off_frame: off,
-                key: Some((69.0 + 12.0 * (pitch_hz / 440.0).log2()).round() as i32),
+                key: Some(key_of(pitch_hz)),
                 lane: 0,
                 color,
             }),

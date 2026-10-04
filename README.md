@@ -12,6 +12,8 @@ ears on the render, a way to hear it: per-section and per-source loudness,
 peaks, octave bands and stereo measurements, findings named by the authored
 IDs, and spectrogram and piano-roll images. Try
 `maac analyze examples/showcase/showcase.maac --project-root . --disk-media --profile song --images analysis`.
+The [AI producer guide](docs/ai-producer-guide.md) shows the whole loop, and
+[`examples/lofi`](examples/lofi/) is a track an AI produced with it.
 
 The installed executable includes [24 basic instruments](docs/basic-instruments.md):
 keys, guitars, basses, drums, strings, flute, bell, pad and lead. Import

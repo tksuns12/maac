@@ -154,6 +154,36 @@ Both images are drawn from data the renderer already has. The build is offline
 with no image or FFT crate, so this needs a small radix-2 FFT and a minimal PNG
 writer using stored deflate blocks, both implemented in the repository.
 
+## Profile `maac.analyze.default/2` (2026-10-04)
+
+The [T2 production trial](ai-production-trial.md) found five problems in v1.
+The profile identifier changed with them; the report schema did not.
+
+- **Source roles:** a generator before its gain stage was reported as a mix
+  source, and its full-scale noise "dominated" every band. Roles now follow
+  the graph:
+  - `output`;
+  - `bus`: a mix point with two or more inputs, or any signal fed from one;
+  - `stem`: an independent source feeding a mix point or the output;
+  - `chain`: an earlier stage of a source.
+
+  `band_dominance` compares stems, and `silent_source` reports stems.
+- **Panning:** `stereo_imbalance` fired for single instruments that were
+  panned on purpose. It now applies to the output and buses only.
+  `mono_cancellation` still applies to every stereo source.
+- **Loudness floor:** decaying tails produced short-term values such as -1751
+  LUFS. As with the BS.1770 absolute gate, momentary and short-term maxima
+  below -70 LUFS are now unmeasured.
+- **Groove grids:** the trial's worst problem was found by the owner's ears,
+  not by the tools. The hats swung their off-beat eighths (x + 2/3q) while
+  keys, bass, kick and melody played them straight (x + 1/2q), 111 ms apart at
+  90 bpm. The new `groove_mismatch` warning reports a section where one part
+  plays at least four straight off-beat eighths and another at least four
+  swung ones. It names the part on the grid with fewer onsets.
+- **Drums in the piano roll:** synthesized drums are all struck on C2, so
+  kick, snare and hats shared one row. A part that strikes a single pitch at
+  least four times now gets its own lane.
+
 ## Deferred to later versions
 
 - **Score–audio agreement:** whether each note is audible in the mix, the

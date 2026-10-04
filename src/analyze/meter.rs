@@ -258,11 +258,13 @@ pub(super) fn measures(
         .filter(|window| full(window))
         .map(energy)
         .collect();
+    // Like the BS.1770 absolute gate, nothing below -70 LUFS is reported.
     let max_loudness = |energies: &mut dyn Iterator<Item = f64>| {
         energies
             .filter(|energy| *energy > 0.0)
             .filter_map(|energy| loudness(energy).ok())
             .reduce(f64::max)
+            .filter(|value| *value > -70.0)
     };
     let max_momentary = max_loudness(&mut momentary.iter().copied());
     let max_short_term =
