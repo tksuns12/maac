@@ -353,10 +353,10 @@ impl Builder<'_> {
             .flat_map(|children| children.iter())
         {
             match child["kind"].as_str() {
-                Some("note" | "hit" | "message" | "audio") => {
+                Some(kind @ ("note" | "chord" | "hit" | "message" | "audio")) => {
                     let mut leaf = child.clone();
                     // Audio leaves share their immutable, hash-pinned asset.
-                    if child["kind"] != "audio" {
+                    if kind != "audio" {
                         self.private_dependencies(&mut leaf, &mut BTreeMap::new())?;
                     }
                     let mut old_path = self
@@ -365,12 +365,23 @@ impl Builder<'_> {
                         .cloned()
                         .unwrap_or_else(|| vec![source_id.to_owned()]);
                     old_path.push(child_id.clone());
-                    self.mapping(
-                        format!("{old_prefix}/{child_id}"),
-                        format!("{new_prefix}/{child_id}"),
-                        old_path,
-                        vec![new_id.clone(), child_id.clone()],
-                    )?;
+                    // Each chord member is its own occurrence, `chord.k`.
+                    let leaves = if kind == "chord" {
+                        let members = child["fields"]["pitches"]["items"]
+                            .as_array()
+                            .map_or(0, Vec::len);
+                        (0..members).map(|k| format!("{child_id}.{k}")).collect()
+                    } else {
+                        vec![child_id.clone()]
+                    };
+                    for leaf_address in leaves {
+                        self.mapping(
+                            format!("{old_prefix}/{leaf_address}"),
+                            format!("{new_prefix}/{leaf_address}"),
+                            old_path.clone(),
+                            vec![new_id.clone(), child_id.clone()],
+                        )?;
+                    }
                     children.insert(child_id.clone(), leaf);
                 }
                 Some("use") => {

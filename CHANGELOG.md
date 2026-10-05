@@ -11,6 +11,20 @@ actually published; no release tag or publication date is asserted here.
 
 ### Added
 
+- Grooves: `groove lazy { grid = 1/2q; ratio = 2/3; }` declares an exact,
+  bar-aligned swing map, and a placement opts in with `groove = &lazy`.
+  Authors write straight positions; note onsets and gate ends, hits and
+  messages move, while overrides, inserts and audio leaves keep their
+  positions. A bar the grid does not divide is `E_RANGE`. See
+  [grooves](MaaC-1-Specification.md#92-grooves).
+- `chord` pattern leaves: simultaneous notes with one onset and gate, written
+  as `pitches = [A3, C4, E4, G4]`. Velocities and offsets take one value or a
+  list with one entry per pitch, so strums are explicit. Members compile to
+  ordinary notes, are addressed individually as `down.2`, and edits that would
+  shift an overridden member are refused. "Late Window" now writes its chords
+  this way: the same 629 events in 270 lines instead of 330. See
+  [chords](MaaC-1-Specification.md#82-chords) and the
+  [authoring density proposal](docs/authoring-density-proposal.md).
 - A native true-peak limiter, `fx.limiter/1`, in the production extension. It
   drives its input by `gain` into a `ceiling` and looks ahead (1.5 ms by
   default, declared as technical latency) with the delivery analyzer's

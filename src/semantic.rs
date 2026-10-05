@@ -842,10 +842,11 @@ impl<'a> Validator<'a> {
             "node" => self.validate_node(object, &path),
             "connect" => self.validate_connect(object, &path),
             "region" => self.validate_region(object, &path),
+            "groove" => self.validate_groove(object, &path),
             "modulate" | "asset" | "audio" | "extension" | "hit" | "message" | "expression" => {
                 self.validate_deferred_object(object, &path)
             }
-            "note" | "use" | "override" | "insert" => {
+            "note" | "chord" | "use" | "override" | "insert" => {
                 self.check_schema(object, &path, &[], &[], &[]);
                 self.push(
                     DiagnosticCode::Capability,
@@ -1596,6 +1597,7 @@ impl<'a> Validator<'a> {
             let child_path = child_path(path, &child.id);
             match child.kind.as_str() {
                 "note" => self.validate_note(child, &child_path),
+                "chord" => self.validate_chord(child, &child_path),
                 "use" => self.validate_use(child, &child_path),
                 "hit" | "message" => self.validate_deferred_object(child, &child_path),
                 "audio" if self.allow_audio => self.validate_pattern_audio(child, &child_path),
@@ -1641,6 +1643,113 @@ impl<'a> Validator<'a> {
             ],
             &[],
         );
+        self.validate_note_gate(object, path);
+        if let Some(field) = object.field("pitch") {
+            self.validate_pitch(field, path);
+        }
+        self.validate_unit_range_field(
+            object,
+            path,
+            "velocity",
+            BigRational::zero(),
+            BigRational::one(),
+        );
+        self.validate_unit_range_field(
+            object,
+            path,
+            "release_velocity",
+            BigRational::zero(),
+            BigRational::one(),
+        );
+        self.validate_seconds(object, path, "onset_offset");
+        self.validate_seconds(object, path, "release_offset");
+        self.validate_note_rest(object, path);
+    }
+
+    /// A chord leaf: simultaneous notes sharing one onset and gate. Per-note
+    /// fields are one value for every member or a list with one per pitch.
+    fn validate_chord(&mut self, object: &Object, path: &[String]) {
+        self.check_schema(
+            object,
+            path,
+            &["at", "dur", "pitches"],
+            &[
+                "at",
+                "dur",
+                "pitches",
+                "velocity",
+                "release_velocity",
+                "onset_offset",
+                "release_offset",
+                "order",
+                "label",
+            ],
+            &[],
+        );
+        self.validate_note_gate(object, path);
+        let members = object
+            .field("pitches")
+            .and_then(|field| match &field.value.kind {
+                ValueKind::List(items) if !items.is_empty() => {
+                    for item in items {
+                        self.validate_pitch_value_at(item, path, "pitches");
+                    }
+                    Some(items.len())
+                }
+                _ => {
+                    self.push(
+                        DiagnosticCode::Range,
+                        "chord.pitches must be a nonempty list of pitches",
+                        Some(field.value.span),
+                        path.to_vec(),
+                        vec!["pitches".into()],
+                    );
+                    None
+                }
+            });
+        for name in [
+            "velocity",
+            "release_velocity",
+            "onset_offset",
+            "release_offset",
+        ] {
+            let Some(field) = object.field(name) else {
+                continue;
+            };
+            let values: Vec<&Value> = match &field.value.kind {
+                ValueKind::List(items) => {
+                    if members.is_some_and(|members| members != items.len()) {
+                        self.push(
+                            DiagnosticCode::Range,
+                            format!("chord.{name} must have one entry per pitch"),
+                            Some(field.value.span),
+                            path.to_vec(),
+                            vec![name.into()],
+                        );
+                    }
+                    items.iter().collect()
+                }
+                _ => vec![&field.value],
+            };
+            for value in values {
+                if name.ends_with("velocity") {
+                    self.validate_unit_range_value(
+                        value,
+                        path,
+                        name,
+                        BigRational::zero(),
+                        BigRational::one(),
+                    );
+                } else {
+                    self.validate_seconds_value(value, path, name);
+                }
+            }
+        }
+        self.validate_note_rest(object, path);
+    }
+
+    /// The nonnegative onset and positive gate shared by notes and chords.
+    fn validate_note_gate(&mut self, object: &Object, path: &[String]) {
         if let Some(field) = object.field("at") {
             if let Some(value) = self.quantity(field, &[Unit::Q], path, "at") {
                 if value < BigRational::zero() {
@@ -1667,25 +1776,10 @@ impl<'a> Validator<'a> {
                 }
             }
         }
-        if let Some(field) = object.field("pitch") {
-            self.validate_pitch(field, path);
-        }
-        self.validate_unit_range_field(
-            object,
-            path,
-            "velocity",
-            BigRational::zero(),
-            BigRational::one(),
-        );
-        self.validate_unit_range_field(
-            object,
-            path,
-            "release_velocity",
-            BigRational::zero(),
-            BigRational::one(),
-        );
-        self.validate_seconds(object, path, "onset_offset");
-        self.validate_seconds(object, path, "release_offset");
+    }
+
+    /// `order` and the expression children shared by notes and chords.
+    fn validate_note_rest(&mut self, object: &Object, path: &[String]) {
         if let Some(field) = object.field("order") {
             self.integer(field, path, "order");
         }
@@ -1780,6 +1874,37 @@ impl<'a> Validator<'a> {
         self.reject_children(object, path);
     }
 
+    /// A named swing map for placements (§9.2).
+    fn validate_groove(&mut self, object: &Object, path: &[String]) {
+        self.check_schema(
+            object,
+            path,
+            &["grid", "ratio"],
+            &["grid", "ratio", "label"],
+            &[],
+        );
+        if let Some(field) = object.field("grid") {
+            if let Some(grid) = self.quantity(field, &[Unit::Q], path, "grid") {
+                if grid <= BigRational::zero() {
+                    self.push(
+                        DiagnosticCode::Range,
+                        "groove.grid must be positive",
+                        Some(field.value.span),
+                        path.to_vec(),
+                        vec!["grid".into()],
+                    );
+                }
+            }
+        }
+        self.validate_unit_range_field(
+            object,
+            path,
+            "ratio",
+            BigRational::new(1.into(), 2.into()),
+            BigRational::new(3.into(), 4.into()),
+        );
+    }
+
     fn validate_place(&mut self, object: &Object, path: &[String]) {
         self.check_schema(
             object,
@@ -1793,6 +1918,7 @@ impl<'a> Validator<'a> {
                 "stretch",
                 "transpose",
                 "boundary",
+                "groove",
                 "label",
             ],
             &[],
@@ -1802,6 +1928,9 @@ impl<'a> Validator<'a> {
         }
         if let Some(field) = object.field("track") {
             self.expect_object_ref(field, "track", &["track"], path);
+        }
+        if let Some(field) = object.field("groove") {
+            self.expect_object_ref(field, "groove", &["groove"], path);
         }
         if let Some(field) = object.field("at") {
             if let Some(value) = self.position_q_value(&field.value, path, "at") {
@@ -5242,6 +5371,10 @@ impl<'a> Validator<'a> {
     }
 
     fn validate_pitch_value(&mut self, value: &Value, path: &[String]) {
+        self.validate_pitch_value_at(value, path, "pitch");
+    }
+
+    fn validate_pitch_value_at(&mut self, value: &Value, path: &[String], name: &str) {
         match &value.kind {
             ValueKind::Symbol(symbol) => {
                 if crate::music::Pitch::parse_spelled(symbol).is_err() {
@@ -5250,7 +5383,7 @@ impl<'a> Validator<'a> {
                         "pitch symbol must be a valid spelled pitch",
                         Some(value.span),
                         path.to_vec(),
-                        vec!["pitch".into()],
+                        vec![name.into()],
                     );
                 }
             }
@@ -5264,7 +5397,7 @@ impl<'a> Validator<'a> {
                         "pitch frequency must be positive",
                         Some(value.span),
                         path.to_vec(),
-                        vec!["pitch".into()],
+                        vec![name.into()],
                     );
                 }
             }
@@ -5277,7 +5410,7 @@ impl<'a> Validator<'a> {
                         "key() requires one integer argument",
                         Some(value.span),
                         path.to_vec(),
-                        vec!["pitch".into()],
+                        vec![name.into()],
                     );
                 }
             }
@@ -5297,7 +5430,7 @@ impl<'a> Validator<'a> {
                         "ratio() requires a dimensionless ratio and Hz base",
                         Some(value.span),
                         path.to_vec(),
-                        vec!["pitch".into()],
+                        vec![name.into()],
                     );
                 } else if let [Value {
                     kind: ValueKind::Number(ratio),
@@ -5314,7 +5447,7 @@ impl<'a> Validator<'a> {
                             "ratio() requires a positive ratio and positive frequency",
                             Some(value.span),
                             path.to_vec(),
-                            vec!["pitch".into()],
+                            vec![name.into()],
                         );
                     }
                 }
@@ -5329,7 +5462,7 @@ impl<'a> Validator<'a> {
                         "degree() requires an integer index and tuning reference",
                         Some(value.span),
                         path.to_vec(),
-                        vec!["pitch".into()],
+                        vec![name.into()],
                     );
                 } else {
                     if let ValueKind::Number(index) = &args[0].kind {
@@ -5339,7 +5472,7 @@ impl<'a> Validator<'a> {
                                 "degree() index must be an integer",
                                 Some(args[0].span),
                                 path.to_vec(),
-                                vec!["pitch".into()],
+                                vec![name.into()],
                             );
                         }
                     }
@@ -5357,7 +5490,7 @@ impl<'a> Validator<'a> {
                             "degree() tuning reference must resolve to a tuning",
                             Some(args[1].span),
                             path.to_vec(),
-                            vec!["pitch".into()],
+                            vec![name.into()],
                         );
                     }
                 }
@@ -5367,7 +5500,7 @@ impl<'a> Validator<'a> {
                 "pitch must be a spelled pitch, key(), degree(), ratio(), or positive Hz quantity",
                 Some(value.span),
                 path.to_vec(),
-                vec!["pitch".into()],
+                vec![name.into()],
             ),
         }
     }
@@ -5630,6 +5763,7 @@ fn is_known_kind(kind: &str) -> bool {
             | "pattern"
             | "track"
             | "place"
+            | "groove"
             | "curve"
             | "automation"
             | "modulate"
@@ -5640,6 +5774,7 @@ fn is_known_kind(kind: &str) -> bool {
             | "region"
             | "extension"
             | "note"
+            | "chord"
             | "hit"
             | "message"
             | "use"

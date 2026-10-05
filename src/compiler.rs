@@ -332,6 +332,15 @@ struct LeafDef {
     order: i32,
     kind: LeafKind,
 }
+impl LeafDef {
+    /// The authored source object: a chord member `chord.k` maps to its chord.
+    fn source_id(&self) -> &str {
+        self.id
+            .split_once('.')
+            .map_or(self.id.as_str(), |(chord, _)| chord)
+    }
+}
+
 #[derive(Clone, Debug)]
 enum LeafKind {
     Note(Box<NoteDef>),
@@ -425,10 +434,19 @@ struct InsertDef {
     leaf: LeafDef,
 }
 
+/// A named swing map (§9.2): within each pair of `grid` steps, counted from
+/// the bar line, the first step takes `ratio` of the pair.
+#[derive(Clone, Debug)]
+struct GrooveDef {
+    grid: Rational,
+    ratio: Rational,
+}
+
 #[derive(Clone, Debug)]
 struct PlaceDef {
     id: String,
     span: Span,
+    groove: Option<GrooveDef>,
     pattern: String,
     track: String,
     at: Rational,
@@ -869,7 +887,9 @@ impl<'a> Compiler<'a> {
                     "stretch",
                     "transpose",
                     "boundary",
+                    "groove",
                 ][..],
+                "groove" => &["grid", "ratio"][..],
                 "curve" => &["clock", "points"][..],
                 "automation" => &["target", "curve", "at"][..],
                 "node" if self.instrument_instances.contains_key(&object.id) => {
@@ -2023,6 +2043,84 @@ impl<'a> Compiler<'a> {
         })
     }
 
+    /// A chord leaf lowers to one note per pitch. Member `k` keeps the chord's
+    /// onset, gate, order and expressions, takes entry `k` of each list-valued
+    /// per-note field, and has the leaf ID `chord.k`.
+    fn parse_chord(&self, object: &Object) -> CResult<Vec<LeafDef>> {
+        const PER_NOTE: [&str; 4] = [
+            "velocity",
+            "release_velocity",
+            "onset_offset",
+            "release_offset",
+        ];
+        self.check_fields(
+            object,
+            &[
+                "at",
+                "dur",
+                "pitches",
+                "velocity",
+                "release_velocity",
+                "onset_offset",
+                "release_offset",
+                "order",
+            ],
+        )?;
+        let pitches_field = self.field(object, "pitches")?;
+        let pitches = match &pitches_field.value.kind {
+            ValueKind::List(items) if !items.is_empty() => items,
+            _ => {
+                return Err(path_diagnostic(
+                    DiagnosticCode::Range,
+                    "chord.pitches must be a nonempty list of pitches",
+                    object,
+                    Some(pitches_field),
+                ))
+            }
+        };
+        for name in PER_NOTE {
+            if let Some(field) = object.field(name) {
+                if matches!(&field.value.kind, ValueKind::List(items) if items.len() != pitches.len())
+                {
+                    return Err(path_diagnostic(
+                        DiagnosticCode::Range,
+                        format!("chord.{name} must have one entry per pitch"),
+                        object,
+                        Some(field),
+                    ));
+                }
+            }
+        }
+        pitches
+            .iter()
+            .enumerate()
+            .map(|(member, pitch)| {
+                let mut note = object.clone();
+                note.kind = "note".into();
+                note.fields.remove("pitches");
+                note.fields.insert(
+                    "pitch".into(),
+                    Field {
+                        name: "pitch".into(),
+                        span: pitches_field.span,
+                        name_span: pitches_field.name_span,
+                        value: pitch.clone(),
+                    },
+                );
+                for name in PER_NOTE {
+                    if let Some(field) = note.fields.get_mut(name) {
+                        if let ValueKind::List(items) = &field.value.kind {
+                            field.value = items[member].clone();
+                        }
+                    }
+                }
+                let mut leaf = self.parse_note(&note)?;
+                leaf.id = format!("{}.{member}", object.id);
+                Ok(leaf)
+            })
+            .collect()
+    }
+
     fn parse_hit(&self, object: &Object) -> CResult<LeafDef> {
         self.check_fields(object, &["at", "key", "velocity", "onset_offset", "order"])?;
         if !object.children.is_empty() {
@@ -2428,6 +2526,20 @@ impl<'a> Compiler<'a> {
             }
             let mut children = Vec::new();
             for child in object.children.values() {
+                if child.kind == "chord" {
+                    for member in self.parse_chord(child)? {
+                        if member.at >= length {
+                            return Err(path_diagnostic(
+                                DiagnosticCode::Interval,
+                                "pattern child onset must be before pattern length",
+                                child,
+                                None,
+                            ));
+                        }
+                        children.push(PatternChild::Leaf(Box::new(member)));
+                    }
+                    continue;
+                }
                 let parsed = match child.kind.as_str() {
                     "note" => PatternChild::Leaf(Box::new(self.parse_note(child)?)),
                     "use" => PatternChild::Use(Box::new(self.parse_use(child)?)),
@@ -2727,6 +2839,14 @@ impl<'a> Compiler<'a> {
                             ));
                         }
                         let leaf = child.children.values().next().unwrap();
+                        if leaf.kind == "chord" {
+                            return Err(path_diagnostic(
+                                DiagnosticCode::Capability,
+                                "an insert contains one note, hit, message, or audio leaf; chords are pattern leaves",
+                                leaf,
+                                None,
+                            ));
+                        }
                         if leaf.kind != "note"
                             && !(self.allow_hits && leaf.kind == "hit")
                             && !(self.allow_messages && leaf.kind == "message")
@@ -2763,9 +2883,14 @@ impl<'a> Compiler<'a> {
                     }
                 }
             }
+            let groove = object
+                .field("groove")
+                .map(|field| self.parse_groove_reference(object, field))
+                .transpose()?;
             self.places.push(PlaceDef {
                 id: object.id.clone(),
                 span: object.span,
+                groove,
                 pattern,
                 track,
                 at,
@@ -2776,6 +2901,85 @@ impl<'a> Compiler<'a> {
                 overrides,
                 inserts,
             });
+        }
+        Ok(())
+    }
+
+    fn parse_groove_reference(&self, place: &Object, field: &Field) -> CResult<GrooveDef> {
+        let id = self.one_reference(&field.value, place, Some(field))?;
+        let groove = self.object(&id)?;
+        if groove.kind != "groove" {
+            return Err(path_diagnostic(
+                DiagnosticCode::Reference,
+                "place.groove must reference a groove",
+                place,
+                Some(field),
+            ));
+        }
+        let grid_field = self.field(groove, "grid")?;
+        let grid = self.q_value(&grid_field.value, groove, Some(grid_field), false)?;
+        if grid <= Rational::zero() {
+            return Err(path_diagnostic(
+                DiagnosticCode::Range,
+                "groove.grid must be positive",
+                groove,
+                Some(grid_field),
+            ));
+        }
+        let ratio_field = self.field(groove, "ratio")?;
+        let ratio = self.rational_value(&ratio_field.value, groove, Some(ratio_field))?;
+        if ratio < Rational::new(1.into(), 2.into()) || ratio > Rational::new(3.into(), 4.into()) {
+            return Err(path_diagnostic(
+                DiagnosticCode::Range,
+                "groove.ratio must be from 1/2 through 3/4",
+                groove,
+                Some(ratio_field),
+            ));
+        }
+        Ok(GrooveDef { grid, ratio })
+    }
+
+    /// Move one placement's expanded events through its groove (§9.2): note
+    /// onsets and gate ends, and hit and message onsets. Audio leaves keep
+    /// their positions; overrides and inserts apply afterwards, unswung.
+    fn apply_groove(&mut self, place: &PlaceDef, groove: &GrooveDef, first: usize) -> CResult<()> {
+        let at = |meter: &MeterMap, position: &Rational| {
+            groove_position(meter, groove, position).map_err(|message| {
+                let object = self
+                    .document
+                    .object(&place.id)
+                    .expect("placements come from document objects");
+                path_diagnostic(
+                    DiagnosticCode::Range,
+                    message,
+                    object,
+                    object.field("groove"),
+                )
+            })
+        };
+        let mut moved = Vec::new();
+        for event in &self.events[first..] {
+            let on = match &event.kind {
+                ExpandedKind::Audio(_) => None,
+                _ => Some(at(&self.meter, &event.score_on_q)?),
+            };
+            let off = match &event.kind {
+                ExpandedKind::Note(note) => Some(at(
+                    &self.meter,
+                    &checked_add(&event.score_on_q, &note.dur_q, Some(event.source_span))?,
+                )?),
+                _ => None,
+            };
+            moved.push((on, off));
+        }
+        for (event, (on, off)) in self.events[first..].iter_mut().zip(moved) {
+            let Some(on) = on else {
+                continue;
+            };
+            if let (Some(off), ExpandedKind::Note(note)) = (off, &mut event.kind) {
+                note.dur_q = off - &on;
+            }
+            event.score_on_q = on;
         }
         Ok(())
     }
@@ -3084,6 +3288,7 @@ impl<'a> Compiler<'a> {
                     Some(place.span),
                 ));
             }
+            let first = self.events.len();
             for repetition in 0..place.count {
                 let repetition_offset = checked_mul(
                     &checked_mul(&place.stretch, &pattern_length, Some(place.span))?,
@@ -3111,6 +3316,9 @@ impl<'a> Compiler<'a> {
                     depth: 0,
                 };
                 self.expand_pattern(&place.pattern, &mut state)?;
+            }
+            if let Some(groove) = &place.groove {
+                self.apply_groove(place, groove, first)?;
             }
             self.apply_place_edits(place, target.as_ref())?;
         }
@@ -3414,7 +3622,7 @@ impl<'a> Compiler<'a> {
         Ok(ExpandedEvent {
             address: state.address.join("/"),
             source: SourceMapping {
-                object: leaf.id.clone(),
+                object: leaf.source_id().to_owned(),
                 path: source_path,
                 span: Some(SourceSpan {
                     start: leaf.span.start,
@@ -3459,7 +3667,7 @@ impl<'a> Compiler<'a> {
                 PatternChild::Leaf(leaf) => {
                     state.address.push(leaf.id.clone());
                     let mut source_path = pattern.source_path.clone();
-                    source_path.push(leaf.id.clone());
+                    source_path.push(leaf.source_id().to_owned());
                     let event = Self::expand_leaf(&leaf, state, source_path)?;
                     if self.events.len() >= MAX_EXPANDED_NOTES {
                         return Err(diagnostics(
@@ -5864,6 +6072,33 @@ pub fn check_versioned_with_limits(
     }
 }
 
+/// The groove map (§9.2) of score position `t`. Within each pair of grid
+/// steps, counted from the start of `t`'s bar, the first step takes `ratio`
+/// of the pair. Bar lines and pair boundaries do not move.
+fn groove_position(meter: &MeterMap, groove: &GrooveDef, t: &Rational) -> Result<Rational, String> {
+    let (start, length) = meter.bar_span(t).map_err(|error| error.to_string())?;
+    let offset = t - &start;
+    if offset.is_zero() {
+        return Ok(t.clone());
+    }
+    let two = Rational::from_integer(2.into());
+    let pair = &groove.grid * &two;
+    if !(&length / &pair).is_integer() {
+        return Err(format!(
+            "groove pairs of {pair}q do not divide the {length}q bar at {start}q"
+        ));
+    }
+    let pairs = (&offset / &pair).floor();
+    let within = &offset - &pairs * &pair;
+    let moved = if within <= groove.grid {
+        &two * &groove.ratio * &within
+    } else {
+        &two * &groove.ratio * &groove.grid
+            + &two * (Rational::one() - &groove.ratio) * (&within - &groove.grid)
+    };
+    Ok(start + pairs * pair + moved)
+}
+
 #[cfg(test)]
 mod hit_expansion_tests {
     use super::*;
@@ -5912,6 +6147,22 @@ mod hit_expansion_tests {
             );
             assert_eq!(event.velocity, Rational::one());
         }
+    }
+
+    #[test]
+    fn grooves_move_hit_onsets() {
+        let events = expand(r#"
+            groove lazy { grid = 1/2q; ratio = 2/3; }
+            pattern pat { length = 4q; hit a { at = 1/2q; key = ""; } hit b { at = 7/4q; key = ""; } }
+            place p { pattern = &pat; track = &t; at = 4q; groove = &lazy; }
+        "#).unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .map(|e| e.score_on_q.clone())
+                .collect::<Vec<_>>(),
+            [(14, 3), (35, 6)].map(|(n, d)| Rational::new(n.into(), d.into()))
+        );
     }
 
     #[test]

@@ -204,7 +204,9 @@ endpoints. The reset origin is `T(score_start_q)`, including negative pickups.
 
 Each event contains:
 
-- `address`: stable occurrence identity, for example `bass_main/7/n2`.
+- `address`: stable occurrence identity, for example `bass_main/7/n2`. A
+  chord member's final component carries its member index, as in
+  `comp_main/0/down.2`; its `source` is the chord.
 - `source`: source object, declaration path and optional byte `span`.
 - `target`: sine or instrument node's `events` port.
 - `kind`: a tagged note value with `kind: "note"`, `pitch_hz`, and rational

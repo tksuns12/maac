@@ -18,13 +18,19 @@ listen before you call a track finished.
   bell. All std/basic drums are struck on C2.
 - **Form.** Fix the tempo, the meter and the form in bars. Declare each
   section as a `region`, so the analysis reports per section by name.
-- **Groove grid.** Choose one grid, straight or swung, for every part, and
-  write it down in a comment. A swung off-beat eighth is `x + 2/3q`; a
-  straight one is `x + 1/2q`. At 90 bpm they are 111 ms apart, which is
-  plainly audible. Mixing them was the trial's worst mistake.
+- **Groove grid.** Choose one grid, straight or swung, for every part. For
+  swing, declare one `groove`, such as `groove lazy { grid = 1/2q; ratio = 2/3; }`,
+  write every part on straight positions, and give each placement
+  `groove = &lazy`. The groove then moves an off-beat eighth at `x + 1/2q` to
+  `x + 2/3q` and a sixteenth at `x + 3/4q` to `x + 5/6q`. At 90 bpm swung and
+  straight eighths are 111 ms apart, which is plainly audible; mixing them was
+  the trial's worst mistake.
 
 ## 2. Write compactly
 
+- Write each chord as one `chord` leaf:
+  `chord down { at = 0q; dur = 7/5q; pitches = [A3, C4, E4, G4]; velocity = [0.5, 0.45, 0.45, 0.42]; }`.
+  Give `velocity` or `onset_offset` a list to voice or strum it.
 - Write one-bar chord patterns and assemble progressions with `use`. Place
   progressions with `count` for repeats.
 - Give each drum its own node, track and pattern, and connect everything to an
@@ -50,7 +56,8 @@ maac analyze main.maac --images analysis/           # spectrogram and piano roll
   trial, a lead melody 6 dB under the comping did not read as a lead, so aim
   for the lead within about 2 dB of the main accompaniment.
 - **Groove.** A `groove_mismatch` warning means parts disagree about swing.
-  Move every off-beat to the chosen grid.
+  Usually a placement lacks the shared `groove` reference, or a part was
+  written at hand-swung positions under a groove that swings them again.
 - **Images.** Look at the PNGs. The piano roll shows form and register; the
   spectrogram shows density, low-end build-up and sections.
 - **Duration.** Rendering runs at roughly real time, so batch several edits

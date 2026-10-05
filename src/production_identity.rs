@@ -405,12 +405,14 @@ impl Normalizer<'_> {
                 | "pattern"
                 | "track"
                 | "place"
+                | "groove"
                 | "curve"
                 | "automation"
                 | "node"
                 | "connect"
                 | "region"
                 | "note"
+                | "chord"
                 | "hit"
                 | "message"
                 | "expression"
@@ -444,7 +446,18 @@ impl Normalizer<'_> {
             }
             let pitch = (object.kind == "note" && name == "pitch")
                 || (object.kind == "override" && name == "set");
-            fields.insert(name.clone(), self.value(&field.value, pitch, constructors)?);
+            let value = match &field.value.kind {
+                // Each spelled chord pitch lowers like a note's `pitch`.
+                ValueKind::List(items) if object.kind == "chord" && name == "pitches" => json!({
+                    "t": "list",
+                    "items": items
+                        .iter()
+                        .map(|item| self.value(item, true, constructors))
+                        .collect::<Result<Vec<_>, _>>()?,
+                }),
+                _ => self.value(&field.value, pitch, constructors)?,
+            };
+            fields.insert(name.clone(), value);
         }
         let mut child_scope = Scope::Nested;
         match object.kind.as_str() {
@@ -457,7 +470,7 @@ impl Normalizer<'_> {
                     .entry("requires")
                     .or_insert_with(|| json!({"t":"list","items":[]}));
             }
-            "note" => {
+            "note" | "chord" => {
                 for (name, value) in [
                     ("velocity", number(1)),
                     (

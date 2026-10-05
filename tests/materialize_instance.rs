@@ -736,3 +736,33 @@ fn subtree_bytes_and_exact_rational_growth_fail_without_mutating_source() {
         "E_RESOURCE_LIMIT"
     );
 }
+
+#[test]
+fn chord_members_keep_their_overrides_through_materialization() {
+    let text = source(
+        r#"
+pattern chords { length=2q; chord c { at=0q; dur=1q; pitches=[C4, E4, G4]; velocity=[0.6, 0.5, 0.4]; } }
+place play { pattern=&chords; track=&notes; at=0q; count=2;
+  override soft { event="1/c.1"; set={velocity=0.1;}; }
+}
+"#,
+    );
+    let before = events(&text);
+    let mut document = SourceDocument::parse(&text).unwrap();
+    let plan = FoundationEditContext
+        .prepare_materialize_instance(document.authored(), "play", "copy")
+        .unwrap();
+    // One mapping per member occurrence: two repetitions of three members.
+    assert_eq!(plan.mappings.len(), 6);
+    let member = plan
+        .mappings
+        .iter()
+        .find(|mapping| mapping.old_event_address == "play/1/c.1")
+        .unwrap();
+    assert_eq!(member.old_source_object_path, vec!["chords", "c"]);
+    assert!(member.new_event_address.ends_with("/c.1"));
+    document
+        .apply(&plan.transaction, &FoundationEditContext)
+        .unwrap();
+    mapped_event_values(&before, &events(document.source()), &plan);
+}

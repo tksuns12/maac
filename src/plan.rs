@@ -5801,11 +5801,20 @@ fn validate_event_address(
         return Err(err("E_RANGE", path, "event address is empty or too long"));
     }
     for component in value.split('/') {
+        // A chord member's leaf component carries its index: `chord.2`.
+        let (component, member) = component
+            .split_once('.')
+            .map_or((component, None), |(leaf, member)| (leaf, Some(member)));
         if component.is_empty()
             || component.len() > limits.max_id_bytes
             || !component
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+            || member.is_some_and(|member| {
+                member.is_empty()
+                    || member.len() > 20
+                    || !member.bytes().all(|byte| byte.is_ascii_digit())
+            })
         {
             return Err(err(
                 "E_RANGE",

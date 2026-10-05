@@ -326,6 +326,13 @@ pub trait EditContext {
         new_path: &[String],
     ) -> EditResult<()>;
 
+    /// Reject a valid candidate whose change would silently retarget existing
+    /// source state, such as an override that would address a different
+    /// chord member after the chord's pitch list changed length.
+    fn validate_transition(&self, _base: &Value, _candidate: &Value) -> EditResult<()> {
+        Ok(())
+    }
+
     /// Refine the kernel's conservative impact after semantic validation.
     /// Implementations may narrow impact only when they can prove a bounded
     /// dependency/occurrence result for both the base and candidate.
@@ -407,6 +414,9 @@ fn apply_transaction_with_locations(
     }
     context
         .validate_document(&candidate)
+        .map_err(|error| locate(error, &identities))?;
+    context
+        .validate_transition(base, &candidate)
         .map_err(|error| locate(error, &identities))?;
     let next = AuthoredDocument::from_value(candidate)?;
     let inverse = make_inverse(base, &next)?;

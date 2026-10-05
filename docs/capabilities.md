@@ -29,8 +29,8 @@ it. See the [unknown-extension decision](unknown-extensions-proposal.md).
 | Feature | Foundation scope |
 | --- | --- |
 | Source | UTF-8, span-aware parsing, exact rational quantities, comments and source text retained in the parsed document |
-| Patterns | Finite notes, hits, messages and [audio leaves](pattern-audio.md), nested uses, repetition, stretching, cents transposition for notes, cut and spill |
-| Arrangement | Explicit tracks and placements, stable occurrence addresses, final-state overrides, deletion and inserts |
+| Patterns | Finite notes, [chords](../MaaC-1-Specification.md#82-chords), hits, messages and [audio leaves](pattern-audio.md), nested uses, repetition, stretching, cents transposition for notes, cut and spill. A chord member is addressed and overridden individually as `chord.k` |
+| Arrangement | Explicit tracks and placements, stable occurrence addresses, final-state overrides, deletion and inserts. A placement may reference a named [groove](../MaaC-1-Specification.md#92-grooves), an exact bar-aligned swing map |
 | Event query | [Exact score-window selection](windowed-event-query.md) on validated resolved artifacts, returning complete note gates or point events with source addresses, payloads, physical offsets and scheduled frames; source queries use full bounded compilation |
 | Instance materialization | Explicit [private copies of a whole placement](materialize-instance.md), including repeated/nested occurrences and curve/tuning dependencies; complete event/source correspondence, atomic edits and inverses; structural identity changes are reported |
 | Time | Step and linear-in-score tempo maps, meter maps, global `bar` positions, independent physical offsets, certified ceiling scheduling |

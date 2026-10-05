@@ -64,9 +64,9 @@ owner heard, every point of friction, and what to build next.
 
 | ID | Problem | Status |
 | --- | --- | --- |
-| F1 | Every note is its own object with an ID; a four-note chord is four objects | Gap: authoring density |
+| F1 | Every note is its own object with an ID; a four-note chord is four objects | Fixed: [`chord` leaves](../MaaC-1-Specification.md#82-chords). "Late Window" now has 21 chords in place of 81 notes |
 | F2 | Each synthesized drum needs its own node, track, connection and pattern; there is no drum map | Gap: authoring density |
-| F3 | Swing has no construct; swung positions are calculated by hand | Gap: authoring density |
+| F3 | Swing has no construct; swung positions are calculated by hand | Fixed: [`groove`](../MaaC-1-Specification.md#92-grooves). Parts are written straight, and each placement references one groove |
 | F4 | `analyze` treated a generator before its gain stage as a mix source | Fixed in `default/2` |
 | F5 | `analyze` flagged intentionally panned instruments as stereo imbalance | Fixed in `default/2` |
 | F6 | `analyze` printed loudness values such as -1751 LUFS for decaying tails | Fixed in `default/2` |

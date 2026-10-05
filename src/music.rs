@@ -654,6 +654,16 @@ impl MeterMap {
         )
     }
 
+    /// The start and length, in q, of the bar containing `q`.
+    pub fn bar_span(&self, q: &BigRational) -> Result<(BigRational, BigRational), MusicError> {
+        ensure_rational(q)?;
+        let segment = self.segment_for_q(q);
+        let length = segment.point.bar_length_q()?;
+        let bars = checked_div(&checked_sub(q, &segment.point.position_q)?, &length)?.floor();
+        let start = checked_add(&segment.point.position_q, &checked_mul(&bars, &length)?)?;
+        Ok((start, length))
+    }
+
     /// Resolve q to a one-based bar and one-based denominator-note position.
     pub fn q_to_bar(&self, q: &BigRational) -> Result<BarCoordinate, MusicError> {
         ensure_rational(q)?;

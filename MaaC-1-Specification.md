@@ -208,6 +208,7 @@ by that extension. Other top-level kinds in a core composition are:
 | Kind | Function |
 |---|---|
 | `tempo`, `meter`, `tuning` | Musical coordinate systems |
+| `groove` | Named swing map that placements reference (§9.2) |
 | `pattern` | Finite reusable event content |
 | `track`, `place` | Event destinations and arrangement instances |
 | `curve`, `automation`, `modulate` | Expression and parameter functions |
@@ -216,7 +217,7 @@ by that extension. Other top-level kinds in a core composition are:
 | `region` | Named score interval, without playback behavior |
 | `extension` | Namespaced data governed by a required external schema |
 
-Nested pattern kinds are `note`, `hit`, `message`, `audio` (§9.1), and `use`. A `note` may contain `expression`. A `place` may contain `override` and `insert`. An `insert` contains exactly one `note`, `hit`, `message`, or `audio`. These nesting locations are exclusive unless an extension schema explicitly adds another location.
+Nested pattern kinds are `note`, `chord` (§8.2), `hit`, `message`, `audio` (§9.1), and `use`. A `note` may contain `expression`. A `place` may contain `override` and `insert`. An `insert` contains exactly one `note`, `hit`, `message`, or `audio`. These nesting locations are exclusive unless an extension schema explicitly adds another location.
 
 All objects may carry the optional string field `label`. No other implicit fields exist. The field definitions below specify defaults. Defaults are expanded into the normalized source graph, not silently chosen by a host.
 
@@ -386,6 +387,38 @@ Kinds are `pitch` (cents offset, default 0ct), `gain` (nonnegative amplitude mul
 
 The referenced curve is evaluated on the note's effective gate. A normalized clock maps 0 to actual scheduled note-on and 1 to actual scheduled note-off. A seconds clock measures physical time from scheduled onset. A score clock maps the effective gate affinely onto `[0, final_note_duration_q]`; this explicitly distributes onset/release offsets across the expression timeline rather than introducing an undeclared extra clock. A note's attached score-clock curve coordinates are multiplied by the product of its inherited musical stretch factors; normalized and seconds coordinates are not. This produces an instance-specific curve view without modifying a shared curve definition. A duration-only occurrence override changes the gate but does not additionally rescale those score-clock curve coordinates. Outside the curve's points, endpoint values hold. During release tails, expression holds its gate-end value.
 
+### 8.2 Chords
+
+A `chord` is a pattern leaf that denotes simultaneous notes sharing one onset
+and one gate.
+
+```maac
+pattern comp {
+  length = 4q;
+  chord down { at = 0q; dur = 7/5q; pitches = [A3, C4, E4, G4]; velocity = [0.5, 0.45, 0.45, 0.42]; }
+  chord strum { at = 2q; dur = 2q; pitches = [G3, B3, D4]; onset_offset = [0ms, 12ms, 24ms]; }
+}
+```
+
+A chord requires `at`, `dur`, and `pitches`, a nonempty list of values in any
+form a note's `pitch` accepts. `velocity`, `release_velocity`, `onset_offset`,
+and `release_offset` are each either one value for every member or a list with
+exactly one entry per pitch, with the note defaults and ranges; a list of
+another length is `E_RANGE`. `order` and `label` are single values. A chord may
+contain `expression` children, each of which applies to every member.
+
+Member `k`, counted from zero, is exactly a note with the chord's `at`, `dur`,
+and `order`, pitch `pitches[k]`, entry `k` of each list-valued field (or the
+single value), and the chord's expressions. Expansion, stretch,
+transposition, `cut`, overrides, queries, and receivers treat members as
+notes. Lists make a strum explicit; no strum or voicing rule is inferred.
+Members may share a pitch. A chord is a pattern leaf only: an `insert` still
+contains exactly one note, hit, message, or audio leaf.
+
+A member's leaf component in the §10 event address is `chord_id.k`, for
+example `comp_main/3/down.2`; identifiers cannot contain `.`. Its source
+object is the chord. Changing a member's pitch keeps its identity.
+
 ## 9. Finite patterns and composition
 
 A `pattern` has a required positive musical `length`. Its children are leaf events and/or `use` objects. Every child onset must satisfy `0 <= at < length`. A note may end after length; length defines the repeat interval, not an automatic note-off. Pattern definitions form a directed acyclic reference graph.
@@ -416,7 +449,7 @@ Pitch transpositions add through nesting. Physical offsets do not stretch. A `cu
 
 Simultaneous `use` objects implement layering. Sequentially positioned uses implement concatenation. Independent lengths and repetition counts implement finite polymeters. Silence is simply absence of events; an empty pattern with a positive length is valid.
 
-There is no recursive pattern call, mutable counter, implicit global cycle, or infinite generator. A host may offer a live looping mode, but that transport behavior is outside a closed document. Probability, Euclidean rhythms, reversal, quantization, and swing may be authoring operations; their materialized events or explicit finite uses are stored. They are not hidden runtime interpretation.
+There is no recursive pattern call, mutable counter, implicit global cycle, or infinite generator. A chord leaf (§8.2) is a finite spelling of simultaneous notes, not a generator. A host may offer a live looping mode, but that transport behavior is outside a closed document. Probability, Euclidean rhythms, reversal, and quantization may be authoring operations; their materialized events or explicit finite uses are stored. They are not hidden runtime interpretation. Swing is instead a declared, exact map of score time, the `groove` of §9.2, in the same class as `stretch`.
 
 This boundary is intentional: the core preserves compact reusable structure without requiring a language runtime to discover the resulting music. A future pure-generator profile may be added, but is not claimed by this version.
 
@@ -445,6 +478,47 @@ A placement that reaches at least one audio leaf, through its pattern's `use` gr
 
 Each occurrence has the §10 structured address. An override may delete it or `set` its `at`, `gain`, `fade_in`, `fade_out`, `fade_shape`, or `label`. Replacing any other audio field is `E_UNKNOWN_FIELD`; a different recording or transport is an explicit edit of the leaf or of a materialized copy. Audio occurrences are transports, not events: score-window queries and event dispatch do not return them. A library pattern cannot name a composition's assets, and a library declares none, so an audio leaf in a library export is `E_REFERENCE` where it is used.
 
+### 9.2 Grooves
+
+A `groove` is a named swing map. A placement opts in with `groove = &id`, so
+every part that references one groove shares one declared feel. Authors write
+straight positions.
+
+```maac
+groove lazy { grid = 1/2q; ratio = 2/3; }
+place hats_main { pattern = &hats; track = &hat_notes; at = 16q; count = 22; groove = &lazy; }
+```
+
+`grid` is a required positive musical duration: `1/2q` swings eighths and
+`1/4q` swings sixteenths. `ratio` is a required dimensionless rational from
+1/2 through 3/4: the fraction of each pair of grid steps that the first step
+takes. 1/2 is straight, 2/3 is triplet swing, and 3/4 is dotted. Values
+outside these ranges are `E_RANGE`.
+
+Let `g = grid`, `P = 2*g`, and `r = ratio`. For a final score position `t`,
+let `b` be the start of the bar containing `t` under the project meter map
+and `p = t - b`. When `p = 0`, `t` does not move. Otherwise `P` must divide
+that bar's length, or the placement's `groove` field is `E_RANGE`. Let
+`k = floor(p/P)` and `f = p - k*P`:
+
+```
+f <= g:     f' = 2*r*f
+otherwise:  f' = 2*r*g + 2*(1-r)*(f - g)
+t' = b + k*P + f'
+```
+
+The map is exact in rationals, continuous, and increasing, and it fixes every
+bar line and pair boundary. With `g = 1/2q` and `r = 2/3`, an eighth at
+`1/2q` sounds at `2/3q` and a sixteenth at `3/4q` at `5/6q`.
+
+The map applies to a placement's events after expansion, stretch,
+transposition, and `cut`, and before its overrides and inserts. A note's onset
+and gate end are mapped independently, so adjacent gates stay adjacent; hit
+and message onsets are mapped. Override `set.at` values and inserts keep their
+final coordinates (§11), audio leaves keep their positions, and physical
+offsets apply afterwards. A groove changes positions only: event identity and
+addresses are unchanged. `groove` is a field of `place` only.
+
 ## 10. Tracks, placement, and event identity
 
 A `track` has an optional event `target` port. A track used by a note/hit/message placement requires that target. Tracks may group audio objects, and placements that expand only audio leaves (§9.1), without an event target. Tracks do not create mixers, faders, pan laws, or implicit connections.
@@ -463,11 +537,11 @@ place bass_main {
 }
 ```
 
-A `place` has the same repetition and transformation fields as `use`, plus required `track`. Its `at` is a global score position. Its occupied repetition span must fit within the project score. Each expanded leaf carries a structured event address:
+A `place` has the same repetition and transformation fields as `use`, plus required `track` and an optional `groove` reference (§9.2). Its `at` is a global score position. Its occupied repetition span must fit within the project score. Each expanded leaf carries a structured event address:
 
 `(placement_id, repetition_index, [use_id, repetition_index ...], leaf_id)`.
 
-For example, `bass_main/7/n2` denotes repetition 7, zero-based, of leaf n2 in that placement. A nested event could be `bass_main/0/first/1/n2`. These are structural tuples, not parsed display names; their display form escapes nothing because IDs are restricted ASCII and do not contain `/`.
+For example, `bass_main/7/n2` denotes repetition 7, zero-based, of leaf n2 in that placement. A nested event could be `bass_main/0/first/1/n2`. A chord member's final component also carries its member index (§8.2): `comp_main/0/down.2`. These are structural tuples, not parsed display names; their display form escapes nothing because IDs are restricted ASCII and do not contain `/`.
 
 Adding an unrelated note does not renumber existing event addresses. Changing count preserves the addresses of surviving repetitions. Moving a note, changing its pitch, or changing its label does not change its identity. Moving a leaf to a different containing pattern is a structural change and must update or reject dependent instance edits.
 
@@ -494,9 +568,9 @@ override late_note {
 }
 ```
 
-`event` is a relative expanded event address within that placement. `set` is a record of replacements for leaf fields; `delete` is an alternative boolean field that must be `true`. Exactly one of `set` and `delete` is present. There is at most one override per addressed event. The target must exist before overrides; dangling overrides are errors.
+`event` is a relative expanded event address within that placement; a chord member is addressed individually, as `"3/down.2"`. `set` is a record of replacements for leaf fields; `delete` is an alternative boolean field that must be `true`. Exactly one of `set` and `delete` is present. There is at most one override per addressed event. The target must exist before overrides; dangling overrides are errors.
 
-Overrides apply **after** all pattern expansion, musical stretch, and transposition. `set.at`, when used, is a musical offset from the placement's global origin, not from the source pattern or the selected repetition. `set.dur` is the final musical duration. `set.pitch` replaces the final pitch without reapplying placement transposition. An override cannot change identity, event kind, destination track, or introduce another source reference.
+Overrides apply **after** all pattern expansion, musical stretch, transposition, and groove. `set.at`, when used, is a musical offset from the placement's global origin, not from the source pattern or the selected repetition. `set.dur` is the final musical duration. `set.pitch` replaces the final pitch without reapplying placement transposition. An override cannot change identity, event kind, destination track, or introduce another source reference.
 
 This final-state rule makes local patches inspectable: replacing the pitch with `C3` means C3, not “C3 and then whatever upstream transposition happens to do.” Allowed replacement fields are the fields of the leaf's kind, except label and order may also be changed. An audio leaf's replacements are limited to those listed in §9.1. Expression children are not replaced through `set`; they are edited by child-addressed patch operations on a materialized instance variant (see below).
 
@@ -863,7 +937,7 @@ The region rules are closed:
 
 Display names, source comments, editor zoom, track color, and analysis annotations are not sound. UI state belongs in a sidecar such as `ui.json`, keyed by source IDs. Engraving, slurs, chord symbols, and articulation marks may be preserved as a declared notation extension; they cannot change playback without being lowered to explicit performance data or referring to a specified interpreter.
 
-A chord in core is simultaneous notes. A rest is absent events over a duration. Sustain is represented by actual gate behavior or an explicit receiver-specific controller, not an unexplained “pedal” word. A slur in an engraving extension does not secretly shorten or lengthen notes.
+A chord in core is simultaneous notes; the `chord` leaf (§8.2) spells them compactly without changing that meaning. A rest is absent events over a duration. Sustain is represented by actual gate behavior or an explicit receiver-specific controller, not an unexplained “pedal” word. A slur in an engraving extension does not secretly shorten or lengthen notes.
 
 ## 20. Canonical data and hashes
 
@@ -992,7 +1066,7 @@ Core operations are:
   payloads (`expect`, `expect_object`, `value`, or `object_value`). Changes to
   randomness/hash identity must be reported.
 
-Ordered lists are replaced as fields in core patches. A UI may implement fine-grained breakpoint edits internally, but it must check the expected old list or revision rather than blindly rely on a stale list index. Core has no query-text execution, wildcard mutation, or implicit last-writer-wins merge.
+Ordered lists are replaced as fields in core patches. Chord members are identified by index (§8.2). A replacement of a chord's `pitches` that changes its length shifts every member after the first changed position. If an override present in **A0** addresses such a shifted member, the transaction fails with `E_INSTANCE_TARGET` rather than silently retargeting it; appending members or changing pitches in place shifts nothing. A UI may implement fine-grained breakpoint edits internally, but it must check the expected old list or revision rather than blindly rely on a stale list index. Core has no query-text execution, wildcard mutation, or implicit last-writer-wins merge.
 
 Before operation evaluation, the supplied `base_revision` must equal
 `SHA-256(canonical A0)` for the immutable original authored graph **A0**;
