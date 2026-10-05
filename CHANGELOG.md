@@ -11,6 +11,14 @@ actually published; no release tag or publication date is asserted here.
 
 ### Added
 
+- Kit instruments: an `instrument` with `piece` children plays other
+  instruments by `hit` key. Each piece has a key, a physical gate, an
+  optional pitch, voices and choke group, and kit controls expose piece
+  controls. A kit renders exactly like its pieces as separate nodes playing
+  notes with the same gates. `std/basic/1.1.0` adds the `drums` kit of its
+  eight drums, with `<piece>_level`, `_pan` and `_brightness` controls and
+  open and closed hats in one choke group. "Late Window" plays its kick and
+  hats from it. See [kits](docs/instruments.md#kits).
 - Grooves: `groove lazy { grid = 1/2q; ratio = 2/3; }` declares an exact,
   bar-aligned swing map, and a placement opts in with `groove = &lazy`.
   Authors write straight positions; note onsets and gate ends, hits and
@@ -265,6 +273,8 @@ actually published; no release tag or publication date is asserted here.
 
 ### Fixed
 
+- The plan's execution-work and history bounds now count `fx.limiter/1`:
+  its per-frame detection and its lookahead delay were missing from them.
 - Dependency failures in the entry source (`import`, `sample`, `wavetable` and
   audio `asset` path, hash, missing-file and built-in errors) are reported at
   the declaration's field, for example `tone` / `hash` for a changed WAV, in

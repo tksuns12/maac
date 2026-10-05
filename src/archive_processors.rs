@@ -244,6 +244,15 @@ impl NativeProcessorContext {
                 ProcessorView::Core(Processor::Instrument { program, .. }) => {
                     Some(bind_instrument(&view, program)?)
                 }
+                ProcessorView::Core(Processor::KitInstrument { .. }) => {
+                    return Err(fail(
+                        DiagnosticCode::Capability,
+                        format!(
+                            "native archives do not yet capture the kit instrument `{}`",
+                            node.id
+                        ),
+                    ))
+                }
                 _ => None,
             };
             let record = NodeRecord {

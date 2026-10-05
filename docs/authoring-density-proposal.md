@@ -1,9 +1,10 @@
 # Authoring density: chord leaves, grooves, and drum kits
 
-**Status:** accepted 2026-10-05; implementation in progress in the order
-chord, groove, kit. Each lands with its own normative contract. The chord leaf
-landed as [§8.2](../MaaC-1-Specification.md#82-chords) and the groove as
-[§9.2](../MaaC-1-Specification.md#92-grooves).
+**Status:** accepted and implemented, 2026-10-05. The chord leaf is
+[§8.2](../MaaC-1-Specification.md#82-chords), the groove
+[§9.2](../MaaC-1-Specification.md#92-grooves), and kit instruments are in the
+[instrument contract](instruments.md#kits). [Results](#results) compares the
+estimates below with what landed.
 
 ## Why
 
@@ -247,6 +248,38 @@ in one choke group. A composition may still declare its own kit.
 | Hand-calculated swung positions | 59 | 0, and one `groove` object |
 | Drum objects (nodes, tracks, patterns, placements, connections), with the std kit | 16 | 7 |
 | Edits to change the swing feel | 59 | 1 |
+
+## Results
+
+"Late Window" after all three:
+
+| | Before | Estimate | Landed |
+| --- | --- | --- | --- |
+| Leaf objects | 150 notes | 90 | 90: 21 chords, 58 notes and 11 hits |
+| Non-blank lines | 318 | about 250 | 266 |
+| Hand-calculated swung positions | 59 | 0 | 0, and one `groove` object |
+| Drum objects | 16 | 7 | 13 |
+| Edits to change the swing feel | 59 | 1 | 1 |
+
+- **Fewer drum objects than estimated.** The kit saves fewer objects because
+  a kit has one output. The snare alone feeds the reverb send, so it stays
+  its own node; the kick and hats play from the `std/basic/1.1.0` kit. Kit
+  piece outputs for per-drum processing would need multiple output ports per
+  node, which the engine does not have.
+- **The same music.** Every change kept the event timing: the chord and
+  groove rewrites produced the same 629 events and a byte-identical master.
+  The kit plays the same kick and hat onsets and velocities. Its closed-hat
+  gate is the kit's 35 ms in place of the earlier 33 ms.
+
+### Implementation notes
+
+- **Kits run at render time.** A plan note needs a positive gate in score
+  time, and a physical gate cannot be expressed exactly in q under every
+  tempo map. Hits therefore stay hits in the plan, and the kit node starts and
+  releases piece notes itself. A kit renders bit-identically to its pieces as
+  separate nodes playing notes with the same gates.
+- **Not yet supported.** Native archives and the generic renderer refuse kits
+  explicitly, and a kit control cannot expose a reset-rate control.
 
 ## Versioning
 

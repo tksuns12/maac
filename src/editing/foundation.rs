@@ -490,28 +490,39 @@ impl BundleEditContext {
         let instance = libraries
             .resolve_instance(&self.source_path, syntax_object)
             .map_err(map_diagnostics)?;
-        let program = libraries
-            .programs
-            .iter()
-            .find(|program| program.id == instance.program_id)
-            .ok_or_else(|| {
-                EditError::new("E_REFERENCE", "resolved instrument program is missing")
-            })?;
+        let control_spec = |name: &str| {
+            if instance.kit {
+                libraries
+                    .kits
+                    .iter()
+                    .find(|kit| kit.id == instance.program_id)
+                    .and_then(|kit| kit.control_spec(&libraries.programs, name))
+            } else {
+                libraries
+                    .programs
+                    .iter()
+                    .find(|program| program.id == instance.program_id)
+                    .and_then(|program| program.control_spec(name))
+            }
+        };
 
         let mut normalized = normalize_plain_object(object, &meter, &seed)?;
         let fields = normalized["fields"]
             .as_object_mut()
             .ok_or_else(|| EditError::new("E_SYNTAX", "normalized fields are malformed"))?;
-        fields.insert(
-            "config".into(),
-            record(Map::from_iter([(
-                "voices".into(),
-                number(i64::from(instance.voices), 1),
-            )])),
-        );
+        // A kit instance takes no config: each piece declares its voices.
+        if !instance.kit {
+            fields.insert(
+                "config".into(),
+                record(Map::from_iter([(
+                    "voices".into(),
+                    number(i64::from(instance.voices), 1),
+                )])),
+            );
+        }
         let mut params = Map::new();
         for (name, value) in &instance.params {
-            let spec = program.control_spec(name).ok_or_else(|| {
+            let spec = control_spec(name).ok_or_else(|| {
                 EditError::new(
                     "E_REFERENCE",
                     format!("instrument control `{name}` has no metadata"),
@@ -610,7 +621,7 @@ impl EditContext for BundleEditContext {
         if kind == "chord" && field.len() == 1 && field[0] == "pitches" {
             return normalize_field_value(kind, "pitches", value, true, &meter);
         }
-        let pitch = (kind == "note" && field.len() == 1 && field[0] == "pitch")
+        let pitch = (matches!(kind, "note" | "piece") && field.len() == 1 && field[0] == "pitch")
             || (kind == "override" && field.len() == 2 && field[0] == "set" && field[1] == "pitch");
         normalize_value_inner(value, pitch, true, &meter)
     }
@@ -702,7 +713,7 @@ impl EditContext for FoundationEditContext {
         if kind == "chord" && field.len() == 1 && field[0] == "pitches" {
             return normalize_field_value(kind, "pitches", value, true, &meter);
         }
-        let pitch = (kind == "note" && field.len() == 1 && field[0] == "pitch")
+        let pitch = (matches!(kind, "note" | "piece") && field.len() == 1 && field[0] == "pitch")
             || (kind == "override" && field.len() == 2 && field[0] == "set" && field[1] == "pitch");
         normalize_value_inner(value, pitch, true, &meter)
     }
@@ -951,7 +962,8 @@ fn normalize_field_value(
             .collect::<EditResult<Vec<_>>>()?;
         return Ok(json!({"t":"list","items":items}));
     }
-    let pitch = (kind == "note" && name == "pitch") || (kind == "override" && name == "set");
+    let pitch = (matches!(kind, "note" | "piece") && name == "pitch")
+        || (kind == "override" && name == "set");
     normalize_value_inner(value, pitch, constructors, meter)
 }
 
@@ -1112,6 +1124,14 @@ fn normalize_object_inner(
             fields
                 .entry("requires")
                 .or_insert_with(|| json!({"t":"list","items":[]}));
+        }
+        "piece" => {
+            fields
+                .entry("pitch")
+                .or_insert_with(|| json!({"t":"call","fn":"key","args":[number(60, 1)]}));
+            fields.entry("voices").or_insert_with(|| {
+                number(i64::from(crate::kit_instrument::DEFAULT_PIECE_VOICES), 1)
+            });
         }
         "note" | "chord" => {
             for (name, value) in [

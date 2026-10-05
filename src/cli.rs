@@ -439,6 +439,8 @@ pub struct CommandResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub instrument: Option<crate::stdlib::InstrumentInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub kit: Option<crate::stdlib::KitInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub library: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub libraries: Option<Vec<crate::stdlib::LibraryInfo>>,
@@ -657,6 +659,7 @@ impl CommandResult {
             exports: None,
             catalog: None,
             instrument: None,
+            kit: None,
             library: None,
             libraries: None,
             delivery: None,
@@ -677,6 +680,7 @@ impl CommandResult {
             exports: None,
             catalog: None,
             instrument: None,
+            kit: None,
             library: None,
             libraries: None,
             delivery: None,
@@ -703,6 +707,7 @@ impl CommandResult {
             exports: None,
             catalog: None,
             instrument: None,
+            kit: None,
             library: None,
             libraries: None,
             delivery: None,
@@ -723,6 +728,7 @@ impl CommandResult {
             exports: None,
             catalog: None,
             instrument: None,
+            kit: None,
             library: None,
             libraries: None,
             delivery: None,
@@ -743,6 +749,7 @@ impl CommandResult {
             exports: Some(exports),
             catalog: None,
             instrument: None,
+            kit: None,
             library: None,
             libraries: None,
             delivery: None,
@@ -769,6 +776,7 @@ impl CommandResult {
             exports: Some(exports),
             catalog: None,
             instrument: None,
+            kit: None,
             library: None,
             libraries: None,
             delivery: None,
@@ -795,6 +803,7 @@ impl CommandResult {
             exports: None,
             catalog: None,
             instrument: None,
+            kit: None,
             library: None,
             libraries: None,
             delivery: None,
@@ -1278,6 +1287,7 @@ pub(crate) fn execute_disk_media_import(
                 exports: None,
                 catalog: None,
                 instrument: None,
+                kit: None,
                 library: None,
                 libraries: None,
                 delivery: None,
@@ -1548,6 +1558,7 @@ fn execute_impl(
                 exports: None,
                 catalog: None,
                 instrument: None,
+                kit: None,
                 library: None,
                 libraries: None,
                 delivery: None,
@@ -1606,6 +1617,7 @@ fn execute_impl(
                 exports: None,
                 catalog: None,
                 instrument: None,
+                kit: None,
                 library: None,
                 libraries: None,
                 delivery: Some(report),
@@ -1636,6 +1648,7 @@ fn execute_impl(
                     exports: None,
                     catalog: None,
                     instrument: None,
+                    kit: None,
                     library: None,
                     libraries: Some(crate::stdlib::libraries()),
                     delivery: None,
@@ -1643,19 +1656,21 @@ fn execute_impl(
                 });
             }
             let selected = library.as_deref().unwrap_or(crate::stdlib::BASIC_ID);
-            let (catalog, instrument) = match name {
-                Some(name) => (
-                    None,
-                    Some(
-                        crate::stdlib::instrument_in(selected, name)
-                            .map_err(|error| CliError::from_diagnostics(&error))?,
-                    ),
-                ),
+            let (catalog, instrument, kit) = match name {
+                Some(name) => match crate::stdlib::instrument_in(selected, name) {
+                    Ok(instrument) => (None, Some(instrument), None),
+                    // A kit export is described when no instrument matches.
+                    Err(error) => match crate::stdlib::kit_in(selected, name) {
+                        Ok(kit) => (None, None, Some(kit)),
+                        Err(_) => return Err(CliError::from_diagnostics(&error)),
+                    },
+                },
                 None => (
                     Some(
                         crate::stdlib::catalog_for(selected)
                             .map_err(|error| CliError::from_diagnostics(&error))?,
                     ),
+                    None,
                     None,
                 ),
             };
@@ -1671,6 +1686,7 @@ fn execute_impl(
                 exports: catalog.as_ref().map(|catalog| catalog.instruments.len()),
                 catalog,
                 instrument,
+                kit,
                 library: library.clone(),
                 libraries: None,
                 delivery: None,
@@ -1740,6 +1756,7 @@ fn execute_impl(
                 exports: None,
                 catalog: None,
                 instrument: None,
+                kit: None,
                 library: None,
                 libraries: None,
                 delivery: None,
@@ -1857,6 +1874,7 @@ fn execute_impl(
                 exports: None,
                 catalog: None,
                 instrument: None,
+                kit: None,
                 library: None,
                 libraries: None,
                 delivery: None,
@@ -2711,6 +2729,7 @@ fn verify_import_project_with_hook(
         exports: None,
         catalog: None,
         instrument: None,
+        kit: None,
         library: None,
         libraries: None,
         delivery: None,
@@ -2761,6 +2780,7 @@ fn verify_import_project_disk_with_hook(
         exports: None,
         catalog: None,
         instrument: None,
+        kit: None,
         library: None,
         libraries: None,
         delivery: None,
@@ -2845,6 +2865,7 @@ fn apply_source_patch(
         exports: None,
         catalog: None,
         instrument: None,
+        kit: None,
         library: None,
         libraries: None,
         delivery: None,
@@ -3411,6 +3432,13 @@ fn format_human_with_counts(result: &CommandResult, hits: usize, audio_clips: us
             .collect::<Vec<_>>()
             .join("\n");
     }
+    if let Some(kit) = &result.kit {
+        let detail = format_kit(kit);
+        return match &result.library {
+            Some(library) => format!("{library}\n{detail}"),
+            None => detail,
+        };
+    }
     if let Some(instrument) = &result.instrument {
         let detail = format_instrument(instrument);
         return match &result.library {
@@ -3439,6 +3467,12 @@ fn format_human_with_counts(result: &CommandResult, hits: usize, audio_clips: us
                     "\n  {} — {}",
                     instrument.name, instrument.description
                 ));
+            }
+        }
+        if !catalog.kits.is_empty() {
+            message.push_str("\n\nkits (played with hits):");
+            for kit in &catalog.kits {
+                message.push_str(&format!("\n  {} — {}", kit.name, kit.description));
             }
         }
         match &result.library {
@@ -3470,6 +3504,42 @@ fn format_human_with_counts(result: &CommandResult, hits: usize, audio_clips: us
     if let Some(frames) = result.frames {
         message.push_str(&format!(" ({frames} frames)"));
     }
+    message
+}
+
+fn format_kit(kit: &crate::stdlib::KitInfo) -> String {
+    let mut message = format!(
+        "{} ({}, {} channels)\n{}\n\n{}\n\nKeys:",
+        kit.name, kit.family, kit.channels, kit.description, kit.notes
+    );
+    for piece in &kit.pieces {
+        message.push_str(&format!(
+            "\n  \"{}\": {}, gate {} s{}",
+            piece.key,
+            piece.instrument,
+            piece.gate_seconds,
+            piece
+                .choke
+                .as_ref()
+                .map(|group| format!(", choke group {group}"))
+                .unwrap_or_default()
+        ));
+    }
+    message.push_str("\n\nControls:");
+    for (name, control) in &kit.controls {
+        message.push_str(&format!(
+            "\n  {name}: default {}; range {}{}, {}{}",
+            control.default,
+            if control.min_open { "(" } else { "[" },
+            control.min,
+            control.max,
+            if control.max_open { ")" } else { "]" },
+        ));
+    }
+    message.push_str(
+        "\n\nSave the following as demo.maac, then run maac build demo.maac -o demo.wav:\n\n",
+    );
+    message.push_str(&kit.usage);
     message
 }
 

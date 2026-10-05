@@ -30,6 +30,7 @@ pub mod graph;
 pub mod instrument_plan;
 pub mod interchange;
 mod kit;
+pub mod kit_instrument;
 pub mod library;
 mod located;
 pub mod media_import;

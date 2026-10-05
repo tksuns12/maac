@@ -311,6 +311,12 @@ control values. Missing values use the program's control defaults. Compiled
 source instances carry the values resolved from defaults, preset, and instance
 overrides. Presets are authoring data, so rendering does not need preset lookup.
 
+A [kit instrument](instruments.md#kits) instance is
+`{"kind":"kit_instrument","kit":"kit_0","channels":2}`, wrapped as a core
+processor in artifact plans. `kit` names an entry of the resources' `kits`, and
+its parameter map holds the kit's public control values. It accepts hit events
+only, and every hit key must name one of its pieces.
+
 A connection has `id`, `from`, and `to` port references. Channel counts must
 match. Single-input ports require one incoming edge; summing inputs accept zero
 or more. Graph execution orders available nodes by ID and sums inputs by
@@ -405,6 +411,7 @@ Versions 3–7 reuse the instrument resource representation introduced in versio
 | `source_files` | Source paths and exact byte hashes |
 | `dependencies` | Declaring source, namespace alias, imported path, and matching source hash |
 | `libraries` | Declaring file/object, nonempty version, and optional creator/license metadata |
+| `kits` | Optional kit instruments; absent when there are none, so earlier payloads keep their bytes |
 
 A program has `id`, `voice`, optional `shared`, `controls`, and `source`.
 Its graph contains `channels`, `nodes`, `connections`, `modulations`, `output`,
@@ -414,6 +421,12 @@ processor references an embedded table ID. A control maps its name to a
 `target` (`graph`, `node`, `parameter`) and rational `default`. A modulation has
 an ID, source port, parameter target, and rational depth. Both audio and
 modulation edges participate in cycle detection.
+
+A kit has `id`, `channels`, `pieces`, optional `controls`, and `source`. A piece
+has `id`, `key`, the `program` it plays, `voices`, `pitch_hz`, a rational
+`gate_seconds`, an optional `choke` group, and optional fixed `params`. A kit
+control maps its name to a `piece`, that piece's `control`, and a rational
+`default`.
 
 The [instrument contract](instruments.md) specifies processor behavior, graph
 ports, units, rates, and source syntax. The [resource bounds](capabilities.md#resource-bounds)

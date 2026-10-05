@@ -426,6 +426,7 @@ impl Normalizer<'_> {
                 | "sample"
                 | "voice"
                 | "shared"
+                | "piece"
                 | "control"
                 | "modulate"
                 | "asset"
@@ -444,7 +445,7 @@ impl Normalizer<'_> {
             if self.strip_object_labels && name == "label" {
                 continue;
             }
-            let pitch = (object.kind == "note" && name == "pitch")
+            let pitch = (matches!(object.kind.as_str(), "note" | "piece") && name == "pitch")
                 || (object.kind == "override" && name == "set");
             let value = match &field.value.kind {
                 // Each spelled chord pitch lowers like a note's `pitch`.
@@ -537,6 +538,25 @@ impl Normalizer<'_> {
                 }
             }
             "node" => self.node(object, scope, &mut fields)?,
+            "instrument" if object.children.values().any(|child| child.kind == "piece") => {
+                let resources =
+                    self.plan.instruments.as_ref().ok_or_else(|| {
+                        error("local kit normalization requires compiled resources")
+                    })?;
+                if !resources.kits.iter().any(|kit| {
+                    kit.source.file == resources.entry_source && kit.source.object == object.id
+                }) {
+                    return Err(error("local kit descriptor missing from compiled plan"));
+                }
+            }
+            "piece" => {
+                fields
+                    .entry("pitch")
+                    .or_insert_with(|| json!({"t":"call","fn":"key","args":[number(60)]}));
+                fields.entry("voices").or_insert_with(|| {
+                    number(i64::from(crate::kit_instrument::DEFAULT_PIECE_VOICES))
+                });
+            }
             "instrument" => {
                 let resources = self.plan.instruments.as_ref().ok_or_else(|| {
                     error("local instrument normalization requires compiled resources")
@@ -674,12 +694,16 @@ impl Normalizer<'_> {
                         }
                         ProcessorView::Kit { .. } => None,
                         ProcessorView::Core(processor) => match processor {
-                            Processor::Instrument { .. } => graph_unit(
-                                self.plan
-                                    .instrument_control_spec(node, name)
-                                    .ok_or_else(|| error("instrument control descriptor missing"))?
-                                    .unit,
-                            ),
+                            Processor::Instrument { .. } | Processor::KitInstrument { .. } => {
+                                graph_unit(
+                                    self.plan
+                                        .instrument_control_spec(node, name)
+                                        .ok_or_else(|| {
+                                            error("instrument control descriptor missing")
+                                        })?
+                                        .unit,
+                                )
+                            }
                             Processor::Sine { .. }
                                 if matches!(name.as_str(), "attack" | "release") =>
                             {

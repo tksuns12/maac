@@ -220,6 +220,89 @@ is 64. Existing automation targets public controls as
 `&lead.params.release`; internal node paths are private. Definition data and
 all mutable instance/voice states are independent.
 
+## Kits
+
+A kit is an instrument whose voices are other instruments, selected by `hit`
+keys. A declaration with `piece` children is a kit.
+
+```maac
+instrument boom_bap {
+  channels = 2;
+  piece kick  { instrument = &basic.kick;       key = "kick";  gate = 100ms; }
+  piece snare { instrument = &basic.snare;      key = "snare"; gate = 100ms; params = { brightness = 4000Hz; }; }
+  piece hat   { instrument = &basic.closed_hat; key = "hat";   gate = 35ms; choke = "hats"; }
+  piece open  { instrument = &basic.open_hat;   key = "open";  gate = 220ms; choke = "hats"; }
+  control kick_level { target = &kick.params.level; default = 0.25; }
+}
+node drums { instrument = &boom_bap; params = { kick_level = 0.3; }; }
+track beat { target = &drums:events; }
+```
+
+**Declaration.**
+- A kit has `channels` (1 or 2), one or more `piece` children, and optional
+  `control` children. A `voice` or `shared` graph is `E_UNKNOWN_KIND`.
+- Each piece has:
+  - a required `instrument` reference to an instrument export (a kit is
+    `E_REFERENCE`), with optional `preset` and `params` that set that
+    instrument's public controls as an instance would;
+  - a required nonempty string `key`, unique within the kit;
+  - a required physical `gate` in seconds, positive and at most 60 s;
+  - an optional `pitch`: a spelled pitch, `key(k)`, or a frequency, default
+    `C4`;
+  - an optional integer `voices` from 1 through 4096, default 8;
+  - an optional nonempty `choke` group string.
+- A piece's instrument must have the kit's channel count, and a kit holds at
+  most 64 pieces.
+- A kit `control` has `target = &piece.params.control` and a required
+  `default`. It takes that piece control's unit, range, and rate, exposes it
+  on the kit instance, and is unique per target. It cannot expose a control
+  the piece already sets in `params` (`E_CONFLICT`) or a reset-rate control
+  (`E_CAPABILITY`). A kit exposes at most 64 controls.
+
+**Instance.** A kit node takes `instrument`, optional `preset`, and `params`
+for its controls. It takes no `config`: each piece declares its voices.
+Presets, automation, and modulation of kit controls follow the instrument
+rules. The node exposes `events` and `out`.
+
+**Playing.**
+- The node accepts hits only. A note sent to it is `E_CAPABILITY`, and a hit
+  whose key matches no piece is `E_REFERENCE`.
+- A hit at frame `n` starts a note on the matching piece's instrument, at the
+  piece's pitch with the hit's velocity. The note is released at frame
+  `n + ceil(48000*gate)` (the engine rate in general), unless a choke
+  releases it first.
+- A hit on a piece in a choke group first releases every still-gated voice of
+  the group's other pieces at frame `n`. Repeated hits on one piece overlap
+  normally. Releases, including choke releases, precede the same frame's hits.
+- **Output.** The kit's output is the sum of the pieces' instrument outputs
+  in piece ID order. A piece's voices and shared graph behave exactly as an
+  instance of its instrument with the piece's settings and exposed controls.
+  A kit therefore sounds identical to the same instruments as separate
+  nodes, played by notes with the same gates and summed in that order.
+- A kit has one output. A piece that needs its own send or processing
+  belongs on its own node.
+
+**Plan and limits.**
+- Kits travel in the plan's instrument resources as `kits`, with each piece
+  naming its instrument program. The instance is a `kit_instrument`
+  processor.
+- Voice, pluck, and work accounting count every piece. A hit's work bound
+  covers its gate plus the largest release its piece can reach.
+- Native archives and the generic renderer do not yet support kits and
+  refuse them with `E_CAPABILITY`.
+
+**Built-in kit.** `std/basic/1.1.0` adds the `drums` kit; its other exports
+and their sound are unchanged from 1.0.0.
+- **Keys:** `kick`, `snare`, `clap`, `hat`, `open_hat`, `low_tom`,
+  `high_tom`, and `crash`.
+- **Gates:** each piece's gate is its drum's example duration. `hat` and
+  `open_hat` share the choke group `hats`.
+- **Controls:** `<piece>_level`, `<piece>_pan`, and `<piece>_brightness`,
+  with defaults equal to the drum's own.
+
+Run `maac instruments drums --library std/basic/1.1.0` for its keys and
+controls and a runnable composition.
+
 ## Graph processors
 
 Connections use existing `connect { from = &source:out; to = &destination:in; }`

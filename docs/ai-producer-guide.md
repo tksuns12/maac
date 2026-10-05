@@ -15,7 +15,8 @@ listen before you call a track finished.
 - **Instruments.** Choose them with `maac instruments` and
   `maac instruments --library std/acoustic/1.0.0`. The std/acoustic guitars
   are physical models and sound less synthetic than the std/basic flute or
-  bell. All std/basic drums are struck on C2.
+  bell. For drums use the `drums` kit of `std/basic/1.1.0`
+  (`maac instruments drums --library std/basic/1.1.0`).
 - **Form.** Fix the tempo, the meter and the form in bars. Declare each
   section as a `region`, so the analysis reports per section by name.
 - **Groove grid.** Choose one grid, straight or swung, for every part. For
@@ -33,8 +34,13 @@ listen before you call a track finished.
   Give `velocity` or `onset_offset` a list to voice or strum it.
 - Write one-bar chord patterns and assemble progressions with `use`. Place
   progressions with `count` for repeats.
-- Give each drum its own node, track and pattern, and connect everything to an
-  explicit stereo `core.sum/1` bus.
+- Play drums from one kit node: import `std/basic/1.1.0`, add
+  `node drums { instrument = &basic.drums; }`, and write `hit` leaves such as
+  `hit k1 { at = 0q; key = "kick"; velocity = 0.85; }`. Keys are `kick`,
+  `snare`, `clap`, `hat`, `open_hat`, `low_tom`, `high_tom` and `crash`; set
+  each drum with `kick_level`, `hat_pan` and so on. A kit has one output, so
+  a drum that needs its own send or effect stays a separate instrument node.
+- Connect everything to an explicit stereo `core.sum/1` bus.
 - Start levels low. Instruments from different libraries have different
   `level` scales: in the trial, the nylon guitar needed `level = 0.7` to match
   an electric piano at `0.11`.

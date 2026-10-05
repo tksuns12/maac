@@ -12,6 +12,7 @@ pub use crate::exact::Rational;
 use crate::exact::{parse_rational_with_limit, rational_parts, RationalError, MAX_RATIONAL_BITS};
 use crate::graph::{InstrumentProgram, ParameterRate, ParameterSpec};
 use crate::instrument_plan::InstrumentResources;
+use crate::kit_instrument::KitProgram;
 pub use crate::production_eq::EqMode;
 use num_bigint::BigInt;
 use num_integer::Integer;
@@ -721,6 +722,12 @@ pub enum Processor {
         voices: u32,
         channels: u8,
     },
+    /// A kit instrument instance, which receives hits: `kit` names an entry
+    /// of the instrument resources' `kits`.
+    KitInstrument {
+        kit: String,
+        channels: u8,
+    },
 }
 
 impl Processor {
@@ -793,11 +800,15 @@ impl Processor {
             Self::Pan => "pan",
             Self::Sum { .. } => "sum",
             Self::Instrument { .. } => "instrument",
+            Self::KitInstrument { .. } => "kit_instrument",
         }
     }
 
     fn accepts_events(&self) -> bool {
-        matches!(self, Self::Sine { .. } | Self::Instrument { .. })
+        matches!(
+            self,
+            Self::Sine { .. } | Self::Instrument { .. } | Self::KitInstrument { .. }
+        )
     }
 
     pub(crate) fn parameter_allowed(&self, parameter: &str) -> bool {
@@ -824,7 +835,7 @@ impl Processor {
             Self::Limiter { .. } => matches!(parameter, "gain" | "ceiling" | "release"),
             Self::Pan => parameter == "pan",
             Self::Sum { .. } => false,
-            Self::Instrument { .. } => false,
+            Self::Instrument { .. } | Self::KitInstrument { .. } => false,
         }
     }
 
@@ -2310,7 +2321,9 @@ impl<'a> PlanView<'a> {
                     || self.nodes.iter().any(|node| {
                         matches!(
                             node.processor,
-                            ProcessorView::Core(Processor::Instrument { .. })
+                            ProcessorView::Core(
+                                Processor::Instrument { .. } | Processor::KitInstrument { .. }
+                            )
                         )
                     })
                 {
@@ -2326,7 +2339,9 @@ impl<'a> PlanView<'a> {
                     && self.nodes.iter().any(|n| {
                         matches!(
                             n.processor,
-                            ProcessorView::Core(Processor::Instrument { .. })
+                            ProcessorView::Core(
+                                Processor::Instrument { .. } | Processor::KitInstrument { .. }
+                            )
                         )
                     })
                 {
@@ -2496,17 +2511,27 @@ impl<'a> PlanView<'a> {
             .find(|program| program.id == id)
     }
 
-    /// Return the processor metadata for an instrument instance's public
-    /// control. Core processors and unknown controls return `None`.
+    /// Look up a kit instrument embedded in this standalone plan.
+    pub fn kit_program(&self, id: &str) -> Option<&'a KitProgram> {
+        self.instruments?.kits.iter().find(|kit| kit.id == id)
+    }
+
+    /// Return the processor metadata for an instrument or kit instance's
+    /// public control. Core processors and unknown controls return `None`.
     pub fn instrument_control_spec(
         &self,
         node: NodeView<'_>,
         control: &str,
     ) -> Option<ParameterSpec> {
-        let Processor::Instrument { program, .. } = node.processor.core().ok()? else {
-            return None;
-        };
-        self.instrument_program(program)?.control_spec(control)
+        match node.processor.core().ok()? {
+            Processor::Instrument { program, .. } => {
+                self.instrument_program(program)?.control_spec(control)
+            }
+            Processor::KitInstrument { kit, .. } => self
+                .kit_program(kit)?
+                .control_spec(&self.instruments?.programs, control),
+            _ => None,
+        }
     }
 
     /// Resolve all public instrument controls, filling omitted instance values
@@ -2526,6 +2551,32 @@ impl<'a> PlanView<'a> {
         if let ProcessorView::Kit { .. } = node.processor {
             let mut params = node.params.clone();
             params.entry("level".into()).or_insert_with(one);
+            return Ok(params);
+        }
+        if let Processor::KitInstrument { kit, .. } = node.processor.core()? {
+            let kit = self.kit_program(kit).ok_or_else(|| {
+                err(
+                    "E_REFERENCE",
+                    format!("nodes.{}.processor.kit", node.id),
+                    "kit instrument does not exist",
+                )
+            })?;
+            let mut params = kit
+                .controls
+                .iter()
+                .map(|(name, control)| (name.clone(), control.default.clone()))
+                .collect::<BTreeMap<_, _>>();
+            for (name, value) in node.params {
+                let spec = self.instrument_control_spec(node, name).ok_or_else(|| {
+                    err(
+                        "E_UNKNOWN_FIELD",
+                        format!("nodes.{}.params.{name}", node.id),
+                        "kit has no such public control",
+                    )
+                })?;
+                validate_parameter_spec(value, &spec, format!("nodes.{}.params.{name}", node.id))?;
+                params.insert(name.clone(), value.clone());
+            }
             return Ok(params);
         }
         let Processor::Instrument { program, .. } = node.processor.core()? else {
@@ -2880,49 +2931,43 @@ impl<'a> PlanView<'a> {
 
             let mut pluck_cells = 0usize;
             for node in self.nodes {
-                let ProcessorView::Core(Processor::Instrument {
-                    program, voices, ..
-                }) = node.processor
-                else {
-                    continue;
-                };
-                let count = resources
-                    .programs
-                    .iter()
-                    .find(|candidate| candidate.id == *program)
-                    .map_or(0, |program| program.pluck_node_count());
-                let cells = crate::graph::pluck_delay_cells(*voices as usize, count)
-                    .and_then(|cells| pluck_cells.checked_add(cells))
-                    .ok_or_else(|| {
-                        err(
+                for (program, voices) in instance_programs(&node.processor, resources) {
+                    let count = resources
+                        .programs
+                        .iter()
+                        .find(|candidate| candidate.id == program)
+                        .map_or(0, |program| program.pluck_node_count());
+                    let cells = crate::graph::pluck_delay_cells(voices as usize, count)
+                        .and_then(|cells| pluck_cells.checked_add(cells))
+                        .ok_or_else(|| {
+                            err(
+                                "E_RESOURCE_LIMIT",
+                                "instruments",
+                                "pluck storage arithmetic overflow",
+                            )
+                        })?;
+                    if cells > limits.max_pluck_delay_cells {
+                        return Err(err(
                             "E_RESOURCE_LIMIT",
                             "instruments",
-                            "pluck storage arithmetic overflow",
-                        )
-                    })?;
-                if cells > limits.max_pluck_delay_cells {
-                    return Err(err(
-                        "E_RESOURCE_LIMIT",
-                        "instruments",
-                        "declared pluck delay storage exceeds the plan limit",
-                    ));
+                            "declared pluck delay storage exceeds the plan limit",
+                        ));
+                    }
+                    pluck_cells = cells;
                 }
-                pluck_cells = cells;
             }
 
             let voice_graph_states = self.nodes.iter().fold(0usize, |total, node| {
-                let ProcessorView::Core(Processor::Instrument {
-                    program, voices, ..
-                }) = node.processor
-                else {
-                    return total;
-                };
-                let graph_nodes = resources
-                    .programs
-                    .iter()
-                    .find(|candidate| candidate.id == *program)
-                    .map_or(0, |program| program.voice.nodes.len());
-                total.saturating_add(graph_nodes.saturating_mul(*voices as usize))
+                instance_programs(&node.processor, resources)
+                    .into_iter()
+                    .fold(total, |total, (program, voices)| {
+                        let graph_nodes = resources
+                            .programs
+                            .iter()
+                            .find(|candidate| candidate.id == program)
+                            .map_or(0, |program| program.voice.nodes.len());
+                        total.saturating_add(graph_nodes.saturating_mul(voices as usize))
+                    })
             });
             if voice_graph_states > limits.max_voice_graph_states {
                 return Err(err(
@@ -3231,6 +3276,9 @@ impl<'a> PlanView<'a> {
             if let ProcessorView::Core(Processor::Instrument { program, .. }) = node.processor {
                 count_string(program, format!("nodes.{}.processor.program", node.id))?;
             }
+            if let ProcessorView::Core(Processor::KitInstrument { kit, .. }) = node.processor {
+                count_string(kit, format!("nodes.{}.processor.kit", node.id))?;
+            }
             for key in node.params.keys() {
                 count_string(key, format!("nodes.{}.params", node.id))?;
             }
@@ -3291,6 +3339,26 @@ impl<'a> PlanView<'a> {
         }
         if let Some(resources) = &self.instruments {
             count_string(&resources.entry_source, "instruments.entry_source".into())?;
+            for (kit_index, kit) in resources.kits.iter().enumerate() {
+                let prefix = format!("instruments.kits[{kit_index}]");
+                count_string(&kit.id, format!("{prefix}.id"))?;
+                count_string(&kit.source.file, format!("{prefix}.source.file"))?;
+                count_string(&kit.source.object, format!("{prefix}.source.object"))?;
+                for piece in &kit.pieces {
+                    for text in [&piece.id, &piece.key, &piece.program]
+                        .into_iter()
+                        .chain(piece.choke.as_ref())
+                        .chain(piece.params.keys())
+                    {
+                        count_string(text, format!("{prefix}.pieces"))?;
+                    }
+                }
+                for (name, control) in &kit.controls {
+                    for text in [name, &control.piece, &control.control] {
+                        count_string(text, format!("{prefix}.controls"))?;
+                    }
+                }
+            }
             for (program_index, program) in resources.programs.iter().enumerate() {
                 let prefix = format!("instruments.programs[{program_index}]");
                 count_string(&program.id, format!("{prefix}.id"))?;
@@ -4036,6 +4104,40 @@ impl<'a> PlanView<'a> {
                         ));
                     }
                 }
+                Processor::KitInstrument { kit, channels } => {
+                    validate_identifier_limit(
+                        kit,
+                        format!("nodes.{}.processor.kit", node.id),
+                        limits.max_id_bytes,
+                    )?;
+                    validate_channel_count(
+                        *channels,
+                        limits,
+                        format!("nodes.{}.processor.channels", node.id),
+                        "kit channels",
+                    )?;
+                    let kit = self.kit_program(kit).ok_or_else(|| {
+                        err(
+                            "E_REFERENCE",
+                            format!("nodes.{}.processor.kit", node.id),
+                            "kit instrument does not exist",
+                        )
+                    })?;
+                    if kit.channels != *channels {
+                        return Err(err(
+                            "E_PORT_TYPE",
+                            format!("nodes.{}.processor.channels", node.id),
+                            "kit instance channels differ from its kit",
+                        ));
+                    }
+                    if kit.voices() > limits.max_instrument_voices {
+                        return Err(err(
+                            "E_RESOURCE_LIMIT",
+                            format!("nodes.{}.processor.kit", node.id),
+                            "kit voice capacity exceeds the published limit",
+                        ));
+                    }
+                }
             }
             match node.processor.core()? {
                 Processor::Compressor {
@@ -4077,10 +4179,12 @@ impl<'a> PlanView<'a> {
                     limits,
                     format!("nodes.{}.params.{}", node.id, parameter),
                 )?;
-                if let Processor::Instrument { program, .. } = node.processor.core()? {
+                if matches!(
+                    node.processor.core()?,
+                    Processor::Instrument { .. } | Processor::KitInstrument { .. }
+                ) {
                     let spec = self
-                        .instrument_program(program)
-                        .and_then(|program| program.control_spec(parameter))
+                        .instrument_control_spec(node, parameter)
                         .ok_or_else(|| {
                             err(
                                 "E_UNKNOWN_FIELD",
@@ -4132,9 +4236,8 @@ impl<'a> PlanView<'a> {
         match node.processor {
             ProcessorView::Constant if name == "value" => Ok(()),
             ProcessorView::Kit { .. } if name == "level" => Ok(()),
-            ProcessorView::Core(Processor::Instrument { program, .. }) => {
-                self.instrument_program(program)
-                    .and_then(|p| p.control_spec(name))
+            ProcessorView::Core(Processor::Instrument { .. } | Processor::KitInstrument { .. }) => {
+                self.instrument_control_spec(node, name)
                     .ok_or_else(missing)?;
                 Ok(())
             }
@@ -4333,6 +4436,10 @@ impl<'a> PlanView<'a> {
                         .is_some_and(|port| port.kind == PortKind::Events)
                 } else {
                     (match target.processor {
+                        // A kit instrument plays hits only.
+                        ProcessorView::Core(Processor::KitInstrument { .. }) => {
+                            matches!(event.kind, EventKind::Hit { .. })
+                        }
                         ProcessorView::Core(processor) => processor.accepts_events(),
                         ProcessorView::Kit { .. } => matches!(event.kind, EventKind::Hit { .. }),
                         ProcessorView::Lfo(_)
@@ -4651,15 +4758,27 @@ impl<'a> PlanView<'a> {
                             "velocity must be finite in [0,1]",
                         ));
                     }
-                    let ProcessorView::Kit {
-                        samples, voices, ..
-                    } = target.processor
-                    else {
-                        return Err(err(
-                            "E_CAPABILITY",
-                            format!("events[{index}].kind"),
-                            "hit requires a kit receiver",
-                        ));
+                    let (has_key, voices) = match target.processor {
+                        ProcessorView::Kit {
+                            samples, voices, ..
+                        } => (samples.iter().any(|sample| sample.key == *key), voices),
+                        ProcessorView::Core(Processor::KitInstrument { kit, .. }) => {
+                            let kit = self.kit_program(kit).ok_or_else(|| {
+                                err(
+                                    "E_REFERENCE",
+                                    format!("events[{index}].target"),
+                                    "kit instrument does not exist",
+                                )
+                            })?;
+                            (kit.piece_for_key(key).is_some(), kit.voices())
+                        }
+                        _ => {
+                            return Err(err(
+                                "E_CAPABILITY",
+                                format!("events[{index}].kind"),
+                                "hit requires a kit receiver",
+                            ))
+                        }
                     };
                     if event.score_off_q.is_some()
                         || has_off_time
@@ -4673,11 +4792,11 @@ impl<'a> PlanView<'a> {
                             "hit must carry onset-only timing and zero unused release fields",
                         ));
                     }
-                    if !samples.iter().any(|sample| sample.key == *key) {
+                    if !has_key {
                         return Err(err(
                             "E_REFERENCE",
                             format!("events[{index}].kind.key"),
-                            "kit has no such sample key",
+                            "kit has no such key",
                         ));
                     }
                     let clock = timing.expect("kit requires certified timing");
@@ -4812,10 +4931,12 @@ impl<'a> PlanView<'a> {
                         format!("automation[{index}].points.value"),
                     )?;
                 }
-            } else if let Processor::Instrument { program, .. } = node.processor.core()? {
+            } else if matches!(
+                node.processor.core()?,
+                Processor::Instrument { .. } | Processor::KitInstrument { .. }
+            ) {
                 let spec = self
-                    .instrument_program(program)
-                    .and_then(|program| program.control_spec(&lane.target.port))
+                    .instrument_control_spec(*node, &lane.target.port)
                     .ok_or_else(|| {
                         err(
                             "E_REFERENCE",
@@ -5246,6 +5367,156 @@ impl<'a> PlanView<'a> {
         Ok(work)
     }
 
+    /// A conservative bound on kit instrument work: each piece's shared graph
+    /// for the whole render, and for each hit its voice graph from onset
+    /// through the gate and the largest release the piece can reach.
+    fn kit_instrument_work(&self) -> Result<u64, PlanError> {
+        let overflow = || err("E_RESOURCE_LIMIT", "instruments.kits", "kit work overflow");
+        let total = self.output.total_frames;
+        let mut work = 0u64;
+        for node in self.nodes {
+            let ProcessorView::Core(Processor::KitInstrument { kit, .. }) = node.processor else {
+                continue;
+            };
+            let kit = self.kit_program(kit).ok_or_else(|| {
+                err(
+                    "E_REFERENCE",
+                    format!("nodes.{}.processor.kit", node.id),
+                    "kit instrument does not exist",
+                )
+            })?;
+            for piece in &kit.pieces {
+                let program = self.instrument_program(&piece.program).ok_or_else(|| {
+                    err(
+                        "E_REFERENCE",
+                        format!("instruments.kits.{}.pieces.{}", kit.id, piece.id),
+                        "kit piece program does not exist",
+                    )
+                })?;
+                if let Some(shared) = &program.shared {
+                    let shared_cost = graph_sample_cost(shared)
+                        .saturating_add(shared.nodes.len() as u64)
+                        .saturating_add(shared.modulations.len() as u64);
+                    work = total
+                        .checked_mul(shared_cost)
+                        .and_then(|shared| work.checked_add(shared))
+                        .ok_or_else(overflow)?;
+                }
+                let amplitude = program
+                    .voice
+                    .amplitude
+                    .as_deref()
+                    .and_then(|id| program.voice.nodes.iter().find(|node| node.id == id));
+                let mut release = amplitude
+                    .and_then(|node| node.params.get("release").cloned())
+                    .unwrap_or_else(zero);
+                if let Some((control_name, control)) =
+                    program.controls.iter().find(|(_, control)| {
+                        control.target.graph == crate::graph::GraphStage::Voice
+                            && amplitude.is_some_and(|node| node.id == control.target.node)
+                            && control.target.parameter == "release"
+                    })
+                {
+                    release = control.default.clone();
+                    if let Some(value) = piece.params.get(control_name) {
+                        release = value.clone();
+                    } else if let Some((kit_control, exposed)) =
+                        kit.controls.iter().find(|(_, exposed)| {
+                            exposed.piece == piece.id && exposed.control == *control_name
+                        })
+                    {
+                        release = node
+                            .params
+                            .get(kit_control)
+                            .cloned()
+                            .unwrap_or_else(|| exposed.default.clone());
+                        for lane in self.automations().filter(|lane| {
+                            lane.target.node == *node.id && lane.target.port == *kit_control
+                        }) {
+                            for point in lane.points {
+                                if point.value > release {
+                                    release = point.value.clone();
+                                }
+                            }
+                        }
+                        if self.modulations.iter().any(|edge| {
+                            edge.target.node == *node.id && edge.target.port == *kit_control
+                        }) {
+                            if let Some(spec) = program.control_spec(control_name) {
+                                release = spec.max;
+                            }
+                        }
+                    }
+                }
+                let mut captures = 0u64;
+                for modulation in &program.voice.modulations {
+                    let Some(spec) = program
+                        .voice
+                        .nodes
+                        .iter()
+                        .find(|candidate| candidate.id == modulation.to.node)
+                        .and_then(|target| {
+                            crate::graph::parameter_descriptor_for_stage(
+                                &target.processor,
+                                &modulation.to.parameter,
+                                crate::graph::GraphStage::Voice,
+                            )
+                        })
+                    else {
+                        continue;
+                    };
+                    if matches!(spec.rate, ParameterRate::NoteOn | ParameterRate::NoteOff) {
+                        captures = 2;
+                    }
+                    if amplitude.is_some_and(|node| node.id == modulation.to.node)
+                        && modulation.to.parameter == "release"
+                        && spec.max > release
+                    {
+                        release = spec.max;
+                    }
+                }
+                let release_frames = rational_ceil_nonnegative(
+                    &(release * BigInt::from(self.output.sample_rate_hz)),
+                )
+                .ok_or_else(overflow)?;
+                let gate = crate::kit_instrument::gate_frames(
+                    &piece.gate_seconds,
+                    self.output.sample_rate_hz,
+                );
+                let voice_cost = graph_sample_cost(&program.voice);
+                let per_hit = (program.pluck_node_count() as u64)
+                    .saturating_mul(crate::graph::PLUCK_DELAY_CELLS as u64)
+                    .saturating_add(
+                        captures.saturating_mul(
+                            voice_cost
+                                .saturating_add(program.voice.nodes.len() as u64)
+                                .saturating_add(program.voice.modulations.len() as u64),
+                        ),
+                    );
+                for event in self.events().filter(|event| event.target.node == *node.id) {
+                    let EventKind::Hit { key, .. } = event.kind else {
+                        continue;
+                    };
+                    if *key != piece.key {
+                        continue;
+                    }
+                    let end = event
+                        .on_frame
+                        .saturating_add(gate)
+                        .saturating_add(release_frames)
+                        .min(total);
+                    work = end
+                        .saturating_sub(event.on_frame)
+                        .checked_mul(voice_cost)
+                        .and_then(|voice| voice.checked_add(per_hit))
+                        .and_then(|hit| work.checked_add(hit))
+                        .ok_or_else(overflow)?;
+                }
+            }
+        }
+        Ok(work)
+    }
+
     fn kit_execution_work(&self) -> Result<u64, PlanError> {
         let overflow = || {
             err(
@@ -5326,10 +5597,12 @@ impl<'a> PlanView<'a> {
 
     fn validate_instrument_work(&self, limits: &PlanLimits) -> Result<u64, PlanError> {
         let control_work = self.control_execution_work(limits)?;
+        let kit_instrument_work = self.kit_instrument_work()?;
         let mut work = self
             .kit_execution_work()?
             .checked_add(self.audio_execution_work()?)
             .and_then(|work| work.checked_add(control_work))
+            .and_then(|work| work.checked_add(kit_instrument_work))
             .ok_or_else(|| {
                 err(
                     "E_RESOURCE_LIMIT",
@@ -5398,6 +5671,19 @@ impl<'a> PlanView<'a> {
                     })?;
                     96 + 40 * u64::from(*channels)
                 }
+                // Per frame: 48 interpolation multiply-adds per channel and at
+                // most L+1 detection bounds; history is L delayed frames plus
+                // eleven interpolator frames per channel.
+                Processor::Limiter {
+                    channels,
+                    lookahead_frames,
+                } => {
+                    let count = usize::from(*channels) * (*lookahead_frames as usize + 11);
+                    cells = cells.checked_add(count).ok_or_else(|| {
+                        err("E_RESOURCE_LIMIT", "production", "native storage overflow")
+                    })?;
+                    16 + 50 * u64::from(*channels) + 2 * (u64::from(*lookahead_frames) + 1)
+                }
                 _ => 0,
             };
             work =
@@ -5424,23 +5710,7 @@ impl<'a> PlanView<'a> {
                     "instrument program does not exist",
                 )
             })?;
-            let graph_cost = |graph: &crate::graph::GraphProgram| {
-                graph
-                    .nodes
-                    .iter()
-                    .fold(0u64, |cost, node| {
-                        cost.saturating_add(
-                            if matches!(node.processor, crate::graph::GraphProcessor::Pluck { .. })
-                            {
-                                crate::graph::PLUCK_SAMPLE_WORK
-                            } else {
-                                1
-                            },
-                        )
-                    })
-                    .saturating_add(graph.connections.len() as u64)
-                    .saturating_add(graph.modulations.len() as u64)
-            };
+            let graph_cost = graph_sample_cost;
             if let Some(shared) = &program.shared {
                 let shared_cost = graph_cost(shared);
                 work = work.saturating_add(self.output.total_frames.saturating_mul(shared_cost));
@@ -5791,6 +6061,50 @@ fn validate_identifier_limit(
     Ok(())
 }
 
+/// Per-sample work of one instrument graph: one unit per node (a pluck
+/// costs more), connection, and modulation edge.
+fn graph_sample_cost(graph: &crate::graph::GraphProgram) -> u64 {
+    graph
+        .nodes
+        .iter()
+        .fold(0u64, |cost, node| {
+            cost.saturating_add(
+                if matches!(node.processor, crate::graph::GraphProcessor::Pluck { .. }) {
+                    crate::graph::PLUCK_SAMPLE_WORK
+                } else {
+                    1
+                },
+            )
+        })
+        .saturating_add(graph.connections.len() as u64)
+        .saturating_add(graph.modulations.len() as u64)
+}
+
+/// The instrument programs one instance runs, with their voice capacities:
+/// one for an instrument node and one per piece for a kit.
+fn instance_programs(
+    processor: &ProcessorView<'_>,
+    resources: &crate::instrument_plan::InstrumentResources,
+) -> Vec<(String, u32)> {
+    match processor {
+        ProcessorView::Core(Processor::Instrument {
+            program, voices, ..
+        }) => vec![(program.clone(), *voices)],
+        ProcessorView::Core(Processor::KitInstrument { kit, .. }) => resources
+            .kits
+            .iter()
+            .find(|candidate| candidate.id == *kit)
+            .map(|kit| {
+                kit.pieces
+                    .iter()
+                    .map(|piece| (piece.program.clone(), piece.voices))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    }
+}
+
 fn validate_event_address(
     value: &str,
     path: impl Into<String>,
@@ -6105,12 +6419,18 @@ fn port_descriptor(node: NodeView<'_>, port: &str, input: bool) -> Option<PortDe
             channels: *channels,
             summing: false,
         }),
-        (Processor::Instrument { .. }, true, "events") => Some(PortDescriptor {
-            kind: PortKind::Events,
-            channels: 0,
-            summing: true,
-        }),
-        (Processor::Instrument { channels, .. }, false, "out") => Some(PortDescriptor {
+        (Processor::Instrument { .. } | Processor::KitInstrument { .. }, true, "events") => {
+            Some(PortDescriptor {
+                kind: PortKind::Events,
+                channels: 0,
+                summing: true,
+            })
+        }
+        (
+            Processor::Instrument { channels, .. } | Processor::KitInstrument { channels, .. },
+            false,
+            "out",
+        ) => Some(PortDescriptor {
             kind: PortKind::Audio,
             channels: *channels,
             summing: false,

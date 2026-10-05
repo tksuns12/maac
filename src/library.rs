@@ -15,6 +15,9 @@ use crate::graph::{
     ParameterTarget, ProgramSource, MAX_EMBEDDED_SAMPLES, MAX_GRAPH_PROGRAMS,
     MAX_TOTAL_GRAPH_EDGES, MAX_TOTAL_GRAPH_NODES,
 };
+use crate::kit_instrument::{
+    KitControl, KitPiece, KitProgram, DEFAULT_PIECE_VOICES, MAX_PIECE_VOICES,
+};
 use crate::plan::{Connection, PlanError, PortRef, SourceSpan};
 use crate::sample_instrument::{InstrumentSample, SampleSource, SampleZone};
 use crate::syntax::{Document, Field, Object, Reference, Unit, Value, ValueKind};
@@ -67,11 +70,14 @@ pub struct ResolvedInstance {
     pub channels: u8,
     pub voices: u32,
     pub params: BTreeMap<String, Rational>,
+    /// Whether `program_id` names a kit, which receives hits.
+    pub kit: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct LibrarySet {
     pub programs: Vec<InstrumentProgram>,
+    pub kits: Vec<KitProgram>,
     pub wavetables: Vec<Wavetable>,
     pub wavetable_sources: Vec<WavetableSource>,
     pub samples: Vec<InstrumentSample>,
@@ -83,6 +89,7 @@ pub struct LibrarySet {
     resolved_document: Document,
     pattern_source_paths: BTreeMap<String, Vec<String>>,
     program_exports: BTreeMap<ExportKey, usize>,
+    kit_exports: BTreeMap<ExportKey, usize>,
     presets: BTreeMap<ExportKey, Preset>,
     imports: BTreeMap<String, BTreeMap<String, String>>,
 }
@@ -110,7 +117,21 @@ impl LibrarySet {
             ));
         }
 
+        // A declaration with `piece` children is a kit; the rest are programs.
+        let (kit_keys, instrument_keys): (Vec<_>, Vec<_>) =
+            instrument_keys.into_iter().partition(|(file, id)| {
+                bundle.documents[file].objects[id]
+                    .children
+                    .values()
+                    .any(|child| child.kind == "piece")
+            });
         let program_exports = instrument_keys
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(index, key)| (key, index))
+            .collect::<BTreeMap<_, _>>();
+        let kit_exports = kit_keys
             .iter()
             .cloned()
             .enumerate()
@@ -186,12 +207,33 @@ impl LibrarySet {
             )?);
         }
 
+        let mut kits = Vec::with_capacity(kit_keys.len());
+        for (index, (file, object_id)) in kit_keys.iter().enumerate() {
+            kits.push(lower_kit(
+                bundle,
+                file,
+                &bundle.documents[file].objects[object_id],
+                format!("kit_{index}"),
+                &program_exports,
+                &kit_exports,
+                &programs,
+            )?);
+        }
+
         let mut presets = BTreeMap::new();
         for (file, object_id) in export_keys(bundle, "preset") {
             let object = &bundle.documents[&file].objects[&object_id];
             presets.insert(
                 (file.clone(), object_id),
-                lower_preset(bundle, &file, object, &program_exports, &programs)?,
+                lower_preset(
+                    bundle,
+                    &file,
+                    object,
+                    &program_exports,
+                    &programs,
+                    &kit_exports,
+                    &kits,
+                )?,
             );
         }
 
@@ -199,6 +241,7 @@ impl LibrarySet {
         validate_musical_exports(&documents.musical)?;
         Ok(Self {
             programs,
+            kits,
             wavetables,
             wavetable_sources,
             samples,
@@ -209,6 +252,7 @@ impl LibrarySet {
             resolved_document: documents.musical,
             pattern_source_paths: documents.pattern_source_paths,
             program_exports,
+            kit_exports,
             presets,
             imports: bundle.imports.clone(),
         })
@@ -232,6 +276,9 @@ impl LibrarySet {
             reference_field(node, "instrument", file)?,
             self.imports.get(file),
         )?;
+        if let Some(&kit_index) = self.kit_exports.get(&instrument_key) {
+            return self.resolve_kit_instance(file, node, &instrument_key, &self.kits[kit_index]);
+        }
         let program_index = *self.program_exports.get(&instrument_key).ok_or_else(|| {
             object_error(
                 DiagnosticCode::Reference,
@@ -274,7 +321,9 @@ impl LibrarySet {
             params.extend(preset.params.clone());
         }
         if let Some(field) = node.field("params") {
-            params.extend(lower_control_values(field, file, node, program)?);
+            params.extend(lower_control_values(field, file, node, &|name| {
+                program.control_spec(name)
+            })?);
         }
         let voices = match node.field("config") {
             Some(field) => lower_instance_config(field, file, node)?,
@@ -285,6 +334,70 @@ impl LibrarySet {
             channels: program.channels(),
             voices,
             params,
+            kit: false,
+        })
+    }
+
+    /// A kit instance layers kit control defaults, a preset, and its own
+    /// params. Piece voices are declared by the kit, so it takes no config.
+    fn resolve_kit_instance(
+        &self,
+        file: &str,
+        node: &Object,
+        key: &ExportKey,
+        kit: &KitProgram,
+    ) -> Result<ResolvedInstance, Diagnostics> {
+        if let Some(field) = node.field("config") {
+            return Err(field_error(
+                DiagnosticCode::UnknownField,
+                file,
+                node,
+                field,
+                "a kit instance takes no config; each piece declares its voices",
+            ));
+        }
+        let mut params = kit
+            .controls
+            .iter()
+            .map(|(name, control)| (name.clone(), control.default.clone()))
+            .collect::<BTreeMap<_, _>>();
+        if let Some(field) = node.field("preset") {
+            let preset_key = resolve_export_key_from_maps(
+                file,
+                expect_reference(field, file, node)?,
+                self.imports.get(file),
+            )?;
+            let preset = self.presets.get(&preset_key).ok_or_else(|| {
+                field_error(
+                    DiagnosticCode::Reference,
+                    file,
+                    node,
+                    field,
+                    "preset reference does not name a preset export",
+                )
+            })?;
+            if &preset.instrument != key {
+                return Err(field_error(
+                    DiagnosticCode::Reference,
+                    file,
+                    node,
+                    field,
+                    "preset selects a different instrument",
+                ));
+            }
+            params.extend(preset.params.clone());
+        }
+        if let Some(field) = node.field("params") {
+            params.extend(lower_control_values(field, file, node, &|name| {
+                kit.control_spec(&self.programs, name)
+            })?);
+        }
+        Ok(ResolvedInstance {
+            program_id: kit.id.clone(),
+            channels: kit.channels,
+            voices: kit.voices(),
+            params,
+            kit: true,
         })
     }
 
@@ -1502,6 +1615,273 @@ fn lower_instrument(
     Ok(program)
 }
 
+/// Lower a kit declaration: `piece` children that play other instruments by
+/// hit key, and `control` children that expose piece controls.
+fn lower_kit(
+    bundle: &ResolvedBundle,
+    file: &str,
+    object: &Object,
+    id: String,
+    program_exports: &BTreeMap<ExportKey, usize>,
+    kit_exports: &BTreeMap<ExportKey, usize>,
+    programs: &[InstrumentProgram],
+) -> Result<KitProgram, Diagnostics> {
+    exact_fields(object, &["channels"], &["channels"], file)?;
+    let channels = integer_field(object, "channels", file, 1, 2)? as u8;
+    for child in object.children.values() {
+        if !matches!(child.kind.as_str(), "piece" | "control") {
+            return Err(object_error(
+                DiagnosticCode::UnknownKind,
+                file,
+                child,
+                format!(
+                    "unexpected kit child `{}`; a kit has pieces and controls, not graphs",
+                    child.kind
+                ),
+            ));
+        }
+    }
+    let mut pieces = Vec::new();
+    for piece in object
+        .children
+        .values()
+        .filter(|child| child.kind == "piece")
+    {
+        exact_fields(
+            piece,
+            &[
+                "instrument",
+                "preset",
+                "params",
+                "key",
+                "gate",
+                "pitch",
+                "voices",
+                "choke",
+            ],
+            &["instrument", "key", "gate"],
+            file,
+        )?;
+        no_children(piece, file)?;
+        let instrument_field = piece.field("instrument").expect("required field checked");
+        let instrument =
+            resolve_export_key(bundle, file, reference_field(piece, "instrument", file)?)?;
+        if kit_exports.contains_key(&instrument) {
+            return Err(field_error(
+                DiagnosticCode::Reference,
+                file,
+                piece,
+                instrument_field,
+                "a kit piece plays an instrument, not another kit",
+            ));
+        }
+        let program = &programs[*program_exports.get(&instrument).ok_or_else(|| {
+            field_error(
+                DiagnosticCode::Reference,
+                file,
+                piece,
+                instrument_field,
+                "piece instrument reference does not name an instrument export",
+            )
+        })?];
+        let mut params = BTreeMap::new();
+        if let Some(field) = piece.field("preset") {
+            let preset_key =
+                resolve_export_key(bundle, file, expect_reference(field, file, piece)?)?;
+            let preset_object = bundle
+                .documents
+                .get(&preset_key.0)
+                .and_then(|document| document.objects.get(&preset_key.1))
+                .filter(|object| object.kind == "preset")
+                .ok_or_else(|| {
+                    field_error(
+                        DiagnosticCode::Reference,
+                        file,
+                        piece,
+                        field,
+                        "preset reference does not name a preset export",
+                    )
+                })?;
+            let preset = lower_preset(
+                bundle,
+                &preset_key.0,
+                preset_object,
+                program_exports,
+                programs,
+                kit_exports,
+                &[],
+            )?;
+            if preset.instrument != instrument {
+                return Err(field_error(
+                    DiagnosticCode::Reference,
+                    file,
+                    piece,
+                    field,
+                    "preset selects a different instrument",
+                ));
+            }
+            params.extend(preset.params);
+        }
+        if let Some(field) = piece.field("params") {
+            params.extend(lower_control_values(field, file, piece, &|name| {
+                program.control_spec(name)
+            })?);
+        }
+        let key_field = piece.field("key").expect("required field checked");
+        let key = string_field(piece, "key", file)?;
+        if key.is_empty() {
+            return Err(field_error(
+                DiagnosticCode::Range,
+                file,
+                piece,
+                key_field,
+                "a piece key must be nonempty",
+            ));
+        }
+        let gate_field = piece.field("gate").expect("required field checked");
+        let gate_seconds =
+            source_number(&gate_field.value, GraphUnit::Seconds).map_err(|message| {
+                field_error(DiagnosticCode::Unit, file, piece, gate_field, message)
+            })?;
+        let pitch_hz = match piece.field("pitch") {
+            Some(field) => piece_pitch_hz(&field.value).map_err(|message| {
+                field_error(DiagnosticCode::Unit, file, piece, field, message)
+            })?,
+            None => crate::music::Pitch::key(60)
+                .frequency_hz()
+                .expect("C4 is a valid pitch"),
+        };
+        let voices = match piece.field("voices") {
+            Some(field) => integer_value(&field.value, file, piece, field, 1, MAX_PIECE_VOICES)?,
+            None => DEFAULT_PIECE_VOICES,
+        };
+        let choke = optional_string_field(piece, "choke", file)?;
+        pieces.push(KitPiece {
+            id: piece.id.clone(),
+            key,
+            program: program.id.clone(),
+            voices,
+            pitch_hz,
+            gate_seconds,
+            choke,
+            params,
+        });
+    }
+    if pieces.is_empty() {
+        return Err(object_error(
+            DiagnosticCode::Range,
+            file,
+            object,
+            "a kit requires at least one piece",
+        ));
+    }
+    let mut controls = BTreeMap::new();
+    for control in object
+        .children
+        .values()
+        .filter(|child| child.kind == "control")
+    {
+        exact_fields(
+            control,
+            &["default", "target"],
+            &["default", "target"],
+            file,
+        )?;
+        no_children(control, file)?;
+        let target_field = control.field("target").expect("required field checked");
+        let reference = expect_reference(target_field, file, control)?;
+        if reference.port.is_some() || reference.path.len() != 3 || reference.path[1] != "params" {
+            return Err(field_error(
+                DiagnosticCode::Reference,
+                file,
+                control,
+                target_field,
+                "kit control target must be &piece.params.control",
+            ));
+        }
+        let piece = pieces
+            .iter()
+            .find(|piece| piece.id == reference.path[0])
+            .ok_or_else(|| {
+                field_error(
+                    DiagnosticCode::Reference,
+                    file,
+                    control,
+                    target_field,
+                    "kit control target piece does not exist",
+                )
+            })?;
+        let spec = programs
+            .iter()
+            .find(|program| program.id == piece.program)
+            .and_then(|program| program.control_spec(&reference.path[2]))
+            .ok_or_else(|| {
+                field_error(
+                    DiagnosticCode::Reference,
+                    file,
+                    control,
+                    target_field,
+                    "kit control target is not a public control of the piece instrument",
+                )
+            })?;
+        let default_field = control.field("default").expect("required field checked");
+        let default = source_number(&default_field.value, spec.unit).map_err(|message| {
+            field_error(DiagnosticCode::Unit, file, control, default_field, message)
+        })?;
+        validate_against_spec(&default, &spec, file, control, default_field)?;
+        controls.insert(
+            control.id.clone(),
+            KitControl {
+                piece: reference.path[0].clone(),
+                control: reference.path[2].clone(),
+                default,
+            },
+        );
+    }
+    let kit = KitProgram {
+        id,
+        channels,
+        pieces,
+        controls,
+        source: ProgramSource {
+            file: file.to_owned(),
+            object: object.id.clone(),
+            span: Some(SourceSpan {
+                start: object.span.start,
+                end: object.span.end,
+            }),
+        },
+    };
+    kit.validate(programs)
+        .map_err(|error| plan_diagnostics(error, file, object))?;
+    Ok(kit)
+}
+
+/// A kit piece's pitch: a spelled pitch, `key(k)`, or a frequency.
+fn piece_pitch_hz(value: &Value) -> Result<f64, &'static str> {
+    let pitch = match &value.kind {
+        ValueKind::Symbol(text) | ValueKind::String(text) => {
+            crate::music::Pitch::parse_spelled(text).map_err(|_| "invalid spelled pitch")?
+        }
+        ValueKind::Call { function, args } if function == "key" && args.len() == 1 => {
+            match &args[0].kind {
+                ValueKind::Number(key) if key.is_integer() => crate::music::Pitch::key(
+                    key.to_integer().to_i64().ok_or("key() is out of range")?,
+                ),
+                _ => return Err("key() requires one integer"),
+            }
+        }
+        ValueKind::Quantity { .. } => {
+            crate::music::Pitch::hz(source_number(value, GraphUnit::Hertz)?)
+                .map_err(|_| "piece frequency must be positive")?
+        }
+        _ => return Err("piece pitch must be a spelled pitch, key(), or a frequency"),
+    };
+    pitch
+        .frequency_hz()
+        .map_err(|_| "piece pitch is outside the representable range")
+}
+
 fn lower_graph(
     bundle: &ResolvedBundle,
     file: &str,
@@ -1851,6 +2231,8 @@ fn lower_preset(
     object: &Object,
     program_exports: &BTreeMap<ExportKey, usize>,
     programs: &[InstrumentProgram],
+    kit_exports: &BTreeMap<ExportKey, usize>,
+    kits: &[KitProgram],
 ) -> Result<Preset, Diagnostics> {
     exact_fields(
         object,
@@ -1861,20 +2243,33 @@ fn lower_preset(
     no_children(object, file)?;
     let instrument =
         resolve_export_key(bundle, file, reference_field(object, "instrument", file)?)?;
-    let index = *program_exports.get(&instrument).ok_or_else(|| {
-        object_error(
-            DiagnosticCode::Reference,
-            file,
-            object,
-            "preset instrument reference does not name an instrument export",
-        )
-    })?;
-    let params = lower_control_values(
-        object.field("params").expect("required field checked"),
-        file,
-        object,
-        &programs[index],
-    )?;
+    let field = object.field("params").expect("required field checked");
+    let params = if let Some(&index) = kit_exports.get(&instrument) {
+        // Pieces resolve their presets before any kit is lowered.
+        let kit = kits.get(index).ok_or_else(|| {
+            object_error(
+                DiagnosticCode::Reference,
+                file,
+                object,
+                "a kit piece preset must select an instrument, not a kit",
+            )
+        })?;
+        lower_control_values(field, file, object, &|name| {
+            kit.control_spec(programs, name)
+        })?
+    } else {
+        let index = *program_exports.get(&instrument).ok_or_else(|| {
+            object_error(
+                DiagnosticCode::Reference,
+                file,
+                object,
+                "preset instrument reference does not name an instrument export",
+            )
+        })?;
+        lower_control_values(field, file, object, &|name| {
+            programs[index].control_spec(name)
+        })?
+    };
     Ok(Preset { instrument, params })
 }
 
@@ -1882,11 +2277,11 @@ fn lower_control_values(
     field: &Field,
     file: &str,
     object: &Object,
-    program: &InstrumentProgram,
+    control_spec: &dyn Fn(&str) -> Option<ParameterSpec>,
 ) -> Result<BTreeMap<String, Rational>, Diagnostics> {
     let mut result = BTreeMap::new();
     for (name, value_field) in expect_record(field, file, object)? {
-        let spec = program.control_spec(name).ok_or_else(|| {
+        let spec = control_spec(name).ok_or_else(|| {
             field_error(
                 DiagnosticCode::UnknownField,
                 file,

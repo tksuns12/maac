@@ -65,7 +65,7 @@ owner heard, every point of friction, and what to build next.
 | ID | Problem | Status |
 | --- | --- | --- |
 | F1 | Every note is its own object with an ID; a four-note chord is four objects | Fixed: [`chord` leaves](../MaaC-1-Specification.md#82-chords). "Late Window" now has 21 chords in place of 81 notes |
-| F2 | Each synthesized drum needs its own node, track, connection and pattern; there is no drum map | Gap: authoring density |
+| F2 | Each synthesized drum needs its own node, track, connection and pattern; there is no drum map | Fixed: [kit instruments](instruments.md#kits) and the `std/basic/1.1.0` `drums` kit. "Late Window" plays kick and hats as hits on one kit node; the snare stays separate because it alone feeds the reverb send |
 | F3 | Swing has no construct; swung positions are calculated by hand | Fixed: [`groove`](../MaaC-1-Specification.md#92-grooves). Parts are written straight, and each placement references one groove |
 | F4 | `analyze` treated a generator before its gain stage as a mix source | Fixed in `default/2` |
 | F5 | `analyze` flagged intentionally panned instruments as stereo imbalance | Fixed in `default/2` |

@@ -68,7 +68,9 @@ fn processor_type(processor: &Processor) -> &'static str {
         Processor::Limiter { .. } => "fx.limiter/1",
         Processor::Pan => "core.pan/1",
         Processor::Sum { .. } => "core.sum/1",
-        Processor::Instrument { .. } => panic!("fixture uses only core processors"),
+        Processor::Instrument { .. } | Processor::KitInstrument { .. } => {
+            panic!("fixture uses only core processors")
+        }
     }
 }
 

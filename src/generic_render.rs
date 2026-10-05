@@ -162,7 +162,7 @@ fn processor_type(processor: &Processor) -> Result<&'static str, LockError> {
         Processor::Limiter { .. } => "fx.limiter/1",
         Processor::Pan => "core.pan/1",
         Processor::Sum { .. } => "core.sum/1",
-        Processor::Instrument { .. } => {
+        Processor::Instrument { .. } | Processor::KitInstrument { .. } => {
             return Err(error(
                 "E_CAPABILITY",
                 "generic renderer does not yet execute instrument-program processors",

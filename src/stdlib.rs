@@ -14,6 +14,10 @@ use crate::plan::rational_serde;
 pub const BASIC_ID: &str = "std/basic/1.0.0";
 pub const BASIC_SOURCE_PATH: &str = "@builtin/std/basic/1.0.0.maac";
 pub const BASIC_SOURCE: &str = include_str!("../stdlib/basic/1.0.0.maac");
+/// Adds the `drums` kit; every 1.0.0 export is unchanged.
+pub const BASIC_1_1_ID: &str = "std/basic/1.1.0";
+pub const BASIC_1_1_SOURCE_PATH: &str = "@builtin/std/basic/1.1.0.maac";
+pub const BASIC_1_1_SOURCE: &str = include_str!("../stdlib/basic/1.1.0.maac");
 pub const ACOUSTIC_ID: &str = "std/acoustic/1.0.0";
 pub const ACOUSTIC_SOURCE_PATH: &str = "@builtin/std/acoustic/1.0.0.maac";
 pub const ACOUSTIC_SOURCE: &str = include_str!("../stdlib/acoustic/1.0.0.maac");
@@ -39,6 +43,15 @@ const DEFINITIONS: &[LibraryDefinition] = &[
             source: BASIC_SOURCE,
         },
         editorial: include_str!("../stdlib/basic/1.0.0.json"),
+        alias: "basic",
+    },
+    LibraryDefinition {
+        id: BASIC_1_1_ID,
+        source: BuiltinSource {
+            path: BASIC_1_1_SOURCE_PATH,
+            source: BASIC_1_1_SOURCE,
+        },
+        editorial: include_str!("../stdlib/basic/1.1.0.json"),
         alias: "basic",
     },
     LibraryDefinition {
@@ -93,6 +106,33 @@ pub struct Catalog {
     pub source_path: String,
     pub source_hash: String,
     pub instruments: Vec<InstrumentInfo>,
+    /// Kit exports, which play their pieces by hit key.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub kits: Vec<KitInfo>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct KitInfo {
+    pub name: String,
+    pub family: String,
+    pub description: String,
+    pub channels: u8,
+    pub pieces: Vec<KitPieceInfo>,
+    pub notes: String,
+    pub controls: BTreeMap<String, ControlInfo>,
+    /// A complete composition playing every key once.
+    pub usage: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct KitPieceInfo {
+    pub key: String,
+    /// The piece's instrument export.
+    pub instrument: String,
+    #[serde(with = "rational_serde")]
+    pub gate_seconds: Rational,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub choke: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -147,7 +187,12 @@ struct Editorial {
     name: String,
     family: String,
     description: String,
-    guidance: MusicalGuidance,
+    /// Required for instruments.
+    #[serde(default)]
+    guidance: Option<MusicalGuidance>,
+    /// Required for kits, which take hits rather than pitched notes.
+    #[serde(default)]
+    kit_notes: Option<String>,
 }
 
 /// Describe the original basic library; its identity does not track newer libraries.
@@ -178,13 +223,81 @@ pub fn catalog_for(library: &str) -> Result<Catalog, Diagnostics> {
     let exports: BTreeSet<_> = libraries
         .programs
         .iter()
-        .filter(|program| program.source.file == definition.source.path)
-        .map(|program| program.source.object.as_str())
+        .map(|program| &program.source)
+        .chain(libraries.kits.iter().map(|kit| &kit.source))
+        .filter(|source| source.file == definition.source.path)
+        .map(|source| source.object.as_str())
         .collect();
     if exports != metadata.keys().map(String::as_str).collect() {
         return Err(catalog_error(
             "built-in catalog metadata must exactly match instrument exports",
         ));
+    }
+    let mut kits = Vec::new();
+    for kit in libraries
+        .kits
+        .iter()
+        .filter(|kit| kit.source.file == definition.source.path)
+    {
+        let name = &kit.source.object;
+        let item = metadata.remove(name).ok_or_else(|| {
+            catalog_error(format!("missing built-in catalog metadata for `{name}`"))
+        })?;
+        let notes = match (&item.guidance, item.kit_notes) {
+            (None, Some(notes)) if !notes.is_empty() && !item.description.is_empty() => notes,
+            _ => {
+                return Err(catalog_error(format!(
+                    "a kit's catalog metadata needs a description and kit_notes, not guidance: `{name}`"
+                )))
+            }
+        };
+        let mut pieces = Vec::with_capacity(kit.pieces.len());
+        for piece in &kit.pieces {
+            let instrument = libraries
+                .programs
+                .iter()
+                .find(|program| program.id == piece.program)
+                .ok_or_else(|| catalog_error(format!("kit `{name}` plays a missing program")))?;
+            pieces.push(KitPieceInfo {
+                key: piece.key.clone(),
+                instrument: instrument.source.object.clone(),
+                gate_seconds: piece.gate_seconds.clone(),
+                choke: piece.choke.clone(),
+            });
+        }
+        let mut controls = BTreeMap::new();
+        for (control_name, control) in &kit.controls {
+            let spec = kit
+                .control_spec(&libraries.programs, control_name)
+                .ok_or_else(|| {
+                    catalog_error(format!(
+                        "missing parameter specification for `{control_name}`"
+                    ))
+                })?;
+            controls.insert(
+                control_name.clone(),
+                ControlInfo {
+                    unit: spec.unit,
+                    rate: spec.rate,
+                    default: control.default.clone(),
+                    min: spec.min,
+                    max: spec.max,
+                    min_open: spec.min_open,
+                    max_open: spec.max_open,
+                },
+            );
+        }
+        let usage = kit_usage_source(definition, name, &pieces);
+        kits.push(KitInfo {
+            name: item.name,
+            family: item.family,
+            description: item.description,
+            channels: kit.channels,
+            pieces,
+            notes,
+            controls,
+            usage,
+        });
     }
     let mut instruments = Vec::with_capacity(libraries.programs.len());
     for program in libraries
@@ -196,7 +309,11 @@ pub fn catalog_for(library: &str) -> Result<Catalog, Diagnostics> {
         let item = metadata.remove(name).ok_or_else(|| {
             catalog_error(format!("missing built-in catalog metadata for `{name}`"))
         })?;
-        let guidance = &item.guidance;
+        let (Some(guidance), None) = (&item.guidance, &item.kit_notes) else {
+            return Err(catalog_error(format!(
+                "an instrument's catalog metadata needs guidance and no kit_notes: `{name}`"
+            )));
+        };
         if item.family.is_empty()
             || item.description.is_empty()
             || guidance.pitch_low.is_empty()
@@ -265,7 +382,7 @@ pub fn catalog_for(library: &str) -> Result<Catalog, Diagnostics> {
             family: item.family,
             description: item.description,
             channels: program.channels(),
-            guidance: item.guidance,
+            guidance: guidance.clone(),
             controls,
             usage,
         });
@@ -275,7 +392,47 @@ pub fn catalog_for(library: &str) -> Result<Catalog, Diagnostics> {
         source_path: definition.source.path.into(),
         source_hash: sha256_digest(definition.source.source.as_bytes()),
         instruments,
+        kits,
     })
+}
+
+/// Describe a kit export from one exact embedded library.
+pub fn kit_in(library: &str, name: &str) -> Result<KitInfo, Diagnostics> {
+    catalog_for(library)?
+        .kits
+        .into_iter()
+        .find(|kit| kit.name == name)
+        .ok_or_else(|| reference_error(format!("unknown built-in kit `{name}` in `{library}`")))
+}
+
+fn kit_usage_source(definition: &LibraryDefinition, name: &str, pieces: &[KitPieceInfo]) -> String {
+    let library = definition.id;
+    let alias = definition.alias;
+    let mut hits = String::new();
+    for (index, piece) in pieces.iter().enumerate() {
+        hits.push_str(&format!(
+            "  hit h{index} {{ at = {}q; key = \"{}\"; velocity = 0.8; }}\n",
+            index, piece.key
+        ));
+    }
+    let length = pieces.len().max(1);
+    format!(
+        r#"maac 1;
+import {alias} {{ builtin = "{library}"; }}
+project demo {{
+  score = [0q, {length}q]; rate = 48000Hz; tempo = &clock; meter = &metre;
+  output = &kit:out; tail = 3s;
+}}
+tempo clock {{ points = [(0q, 120bpm, step)]; }}
+meter metre {{ points = [(0q, 4, 4)]; }}
+pattern every_key {{
+  length = {length}q;
+{hits}}}
+track drums {{ target = &kit:events; }}
+place play {{ pattern = &every_key; track = &drums; at = 0q; }}
+node kit {{ instrument = &{alias}.{name}; }}
+"#
+    )
 }
 
 /// Describe one bare instrument export, such as `mellow_piano`.

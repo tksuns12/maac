@@ -16,7 +16,7 @@ project late_window {
 }
 tempo clock { points = [(0q, 90bpm, step)]; }
 meter metre { points = [(0q, 4, 4)]; }
-import basic { builtin = "std/basic/1.0.0"; }
+import basic { builtin = "std/basic/1.1.0"; }
 import acoustic { builtin = "std/acoustic/1.0.0"; }
 
 region intro { span = [bar(1, 1), bar(5, 1)]; }
@@ -135,37 +135,42 @@ place bass_b1 { pattern = &bass_b; track = &bass_notes; at = 48q; count = 2; gro
 place bass_a2 { pattern = &bass_a; track = &bass_notes; at = 80q; groove = &lazy; }
 
 // ---------------------------------------------------------------- drums
-node kick { instrument = &basic.kick; config = { voices = 4; }; params = { level = 0.22; }; }
-node snare { instrument = &basic.snare; config = { voices = 4; }; params = { level = 0.28; pan = 0.05; brightness = 4000Hz; }; }
-node hat { instrument = &basic.closed_hat; config = { voices = 6; }; params = { level = 0.4; pan = 0.35; brightness = 5500Hz; }; }
-pattern kick_bar { length = 4q;
-  note k1 { at = 0q; dur = 3/20q; pitch = C2; velocity = 0.85; }
-  note k2 { at = 11/6q; dur = 3/20q; pitch = C2; velocity = 0.5; }
-  note k3 { at = 8/3q; dur = 3/20q; pitch = C2; velocity = 0.72; }
+// The std/basic kit plays the kick and hats by hit key; the groove swings the
+// hats and the pushed kicks with the other parts. A kit has one output, so the
+// snare, which alone feeds the room send, stays its own node.
+node drums {
+  instrument = &basic.drums;
+  params = { kick_level = 0.22; hat_level = 0.4; hat_pan = 0.35; hat_brightness = 5500Hz; };
 }
+node snare { instrument = &basic.snare; config = { voices = 4; }; params = { level = 0.28; pan = 0.05; brightness = 4000Hz; }; }
+pattern hat_bar { length = 4q;
+  hit h1 { at = 0q; key = "hat"; velocity = 0.5; }
+  hit h2 { at = 1/2q; key = "hat"; velocity = 0.3; }
+  hit h3 { at = 1q; key = "hat"; velocity = 0.46; }
+  hit h4 { at = 3/2q; key = "hat"; velocity = 0.3; }
+  hit h5 { at = 2q; key = "hat"; velocity = 0.5; }
+  hit h6 { at = 5/2q; key = "hat"; velocity = 0.3; }
+  hit h7 { at = 3q; key = "hat"; velocity = 0.46; }
+  hit h8 { at = 7/2q; key = "hat"; velocity = 0.34; }
+}
+// Boom-bap kicks on 1, the last sixteenth of 2 and the and of 3, over the hats.
+pattern beat { length = 4q;
+  hit k1 { at = 0q; key = "kick"; velocity = 0.85; }
+  hit k2 { at = 7/4q; key = "kick"; velocity = 0.5; }
+  hit k3 { at = 5/2q; key = "kick"; velocity = 0.72; }
+  use hats { pattern = &hat_bar; at = 0q; }
+}
+// The snare plays on 2 and 4, which no groove moves.
 pattern snare_bar { length = 4q;
   note s1 { at = 1q; dur = 3/20q; pitch = C2; velocity = 0.7; }
   note s2 { at = 3q; dur = 3/20q; pitch = C2; velocity = 0.74; }
 }
-// The drums are written at their swung positions, matching the groove, so
-// their very short gates keep their exact lengths.
-pattern hat_bar { length = 4q;
-  note h1 { at = 0q; dur = 1/20q; pitch = C2; velocity = 0.5; }
-  note h2 { at = 2/3q; dur = 1/20q; pitch = C2; velocity = 0.3; }
-  note h3 { at = 1q; dur = 1/20q; pitch = C2; velocity = 0.46; }
-  note h4 { at = 5/3q; dur = 1/20q; pitch = C2; velocity = 0.3; }
-  note h5 { at = 2q; dur = 1/20q; pitch = C2; velocity = 0.5; }
-  note h6 { at = 8/3q; dur = 1/20q; pitch = C2; velocity = 0.3; }
-  note h7 { at = 3q; dur = 1/20q; pitch = C2; velocity = 0.46; }
-  note h8 { at = 11/3q; dur = 1/20q; pitch = C2; velocity = 0.34; }
-}
-track kick_notes { target = &kick:events; }
+track drum_hits { target = &drums:events; }
 track snare_notes { target = &snare:events; }
-track hat_notes { target = &hat:events; }
-place hats_intro { pattern = &hat_bar; track = &hat_notes; at = 8q; count = 2; }
-place kick_main { pattern = &kick_bar; track = &kick_notes; at = 16q; count = 20; }
+place hats_intro { pattern = &hat_bar; track = &drum_hits; at = 8q; count = 2; groove = &lazy; }
+place beat_main { pattern = &beat; track = &drum_hits; at = 16q; count = 20; groove = &lazy; }
+place hats_outro { pattern = &hat_bar; track = &drum_hits; at = 96q; count = 2; groove = &lazy; }
 place snare_main { pattern = &snare_bar; track = &snare_notes; at = 16q; count = 20; }
-place hats_main { pattern = &hat_bar; track = &hat_notes; at = 16q; count = 22; }
 
 // ---------------------------------------------------------------- melodies
 // One nylon guitar plays both melodies.
@@ -241,9 +246,8 @@ node master { type = "fx.limiter/1"; config = { channels = 2; }; params = { gain
 
 connect keys_bus { from = &keys:out; to = &bus:in; }
 connect bass_bus { from = &bass:out; to = &bus:in; }
-connect kick_bus { from = &kick:out; to = &bus:in; }
+connect drums_bus { from = &drums:out; to = &bus:in; }
 connect snare_bus { from = &snare:out; to = &bus:in; }
-connect hat_bus { from = &hat:out; to = &bus:in; }
 connect guitar_bus { from = &guitar:out; to = &bus:in; }
 connect pad_bus { from = &pad:out; to = &bus:in; }
 connect keys_send { from = &keys:out; to = &send:in; }

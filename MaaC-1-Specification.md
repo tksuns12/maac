@@ -51,7 +51,7 @@ An implementation states its profiles and its supported extension identifiers. A
 The normative [reusable library and instrument contract](docs/instruments.md)
 defines this repository's local-library extension: library documents,
 hash-pinned imports, reusable patterns, curves and tunings, instruments,
-presets, explicit WAV wavetables, zoned pitched samples (mono or stereo WAV,
+kit instruments played by hit key, presets, explicit WAV wavetables, zoned pitched samples (mono or stereo WAV,
 core PCM files, or a composition's own audio asset) with velocity layers and
 key/velocity crossfades, and versioned `synth.* /1` voice/shared
 processors. It specifies declaration and namespace rules, musical reference
@@ -366,7 +366,7 @@ pattern bass_riff {
 
 A `note` requires `at`, `dur`, and `pitch`. `at` is nonnegative pattern-local q; `dur` is positive q. `velocity` is dimensionless `[0,1]`, default 1. `release_velocity` is `[0,1]`, default 0.5. `onset_offset` and `release_offset` are seconds, default zero. `order` is an integer, default zero. Notes are not shortened merely because another note of the same pitch starts.
 
-A `hit` requires `at` and a string `key`, identifying a declared unpitched trigger on its destination, such as a sample-kit key. It has `velocity`, `onset_offset`, and `order` with the same defaults. It has no gate duration or implicit note-off; the receiver's declared trigger behavior determines its tail.
+A `hit` requires `at` and a string `key`, identifying a declared unpitched trigger on its destination, such as a sample-kit key or the piece key of a [kit instrument](docs/instruments.md#kits). It has `velocity`, `onset_offset`, and `order` with the same defaults. It has no gate duration or implicit note-off; the receiver's declared trigger behavior determines its tail.
 
 A `message` requires `at`, an exact protocol identifier string, and `bytes`, a list of integers from 0 through 255. It has `onset_offset` and `order`. Messages are transport payloads, not host actions. The receiving adapter must explicitly advertise the protocol and define its effect. There is no core network or external-hardware message receiver. A closed render must reject uncaptured external-device dependencies.
 

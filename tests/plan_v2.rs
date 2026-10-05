@@ -64,6 +64,7 @@ fn program() -> InstrumentProgram {
 fn resources() -> InstrumentResources {
     InstrumentResources {
         entry_source: "score.maac".into(),
+        kits: Vec::new(),
         programs: vec![program()],
         wavetables: Vec::new(),
         wavetable_sources: Vec::new(),

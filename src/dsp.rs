@@ -10,6 +10,7 @@ use crate::audio_clip::{prepare_clip, PreparedAudioClip};
 use crate::expression::ExpressionRuntime;
 use crate::graph::ParameterRate;
 use crate::kit::{KitRuntime, KitSample};
+use crate::kit_instrument::KitInstrumentRuntime;
 use crate::plan::{
     AutomationAnchorView, AutomationClock, EventKind, EventView, GainExpression, Interpolation,
     PitchExpression, Plan, PlanError, PlanLimits, PlanView, PortRef, PressureExpression, Processor,
@@ -435,6 +436,20 @@ impl<'a> DspEngine<'a> {
             state.validate_current_parameters(rate)?;
             if !reset_instrument_nodes[index] {
                 state.initialize_instrument(compiled, rate)?;
+            }
+            if let ProcessorView::Core(Processor::KitInstrument { kit, .. }) = node.processor {
+                let kit = plan.kit_program(kit).ok_or_else(|| {
+                    RenderError::RenderState(format!(
+                        "kit node {} refers to a missing kit {kit}",
+                        node.id
+                    ))
+                })?;
+                state.kit_instrument = Some(KitInstrumentRuntime::new(
+                    kit,
+                    &instrument_programs,
+                    plan.output.sample_rate_hz,
+                    &state.current_params,
+                )?);
             }
             nodes.push(state);
         }
@@ -1014,6 +1029,9 @@ impl<'a> DspEngine<'a> {
             if let Some(instrument) = &mut node.instrument {
                 instrument.update_controls(&node.current_params)?;
             }
+            if let Some(kit) = &mut node.kit_instrument {
+                kit.update_controls(&node.current_params)?;
+            }
         }
         Ok(())
     }
@@ -1072,6 +1090,15 @@ impl<'a> DspEngine<'a> {
                         )
                     })?;
             }
+            if let Some(kit) = &mut node.kit_instrument {
+                kit.update_controls(&node.current_params).map_err(|_| {
+                    crate::plan::err(
+                        "E_RANGE",
+                        "modulations.target",
+                        "kit control is outside its declared range",
+                    )
+                })?;
+            }
         }
         Ok(())
     }
@@ -1102,6 +1129,9 @@ impl<'a> DspEngine<'a> {
             pressure_expression,
         ) = match event.data {
             EventData::Hit { key, velocity } => {
+                if let Some(kit) = &mut node.kit_instrument {
+                    return kit.hit(frame, &key, velocity, &event.address);
+                }
                 let kit = node
                     .kit
                     .as_mut()
@@ -1505,6 +1535,20 @@ impl<'a> DspEngine<'a> {
                             "instrument node {} has no runtime state",
                             node_id
                         ))
+                    })?
+                    .render(frame)?;
+                let output = [rendered[0], rendered.get(1).copied().unwrap_or(0.0)];
+                node.output.copy_from_slice(&output[..channels]);
+            }
+            Processor::KitInstrument { .. } => {
+                let node = &mut self.nodes[node_index];
+                let node_id = node.id.clone();
+                let channels = node.output.len();
+                let rendered = node
+                    .kit_instrument
+                    .as_mut()
+                    .ok_or_else(|| {
+                        RenderError::RenderState(format!("kit node {node_id} has no runtime state"))
                     })?
                     .render(frame)?;
                 let output = [rendered[0], rendered.get(1).copied().unwrap_or(0.0)];
@@ -2076,6 +2120,7 @@ struct NodeState {
     onepole_previous: Vec<f64>,
     voices: Vec<Voice>,
     instrument: Option<InstrumentRuntime>,
+    kit_instrument: Option<KitInstrumentRuntime>,
     eq: Option<Eq>,
     compressor: Option<Compressor>,
     reverb: Option<Reverb>,
@@ -2107,7 +2152,9 @@ impl NodeState {
             Processor::Delay { channels, .. } => usize::from(channels),
             Processor::Matrix { outputs, .. } => usize::from(outputs),
             Processor::Pan => 2,
-            Processor::Instrument { channels, .. } => usize::from(channels),
+            Processor::Instrument { channels, .. } | Processor::KitInstrument { channels, .. } => {
+                usize::from(channels)
+            }
         };
         let mut base_params = BTreeMap::new();
         match processor {
@@ -2147,6 +2194,8 @@ impl NodeState {
                     })?
                     .default_controls();
             }
+            // Kit control defaults arrive with the plan's resolved params.
+            Processor::KitInstrument { .. } => {}
         }
         let eq = if let Processor::Eq { channels, mode } = processor {
             Some(Eq::new(channels, mode)?)
@@ -2234,6 +2283,7 @@ impl NodeState {
             onepole_previous: vec![0.0; channels],
             voices: Vec::new(),
             instrument: None,
+            kit_instrument: None,
             eq,
             compressor,
             reverb,
@@ -2263,6 +2313,7 @@ impl NodeState {
             onepole_previous: Vec::new(),
             voices: Vec::new(),
             instrument: None,
+            kit_instrument: None,
             eq: None,
             compressor: None,
             reverb: None,
@@ -2290,6 +2341,7 @@ impl NodeState {
             onepole_previous: Vec::new(),
             voices: Vec::new(),
             instrument: None,
+            kit_instrument: None,
             eq: None,
             compressor: None,
             reverb: None,
@@ -2321,6 +2373,7 @@ impl NodeState {
             onepole_previous: Vec::new(),
             voices: Vec::new(),
             instrument: None,
+            kit_instrument: None,
             eq: None,
             compressor: None,
             reverb: None,
@@ -2385,6 +2438,9 @@ impl NodeState {
         self.voices.clear();
         if let Some(kit) = &mut self.kit {
             kit.reset();
+        }
+        if let Some(kit) = &mut self.kit_instrument {
+            kit.reset_state();
         }
         if let Some(eq) = &mut self.eq {
             eq.reset();
@@ -2468,6 +2524,10 @@ impl NodeState {
             .retain(|voice| !voice.released || voice.envelope(frame, rate) > 0.0);
         if let Some(instrument) = &mut self.instrument {
             instrument.prune_finished(frame)?;
+        }
+        // Gates that end at this frame are released here, before its hits.
+        if let Some(kit) = &mut self.kit_instrument {
+            kit.prune_finished(frame)?;
         }
         Ok(())
     }

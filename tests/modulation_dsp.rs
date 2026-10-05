@@ -247,6 +247,7 @@ fn add_instrument(v: &mut Value) {
     };
     let resources = maac::instrument_plan::InstrumentResources {
         entry_source: "retained.maac".into(),
+        kits: Vec::new(),
         programs: vec![program],
         wavetables: vec![],
         wavetable_sources: vec![],

@@ -1487,15 +1487,19 @@ impl<'a> Compiler<'a> {
                 continue;
             }
             if let Some(instance) = self.instrument_instances.get(&object.id).cloned() {
-                let mut node = Node::new(
-                    object.id.clone(),
+                let processor = if instance.kit {
+                    Processor::KitInstrument {
+                        kit: instance.program_id,
+                        channels: instance.channels,
+                    }
+                } else {
                     Processor::Instrument {
                         program: instance.program_id,
                         voices: instance.voices,
                         channels: instance.channels,
-                    },
-                )
-                .map_err(plan_error)?;
+                    }
+                };
+                let mut node = Node::new(object.id.clone(), processor).map_err(plan_error)?;
                 node.params = instance.params;
                 self.nodes.push(node);
                 continue;
@@ -1768,6 +1772,7 @@ impl<'a> Compiler<'a> {
                 }
                 Processor::Sum { .. }
                 | Processor::Instrument { .. }
+                | Processor::KitInstrument { .. }
                 | Processor::Eq { .. }
                 | Processor::Compressor { .. }
                 | Processor::Reverb { .. }
@@ -5427,7 +5432,9 @@ impl<'a> Compiler<'a> {
             | Processor::Reverb { channels, .. }
             | Processor::Limiter { channels, .. } => Ok(channels),
             Processor::Sine { .. } => Ok(1),
-            Processor::Instrument { channels, .. } => Ok(channels),
+            Processor::Instrument { channels, .. } | Processor::KitInstrument { channels, .. } => {
+                Ok(channels)
+            }
         }
     }
 }
@@ -5450,6 +5457,54 @@ pub(crate) fn validate_musical_catalog(document: &Document) -> CResult<()> {
     compiler.read_curves()
 }
 
+/// The public control surface of a resolved instrument or kit instance.
+fn instance_descriptor(
+    libraries: &LibrarySet,
+    instance: &crate::library::ResolvedInstance,
+    node: &Object,
+) -> CResult<InstrumentNodeDescriptor> {
+    let missing = |message: String| {
+        path_diagnostic(
+            DiagnosticCode::Reference,
+            message,
+            node,
+            node.field("instrument"),
+        )
+    };
+    let mut controls = BTreeMap::new();
+    if instance.kit {
+        let kit = libraries
+            .kits
+            .iter()
+            .find(|kit| kit.id == instance.program_id)
+            .ok_or_else(|| missing("resolved kit is missing".into()))?;
+        for name in kit.controls.keys() {
+            let spec = kit.control_spec(&libraries.programs, name).ok_or_else(|| {
+                missing(format!("kit control `{name}` has no parameter metadata"))
+            })?;
+            controls.insert(name.clone(), spec);
+        }
+    } else {
+        let program = libraries
+            .programs
+            .iter()
+            .find(|program| program.id == instance.program_id)
+            .ok_or_else(|| missing("resolved instrument program is missing".into()))?;
+        for name in program.controls.keys() {
+            let spec = program.control_spec(name).ok_or_else(|| {
+                missing(format!(
+                    "instrument control `{name}` has no parameter metadata"
+                ))
+            })?;
+            controls.insert(name.clone(), spec);
+        }
+    }
+    Ok(InstrumentNodeDescriptor {
+        channels: instance.channels,
+        controls,
+    })
+}
+
 pub(crate) fn instrument_descriptors_for_editing(
     resolved: &ResolvedBundle,
     libraries: &LibrarySet,
@@ -5462,36 +5517,9 @@ pub(crate) fn instrument_descriptors_for_editing(
         .filter(|object| object.kind == "node" && object.field("instrument").is_some())
     {
         let instance = libraries.resolve_instance(&resolved.entry, node)?;
-        let program = libraries
-            .programs
-            .iter()
-            .find(|program| program.id == instance.program_id)
-            .ok_or_else(|| {
-                path_diagnostic(
-                    DiagnosticCode::Reference,
-                    "resolved instrument program is missing",
-                    node,
-                    node.field("instrument"),
-                )
-            })?;
-        let mut controls = BTreeMap::new();
-        for name in program.controls.keys() {
-            let spec = program.control_spec(name).ok_or_else(|| {
-                path_diagnostic(
-                    DiagnosticCode::Reference,
-                    format!("instrument control `{name}` has no parameter metadata"),
-                    node,
-                    node.field("instrument"),
-                )
-            })?;
-            controls.insert(name.clone(), spec);
-        }
         descriptors.insert(
             node.id.clone(),
-            InstrumentNodeDescriptor {
-                channels: instance.channels,
-                controls,
-            },
+            instance_descriptor(libraries, &instance, node)?,
         );
     }
     Ok(descriptors)
@@ -5511,36 +5539,9 @@ fn prepare_instrument_compiler<'a>(
         .filter(|object| object.kind == "node" && object.field("instrument").is_some())
     {
         let instance = libraries.resolve_instance(&resolved.entry, node)?;
-        let program = libraries
-            .programs
-            .iter()
-            .find(|program| program.id == instance.program_id)
-            .ok_or_else(|| {
-                path_diagnostic(
-                    DiagnosticCode::Reference,
-                    "resolved instrument program is missing",
-                    node,
-                    node.field("instrument"),
-                )
-            })?;
-        let mut controls = BTreeMap::new();
-        for name in program.controls.keys() {
-            let spec = program.control_spec(name).ok_or_else(|| {
-                path_diagnostic(
-                    DiagnosticCode::Reference,
-                    format!("instrument control `{name}` has no parameter metadata"),
-                    node,
-                    node.field("instrument"),
-                )
-            })?;
-            controls.insert(name.clone(), spec);
-        }
         descriptors.insert(
             node.id.clone(),
-            InstrumentNodeDescriptor {
-                channels: instance.channels,
-                controls,
-            },
+            instance_descriptor(&libraries, &instance, node)?,
         );
         instances.insert(node.id.clone(), instance);
     }
@@ -5548,6 +5549,7 @@ fn prepare_instrument_compiler<'a>(
     let resources = InstrumentResources {
         entry_source: resolved.entry.clone(),
         programs: libraries.programs,
+        kits: libraries.kits,
         wavetables: libraries.wavetables,
         wavetable_sources: libraries.wavetable_sources,
         samples: libraries.samples,

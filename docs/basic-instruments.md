@@ -1,6 +1,8 @@
 # Built-in basic instruments
 
 `std/basic/1.0.0` supplies 24 stereo instruments from the installed MaaC executable.
+`std/basic/1.1.0` keeps those exports unchanged and adds the `drums`
+[kit](instruments.md#kits), which plays the eight drums by hit key.
 A composition needs only its own `.maac` text: no sound-library directory,
 recordings, downloaded samples, or network resolution. These are synthesized
 interpretations made from oscillator, envelope, noise, filter and mixing graphs;

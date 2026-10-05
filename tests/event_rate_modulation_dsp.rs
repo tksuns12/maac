@@ -347,6 +347,7 @@ fn instrument_resources() -> InstrumentResources {
     let source = b"event-rate modulation instrument fixture";
     InstrumentResources {
         entry_source: "fixture.maac".into(),
+        kits: Vec::new(),
         programs: vec![InstrumentProgram {
             id: "program".into(),
             voice,

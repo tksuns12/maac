@@ -27,6 +27,10 @@ pub struct InstrumentResources {
     pub samples: Vec<InstrumentSample>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sample_sources: Vec<SampleSource>,
+    /// Kit instruments, whose pieces are programs above. Absent in plans
+    /// without kits, so earlier resource payloads are byte-identical.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub kits: Vec<crate::kit_instrument::KitProgram>,
     pub source_files: Vec<SourceIdentity>,
     pub dependencies: Vec<DependencyIdentity>,
     pub libraries: Vec<LibraryMetadata>,
@@ -178,6 +182,32 @@ impl InstrumentResources {
                 ));
             }
             validate_identifier(&program.source.object, format!("{path}.source.object"))?;
+        }
+        if self.kits.len() > MAX_GRAPH_PROGRAMS {
+            return Err(error(
+                "E_RESOURCE_LIMIT",
+                "instruments.kits",
+                "kit program limit exceeded",
+            ));
+        }
+        for (index, kit) in self.kits.iter().enumerate() {
+            let path = format!("instruments.kits[{index}]");
+            if !program_ids.insert(kit.id.as_str()) {
+                return Err(error(
+                    "E_DUPLICATE_ID",
+                    format!("{path}.id"),
+                    "duplicate instrument program or kit ID",
+                ));
+            }
+            kit.validate(&self.programs)?;
+            if !source_by_path.contains_key(kit.source.file.as_str()) {
+                return Err(error(
+                    "E_REFERENCE",
+                    format!("{path}.source.file"),
+                    "kit source has no source identity",
+                ));
+            }
+            validate_identifier(&kit.source.object, format!("{path}.source.object"))?;
         }
 
         let mut table_ids = BTreeSet::new();

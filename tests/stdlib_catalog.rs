@@ -130,3 +130,57 @@ fn every_catalog_usage_is_a_complete_offline_composition() {
         assert_eq!(maac::load_plan(&bytes).unwrap(), plan);
     }
 }
+
+#[test]
+fn basic_1_1_keeps_every_1_0_export_and_adds_the_drums_kit() {
+    use maac::stdlib::{BASIC_1_1_ID, BASIC_1_1_SOURCE};
+    assert_eq!(
+        sha256_digest(BASIC_1_1_SOURCE.as_bytes()),
+        include_str!("../stdlib/basic/1.1.0.sha256").trim()
+    );
+    let old = stdlib::catalog_for(BASIC_ID).unwrap();
+    let new = stdlib::catalog_for(BASIC_1_1_ID).unwrap();
+    assert!(old.kits.is_empty());
+    // The instruments are the same exports with the same controls and
+    // guidance; only their usage examples name the newer import.
+    assert_eq!(old.instruments.len(), new.instruments.len());
+    for (before, after) in old.instruments.iter().zip(&new.instruments) {
+        assert_eq!(before.name, after.name);
+        assert_eq!(before.controls, after.controls);
+        assert_eq!(before.guidance, after.guidance);
+    }
+    let [kit] = new.kits.as_slice() else {
+        panic!("one kit export")
+    };
+    assert_eq!(kit.name, "drums");
+    let keys: Vec<_> = kit.pieces.iter().map(|piece| piece.key.as_str()).collect();
+    assert_eq!(
+        keys,
+        ["clap", "crash", "hat", "high_tom", "kick", "low_tom", "open_hat", "snare"]
+    );
+    let chokes: Vec<_> = kit
+        .pieces
+        .iter()
+        .filter(|piece| piece.choke.as_deref() == Some("hats"))
+        .map(|piece| piece.instrument.as_str())
+        .collect();
+    assert_eq!(chokes, ["closed_hat", "open_hat"]);
+    // Each piece control, named by the piece's key, defaults to its drum's
+    // own control default.
+    for piece in &kit.pieces {
+        let drum = new
+            .instruments
+            .iter()
+            .find(|instrument| instrument.name == piece.instrument)
+            .unwrap();
+        for control in ["level", "pan", "brightness"] {
+            let name = format!("{}_{control}", piece.key);
+            assert_eq!(
+                kit.controls[&name].default, drum.controls[control].default,
+                "{name}"
+            );
+        }
+    }
+    assert_eq!(stdlib::kit_in(BASIC_1_1_ID, "drums").unwrap().name, "drums");
+    assert!(stdlib::kit_in(BASIC_ID, "drums").is_err());
+}
