@@ -27,6 +27,10 @@ pub const DEFAULT_PLUCK_SEED: u32 = DEFAULT_NOISE_SEED;
 pub const PLUCK_DELAY_CELLS: usize = crate::pluck::DELAY_CELLS;
 pub const MAX_PLUCK_DELAY_CELLS: usize = 8_388_608;
 pub const PLUCK_SAMPLE_WORK: u64 = 16;
+/// Per-sample work of a `synth.svf/1` or `synth.drive/1` node. Measured at
+/// 1.4 and 1.9 times a one-unit oscillator node, rounded up.
+pub const SVF_SAMPLE_WORK: u64 = 2;
+pub const DRIVE_SAMPLE_WORK: u64 = 2;
 
 pub(crate) fn pluck_delay_cells(capacity: usize, nodes: usize) -> Option<usize> {
     capacity.checked_mul(nodes)?.checked_mul(PLUCK_DELAY_CELLS)
@@ -96,6 +100,15 @@ pub enum GraphProcessor {
     OnePole { channels: u8 },
     #[serde(rename = "synth.highpass/1")]
     HighPass { channels: u8 },
+    /// A resonant two-pole state-variable filter.
+    #[serde(rename = "synth.svf/1")]
+    Svf {
+        channels: u8,
+        mode: crate::synth::SvfMode,
+    },
+    /// Anti-aliased `tanh` saturation with an offset.
+    #[serde(rename = "synth.drive/1")]
+    Drive { channels: u8 },
     #[serde(rename = "synth.mix/1")]
     Mix { channels: u8 },
     #[serde(rename = "synth.pan/1")]
@@ -145,6 +158,13 @@ enum GraphProcessorWire {
     OnePole { channels: u8 },
     #[serde(rename = "synth.highpass/1")]
     HighPass { channels: u8 },
+    #[serde(rename = "synth.svf/1")]
+    Svf {
+        channels: u8,
+        mode: crate::synth::SvfMode,
+    },
+    #[serde(rename = "synth.drive/1")]
+    Drive { channels: u8 },
     #[serde(rename = "synth.mix/1")]
     Mix { channels: u8 },
     #[serde(rename = "synth.pan/1")]
@@ -188,6 +208,8 @@ impl<'de> Deserialize<'de> for GraphProcessor {
             GraphProcessorWire::Gain { channels } => Self::Gain { channels },
             GraphProcessorWire::OnePole { channels } => Self::OnePole { channels },
             GraphProcessorWire::HighPass { channels } => Self::HighPass { channels },
+            GraphProcessorWire::Svf { channels, mode } => Self::Svf { channels, mode },
+            GraphProcessorWire::Drive { channels } => Self::Drive { channels },
             GraphProcessorWire::Mix { channels } => Self::Mix { channels },
             GraphProcessorWire::Pan {} => Self::Pan,
         })
@@ -214,6 +236,8 @@ impl GraphProcessor {
             Self::Gain { .. } => "synth.gain/1",
             Self::OnePole { .. } => "synth.onepole/1",
             Self::HighPass { .. } => "synth.highpass/1",
+            Self::Svf { .. } => "synth.svf/1",
+            Self::Drive { .. } => "synth.drive/1",
             Self::Mix { .. } => "synth.mix/1",
             Self::Pan => "synth.pan/1",
         }
@@ -224,6 +248,8 @@ impl GraphProcessor {
             Self::Gain { channels }
             | Self::OnePole { channels }
             | Self::HighPass { channels }
+            | Self::Svf { channels, .. }
+            | Self::Drive { channels }
             | Self::Mix { channels }
             | Self::Sample { channels, .. } => *channels,
             Self::Pan => 2,
@@ -236,6 +262,8 @@ impl GraphProcessor {
             Self::Gain { channels }
             | Self::OnePole { channels }
             | Self::HighPass { channels }
+            | Self::Svf { channels, .. }
+            | Self::Drive { channels }
             | Self::Mix { channels } => Some(*channels),
             Self::Pan => Some(1),
             _ => None,
@@ -661,6 +689,31 @@ pub fn parameter_descriptor(processor: &GraphProcessor, name: &str) -> Option<Pa
                     true,
                 )
             }),
+        GraphProcessor::Svf { .. } => match name {
+            "cutoff" => Some(spec(
+                GraphUnit::Hertz,
+                ParameterRate::Sample,
+                1_000,
+                0,
+                24_000,
+                false,
+                true,
+            )),
+            "ratio" => Some(dimensionless(ParameterRate::Sample, 0, 0, 64)),
+            "q" => {
+                let mut result = dimensionless(ParameterRate::Sample, 0, 0, 40);
+                result.default = Rational::new(707.into(), 1_000.into());
+                result.min = Rational::new(1.into(), 10.into());
+                Some(result)
+            }
+            _ => None,
+        },
+        GraphProcessor::Drive { .. } => match name {
+            "drive" => Some(dimensionless(ParameterRate::Sample, 1, 0, 64)),
+            "bias" => Some(dimensionless(ParameterRate::Sample, 0, -4, 4)),
+            "level" => Some(dimensionless(ParameterRate::Sample, 1, 0, 16)),
+            _ => None,
+        },
         GraphProcessor::Pan => {
             (name == "pan").then(|| dimensionless(ParameterRate::Sample, 0, -1, 1))
         }
@@ -680,6 +733,13 @@ pub fn parameter_descriptor_for_stage(
     let mut result = parameter_descriptor(processor, name)?;
     if stage == GraphStage::Shared && matches!(processor, GraphProcessor::Lfo) && name == "phase" {
         result.rate = ParameterRate::Reset;
+    }
+    // A shared graph has no note, so its filters cannot track one.
+    if stage == GraphStage::Shared
+        && matches!(processor, GraphProcessor::Svf { .. })
+        && name == "ratio"
+    {
+        result.max = Rational::from_integer(BigInt::zero());
     }
     Some(result)
 }

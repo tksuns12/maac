@@ -443,6 +443,14 @@ strict resolved-seed validation and separate delay-memory and weighted-work
 bounds. It does not change plan versions or serialize mutable string state.
 The contract records its implemented scope and resource limits.
 
+The [instrument palette](instrument-palette-proposal.md) adds four more
+processors to the same representation, again without a new plan version:
+`{"kind":"synth.velocity/1"}`, `{"kind":"synth.key/1"}`,
+`{"kind":"synth.svf/1","channels":1,"mode":"lowpass"}` (or `bandpass`,
+`highpass`) and `{"kind":"synth.drive/1","channels":1}`. A `synth.adsr/1`
+node may carry a `curve` parameter. Older readers reject these as unknown
+processors or parameters rather than rendering them differently.
+
 ## Import boundary
 
 `Plan::from_json` enforces the input byte limit before deserializing and validates

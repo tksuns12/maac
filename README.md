@@ -99,6 +99,10 @@ note's velocity and key, so harder notes can be brighter and higher notes
 decay sooner. An envelope's `curve` makes decays and releases exponential in
 shape while keeping their durations.
 Try `maac build examples/note-sources.maac -o note-sources.wav`.
+A [resonant filter](docs/instruments.md#resonant-filter) that can track the
+key and anti-aliased [saturation](docs/instruments.md#saturation) give
+instruments filter character and warmth.
+Try `maac build examples/resonant-drive.maac -o resonant-drive.wav`.
 
 The [project-entrypoint guide](docs/project-entrypoint.md) specifies conventional
 `main.maac` discovery and the explicit finite `--profile song` allowance for

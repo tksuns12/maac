@@ -116,6 +116,15 @@ C3, C4 and C5 each play soft, medium and hard.
 maac build examples/note-sources.maac -o note-sources.wav
 ```
 
+[`resonant-drive.maac`](resonant-drive.maac) plays a saw bass through a
+key-tracked resonant `synth.svf/1` low-pass with a curved filter envelope,
+then an asymmetric `synth.drive/1`. Velocity opens the filter and pushes the
+drive.
+
+```sh
+maac build examples/resonant-drive.maac -o resonant-drive.wav
+```
+
 ```sh
 maac build examples/internal-phase-modulation.maac -o internal-phase.wav
 maac compile examples/internal-phase-modulation.maac -o internal-phase.plan.json

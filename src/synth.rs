@@ -1,6 +1,8 @@
 //! Reusable synthesis primitives backed by one shared harmonic tablebank.
 
 use crate::dsp::RenderError;
+use serde::{Deserialize, Serialize};
+use std::f64::consts::{LN_2, PI};
 use std::sync::OnceLock;
 
 const TABLE_LEN: usize = 2_048;
@@ -231,6 +233,109 @@ fn validate_rate(rate: f64) -> Result<(), RenderError> {
 pub fn curve_shape(curve: f64, progress: f64) -> f64 {
     let end = (-curve).exp_m1();
     ((-curve * progress).exp_m1() - end) / -end
+}
+
+/// The response a `synth.svf/1` filter outputs.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SvfMode {
+    Lowpass,
+    Bandpass,
+    Highpass,
+}
+
+impl SvfMode {
+    /// The source symbol for a mode.
+    pub fn from_symbol(symbol: &str) -> Option<Self> {
+        match symbol {
+            "lowpass" => Some(Self::Lowpass),
+            "bandpass" => Some(Self::Bandpass),
+            "highpass" => Some(Self::Highpass),
+            _ => None,
+        }
+    }
+}
+
+/// One sample's coefficients of the trapezoidal (topology-preserving)
+/// state-variable filter.
+#[derive(Clone, Copy, Debug)]
+pub struct SvfCoefficients {
+    k: f64,
+    a1: f64,
+    a2: f64,
+    a3: f64,
+}
+
+impl SvfCoefficients {
+    /// Coefficients for a cutoff strictly within `(0, rate / 2)` and a
+    /// positive `q`.
+    pub fn new(cutoff_hz: f64, q: f64, rate: f64) -> Result<Self, RenderError> {
+        validate_rate(rate)?;
+        if !cutoff_hz.is_finite() || cutoff_hz <= 0.0 || cutoff_hz >= rate / 2.0 {
+            return Err(RenderError::Nonfinite(format!(
+                "state-variable filter cutoff {cutoff_hz} Hz must be strictly within 0..{} Hz",
+                rate / 2.0
+            )));
+        }
+        if !q.is_finite() || q <= 0.0 {
+            return Err(RenderError::Nonfinite(format!(
+                "state-variable filter q {q} must be finite and positive"
+            )));
+        }
+        let g = (PI * cutoff_hz / rate).tan();
+        let k = 1.0 / q;
+        let a1 = 1.0 / (1.0 + g * (g + k));
+        let a2 = g * a1;
+        Ok(Self {
+            k,
+            a1,
+            a2,
+            a3: g * a2,
+        })
+    }
+
+    /// Advance one channel's integrator state `[s1, s2]` by one input
+    /// sample and return the chosen response. The band-pass output has unity
+    /// gain at the cutoff.
+    pub fn step(&self, mode: SvfMode, input: f64, state: &mut [f64; 2]) -> f64 {
+        let v3 = input - state[1];
+        let v1 = self.a1 * state[0] + self.a2 * v3;
+        let v2 = state[1] + self.a2 * state[0] + self.a3 * v3;
+        state[0] = 2.0 * v1 - state[0];
+        state[1] = 2.0 * v2 - state[1];
+        match mode {
+            SvfMode::Lowpass => v2,
+            SvfMode::Bandpass => self.k * v1,
+            SvfMode::Highpass => input - self.k * v1 - v2,
+        }
+    }
+}
+
+/// Below this change in the curve's input, [`drive_sample`] evaluates
+/// `tanh` at the midpoint instead of the antiderivative quotient, which
+/// cancels as the change approaches zero.
+pub const DRIVE_ADAA_EPSILON: f64 = 1e-6;
+
+/// `ln(cosh(u))`, the antiderivative of `tanh`, without overflow.
+pub fn log_cosh(u: f64) -> f64 {
+    let magnitude = u.abs();
+    magnitude + (-2.0 * magnitude).exp().ln_1p() - LN_2
+}
+
+/// One sample of `synth.drive/1` for one channel: `tanh(drive * x + bias)`
+/// with first-order antiderivative anti-aliasing, minus `tanh(bias)` so
+/// silence stays silent, times `level`. `previous` is the channel's previous
+/// input sample; both ends of the step use the current drive and bias.
+pub fn drive_sample(input: f64, previous: f64, drive: f64, bias: f64, level: f64) -> f64 {
+    let u = drive * input + bias;
+    let previous_u = drive * previous + bias;
+    let delta = u - previous_u;
+    let shaped = if delta.abs() < DRIVE_ADAA_EPSILON {
+        (0.5 * (u + previous_u)).tanh()
+    } else {
+        (log_cosh(u) - log_cosh(previous_u)) / delta
+    };
+    level * (shaped - bias.tanh())
 }
 
 fn validate_duration(name: &str, seconds: f64) -> Result<(), RenderError> {

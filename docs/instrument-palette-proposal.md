@@ -3,8 +3,9 @@
 **Status:** accepted 2026-10-06; in progress. The owner chose the
 synthesized direction over sampled instruments and character processors and
 accepted every [decision](#decisions). Part 1, the note sources and the
-envelope `curve`, has landed in the
-[instrument contract](instruments.md#note-sources).
+envelope `curve`, and part 2, the [resonant filter](instruments.md#resonant-filter)
+and [saturation](instruments.md#saturation), have landed in the instrument
+contract.
 
 ## Why
 
@@ -70,7 +71,7 @@ modulation, with final bounds checks and no clipping:
 
 ```maac
 node vel { type = "synth.velocity/1"; }
-node tone { type = "synth.svf/1"; config = { channels = 1; mode = "lowpass"; }; params = { cutoff = 900Hz; }; }
+node tone { type = "synth.svf/1"; config = { channels = 1; mode = lowpass; }; params = { cutoff = 900Hz; }; }
 modulate harder_brighter { from = &vel:out; to = &tone.params.cutoff; depth = 2400Hz; }
 ```
 
@@ -112,7 +113,7 @@ envelopes, LFOs, velocity and key requires.
 | Field | Meaning | Default; range |
 | --- | --- | --- |
 | `config.channels` | 1 or 2, required | — |
-| `config.mode` | `"lowpass"`, `"bandpass"` or `"highpass"`, required | — |
+| `config.mode` | `lowpass`, `bandpass` or `highpass`, a bare symbol like `fade_shape`; required | — |
 | `cutoff` | Hz, added to the key-tracked part | 1000 Hz; the sum strictly within 0…24000 Hz |
 | `ratio` | Key tracking: cutoff is `note_hz * ratio + cutoff` | 0; 0…64, and 0 in a shared graph |
 | `q` | Resonance; 0.707 is maximally flat | 707/1000; 1/10…40 |
@@ -283,6 +284,36 @@ instruments use 2.6 billion of the song profile's 10 billion work units.
   - The owner's listening verdict is recorded. The owner's ears decide
     whether F14 is fixed; the numbers above only show that the primitives
     behave as specified.
+
+## Results
+
+### Parts 1 and 2: the building blocks
+
+- **Nothing existing changed.** "Late Window" renders byte-identically to its
+  pre-change master, covering `std/basic`, its kit and `std/acoustic`.
+- **Note sources.** [`examples/note-sources.maac`](../examples/note-sources.maac)
+  maps velocity to brightness and key to decay. Its spectral centroid rises
+  about 600 Hz from soft to hard in every register, and in the first 0.4 s
+  C3 falls 13 dB, C4 18 dB and C5 24 dB.
+- **Curve.** The shape is evaluated with `expm1`, the same function written
+  so that small curves do not lose precision to cancellation.
+- **Filter.** Measured responses match the bilinear transfer function within
+  1e-9 for every mode, at four values of `q` and three cutoffs. A cutoff
+  jumping to a random value every sample at `q = 40` stays finite and
+  bounded. `mode` is a bare symbol, `mode = lowpass;`, like `fade_shape`,
+  rather than the string first proposed.
+- **Drive.** The anti-aliasing works where aliasing is most audible but
+  less across the whole band than hoped. On the recorded fixture (4,990 Hz
+  at 0.9 of full scale, `drive = 8`), folded power below 5 kHz falls from
+  −24.0 dB to −53.4 dB. Across the whole band it falls only from −13.5 dB to
+  −19.6 dB, because folds that land near 24 kHz dominate the total and the
+  averaging barely touches them. If listening finds hard-driven high notes
+  harsh, oversampling is the next step.
+- **Cost.** In a release benchmark, the filter costs 1.4 times and the drive
+  1.9 times a one-unit oscillator node per sample, so each is charged 2 work
+  units. Most of every node's time is the engine's per-node overhead, not its
+  DSP, so render speed (F7) is better addressed in the engine than in these
+  processors.
 
 ## Not proposed
 

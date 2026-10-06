@@ -47,7 +47,7 @@ it. See the [unknown-extension decision](unknown-extensions-proposal.md).
 | Takes and comping | Required `maac.takes/1` or `maac.takes/2`: alternate mono/stereo assets, shared physical origins, disjoint frame regions validated against explicit rate-mode clips, atomic Protocol 2 selection edits and inverse history, and archived inactive alternates. V2 synchronizes named microphone-file lanes with individual source origins and one selection. Device capture remains separate; rendered audition uses the `play` command. |
 | WAV import and disk media | `maac import-wav` imports whole mono/stereo RIFF WAVs or nonempty frame crops from PCM16/24/32 and IEEE float32 into a relocatable source project with native float32 PCM and source/conversion provenance; `--retain-original` preserves the snapshotted WAV and `maac verify-import` checks it, the crop, and the current project closure. Opt-in `import-wav --disk-media` and `verify-import --disk-media` handle selected native PCM crops up to 1 GiB through private files. `check` and `build` accept `--disk-media` to verify and render hash-pinned native PCM beyond inline limits from private snapshots. `patch --disk-media [--profile song]` edits source against captured PCM with the existing Protocol 2 conflicts and inverses. The artifact DSP engine also supports opt-in disk-backed sampling of already-embedded PCM. |
 | Reusable instruments | Named libraries, typed public controls, presets, independent polyphonic instances, voice and shared graphs; [kit instruments](instruments.md#kits) that play other instruments by hit key, with gates and choke groups |
-| Sound graphs | Versioned sine/saw/square/triangle/wavetable oscillators, zoned pitched sample playback with sustain loops (`synth.sample/1`), deterministic noise and recirculating plucked strings, ADSR with linear or curved decay and release, note velocity and key sources, sine LFO, gain, low/high-pass one-pole filtering, mixing and panning |
+| Sound graphs | Versioned sine/saw/square/triangle/wavetable oscillators, zoned pitched sample playback with sustain loops (`synth.sample/1`), deterministic noise and recirculating plucked strings, ADSR with linear or curved decay and release, note velocity and key sources, sine LFO, gain, low/high-pass one-pole filtering, a resonant key-trackable state-variable filter, anti-aliased `tanh` saturation, mixing and panning |
 | Modulation | Top-level typed control modulation of continuous sample-rate, note-on/note-off, and instrument reset parameters, score/seconds LFOs and automated constants; instrument feed-forward graph modulation, ADSR, voice phase, and shared-LFO reset capture, and sample-wise through-zero linear FM; no oversampling |
 | Built-in instruments | 24 stereo exports in `std/basic/1.0.0` with four common controls, and the same plus the `drums` kit in `std/basic/1.1.0`; three separate `std/acoustic/1.0.0` guitars with six controls; exact-version CLI/Rust discovery |
 | Local dependencies | Explicit namespace aliases, transitive declaring-file resolution, SHA-256 source/WAV pins, project containment |
@@ -255,6 +255,14 @@ creator, and license metadata each have the same byte limit.
 | Pluck delay cells | 8,388,608 f64 cells / 64 MiB payload; 2402 cells per pluck voice-node |
 | Instrument expression execution charge | `17 + ceil(log2(point_count))` units per active voice frame for each attached pitch, gain, timbre, or pressure curve, additive when combined, including conservative release |
 | Pluck execution charge | 16 units per sample visit plus 2402 initialization units per note per pluck node |
+| Resonant filter and drive execution charge | 2 units per sample visit for each `synth.svf/1` or `synth.drive/1` node; every other graph node is 1 |
+
+The filter and drive charges come from a release-build benchmark on an Apple
+M1: 40 chained nodes of one kind in 16 held voices for 20 s. Per added node
+and sample, including the engine's per-node overhead, gain took 19 ns, a one-pole filter
+48 ns, a sine oscillator 146 ns, the resonant filter 208 ns and the drive
+278 ns. The one-unit scale already spans gain to oscillators, so the new
+charges round 1.4 and 1.9 times an oscillator up to 2.
 
 Execution work includes every note's gate and maximum possible release, bounded
 by the render endpoint, plus shared effects throughout the full output. Caller

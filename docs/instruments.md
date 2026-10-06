@@ -196,7 +196,7 @@ Each graph declares its output channel count and `output = &node:out`. The voice
 graph requires `amplitude = &adsr_node`; shared graphs have no amplitude ADSR.
 Shared graphs receive the stable sum of completed voice outputs at the reserved
 `&input:out` source, whose channels equal the voice graph's output. They may use
-gain, low-pass or high-pass filtering, mixing, panning, and LFO modulation. They run once per
+gain, low-pass, high-pass or resonant filtering, saturation, mixing, panning, and LFO modulation. They run once per
 sample through the project tail, including when no voices remain. Without a
 shared graph, voice and instrument channel counts must agree; otherwise shared
 and instrument channel counts agree. Graph nodes cannot use the reserved ID
@@ -306,7 +306,7 @@ controls and a runnable composition.
 ## Graph processors
 
 Connections use existing `connect { from = &source:out; to = &destination:in; }`
-fields and require matching channels. Gain, filter, and pan require one input;
+fields and require matching channels. Gain, filters, drive, and pan require one input;
 mix accepts zero or more inputs (zero means silence). Every graph must be a DAG
 when both audio and modulation edges are considered. Stable ordering uses node
 IDs for topological ties and connection/modulation IDs for reductions. Feedback
@@ -327,14 +327,16 @@ is rejected, including mixed audio/modulation cycles.
 | `synth.gain/1` | `level` (1; 0…16); required `config.channels` | Same channels as input |
 | `synth.onepole/1` | `cutoff` (1000 Hz; strictly between 0 and 24000 Hz); required `config.channels` | Same channels as input |
 | `synth.highpass/1` | `cutoff` (1000 Hz; strictly between 0 and 24000 Hz); required `config.channels` | Same channels as input |
+| `synth.svf/1` | `cutoff` (1000 Hz; 0 up to but not including 24000 Hz), `ratio` (0; 0…64, and 0 in a shared graph), `q` (707/1000; 1/10…40); required `config.channels` and `config.mode` (`lowpass`, `bandpass` or `highpass`) | Same channels as input |
+| `synth.drive/1` | `drive` (1; 0…64), `bias` (0; −4…4), `level` (1; 0…16); required `config.channels` | Same channels as input |
 | `synth.mix/1` | Required `config.channels`; no parameters | Mono/stereo sum |
 | `synth.pan/1` | `pan` (0; −1…1) | Equal-power stereo from mono |
 
 Numbers are dimensionless; seconds accept `s` and `ms`, hertz accept `Hz` and
 `kHz`. Parameters and controls use exact rationals until the DSP boundary.
 Unknown fields, wrong units, invalid ranges, and nonfinite values fail.
-Oscillators and noise are voice-only; high-pass is allowed in both voice and
-shared graphs. ADSR attack/decay/sustain/curve and oscillator/LFO phase
+Oscillators and noise are voice-only; high-pass, the resonant filter and the
+drive are allowed in both voice and shared graphs. ADSR attack/decay/sustain/curve and oscillator/LFO phase
 are captured at note-on (shared LFO phase at render reset). Release is captured
 at note-off. Other parameters are sampled each frame. Shared LFO phase controls
 accept defaults, presets, and instance values at render reset; they cannot be
@@ -492,6 +494,84 @@ Cutoff is sampled each frame and must remain strictly between 0 and 24000 Hz,
 including after modulation. Its connection rules match the low-pass filter.
 Shared filter state continues through the project tail; voice state resets
 independently at note-on.
+
+### Resonant filter
+
+`synth.svf/1` is a two-pole state-variable filter in the trapezoidal
+(topology-preserving) form, so it stays stable when its cutoff moves every
+sample. Its effective cutoff is `note_hz * ratio + cutoff`, the oscillator
+convention, and must lie strictly between 0 and 24000 Hz after controls and
+modulation; otherwise rendering fails without clamping. A positive `ratio`
+keeps the cutoff at the same place relative to each note's harmonics. A
+shared graph has no note, so its `ratio` must be 0. `config.mode` is the bare
+symbol `lowpass`, `bandpass` or `highpass`:
+
+```maac
+node tone {
+  type = "synth.svf/1";
+  config = { channels = 1; mode = lowpass; };
+  params = { cutoff = 200Hz; ratio = 4; q = 2; };
+}
+```
+
+Each channel keeps two integrator states `s1` and `s2`, initially zero; voice
+state resets at note-on and shared state at render reset. Per sample, with
+`fc` the effective cutoff, `g = tan(pi * fc / 48000)` and `k = 1/q`:
+
+```text
+a1 = 1 / (1 + g (g + k));  a2 = g a1;  a3 = g a2
+v3 = x - s2;  v1 = a1 s1 + a2 v3;  v2 = s2 + a2 s1 + a3 v3
+s1 = 2 v1 - s1;  s2 = 2 v2 - s2
+lowpass = v2;  bandpass = k v1;  highpass = x - k v1 - v2
+```
+
+This is exactly the bilinear transform of the analog prototype
+`1 / (s^2 + k s + 1)` with the cutoff prewarped, so low-pass and high-pass
+slope at 12 dB per octave. At the cutoff, low-pass and high-pass have gain
+`q` (3 dB down at q = 0.707), and band-pass has unity gain for every `q`, so
+a narrower band of noise does not get louder. The filter is linear and cannot
+self-oscillate; `q` stops at 40.
+
+### Saturation
+
+`synth.drive/1` bends each channel through `tanh` with an offset:
+
+```text
+u = drive * x + bias
+y = level * (tanh(u) - tanh(bias))
+```
+
+`drive` sets how hard the signal pushes into the curve, `bias` makes the
+curve asymmetric so even harmonics appear, and `level` scales the result.
+Subtracting `tanh(bias)` keeps silence exactly silent. A loud signal through
+an asymmetric curve also shifts its average level; a `synth.highpass/1` after
+the drive removes that.
+
+The curve's added harmonics would fold back from above 24 kHz into the
+audible band. The processor therefore averages the curve over each sample
+step instead of sampling it: first-order antiderivative anti-aliasing (Parker,
+Zavalishin and Le Bivic, DAFx-16). With `F(u) = ln cosh(u)`, evaluated as
+`|u| + ln1p(exp(-2|u|)) - ln 2` so it cannot overflow,
+
+```text
+u' = drive * x_previous + bias
+y  = level * ((F(u) - F(u')) / (u - u') - tanh(bias))
+```
+
+and `tanh((u + u') / 2)` replaces the quotient when `|u - u'| < 1e-6`. Both
+ends of the step use the current `drive` and `bias`; the only state is each
+channel's previous input, initially zero and reset like the filters. The
+average delays the output by half a sample, and it needs no oversampling
+filter whose design would also have to be fixed.
+
+The averaging suppresses most strongly the harmonics that would fold down
+into the low and middle band, where they sound like out-of-tune tones, and
+least those that fold to just below 24 kHz. On the recorded fixture, a
+4,990 Hz sine at 0.9 of full scale into `drive = 8`, folded power below 5 kHz
+falls from −24.0 dB to −53.4 dB relative to the fundamental. Across the whole
+band it falls only from −13.5 dB to −19.6 dB, because folds near 24 kHz
+dominate the total. High notes driven hard therefore still alias near the top
+of the band; `tests/drive.rs` checks both figures.
 
 Band limiting the underlying wave does not eliminate modulation sidebands or
 bank-switching artifacts. Strong/high-frequency FM can still alias; automated

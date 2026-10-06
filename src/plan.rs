@@ -6061,20 +6061,19 @@ fn validate_identifier_limit(
     Ok(())
 }
 
-/// Per-sample work of one instrument graph: one unit per node (a pluck
-/// costs more), connection, and modulation edge.
+/// Per-sample work of one instrument graph: one unit per node (a pluck,
+/// resonant filter or drive costs more), connection, and modulation edge.
 fn graph_sample_cost(graph: &crate::graph::GraphProgram) -> u64 {
     graph
         .nodes
         .iter()
         .fold(0u64, |cost, node| {
-            cost.saturating_add(
-                if matches!(node.processor, crate::graph::GraphProcessor::Pluck { .. }) {
-                    crate::graph::PLUCK_SAMPLE_WORK
-                } else {
-                    1
-                },
-            )
+            cost.saturating_add(match node.processor {
+                crate::graph::GraphProcessor::Pluck { .. } => crate::graph::PLUCK_SAMPLE_WORK,
+                crate::graph::GraphProcessor::Svf { .. } => crate::graph::SVF_SAMPLE_WORK,
+                crate::graph::GraphProcessor::Drive { .. } => crate::graph::DRIVE_SAMPLE_WORK,
+                _ => 1,
+            })
         })
         .saturating_add(graph.connections.len() as u64)
         .saturating_add(graph.modulations.len() as u64)

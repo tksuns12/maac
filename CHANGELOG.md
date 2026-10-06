@@ -11,6 +11,16 @@ actually published; no release tag or publication date is asserted here.
 
 ### Added
 
+- A resonant filter and saturation, part 2 of the
+  [instrument palette](docs/instrument-palette-proposal.md).
+  `synth.svf/1` is a trapezoidal state-variable filter with low-pass,
+  band-pass and high-pass modes, `q` from 1/10 to 40, and key tracking
+  through `ratio`, stable when its cutoff moves every sample.
+  `synth.drive/1` is `tanh` saturation with `drive`, an asymmetry `bias` and
+  `level`, using first-order antiderivative anti-aliasing. Both work in voice
+  and shared graphs. See the [resonant filter](docs/instruments.md#resonant-filter),
+  [saturation](docs/instruments.md#saturation) and
+  [`examples/resonant-drive.maac`](examples/resonant-drive.maac).
 - Note sources and curved envelopes, part 1 of the
   [instrument palette](docs/instrument-palette-proposal.md).
   `synth.velocity/1` and `synth.key/1` are voice-only graph sources: the

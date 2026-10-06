@@ -1313,6 +1313,24 @@ fn normalize_node_fields(fields: &mut Map<String, Value>, project_seed: &Value) 
                     .entry("cutoff")
                     .or_insert_with(|| quantity(1000, 1, Unit::Hz));
             }
+            "synth.svf/1" => {
+                for (name, value) in [
+                    ("cutoff", quantity(1000, 1, Unit::Hz)),
+                    ("ratio", number(0, 1)),
+                    ("q", number(707, 1000)),
+                ] {
+                    params.entry(name).or_insert(value);
+                }
+            }
+            "synth.drive/1" => {
+                for (name, value) in [
+                    ("drive", number(1, 1)),
+                    ("bias", number(0, 1)),
+                    ("level", number(1, 1)),
+                ] {
+                    params.entry(name).or_insert(value);
+                }
+            }
             "synth.pan/1" => {
                 params.entry("pan").or_insert_with(|| number(0, 1));
             }

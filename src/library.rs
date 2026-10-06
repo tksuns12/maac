@@ -2053,6 +2053,35 @@ fn lower_graph_node(
         "synth.highpass/1" => GraphProcessor::HighPass {
             channels: config_channels(config, file, object, &identity)?,
         },
+        "synth.svf/1" => {
+            let config = exact_record(config, &["channels", "mode"], file, object, &identity)?;
+            let channels = integer_value(
+                &config["channels"].value,
+                file,
+                object,
+                &config["channels"],
+                1,
+                2,
+            )? as u8;
+            let field = &config["mode"];
+            let mode = field
+                .value
+                .as_symbol()
+                .and_then(crate::synth::SvfMode::from_symbol)
+                .ok_or_else(|| {
+                    field_error(
+                        DiagnosticCode::Range,
+                        file,
+                        object,
+                        field,
+                        "mode must be lowpass, bandpass or highpass",
+                    )
+                })?;
+            GraphProcessor::Svf { channels, mode }
+        }
+        "synth.drive/1" => GraphProcessor::Drive {
+            channels: config_channels(config, file, object, &identity)?,
+        },
         "synth.mix/1" => GraphProcessor::Mix {
             channels: config_channels(config, file, object, &identity)?,
         },

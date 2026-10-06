@@ -8,7 +8,7 @@ use crate::graph::{
 };
 use crate::plan::{GainExpression, PitchExpression, PressureExpression, TimbreExpression};
 use crate::sample_instrument::{SampleFadeShape, SamplePlayback, SampleZone};
-use crate::synth::{Adsr, Oscillator, Waveform};
+use crate::synth::{drive_sample, Adsr, Oscillator, SvfCoefficients, SvfMode, Waveform};
 use crate::wavetable::TableBank;
 use num_traits::ToPrimitive;
 use std::collections::{BTreeMap, HashMap};
@@ -85,6 +85,8 @@ enum ProcessorCode {
     Gain(usize),
     OnePole(usize),
     HighPass(usize),
+    Svf(usize, SvfMode),
+    Drive(usize),
     Mix(usize),
     Pan,
 }
@@ -196,6 +198,10 @@ enum ProcessorState {
     Adsr(Adsr),
     Lfo(Oscillator),
     OnePole([f64; 2]),
+    /// Each channel's state-variable filter integrators `[s1, s2]`.
+    Svf([[f64; 2]; 2]),
+    /// Each channel's previous drive input.
+    Drive([f64; 2]),
     /// The note-on velocity a `synth.velocity/1` node emits.
     Velocity(f64),
     Stateless,
@@ -698,6 +704,8 @@ impl GraphState {
                 ProcessorCode::OnePole(_) | ProcessorCode::HighPass(_) => {
                     ProcessorState::OnePole([0.0; 2])
                 }
+                ProcessorCode::Svf(..) => ProcessorState::Svf([[0.0; 2]; 2]),
+                ProcessorCode::Drive(_) => ProcessorState::Drive([0.0; 2]),
                 ProcessorCode::Velocity => ProcessorState::Velocity(velocity),
                 ProcessorCode::Gain(_)
                 | ProcessorCode::Key
@@ -1395,6 +1403,42 @@ fn process_graph_node(
                 *previous = next;
             }
         }
+        (ProcessorCode::Svf(channels, mode), ProcessorState::Svf(states)) => {
+            // A shared graph renders with zero pitch, and its ratio is zero.
+            let cutoff = pitch_hz * params[1] + params[0];
+            let coefficients = SvfCoefficients::new(cutoff, params[2], rate).map_err(|_| {
+                RenderError::Nonfinite(format!(
+                    "state-variable filter {} cutoff {cutoff} Hz must be strictly within 0..{} Hz",
+                    compiled.id,
+                    rate / 2.0
+                ))
+            })?;
+            let mut next = *states;
+            for ((output, state), input) in output
+                .iter_mut()
+                .zip(next.iter_mut())
+                .zip(audio_input)
+                .take(*channels)
+            {
+                *output = coefficients.step(*mode, input, state);
+            }
+            if commit {
+                *states = next;
+            }
+        }
+        (ProcessorCode::Drive(channels), ProcessorState::Drive(previous)) => {
+            for ((output, previous), input) in output
+                .iter_mut()
+                .zip(previous.iter())
+                .zip(audio_input)
+                .take(*channels)
+            {
+                *output = drive_sample(input, *previous, params[0], params[1], params[2]);
+            }
+            if commit {
+                previous[..*channels].copy_from_slice(&audio_input[..*channels]);
+            }
+        }
         (ProcessorCode::Mix(channels), ProcessorState::Stateless) => {
             output[..*channels].copy_from_slice(&audio_input[..*channels]);
         }
@@ -1601,6 +1645,14 @@ fn compile_processor(
         GraphProcessor::HighPass { channels } => {
             (&["cutoff"], ProcessorCode::HighPass(*channels as usize))
         }
+        GraphProcessor::Svf { channels, mode } => (
+            &["cutoff", "ratio", "q"],
+            ProcessorCode::Svf(*channels as usize, *mode),
+        ),
+        GraphProcessor::Drive { channels } => (
+            &["drive", "bias", "level"],
+            ProcessorCode::Drive(*channels as usize),
+        ),
         GraphProcessor::Mix { channels } => (&[], ProcessorCode::Mix(*channels as usize)),
         GraphProcessor::Pan => (&["pan"], ProcessorCode::Pan),
     })
@@ -1616,6 +1668,8 @@ fn parameter_slot(processor: &ProcessorCode, name: &str) -> Option<usize> {
         ProcessorCode::Lfo => &["frequency", "phase", "level"],
         ProcessorCode::Gain(_) | ProcessorCode::Noise(_) => &["level"],
         ProcessorCode::OnePole(_) | ProcessorCode::HighPass(_) => &["cutoff"],
+        ProcessorCode::Svf(..) => &["cutoff", "ratio", "q"],
+        ProcessorCode::Drive(_) => &["drive", "bias", "level"],
         ProcessorCode::Mix(_)
         | ProcessorCode::Timbre
         | ProcessorCode::Pressure
