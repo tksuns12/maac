@@ -5,10 +5,10 @@ full Document, Performance, Core Audio, or Locked Render conformance. The langua
 specification remains authoritative; this page describes the implementation scope.
 
 This inventory includes language behavior, reference-runtime algorithms, and
-optional process tools. Its rows are not a language-completeness checklist.
+authoring and delivery tools. Its rows are not a language-completeness checklist.
 The [language specification and conformance plan](language-specification-plan.md#current-priorities)
-owns active priorities; device capture, monitoring, playback, and external
-hosting belong to a deferred host/tooling track.
+owns active priorities. Device capture, monitoring, playback and plug-in
+hosting are outside MaaC.
 
 The [Core Audio conformance audit](core-audio-conformance-audit.md) records
 processor coverage, confirmed discrepancies, and remaining profile obligations.
@@ -44,7 +44,7 @@ it. See the [unknown-extension decision](unknown-extensions-proposal.md).
 | Processors | `core.sine/1`, `core.kit/1`, `core.onepole/1`, `core.pan/1`, `core.sum/1`, `core.gain/1`, `core.fader/1`, `core.matrix/1`, `core.delay/1`, `core.noise/1` (mono/stereo); explicit delays permit causal feedback |
 | Sample kits | Pinned raw float32 mono/stereo assets, native-rate one-shot playback, linear interpolation, natural tails and sample-rate level automation |
 | Arranged audio | Top-level rate, warp-rate, and preserve-pitch warp clips (core `core.stretch.ola/1` reference stretch; module-asset stretchers refused); source-frame slicing, musical warp anchors, rate-mode speed/reverse/physical placement, gain, linear/equal-power fades, explicit routing and tempo-aware tails |
-| Takes and comping | Required `maac.takes/1` or `maac.takes/2`: alternate mono/stereo assets, shared physical origins, disjoint frame regions validated against explicit rate-mode clips, atomic Protocol 2 selection edits and inverse history, and archived inactive alternates. V2 synchronizes named microphone-file lanes with individual source origins and one selection. Device capture remains separate; rendered audition uses the `play` command. |
+| Takes and comping | Required `maac.takes/1` or `maac.takes/2`: alternate mono/stereo assets, shared physical origins, disjoint frame regions validated against explicit rate-mode clips, atomic Protocol 2 selection edits and inverse history, and archived inactive alternates. V2 synchronizes named microphone-file lanes with individual source origins and one selection. MaaC does not capture from devices; takes are imported files. |
 | WAV import and disk media | `maac import-wav` imports whole mono/stereo RIFF WAVs or nonempty frame crops from PCM16/24/32 and IEEE float32 into a relocatable source project with native float32 PCM and source/conversion provenance; `--retain-original` preserves the snapshotted WAV and `maac verify-import` checks it, the crop, and the current project closure. Opt-in `import-wav --disk-media` and `verify-import --disk-media` handle selected native PCM crops up to 1 GiB through private files. `check` and `build` accept `--disk-media` to verify and render hash-pinned native PCM beyond inline limits from private snapshots. `patch --disk-media [--profile song]` edits source against captured PCM with the existing Protocol 2 conflicts and inverses. The artifact DSP engine also supports opt-in disk-backed sampling of already-embedded PCM. |
 | Reusable instruments | Named libraries, typed public controls, presets, independent polyphonic instances, voice and shared graphs; [kit instruments](instruments.md#kits) that play other instruments by hit key, with gates and choke groups |
 | Sound graphs | Versioned sine/saw/square/triangle/wavetable oscillators, zoned pitched sample playback with sustain loops (`synth.sample/1`), deterministic noise and recirculating plucked strings, ADSR with linear or curved decay and release, note velocity and key sources, sine LFO, gain, low/high-pass one-pole filtering, a resonant key-trackable state-variable filter, anti-aliased `tanh` saturation, mixing and panning |
@@ -56,14 +56,12 @@ it. See the [unknown-extension decision](unknown-extensions-proposal.md).
 | Pitched samples | `sample` declarations: mono or stereo WAV (embedded within the shared 262,144-value budget) or mono or stereo core PCM carried as a plan audio asset, inline or `--disk-media` up to 1 GiB, or a composition audio asset shared with clips and kits; mono or stereo `synth.sample/1` nodes whose zones match their channel count; recorded rate, 12-TET root key, optional forward sustain loop; overlapping key zones with velocity layers and linear or equal-power key/velocity crossfades |
 | Regions | Named score intervals retained as non-rendering metadata |
 | Render | Reset-state offline rendering at 48 kHz, score-end releases, explicit tail, and reset-correct WAV excerpts that still execute through the complete plan |
-| Playback | `maac play` renders complete source or retained-plan output to a private Float32 WAV and auditions it through macOS system-default output. Supports source disk media, existing profiles, interrupt cleanup, and explicit device/backend errors. No live DSP, seek, monitoring, or device selection. |
-| Recording | `maac inputs` lists recording-device metadata without capture permission. `maac record` captures a bounded duration of delivered 48 kHz mono Float32 from macOS default or exact UID-selected input and creates a retained-import project with embedded recording provenance. Permission, detected discontinuity, device, and cancellation failures publish no partial project. Opt-in `record --monitor` routes input channel 1 at reduced gain to outputs on the same explicit 48 kHz duplex device, retaining a dry take and version 3 provenance. Physical-device/monitoring acceptance and overdub alignment remain open. |
 | Export | Legacy build/render: Float32 WAV or overload-rejecting PCM16; `render` accepts paired reset-origin frame bounds for exact payload slices; production delivery also adds PCM24 and explicit seeded TPDF |
 | Analysis for AI producers | [`maac analyze`](analyze.md) renders once and reports, per region or bar block and per source port, BS.1770-5 loudness, peaks and clipping positions, octave bands, stereo balance, correlation and mono loss, activity and shares of the output; a findings list from a versioned profile; and spectrogram and piano-roll PNGs |
 | Native production | Project-level EQ, linked peak compression with external sidechains, eight-delay reverb; required `maac.production/1` |
 | Named deliveries | Complete-graph master/stem capture; 44.1/48/96 kHz conversion; final-artifact loudness/sample-peak/experimental true-peak analysis |
 | Interchange | Independently validated standalone plans: version 1 legacy, version 2 embedded graph/data/provenance, version 3 exact ramp timing recipes, version 4 embedded audio assets and kit nodes, version 5 rate clips, version 6 warp-rate clips, version 7 core control modulation |
-| Native archive | `maac archive create/patch/verify/unpack` captures exact source/media closures. Versions 2–3 add linear checkpoints and retained original WAV imports; version 4 retains and explicitly reuses a verified whole-output freeze; version 5 journals an explicit entry edit and inverse; version 6 retains multiple WAV imports; version 7 journals a direct library edit; version 8 freezes and explicitly substitutes one native effect output, allowing bounded gain/pan edits on branches that cannot feed it in new freezes; version 9 groups independent native effect outputs, with opt-in partial reuse of eligible members; version 10 journals a bounded group of direct library edits with one generated entry repin transaction; version 11 journals edits to shared and transitive local sources with exact pin propagation; version 12 optionally retains verified native processor context. Older versions remain readable. External processor dependencies/state, broader invalidation, and overlapping frozen graph branches remain deferred product-track work. |
+| Native archive | `maac archive create/patch/verify/unpack` captures exact source/media closures. Versions 2–3 add linear checkpoints and retained original WAV imports; version 4 retains and explicitly reuses a verified whole-output freeze; version 5 journals an explicit entry edit and inverse; version 6 retains multiple WAV imports; version 7 journals a direct library edit; version 8 freezes and explicitly substitutes one native effect output, allowing bounded gain/pan edits on branches that cannot feed it in new freezes; version 9 groups independent native effect outputs, with opt-in partial reuse of eligible members; version 10 journals a bounded group of direct library edits with one generated entry repin transaction; version 11 journals edits to shared and transitive local sources with exact pin propagation; version 12 optionally retains verified native processor context. Older versions remain readable. External processor dependencies/state, broader invalidation, and overlapping frozen graph branches are not implemented. |
 
 The normative [generic interchange v1 field contract](generic-interchange.md),
 [generic schema](../interchange.schema.json), and [L4 corpus](../conformance/l4/)
@@ -79,14 +77,13 @@ context and exact bytes, keeping optional evidence outside the render key; the v
 independently validates the complete lock envelope without guessing unknown contracts.
 Strict external descriptor parsing and owner-scoped locked dependency discovery are
 implemented by `maac::external`.
-`maac::generic_render` can execute a verified lock against an already-resolved built-in/core `Plan`; it requires the renderer's concrete engine identity, rejects non-null block schedules and external/state-pinned processors with `E_CAPABILITY`, renders from reset through the full locked interval, then applies crop/channel order and returns raw `pcm_f32le_interleaved/1` evidence. `maac::external_host` and `maac::external_native` separately provide an explicit executable external-host boundary and the published `maac.native-c-abi/1` + `maac.native-dylib-adapter/1` Unix dynamic-library contract. A separate `maac::generic_external_render` path now proves end-to-end locked execution for exactly one output-only external audio generator under an explicitly block-independent adapter, with zero technical latency, static parameters only, all parameters resolved, reset-origin streaming, crop/channel selection, and evidence verification. Mixed external/core graphs, external inputs/events, and parameter automation remain deferred, so this is not full Locked Render conformance.
+`maac::generic_render` can execute a verified lock against an already-resolved built-in/core `Plan`; it requires the renderer's concrete engine identity, rejects non-null block schedules and external/state-pinned processors with `E_CAPABILITY`, renders from reset through the full locked interval, then applies crop/channel order and returns raw `pcm_f32le_interleaved/1` evidence. MaaC does not execute external processors, so this is not full Locked Render conformance.
 Section 25 loss reporting and the initial MIDI 1.0 SMF adapter are implemented through
-`maac::interchange`; notation and DAW-session adapters remain separate work.
+`maac::interchange`.
 
 Message performance is resolved into retained transport events, including exact protocol/bytes, certified frames, and §6.1 dispatch ordering. Hosts must explicitly advertise a matching protocol for each target through `PlanArtifact::performance_dispatches`; the built-in Core Audio renderer has no raw-message adapter and therefore still returns `E_CAPABILITY`. Other recognized deferred execution features fail with `E_CAPABILITY`:
-other processors, module-asset stretchers and other extensions. The published native external ABI can be hosted explicitly, but general mixed external-node graph integration, subprocess/sandbox hosting, notation/DAW adapters, GUI and real-time
-playback are outside this release's interfaces. The bounded MIDI 1.0 SMF adapter is an
-offline interchange export and does not provide live MIDI device transport.
+other processors, module-asset stretchers and other extensions. The bounded
+MIDI 1.0 SMF adapter is an offline interchange export, not live MIDI transport.
 Protocol 2 transactional editing is implemented through `maac::editing` and `maac patch` for
 core compositions, hash-pinned local/built-in imports, reusable library sources and the recognized
 production and take extensions. Candidate import edits are re-resolved and repinned atomically, and editing
@@ -145,10 +142,6 @@ The [pressure guide](pressure-expression.md) adds independent authored pressure
 mappings with separate `synth.pressure/1` opt-in. All four expression kinds may
 coexist when the graph declares both sources; frozen libraries remain unchanged.
 
-The [playback guide](playback.md) describes process-only rendered audition on
-macOS, cancellation during preparation and playback, private file cleanup, and
-terminal result semantics. Other hosts fail explicitly. A successful player
-exit is not measured device-latency or listening evidence.
 
 The [take and comp contract](takes-and-comping.md), required capability
 `maac.takes/1`, preserves explicit alternate membership and selection in source.

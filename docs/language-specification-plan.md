@@ -1,17 +1,16 @@
 # MaaC language specification and conformance plan
 
 **Status:** active language/specification roadmap; scope reset 2026-09-28.
-This plan owns current priorities. The [broader production
-plan](end-to-end-production-plan.md) is deferred; device integration and
-full-application readiness do not determine language completeness.
+This plan owns current priorities. Device integration and application
+features are outside MaaC and do not determine language completeness.
 
 **Historical baseline:** L1, L2, L3, L4, and L5 are addressed 2026-09-13 for their bounded
 contracts and evidence. L1 authority and the L5 metric and bound are
 **RESOLVED**. L4 is committed at `e948ce7`. Later bounded runtime slices add
 reusable source modules, generic lock verification/construction, strict external
 descriptor and dependency discovery, MIDI loss reporting, bounded built-in/core
-generic rendering, an explicit native external ABI host, and a single-generator
-external render bridge; mixed external/core graph execution remains deferred.
+generic rendering. Executing external processors is outside MaaC; a native
+plug-in host added earlier was removed before release on 2026-10-07.
 Baseline: A1–A4 are addressed at
 `b19ae2884fbfad2dbf5efb1526a1eff8f5452d9d`. This plan records specification
 priorities. The adopted authored-state decision and the scoped L1 semantic
@@ -60,7 +59,7 @@ P1's normative clarification and scoped evidence are recorded separately.
 | Portable interchange — active when required by a selected language slice | Pins, dependency/state descriptions, authored-versus-derived identity, losses, and refusal semantics | Round-trip and tamper/refusal vectors that identify exactly what is preserved |
 | Reference runtime — supporting | Implementing and checking the selected declared subset under explicit limits | Scoped compiler/renderer evidence; no inference of full-profile conformance from processor coverage |
 | AI production tooling — active | Tools that let an AI producer perceive and judge its own renders: measurement, findings, images, and workflow guidance. They read compiled plans and never change the language or plan formats | Known-answer fixtures, deterministic reports, and use on real compositions; [T1 `maac analyze`](analyze.md) addressed 2026-10-03; [T2 production trial](ai-production-trial.md) 2026-10-04: an AI produced a track end to end, the analyzer gained `groove_mismatch` and graph roles, and the trial ranks what to build next (instrument palette, a true-peak limiter, authoring density); the limiter landed 2026-10-04 as the production extension's [`fx.limiter/1`](limiter-proposal.md); the [authoring density proposal](authoring-density-proposal.md) added chord leaves, grooves and kit instruments (landed 2026-10-05) |
-| Host/application tooling — deferred | Device discovery, microphone capture, monitoring, live transport, hardware latency calibration, GUI, and executable plugin hosting | Separate product/hardware contracts and acceptance, outside language completion |
+| Host/application tooling — out of scope | Device discovery, microphone capture, monitoring, playback, live transport, hardware latency calibration, GUI, and executable plug-in hosting | Not part of MaaC; separate applications may read and write MaaC data |
 
 An asset's source frame and declared origin are portable data. Measuring a
 microphone's latency or routing its monitor signal is host work. Likewise,
@@ -153,8 +152,8 @@ ownership, precedence, identity, and compatibility decision; it is not a defect
 merely because the current contract lacks it. Multi-lane move/duplicate helpers
 belong first to tools over existing transactions. Pitched samplers and the
 core preserve-pitch stretch were later addressed as P11–P14. Additional receiver
-adapters, module-asset stretchers, and executable hosting each need their own
-scoped proposal; none is the automatic next task.
+adapters and module-asset stretchers each need their own scoped proposal; neither
+is the automatic next task.
 
 The [production-language research memo](professional-production-language-review.md)
 is background, not a competing ordered backlog. Its historical adoption and
@@ -357,12 +356,12 @@ Subsequent work added the `maac::generic_lock` runtime verifier, the
 typed generator (originally two parallel modules, consolidated on 2026-09-30 into
 `maac::generic_lock_normalization`), which deterministically constructs canonical v1 Config, RenderInput, and
 Lock artifacts from already-resolved typed context and exact bytes.
-`maac::generic_render` now renders already-resolved built-in/core `Plan` contexts after pre-render verification, with a concrete host identity and null block schedule. `maac::external_host` and `maac::external_native` subsequently add an explicit executable native ABI boundary; a bounded single output-only external-generator render bridge is now implemented; general mixed external-node graph integration remains deferred. These later runtime slices do not turn the historical L4 schema/corpus
+`maac::generic_render` now renders already-resolved built-in/core `Plan` contexts after pre-render verification, with a concrete host identity and null block schedule. These later runtime slices do not turn the historical L4 schema/corpus
 slice into a full Locked Render conformance claim. The historical L4 slice itself
 did not claim full Rust/build or remote-CI gates. Status
 is **addressed 2026-09-13** for this bounded contract/schema/corpus/checker
 slice. Strict external descriptor/discovery support and bounded interchange loss reporting
-were added in later L4 runtime slices; bounded built-in/core generic rendering and an explicit native ABI host boundary were added subsequently, while mixed external/core DAG execution remains a separate follow-up. See the
+were added in later L4 runtime slices; bounded built-in/core generic rendering was added subsequently. See the
 [L4 portable-interchange decision](l4-portable-interchange-decision.md) for
 the accepted direction and scope boundary.
 
@@ -417,9 +416,7 @@ cross-platform, and listening gates. Runtime normalizer/editor behavior was late
 implemented for the bounded language contexts. Generic lock verification and
 construction, strict external descriptor/dependency discovery, and the versioned
 `maac.interchange-loss-report` contract with its bounded MIDI 1.0 SMF adapter now
-exist, as do bounded built-in/core generic rendering, an explicit native ABI host,
-and a single-generator external render bridge; mixed external/core graph execution,
-notation, and DAW-session adapters remain separate work. L5 is addressed for this bounded contract, corpus, checker, index, and runtime-evidence slice; it makes
+exist, as does bounded built-in/core generic rendering. L5 is addressed for this bounded contract, corpus, checker, index, and runtime-evidence slice; it makes
 no full-profile, universal-tolerance, or cross-platform bit-identity claim.
 
 **Acceptance, dependencies, status.** L5 follows L4 and consolidates or
@@ -443,14 +440,6 @@ records possible language improvements and adoption prerequisites for
 professional music production. It does not create L6 or alter L1–L5 status;
 the bounded F1 artifact slice is implemented, while broader F1/package work
 remains outside the accepted L1–L5 scope.
-
-## Deferred broader-product direction
-
-The non-normative [end-to-end production plan](end-to-end-production-plan.md)
-preserves the earlier composition-through-reopen application proposal and its
-existing tooling evidence. Further capture, monitoring, backing-track transport,
-hardware alignment, and host integration are deferred. They do not change
-L1–L5 status or block the language priorities above.
 
 ## Completion rule
 

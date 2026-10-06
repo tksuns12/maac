@@ -142,21 +142,14 @@ The [take and comp capability](docs/takes-and-comping.md) records alternate
 audio assets, a shared physical origin, and comp regions checked against
 explicit clips. Selection changes use existing atomic edits, inverses, and
 archive history. Try the [synthetic take example](examples/take-comp.maac);
-[v2 microphone groups](docs/grouped-takes.md) coordinate all lanes of a take.
-[Rendered playback](docs/playback.md) is available through `maac play` on
-macOS. Bounded [microphone recording](docs/recording.md) creates an editable
-project with retained capture provenance. [Input selection](docs/input-devices.md)
-lists devices with `maac inputs` and selects exact UIDs with `record --input-device`.
-[Live input monitoring](docs/input-monitoring.md) is opt-in with `record --monitor`
-on an explicitly selected 48 kHz duplex device. These are optional host tools;
-further device integration, backing-track transport, and hardware acceptance
-are deferred while language/specification work takes priority.
+[v2 take groups](docs/grouped-takes.md) coordinate all lanes of a take.
+Takes are imported audio; MaaC itself does not record, play or monitor audio
+devices. Capture and listen with any audio tool, and bring recordings in with
+`maac import-wav`.
 
 ## Quick start
 
-Install a current stable Rust toolchain. macOS builds also use Apple’s Xcode
-Command Line Tools to compile the microphone permission bridge; no runtime
-compiler or downloaded recording helper is needed. From the repository root:
+Install a current stable Rust toolchain. From the repository root:
 
 ```sh
 cargo build --release --locked
@@ -184,15 +177,7 @@ maac compile example.maac -o example.performance.json
 maac render example.performance.json -o example.wav
 ```
 
-On macOS, audition a composition or retained plan through the default output:
-
-```sh
-maac play examples/basic/mellow_piano.maac
-maac play example.performance.json --plan
-```
-
-Rendering finishes before playback starts. Ctrl-C stops either phase. See the
-[playback guide](docs/playback.md) for device and platform boundaries.
+Open the WAV in any audio player to listen.
 
 Render the named production example from the repository root:
 
@@ -246,9 +231,6 @@ owns active priorities: portable musical meaning, reusable source data,
 interchange, and evidence for stated conformance boundaries.
 The [Document/Performance evidence map](docs/document-performance-evidence.md)
 connects language obligations to public APIs, fixed tests, and remaining limits.
-The [end-to-end production plan](docs/end-to-end-production-plan.md) preserves
-the deferred broader-product proposal. Device capture, monitoring, transport,
-and host integration are optional tooling, not language-completeness gates.
 The [pitch guide](docs/pitch-expression.md) and [gain guide](docs/gain-expression.md)
 demonstrate independent bends, swells, and fades on overlapping `core.sine/1` voices.
 The [instrument pitch guide](docs/instrument-pitch.md) applies independent bends

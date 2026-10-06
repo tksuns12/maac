@@ -3,8 +3,7 @@
 This document separates local MaaC source-only preparation from decisions that
 remain before release publication. It is a publication-status record, not the
 feature roadmap; the [language specification and conformance plan](language-specification-plan.md#current-priorities)
-owns active priorities. The broader [production plan](end-to-end-production-plan.md)
-is deferred. MaaC is the project and `maac` is the CLI;
+owns active priorities. MaaC is the project and `maac` is the CLI;
 MaaC/1 is the source language, `.maac` is its file extension, and `maac 1;` is
 the canonical document header. Noncanonical language headers are rejected. The
 public [tksuns12/maac repository](https://github.com/tksuns12/maac)

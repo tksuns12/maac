@@ -4,7 +4,6 @@
 
 **Current scope (2026-09-28):** active priorities belong to the
 [language specification and conformance plan](language-specification-plan.md#current-priorities).
-The [broader production plan](end-to-end-production-plan.md) is deferred.
 This memo preserves exploratory proposals and optional adoption experiments;
 its historical ranking does not select the next task. Device and host readiness
 are not language-completeness gates.

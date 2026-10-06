@@ -212,8 +212,8 @@ the requested source file; dependencies and retained import records remain
 caller-owned project members. Replacing the current entry requires `--force`.
 Unrelated source comments survive forward projection. The inverse restores
 the canonical authored tree; it may replace formatting on changed roots.
-Audio-clip edits retain conservative full-render invalidation. Recording,
-take collections, and comp selection remain separate roadmap work.
+Audio-clip edits retain conservative full-render invalidation. Take collections
+and comp selection are covered by [takes and comping](takes-and-comping.md).
 
 ## Work outside the first P0
 

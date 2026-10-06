@@ -1,8 +1,7 @@
 # Musical source module artifact
 
-This document describes the bounded F1 source-artifact slice. It does not claim
-completion of a broader package registry, binary module format, or direct
-artifact-import feature.
+This document describes the bounded F1 source-artifact slice. A package
+registry, binary module format and direct artifact imports are outside MaaC.
 
 ## Contract
 

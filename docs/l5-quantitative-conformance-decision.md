@@ -154,9 +154,8 @@ suite, release build, installed acceptance, remote CI, cross-platform runtime,
 and listening checks were omitted from this historical decision. Runtime
 normalizer/editor behavior, generic lock verification/construction, strict
 descriptor/dependency discovery, and loss-report/MIDI contracts were later added
-as bounded slices, followed by bounded built-in/core generic rendering and an
-explicit native external ABI host; mixed external/core graph execution remains
-separate deferred work. The bounded result does not claim a full profile,
+as bounded slices, followed by bounded built-in/core generic rendering.
+Executing external processors is outside MaaC. The bounded result does not claim a full profile,
 universal tolerance, or cross-platform bit identity. Any change
 to the metric, reference interpretation, epsilon, scope, window, or required
 fixtures requires a new suite or policy version.

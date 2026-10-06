@@ -3596,79 +3596,12 @@ struct ProcessOptions {
     disk_media_profile: Option<ProfileArg>,
 }
 
-enum ProcessRequest {
-    Existing(Cli, ProcessOptions),
-    Play {
-        request: crate::playback::PlayRequest,
-        json: bool,
-    },
-    Record {
-        request: crate::recording::RecordRequest,
-        json: bool,
-    },
-    Inputs {
-        json: bool,
-    },
-}
-
 /// Add process-only flags without changing the public Command enum used by
 /// library callers.
 fn parse_cli_with_process_options(
     args: Vec<std::ffi::OsString>,
-) -> Result<ProcessRequest, ParsedArgsError> {
+) -> Result<(Cli, ProcessOptions), ParsedArgsError> {
     let mut command = Cli::command();
-    command = command.subcommand(
-        clap::Command::new("inputs")
-            .about("List macOS input devices and their exact UIDs without microphone access"),
-    );
-    command = command.subcommand(
-        clap::Command::new("record")
-            .about("Record a macOS input device into a new retained media project")
-            .after_help("Captures exactly the requested duration as 48000 Hz mono Float32. The input device is selected once and pinned. Omit --input-device to select the system default; use maac inputs to find exact UIDs. --monitor requires an explicit UID for one duplex device already at 48000 Hz; it records dry input channel 1 and monitors it to output channels 1/2 (one if mono) at fixed gain 0.125. Microphone permission is requested before capture. Press Ctrl-C to abort and remove private files without publishing a project.")
-            .arg(Arg::new("duration-seconds").long("duration-seconds").value_name("N").required(true).value_parser(clap::value_parser!(u32).range(1..=1800)).help("required whole seconds of delivered input (1..1800)"))
-            .arg(Arg::new("output-dir").long("output-dir").value_name("NEW").required(true).value_parser(clap::value_parser!(PathBuf)).help("new project directory; parent must already exist"))
-            .arg(Arg::new("input-device").long("input-device").value_name("UID").help("exact input device UID from maac inputs; no fallback if unavailable"))
-            .arg(Arg::new("monitor").long("monitor").action(ArgAction::SetTrue).requires("input-device").help("monitor input channel 1 on the same 48000 Hz duplex device at fixed gain 0.125"))
-            .arg(Arg::new("profile").long("profile").default_value("default").value_parser(clap::value_parser!(ProfileArg)).help("finite execution-work allowance for the resulting project")),
-    );
-    command = command.subcommand(
-        clap::Command::new("play")
-            .about("Render a source or retained plan privately and audition through macOS afplay")
-            .after_help("Renders complete output before playback through the macOS system default output device. Press Ctrl-C to stop preparation or playback and clean up private files.")
-            .arg(
-                Arg::new("input")
-                    .value_name("INPUT")
-                    .value_parser(clap::value_parser!(PathBuf)),
-            )
-            .arg(
-                Arg::new("plan")
-                    .long("plan")
-                    .action(ArgAction::SetTrue)
-                    .requires("input")
-                    .conflicts_with_all(["project-root", "disk-media"])
-                    .help("interpret INPUT as a retained performance-plan JSON file"),
-            )
-            .arg(
-                Arg::new("project-root")
-                    .long("project-root")
-                    .value_name("PATH")
-                    .value_parser(clap::value_parser!(PathBuf))
-                    .help("root used to resolve source imports and assets"),
-            )
-            .arg(
-                Arg::new("disk-media")
-                    .long("disk-media")
-                    .action(ArgAction::SetTrue)
-                    .help("use bounded private disk snapshots for native source PCM"),
-            )
-            .arg(
-                Arg::new("profile")
-                    .long("profile")
-                    .default_value("default")
-                    .value_parser(clap::value_parser!(ProfileArg))
-                    .help("finite execution-work allowance for preparation"),
-            ),
-    );
     let render = command
         .find_subcommand_mut("render")
         .expect("render command is declared");
@@ -3721,44 +3654,6 @@ fn parse_cli_with_process_options(
     let matches = command
         .try_get_matches_from(args)
         .map_err(ParsedArgsError::Clap)?;
-    if matches.subcommand_matches("inputs").is_some() {
-        return Ok(ProcessRequest::Inputs {
-            json: matches.get_flag("json"),
-        });
-    }
-    if let Some(record) = matches.subcommand_matches("record") {
-        return Ok(ProcessRequest::Record {
-            request: crate::recording::RecordRequest {
-                duration_seconds: *record
-                    .get_one::<u32>("duration-seconds")
-                    .expect("duration is required"),
-                output_dir: record
-                    .get_one::<PathBuf>("output-dir")
-                    .expect("output is required")
-                    .clone(),
-                profile: *record
-                    .get_one::<ProfileArg>("profile")
-                    .expect("profile has a default"),
-                input_device: record.get_one::<String>("input-device").cloned(),
-                monitor: record.get_flag("monitor"),
-            },
-            json: matches.get_flag("json"),
-        });
-    }
-    if let Some(play) = matches.subcommand_matches("play") {
-        return Ok(ProcessRequest::Play {
-            request: crate::playback::PlayRequest {
-                input: play.get_one::<PathBuf>("input").cloned(),
-                plan: play.get_flag("plan"),
-                project_root: play.get_one::<PathBuf>("project-root").cloned(),
-                disk_media: play.get_flag("disk-media"),
-                profile: *play
-                    .get_one::<ProfileArg>("profile")
-                    .expect("profile has a default"),
-            },
-            json: matches.get_flag("json"),
-        });
-    }
     let range = match matches.subcommand_matches("render") {
         Some(render) => match (
             render.get_one::<u64>("start-frame"),
@@ -3798,7 +3693,7 @@ fn parse_cli_with_process_options(
                 .copied()
         });
     let cli = Cli::from_arg_matches(&matches).map_err(ParsedArgsError::Clap)?;
-    Ok(ProcessRequest::Existing(
+    Ok((
         cli,
         ProcessOptions {
             range,
@@ -3814,11 +3709,8 @@ where
     T: Into<std::ffi::OsString> + Clone,
 {
     let args: Vec<std::ffi::OsString> = args.into_iter().map(Into::into).collect();
-    if let Some(code) = crate::recording::private_child(&args) {
-        return code;
-    }
     let json_requested = args.iter().any(|arg| arg == "--json");
-    let parsed = match parse_cli_with_process_options(args) {
+    let (cli, options) = match parse_cli_with_process_options(args) {
         Ok(parsed) => parsed,
         Err(ParsedArgsError::Clap(error)) => {
             let result = CliError::new("E_USAGE", error.to_string());
@@ -3849,12 +3741,6 @@ where
             }
             return 1;
         }
-    };
-    let (cli, options) = match parsed {
-        ProcessRequest::Existing(cli, options) => (cli, options),
-        ProcessRequest::Play { request, json } => return run_playback(&request, json),
-        ProcessRequest::Record { request, json } => return run_recording(&request, json),
-        ProcessRequest::Inputs { json } => return run_inputs(json),
     };
     let json = cli.json;
     let result = if options.disk_media_profile.is_some() && !options.disk_media {
@@ -3896,109 +3782,6 @@ where
                 eprintln!("{error}");
             }
             1
-        }
-    }
-}
-
-fn run_inputs(json: bool) -> i32 {
-    match crate::recording::inputs() {
-        Ok(result) => {
-            if json {
-                println!(
-                    "{}",
-                    serde_json::to_string(&result).expect("input devices are serializable")
-                );
-            } else if result.devices.is_empty() {
-                println!("No input devices found.");
-            } else {
-                for device in result.devices {
-                    println!(
-                        "{:?}: {:?} ({} input channels, {} output channels{}{})",
-                        device.uid,
-                        device.name,
-                        device.input_channels,
-                        device.output_channels,
-                        if device.is_default { ", default" } else { "" },
-                        if device.available {
-                            ""
-                        } else {
-                            ", unavailable"
-                        }
-                    );
-                }
-            }
-            0
-        }
-        Err(error) => {
-            if json {
-                println!(
-                    "{}",
-                    serde_json::to_string(&error).expect("input device error is serializable")
-                );
-            } else {
-                eprintln!("{error}");
-            }
-            1
-        }
-    }
-}
-
-fn run_recording(request: &crate::recording::RecordRequest, json: bool) -> i32 {
-    match crate::recording::run(request) {
-        Ok(result) => {
-            if json {
-                println!(
-                    "{}",
-                    serde_json::to_string(&result).expect("recording result is serializable")
-                );
-            } else {
-                println!(
-                    "Recorded {} frames at {} Hz into {}",
-                    result.frames, result.sample_rate, result.output
-                );
-            }
-            0
-        }
-        Err(failure) => {
-            if json {
-                println!(
-                    "{}",
-                    serde_json::to_string(&failure.error).expect("recording error is serializable")
-                );
-            } else {
-                eprintln!("{}", failure.error);
-            }
-            failure.exit_code
-        }
-    }
-}
-
-fn run_playback(request: &crate::playback::PlayRequest, json: bool) -> i32 {
-    match crate::playback::run(request) {
-        Ok(result) => {
-            if json {
-                println!(
-                    "{}",
-                    serde_json::to_string(&result).expect("playback result is serializable")
-                );
-            } else {
-                println!(
-                    "play: completed {} frames from {} through {} (system default device)",
-                    result.frames, result.input, result.backend
-                );
-            }
-            0
-        }
-        Err(failure) => {
-            if json {
-                println!(
-                    "{}",
-                    serde_json::to_string(&failure.error).expect("playback error is serializable")
-                );
-            } else {
-                eprintln!("{}", failure.error);
-            }
-            failure.exit_code
         }
     }
 }

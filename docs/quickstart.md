@@ -104,32 +104,3 @@ Read the [authoring tutorial](tutorial.md), [capability matrix](capabilities.md)
 and [diagnostics guide](diagnostics.md) before using features beyond these examples.
 The [full specification](../MaaC-1-Specification.md) defines the language;
 foundation support is explicitly narrower than its conformance profiles.
-
-## Audition on macOS
-
-```sh
-maac play . --profile song
-maac play song.performance.json --plan --profile song
-```
-
-The command renders the complete output before playing through the system-default
-audio route. Ctrl-C stops rendering or playback. Large imported projects can add
-`--disk-media` in source mode. See [rendered playback](playback.md) for limits and
-platform support.
-
-## Record a microphone take on macOS
-
-```sh
-maac inputs
-maac record --duration-seconds 10 --output-dir new-take
-maac verify-import new-take --disk-media
-maac play new-take --disk-media
-```
-
-The OS must authorize microphone access. The command captures a fixed duration
-from the default input, then creates a new editable project with its original
-WAV retained. It delivers 48 kHz mono; Ctrl-C aborts without saving a partial
-take. Add `--input-device UID` to select an exact listed input. For headphones
-on that same device, add `--monitor` when it supports both input and output at
-48 kHz; see [live input monitoring](input-monitoring.md) for routing and gain.
-See [recording](recording.md) for device, provenance, and acceptance limits.

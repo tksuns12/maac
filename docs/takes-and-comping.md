@@ -129,6 +129,4 @@ alone does not establish asset identity, alignment, or clip agreement.
 The [verification record](verification.md) describes executable acceptance,
 including exact selected samples, atomic switching and inverse restoration,
 production delivery coexistence, and archive relocation. This capability
-provides the original single-file comp-selection contract; the broader capture,
-playback, listening, and producer workflow gates remain in the
-[roadmap](end-to-end-production-plan.md).
+provides the original single-file comp-selection contract.

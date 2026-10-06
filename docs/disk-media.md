@@ -67,6 +67,5 @@ same environment. Compact compositions render the same samples through disk
 and embedded paths. External media is required for this process-local path;
 the project is not a dependency-complete archive, and no source-free retained
 plan is produced. File-backed WAV import still snapshots the entire input and
-is limited to RIFF/WAVE PCM16/24/32 or float32 mono/stereo. Recording, broader
-history, freeze invalidation, and general editable archive packaging remain
-separate Phase 3 work.
+is limited to RIFF/WAVE PCM16/24/32 or float32 mono/stereo. Broader history,
+freeze invalidation, and general editable archive packaging are not implemented.

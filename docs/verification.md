@@ -486,12 +486,7 @@ tests passed, and that fixture returned `E_RESOURCE_LIMIT` in about two
 seconds. The full gate's pre-fix timing is stated above so it is not mistaken
 for a second full run after the guard changed.
 
-## Phase 1 inventory and partial group freeze reuse (2026-09-27)
-
-The [lifecycle inventory](end-to-end-lifecycle-inventory.md) maps the current
-bounded implementation against media, recording, latency, crops, takes,
-automation, routing, delivery, archive, and clean reopen gates. Its 54 local
-links and heading fragments resolved in a documentation-only check.
+## Partial group freeze reuse (2026-09-27)
 
 `archive freeze-render --reuse-current-nodes` can explicitly reuse the still
 eligible members of an independent native-effect freeze group while executing
@@ -626,9 +621,8 @@ regression proves incomplete addition/removal preserves an existing destination
 and source, while complete metadata/capability removal preserves audio.
 
 This is a library and focused-integration gate, not a new full all-targets
-test-suite run. Device capture, synchronized microphone-file groups, playback,
-automatic crossfades, and representative listening/producer acceptance remain
-open.
+test-suite run. Synchronized microphone-file groups were added later; automatic
+crossfades are not implemented.
 
 ## Synchronized microphone-file take lanes (2026-09-28)
 
@@ -680,212 +674,6 @@ not run because `jsonschema` is unavailable in the local Python environment.
 This is a library and focused-integration gate, not a full all-targets test-suite
 run. The fixtures prove authored coordinates and sample selection, not measured
 capture latency, acoustic phase, listening quality, device recording, or playback.
-
-## Rendered macOS playback (2026-09-28)
-
-`maac play` supervises the existing source-build or retained-plan renderer,
-validates its private Float32 WAV, then runs macOS `/usr/bin/afplay` on the
-system-default output. See the [playback contract](playback.md) for supported
-flags, signal handling, diagnostics, cleanup, and limits.
-
-| Check | Command | Result |
-| --- | --- | --- |
-| Library and adjacent CLI gate | `cargo test --lib --test playback_cli --test cli --test cli_bundle --test cli_execution_profiles --test disk_media_cli --test grouped_takes_cli --locked --offline --quiet` | Passed: 354 active library tests, 3 existing ignored; 4 playback, 3 CLI, 7 bundle CLI, 3 execution-profile, 3 disk-media CLI, and 7 grouped-take CLI tests |
-| Playback lifecycle | Fourteen library tests included above | Passed: isolated subprocess supervision, signals, diagnostics, finalized WAV validation, cleanup, and restored signal handlers |
-| All-targets strict Clippy | `cargo clippy --all-targets --locked --offline -- -D warnings` | Passed after final code changes |
-| Formatting and whitespace | `cargo fmt --all -- --check`; `git diff --check` | Passed |
-| Independent review | Read-only Astra max supervisor and CLI review | No remaining findings after the fixes below |
-| Real renderer handoff | Private test helper invokes the real CLI renderer and compares the staged WAV with an ordinary build | Passed: exact Float32 WAV bytes for 48,000 stereo grouped-take frames; disk-media/song renderer; staging empty |
-| Release build | `cargo build --release --locked --offline` | Passed |
-| Release backend smoke | Quiet 50 ms source, disk-media/song source, and retained plan through the fixed system player | Passed outside the execution sandbox: each completed with 2,400 mono frames at 48 kHz, one JSON result, empty stderr, and empty staging |
-
-The lifecycle tests cover renderer and backend startup/failure, malformed or
-incomplete WAV output, exact player input bytes, bounded backend stderr, large
-UTF-8 renderer diagnostics, option forwarding, SIGINT/SIGTERM during playback,
-child termination/reaping, and temporary-file removal. Public CLI tests also
-interrupt a renderer blocked on input and check usage conflicts and source/plan
-diagnostic identity. Deliberate permission loss checks cleanup failure after
-success, backend failure, and interruption. The primary failure and signal exit
-status survive; the diagnostic identifies the remaining directory for recovery.
-
-Independent review identified three issues that were fixed and covered by
-regressions: parsing a large valid renderer error before truncating its message,
-forwarding dash-prefixed project roots as one option value, and reporting cleanup
-failure without replacing the primary error. Backend message truncation also
-now includes an explicit marker. A fresh public-binary permission-loss check
-returned SIGTERM exit 143 with `E_INTERRUPTED`, the surviving path, one JSON
-object, and empty stderr.
-
-An initial debug smoke inside the execution sandbox reported `E_PLAYBACK` for
-`AudioQueueStart failed (-66680)`; the same short fixture succeeded outside the
-sandbox. Real-player success proves successful backend process completion,
-not that a listener heard it, measured latency, or the physical device rate.
-
-This is a library and focused-integration gate, not a full all-targets test-suite
-run or a cross-platform execution result. Device capture, input monitoring,
-low-latency transport, and representative producer/listening acceptance remain
-open.
-
-## Bounded macOS microphone recording (2026-09-28)
-
-The experimental process-only `maac record` command captures a required finite
-interval as delivered 48 kHz mono Float32, embeds bounded `maac.recording/1`
-provenance in a WAV chunk, and creates an ordinary retained disk-media import.
-The final new project is published atomically with owner-only permissions.
-See the [recording contract](recording.md) for authorization, limits, capture
-origin, failure behavior, and the separate hardware-acceptance boundary.
-
-| Check | Command | Result |
-| --- | --- | --- |
-| Library and adjacent CLI gate | `cargo test --lib --test recording_cli --test playback_cli --test cli --test cli_bundle --test cli_execution_profiles --test media_import_cli --test disk_media_cli --test archive_retained_cli --locked --offline --quiet` | Passed: 373 active library tests, 3 existing ignored; 4 recording, 4 playback, 3 CLI, 7 bundle CLI, 3 execution-profile, 9 media-import, 3 disk-media, and 7 retained-archive CLI tests |
-| Recording core lifecycle | `cargo test --lib recording:: --locked --offline --quiet` | Passed: 17 tests after final review fixes; included in the library gate above |
-| Playback snapshot cleanup | `cargo test --lib playback:: --locked --offline --quiet` | Passed: 16 tests, including the new real temporary-snapshot cancellation regression |
-| All-targets strict Clippy | `cargo clippy --all-targets -- -D warnings` | Passed after final source and regression changes |
-| Formatting and whitespace | `cargo fmt --all -- --check`; `git diff --check` | Passed |
-| Independent review | Read-only Astra max native, lifecycle, publication, and playback delta review | No unresolved actionable findings |
-| Apple SDK ABI and permission metadata | Clang static assertions against installed Xcode 26.5 headers; `plutil` | Passed: audio format, queue buffer, timestamp, property-address layouts, selectors, PCM flags, and plist syntax |
-| Release build | `cargo build --release --locked --offline` | Passed after final native and publication fixes |
-| Release CLI and native packaging | `record --help`, invalid/existing-output and resource preflight, `otool -P`, `otool -L` | Passed: required help, preserved destination, expected error codes, embedded microphone purpose, and required macOS frameworks; no microphone access |
-
-Synthetic input exercises exact final-frame trimming, Float32 sample identity,
-bounded callback storage, overflow, timeline discontinuity, invalid samples,
-strict WAV/recording metadata, requested duration, and PCM hash validation.
-The successful supervisor test uses the real retained importer, verifies the
-resulting project, creates an archive, deletes the source project, relocates
-and verifies the archive, then unpacks and verifies the exact original WAV.
-No archive schema or import manifest version changed.
-
-Process tests check SIGINT/SIGTERM during capture and import, child reaping,
-no-clobber publication races, permission-error propagation, bounded setup and
-capture watchdogs, and cleanup failures with recoverable staging paths.
-A real disk-import fixture holds actual source-WAV and PCM snapshots while
-being interrupted; it verifies that all snapshots remain inside owner-only
-staging and are removed even though the killed child cannot run destructors.
-The analogous playback regression uses a real default `NamedTempFile` in a
-renderer child and checks both signals. Permission checks run under a deliberately
-permissive umask. Public CLI tests reject invalid duration/flags, existing files,
-directories and dangling symlinks, missing parents, and predictable work-budget
-failure before microphone access.
-
-Independent review corrected escaped child temporary files, default staging
-permissions, a successful-rename cleanup regression, and an expected AudioQueue
-shutdown enqueue rejection that could incorrectly fail a completed take.
-Capture rechecks fatal callback state after disposal while distinguishing
-those documented shutdown statuses. Publication disarms the temporary-directory
-owner after the atomic rename; failures still clean staging and report residue.
-
-No microphone authorization or real device capture was invoked during this
-work. The native build, synthetic pipeline, and ABI checks do not establish
-TCC/signing behavior, device pinning and conversion on real hardware, physical
-capture continuity, latency, or listening quality. Those remain deliberate
-hardware-acceptance work. Non-macOS execution was not run, and this focused gate
-does not replace the full all-targets test suite or the producer-acceptance gate.
-
-## Input discovery and exact recording selection (2026-09-28)
-
-`maac inputs` adds read-only macOS input metadata discovery. The process CLI
-accepts `record --input-device UID`, resolves it before microphone authorization,
-rechecks it afterward, and pins and verifies the queue's actual UID. The retained
-WAV uses `maac.recording/2` for explicit selection; default selection keeps the
-existing v1 fields and policy. See the [input-device contract](input-devices.md).
-
-| Check | Command | Result |
-| --- | --- | --- |
-| Final library and adjacent CLI gate | `cargo test --lib --test recording_cli --test playback_cli --test cli --test cli_bundle --test cli_execution_profiles --test media_import_cli --test disk_media_cli --test archive_retained_cli --locked --offline --quiet` | Passed after final source edits: 385 active library tests, 3 existing ignored; 7 recording, 4 playback, 3 CLI, 7 bundle CLI, 3 execution-profile, 9 media-import, 3 disk-media, and 7 retained-archive CLI tests |
-| Recording and discovery checks | Included in the library gate | Passed: 29 cases in the final library gate, including both provenance versions and CF ownership |
-| All-target strict Clippy | `cargo clippy --all-targets --locked --offline -- -D warnings` | Passed after final lint fixes |
-| Formatting and whitespace | `cargo fmt --all -- --check`; `git diff --check` | Passed |
-| Independent review | Read-only Astra max device-query, selection, provenance, lifecycle, documentation, and test review | No remaining material findings |
-| Native debug metadata smoke | JSON and human `inputs`; selector help; no capture invocation | Passed: empty sandbox inventory; outside the sandbox, one available default mono input at nominal 48 kHz; no files or microphone access |
-| Release build | `cargo build --release --locked --offline` | Passed after final source edits |
-| Native release metadata smoke | JSON/human `inputs`, selection help, bounded field checks | Passed outside the sandbox: one available default mono input at nominal 48 kHz; no capture or files created |
-
-Synthetic provider tests exercise ordering, input-only filtering, no default,
-empty and unavailable inventories, duplicate IDs/UIDs, changing inventories,
-malformed and oversized property data, and exact selection. Property buffers
-are bounded; discovery requires matching observations within a finite retry
-budget. Name/UID controls are escaped in human output. Explicit requests retain
-spaces, non-ASCII characters, and dash-prefixed UIDs without treating them as
-names, indices, or aliases.
-
-The authorization seam verifies selection and metadata size before permission,
-then revalidates availability, identity, channels, and rate afterward. Tests
-cover disappearance or ambiguity across that boundary. The authorized marker
-is written before post-permission inspection so the existing setup watchdog
-covers it. Default preference changes do not retarget a pinned input.
-
-The supervisor binds metadata version, selection policy, and actual UID to the
-request before import/publication. Synthetic v1 and v2 captures pass retained
-import verification and archive relocation/reopen; wrong UID, fallback version,
-malformed metadata, or oversized encoding is rejected. The existing original
-WAV and import/archive formats retain these bytes without a migration. Public
-CLI tests use existing destinations as a second barrier against accidental
-capture while exercising selector validation and argument handling.
-
-Apple’s [AudioQueueGetProperty documentation](https://developer.apple.com/documentation/audiotoolbox/audioqueuegetproperty%28_%3A_%3A_%3A_%3A%29)
-confirms that returned CF values are duplicated and caller-owned. Native queue UID checks now release those
-references after bounded conversion. Focused tests prove correct release on
-success and property-size/conversion failure without opening an audio device.
-Review also corrected platform configuration and post-authorization timing
-and ambiguity handling before the final gate.
-
-Read-only enumeration is the only actual-device operation exercised here.
-No microphone authorization, default-input capture, or selected-input capture
-was invoked. Physical capture, monitoring, latency/clock alignment, listening
-acceptance, and non-macOS execution remain unverified. This is a library and
-focused CLI gate, not a full all-targets test-suite refresh.
-
-## Same-device live input monitoring (2026-09-28)
-
-The opt-in `record --input-device UID --monitor` path uses one AUHAL instance
-on an explicitly selected 48 kHz duplex device. It records input channel 1 dry,
-monitors it at gain 0.125 with clamping on the first one or two outputs, and
-retains `maac.recording/3` route and timing provenance. See the
-[monitoring contract](input-monitoring.md). Existing unmonitored recording keeps
-the AudioQueue backend and v1/v2 provenance.
-
-| Gate | Command or check | Result |
-| --- | --- | --- |
-| Final library and adjacent CLI gate | `cargo test --lib --test recording_cli --test playback_cli --test cli --test cli_bundle --test cli_execution_profiles --test media_import_cli --test disk_media_cli --test archive_retained_cli --locked --offline --quiet` | Passed after final source edits: 399 active library tests, 3 existing ignored; 9 recording, 4 playback, 3 CLI, 7 bundle CLI, 3 execution-profile, 9 media-import, 3 disk-media, and 7 retained-archive CLI tests |
-| Focused recording gate | `cargo test --lib recording:: --locked --offline --quiet` | Passed: 43 tests, also included in the final library gate |
-| Strict lint | `cargo clippy --all-targets --locked --offline -- -D warnings` | Passed after final source edits |
-| Formatting and whitespace | `cargo fmt --all -- --check`; `git diff --check` | Passed |
-| Independent native ABI check | `xcrun clang -x c -std=c11 -fsyntax-only -` with installed SDK headers and static assertions | Passed: AudioComponentDescription, AudioBuffer/List, callback struct, timestamp, stream format, timebase, and new selector/scope/flag layouts and identities |
-| Native debug metadata smoke | JSON/human `inputs`, monitor help, bounded field checks | Passed: empty sandbox inventory; outside the sandbox, one available default input with one input channel, zero output channels, and nominal 48 kHz; no capture or files created |
-| Optimized build | `cargo build --release --locked --offline --quiet` | Passed |
-| Release binary checks | Native framework links, embedded microphone purpose, help, and six unmonitored/monitored usage/destination/work preflight failures | Passed without microphone access; existing sentinel preserved and no capture files created |
-| Native release metadata smoke | JSON/human `inputs` and help outside the sandbox | Passed with the same input/output channel counts and rate; no capture or files created |
-
-Synthetic checks cover:
-
-- Dry sample preservation, gain/clamp behavior, channel mapping, variable bounded
-  callbacks, exact target-frame trimming, and silent final excess.
-- The native render callback with an injected input pull, including bus and
-  timestamp identity, scratch alignment, native pull failure, and real output
-  zeroing when a failure is latched after routing.
-- Preservation of signed-zero PCM bits and rejection of nonfinite samples even
-  when the input render call supplies a silence hint.
-- Timestamp gaps, malformed/oversized buffers, overlap, ring overflow, stopping,
-  and detected route changes without opening an audio device.
-- Stop → uninitialize → dispose ordering, each teardown failure, late callback
-  failure, and retained callback storage if disposal fails.
-- Preauthorization duplex/rate eligibility and bounded metadata encoding with
-  worst-case timestamp space reserved.
-- Request-bound v3 backend, UID, channel route, gain, clock, and latency fields;
-  forged or downgraded metadata fails before retained import.
-- Monitored retained import, archive create/verify/unpack, and reopened original
-  WAV/provenance verification. Existing unmonitored lifecycle tests also pass.
-
-Independent review found and resolved late-failure output clearing, timestamp
-encoding headroom, and input silence-hint handling before the final gate.
-No remaining actionable review findings were reported.
-
-Read-only enumeration was the only actual-device operation. The available input
-has no outputs and therefore is not eligible for this same-device monitoring
-path. No microphone authorization, capture, or monitor playback was invoked.
-Audible routing, physical round-trip latency, final audible-frame delivery, and
-non-macOS execution remain unverified. This is a library and adjacent CLI gate,
-not a full all-targets test-suite refresh or production listening acceptance.
 
 ## Historical naming cleanup
 

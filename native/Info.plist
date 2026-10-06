@@ -1,7 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-<key>CFBundleIdentifier</key><string>org.maac.cli</string>
-<key>CFBundleName</key><string>MaaC</string>
-<key>NSMicrophoneUsageDescription</key><string>MaaC records microphone audio only when you run the record command.</string>
-</dict></plist>

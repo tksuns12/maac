@@ -123,15 +123,6 @@ and its import record in a version 3 checkpoint. A version 6 archive can
 retain several explicitly selected existing import directories used by one
 composition. Archive patching records explicit entry-source and direct library
 edits. Whole-output freezes and a single native effect output freeze support
-explicit reuse after conservative input validation. Recording workflows,
-broader edit journaling, processor-state packaging, broader selective invalidation,
-and multiple frozen graph branches remain future Phase 3 work.
-
-## Device-recorded imports
-
-[`maac record`](recording.md) creates a retained disk-media import from bounded
-macOS microphone capture. Its recording provenance is inside the original WAV,
-so the existing complete-file hash and archive retained-import paths
-preserve it without changing the import manifest. Import verification checks
-retained bytes and decoded samples; it does not certify microphone identity or
-recording quality.
+explicit reuse after conservative input validation. Broader edit journaling,
+processor-state packaging, broader selective invalidation, and multiple frozen
+graph branches are not implemented.

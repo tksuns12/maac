@@ -9,6 +9,18 @@ This entry describes the current source tree prepared for a GitHub source-only
 release. It may be moved to a dated `0.1.0` release entry when a release is
 actually published; no release tag or publication date is asserted here.
 
+### Removed
+
+- The macOS host tools `maac play`, `maac inputs` and `maac record` (with
+  live monitoring), the microphone permission bridge, and the native plug-in
+  execution host (`maac::external_host`, `maac::external_native`, the
+  `maac.native-c-abi/1` ABI and the single-generator external render bridge).
+  They were never released. Device capture, playback and plug-in hosting are
+  out of scope for MaaC, so the build no longer needs Xcode or links Apple's
+  audio frameworks. External processor descriptors and lock checks (§17) and
+  the MIDI export remain. Deferred host and product roadmaps were removed from
+  the documentation.
+
 ### Added
 
 - "Late Window" ([`examples/lofi`](examples/lofi/)) plays `std/studio`, part 4
@@ -147,10 +159,9 @@ actually published; no release tag or publication date is asserted here.
   [reusable declarations](docs/instruments.md#reusable-musical-declarations)
   and the [module artifact](docs/musical-module-artifact.md).
 - Generic interchange: canonical generic Locked Render lock generation and
-  verification, rendering a verified lock for built-in plans, strict external
-  processor descriptors, and the `maac.native-c-abi/1` host for one
-  output-only external generator. See [generic interchange](docs/generic-interchange.md)
-  and the [native ABI](docs/native-external-abi-v1.md).
+  verification, rendering a verified lock for built-in plans, and strict
+  external processor descriptors with host-policy checks. See
+  [generic interchange](docs/generic-interchange.md).
 - MIDI 1.0 SMF export with explicit loss reports. See
   [loss reporting](docs/interchange-loss-report.md).
 - `maac render` accepts reset-origin frame bounds for exact WAV excerpts that
@@ -170,11 +181,6 @@ actually published; no release tag or publication date is asserted here.
 - Takes and comping through `maac.takes/1` and grouped microphone lanes through
   `maac.takes/2`. See [takes](docs/takes-and-comping.md) and
   [grouped takes](docs/grouped-takes.md).
-- macOS process tools: `maac play` renders and auditions through the default
-  output; `maac inputs` lists devices; `maac record` captures bounded 48 kHz
-  mono takes from the default or a UID-selected input, with opt-in duplex
-  monitoring. See [playback](docs/playback.md), [recording](docs/recording.md)
-  and [input monitoring](docs/input-monitoring.md).
 - Language conformance evidence: the specification adds edit protocol 2 with
   authored revision identity, timing coordinates, tuning and processor input
   contracts, generic interchange, and bounded L1–L5 quantitative conformance
@@ -363,11 +369,12 @@ actually published; no release tag or publication date is asserted here.
 - The Rust implementation is a foundation subset; it does not claim full
   Document, Performance, Core Audio, or Locked Render conformance.
 - The built-in renderer has no raw-message adapter, so rendering message
-  events fails with `E_CAPABILITY`. Module-asset stretchers, mixed external and
-  core processor graphs, external inputs, events and automation, unknown
-  extension semantics, live MIDI transport, GUI, and real-time or live DSP
-  playback remain deferred or outside the current interfaces. Recognized
-  deferred features fail explicitly with `E_CAPABILITY`.
+  events fails with `E_CAPABILITY`. Module-asset stretchers, executing
+  external processors, and unknown extension semantics are outside the
+  implementation and fail explicitly with `E_CAPABILITY`.
+- MaaC is a language and offline toolchain. It does not record, play or
+  monitor audio devices, host plug-ins, or provide a GUI or real-time
+  transport; those belong to separate applications that read and write MaaC.
 - The normative specification remains a design draft and needs
   implementation-driven review before stabilization.
 - Automated finite, non-silent sample measurements and repeatability checks do

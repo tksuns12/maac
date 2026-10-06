@@ -146,6 +146,6 @@ time, runtime normalizer/editor behavior, generic lock verification/discovery/
 rendering, descriptor wire schemas, and loss-report schemas were also outside
 its scope. Later bounded slices added normalizer/editor behavior, generic lock
 verification/construction, strict descriptor and dependency discovery, and the
-loss-report/MIDI contract, bounded built-in/core generic rendering, and an explicit
-native external ABI host; mixed external/core graph execution remains outside scope. This document does not claim full-profile execution, a
+loss-report/MIDI contract, and bounded built-in/core generic rendering; executing
+external processors is outside MaaC. This document does not claim full-profile execution, a
 universal tolerance, or cross-platform bit identity.

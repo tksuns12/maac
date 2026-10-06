@@ -1,6 +1,6 @@
 # Native composition archives and checkpoint history
 
-**Status:** Phase 3 bounded native archive slices. Version 1 captures one
+**Status:** bounded native archive slices. Version 1 captures one
 composition; version 2 preserves an explicit linear sequence of complete
 composition checkpoints; version 3 also retains verified original WAV import
 records when present; version 4 can retain an opt-in full-output freeze;

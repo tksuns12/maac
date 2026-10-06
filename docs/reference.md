@@ -11,10 +11,6 @@ language.
 | `maac compile [INPUT] -o PLAN [--project-root ROOT] [--profile default\|song]` | Resolve a composition bundle and write an independently loadable versioned JSON plan |
 | `maac render PLAN -o WAV [--start-frame N --end-frame M] [--profile default\|song]` | Validate an explicit plan file under the caller's profile, then render it; an optional pair exports a reset-origin half-open frame excerpt |
 | `maac build [INPUT] -o WAV [--project-root ROOT] [--profile default\|song]` | Resolve, compile and render a composition bundle through the same selected limits |
-| `maac play [INPUT] [--project-root ROOT] [--disk-media] [--profile default\|song]` | Render source to a private Float32 WAV, then play through macOS system-default output; Ctrl-C stops preparation or playback |
-| `maac play PLAN --plan [--profile default\|song]` | Validate and render an explicit retained plan, then play it through the same backend |
-| `maac inputs` | List macOS recording input UIDs and metadata without opening a microphone |
-| `maac record --duration-seconds N --output-dir NEW [--input-device UID] [--monitor] [--profile default\|song]` | Capture 1–1800 whole seconds of 48 kHz mono Float32 into a new retained-import project; optional monitoring requires an explicit 48 kHz duplex device |
 | `maac deliver INPUT --delivery ID --output-dir DIR [--target ID] [--profile default\|song]` | Render selected named targets from source or retained JSON, analyze final WAVs, and publish a manifest |
 | `maac instruments [NAME]` | List the built-in catalog, or show one instrument with controls, musical guidance and runnable usage |
 | `maac instruments [NAME] --library ID` | Select an exact built-in version for catalog listing or named detail |
@@ -56,22 +52,6 @@ output file. Use `--json` for complete event payloads.
 replacing an existing output. Render/build accept `--format float32` (default)
 or `--format pcm16`. Exit status is zero for success and nonzero for failure.
 Use the executable's `--help` for argument syntax.
-
-`play` is a process-only CLI command with a fixed macOS backend. It renders
-complete output before audition, cleans private files on handled failure and
-SIGINT/SIGTERM, and has no device selector, seek, or monitoring path. `--plan`
-requires input and conflicts with source-only flags. The public `Command` and
-`execute*` APIs remain unchanged. See [playback](playback.md).
-
-`inputs` and `record` are also process-only. [Input selection](input-devices.md)
-uses exact UIDs; it never falls back to another device. `record` requires
-microphone authorization, records a
-fixed duration, and atomically publishes a new project with the original WAV
-retained. `--monitor` requires `--input-device UID` and routes input channel 1
-to that same 48 kHz device's first two outputs at fixed reduced gain. See
-[monitoring](input-monitoring.md) for the full contract.
-Ctrl-C aborts; it does not save a partial take. See
-[recording](recording.md) for provenance and hardware-acceptance limits.
 
 `render` accepts `--start-frame N` and `--end-frame M` only as a pair. They
 select `[N, M)` in reset-origin engine frames, including the plan's declared
