@@ -11,6 +11,16 @@ actually published; no release tag or publication date is asserted here.
 
 ### Added
 
+- "Late Window" ([`examples/lofi`](examples/lofi/)) plays `std/studio`, part 4
+  and the end of the [instrument palette](docs/instrument-palette-proposal.md).
+  Its electric piano, bass, kick and hats, snare and pad are std/studio
+  instruments, and the notes are unchanged. Each part's loudness matches the
+  previous master within 0.02 LU. The master measures −14.76 LUFS at
+  −1.10 dBTP, against −14.73 LUFS before, and `maac deliver` passes. The
+  render takes 45.6 s, 1.7 times the earlier 26.7 s and within the proposal's
+  2× limit. The [AI producer guide](docs/ai-producer-guide.md) now starts
+  from std/studio, and the [T2 report](docs/ai-production-trial.md) marks F14
+  addressed and F15 fixed within std/studio.
 - `std/studio/1.0.0`, part 3 of the
   [instrument palette](docs/instrument-palette-proposal.md): an electric
   piano, a bass, a pad and an eight-piece `drums` kit built from the palette

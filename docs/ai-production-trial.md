@@ -31,7 +31,8 @@ owner heard, every point of friction, and what to build next.
   at -15.58 LUFS integrated and -2.07 dBTP true peak.
 - **Owner's final verdict:** the timing "locks", the noise is gone, and the
   guitar is "somewhat better". The std/basic keys, bass, drums and pad still
-  sound dated.
+  sound dated. The example has since moved its keys, bass, drums and pad to
+  [std/studio](studio-instruments.md) at the same per-part loudness (F14).
 
 ## What happened
 
@@ -76,13 +77,15 @@ owner heard, every point of friction, and what to build next.
 | F11 | A delivery needs a copied schema file and its hash pin. Its path is project-root relative, while sample paths are source relative | Gap: delivery boilerplate |
 | F12 | Mixed swing and straight grids went unnoticed by every tool; the owner's ears caught them | Fixed: `groove_mismatch` |
 | F13 | A vinyl hiss 27 dB under the music still read as a constant, annoying "sssss" once the compressors lifted quiet passages. The numbers could not show that steady noise is salient | Gap: perception |
-| F14 | The std/basic instruments sound dated, and they limit how good any track can sound | Gap: instrument palette |
-| F15 | `level` has no common loudness scale across libraries; the guitar started 10–14 dB too quiet | Gap: level calibration |
+| F14 | The std/basic instruments sound dated, and they limit how good any track can sound | Addressed by [`std/studio/1.0.0`](studio-instruments.md): new building blocks and an electric piano, bass, pad and kit whose timbre follows velocity. "Late Window" now plays them. Accepted on measurements; no one has judged it by ear |
+| F15 | `level` has no common loudness scale across libraries; the guitar started 10–14 dB too quiet | Fixed within std/studio: every default puts a reference phrase at velocity 0.7 at −20 LUFS. std/basic and std/acoustic keep their released scales |
 
 ## What to build next, in order
 
 1. **Instrument palette (F14).** Production quality cannot exceed instrument
-   quality, and this was the owner's lasting complaint. Candidates:
+   quality, and this was the owner's lasting complaint. Addressed on
+   2026-10-06 by the synthesized route below; see the
+   [palette proposal](instrument-palette-proposal.md). Candidates:
    - more modelled instruments like std/acoustic, for example a modelled
      electric piano, upright and electric bass, and drum kits;
    - sampled instruments using the existing pitched sampler, which needs
@@ -102,7 +105,8 @@ owner heard, every point of friction, and what to build next.
 4. **Iteration speed (F7).** Profile the renderer, and let `analyze` render
    one region or score window.
 5. **Level calibration (F15).** Publish each library instrument's loudness at
-   `level = 1`, or calibrate `level` to a common reference.
+   `level = 1`, or calibrate `level` to a common reference. Done for
+   std/studio, whose defaults share a −20 LUFS reference.
 6. **Perception gaps (F13).** Measure the noise floor of quiet passages, and
    add the deferred score–audio checks (audible notes, sounding pitch).
 7. **Delivery boilerplate (F11).** A built-in production schema reference

@@ -16,7 +16,7 @@ project late_window {
 }
 tempo clock { points = [(0q, 90bpm, step)]; }
 meter metre { points = [(0q, 4, 4)]; }
-import basic { builtin = "std/basic/1.1.0"; }
+import studio { builtin = "std/studio/1.0.0"; }
 import acoustic { builtin = "std/acoustic/1.0.0"; }
 
 region intro { span = [bar(1, 1), bar(5, 1)]; }
@@ -32,8 +32,8 @@ groove lazy { grid = 1/2q; ratio = 2/3; }
 
 // ---------------------------------------------------------------- keys
 node keys {
-  instrument = &basic.electric_piano; config = { voices = 24; };
-  params = { level = 0.11; brightness = 2400Hz; release = 600ms; pan = -0.15; };
+  instrument = &studio.electric_piano; config = { voices = 24; };
+  params = { level = 0.141; release = 600ms; pan = -0.15; };
 }
 // One bar of comping: a chord on beat 1 and a pushed chord on the and of 3.
 pattern ch_fmaj9 { length = 4q;
@@ -98,8 +98,8 @@ place keys_outro { pattern = &prog_end; track = &keys_notes; at = 96q; groove = 
 
 // ---------------------------------------------------------------- bass
 node bass {
-  instrument = &basic.finger_bass; config = { voices = 6; };
-  params = { level = 0.24; brightness = 1800Hz; release = 150ms; };
+  instrument = &studio.bass; config = { voices = 6; };
+  params = { level = 0.628; release = 150ms; };
 }
 pattern bass_a { length = 16q;
   note f1 { at = 0q; dur = 19/16q; pitch = F2; velocity = 0.62; }
@@ -135,14 +135,14 @@ place bass_b1 { pattern = &bass_b; track = &bass_notes; at = 48q; count = 2; gro
 place bass_a2 { pattern = &bass_a; track = &bass_notes; at = 80q; groove = &lazy; }
 
 // ---------------------------------------------------------------- drums
-// The std/basic kit plays the kick and hats by hit key; the groove swings the
+// The std/studio kit plays the kick and hats by hit key; the groove swings the
 // hats and the pushed kicks with the other parts. A kit has one output, so the
 // snare, which alone feeds the room send, stays its own node.
 node drums {
-  instrument = &basic.drums;
-  params = { kick_level = 0.22; hat_level = 0.4; hat_pan = 0.35; hat_brightness = 5500Hz; };
+  instrument = &studio.drums;
+  params = { kick_level = 0.254; hat_level = 1.98; hat_pan = 0.35; hat_brightness = 8000Hz; };
 }
-node snare { instrument = &basic.snare; config = { voices = 4; }; params = { level = 0.28; pan = 0.05; brightness = 4000Hz; }; }
+node snare { instrument = &studio.snare; config = { voices = 4; }; params = { level = 0.579; pan = 0.05; brightness = 6000Hz; }; }
 pattern hat_bar { length = 4q;
   hit h1 { at = 0q; key = "hat"; velocity = 0.5; }
   hit h2 { at = 1/2q; key = "hat"; velocity = 0.3; }
@@ -221,8 +221,8 @@ track melody_a2 { target = &guitar:events; }
 place melody_a21 { pattern = &guitar_line_high; track = &melody_a2; at = 80q; groove = &lazy; }
 
 node pad {
-  instrument = &basic.warm_pad; config = { voices = 8; };
-  params = { level = 0.05; brightness = 2500Hz; release = 1500ms; pan = -0.35; };
+  instrument = &studio.pad; config = { voices = 8; };
+  params = { level = 0.06; release = 1500ms; };
 }
 pattern pad_b { length = 16q;
   chord b { at = 0q; dur = 4q; pitches = [D3, F3, A3]; velocity = [0.32, 0.3, 0.3]; }
@@ -242,7 +242,7 @@ node warmth { type = "fx.eq/1"; config = { channels = 2; mode = high_shelf; }; p
 node glue { type = "fx.compressor/1"; config = { channels = 2; }; params = { threshold = -26dB; ratio = 3; knee = 6dB; attack = 20ms; release = 200ms; makeup = 4dB; }; }
 // Drives the mix to the loudness target under a true-peak ceiling. Its 1.5 ms
 // lookahead is declared latency; the 3 s tail covers it.
-node master { type = "fx.limiter/1"; config = { channels = 2; }; params = { gain = 9.5dB; ceiling = -1.1dB; release = 150ms; }; }
+node master { type = "fx.limiter/1"; config = { channels = 2; }; params = { gain = 9.8dB; ceiling = -1.1dB; release = 150ms; }; }
 
 connect keys_bus { from = &keys:out; to = &bus:in; }
 connect bass_bus { from = &bass:out; to = &bus:in; }

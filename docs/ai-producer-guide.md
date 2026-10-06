@@ -12,11 +12,12 @@ listen before you call a track finished.
 
 ## 1. Plan before writing
 
-- **Instruments.** Choose them with `maac instruments` and
-  `maac instruments --library std/acoustic/1.0.0`. The std/acoustic guitars
-  are physical models and sound less synthetic than the std/basic flute or
-  bell. For drums use the `drums` kit of `std/basic/1.1.0`
-  (`maac instruments drums --library std/basic/1.1.0`).
+- **Instruments.** Start from `std/studio/1.0.0`
+  (`maac instruments --library std/studio/1.0.0`): its electric piano, bass,
+  pad and `drums` kit change timbre with velocity, and their levels share one
+  calibrated scale. Use the `std/acoustic/1.0.0` guitars for guitar parts.
+  std/basic covers other roles, such as organ, strings, flute and leads, with
+  older synthesized timbres that ignore velocity except for loudness.
 - **Form.** Fix the tempo, the meter and the form in bars. Declare each
   section as a `region`, so the analysis reports per section by name.
 - **Groove grid.** Choose one grid, straight or swung, for every part. For
@@ -34,16 +35,20 @@ listen before you call a track finished.
   Give `velocity` or `onset_offset` a list to voice or strum it.
 - Write one-bar chord patterns and assemble progressions with `use`. Place
   progressions with `count` for repeats.
-- Play drums from one kit node: import `std/basic/1.1.0`, add
-  `node drums { instrument = &basic.drums; }`, and write `hit` leaves such as
+- Play drums from one kit node: import `std/studio/1.0.0`, add
+  `node drums { instrument = &studio.drums; }`, and write `hit` leaves such as
   `hit k1 { at = 0q; key = "kick"; velocity = 0.85; }`. Keys are `kick`,
   `snare`, `clap`, `hat`, `open_hat`, `low_tom`, `high_tom` and `crash`; set
   each drum with `kick_level`, `hat_pan` and so on. A kit has one output, so
   a drum that needs its own send or effect stays a separate instrument node.
 - Connect everything to an explicit stereo `core.sum/1` bus.
-- Start levels low. Instruments from different libraries have different
-  `level` scales: in the trial, the nylon guitar needed `level = 0.7` to match
-  an electric piano at `0.11`.
+- Vary velocity. On std/studio a harder note is brighter as well as louder,
+  so accents and ghost notes change the sound; a part at one velocity sounds
+  like a machine.
+- Mind the level scales. Every std/studio default puts a typical phrase at
+  velocity 0.7 at −20 LUFS, so its instruments start balanced against each
+  other. std/basic and std/acoustic use other scales: in the trial, the nylon
+  guitar needed `level = 0.7` to match a std/basic electric piano at `0.11`.
 - Run `maac check` after each edit. Diagnostics name the object and field at
   fault; fix that field.
 
@@ -111,6 +116,6 @@ ask for a verdict.
 | --- | --- | --- |
 | "The melody and the beat keep missing each other" | Some parts swung, others straight | `groove_mismatch`; count onset fractions from `query-events` |
 | "A constant sssss in the background" | Low-level steady noise lifted by compression | Not measured yet; avoid steady noise |
-| "The instruments sound tacky" | std/basic synthesized timbres | Not measurable; prefer std/acoustic and darker `brightness` |
+| "The instruments sound tacky" | std/basic synthesized timbres that ignore velocity | Not measurable; use std/studio and std/acoustic, and vary velocity |
 | Lead melody gets lost | Melody 6 dB under the comping | Per-stem `max_short_term_lufs` by region |
 | True peak over the limit after a sound change | Plucked attacks through compressors standing in for a limiter | `true_peak_over`; master through `fx.limiter/1` with its ceiling under the limit |

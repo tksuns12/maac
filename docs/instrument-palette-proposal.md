@@ -1,13 +1,13 @@
 # Instrument palette: synthesis primitives and a studio library
 
-**Status:** accepted 2026-10-06; in progress. The owner chose the
+**Status:** accepted 2026-10-06; complete 2026-10-07. The owner chose the
 synthesized direction over sampled instruments and character processors and
 accepted every [decision](#decisions). Part 1, the note sources and the
 envelope `curve`, and part 2, the [resonant filter](instruments.md#resonant-filter)
 and [saturation](instruments.md#saturation), have landed in the instrument
 contract. Part 3, [`std/studio/1.0.0`](studio-instruments.md), is frozen on
 measurements: after one audition round the owner declined to act as the
-listening gate (decision 7).
+listening gate (decision 7). Part 4 moved "Late Window" onto it.
 
 ## Why
 
@@ -331,6 +331,21 @@ instruments use 2.6 billion of the song profile's 10 billion work units.
   soft clip after velocity for the snare to keep −20 LUFS within headroom.
 - **Cost.** The electric piano renders at 2.0 times real time on its own.
   Part 4 measures "Late Window" against the 2× limit.
+
+### Part 4: "Late Window" on std/studio
+
+- **The same mix with new instruments.** The electric piano, bass, kick and
+  hats, snare and pad now come from std/studio. Their levels were set so that
+  each part's integrated loudness matches the previous master within
+  0.02 LU, which keeps the balance the owner approved. The track keeps its
+  own choices: pans, releases, and darker hats and snare. The pad loses its
+  pan because its voice is already stereo.
+- **Delivery.** The limiter gain rose by 0.3 dB to keep the loudness. The
+  master measures −14.76 LUFS at −1.10 dBTP, against −14.73 LUFS before, and
+  `maac deliver` passes. `maac analyze` reports no findings.
+- **Cost.** The render takes 45.6 s, 1.71 times the 26.7 s baseline, inside
+  the 2× limit. The instruments use 3.25 of the song profile's 10 billion
+  work units, against 2.64 before.
 
 ## Not proposed
 
