@@ -82,6 +82,12 @@ pub enum GraphProcessor {
     Timbre,
     #[serde(rename = "synth.pressure/1")]
     Pressure,
+    /// The note's velocity, constant for the voice's life.
+    #[serde(rename = "synth.velocity/1")]
+    Velocity,
+    /// The voice's base frequency in octaves from C4.
+    #[serde(rename = "synth.key/1")]
+    Key,
     #[serde(rename = "synth.lfo/1")]
     Lfo,
     #[serde(rename = "synth.gain/1")]
@@ -127,6 +133,10 @@ enum GraphProcessorWire {
     Timbre {},
     #[serde(rename = "synth.pressure/1")]
     Pressure {},
+    #[serde(rename = "synth.velocity/1")]
+    Velocity {},
+    #[serde(rename = "synth.key/1")]
+    Key {},
     #[serde(rename = "synth.lfo/1")]
     Lfo {},
     #[serde(rename = "synth.gain/1")]
@@ -172,6 +182,8 @@ impl<'de> Deserialize<'de> for GraphProcessor {
             GraphProcessorWire::Adsr {} => Self::Adsr,
             GraphProcessorWire::Timbre {} => Self::Timbre,
             GraphProcessorWire::Pressure {} => Self::Pressure,
+            GraphProcessorWire::Velocity {} => Self::Velocity,
+            GraphProcessorWire::Key {} => Self::Key,
             GraphProcessorWire::Lfo {} => Self::Lfo,
             GraphProcessorWire::Gain { channels } => Self::Gain { channels },
             GraphProcessorWire::OnePole { channels } => Self::OnePole { channels },
@@ -196,6 +208,8 @@ impl GraphProcessor {
             Self::Adsr => "synth.adsr/1",
             Self::Timbre => "synth.timbre/1",
             Self::Pressure => "synth.pressure/1",
+            Self::Velocity => "synth.velocity/1",
+            Self::Key => "synth.key/1",
             Self::Lfo => "synth.lfo/1",
             Self::Gain { .. } => "synth.gain/1",
             Self::OnePole { .. } => "synth.onepole/1",
@@ -246,6 +260,8 @@ impl GraphProcessor {
                 | Self::Adsr
                 | Self::Timbre
                 | Self::Pressure
+                | Self::Velocity
+                | Self::Key
         )
     }
 }
@@ -604,6 +620,7 @@ pub fn parameter_descriptor(processor: &GraphProcessor, name: &str) -> Option<Pa
                 false,
             )),
             "sustain" => Some(dimensionless(ParameterRate::NoteOn, 1, 0, 1)),
+            "curve" => Some(dimensionless(ParameterRate::NoteOn, 0, 0, 16)),
             "release" => Some(spec(
                 GraphUnit::Seconds,
                 ParameterRate::NoteOff,
@@ -647,7 +664,11 @@ pub fn parameter_descriptor(processor: &GraphProcessor, name: &str) -> Option<Pa
         GraphProcessor::Pan => {
             (name == "pan").then(|| dimensionless(ParameterRate::Sample, 0, -1, 1))
         }
-        GraphProcessor::Mix { .. } | GraphProcessor::Timbre | GraphProcessor::Pressure => None,
+        GraphProcessor::Mix { .. }
+        | GraphProcessor::Timbre
+        | GraphProcessor::Pressure
+        | GraphProcessor::Velocity
+        | GraphProcessor::Key => None,
     }
 }
 

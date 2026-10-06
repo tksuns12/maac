@@ -94,6 +94,12 @@ Try `maac build examples/internal-event-modulation.maac -o internal-event.wav`
 or `maac build examples/internal-phase-modulation.maac -o internal-phase.wav`.
 Shared reset capture: `maac build examples/internal-reset-modulation.maac -o internal-reset.wav`.
 
+[Note sources](docs/instruments.md#note-sources) let a voice graph read the
+note's velocity and key, so harder notes can be brighter and higher notes
+decay sooner. An envelope's `curve` makes decays and releases exponential in
+shape while keeping their durations.
+Try `maac build examples/note-sources.maac -o note-sources.wav`.
+
 The [project-entrypoint guide](docs/project-entrypoint.md) specifies conventional
 `main.maac` discovery and the explicit finite `--profile song` allowance for
 larger projects. Existing explicit-file commands remain compatible.

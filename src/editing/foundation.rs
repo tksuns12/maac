@@ -1291,6 +1291,7 @@ fn normalize_node_fields(fields: &mut Map<String, Value>, project_seed: &Value) 
                     ("decay", quantity(0, 1, Unit::S)),
                     ("sustain", number(1, 1)),
                     ("release", quantity(0, 1, Unit::S)),
+                    ("curve", number(0, 1)),
                 ] {
                     params.entry(name).or_insert(value);
                 }
@@ -1315,7 +1316,8 @@ fn normalize_node_fields(fields: &mut Map<String, Value>, project_seed: &Value) 
             "synth.pan/1" => {
                 params.entry("pan").or_insert_with(|| number(0, 1));
             }
-            "synth.mix/1" | "synth.timbre/1" | "synth.pressure/1" => {}
+            "synth.mix/1" | "synth.timbre/1" | "synth.pressure/1" | "synth.velocity/1"
+            | "synth.key/1" => {}
             other => {
                 return Err(EditError::new(
                     "E_CAPABILITY",

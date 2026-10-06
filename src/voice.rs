@@ -80,6 +80,8 @@ enum ProcessorCode {
     Lfo,
     Timbre,
     Pressure,
+    Velocity,
+    Key,
     Gain(usize),
     OnePole(usize),
     HighPass(usize),
@@ -194,6 +196,8 @@ enum ProcessorState {
     Adsr(Adsr),
     Lfo(Oscillator),
     OnePole([f64; 2]),
+    /// The note-on velocity a `synth.velocity/1` node emits.
+    Velocity(f64),
     Stateless,
 }
 
@@ -681,11 +685,12 @@ impl GraphState {
                     velocity,
                     layers: None,
                 },
-                ProcessorCode::Adsr => ProcessorState::Adsr(Adsr::new(
+                ProcessorCode::Adsr => ProcessorState::Adsr(Adsr::new_curved(
                     on_frame.unwrap_or(0),
                     params[0],
                     params[1],
                     params[2],
+                    params[4],
                 )?),
                 ProcessorCode::Lfo => {
                     ProcessorState::Lfo(Oscillator::new(Waveform::Sine, params[1])?)
@@ -693,7 +698,9 @@ impl GraphState {
                 ProcessorCode::OnePole(_) | ProcessorCode::HighPass(_) => {
                     ProcessorState::OnePole([0.0; 2])
                 }
+                ProcessorCode::Velocity => ProcessorState::Velocity(velocity),
                 ProcessorCode::Gain(_)
+                | ProcessorCode::Key
                 | ProcessorCode::Mix(_)
                 | ProcessorCode::Pan
                 | ProcessorCode::Timbre
@@ -876,14 +883,15 @@ impl GraphState {
                 )?;
                 match (&compiled.processor, &mut self.nodes[node_index].state) {
                     (ProcessorCode::Adsr, state) => {
-                        for (parameter, &value) in event_params.iter().enumerate().take(3) {
-                            validate_event_parameter(compiled, parameter, value)?;
+                        for parameter in [0, 1, 2, 4] {
+                            validate_event_parameter(compiled, parameter, event_params[parameter])?;
                         }
-                        *state = ProcessorState::Adsr(Adsr::new(
+                        *state = ProcessorState::Adsr(Adsr::new_curved(
                             frame,
                             event_params[0],
                             event_params[1],
                             event_params[2],
+                            event_params[4],
                         )?);
                     }
                     (ProcessorCode::Oscillator(_), ProcessorState::Oscillator(oscillator)) => {
@@ -1355,6 +1363,11 @@ fn process_graph_node(
         }
         (ProcessorCode::Timbre, ProcessorState::Stateless) => output[0] = timbre,
         (ProcessorCode::Pressure, ProcessorState::Stateless) => output[0] = pressure,
+        (ProcessorCode::Velocity, ProcessorState::Velocity(velocity)) => output[0] = *velocity,
+        // Octaves from C4 = 440 Hz * 2^(-9/12).
+        (ProcessorCode::Key, ProcessorState::Stateless) => {
+            output[0] = (pitch_hz / 440.0).log2() + 0.75;
+        }
         (ProcessorCode::Gain(channels), ProcessorState::Stateless) => {
             for (output, input) in output.iter_mut().zip(audio_input).take(*channels) {
                 *output = input * params[0];
@@ -1573,11 +1586,13 @@ fn compile_processor(
             })),
         ),
         GraphProcessor::Adsr => (
-            &["attack", "decay", "sustain", "release"],
+            &["attack", "decay", "sustain", "release", "curve"],
             ProcessorCode::Adsr,
         ),
         GraphProcessor::Timbre => (&[], ProcessorCode::Timbre),
         GraphProcessor::Pressure => (&[], ProcessorCode::Pressure),
+        GraphProcessor::Velocity => (&[], ProcessorCode::Velocity),
+        GraphProcessor::Key => (&[], ProcessorCode::Key),
         GraphProcessor::Lfo => (&["frequency", "phase", "level"], ProcessorCode::Lfo),
         GraphProcessor::Gain { channels } => (&["level"], ProcessorCode::Gain(*channels as usize)),
         GraphProcessor::OnePole { channels } => {
@@ -1597,11 +1612,15 @@ fn parameter_slot(processor: &ProcessorCode, name: &str) -> Option<usize> {
         ProcessorCode::Pluck(_) => &["ratio", "decay", "damping", "level"],
         ProcessorCode::Wavetable(_) => &["ratio", "frequency", "phase", "level", "position"],
         ProcessorCode::Sample(_) => &["ratio", "frequency", "level"],
-        ProcessorCode::Adsr => &["attack", "decay", "sustain", "release"],
+        ProcessorCode::Adsr => &["attack", "decay", "sustain", "release", "curve"],
         ProcessorCode::Lfo => &["frequency", "phase", "level"],
         ProcessorCode::Gain(_) | ProcessorCode::Noise(_) => &["level"],
         ProcessorCode::OnePole(_) | ProcessorCode::HighPass(_) => &["cutoff"],
-        ProcessorCode::Mix(_) | ProcessorCode::Timbre | ProcessorCode::Pressure => &[],
+        ProcessorCode::Mix(_)
+        | ProcessorCode::Timbre
+        | ProcessorCode::Pressure
+        | ProcessorCode::Velocity
+        | ProcessorCode::Key => &[],
         ProcessorCode::Pan => &["pan"],
     };
     names.iter().position(|candidate| *candidate == name)

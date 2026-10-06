@@ -318,9 +318,11 @@ is rejected, including mixed audio/modulation cycles.
 | `synth.wavetable/1` | Oscillator parameters plus `position` (0; 0…1); required `config.table = &wavetable` | Mono |
 | `synth.sample/1` | `ratio`, `frequency`, and `level` as for oscillators (no `phase`); required `config.zones` and optional `config.channels` (1) (see [Samples](#samples)) | Mono, or stereo with `channels = 2` |
 | `synth.noise/1` | `level` (1; 0…16); optional nonzero unsigned 32-bit `config.seed` (1831565813) | Mono |
-| `synth.adsr/1` | `attack` (0 s), `decay` (0 s), `sustain` (1; 0…1), `release` (0 s); times 0…1800 s | Mono control signal |
+| `synth.adsr/1` | `attack` (0 s), `decay` (0 s), `sustain` (1; 0…1), `release` (0 s); times 0…1800 s; `curve` (0; 0…16) | Mono control signal |
 | `synth.timbre/1` | No inputs, parameters, or configuration; voice-only | Mono per-note timbre signal (zero when absent) |
 | `synth.pressure/1` | No inputs, parameters, or configuration; voice-only | Mono per-note pressure signal (zero when absent) |
+| `synth.velocity/1` | No inputs, parameters, or configuration; voice-only | Mono note velocity, 0…1, constant for the voice's life |
+| `synth.key/1` | No inputs, parameters, or configuration; voice-only | Mono base frequency in octaves from C4 |
 | `synth.lfo/1` | `frequency` (1 Hz; −200…200 Hz), `phase` (0; 0…1), `level` (1; 0…16) | Mono control signal |
 | `synth.gain/1` | `level` (1; 0…16); required `config.channels` | Same channels as input |
 | `synth.onepole/1` | `cutoff` (1000 Hz; strictly between 0 and 24000 Hz); required `config.channels` | Same channels as input |
@@ -332,7 +334,7 @@ Numbers are dimensionless; seconds accept `s` and `ms`, hertz accept `Hz` and
 `kHz`. Parameters and controls use exact rationals until the DSP boundary.
 Unknown fields, wrong units, invalid ranges, and nonfinite values fail.
 Oscillators and noise are voice-only; high-pass is allowed in both voice and
-shared graphs. ADSR attack/decay/sustain and oscillator/LFO phase
+shared graphs. ADSR attack/decay/sustain/curve and oscillator/LFO phase
 are captured at note-on (shared LFO phase at render reset). Release is captured
 at note-off. Other parameters are sampled each frame. Shared LFO phase controls
 accept defaults, presets, and instance values at render reset; they cannot be
@@ -349,8 +351,38 @@ Shared-LFO phase captures at reset from resolved authored controls, captured
 top-level reset-control contributions when present, and silent shared input. Internal event-rate sums are checked only when captured. See [internal event modulation](internal-event-modulation.md)
 for ordering, source previews, and conservative release-work bounds. Final evaluated
 values must satisfy the processor range; no depth adjustment or clipping occurs.
-ADSR, LFO, timbre, and pressure signals may also feed mono audio inputs; stereo signals cannot
+ADSR, LFO, timbre, pressure, velocity, and key signals may also feed mono audio inputs; stereo signals cannot
 modulate a scalar parameter.
+
+### Note sources
+
+`synth.velocity/1` emits the note's velocity, the same value that scales the
+voice's amplitude, constant from note-on through release. A kit passes each
+hit's velocity to its piece. `synth.key/1` emits `log2(f / 440 Hz) + 3/4`,
+the voice's base frequency `f` in octaves from C4 = 440 Hz × 2^(−9/12). `f`
+is the frequency the voice receives, including [per-note pitch](instrument-pitch.md)
+and before node ratios and frequency offsets. It is evaluated every frame, so
+it follows a bend; a note-on capture takes its value at note-on. Under 12-TET,
+A4 is 0.75 and A3 is −0.25.
+
+Neither source opts the instrument into an expression kind or changes the
+voice path: amplitude still scales by velocity exactly once. They map playing
+strength and register to timbre through ordinary connections and modulation:
+
+```maac
+node vel { type = "synth.velocity/1"; }
+node key { type = "synth.key/1"; }
+node amp { type = "synth.adsr/1"; params = { decay = 1200ms; sustain = 0; curve = 7; }; }
+node tone { type = "synth.onepole/1"; config = { channels = 1; }; params = { cutoff = 1200Hz; }; }
+modulate harder_brighter { from = &vel:out; to = &tone.params.cutoff; depth = 2400Hz; }
+modulate higher_shorter { from = &key:out; to = &amp.params.decay; depth = -300ms; }
+```
+
+Each mapping is linear and its final value must lie in the target's range:
+here a key above 4 octaves from C4 would ask for a negative decay and fail.
+The [complete example](../examples/note-sources.maac) applies the same two
+mappings to a filtered saw at C3, C4 and C5, each played soft, medium and
+hard.
 
 ## Timing and audio contract
 
@@ -380,10 +412,26 @@ reaches zero, even if its sustain is zero. Voices sum in unsigned UTF-8
 event-address order. Overflow is an explicit error. Note-offs and expired-tail
 retirement precede note-ons at a shared frame, preserving the existing schedule.
 
-Envelopes are linear functions evaluated at sample instants. Durations are not
+Envelopes are functions evaluated at sample instants. Durations are not
 rounded to whole frames. A zero attack immediately reaches 1; a zero decay
 immediately reaches sustain. Release starts from the level at note-off; a zero
-release retires at that frame. The score boundary releases still-held notes;
+release retires at that frame. Attack is linear. With `curve = 0`, decay and
+release are linear too. A positive curve `c` shapes both by the fraction of
+the segment remaining at progress `x` in 0…1:
+
+```text
+g(x) = (exp(-c x) - exp(-c)) / (1 - exp(-c))
+     = (expm1(-c x) - expm1(-c)) / -expm1(-c)      evaluated form
+decay:   sustain + (1 - sustain) g(x)
+release: level_at_note_off * g(x)
+```
+
+`g` runs from exactly 1 to exactly 0, so a curved decay reaches sustain and a
+curved release reaches zero at the same instants as linear ones, and voices
+retire on the same frames. Struck and plucked sounds decay roughly
+exponentially. With `curve = 7`, a segment is 31 dB down halfway and 61 dB
+down at 90 % of its duration. The curve is captured at note-on and applies to
+the release too. The score boundary releases still-held notes;
 the declared project tail is the render boundary.
 
 Oscillator instantaneous frequency is `note_hz * ratio + frequency`, where

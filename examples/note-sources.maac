@@ -1,0 +1,57 @@
+maac 1;
+
+// Velocity and key as graph sources, with a curved envelope. Harder notes
+// are brighter; higher notes decay sooner. Each register plays soft, medium
+// and hard.
+project note_sources_demo {
+  score = [0q, 9q];
+  tail = 2s;
+  rate = 48000Hz;
+  tempo = &clock;
+  meter = &metre;
+  output = &sound:out;
+}
+tempo clock { points = [(0q, 120bpm, step)]; }
+meter metre { points = [(0q, 4, 4)]; }
+
+instrument struck {
+  channels = 1;
+  voice v {
+    channels = 1;
+    amplitude = &amp;
+    output = &tone:out;
+    node amp {
+      type = "synth.adsr/1";
+      params = { attack = 2ms; decay = 1500ms; sustain = 0; release = 600ms; curve = 7; };
+    }
+    node osc { type = "synth.saw/1"; params = { ratio = 1; level = 1/4; }; }
+    node tone {
+      type = "synth.onepole/1";
+      config = { channels = 1; };
+      params = { cutoff = 600Hz; };
+    }
+    node vel { type = "synth.velocity/1"; }
+    node key { type = "synth.key/1"; }
+    connect osc_tone { from = &osc:out; to = &tone:in; }
+    // Velocity 0.3 gives a 1.5 kHz cutoff; velocity 1 gives 3.6 kHz.
+    modulate harder_brighter { from = &vel:out; to = &tone.params.cutoff; depth = 3000Hz; }
+    // C3 decays over 1.9 s, C4 over 1.5 s and C5 over 1.1 s.
+    modulate higher_shorter { from = &key:out; to = &amp.params.decay; depth = -400ms; }
+  }
+}
+node sound { instrument = &struck; config = { voices = 4; }; }
+
+pattern registers {
+  length = 9q;
+  note low_soft { at = 0q; dur = 1q; pitch = C3; velocity = 0.3; }
+  note low_medium { at = 1q; dur = 1q; pitch = C3; velocity = 0.6; }
+  note low_hard { at = 2q; dur = 1q; pitch = C3; velocity = 1; }
+  note mid_soft { at = 3q; dur = 1q; pitch = C4; velocity = 0.3; }
+  note mid_medium { at = 4q; dur = 1q; pitch = C4; velocity = 0.6; }
+  note mid_hard { at = 5q; dur = 1q; pitch = C4; velocity = 1; }
+  note high_soft { at = 6q; dur = 1q; pitch = C5; velocity = 0.3; }
+  note high_medium { at = 7q; dur = 1q; pitch = C5; velocity = 0.6; }
+  note high_hard { at = 8q; dur = 1q; pitch = C5; velocity = 1; }
+}
+track notes { target = &sound:events; }
+place once { pattern = &registers; track = &notes; at = 0q; }

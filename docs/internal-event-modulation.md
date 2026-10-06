@@ -1,7 +1,7 @@
 # Instrument-internal event modulation
 
 Instrument voice graphs can modulate the event-rate parameters of `synth.adsr/1`:
-`attack`, `decay`, and `sustain` are captured at note-on; `release` is captured at
+`attack`, `decay`, `sustain`, and `curve` are captured at note-on; `release` is captured at
 note-off. This extends the existing internal `modulate { from; to; depth; }`
 syntax. Voice sine, saw, square, triangle, wavetable, and LFO `phase` parameters
 also capture at note-on. Shared LFO `phase` captures at render reset. Shared

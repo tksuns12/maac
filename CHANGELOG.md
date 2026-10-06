@@ -11,6 +11,18 @@ actually published; no release tag or publication date is asserted here.
 
 ### Added
 
+- Note sources and curved envelopes, part 1 of the
+  [instrument palette](docs/instrument-palette-proposal.md).
+  `synth.velocity/1` and `synth.key/1` are voice-only graph sources: the
+  note's velocity, and its base frequency in octaves from C4, following
+  per-note pitch. Through ordinary modulation, harder notes can be brighter
+  and higher notes can decay sooner; amplitude still scales by velocity
+  once. `synth.adsr/1` gains `curve` (default 0, up to 16), captured at
+  note-on: a positive curve shapes decay and release as a normalized
+  exponential that still ends at the same instants, so voices retire on the
+  same frames. `curve = 0` and every existing graph render bit-identically.
+  See [note sources](docs/instruments.md#note-sources) and
+  [`examples/note-sources.maac`](examples/note-sources.maac).
 - Kit instruments: an `instrument` with `piece` children plays other
   instruments by `hit` key. Each piece has a key, a physical gate, an
   optional pitch, voices and choke group, and kit controls expose piece

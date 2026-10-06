@@ -16,15 +16,21 @@ pub enum Waveform {
     Triangle,
 }
 
-/// A per-voice linear attack-decay-sustain-release envelope.
+/// A per-voice attack-decay-sustain-release envelope. Attack is linear;
+/// decay and release are linear or, with a positive curve, follow
+/// [`curve_shape`].
 #[derive(Clone, Debug)]
 pub struct Adsr {
     on_frame: u64,
     attack_seconds: f64,
     decay_seconds: f64,
     sustain: f64,
+    curve: f64,
     release: Option<Release>,
 }
+
+/// The largest envelope curve.
+pub const MAX_ADSR_CURVE: f64 = 16.0;
 
 #[derive(Clone, Debug)]
 struct Release {
@@ -34,12 +40,25 @@ struct Release {
 }
 
 impl Adsr {
-    /// Capture note-on time and the attack, decay, and sustain parameters.
+    /// Capture note-on time and the attack, decay, and sustain parameters
+    /// of a linear envelope.
     pub fn new(
         on_frame: u64,
         attack_seconds: f64,
         decay_seconds: f64,
         sustain: f64,
+    ) -> Result<Self, RenderError> {
+        Self::new_curved(on_frame, attack_seconds, decay_seconds, sustain, 0.0)
+    }
+
+    /// Capture note-on time, the attack, decay, and sustain parameters, and
+    /// the curve shared by the decay and release segments.
+    pub fn new_curved(
+        on_frame: u64,
+        attack_seconds: f64,
+        decay_seconds: f64,
+        sustain: f64,
+        curve: f64,
     ) -> Result<Self, RenderError> {
         validate_duration("attack", attack_seconds)?;
         validate_duration("decay", decay_seconds)?;
@@ -48,11 +67,17 @@ impl Adsr {
                 "ADSR sustain {sustain} must be finite and within 0..=1"
             )));
         }
+        if !curve.is_finite() || !(0.0..=MAX_ADSR_CURVE).contains(&curve) {
+            return Err(RenderError::Nonfinite(format!(
+                "ADSR curve {curve} must be finite and within 0..={MAX_ADSR_CURVE}"
+            )));
+        }
         Ok(Self {
             on_frame,
             attack_seconds,
             decay_seconds,
             sustain,
+            curve,
             release: None,
         })
     }
@@ -89,6 +114,10 @@ impl Adsr {
                 }
                 let elapsed_frames = (frame - release.frame) as f64;
                 let release_frames = release.seconds * rate;
+                if self.curve > 0.0 {
+                    let progress = (elapsed_frames / release_frames).min(1.0);
+                    return Ok(release.amplitude * curve_shape(self.curve, progress));
+                }
                 return Ok(release.amplitude * (1.0 - elapsed_frames / release_frames).max(0.0));
             }
         }
@@ -101,6 +130,10 @@ impl Adsr {
         let decay_elapsed_frames = elapsed_frames - attack_frames;
         let decay_frames = self.decay_seconds * rate;
         if decay_frames > 0.0 && decay_elapsed_frames < decay_frames {
+            if self.curve > 0.0 {
+                let shape = curve_shape(self.curve, decay_elapsed_frames / decay_frames);
+                return Ok(self.sustain + (1.0 - self.sustain) * shape);
+            }
             return Ok(1.0 + (self.sustain - 1.0) * decay_elapsed_frames / decay_frames);
         }
         Ok(self.sustain)
@@ -189,6 +222,15 @@ fn validate_rate(rate: f64) -> Result<(), RenderError> {
         )));
     }
     Ok(())
+}
+
+/// A curved segment's remaining fraction at `progress` in `0..=1`:
+/// `(exp(-c x) - exp(-c)) / (1 - exp(-c))`, exactly 1 at the start and 0 at
+/// the end. `curve` must be positive. The `exp_m1` form keeps small curves
+/// accurate, where the plain form cancels.
+pub fn curve_shape(curve: f64, progress: f64) -> f64 {
+    let end = (-curve).exp_m1();
+    ((-curve * progress).exp_m1() - end) / -end
 }
 
 fn validate_duration(name: &str, seconds: f64) -> Result<(), RenderError> {

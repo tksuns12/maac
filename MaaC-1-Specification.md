@@ -54,7 +54,7 @@ hash-pinned imports, reusable patterns, curves and tunings, instruments,
 kit instruments played by hit key, presets, explicit WAV wavetables, zoned pitched samples (mono or stereo WAV,
 core PCM files, or a composition's own audio asset) with velocity layers and
 key/velocity crossfades, and versioned `synth.* /1` voice/shared
-processors. It specifies declaration and namespace rules, musical reference
+processors, including note velocity and key sources and curved envelopes. It specifies declaration and namespace rules, musical reference
 ownership, public control interfaces, synthesis behavior, and resource limits.
 Importing musical definitions retains the consuming composition's tempo,
 meter, placement, and target bindings. These declarations opt into the

@@ -108,6 +108,14 @@ maac render internal-event.plan.json -o internal-event-from-plan.wav
 [`internal-phase-modulation.maac`](internal-phase-modulation.maac) captures per-note
 expression into voice oscillator and LFO phase at note-on.
 
+[`note-sources.maac`](note-sources.maac) maps velocity to brightness and key to
+decay through `synth.velocity/1` and `synth.key/1`, with a curved envelope.
+C3, C4 and C5 each play soft, medium and hard.
+
+```sh
+maac build examples/note-sources.maac -o note-sources.wav
+```
+
 ```sh
 maac build examples/internal-phase-modulation.maac -o internal-phase.wav
 maac compile examples/internal-phase-modulation.maac -o internal-phase.plan.json
