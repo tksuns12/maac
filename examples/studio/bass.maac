@@ -1,0 +1,25 @@
+maac 1;
+
+// A finger-bass line with accents: harder notes pluck brighter; the low E
+// shows the bottom of the range.
+project bass_audition {
+  score = [0q, 16q]; rate = 48000Hz;
+  tempo = &clock; meter = &metre; output = &sound:out; tail = 500ms;
+}
+tempo clock { points = [(0q, 90bpm, step)]; }
+meter metre { points = [(0q, 4, 4)]; }
+groove lazy { grid = 1/2q; ratio = 2/3; }
+import studio { builtin = "std/studio/1.0.0"; }
+node sound { instrument = &studio.bass; config = { voices = 6; }; }
+pattern line {
+  length = 8q;
+  note a1 { at = 0q; dur = 3/2q; pitch = A1; velocity = 0.9; }
+  note a2 { at = 3/2q; dur = 1/2q; pitch = A1; velocity = 0.4; }
+  note c2 { at = 2q; dur = 1q; pitch = C2; velocity = 0.6; }
+  note e2 { at = 7/2q; dur = 1/2q; pitch = E2; velocity = 0.5; }
+  note d2 { at = 4q; dur = 3/2q; pitch = D2; velocity = 0.85; }
+  note f2 { at = 11/2q; dur = 1/2q; pitch = F2; velocity = 0.45; }
+  note e1 { at = 6q; dur = 2q; pitch = E1; velocity = 1; }
+}
+track notes { target = &sound:events; }
+place twice { pattern = &line; track = &notes; at = 0q; count = 2; groove = &lazy; }

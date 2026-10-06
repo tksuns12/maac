@@ -11,6 +11,20 @@ actually published; no release tag or publication date is asserted here.
 
 ### Added
 
+- `std/studio/1.0.0`, part 3 of the
+  [instrument palette](docs/instrument-palette-proposal.md): an electric
+  piano, a bass, a pad and an eight-piece `drums` kit built from the palette
+  processors. Velocity changes each instrument's sound, not only its level:
+  harder electric-piano notes bark through an asymmetric pickup drive,
+  harder bass notes open the filter, and every drum gets brighter. Every
+  default level is calibrated so a reference phrase at velocity 0.7 measures
+  −20 LUFS (F15), and the kit keeps the std/basic/1.1.0 keys, gates and hat
+  choke. The library is accepted on measurements only; no one has approved
+  its sound by ear. See the [guide](docs/studio-instruments.md), the
+  [delivery report](docs/studio-delivery.md) and
+  [`examples/studio`](examples/studio/). `scripts/studio_auditions.py`
+  renders std/basic and std/studio on the same notes at matched loudness,
+  and with `--calibrate` measures the reference phrases.
 - A resonant filter and saturation, part 2 of the
   [instrument palette](docs/instrument-palette-proposal.md).
   `synth.svf/1` is a trapezoidal state-variable filter with low-pass,

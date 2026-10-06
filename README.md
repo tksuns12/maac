@@ -26,6 +26,13 @@ and vibrato. The [delivery report](docs/acoustic-delivery.md) records numerical
 and installed-example checks; user listening approval remains pending. Basic
 sounds and default discovery remain unchanged.
 
+The [studio instruments](docs/studio-instruments.md) under `std/studio/1.0.0`
+are an electric piano, bass, pad and drum kit whose sound changes with
+velocity: harder notes bark, pluck or hit brighter. Their defaults share one
+loudness scale (−20 LUFS at velocity 0.7), and the drum kit uses the
+std/basic/1.1.0 kit's keys. They are measured, not listened to.
+Try `maac build examples/studio/drums.maac -o studio-drums.wav`.
+
 Reusable [sound libraries](docs/instruments.md) add code-authored instruments,
 presets, sample-wise FM, and morphing wavetables. Import local source files with
 SHA-256 pins, instantiate their instruments, and automate the exposed controls.

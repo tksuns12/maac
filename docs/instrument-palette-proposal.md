@@ -5,7 +5,9 @@ synthesized direction over sampled instruments and character processors and
 accepted every [decision](#decisions). Part 1, the note sources and the
 envelope `curve`, and part 2, the [resonant filter](instruments.md#resonant-filter)
 and [saturation](instruments.md#saturation), have landed in the instrument
-contract.
+contract. Part 3, [`std/studio/1.0.0`](studio-instruments.md), is frozen on
+measurements: after one audition round the owner declined to act as the
+listening gate (decision 7).
 
 ## Why
 
@@ -315,6 +317,21 @@ instruments use 2.6 billion of the song profile's 10 billion work units.
   DSP, so render speed (F7) is better addressed in the engine than in these
   processors.
 
+### Part 3: `std/studio/1.0.0`
+
+- **Accepted on measurements.** Every pitched export renders every semitone
+  of its range at three velocities; all 3 pitched exports and all 8 drums
+  are brighter at velocity 1 than at 0.3; every reference phrase is within
+  ±1 LU of −20 LUFS. The owner declined the listening gate (decision 7), so
+  no one has approved the sound by ear. See the [delivery report](studio-delivery.md).
+- **Measurement changed the design.** The first bass hissed: the plucked
+  string's white-noise excitation put its centroid at 740–1,380 Hz. A sine
+  and saw body with a pluck envelope replaced it. The drums needed releases
+  that outlast the kit's gates, spread oscillator phases for the hats, and a
+  soft clip after velocity for the snare to keep −20 LUFS within headroom.
+- **Cost.** The electric piano renders at 2.0 times real time on its own.
+  Part 4 measures "Late Window" against the 2× limit.
+
 ## Not proposed
 
 - **A modal resonator bank.** Sine oscillators with curved envelopes already
@@ -345,3 +362,9 @@ The owner accepted every recommendation on 2026-10-06:
 5. **Levels:** −20 LUFS at velocity 0.7 on each reference phrase.
 6. **Order:** primitives, then the library through listening rounds, then
    "Late Window". The library is frozen only after approval.
+7. **Listening gate, changed 2026-10-06:** after the first audition round the
+   owner said they cannot judge instrument quality by ear and asked to go on.
+   `std/studio/1.0.0` is therefore frozen on the numerical acceptance alone,
+   and its guide and delivery report say that no one has approved its sound
+   by ear. This replaces the listening rounds in decision 6 and the
+   listening verdict in the acceptance list.

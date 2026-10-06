@@ -71,6 +71,11 @@ implementation. It preserves source grammar, core processor and plan versions,
 public graph DAG rules, and frozen basic-library bytes. Numerical verification
 and user listening acceptance remain separate from this design approval.
 
+The separate `std/studio/1.0.0` library builds an electric piano, bass, pad
+and drum kit from the instrument contract's velocity and key sources, curved
+envelopes, resonant filter and drive. It is reusable library content under
+the same extension and changes no core semantics.
+
 ### 1.4 Native production extension
 
 The normative [native mixing and delivery contract](docs/production.md) defines

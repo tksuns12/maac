@@ -10,7 +10,7 @@ use maac::stdlib::{
 #[test]
 fn registry_lists_exact_sources_and_basic_wrappers_keep_their_defaults() {
     let listed = stdlib::libraries();
-    assert_eq!(listed.len(), 3);
+    assert_eq!(listed.len(), 4);
     for (id, path, source) in [
         (BASIC_ID, BASIC_SOURCE_PATH, BASIC_SOURCE),
         (
@@ -19,6 +19,11 @@ fn registry_lists_exact_sources_and_basic_wrappers_keep_their_defaults() {
             stdlib::BASIC_1_1_SOURCE,
         ),
         (ACOUSTIC_ID, ACOUSTIC_SOURCE_PATH, ACOUSTIC_SOURCE),
+        (
+            stdlib::STUDIO_ID,
+            stdlib::STUDIO_SOURCE_PATH,
+            stdlib::STUDIO_SOURCE,
+        ),
     ] {
         let library = listed.iter().find(|library| library.library == id).unwrap();
         assert_eq!(library.source_path, path);

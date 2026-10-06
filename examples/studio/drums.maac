@@ -1,0 +1,52 @@
+maac 1;
+
+// Two bars of boom-bap with accents and ghost notes, then every piece soft
+// and hard.
+project drums_audition {
+  score = [0q, 24q]; rate = 48000Hz;
+  tempo = &clock; meter = &metre; output = &kit:out; tail = 2s;
+}
+tempo clock { points = [(0q, 90bpm, step)]; }
+meter metre { points = [(0q, 4, 4)]; }
+groove lazy { grid = 1/2q; ratio = 2/3; }
+import studio { builtin = "std/studio/1.0.0"; }
+node kit { instrument = &studio.drums; }
+pattern beat {
+  length = 4q;
+  hit k1 { at = 0q; key = "kick"; velocity = 0.9; }
+  hit k2 { at = 7/4q; key = "kick"; velocity = 0.5; }
+  hit k3 { at = 5/2q; key = "kick"; velocity = 0.75; }
+  hit s1 { at = 1q; key = "snare"; velocity = 0.8; }
+  hit g1 { at = 11/4q; key = "snare"; velocity = 0.25; }
+  hit s2 { at = 3q; key = "snare"; velocity = 0.85; }
+  hit h1 { at = 0q; key = "hat"; velocity = 0.6; }
+  hit h2 { at = 1/2q; key = "hat"; velocity = 0.3; }
+  hit h3 { at = 1q; key = "hat"; velocity = 0.55; }
+  hit h4 { at = 3/2q; key = "hat"; velocity = 0.3; }
+  hit h5 { at = 2q; key = "hat"; velocity = 0.6; }
+  hit h6 { at = 5/2q; key = "hat"; velocity = 0.3; }
+  hit h7 { at = 3q; key = "hat"; velocity = 0.55; }
+  hit o1 { at = 7/2q; key = "open_hat"; velocity = 0.5; }
+}
+pattern pieces {
+  length = 16q;
+  hit kick_soft { at = 0q; key = "kick"; velocity = 0.3; }
+  hit kick_hard { at = 1q; key = "kick"; velocity = 1; }
+  hit snare_soft { at = 2q; key = "snare"; velocity = 0.3; }
+  hit snare_hard { at = 3q; key = "snare"; velocity = 1; }
+  hit clap_soft { at = 4q; key = "clap"; velocity = 0.3; }
+  hit clap_hard { at = 5q; key = "clap"; velocity = 1; }
+  hit hat_soft { at = 6q; key = "hat"; velocity = 0.3; }
+  hit hat_hard { at = 13/2q; key = "hat"; velocity = 1; }
+  hit open_soft { at = 7q; key = "open_hat"; velocity = 0.3; }
+  hit open_hard { at = 8q; key = "open_hat"; velocity = 1; }
+  hit low_soft { at = 9q; key = "low_tom"; velocity = 0.3; }
+  hit low_hard { at = 10q; key = "low_tom"; velocity = 1; }
+  hit high_soft { at = 11q; key = "high_tom"; velocity = 0.3; }
+  hit high_hard { at = 12q; key = "high_tom"; velocity = 1; }
+  hit crash_soft { at = 13q; key = "crash"; velocity = 0.3; }
+  hit crash_hard { at = 14q; key = "crash"; velocity = 1; }
+}
+track hits { target = &kit:events; }
+place main { pattern = &beat; track = &hits; at = 0q; count = 2; groove = &lazy; }
+place tour { pattern = &pieces; track = &hits; at = 8q; }

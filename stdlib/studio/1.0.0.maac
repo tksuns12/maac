@@ -1,0 +1,774 @@
+maac 1;
+
+library studio {
+  version = "1.0.0";
+  creator = "MaaC project";
+  license = "Apache-2.0";
+}
+
+// Tine electric piano: a pitch-proportional FM body with a short inharmonic
+// tine partial, through an asymmetric drive standing in for the pickup.
+// Harder notes bark; higher notes decay sooner. Stereo tremolo pans the
+// whole instrument.
+instrument electric_piano {
+  channels = 2;
+  voice voice {
+    channels = 1;
+    amplitude = &amp;
+    output = &tone:out;
+    node amp {
+      type = "synth.adsr/1";
+      params = { attack = 1ms; decay = 4500ms; sustain = 0; release = 300ms; curve = 5; };
+    }
+    node vel { type = "synth.velocity/1"; }
+    node key { type = "synth.key/1"; }
+    modulate higher_shorter { from = &key:out; to = &amp.params.decay; depth = -1100ms; }
+
+    // The modulator's output scales the carrier's ratio, so the FM index is
+    // the same at every pitch: envelope times (0.3 + 1.2 velocity).
+    node modulator { type = "synth.sine/1"; params = { ratio = 1; }; }
+    node index_env {
+      type = "synth.adsr/1";
+      params = { decay = 1200ms; sustain = 1/8; release = 300ms; curve = 4; };
+    }
+    node index_shape {
+      type = "synth.gain/1";
+      config = { channels = 1; };
+      params = { level = 0; };
+    }
+    node index_depth {
+      type = "synth.gain/1";
+      config = { channels = 1; };
+      params = { level = 1/4; };
+    }
+    connect modulator_shape { from = &modulator:out; to = &index_shape:in; }
+    connect shape_depth { from = &index_shape:out; to = &index_depth:in; }
+    modulate index_envelope { from = &index_env:out; to = &index_shape.params.level; depth = 1; }
+    modulate index_velocity { from = &vel:out; to = &index_depth.params.level; depth = 9/10; }
+    node carrier { type = "synth.sine/1"; params = { ratio = 1; }; }
+    modulate fm { from = &index_depth:out; to = &carrier.params.ratio; depth = 1; }
+
+    // The tine: a short partial above the seventh harmonic.
+    node tine { type = "synth.sine/1"; params = { ratio = 7.1; level = 0; }; }
+    node tine_env {
+      type = "synth.adsr/1";
+      params = { decay = 140ms; sustain = 0; curve = 6; };
+    }
+    modulate tine_envelope { from = &tine_env:out; to = &tine.params.level; depth = 1; }
+    node tine_gain {
+      type = "synth.gain/1";
+      config = { channels = 1; };
+      params = { level = 1/50; };
+    }
+    modulate tine_velocity { from = &vel:out; to = &tine_gain.params.level; depth = 1/10; }
+    connect tine_level { from = &tine:out; to = &tine_gain:in; }
+
+    node body { type = "synth.mix/1"; config = { channels = 1; }; }
+    connect carrier_body { from = &carrier:out; to = &body:in; }
+    connect tine_body { from = &tine_gain:out; to = &body:in; }
+
+    // The pickup: harder notes drive the asymmetric curve further.
+    node pickup {
+      type = "synth.drive/1";
+      config = { channels = 1; };
+      params = { drive = 1/2; bias = 1/4; level = 1; };
+    }
+    modulate pickup_velocity { from = &vel:out; to = &pickup.params.drive; depth = 1; }
+    node dc {
+      type = "synth.highpass/1";
+      config = { channels = 1; };
+      params = { cutoff = 25Hz; };
+    }
+    node tone {
+      type = "synth.svf/1";
+      config = { channels = 1; mode = lowpass; };
+      params = { cutoff = 900Hz; ratio = 6; q = 3/5; };
+    }
+    modulate tone_velocity { from = &vel:out; to = &tone.params.cutoff; depth = 2500Hz; }
+    connect body_pickup { from = &body:out; to = &pickup:in; }
+    connect pickup_dc { from = &pickup:out; to = &dc:in; }
+    connect dc_tone { from = &dc:out; to = &tone:in; }
+  }
+  shared stage {
+    channels = 2;
+    output = &gain:out;
+    node tremolo { type = "synth.lfo/1"; params = { frequency = 4.5Hz; level = 1/5; }; }
+    node stereo { type = "synth.pan/1"; params = { pan = 0; }; }
+    modulate auto_pan { from = &tremolo:out; to = &stereo.params.pan; depth = 1; }
+    node gain {
+      type = "synth.gain/1";
+      config = { channels = 2; };
+      params = { level = 0.22; };
+    }
+    connect input_stereo { from = &input:out; to = &stereo:in; }
+    connect stereo_gain { from = &stereo:out; to = &gain:in; }
+  }
+  control level { target = &stage.gain.params.level; default = 0.22; }
+  control brightness { target = &voice.tone.params.cutoff; default = 900Hz; }
+  control release { target = &voice.amp.params.release; default = 300ms; }
+  control pan { target = &stage.stereo.params.pan; default = 0; }
+  control bark { target = &voice.pickup.params.drive; default = 1/2; }
+  control tremolo_depth { target = &stage.tremolo.params.level; default = 1/5; }
+  control tremolo_rate { target = &stage.tremolo.params.frequency; default = 4.5Hz; }
+}
+
+// Finger bass: a sine and a saw for the body, with the plucked string for the
+// attack, through a key-tracked low-pass that a fast envelope opens at each
+// pluck. Harder notes open it further; the release mutes the string.
+instrument bass {
+  channels = 2;
+  voice voice {
+    channels = 1;
+    amplitude = &amp;
+    output = &dc:out;
+    node amp {
+      type = "synth.adsr/1";
+      params = { attack = 2ms; sustain = 1; release = 90ms; curve = 4; };
+    }
+    node vel { type = "synth.velocity/1"; }
+    node key { type = "synth.key/1"; }
+    node string {
+      type = "synth.pluck/1";
+      config = { seed = 1831565813; };
+      params = { ratio = 1; decay = 3500ms; damping = 9/10; level = 1/4; };
+    }
+    modulate string_velocity { from = &vel:out; to = &string.params.damping; depth = -2/5; }
+    modulate string_key { from = &key:out; to = &string.params.decay; depth = -600ms; }
+    node fundamental { type = "synth.sine/1"; params = { ratio = 1; level = 0; }; }
+    node fundamental_env {
+      type = "synth.adsr/1";
+      params = { attack = 4ms; decay = 2800ms; sustain = 3/10; release = 90ms; curve = 4; };
+    }
+    modulate fundamental_level { from = &fundamental_env:out; to = &fundamental.params.level; depth = 9/20; }
+    node harmonics { type = "synth.saw/1"; params = { ratio = 1; level = 0; }; }
+    modulate harmonics_level { from = &fundamental_env:out; to = &harmonics.params.level; depth = 7/20; }
+    node body { type = "synth.mix/1"; config = { channels = 1; }; }
+    connect string_body { from = &string:out; to = &body:in; }
+    connect fundamental_body { from = &fundamental:out; to = &body:in; }
+    connect harmonics_body { from = &harmonics:out; to = &body:in; }
+    node pluck_env {
+      type = "synth.adsr/1";
+      params = { decay = 260ms; sustain = 0; release = 90ms; curve = 5; };
+    }
+    node pluck_amount { type = "synth.gain/1"; config = { channels = 1; }; params = { level = 1/5; }; }
+    connect pluck_env_amount { from = &pluck_env:out; to = &pluck_amount:in; }
+    modulate pluck_velocity { from = &vel:out; to = &pluck_amount.params.level; depth = 4/5; }
+    node tone {
+      type = "synth.svf/1";
+      config = { channels = 1; mode = lowpass; };
+      params = { cutoff = 80Hz; ratio = 2; q = 4/5; };
+    }
+    modulate tone_velocity { from = &vel:out; to = &tone.params.cutoff; depth = 250Hz; }
+    modulate tone_pluck { from = &pluck_amount:out; to = &tone.params.cutoff; depth = 900Hz; }
+    node top {
+      type = "synth.svf/1";
+      config = { channels = 1; mode = lowpass; };
+      params = { cutoff = 400Hz; ratio = 6; q = 3/5; };
+    }
+    modulate top_velocity { from = &vel:out; to = &top.params.cutoff; depth = 900Hz; }
+    node growl {
+      type = "synth.drive/1";
+      config = { channels = 1; };
+      params = { drive = 6/5; bias = 3/20; level = 9/10; };
+    }
+    node dc {
+      type = "synth.highpass/1";
+      config = { channels = 1; };
+      params = { cutoff = 30Hz; };
+    }
+    connect body_tone { from = &body:out; to = &tone:in; }
+    connect tone_top { from = &tone:out; to = &top:in; }
+    connect top_growl { from = &top:out; to = &growl:in; }
+    connect growl_dc { from = &growl:out; to = &dc:in; }
+  }
+  shared stage {
+    channels = 2;
+    output = &gain:out;
+    node stereo { type = "synth.pan/1"; params = { pan = 0; }; }
+    node gain {
+      type = "synth.gain/1";
+      config = { channels = 2; };
+      params = { level = 1.39; };
+    }
+    connect input_stereo { from = &input:out; to = &stereo:in; }
+    connect stereo_gain { from = &stereo:out; to = &gain:in; }
+  }
+  control level { target = &stage.gain.params.level; default = 1.39; }
+  control brightness { target = &voice.tone.params.cutoff; default = 80Hz; }
+  control release { target = &voice.amp.params.release; default = 90ms; }
+  control pan { target = &stage.stereo.params.pan; default = 0; }
+  control growl { target = &voice.growl.params.drive; default = 6/5; }
+}
+
+// Warm analog pad: four detuned saws in a stereo pair and a sub triangle,
+// through a key-tracked resonant low-pass that drifts slowly. Each key starts
+// its drift at a different phase; velocity opens the filter.
+instrument pad {
+  channels = 2;
+  voice voice {
+    channels = 2;
+    amplitude = &amp;
+    output = &warmth:out;
+    node amp {
+      type = "synth.adsr/1";
+      params = { attack = 450ms; decay = 1s; sustain = 17/20; release = 1600ms; curve = 3; };
+    }
+    node vel { type = "synth.velocity/1"; }
+    node key { type = "synth.key/1"; }
+    node saw_l1 { type = "synth.saw/1"; params = { ratio = 0.9971; level = 1/5; }; }
+    node saw_l2 { type = "synth.saw/1"; params = { ratio = 1.0017; level = 1/5; phase = 1/3; }; }
+    node saw_r1 { type = "synth.saw/1"; params = { ratio = 0.9983; level = 1/5; phase = 1/2; }; }
+    node saw_r2 { type = "synth.saw/1"; params = { ratio = 1.0029; level = 1/5; phase = 5/6; }; }
+    node sub { type = "synth.triangle/1"; params = { ratio = 1/2; level = 1/4; }; }
+    node left { type = "synth.mix/1"; config = { channels = 1; }; }
+    node right { type = "synth.mix/1"; config = { channels = 1; }; }
+    connect l1 { from = &saw_l1:out; to = &left:in; }
+    connect l2 { from = &saw_l2:out; to = &left:in; }
+    connect r1 { from = &saw_r1:out; to = &right:in; }
+    connect r2 { from = &saw_r2:out; to = &right:in; }
+    node pan_left { type = "synth.pan/1"; params = { pan = -3/5; }; }
+    node pan_right { type = "synth.pan/1"; params = { pan = 3/5; }; }
+    node pan_sub { type = "synth.pan/1"; params = { pan = 0; }; }
+    connect left_pan { from = &left:out; to = &pan_left:in; }
+    connect right_pan { from = &right:out; to = &pan_right:in; }
+    connect sub_pan { from = &sub:out; to = &pan_sub:in; }
+    node spread { type = "synth.mix/1"; config = { channels = 2; }; }
+    connect spread_left { from = &pan_left:out; to = &spread:in; }
+    connect spread_right { from = &pan_right:out; to = &spread:in; }
+    connect spread_sub { from = &pan_sub:out; to = &spread:in; }
+    node drift { type = "synth.lfo/1"; params = { frequency = 0.13Hz; phase = 1/2; level = 1; }; }
+    modulate drift_phase { from = &key:out; to = &drift.params.phase; depth = 0.12; }
+    node tone {
+      type = "synth.svf/1";
+      config = { channels = 2; mode = lowpass; };
+      params = { cutoff = 500Hz; ratio = 3; q = 11/10; };
+    }
+    modulate tone_drift { from = &drift:out; to = &tone.params.cutoff; depth = 350Hz; }
+    modulate tone_velocity { from = &vel:out; to = &tone.params.cutoff; depth = 1200Hz; }
+    node warmth {
+      type = "synth.drive/1";
+      config = { channels = 2; };
+      params = { drive = 9/10; bias = 1/10; level = 6/5; };
+    }
+    connect spread_tone { from = &spread:out; to = &tone:in; }
+    connect tone_warmth { from = &tone:out; to = &warmth:in; }
+  }
+  shared stage {
+    channels = 2;
+    output = &gain:out;
+    node dc {
+      type = "synth.highpass/1";
+      config = { channels = 2; };
+      params = { cutoff = 30Hz; };
+    }
+    node gain {
+      type = "synth.gain/1";
+      config = { channels = 2; };
+      params = { level = 0.399; };
+    }
+    connect input_dc { from = &input:out; to = &dc:in; }
+    connect dc_gain { from = &dc:out; to = &gain:in; }
+  }
+  control level { target = &stage.gain.params.level; default = 0.399; }
+  control brightness { target = &voice.tone.params.cutoff; default = 500Hz; }
+  control attack { target = &voice.amp.params.attack; default = 450ms; }
+  control release { target = &voice.amp.params.release; default = 1600ms; }
+  control motion { target = &voice.drift.params.level; default = 1; }
+}
+
+// Kick: a sine with a curved pitch drop and a band-passed click, driven for
+// weight. Harder hits drop further and click louder.
+instrument kick {
+  channels = 2;
+  voice voice {
+    channels = 1;
+    amplitude = &amp;
+    output = &punch:out;
+    node amp {
+      type = "synth.adsr/1";
+      params = { attack = 0.5ms; decay = 600ms; sustain = 0; release = 400ms; curve = 5; };
+    }
+    node vel { type = "synth.velocity/1"; }
+    node body { type = "synth.sine/1"; params = { ratio = 0; frequency = 48Hz; }; }
+    node drop_env {
+      type = "synth.adsr/1";
+      params = { decay = 70ms; sustain = 0; curve = 6; };
+    }
+    node drop_source { type = "synth.gain/1"; config = { channels = 1; }; params = { level = 3/5; }; }
+    connect drop_env_source { from = &drop_env:out; to = &drop_source:in; }
+    modulate drop_velocity { from = &vel:out; to = &drop_source.params.level; depth = 2/5; }
+    modulate pitch_drop { from = &drop_source:out; to = &body.params.frequency; depth = 140Hz; }
+    node noise { type = "synth.noise/1"; config = { seed = 1831565813; }; params = { level = 0; }; }
+    node click_env {
+      type = "synth.adsr/1";
+      params = { decay = 8ms; sustain = 0; curve = 4; };
+    }
+    modulate click_shape { from = &click_env:out; to = &noise.params.level; depth = 1; }
+    node click_band {
+      type = "synth.svf/1";
+      config = { channels = 1; mode = bandpass; };
+      params = { cutoff = 3500Hz; q = 4/5; };
+    }
+    node click_gain { type = "synth.gain/1"; config = { channels = 1; }; params = { level = 1/20; }; }
+    modulate click_velocity { from = &vel:out; to = &click_gain.params.level; depth = 1/4; }
+    connect noise_band { from = &noise:out; to = &click_band:in; }
+    connect band_gain { from = &click_band:out; to = &click_gain:in; }
+    node mix { type = "synth.mix/1"; config = { channels = 1; }; }
+    connect body_mix { from = &body:out; to = &mix:in; }
+    connect click_mix { from = &click_gain:out; to = &mix:in; }
+    node punch {
+      type = "synth.drive/1";
+      config = { channels = 1; };
+      params = { drive = 3/2; bias = 1/10; level = 4/5; };
+    }
+    modulate punch_velocity { from = &vel:out; to = &punch.params.drive; depth = 1; }
+    connect mix_punch { from = &mix:out; to = &punch:in; }
+  }
+  shared stage {
+    channels = 2;
+    output = &stereo:out;
+    node dc {
+      type = "synth.highpass/1";
+      config = { channels = 1; };
+      params = { cutoff = 20Hz; };
+    }
+    node tone {
+      type = "synth.onepole/1";
+      config = { channels = 1; };
+      params = { cutoff = 6000Hz; };
+    }
+    node gain { type = "synth.gain/1"; config = { channels = 1; }; params = { level = 1/2; }; }
+    node stereo { type = "synth.pan/1"; params = { pan = 0; }; }
+    connect input_dc { from = &input:out; to = &dc:in; }
+    connect dc_tone { from = &dc:out; to = &tone:in; }
+    connect tone_gain { from = &tone:out; to = &gain:in; }
+    connect gain_stereo { from = &gain:out; to = &stereo:in; }
+  }
+  control level { target = &stage.gain.params.level; default = 0.937; }
+  control brightness { target = &stage.tone.params.cutoff; default = 6000Hz; }
+  control pan { target = &stage.stereo.params.pan; default = 0; }
+}
+
+// Snare: two body modes with a small pitch drop, and noise through a
+// high-pass and a resonant band for the wires. Harder hits are brighter and
+// carry more wire, and the loudest soft-clip.
+instrument snare {
+  channels = 2;
+  voice voice {
+    channels = 1;
+    amplitude = &amp;
+    output = &mix:out;
+    node amp {
+      type = "synth.adsr/1";
+      params = { attack = 0.5ms; decay = 400ms; sustain = 0; release = 280ms; curve = 4; };
+    }
+    node vel { type = "synth.velocity/1"; }
+    node body_env {
+      type = "synth.adsr/1";
+      params = { decay = 150ms; sustain = 0; release = 120ms; curve = 5; };
+    }
+    node drop_env {
+      type = "synth.adsr/1";
+      params = { decay = 30ms; sustain = 0; curve = 5; };
+    }
+    node mode_low { type = "synth.sine/1"; params = { ratio = 0; frequency = 185Hz; level = 0; }; }
+    node mode_high { type = "synth.sine/1"; params = { ratio = 0; frequency = 330Hz; level = 0; }; }
+    modulate low_drop { from = &drop_env:out; to = &mode_low.params.frequency; depth = 40Hz; }
+    modulate high_drop { from = &drop_env:out; to = &mode_high.params.frequency; depth = 60Hz; }
+    modulate low_level { from = &body_env:out; to = &mode_low.params.level; depth = 1/2; }
+    modulate high_level { from = &body_env:out; to = &mode_high.params.level; depth = 1/4; }
+    node noise { type = "synth.noise/1"; config = { seed = 2718281828; }; params = { level = 0; }; }
+    node wire_env {
+      type = "synth.adsr/1";
+      params = { attack = 1ms; decay = 280ms; sustain = 0; release = 200ms; curve = 4; };
+    }
+    modulate wire_shape { from = &wire_env:out; to = &noise.params.level; depth = 1; }
+    node wire_cut {
+      type = "synth.svf/1";
+      config = { channels = 1; mode = highpass; };
+      params = { cutoff = 1500Hz; q = 7/10; };
+    }
+    node wire_tone {
+      type = "synth.svf/1";
+      config = { channels = 1; mode = lowpass; };
+      params = { cutoff = 5000Hz; q = 6/5; };
+    }
+    modulate wire_velocity { from = &vel:out; to = &wire_tone.params.cutoff; depth = 4000Hz; }
+    node wire_gain { type = "synth.gain/1"; config = { channels = 1; }; params = { level = 2/5; }; }
+    modulate wire_amount { from = &vel:out; to = &wire_gain.params.level; depth = 2/5; }
+    connect noise_cut { from = &noise:out; to = &wire_cut:in; }
+    connect cut_tone { from = &wire_cut:out; to = &wire_tone:in; }
+    connect tone_gain { from = &wire_tone:out; to = &wire_gain:in; }
+    node mix { type = "synth.mix/1"; config = { channels = 1; }; }
+    connect low_mix { from = &mode_low:out; to = &mix:in; }
+    connect high_mix { from = &mode_high:out; to = &mix:in; }
+    connect wire_mix { from = &wire_gain:out; to = &mix:in; }
+  }
+  shared stage {
+    channels = 2;
+    output = &stereo:out;
+    node tone {
+      type = "synth.onepole/1";
+      config = { channels = 1; };
+      params = { cutoff = 12000Hz; };
+    }
+    node gain { type = "synth.gain/1"; config = { channels = 1; }; params = { level = 0.719; }; }
+    node stereo { type = "synth.pan/1"; params = { pan = 0; }; }
+    // Loud hits soft-clip, as a snare through a driven preamp would.
+    node glue {
+      type = "synth.drive/1";
+      config = { channels = 1; };
+      params = { drive = 2; level = 1/2; };
+    }
+    connect input_glue { from = &input:out; to = &glue:in; }
+    connect glue_tone { from = &glue:out; to = &tone:in; }
+    connect tone_gain { from = &tone:out; to = &gain:in; }
+    connect gain_stereo { from = &gain:out; to = &stereo:in; }
+  }
+  control level { target = &stage.gain.params.level; default = 1.63; }
+  control brightness { target = &stage.tone.params.cutoff; default = 12000Hz; }
+  control pan { target = &stage.stereo.params.pan; default = 0; }
+}
+
+// Clap: band-passed noise shaped into a sharp burst, a second swell and a
+// short tail. Harder hits are brighter.
+instrument clap {
+  channels = 2;
+  voice voice {
+    channels = 1;
+    amplitude = &amp;
+    output = &shape:out;
+    node amp {
+      type = "synth.adsr/1";
+      params = { attack = 0ms; decay = 0ms; sustain = 1; release = 120ms; curve = 5; };
+    }
+    node vel { type = "synth.velocity/1"; }
+    node noise { type = "synth.noise/1"; config = { seed = 3141592653; }; }
+    node band {
+      type = "synth.svf/1";
+      config = { channels = 1; mode = bandpass; };
+      params = { cutoff = 1100Hz; q = 3/2; };
+    }
+    modulate band_velocity { from = &vel:out; to = &band.params.cutoff; depth = 700Hz; }
+    connect noise_band { from = &noise:out; to = &band:in; }
+    // Each burst rises over its attack and falls over its decay; the tail
+    // starts last and lasts longest.
+    node burst_1 { type = "synth.adsr/1"; params = { decay = 7ms; sustain = 0; curve = 5; }; }
+    node burst_2 { type = "synth.adsr/1"; params = { attack = 10ms; decay = 8ms; sustain = 0; curve = 5; }; }
+    node tail { type = "synth.adsr/1"; params = { attack = 20ms; decay = 180ms; sustain = 0; curve = 5; }; }
+    node shape { type = "synth.gain/1"; config = { channels = 1; }; params = { level = 0; }; }
+    modulate shape_1 { from = &burst_1:out; to = &shape.params.level; depth = 1; }
+    modulate shape_2 { from = &burst_2:out; to = &shape.params.level; depth = 4/5; }
+    modulate shape_tail { from = &tail:out; to = &shape.params.level; depth = 7/10; }
+    connect band_shape { from = &band:out; to = &shape:in; }
+  }
+  shared stage {
+    channels = 2;
+    output = &stereo:out;
+    node tone {
+      type = "synth.onepole/1";
+      config = { channels = 1; };
+      params = { cutoff = 9000Hz; };
+    }
+    node gain { type = "synth.gain/1"; config = { channels = 1; }; params = { level = 1.52; }; }
+    node stereo { type = "synth.pan/1"; params = { pan = 0; }; }
+    connect input_tone { from = &input:out; to = &tone:in; }
+    connect tone_gain { from = &tone:out; to = &gain:in; }
+    connect gain_stereo { from = &gain:out; to = &stereo:in; }
+  }
+  control level { target = &stage.gain.params.level; default = 2.85; }
+  control brightness { target = &stage.tone.params.cutoff; default = 9000Hz; }
+  control pan { target = &stage.stereo.params.pan; default = 0; }
+}
+
+// Closed hat: six inharmonic square waves, as analog drum machines used,
+// through a resonant band and a high-pass. Harder hits are brighter.
+instrument closed_hat {
+  channels = 2;
+  voice voice {
+    channels = 1;
+    amplitude = &amp;
+    output = &cut:out;
+    node amp {
+      type = "synth.adsr/1";
+      params = { attack = 0ms; decay = 55ms; sustain = 0; release = 20ms; curve = 6; };
+    }
+    node vel { type = "synth.velocity/1"; }
+    node m1 { type = "synth.square/1"; params = { ratio = 0; frequency = 205.3Hz; level = 1/6; phase = 0; }; }
+    node m2 { type = "synth.square/1"; params = { ratio = 0; frequency = 304.4Hz; level = 1/6; phase = 0.17; }; }
+    node m3 { type = "synth.square/1"; params = { ratio = 0; frequency = 369.6Hz; level = 1/6; phase = 0.41; }; }
+    node m4 { type = "synth.square/1"; params = { ratio = 0; frequency = 522.7Hz; level = 1/6; phase = 0.63; }; }
+    node m5 { type = "synth.square/1"; params = { ratio = 0; frequency = 540Hz; level = 1/6; phase = 0.29; }; }
+    node m6 { type = "synth.square/1"; params = { ratio = 0; frequency = 800Hz; level = 1/6; phase = 0.83; }; }
+    node metal { type = "synth.mix/1"; config = { channels = 1; }; }
+    connect c1 { from = &m1:out; to = &metal:in; }
+    connect c2 { from = &m2:out; to = &metal:in; }
+    connect c3 { from = &m3:out; to = &metal:in; }
+    connect c4 { from = &m4:out; to = &metal:in; }
+    connect c5 { from = &m5:out; to = &metal:in; }
+    connect c6 { from = &m6:out; to = &metal:in; }
+    node band {
+      type = "synth.svf/1";
+      config = { channels = 1; mode = bandpass; };
+      params = { cutoff = 9000Hz; q = 1; };
+    }
+    modulate band_velocity { from = &vel:out; to = &band.params.cutoff; depth = 2500Hz; }
+    node cut {
+      type = "synth.svf/1";
+      config = { channels = 1; mode = highpass; };
+      params = { cutoff = 7000Hz; q = 7/10; };
+    }
+    connect metal_band { from = &metal:out; to = &band:in; }
+    connect band_cut { from = &band:out; to = &cut:in; }
+  }
+  shared stage {
+    channels = 2;
+    output = &stereo:out;
+    node tone {
+      type = "synth.onepole/1";
+      config = { channels = 1; };
+      params = { cutoff = 14000Hz; };
+    }
+    node gain { type = "synth.gain/1"; config = { channels = 1; }; params = { level = 3.47; }; }
+    node stereo { type = "synth.pan/1"; params = { pan = 0; }; }
+    connect input_tone { from = &input:out; to = &tone:in; }
+    connect tone_gain { from = &tone:out; to = &gain:in; }
+    connect gain_stereo { from = &gain:out; to = &stereo:in; }
+  }
+  control level { target = &stage.gain.params.level; default = 7.32; }
+  control brightness { target = &stage.tone.params.cutoff; default = 14000Hz; }
+  control pan { target = &stage.stereo.params.pan; default = 0; }
+}
+
+// Open hat: the closed hat's metal with a longer curved decay.
+instrument open_hat {
+  channels = 2;
+  voice voice {
+    channels = 1;
+    amplitude = &amp;
+    output = &cut:out;
+    node amp {
+      type = "synth.adsr/1";
+      params = { attack = 0ms; decay = 480ms; sustain = 0; release = 60ms; curve = 4; };
+    }
+    node vel { type = "synth.velocity/1"; }
+    node m1 { type = "synth.square/1"; params = { ratio = 0; frequency = 205.3Hz; level = 1/6; phase = 0; }; }
+    node m2 { type = "synth.square/1"; params = { ratio = 0; frequency = 304.4Hz; level = 1/6; phase = 0.17; }; }
+    node m3 { type = "synth.square/1"; params = { ratio = 0; frequency = 369.6Hz; level = 1/6; phase = 0.41; }; }
+    node m4 { type = "synth.square/1"; params = { ratio = 0; frequency = 522.7Hz; level = 1/6; phase = 0.63; }; }
+    node m5 { type = "synth.square/1"; params = { ratio = 0; frequency = 540Hz; level = 1/6; phase = 0.29; }; }
+    node m6 { type = "synth.square/1"; params = { ratio = 0; frequency = 800Hz; level = 1/6; phase = 0.83; }; }
+    node metal { type = "synth.mix/1"; config = { channels = 1; }; }
+    connect c1 { from = &m1:out; to = &metal:in; }
+    connect c2 { from = &m2:out; to = &metal:in; }
+    connect c3 { from = &m3:out; to = &metal:in; }
+    connect c4 { from = &m4:out; to = &metal:in; }
+    connect c5 { from = &m5:out; to = &metal:in; }
+    connect c6 { from = &m6:out; to = &metal:in; }
+    node band {
+      type = "synth.svf/1";
+      config = { channels = 1; mode = bandpass; };
+      params = { cutoff = 8500Hz; q = 4/5; };
+    }
+    modulate band_velocity { from = &vel:out; to = &band.params.cutoff; depth = 2500Hz; }
+    node cut {
+      type = "synth.svf/1";
+      config = { channels = 1; mode = highpass; };
+      params = { cutoff = 6500Hz; q = 7/10; };
+    }
+    connect metal_band { from = &metal:out; to = &band:in; }
+    connect band_cut { from = &band:out; to = &cut:in; }
+  }
+  shared stage {
+    channels = 2;
+    output = &stereo:out;
+    node tone {
+      type = "synth.onepole/1";
+      config = { channels = 1; };
+      params = { cutoff = 14000Hz; };
+    }
+    node gain { type = "synth.gain/1"; config = { channels = 1; }; params = { level = 1.46; }; }
+    node stereo { type = "synth.pan/1"; params = { pan = 0; }; }
+    connect input_tone { from = &input:out; to = &tone:in; }
+    connect tone_gain { from = &tone:out; to = &gain:in; }
+    connect gain_stereo { from = &gain:out; to = &stereo:in; }
+  }
+  control level { target = &stage.gain.params.level; default = 2.78; }
+  control brightness { target = &stage.tone.params.cutoff; default = 14000Hz; }
+  control pan { target = &stage.stereo.params.pan; default = 0; }
+}
+
+// Low tom: two membrane modes, the second at 1.59 times the first, with a
+// pitch drop. Harder hits drop further.
+instrument low_tom {
+  channels = 2;
+  voice voice {
+    channels = 1;
+    amplitude = &amp;
+    output = &mix:out;
+    node amp {
+      type = "synth.adsr/1";
+      params = { attack = 0.5ms; decay = 700ms; sustain = 0; release = 450ms; curve = 5; };
+    }
+    node vel { type = "synth.velocity/1"; }
+    node drop_env { type = "synth.adsr/1"; params = { decay = 90ms; sustain = 0; curve = 5; }; }
+    node drop_source { type = "synth.gain/1"; config = { channels = 1; }; params = { level = 1/2; }; }
+    connect drop_env_source { from = &drop_env:out; to = &drop_source:in; }
+    modulate drop_velocity { from = &vel:out; to = &drop_source.params.level; depth = 1/2; }
+    node mode_1 { type = "synth.sine/1"; params = { ratio = 0; frequency = 98Hz; level = 7/10; }; }
+    node mode_2 { type = "synth.sine/1"; params = { ratio = 0; frequency = 156Hz; level = 1/4; }; }
+    modulate drop_1 { from = &drop_source:out; to = &mode_1.params.frequency; depth = 45Hz; }
+    modulate drop_2 { from = &drop_source:out; to = &mode_2.params.frequency; depth = 70Hz; }
+    node mix { type = "synth.mix/1"; config = { channels = 1; }; }
+    connect mode_1_mix { from = &mode_1:out; to = &mix:in; }
+    connect mode_2_mix { from = &mode_2:out; to = &mix:in; }
+  }
+  shared stage {
+    channels = 2;
+    output = &stereo:out;
+    node tone { type = "synth.onepole/1"; config = { channels = 1; }; params = { cutoff = 5000Hz; }; }
+    node gain { type = "synth.gain/1"; config = { channels = 1; }; params = { level = 0.425; }; }
+    node stereo { type = "synth.pan/1"; params = { pan = 0; }; }
+    connect input_tone { from = &input:out; to = &tone:in; }
+    connect tone_gain { from = &tone:out; to = &gain:in; }
+    connect gain_stereo { from = &gain:out; to = &stereo:in; }
+  }
+  control level { target = &stage.gain.params.level; default = 0.797; }
+  control brightness { target = &stage.tone.params.cutoff; default = 5000Hz; }
+  control pan { target = &stage.stereo.params.pan; default = 0; }
+}
+
+// High tom: the low tom's membrane a fifth higher, with a shorter decay.
+instrument high_tom {
+  channels = 2;
+  voice voice {
+    channels = 1;
+    amplitude = &amp;
+    output = &mix:out;
+    node amp {
+      type = "synth.adsr/1";
+      params = { attack = 0.5ms; decay = 550ms; sustain = 0; release = 350ms; curve = 5; };
+    }
+    node vel { type = "synth.velocity/1"; }
+    node drop_env { type = "synth.adsr/1"; params = { decay = 70ms; sustain = 0; curve = 5; }; }
+    node drop_source { type = "synth.gain/1"; config = { channels = 1; }; params = { level = 1/2; }; }
+    connect drop_env_source { from = &drop_env:out; to = &drop_source:in; }
+    modulate drop_velocity { from = &vel:out; to = &drop_source.params.level; depth = 1/2; }
+    node mode_1 { type = "synth.sine/1"; params = { ratio = 0; frequency = 147Hz; level = 7/10; }; }
+    node mode_2 { type = "synth.sine/1"; params = { ratio = 0; frequency = 234Hz; level = 1/4; }; }
+    modulate drop_1 { from = &drop_source:out; to = &mode_1.params.frequency; depth = 60Hz; }
+    modulate drop_2 { from = &drop_source:out; to = &mode_2.params.frequency; depth = 95Hz; }
+    node mix { type = "synth.mix/1"; config = { channels = 1; }; }
+    connect mode_1_mix { from = &mode_1:out; to = &mix:in; }
+    connect mode_2_mix { from = &mode_2:out; to = &mix:in; }
+  }
+  shared stage {
+    channels = 2;
+    output = &stereo:out;
+    node tone { type = "synth.onepole/1"; config = { channels = 1; }; params = { cutoff = 6000Hz; }; }
+    node gain { type = "synth.gain/1"; config = { channels = 1; }; params = { level = 0.425; }; }
+    node stereo { type = "synth.pan/1"; params = { pan = 0; }; }
+    connect input_tone { from = &input:out; to = &tone:in; }
+    connect tone_gain { from = &tone:out; to = &gain:in; }
+    connect gain_stereo { from = &gain:out; to = &stereo:in; }
+  }
+  control level { target = &stage.gain.params.level; default = 0.797; }
+  control brightness { target = &stage.tone.params.cutoff; default = 6000Hz; }
+  control pan { target = &stage.stereo.params.pan; default = 0; }
+}
+
+// Crash: the hat metal a fifth higher plus high-passed noise, with a long
+// curved decay. Harder hits are brighter.
+instrument crash {
+  channels = 2;
+  voice voice {
+    channels = 1;
+    amplitude = &amp;
+    output = &mix:out;
+    node amp {
+      type = "synth.adsr/1";
+      params = { attack = 0ms; decay = 2200ms; sustain = 0; release = 1600ms; curve = 4; };
+    }
+    node vel { type = "synth.velocity/1"; }
+    node m1 { type = "synth.square/1"; params = { ratio = 0; frequency = 307.95Hz; level = 1/6; phase = 0; }; }
+    node m2 { type = "synth.square/1"; params = { ratio = 0; frequency = 456.6Hz; level = 1/6; phase = 0.17; }; }
+    node m3 { type = "synth.square/1"; params = { ratio = 0; frequency = 554.4Hz; level = 1/6; phase = 0.41; }; }
+    node m4 { type = "synth.square/1"; params = { ratio = 0; frequency = 784.05Hz; level = 1/6; phase = 0.63; }; }
+    node m5 { type = "synth.square/1"; params = { ratio = 0; frequency = 810Hz; level = 1/6; phase = 0.29; }; }
+    node m6 { type = "synth.square/1"; params = { ratio = 0; frequency = 1200Hz; level = 1/6; phase = 0.83; }; }
+    node metal { type = "synth.mix/1"; config = { channels = 1; }; }
+    connect c1 { from = &m1:out; to = &metal:in; }
+    connect c2 { from = &m2:out; to = &metal:in; }
+    connect c3 { from = &m3:out; to = &metal:in; }
+    connect c4 { from = &m4:out; to = &metal:in; }
+    connect c5 { from = &m5:out; to = &metal:in; }
+    connect c6 { from = &m6:out; to = &metal:in; }
+    node band {
+      type = "synth.svf/1";
+      config = { channels = 1; mode = highpass; };
+      params = { cutoff = 5000Hz; q = 7/10; };
+    }
+    connect metal_band { from = &metal:out; to = &band:in; }
+    node noise { type = "synth.noise/1"; config = { seed = 1618033988; }; params = { level = 1/3; }; }
+    node air {
+      type = "synth.svf/1";
+      config = { channels = 1; mode = highpass; };
+      params = { cutoff = 4500Hz; q = 7/10; };
+    }
+    modulate air_velocity { from = &vel:out; to = &air.params.cutoff; depth = 2500Hz; }
+    connect noise_air { from = &noise:out; to = &air:in; }
+    node mix { type = "synth.mix/1"; config = { channels = 1; }; }
+    connect band_mix { from = &band:out; to = &mix:in; }
+    connect air_mix { from = &air:out; to = &mix:in; }
+  }
+  shared stage {
+    channels = 2;
+    output = &stereo:out;
+    node tone { type = "synth.onepole/1"; config = { channels = 1; }; params = { cutoff = 13000Hz; }; }
+    node gain { type = "synth.gain/1"; config = { channels = 1; }; params = { level = 0.263; }; }
+    node stereo { type = "synth.pan/1"; params = { pan = 0; }; }
+    connect input_tone { from = &input:out; to = &tone:in; }
+    connect tone_gain { from = &tone:out; to = &gain:in; }
+    connect gain_stereo { from = &gain:out; to = &stereo:in; }
+  }
+  control level { target = &stage.gain.params.level; default = 0.493; }
+  control brightness { target = &stage.tone.params.cutoff; default = 13000Hz; }
+  control pan { target = &stage.stereo.params.pan; default = 0; }
+}
+
+// The eight drums by hit key, with the std/basic/1.1.0 kit's keys and gates.
+instrument drums {
+  channels = 2;
+  piece kick { instrument = &kick; key = "kick"; gate = 100ms; }
+  piece snare { instrument = &snare; key = "snare"; gate = 100ms; }
+  piece clap { instrument = &clap; key = "clap"; gate = 120ms; }
+  piece hat { instrument = &closed_hat; key = "hat"; gate = 35ms; choke = "hats"; }
+  piece open_hat { instrument = &open_hat; key = "open_hat"; gate = 220ms; choke = "hats"; }
+  piece low_tom { instrument = &low_tom; key = "low_tom"; gate = 160ms; }
+  piece high_tom { instrument = &high_tom; key = "high_tom"; gate = 120ms; }
+  piece crash { instrument = &crash; key = "crash"; gate = 350ms; }
+  control kick_level { target = &kick.params.level; default = 0.937; }
+  control kick_pan { target = &kick.params.pan; default = 0; }
+  control kick_brightness { target = &kick.params.brightness; default = 6000Hz; }
+  control snare_level { target = &snare.params.level; default = 1.63; }
+  control snare_pan { target = &snare.params.pan; default = 0; }
+  control snare_brightness { target = &snare.params.brightness; default = 12000Hz; }
+  control clap_level { target = &clap.params.level; default = 2.85; }
+  control clap_pan { target = &clap.params.pan; default = 0; }
+  control clap_brightness { target = &clap.params.brightness; default = 9000Hz; }
+  control hat_level { target = &hat.params.level; default = 7.32; }
+  control hat_pan { target = &hat.params.pan; default = 0; }
+  control hat_brightness { target = &hat.params.brightness; default = 14000Hz; }
+  control open_hat_level { target = &open_hat.params.level; default = 2.78; }
+  control open_hat_pan { target = &open_hat.params.pan; default = 0; }
+  control open_hat_brightness { target = &open_hat.params.brightness; default = 14000Hz; }
+  control low_tom_level { target = &low_tom.params.level; default = 0.797; }
+  control low_tom_pan { target = &low_tom.params.pan; default = 0; }
+  control low_tom_brightness { target = &low_tom.params.brightness; default = 5000Hz; }
+  control high_tom_level { target = &high_tom.params.level; default = 0.797; }
+  control high_tom_pan { target = &high_tom.params.pan; default = 0; }
+  control high_tom_brightness { target = &high_tom.params.brightness; default = 6000Hz; }
+  control crash_level { target = &crash.params.level; default = 0.493; }
+  control crash_pan { target = &crash.params.pan; default = 0; }
+  control crash_brightness { target = &crash.params.brightness; default = 13000Hz; }
+}

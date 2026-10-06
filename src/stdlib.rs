@@ -21,6 +21,11 @@ pub const BASIC_1_1_SOURCE: &str = include_str!("../stdlib/basic/1.1.0.maac");
 pub const ACOUSTIC_ID: &str = "std/acoustic/1.0.0";
 pub const ACOUSTIC_SOURCE_PATH: &str = "@builtin/std/acoustic/1.0.0.maac";
 pub const ACOUSTIC_SOURCE: &str = include_str!("../stdlib/acoustic/1.0.0.maac");
+/// Electric piano, bass, pad and drums built on velocity and key sources,
+/// curved envelopes, the resonant filter and the drive.
+pub const STUDIO_ID: &str = "std/studio/1.0.0";
+pub const STUDIO_SOURCE_PATH: &str = "@builtin/std/studio/1.0.0.maac";
+pub const STUDIO_SOURCE: &str = include_str!("../stdlib/studio/1.0.0.maac");
 
 #[derive(Clone, Copy, Debug)]
 pub struct BuiltinSource {
@@ -62,6 +67,15 @@ const DEFINITIONS: &[LibraryDefinition] = &[
         },
         editorial: include_str!("../stdlib/acoustic/1.0.0.json"),
         alias: "acoustic",
+    },
+    LibraryDefinition {
+        id: STUDIO_ID,
+        source: BuiltinSource {
+            path: STUDIO_SOURCE_PATH,
+            source: STUDIO_SOURCE,
+        },
+        editorial: include_str!("../stdlib/studio/1.0.0.json"),
+        alias: "studio",
     },
 ];
 

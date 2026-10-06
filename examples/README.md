@@ -295,6 +295,20 @@ maac build examples/acoustic/nylon_guitar.maac -o nylon.wav --format pcm16
 maac build examples/acoustic/fingerpicked_phrase.maac -o fingerpicked.wav --format pcm16
 ```
 
+# Studio instruments
+
+[`studio/`](studio/) contains auditions for the `std/studio/1.0.0` electric
+piano, bass, pad and drum kit. Each plays the same material at several
+velocities, so you can hear the timbre change with playing strength. The
+[studio instruments guide](../docs/studio-instruments.md) covers switching
+from std/basic, the calibrated levels and every control.
+
+```sh
+maac instruments --library std/studio/1.0.0
+maac build examples/studio/electric_piano.maac -o studio-keys.wav --format pcm16
+maac build examples/studio/drums.maac -o studio-drums.wav --format pcm16
+```
+
 # Reusable starter sounds
 
 `sounds/studio.maac` is a small local MaaC library used by

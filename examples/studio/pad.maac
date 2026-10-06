@@ -1,0 +1,21 @@
+maac 1;
+
+// Held chords: listen for the stereo spread and the slow filter drift. The
+// last chord is played harder, which opens the filter.
+project pad_audition {
+  score = [0q, 16q]; rate = 48000Hz;
+  tempo = &clock; meter = &metre; output = &sound:out; tail = 2s;
+}
+tempo clock { points = [(0q, 90bpm, step)]; }
+meter metre { points = [(0q, 4, 4)]; }
+import studio { builtin = "std/studio/1.0.0"; }
+node sound { instrument = &studio.pad; config = { voices = 12; }; }
+pattern chords {
+  length = 16q;
+  chord d { at = 0q; dur = 4q; pitches = [D3, F3, A3]; velocity = 0.3; }
+  chord c { at = 4q; dur = 4q; pitches = [C3, E3, G3]; velocity = 0.3; }
+  chord bb { at = 8q; dur = 4q; pitches = [Bb2, D3, F3]; velocity = 0.3; }
+  chord open { at = 12q; dur = 4q; pitches = [Bb2, C3, F3, A3]; velocity = 0.8; }
+}
+track notes { target = &sound:events; }
+place once { pattern = &chords; track = &notes; at = 0q; }
