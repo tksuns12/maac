@@ -33,6 +33,18 @@ pub(crate) struct Reverb {
     feedback: [Ring; 8],
     previous: [f64; 8],
     hadamard: [[f64; 8]; 8],
+    gains: GainCache,
+}
+
+/// The feedback gains for the last decay, a pure function of it. It is not
+/// processing state, so it takes no part in equality.
+#[derive(Clone, Debug, Default)]
+struct GainCache(Option<(u64, [f64; 8])>);
+
+impl PartialEq for GainCache {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
 }
 
 impl Reverb {
@@ -98,6 +110,7 @@ impl Reverb {
             feedback,
             previous: [0.0; 8],
             hadamard,
+            gains: GainCache::default(),
         })
     }
 
@@ -160,6 +173,17 @@ impl Reverb {
                     + finite(half_damping * finite(self.previous[i])?)?,
             )?;
         }
+        let gains = match self.gains.0 {
+            Some((bits, gains)) if bits == decay.to_bits() => gains,
+            _ => {
+                let mut gains = [0.0; 8];
+                for (i, gain) in gains.iter_mut().enumerate() {
+                    let seconds = LENGTHS[i] as f64 / 48000.0;
+                    *gain = finite(10.0_f64.powf(-3.0 * seconds / decay))?;
+                }
+                gains
+            }
+        };
         let mut writes = [0.0; 8];
         for i in 0..8 {
             let mut projected = 0.0;
@@ -170,9 +194,7 @@ impl Reverb {
             for (j, &value) in filtered.iter().enumerate() {
                 feedback = finite(feedback + finite(self.hadamard[i][j] * value)?)?;
             }
-            let seconds = LENGTHS[i] as f64 / 48000.0;
-            let gain = finite(10.0_f64.powf(-3.0 * seconds / decay))?;
-            writes[i] = finite(projected + finite(gain * feedback)?)?;
+            writes[i] = finite(projected + finite(gains[i] * feedback)?)?;
         }
         let mut output = [0.0; 2];
         for c in 0..self.channels {
@@ -200,18 +222,23 @@ impl Reverb {
             ring.advance();
         }
         self.previous = reads;
+        self.gains.0 = Some((decay.to_bits(), gains));
         Ok(output)
     }
 }
 
+#[inline(always)]
 fn finite(value: f64) -> Result<f64> {
     if value.is_finite() {
         Ok(value)
     } else {
-        Err(RenderError::Nonfinite(
-            "reverb intermediate or state is nonfinite".into(),
-        ))
+        Err(nonfinite())
     }
+}
+
+#[cold]
+fn nonfinite() -> RenderError {
+    RenderError::Nonfinite("reverb intermediate or state is nonfinite".into())
 }
 
 fn plan_error(code: &str, message: &str) -> RenderError {

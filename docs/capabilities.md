@@ -255,7 +255,9 @@ M1: 40 chained nodes of one kind in 16 held voices for 20 s. Per added node
 and sample, including the engine's per-node overhead, gain took 19 ns, a one-pole filter
 48 ns, a sine oscillator 146 ns, the resonant filter 208 ns and the drive
 278 ns. The one-unit scale already spans gain to oscillators, so the new
-charges round 1.4 and 1.9 times an oscillator up to 2.
+charges round 1.4 and 1.9 times an oscillator up to 2. These times predate
+the [render-speed pass](render-speed.md), which removed much of the fixed
+per-node cost; the charges are unchanged.
 
 Execution work includes every note's gate and maximum possible release, bounded
 by the render endpoint, plus shared effects throughout the full output. Caller

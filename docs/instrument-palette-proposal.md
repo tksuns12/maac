@@ -329,7 +329,9 @@ instruments use 2.6 billion of the song profile's 10 billion work units.
   and saw body with a pluck envelope replaced it. The drums needed releases
   that outlast the kit's gates, spread oscillator phases for the hats, and a
   soft clip after velocity for the snare to keep −20 LUFS within headroom.
-- **Cost.** The electric piano renders at 2.0 times real time on its own.
+- **Cost.** Each example renders in well under real time; the electric
+  piano example takes about 1.8 s of CPU for 12.2 s of audio. (An earlier
+  figure of twice real time came from a timing taken under parallel load.)
   Part 4 measures "Late Window" against the 2× limit.
 
 ### Part 4: "Late Window" on std/studio

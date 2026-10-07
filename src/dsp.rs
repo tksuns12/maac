@@ -179,6 +179,12 @@ pub struct DspEngine<'a> {
     off_events: BTreeMap<u64, Vec<usize>>,
     tempo: TempoRuntime,
     frame: Vec<f64>,
+    /// Nodes whose parameters cannot change during a render: no automation,
+    /// no incoming modulation, and not a control source.
+    fixed_parameters: Vec<bool>,
+    /// Whether a fixed node's parameters have been evaluated, validated and
+    /// applied since the last reset.
+    parameters_settled: Vec<bool>,
 }
 
 type NodeReplacementFill<'a> = dyn FnMut(usize, u64, &mut [f64]) -> Result<()> + 'a;
@@ -568,6 +574,14 @@ impl<'a> DspEngine<'a> {
             ));
         }
 
+        let fixed_parameters = nodes
+            .iter()
+            .zip(&incoming_modulations)
+            .map(|(node, incoming)| {
+                node.automations.is_empty() && incoming.is_empty() && node.control.is_none()
+            })
+            .collect();
+        let parameters_settled = vec![false; nodes.len()];
         Ok(Self {
             plan,
             limits: *limits,
@@ -586,6 +600,8 @@ impl<'a> DspEngine<'a> {
             off_events,
             tempo,
             frame: vec![0.0; channels],
+            fixed_parameters,
+            parameters_settled,
         })
     }
 
@@ -931,8 +947,8 @@ impl<'a> DspEngine<'a> {
                 }
             }
 
-            let topo_order = self.topo_order.clone();
-            for node_index in topo_order {
+            for order_index in 0..self.topo_order.len() {
+                let node_index = self.topo_order[order_index];
                 if let Some(replacement) = &mut replacement {
                     if let Some(position) = replacement
                         .indices
@@ -974,6 +990,7 @@ impl<'a> DspEngine<'a> {
         for node in &mut self.nodes {
             node.reset();
         }
+        self.parameters_settled.fill(false);
         self.frame.fill(0.0);
     }
 
@@ -1013,8 +1030,14 @@ impl<'a> DspEngine<'a> {
         if self.plan.version == 7 {
             return self.evaluate_modulated_parameters(frame);
         }
-        for node in &mut self.nodes {
-            node.current_params.clone_from(&node.base_params);
+        for (index, node) in self.nodes.iter_mut().enumerate() {
+            // A fixed node's parameters equal its base parameters on every
+            // frame, so evaluating them again would repeat the same work.
+            if self.fixed_parameters[index] && self.parameters_settled[index] {
+                continue;
+            }
+            // Only automated parameters differ from the base values, so they
+            // are the only ones written.
             for (name, lane) in &node.automations {
                 let value = lane.lane.value_at(frame, &self.tempo)?;
                 if !value.is_finite() {
@@ -1023,7 +1046,12 @@ impl<'a> DspEngine<'a> {
                         lane.id, node.id
                     )));
                 }
-                node.current_params.insert(name.clone(), value);
+                match node.current_params.get_mut(name) {
+                    Some(current) => *current = value,
+                    None => {
+                        node.current_params.insert(name.clone(), value);
+                    }
+                }
             }
             node.validate_current_parameters(self.rate)?;
             if let Some(instrument) = &mut node.instrument {
@@ -1032,6 +1060,7 @@ impl<'a> DspEngine<'a> {
             if let Some(kit) = &mut node.kit_instrument {
                 kit.update_controls(&node.current_params)?;
             }
+            self.parameters_settled[index] = true;
         }
         Ok(())
     }
@@ -1039,7 +1068,10 @@ impl<'a> DspEngine<'a> {
     /// V7 controls have only control parents. Evaluate their DAG before audio,
     /// then apply audio targets before the existing note-off/note-on sequence.
     fn evaluate_modulated_parameters(&mut self, frame: u64) -> Result<()> {
-        for node in &mut self.nodes {
+        for (index, node) in self.nodes.iter_mut().enumerate() {
+            if self.fixed_parameters[index] && self.parameters_settled[index] {
+                continue;
+            }
             for (name, value) in &node.base_params {
                 *node
                     .current_params
@@ -1073,9 +1105,12 @@ impl<'a> DspEngine<'a> {
             }
         }
         for index in 0..self.nodes.len() {
-            if self.nodes[index].control.is_some() {
+            if self.nodes[index].control.is_some()
+                || (self.fixed_parameters[index] && self.parameters_settled[index])
+            {
                 continue;
             }
+            self.parameters_settled[index] = true;
             self.apply_modulations(index)?;
             let node = &mut self.nodes[index];
             node.validate_modulated_parameters(self.rate)?;
@@ -1298,6 +1333,40 @@ impl<'a> DspEngine<'a> {
                 .copy_from_slice(&output[..matrix.outputs]);
             return Ok(());
         }
+        // Instruments render first: their processor carries strings, and
+        // cloning it every frame allocated.
+        let node = &mut self.nodes[node_index];
+        let rendered = match node.processor {
+            RuntimeProcessor::Core(Processor::Instrument { .. }) => Some(
+                node.instrument
+                    .as_mut()
+                    .ok_or_else(|| {
+                        RenderError::RenderState(format!(
+                            "instrument node {} has no runtime state",
+                            node.id
+                        ))
+                    })?
+                    .render(frame)?,
+            ),
+            RuntimeProcessor::Core(Processor::KitInstrument { .. }) => Some(
+                node.kit_instrument
+                    .as_mut()
+                    .ok_or_else(|| {
+                        RenderError::RenderState(format!(
+                            "kit node {} has no runtime state",
+                            node.id
+                        ))
+                    })?
+                    .render(frame)?,
+            ),
+            _ => None,
+        };
+        if let Some(rendered) = rendered {
+            let output = [rendered[0], rendered.get(1).copied().unwrap_or(0.0)];
+            let channels = node.output.len();
+            node.output.copy_from_slice(&output[..channels]);
+            return Ok(());
+        }
         let processor = match self.nodes[node_index].processor.clone() {
             RuntimeProcessor::Control => {
                 return Err(RenderError::RenderState(
@@ -1329,7 +1398,7 @@ impl<'a> DspEngine<'a> {
                 return Ok(());
             }
         };
-        let incoming = self.incoming[node_index].clone();
+        let incoming = &self.incoming[node_index];
         match processor {
             Processor::Sine { .. } => {
                 let level = self.nodes[node_index].current_param("level");
@@ -1339,7 +1408,7 @@ impl<'a> DspEngine<'a> {
             Processor::OnePole { channels } => {
                 let cutoff = self.nodes[node_index].current_param("cutoff");
                 let mut input = [0.0; 2];
-                for &connection_index in &incoming {
+                for &connection_index in incoming {
                     let connection = &self.connections[connection_index];
                     for (channel, sample) in
                         input.iter_mut().enumerate().take(usize::from(channels))
@@ -1486,7 +1555,7 @@ impl<'a> DspEngine<'a> {
             }
             Processor::Pan => {
                 let mut input = 0.0;
-                for &connection_index in &incoming {
+                for &connection_index in incoming {
                     let connection = &self.connections[connection_index];
                     input += self.nodes[connection.from].output[0];
                 }
@@ -1498,7 +1567,7 @@ impl<'a> DspEngine<'a> {
             Processor::Sum { channels } => {
                 for channel in 0..usize::from(channels) {
                     let mut sum = 0.0;
-                    for &connection_index in &incoming {
+                    for &connection_index in incoming {
                         let connection = &self.connections[connection_index];
                         sum += self.nodes[connection.from].output[channel];
                     }
@@ -1523,36 +1592,8 @@ impl<'a> DspEngine<'a> {
             }
             Processor::Matrix { .. } => unreachable!("matrix uses its prepared runtime"),
             Processor::Delay { .. } => unreachable!("delay uses the frame scheduler"),
-            Processor::Instrument { .. } => {
-                let node = &mut self.nodes[node_index];
-                let node_id = node.id.clone();
-                let channels = node.output.len();
-                let rendered = node
-                    .instrument
-                    .as_mut()
-                    .ok_or_else(|| {
-                        RenderError::RenderState(format!(
-                            "instrument node {} has no runtime state",
-                            node_id
-                        ))
-                    })?
-                    .render(frame)?;
-                let output = [rendered[0], rendered.get(1).copied().unwrap_or(0.0)];
-                node.output.copy_from_slice(&output[..channels]);
-            }
-            Processor::KitInstrument { .. } => {
-                let node = &mut self.nodes[node_index];
-                let node_id = node.id.clone();
-                let channels = node.output.len();
-                let rendered = node
-                    .kit_instrument
-                    .as_mut()
-                    .ok_or_else(|| {
-                        RenderError::RenderState(format!("kit node {node_id} has no runtime state"))
-                    })?
-                    .render(frame)?;
-                let output = [rendered[0], rendered.get(1).copied().unwrap_or(0.0)];
-                node.output.copy_from_slice(&output[..channels]);
+            Processor::Instrument { .. } | Processor::KitInstrument { .. } => {
+                unreachable!("instruments render before the processor dispatch")
             }
         }
         Ok(())

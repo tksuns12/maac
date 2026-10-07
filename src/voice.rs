@@ -8,7 +8,7 @@ use crate::graph::{
 };
 use crate::plan::{GainExpression, PitchExpression, PressureExpression, TimbreExpression};
 use crate::sample_instrument::{SampleFadeShape, SamplePlayback, SampleZone};
-use crate::synth::{drive_sample, Adsr, Oscillator, SvfCoefficients, SvfMode, Waveform};
+use crate::synth::{Adsr, DriveState, Oscillator, SvfCoefficients, SvfMode, Waveform};
 use crate::wavetable::TableBank;
 use num_traits::ToPrimitive;
 use std::collections::{BTreeMap, HashMap};
@@ -66,6 +66,9 @@ struct CompiledNode {
     modulations: Vec<ModulationBinding>,
     has_note_on_modulations: bool,
     has_reset_modulations: bool,
+    /// Whether any modulation changes a parameter every sample; without one
+    /// the parameters change only when a control does.
+    has_sample_modulations: bool,
     controls: Vec<ControlBinding>,
 }
 
@@ -172,6 +175,9 @@ struct VoiceState {
 #[derive(Clone, Debug)]
 struct GraphState {
     nodes: Vec<RuntimeNode>,
+    /// The controls that the parameters of nodes without sample-rate
+    /// modulation were last computed from; `None` before the first sample.
+    settled_controls: Option<Vec<f64>>,
 }
 
 #[derive(Clone, Debug)]
@@ -200,8 +206,8 @@ enum ProcessorState {
     OnePole([f64; 2]),
     /// Each channel's state-variable filter integrators `[s1, s2]`.
     Svf([[f64; 2]; 2]),
-    /// Each channel's previous drive input.
-    Drive([f64; 2]),
+    /// Each channel's drive state.
+    Drive([DriveState; 2]),
     /// The note-on velocity a `synth.velocity/1` node emits.
     Velocity(f64),
     Stateless,
@@ -705,7 +711,7 @@ impl GraphState {
                     ProcessorState::OnePole([0.0; 2])
                 }
                 ProcessorCode::Svf(..) => ProcessorState::Svf([[0.0; 2]; 2]),
-                ProcessorCode::Drive(_) => ProcessorState::Drive([0.0; 2]),
+                ProcessorCode::Drive(_) => ProcessorState::Drive([DriveState::default(); 2]),
                 ProcessorCode::Velocity => ProcessorState::Velocity(velocity),
                 ProcessorCode::Gain(_)
                 | ProcessorCode::Key
@@ -720,7 +726,10 @@ impl GraphState {
                 output: [0.0; 2],
             });
         }
-        Ok(Self { nodes })
+        Ok(Self {
+            nodes,
+            settled_controls: None,
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1012,8 +1021,28 @@ impl GraphState {
         pressure: f64,
         input: [f64; 2],
     ) -> Result<[f64; 2]> {
+        // A node without sample-rate modulation computes the same parameters
+        // until a control changes, so it keeps the values it already checked.
+        let settled = self.settled_controls.as_deref() == Some(controls);
         for &node_index in &graph.order {
             let compiled = &graph.nodes[node_index];
+            if settled && !compiled.has_sample_modulations {
+                let audio_input = sum_inputs(&self.nodes, &compiled.incoming, input)?;
+                let runtime = &mut self.nodes[node_index];
+                runtime.output = process_graph_node(
+                    compiled,
+                    &mut runtime.state,
+                    &runtime.params,
+                    frame,
+                    rate,
+                    pitch_hz,
+                    timbre,
+                    pressure,
+                    audio_input,
+                    true,
+                )?;
+                continue;
+            }
             self.nodes[node_index]
                 .params
                 .clone_from_slice(&compiled.base_params);
@@ -1060,6 +1089,12 @@ impl GraphState {
                 audio_input,
                 true,
             )?;
+        }
+        if !settled {
+            match &mut self.settled_controls {
+                Some(previous) => previous.clone_from_slice(controls),
+                None => self.settled_controls = Some(controls.to_vec()),
+            }
         }
         Ok(self.nodes[graph.output].output)
     }
@@ -1426,17 +1461,20 @@ fn process_graph_node(
                 *states = next;
             }
         }
-        (ProcessorCode::Drive(channels), ProcessorState::Drive(previous)) => {
-            for ((output, previous), input) in output
+        (ProcessorCode::Drive(channels), ProcessorState::Drive(states)) => {
+            let mut next = *states;
+            for ((output, state), input) in output
                 .iter_mut()
-                .zip(previous.iter())
+                .zip(next.iter_mut())
                 .zip(audio_input)
                 .take(*channels)
             {
-                *output = drive_sample(input, *previous, params[0], params[1], params[2]);
+                let (value, after) = state.sample(input, params[0], params[1], params[2]);
+                *output = value;
+                *state = after;
             }
             if commit {
-                previous[..*channels].copy_from_slice(&audio_input[..*channels]);
+                *states = next;
             }
         }
         (ProcessorCode::Mix(channels), ProcessorState::Stateless) => {
@@ -1505,6 +1543,7 @@ fn compile_graph(
             modulations: Vec::new(),
             has_note_on_modulations: false,
             has_reset_modulations: false,
+            has_sample_modulations: false,
             controls: Vec::new(),
         });
     }
@@ -1552,6 +1591,8 @@ fn compile_graph(
             nodes[target].has_note_on_modulations = true;
         } else if rate == ParameterRate::Reset {
             nodes[target].has_reset_modulations = true;
+        } else if rate == ParameterRate::Sample {
+            nodes[target].has_sample_modulations = true;
         }
     }
 

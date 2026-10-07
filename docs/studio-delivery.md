@@ -109,18 +109,22 @@ The first draft was measured and changed before freezing:
 
 ## Render cost
 
-| Example | Audio | Render | Ratio |
-| --- | ---: | ---: | ---: |
-| [`electric_piano.maac`](../examples/studio/electric_piano.maac) | 12.2 s | 24.0 s | 2.0× |
-| [`pad.maac`](../examples/studio/pad.maac) | 12.7 s | 16.4 s | 1.3× |
-| [`drums.maac`](../examples/studio/drums.maac) | 18.0 s | 12.6 s | 0.7× |
-| [`bass.maac`](../examples/studio/bass.maac) | 11.2 s | 5.4 s | 0.5× |
+CPU cycles for `maac build` on an Apple M1, from `time -l`. They do not
+depend on other load on the machine. At the M1's full clock, 3.2 billion
+cycles are about one second.
 
-The electric piano is the most expensive: 15 nodes and 16 edges per voice,
-including three oscillators and three envelopes, with decays of several
-seconds that keep voices alive.
-Most of each node's time is the engine's fixed per-node cost, not its DSP,
-so iteration speed (F7) is better addressed in the engine.
+| Example | Audio | Cycles at release | Cycles after the engine work |
+| --- | ---: | ---: | ---: |
+| [`electric_piano.maac`](../examples/studio/electric_piano.maac) | 12.2 s | 5.72 billion | 3.28 billion |
+| [`pad.maac`](../examples/studio/pad.maac) | 12.7 s | 7.13 billion | 4.57 billion |
+| [`drums.maac`](../examples/studio/drums.maac) | 18.0 s | 9.05 billion | 3.77 billion |
+| [`bass.maac`](../examples/studio/bass.maac) | 11.2 s | 2.50 billion | 1.23 billion |
+
+Every example renders in well under real time: the electric piano took about
+1.8 s of CPU for 12.2 s of audio at release, and about 1.0 s after the
+[render-speed work](render-speed.md). An earlier version of this table
+reported wall-clock times taken while a test suite compiled in parallel; they
+overstated the cost several times over and have been replaced.
 
 ## Limits
 

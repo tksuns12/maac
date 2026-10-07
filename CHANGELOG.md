@@ -9,6 +9,16 @@ This entry describes the current source tree prepared for a GitHub source-only
 release. It may be moved to a dated `0.1.0` release entry when a release is
 actually published; no release tag or publication date is asserted here.
 
+### Changed
+
+- Rendering does much less work per frame, with byte-identical output.
+  Nodes whose parameters cannot change are evaluated once per render instead
+  of every frame, per-frame clones and allocations are gone, voice nodes
+  recompute their parameters only when a control changes, and the reverb,
+  curved envelopes and drive reuse values computed from unchanged inputs.
+  "Late Window" takes 1.82 times fewer CPU cycles (161.5 to 88.7 billion) and
+  2.43 times fewer instructions. See [render speed](docs/render-speed.md).
+
 ### Removed
 
 - The macOS host tools `maac play`, `maac inputs` and `maac record` (with

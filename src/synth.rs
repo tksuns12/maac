@@ -28,6 +28,8 @@ pub struct Adsr {
     decay_seconds: f64,
     sustain: f64,
     curve: f64,
+    /// `expm1(-curve)`, the shape's constant term, computed once.
+    curve_end: f64,
     release: Option<Release>,
 }
 
@@ -80,6 +82,7 @@ impl Adsr {
             decay_seconds,
             sustain,
             curve,
+            curve_end: (-curve).exp_m1(),
             release: None,
         })
     }
@@ -118,7 +121,7 @@ impl Adsr {
                 let release_frames = release.seconds * rate;
                 if self.curve > 0.0 {
                     let progress = (elapsed_frames / release_frames).min(1.0);
-                    return Ok(release.amplitude * curve_shape(self.curve, progress));
+                    return Ok(release.amplitude * curved(self.curve, self.curve_end, progress));
                 }
                 return Ok(release.amplitude * (1.0 - elapsed_frames / release_frames).max(0.0));
             }
@@ -133,7 +136,11 @@ impl Adsr {
         let decay_frames = self.decay_seconds * rate;
         if decay_frames > 0.0 && decay_elapsed_frames < decay_frames {
             if self.curve > 0.0 {
-                let shape = curve_shape(self.curve, decay_elapsed_frames / decay_frames);
+                let shape = curved(
+                    self.curve,
+                    self.curve_end,
+                    decay_elapsed_frames / decay_frames,
+                );
                 return Ok(self.sustain + (1.0 - self.sustain) * shape);
             }
             return Ok(1.0 + (self.sustain - 1.0) * decay_elapsed_frames / decay_frames);
@@ -231,7 +238,11 @@ fn validate_rate(rate: f64) -> Result<(), RenderError> {
 /// the end. `curve` must be positive. The `exp_m1` form keeps small curves
 /// accurate, where the plain form cancels.
 pub fn curve_shape(curve: f64, progress: f64) -> f64 {
-    let end = (-curve).exp_m1();
+    curved(curve, (-curve).exp_m1(), progress)
+}
+
+/// [`curve_shape`] with its constant `expm1(-curve)` supplied.
+fn curved(curve: f64, end: f64, progress: f64) -> f64 {
     ((-curve * progress).exp_m1() - end) / -end
 }
 
@@ -336,6 +347,53 @@ pub fn drive_sample(input: f64, previous: f64, drive: f64, bias: f64, level: f64
         (log_cosh(u) - log_cosh(previous_u)) / delta
     };
     level * (shaped - bias.tanh())
+}
+
+/// One channel of a running `synth.drive/1`: the previous input, and values
+/// reused from the previous sample while `drive` and `bias` are unchanged.
+/// [`DriveState::sample`] returns exactly what [`drive_sample`] would.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DriveState {
+    previous: f64,
+    /// `log_cosh(drive * previous + bias)` with the bits of drive and bias.
+    previous_log_cosh: Option<(u64, u64, f64)>,
+    /// `tanh(bias)` with the bits of bias.
+    bias_tanh: Option<(u64, f64)>,
+}
+
+impl DriveState {
+    /// The next output and the state after it, leaving `self` unchanged.
+    pub fn sample(&self, input: f64, drive: f64, bias: f64, level: f64) -> (f64, Self) {
+        let u = drive * input + bias;
+        let previous_u = drive * self.previous + bias;
+        let delta = u - previous_u;
+        let mut after = Self {
+            previous: input,
+            previous_log_cosh: None,
+            bias_tanh: self.bias_tanh,
+        };
+        let shaped = if delta.abs() < DRIVE_ADAA_EPSILON {
+            (0.5 * (u + previous_u)).tanh()
+        } else {
+            let keys = (drive.to_bits(), bias.to_bits());
+            let previous_value = match self.previous_log_cosh {
+                Some((d, b, value)) if (d, b) == keys => value,
+                _ => log_cosh(previous_u),
+            };
+            let value = log_cosh(u);
+            after.previous_log_cosh = Some((keys.0, keys.1, value));
+            (value - previous_value) / delta
+        };
+        let offset = match self.bias_tanh {
+            Some((bits, value)) if bits == bias.to_bits() => value,
+            _ => {
+                let value = bias.tanh();
+                after.bias_tanh = Some((bias.to_bits(), value));
+                value
+            }
+        };
+        (level * (shaped - offset), after)
+    }
 }
 
 fn validate_duration(name: &str, seconds: f64) -> Result<(), RenderError> {
