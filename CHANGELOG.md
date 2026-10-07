@@ -11,13 +11,16 @@ actually published; no release tag or publication date is asserted here.
 
 ### Changed
 
-- Rendering does much less work per frame, with byte-identical output.
-  Nodes whose parameters cannot change are evaluated once per render instead
-  of every frame, per-frame clones and allocations are gone, voice nodes
-  recompute their parameters only when a control changes, and the reverb,
+- Rendering is about three times faster, with byte-identical output. Nodes
+  whose parameters cannot change are evaluated once per render instead of
+  every frame; per-frame clones and allocations are gone; voice nodes
+  recompute their parameters only when a control changes; and the reverb,
   curved envelopes and drive reuse values computed from unchanged inputs.
-  "Late Window" takes 1.82 times fewer CPU cycles (161.5 to 88.7 billion) and
-  2.43 times fewer instructions. See [render speed](docs/render-speed.md).
+  An instrument with fixed parameters now renders ahead to its next event,
+  each voice graph node by node over the block, with errors reported at the
+  same frame as before. Measured together on one machine, "Late Window" went
+  from 113.9 to 36.5 billion CPU cycles (3.12 times fewer) and from 48.5 s to
+  14.8 s of CPU time. See [render speed](docs/render-speed.md).
 
 ### Removed
 
@@ -33,6 +36,14 @@ actually published; no release tag or publication date is asserted here.
 
 ### Added
 
+- `maac analyze --window region:ID|bars:A-B` measures one section. It
+  renders from the start but stops at the window's end, so the measured
+  frames are exactly the full render's; `--preroll SECONDS` instead starts
+  that many seconds before the window from reset state, for fast,
+  approximate previews marked `"approximate": true`. Sections, findings,
+  images and positions follow the window. In Rust, `RenderSpan` and
+  `render_ports_artifact_span_with_limits` render a span of frames. See
+  [windows](docs/analyze.md#windows-2026-10-07).
 - "Late Window" ([`examples/lofi`](examples/lofi/)) plays `std/studio`, part 4
   and the end of the [instrument palette](docs/instrument-palette-proposal.md).
   Its electric piano, bass, kick and hats, snare and pad are std/studio

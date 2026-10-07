@@ -397,10 +397,19 @@ impl KitInstrumentRuntime {
     }
 
     /// Sum every piece's output for this frame, in piece order.
-    pub(crate) fn render(&mut self, frame: u64) -> Result<&[f64]> {
+    /// Render `frame`, letting each piece render ahead up to `horizon` or the
+    /// next gate end, whichever comes first. The caller promises no hit or
+    /// control change below `horizon`; gate ends are the kit's own events.
+    pub(crate) fn render_until(&mut self, frame: u64, horizon: u64) -> Result<&[f64]> {
+        let horizon = self
+            .open
+            .iter()
+            .map(|(_, _, release)| *release)
+            .filter(|release| *release > frame)
+            .fold(horizon, u64::min);
         let mut sum = [0.0; 2];
         for piece in &mut self.pieces {
-            let output = piece.runtime.render(frame)?;
+            let output = piece.runtime.render_until(frame, horizon)?;
             for (total, sample) in sum.iter_mut().zip(output) {
                 *total += sample;
             }

@@ -87,6 +87,12 @@ impl SectionMode {
 #[derive(Clone, Debug)]
 pub struct AnalyzeOptions {
     pub sections: SectionMode,
+    /// Analyse only this score window instead of the whole piece.
+    pub window: Option<Window>,
+    /// With a window: start rendering this many seconds before it, from
+    /// reset state, instead of at the start of the piece. Faster, but only
+    /// approximate; see [`crate::dsp::RenderSpan`].
+    pub preroll_seconds: Option<f64>,
     /// Ports to analyse besides the project output; empty selects every
     /// output port that reaches it.
     pub sources: Vec<PortRef>,
@@ -100,6 +106,8 @@ impl Default for AnalyzeOptions {
     fn default() -> Self {
         Self {
             sections: SectionMode::Auto,
+            window: None,
+            preroll_seconds: None,
             sources: Vec::new(),
             images: None,
             force: false,
@@ -158,6 +166,61 @@ pub struct AnalysisReport {
     pub sources: Vec<SourceReport>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<ImageFile>,
+    /// The analysed window, when not the whole piece.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window: Option<WindowReport>,
+}
+
+/// A score window to analyse.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Window {
+    /// A declared region.
+    Region(String),
+    /// Bars `first` through `last`, inclusive.
+    Bars(i64, i64),
+}
+
+impl Window {
+    /// `region:ID` or `bars:FIRST-LAST`.
+    pub fn parse(text: &str) -> Result<Self, AnalyzeError> {
+        let usage = || {
+            AnalyzeError::new(
+                "E_USAGE",
+                format!("window `{text}` must be region:ID or bars:FIRST-LAST"),
+            )
+        };
+        if let Some(id) = text.strip_prefix("region:") {
+            return if id.is_empty() {
+                Err(usage())
+            } else {
+                Ok(Self::Region(id.to_owned()))
+            };
+        }
+        let (first, last) = text
+            .strip_prefix("bars:")
+            .and_then(|range| range.split_once('-'))
+            .ok_or_else(usage)?;
+        let first: i64 = first.parse().map_err(|_| usage())?;
+        let last: i64 = last.parse().map_err(|_| usage())?;
+        if first < 1 || last < first {
+            return Err(usage());
+        }
+        Ok(Self::Bars(first, last))
+    }
+}
+
+/// The analysed window in the report.
+#[derive(Clone, Debug, Serialize)]
+pub struct WindowReport {
+    pub start_q: String,
+    pub end_q: String,
+    pub start_frame: u64,
+    pub end_frame: u64,
+    /// The frame rendering started at: 0 for an exact window.
+    pub render_start_frame: u64,
+    /// True when rendering started after frame 0, so the measurements only
+    /// approximate a full render's.
+    pub approximate: bool,
 }
 
 fn is_zero(value: &usize) -> bool {
@@ -354,8 +417,11 @@ pub fn analyze_artifact(
         meter,
         options,
         limits,
-        |ports, callback| {
-            crate::dsp::render_ports_artifact_with_limits(plan, limits, ports, callback)
+        |ports, span, callback| match span {
+            Some(span) => crate::dsp::render_ports_artifact_span_with_limits(
+                plan, limits, ports, span, callback,
+            ),
+            None => crate::dsp::render_ports_artifact_with_limits(plan, limits, ports, callback),
         },
     )
 }
@@ -377,7 +443,10 @@ pub(crate) fn analyze_disk_media(
         meter,
         options,
         limits,
-        |ports, callback| plan.render_ports(ports, callback),
+        |ports, span, callback| match span {
+            Some(span) => plan.render_ports_span(ports, span, callback),
+            None => plan.render_ports(ports, callback),
+        },
     )
 }
 
@@ -389,7 +458,11 @@ fn analyze_view(
     meter: Option<&MeterMap>,
     options: &AnalyzeOptions,
     limits: &PlanLimits,
-    render: impl FnOnce(&[PortRef], RenderPorts<'_>) -> crate::dsp::Result<()>,
+    render: impl FnOnce(
+        &[PortRef],
+        Option<crate::dsp::RenderSpan>,
+        RenderPorts<'_>,
+    ) -> crate::dsp::Result<()>,
 ) -> Result<AnalysisReport, AnalyzeError> {
     let rate = view.output.sample_rate_hz;
     let frames = view.output.total_frames;
@@ -409,10 +482,43 @@ fn analyze_view(
         Ok(frame.to_u64().unwrap_or(0).min(frames))
     };
     let positions = position_map(&view, meter, rate, &frame_at)?;
-    let sections = sections(&view, meter, &options.sections, &frame_at)?;
+    let window = match &options.window {
+        Some(window) => Some(resolve_window(&view, meter, window, &frame_at)?),
+        None => None,
+    };
+    if options.preroll_seconds.is_some() && window.is_none() {
+        return Err(AnalyzeError::new("E_USAGE", "--preroll needs --window"));
+    }
+    let (window_start, window_end) = window
+        .as_ref()
+        .map_or((0, frames), |(_, _, start, end)| (*start, *end));
+    if window_start >= window_end {
+        return Err(AnalyzeError::new("E_RANGE", "the analysis window is empty"));
+    }
+    let render_start = match options.preroll_seconds {
+        Some(seconds) if seconds.is_finite() && seconds >= 0.0 => {
+            window_start.saturating_sub((seconds * f64::from(rate)).round() as u64)
+        }
+        Some(_) => {
+            return Err(AnalyzeError::new(
+                "E_USAGE",
+                "--preroll must be a nonnegative number of seconds",
+            ))
+        }
+        None => 0,
+    };
+    let span = window.as_ref().map(|_| crate::dsp::RenderSpan {
+        start: render_start,
+        end: window_end,
+    });
+    let sections = clip_sections(
+        sections(&view, meter, &options.sections, &frame_at)?,
+        window.as_ref(),
+    );
     let sources = sources(&view, &options.sources)?;
+    let analysed_frames = window_end - window_start;
 
-    let columns_hop = image::frames_per_column(frames);
+    let columns_hop = image::frames_per_column(analysed_frames);
     let ports: Vec<PortRef> = sources.iter().map(|source| source.port.clone()).collect();
     let mut meters: Vec<SourceMeter> = sources
         .iter()
@@ -421,13 +527,17 @@ fn analyze_view(
                 .images
                 .as_ref()
                 .map(|_| Spectrogram::new(rate, columns_hop));
-            SourceMeter::new(rate, source.channels, hop, spectrogram)
+            SourceMeter::new(rate, source.channels, hop, spectrogram).starting_at(window_start)
         })
         .collect();
-    render(&ports, &mut |frame| {
-        for (meter, values) in meters.iter_mut().zip(frame) {
-            meter.push(values);
+    let mut frame_index = render_start;
+    render(&ports, span, &mut |frame| {
+        if frame_index >= window_start {
+            for (meter, values) in meters.iter_mut().zip(frame) {
+                meter.push(values);
+            }
         }
+        frame_index += 1;
         Ok(())
     })
     .map_err(|failure| AnalyzeError::new("E_RENDER", failure.to_string()))?;
@@ -484,7 +594,13 @@ fn analyze_view(
             }
         })
         .collect();
-    let (findings, findings_omitted) = findings(&reports, &sections, &positions, &view);
+    let (findings, findings_omitted) = findings(
+        &reports,
+        &sections,
+        &positions,
+        &view,
+        (window_start, window_end),
+    );
 
     let images = match &options.images {
         Some(directory) => write_images(
@@ -494,7 +610,8 @@ fn analyze_view(
             &reports,
             &spectrograms,
             &sections,
-            frames,
+            window_start,
+            analysed_frames,
             columns_hop,
         )?,
         None => Vec::new(),
@@ -509,15 +626,91 @@ fn analyze_view(
         band_centers_hz: BAND_CENTERS_HZ.to_vec(),
         plan_sha256,
         sample_rate_hz: rate,
-        frames,
-        seconds: round3(frames as f64 / f64::from(rate)),
+        frames: analysed_frames,
+        seconds: round3(analysed_frames as f64 / f64::from(rate)),
         block_frames: hop,
         findings,
         findings_omitted,
         sections,
         sources: reports,
         images,
+        window: window.map(|(start_q, end_q, start_frame, end_frame)| WindowReport {
+            start_q: start_q.to_string(),
+            end_q: end_q.to_string(),
+            start_frame,
+            end_frame,
+            render_start_frame: render_start,
+            approximate: render_start > 0,
+        }),
     })
+}
+
+/// The window's score bounds and frames, within the score.
+fn resolve_window(
+    view: &PlanView<'_>,
+    meter: Option<&MeterMap>,
+    window: &Window,
+    frame_at: &dyn Fn(&Rational) -> Result<u64, AnalyzeError>,
+) -> Result<(Rational, Rational, u64, u64), AnalyzeError> {
+    let (start, end) = match window {
+        Window::Region(id) => {
+            let region = view
+                .regions
+                .iter()
+                .find(|region| &region.id == id)
+                .ok_or_else(|| {
+                    AnalyzeError::new("E_REFERENCE", format!("no region `{id}` to analyse"))
+                })?;
+            (region.start_q.clone(), region.end_q.clone())
+        }
+        Window::Bars(first, last) => {
+            let meter = meter.ok_or_else(|| {
+                AnalyzeError::new("E_RANGE", "a bars window needs the source's meter")
+            })?;
+            let one = Rational::from_integer(1.into());
+            let at = |bar: i64| {
+                meter
+                    .bar_to_q(bar, &one)
+                    .map_err(|e| AnalyzeError::new("E_RANGE", e.to_string()))
+            };
+            (at(*first)?, at(*last + 1)?)
+        }
+    };
+    let start = start.max(view.output.score_start_q.clone());
+    let end = end.min(view.output.score_end_q.clone());
+    if start >= end {
+        return Err(AnalyzeError::new(
+            "E_RANGE",
+            "the analysis window does not overlap the score",
+        ));
+    }
+    let (start_frame, end_frame) = (frame_at(&start)?, frame_at(&end)?);
+    Ok((start, end, start_frame, end_frame))
+}
+
+/// Keep the sections that overlap the window, cut to it.
+fn clip_sections(
+    sections: Vec<Section>,
+    window: Option<&(Rational, Rational, u64, u64)>,
+) -> Vec<Section> {
+    let Some((start_q, end_q, start, end)) = window else {
+        return sections;
+    };
+    sections
+        .into_iter()
+        .filter(|section| section.end_frame > *start && section.start_frame < *end)
+        .map(|mut section| {
+            if section.start_frame < *start {
+                section.start_frame = *start;
+                section.start_q = start_q.to_string();
+            }
+            if section.end_frame > *end {
+                section.end_frame = *end;
+                section.end_q = end_q.to_string();
+            }
+            section
+        })
+        .collect()
 }
 
 fn position_map<'m>(
@@ -745,10 +938,11 @@ fn groove_findings(
     view: &PlanView<'_>,
     sections: &[Section],
     positions: &PositionMap<'_>,
+    (start, end): (u64, u64),
 ) -> Vec<Finding> {
     let half = Rational::new(1.into(), 2.into());
     let two_thirds = Rational::new(2.into(), 3.into());
-    let whole = [(None, 0, u64::MAX)];
+    let whole = [(None, start, end)];
     let groups: Vec<(Option<&Section>, u64, u64)> = if sections.is_empty() {
         whole.to_vec()
     } else {
@@ -839,8 +1033,9 @@ fn findings(
     sections: &[Section],
     positions: &PositionMap<'_>,
     view: &PlanView<'_>,
+    analysed: (u64, u64),
 ) -> (Vec<Finding>, usize) {
-    let mut found = groove_findings(view, sections, positions);
+    let mut found = groove_findings(view, sections, positions, analysed);
     let output = &reports[0];
     let section_start = |id: &str| {
         sections
@@ -1069,6 +1264,7 @@ fn write_images(
     reports: &[SourceReport],
     spectrograms: &[Option<Spectrogram>],
     sections: &[Section],
+    origin: u64,
     frames: u64,
     hop: u64,
 ) -> Result<Vec<ImageFile>, AnalyzeError> {
@@ -1080,8 +1276,8 @@ fn write_images(
         .iter()
         .map(|section| ImageSection {
             id: section.id.clone(),
-            x0: (section.start_frame / hop) as usize,
-            x1: (section.end_frame / hop) as usize,
+            x0: ((section.start_frame - origin) / hop) as usize,
+            x1: ((section.end_frame - origin) / hop) as usize,
         })
         .collect();
     let boundaries: Vec<usize> = image_sections.iter().map(|s| s.x0).collect();
@@ -1149,9 +1345,17 @@ fn write_images(
     };
     let mut lanes: BTreeMap<(String, String), usize> = BTreeMap::new();
     let mut marks = Vec::new();
+    // Marks are relative to the window; events outside it are left out.
+    let window_end = origin + frames;
     for event in view.events() {
         let color = targets[event.target.node.as_str()];
         let off = event.off_frame.unwrap_or(event.on_frame + hop);
+        if off <= origin || event.on_frame >= window_end {
+            continue;
+        }
+        let shift = |frame: u64| frame.clamp(origin, window_end) - origin;
+        let (event_on, off) = (shift(event.on_frame), shift(off));
+        let event_hit_off = shift(event.on_frame + hop);
         match event.kind {
             &EventKind::Note { .. } if drum(&event.target.node) => {
                 let next = lanes.len();
@@ -1159,15 +1363,15 @@ fn write_images(
                     .entry((event.target.node.clone(), String::new()))
                     .or_insert(next);
                 marks.push(Mark {
-                    on_frame: event.on_frame,
-                    off_frame: event.on_frame + hop,
+                    on_frame: event_on,
+                    off_frame: event_hit_off,
                     key: None,
                     lane,
                     color,
                 });
             }
             &EventKind::Note { pitch_hz, .. } if pitch_hz > 0.0 => marks.push(Mark {
-                on_frame: event.on_frame,
+                on_frame: event_on,
                 off_frame: off,
                 key: Some(key_of(pitch_hz)),
                 lane: 0,
@@ -1179,8 +1383,8 @@ fn write_images(
                     .entry((event.target.node.clone(), key.clone()))
                     .or_insert(next);
                 marks.push(Mark {
-                    on_frame: event.on_frame,
-                    off_frame: event.on_frame + hop,
+                    on_frame: event_on,
+                    off_frame: event_hit_off,
                     key: None,
                     lane,
                     color,

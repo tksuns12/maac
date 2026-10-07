@@ -185,9 +185,22 @@ pub struct DspEngine<'a> {
     /// Whether a fixed node's parameters have been evaluated, validated and
     /// applied since the last reset.
     parameters_settled: Vec<bool>,
+    /// Each node's frames with a note, hit or release, ascending.
+    event_frames: Vec<Vec<u64>>,
 }
 
 type NodeReplacementFill<'a> = dyn FnMut(usize, u64, &mut [f64]) -> Result<()> + 'a;
+
+/// The frames a render produces, `start .. end`. A span from frame 0 renders
+/// exactly as the full plan does, up to `end`. A span that starts later is a
+/// preview: the engine starts from reset state at `start`, restarts there any
+/// note still sounding, and drops earlier hits, so its frames only
+/// approximate a full render's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RenderSpan {
+    pub start: u64,
+    pub end: u64,
+}
 
 struct NodeReplacement<'a> {
     indices: Vec<usize>,
@@ -582,6 +595,16 @@ impl<'a> DspEngine<'a> {
             })
             .collect();
         let parameters_settled = vec![false; nodes.len()];
+        let mut event_frames = vec![Vec::new(); nodes.len()];
+        for (frame, indices) in on_events.iter().chain(off_events.iter()) {
+            for &index in indices {
+                event_frames[events[index].node].push(*frame);
+            }
+        }
+        for frames in &mut event_frames {
+            frames.sort_unstable();
+            frames.dedup();
+        }
         Ok(Self {
             plan,
             limits: *limits,
@@ -602,6 +625,7 @@ impl<'a> DspEngine<'a> {
             frame: vec![0.0; channels],
             fixed_parameters,
             parameters_settled,
+            event_frames,
         })
     }
 
@@ -611,7 +635,9 @@ impl<'a> DspEngine<'a> {
         F: FnMut(&[f64]) -> Result<()>,
     {
         let output = self.plan.output.output.clone();
-        self.render_ports_inner(&[output], false, None, |outputs| callback(&outputs[0]))
+        self.render_ports_inner(&[output], false, None, None, |outputs| {
+            callback(&outputs[0])
+        })
     }
 
     /// Capture selected ports from one complete graph execution. Buffers are reused each frame.
@@ -619,7 +645,20 @@ impl<'a> DspEngine<'a> {
     where
         F: FnMut(&[Vec<f64>]) -> Result<()>,
     {
-        self.render_ports_inner(ports, true, None, callback)
+        self.render_ports_inner(ports, true, None, None, callback)
+    }
+
+    /// Capture selected ports over `span` only; see [`RenderSpan`].
+    pub fn render_ports_span<F>(
+        &mut self,
+        ports: &[PortRef],
+        span: RenderSpan,
+        callback: F,
+    ) -> Result<()>
+    where
+        F: FnMut(&[Vec<f64>]) -> Result<()>,
+    {
+        self.render_ports_inner(ports, true, None, Some(span), callback)
     }
 
     /// Check that a boundary is one project-level native effect's audio output.
@@ -778,6 +817,7 @@ impl<'a> DspEngine<'a> {
                 indices: vec![index],
                 fill: &mut indexed_replacement,
             }),
+            None,
             |outputs| callback(&outputs[0]),
         )
     }
@@ -822,6 +862,7 @@ impl<'a> DspEngine<'a> {
                 indices,
                 fill: &mut replacement,
             }),
+            None,
             |outputs| callback(&outputs[0]),
         )
     }
@@ -831,6 +872,7 @@ impl<'a> DspEngine<'a> {
         ports: &[PortRef],
         charge_capture: bool,
         mut replacement: Option<NodeReplacement<'_>>,
+        span: Option<RenderSpan>,
         mut callback: F,
     ) -> Result<()>
     where
@@ -922,7 +964,48 @@ impl<'a> DspEngine<'a> {
             .get(&self.plan.output.output.node)
             .ok_or_else(|| RenderError::RenderState("output node does not exist".into()))?;
 
-        for frame_index in 0..self.plan.output.total_frames {
+        let total = self.plan.output.total_frames;
+        let span = span.unwrap_or(RenderSpan {
+            start: 0,
+            end: total,
+        });
+        if span.start >= span.end || span.end > total {
+            return Err(RenderError::Plan(PlanError {
+                code: "E_RANGE".into(),
+                path: "span".into(),
+                message: format!(
+                    "render span {}..{} must be nonempty and end within {total} frames",
+                    span.start, span.end
+                ),
+                span: None,
+            }));
+        }
+        // A preview restarts, at its first frame, every note that sounds
+        // through it, in the order the score would have started them.
+        let mut carried: Vec<usize> = if span.start > 0 {
+            self.events
+                .iter()
+                .enumerate()
+                .filter(|(_, event)| {
+                    matches!(event.data, EventData::Note { .. })
+                        && event.on_frame < span.start
+                        && event.off_frame.is_some_and(|off| off > span.start)
+                })
+                .map(|(index, _)| index)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        carried.sort_by(|&left, &right| {
+            let (left, right) = (&self.events[left], &self.events[right]);
+            (left.on_frame, left.order, left.address.as_bytes()).cmp(&(
+                right.on_frame,
+                right.order,
+                right.address.as_bytes(),
+            ))
+        });
+
+        for frame_index in span.start..span.end {
             self.read_delays();
             self.evaluate_parameters(frame_index)?;
 
@@ -940,6 +1023,11 @@ impl<'a> DspEngine<'a> {
             // the new event.
             for node in &mut self.nodes {
                 node.prune_finished_voices(frame_index, self.rate)?;
+            }
+            if frame_index == span.start {
+                for event_index in std::mem::take(&mut carried) {
+                    self.start_event(event_index, frame_index)?;
+                }
             }
             if let Some(events) = self.on_events.get(&frame_index).cloned() {
                 for event_index in events {
@@ -1334,7 +1422,18 @@ impl<'a> DspEngine<'a> {
             return Ok(());
         }
         // Instruments render first: their processor carries strings, and
-        // cloning it every frame allocated.
+        // cloning it every frame allocated. An instrument whose parameters
+        // cannot change renders ahead until its next event.
+        let horizon = if self.fixed_parameters[node_index] {
+            let frames = &self.event_frames[node_index];
+            frames
+                .get(frames.partition_point(|&event| event <= frame))
+                .copied()
+                .unwrap_or(self.plan.output.total_frames)
+                .min(self.plan.output.total_frames)
+        } else {
+            frame + 1
+        };
         let node = &mut self.nodes[node_index];
         let rendered = match node.processor {
             RuntimeProcessor::Core(Processor::Instrument { .. }) => Some(
@@ -1346,7 +1445,7 @@ impl<'a> DspEngine<'a> {
                             node.id
                         ))
                     })?
-                    .render(frame)?,
+                    .render_until(frame, horizon)?,
             ),
             RuntimeProcessor::Core(Processor::KitInstrument { .. }) => Some(
                 node.kit_instrument
@@ -1357,7 +1456,7 @@ impl<'a> DspEngine<'a> {
                             node.id
                         ))
                     })?
-                    .render(frame)?,
+                    .render_until(frame, horizon)?,
             ),
             _ => None,
         };
@@ -3527,6 +3626,20 @@ where
     F: FnMut(&[Vec<f64>]) -> Result<()>,
 {
     DspEngine::new_artifact_with_limits(plan, limits)?.render_ports(ports, callback)
+}
+
+/// Capture selected ports over a [`RenderSpan`] of a plan artifact.
+pub fn render_ports_artifact_span_with_limits<F>(
+    plan: &PlanArtifact,
+    limits: &PlanLimits,
+    ports: &[PortRef],
+    span: RenderSpan,
+    callback: F,
+) -> Result<()>
+where
+    F: FnMut(&[Vec<f64>]) -> Result<()>,
+{
+    DspEngine::new_artifact_with_limits(plan, limits)?.render_ports_span(ports, span, callback)
 }
 
 #[allow(dead_code)] // Retained as the shared crate-internal IO boundary.

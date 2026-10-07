@@ -39,7 +39,23 @@ pub struct InstrumentRuntime {
     shared: Option<GraphState>,
     shared_reset: Option<GraphState>,
     output: [f64; 2],
+    /// Frames rendered ahead of the caller, starting at `buffered_start`.
+    buffered: Vec<[f64; 2]>,
+    buffered_start: u64,
+    /// The error found at the frame after the buffered ones.
+    buffered_error: Option<RenderError>,
+    /// The frame after the last one the caller received.
+    next_frame: u64,
+    /// Node outputs of the graph being rendered, one block per node.
+    scratch: Vec<[f64; 2]>,
+    /// Each voice's output for the block being rendered.
+    voice_frames: Vec<[f64; 2]>,
+    /// Per-frame pitch, timbre and pressure of the voice being rendered.
+    expressions: Vec<(f64, f64, f64)>,
 }
+
+/// The most frames an instrument renders ahead at once.
+const BLOCK_FRAMES: usize = 128;
 
 #[derive(Debug)]
 struct CompiledGraph {
@@ -184,7 +200,6 @@ struct GraphState {
 struct RuntimeNode {
     state: ProcessorState,
     params: Vec<f64>,
-    output: [f64; 2],
 }
 
 #[derive(Clone, Debug)]
@@ -373,11 +388,49 @@ impl InstrumentRuntime {
             shared_reset: shared.clone(),
             shared,
             output: [0.0; 2],
+            buffered: Vec::new(),
+            buffered_start: 0,
+            buffered_error: None,
+            next_frame: 0,
+            scratch: Vec::new(),
+            voice_frames: Vec::new(),
+            expressions: Vec::new(),
         })
+    }
+
+    /// Refuse a change at `frame` while frames from it on were rendered ahead
+    /// but not yet handed out; those frames were computed without it. Frames
+    /// already handed out are final, as they always were.
+    fn check_nothing_ahead(&self, frame: u64) -> Result<()> {
+        if self.buffered_start + self.buffered.len() as u64 > frame.max(self.next_frame) {
+            return Err(RenderError::RenderState(format!(
+                "instrument {} changed inside a block rendered ahead",
+                self.program.id
+            )));
+        }
+        Ok(())
+    }
+
+    fn clear_ahead(&mut self) {
+        self.buffered.clear();
+        self.buffered_start = 0;
+        self.buffered_error = None;
+        self.next_frame = 0;
     }
 
     /// Replace the instance's public control cache for the current frame.
     pub fn update_controls(&mut self, controls: &BTreeMap<String, f64>) -> Result<()> {
+        if self.buffered_start + self.buffered.len() as u64 > self.next_frame {
+            let before = self.controls.clone();
+            update_resolved_controls(&self.program, controls, &mut self.controls)?;
+            if before != self.controls {
+                return Err(RenderError::RenderState(format!(
+                    "instrument {} controls changed inside a block rendered ahead",
+                    self.program.id
+                )));
+            }
+            return Ok(());
+        }
         update_resolved_controls(&self.program, controls, &mut self.controls)
     }
 
@@ -409,6 +462,7 @@ impl InstrumentRuntime {
                 "instrument note pitch must be finite and velocity must be within 0..=1".into(),
             ));
         }
+        self.check_nothing_ahead(frame)?;
         if self.voices.len() >= self.capacity {
             return Err(RenderError::VoiceLimit {
                 node: self.program.id.clone(),
@@ -456,6 +510,7 @@ impl InstrumentRuntime {
     }
 
     pub fn note_off(&mut self, address: &str, frame: u64) -> Result<()> {
+        self.check_nothing_ahead(frame)?;
         let position = self
             .voices
             .binary_search_by(|voice| voice.address.as_bytes().cmp(address.as_bytes()))
@@ -516,66 +571,223 @@ impl InstrumentRuntime {
     /// Render one frame after the caller has applied note-off, pruning, and
     /// note-on in that order.
     pub fn render(&mut self, frame: u64) -> Result<&[f64]> {
-        let voice_channels = self.program.voice.channels;
-        let mut voice_sum = [0.0; 2];
-        for voice in &mut self.voices {
-            let (pitch_hz, timbre, pressure) = voice.expression_inputs(frame, self.rate)?;
-            let sample = voice.graph.render(
-                &self.program.voice,
-                &self.controls,
-                frame,
-                self.rate,
-                pitch_hz,
-                timbre,
-                pressure,
-                [0.0; 2],
-            )?;
-            let amplitude = voice
-                .graph
-                .amplitude(&self.program.voice, frame, self.rate)?;
-            let gain = voice.gain_expression.as_ref().map(|expression| {
-                expression
-                    .curve
-                    .gain_at(&expression.coordinate_at(voice.on_frame, frame))
-            });
-            if gain.is_some_and(|value| !value.is_finite() || value < 0.0) {
-                return Err(RenderError::Nonfinite(format!(
-                    "gain expression at {} produced an invalid value",
-                    voice.address
-                )));
-            }
-            for channel in 0..voice_channels {
-                let contribution = sample[channel] * amplitude * voice.velocity;
-                voice_sum[channel] += match gain {
-                    Some(gain) => contribution * gain,
-                    None => contribution,
-                };
-                if !voice_sum[channel].is_finite() {
-                    return Err(RenderError::Nonfinite(format!(
-                        "instrument {} voice sum is nonfinite",
-                        self.program.id
-                    )));
+        self.render_until(frame, frame + 1)
+    }
+
+    /// Render `frame`, rendering ahead up to `horizon` (exclusive). The caller
+    /// promises to send no note, control or reset to this instrument at a
+    /// frame below `horizon`. Every frame equals what frame-by-frame rendering
+    /// gives, and an error is reported at the same frame.
+    pub(crate) fn render_until(&mut self, frame: u64, horizon: u64) -> Result<&[f64]> {
+        let end = self.buffered_start + self.buffered.len() as u64;
+        if !(self.buffered_start..end).contains(&frame) {
+            if frame == end {
+                if let Some(error) = self.buffered_error.take() {
+                    return Err(error);
                 }
             }
+            let frames = horizon.saturating_sub(frame).clamp(1, BLOCK_FRAMES as u64) as usize;
+            self.fill(frame, frames);
+            if self.buffered.is_empty() {
+                return Err(self.buffered_error.take().unwrap_or_else(|| {
+                    RenderError::RenderState("instrument block rendered no frame".into())
+                }));
+            }
+        }
+        self.output = self.buffered[(frame - self.buffered_start) as usize];
+        self.next_frame = frame + 1;
+        Ok(&self.output[..self.program.channels])
+    }
+
+    /// Render `frames` frames from `start` into the buffer. Each voice graph
+    /// runs node by node over the block; the voices and the shared graph are
+    /// then combined frame by frame in the same order as [`Self::render`]
+    /// combined them. A voice retires at the frame where pruning would have
+    /// removed it.
+    fn fill(&mut self, start: u64, frames: usize) {
+        let program = Arc::clone(&self.program);
+        let graph = &program.voice;
+        let rate = self.rate;
+        let stride = BLOCK_FRAMES;
+        let scratch_len = stride
+            * program.voice.nodes.len().max(
+                program
+                    .shared
+                    .as_ref()
+                    .map_or(0, |shared| shared.nodes.len()),
+            );
+        if self.scratch.len() < scratch_len {
+            self.scratch.resize(scratch_len, [0.0; 2]);
+        }
+        if self.voice_frames.len() < self.voices.len() * stride {
+            self.voice_frames
+                .resize(self.voices.len() * stride, [0.0; 2]);
+        }
+        if self.expressions.len() < stride {
+            self.expressions.resize(stride, (0.0, 0.0, 0.0));
         }
 
-        self.output = if let (Some(compiled), Some(shared)) =
-            (self.program.shared.as_ref(), self.shared.as_mut())
-        {
-            shared.render(
+        // Each voice: frames before its retirement, and its first error.
+        let mut active = Vec::with_capacity(self.voices.len());
+        let mut voice_errors: Vec<Option<(usize, RenderError)>> =
+            Vec::with_capacity(self.voices.len());
+        for (index, voice) in self.voices.iter_mut().enumerate() {
+            let mut length = frames;
+            let mut error = None;
+            if voice.released {
+                for offset in 1..frames {
+                    match voice.graph.finished(graph, start + offset as u64, rate) {
+                        Ok(true) => {
+                            length = offset;
+                            break;
+                        }
+                        Ok(false) => {}
+                        Err(failure) => {
+                            length = offset;
+                            error = Some((offset, failure));
+                            break;
+                        }
+                    }
+                }
+            }
+            active.push(length);
+            let mut rendered = length;
+            for offset in 0..length {
+                match voice.expression_inputs(start + offset as u64, rate) {
+                    Ok(inputs) => self.expressions[offset] = inputs,
+                    Err(failure) => {
+                        rendered = offset;
+                        error = Some((offset, failure));
+                        break;
+                    }
+                }
+            }
+            let (graph_frames, graph_error) = voice.graph.render_block(
+                graph,
+                &self.controls,
+                start,
+                rendered,
+                rate,
+                &self.expressions[..rendered],
+                None,
+                &mut self.scratch,
+                stride,
+            );
+            if let Some(failure) = graph_error {
+                error = Some((graph_frames, failure));
+            }
+            let output = graph.output * stride;
+            self.voice_frames[index * stride..index * stride + graph_frames]
+                .copy_from_slice(&self.scratch[output..output + graph_frames]);
+            voice_errors.push(error);
+        }
+
+        // Combine the voices frame by frame, in voice order.
+        let voice_channels = graph.channels;
+        let mut sums = vec![[0.0; 2]; frames];
+        let mut limit = frames;
+        let mut error = None;
+        'frames: for (offset, sum) in sums.iter_mut().enumerate() {
+            let frame = start + offset as u64;
+            let mut voice_sum = [0.0; 2];
+            for (index, voice) in self.voices.iter().enumerate() {
+                if offset >= active[index] {
+                    if let Some((at, _)) = &voice_errors[index] {
+                        if *at == offset {
+                            limit = offset;
+                            error = voice_errors[index].take().map(|(_, failure)| failure);
+                            break 'frames;
+                        }
+                    }
+                    continue;
+                }
+                if let Some((at, _)) = &voice_errors[index] {
+                    if *at == offset {
+                        limit = offset;
+                        error = voice_errors[index].take().map(|(_, failure)| failure);
+                        break 'frames;
+                    }
+                }
+                let sample = self.voice_frames[index * stride + offset];
+                let amplitude = match voice.graph.amplitude(graph, frame, rate) {
+                    Ok(amplitude) => amplitude,
+                    Err(failure) => {
+                        limit = offset;
+                        error = Some(failure);
+                        break 'frames;
+                    }
+                };
+                let gain = voice.gain_expression.as_ref().map(|expression| {
+                    expression
+                        .curve
+                        .gain_at(&expression.coordinate_at(voice.on_frame, frame))
+                });
+                if gain.is_some_and(|value| !value.is_finite() || value < 0.0) {
+                    limit = offset;
+                    error = Some(RenderError::Nonfinite(format!(
+                        "gain expression at {} produced an invalid value",
+                        voice.address
+                    )));
+                    break 'frames;
+                }
+                for channel in 0..voice_channels {
+                    let contribution = sample[channel] * amplitude * voice.velocity;
+                    voice_sum[channel] += match gain {
+                        Some(gain) => contribution * gain,
+                        None => contribution,
+                    };
+                    if !voice_sum[channel].is_finite() {
+                        limit = offset;
+                        error = Some(RenderError::Nonfinite(format!(
+                            "instrument {} voice sum is nonfinite",
+                            program.id
+                        )));
+                        break 'frames;
+                    }
+                }
+            }
+            *sum = voice_sum;
+        }
+
+        // The shared graph runs over the frames every voice completed.
+        self.buffered.clear();
+        self.buffered_start = start;
+        if let (Some(compiled), Some(shared)) = (program.shared.as_ref(), self.shared.as_mut()) {
+            for expression in &mut self.expressions[..limit] {
+                *expression = (0.0, 0.0, 0.0);
+            }
+            let (shared_frames, shared_error) = shared.render_block(
                 compiled,
                 &self.controls,
-                frame,
-                self.rate,
-                0.0,
-                0.0,
-                0.0,
-                voice_sum,
-            )?
+                start,
+                limit,
+                rate,
+                &self.expressions[..limit],
+                Some(&sums[..limit]),
+                &mut self.scratch,
+                stride,
+            );
+            if shared_error.is_some() {
+                limit = shared_frames;
+                error = shared_error;
+            }
+            let output = compiled.output * stride;
+            self.buffered
+                .extend_from_slice(&self.scratch[output..output + limit]);
         } else {
-            voice_sum
-        };
-        Ok(&self.output[..self.program.channels])
+            self.buffered.extend_from_slice(&sums[..limit]);
+        }
+        self.buffered_error = error;
+
+        // Pruning would have removed these voices at their retirement frames.
+        if self.buffered_error.is_none() {
+            let mut index = 0;
+            self.voices.retain(|_| {
+                let keep = active[index] == frames;
+                index += 1;
+                keep
+            });
+        }
     }
 
     pub fn reset(&mut self, controls: &BTreeMap<String, f64>) -> Result<()> {
@@ -593,6 +805,7 @@ impl InstrumentRuntime {
         self.output = [0.0; 2];
         self.shared = shared;
         self.shared_reset = shared_reset;
+        self.clear_ahead();
         Ok(())
     }
 
@@ -600,6 +813,7 @@ impl InstrumentRuntime {
         self.voices.clear();
         self.output = [0.0; 2];
         self.shared.clone_from(&self.shared_reset);
+        self.clear_ahead();
     }
 
     pub fn active_voice_count(&self) -> usize {
@@ -720,11 +934,7 @@ impl GraphState {
                 | ProcessorCode::Timbre
                 | ProcessorCode::Pressure => ProcessorState::Stateless,
             };
-            nodes.push(RuntimeNode {
-                state,
-                params,
-                output: [0.0; 2],
-            });
+            nodes.push(RuntimeNode { state, params });
         }
         Ok(Self {
             nodes,
@@ -1009,94 +1219,138 @@ impl GraphState {
         }
     }
 
+    /// Render frames `start .. start + frames` node by node, writing node
+    /// `n`'s output for frame offset `i` to `scratch[n * stride + i]`. Each
+    /// node does at each frame exactly what frame-by-frame evaluation does.
+    /// When a node fails at some frame, later nodes stop before that frame, so
+    /// the error is the one frame-by-frame evaluation would meet first.
+    /// Returns the frames completed and the error at the next frame, if any.
     #[allow(clippy::too_many_arguments)]
-    fn render(
+    fn render_block(
         &mut self,
         graph: &CompiledGraph,
         controls: &[f64],
-        frame: u64,
+        start: u64,
+        frames: usize,
         rate: f64,
-        pitch_hz: f64,
-        timbre: f64,
-        pressure: f64,
-        input: [f64; 2],
-    ) -> Result<[f64; 2]> {
+        expressions: &[(f64, f64, f64)],
+        input: Option<&[[f64; 2]]>,
+        scratch: &mut [[f64; 2]],
+        stride: usize,
+    ) -> (usize, Option<RenderError>) {
         // A node without sample-rate modulation computes the same parameters
         // until a control changes, so it keeps the values it already checked.
         let settled = self.settled_controls.as_deref() == Some(controls);
+        let input_at = |offset: usize| input.map_or([0.0; 2], |input| input[offset]);
+        let mut limit = frames;
+        let mut error = None;
         for &node_index in &graph.order {
             let compiled = &graph.nodes[node_index];
-            if settled && !compiled.has_sample_modulations {
-                let audio_input = sum_inputs(&self.nodes, &compiled.incoming, input)?;
+            let per_sample = compiled.has_sample_modulations;
+            if !settled && !per_sample && limit > 0 {
+                let params = &mut self.nodes[node_index].params;
+                params.clone_from_slice(&compiled.base_params);
+                apply_controls(compiled, controls, ParameterRate::Sample, params);
+                if let Err(failure) = validate_params(compiled, params) {
+                    limit = 0;
+                    error = Some(failure);
+                    continue;
+                }
+            }
+            let mut stopped = None;
+            for offset in 0..limit {
+                if per_sample {
+                    let params = &mut self.nodes[node_index].params;
+                    params.clone_from_slice(&compiled.base_params);
+                    apply_controls(compiled, controls, ParameterRate::Sample, params);
+                    let mut failure = None;
+                    for modulation in &compiled.modulations {
+                        if modulation.rate != ParameterRate::Sample {
+                            continue;
+                        }
+                        let source = match modulation.source {
+                            Source::Input => input_at(offset)[0],
+                            Source::Node(index) => scratch[index * stride + offset][0],
+                        };
+                        let product = source * modulation.depth;
+                        if !product.is_finite() {
+                            failure = Some(RenderError::Nonfinite(format!(
+                                "modulation {} product is nonfinite",
+                                modulation.id
+                            )));
+                            break;
+                        }
+                        let sum = params[modulation.parameter] + product;
+                        if !sum.is_finite() {
+                            failure = Some(RenderError::Nonfinite(format!(
+                                "modulation {} sum is nonfinite",
+                                modulation.id
+                            )));
+                            break;
+                        }
+                        params[modulation.parameter] = sum;
+                    }
+                    if let Some(failure) =
+                        failure.or_else(|| validate_params(compiled, params).err())
+                    {
+                        stopped = Some((offset, failure));
+                        break;
+                    }
+                }
+                let mut audio_input = [0.0; 2];
+                let mut failure = None;
+                'sum: for source in &compiled.incoming {
+                    let source = match source {
+                        Source::Input => input_at(offset),
+                        Source::Node(index) => scratch[index * stride + offset],
+                    };
+                    for channel in 0..2 {
+                        audio_input[channel] += source[channel];
+                        if !audio_input[channel].is_finite() {
+                            failure = Some(RenderError::Nonfinite(
+                                "instrument graph input sum is nonfinite".into(),
+                            ));
+                            break 'sum;
+                        }
+                    }
+                }
+                if let Some(failure) = failure {
+                    stopped = Some((offset, failure));
+                    break;
+                }
+                let (pitch_hz, timbre, pressure) = expressions[offset];
                 let runtime = &mut self.nodes[node_index];
-                runtime.output = process_graph_node(
+                match process_graph_node(
                     compiled,
                     &mut runtime.state,
                     &runtime.params,
-                    frame,
+                    start + offset as u64,
                     rate,
                     pitch_hz,
                     timbre,
                     pressure,
                     audio_input,
                     true,
-                )?;
-                continue;
+                ) {
+                    Ok(output) => scratch[node_index * stride + offset] = output,
+                    Err(failure) => {
+                        stopped = Some((offset, failure));
+                        break;
+                    }
+                }
             }
-            self.nodes[node_index]
-                .params
-                .clone_from_slice(&compiled.base_params);
-            apply_controls(
-                compiled,
-                controls,
-                ParameterRate::Sample,
-                &mut self.nodes[node_index].params,
-            );
-            for modulation in &compiled.modulations {
-                if modulation.rate != ParameterRate::Sample {
-                    continue;
-                }
-                let source = source_sample(&self.nodes, modulation.source, input)[0];
-                let product = source * modulation.depth;
-                if !product.is_finite() {
-                    return Err(RenderError::Nonfinite(format!(
-                        "modulation {} product is nonfinite",
-                        modulation.id
-                    )));
-                }
-                let sum = self.nodes[node_index].params[modulation.parameter] + product;
-                if !sum.is_finite() {
-                    return Err(RenderError::Nonfinite(format!(
-                        "modulation {} sum is nonfinite",
-                        modulation.id
-                    )));
-                }
-                self.nodes[node_index].params[modulation.parameter] = sum;
+            if let Some((offset, failure)) = stopped {
+                limit = offset;
+                error = Some(failure);
             }
-            validate_params(compiled, &self.nodes[node_index].params)?;
-
-            let audio_input = sum_inputs(&self.nodes, &compiled.incoming, input)?;
-            let runtime = &mut self.nodes[node_index];
-            runtime.output = process_graph_node(
-                compiled,
-                &mut runtime.state,
-                &runtime.params,
-                frame,
-                rate,
-                pitch_hz,
-                timbre,
-                pressure,
-                audio_input,
-                true,
-            )?;
         }
-        if !settled {
+        if !settled && error.is_none() && frames > 0 {
             match &mut self.settled_controls {
                 Some(previous) => previous.clone_from_slice(controls),
                 None => self.settled_controls = Some(controls.to_vec()),
             }
         }
-        Ok(self.nodes[graph.output].output)
+        (limit, error)
     }
 }
 
@@ -1866,29 +2120,6 @@ fn rational_f64(value: &crate::plan::Rational, context: &str) -> Result<f64> {
     Ok(result)
 }
 
-fn source_sample(nodes: &[RuntimeNode], source: Source, input: [f64; 2]) -> [f64; 2] {
-    match source {
-        Source::Input => input,
-        Source::Node(index) => nodes[index].output,
-    }
-}
-
-fn sum_inputs(nodes: &[RuntimeNode], incoming: &[Source], input: [f64; 2]) -> Result<[f64; 2]> {
-    let mut sum = [0.0; 2];
-    for source in incoming {
-        let source = source_sample(nodes, *source, input);
-        for channel in 0..2 {
-            sum[channel] += source[channel];
-            if !sum[channel].is_finite() {
-                return Err(RenderError::Nonfinite(
-                    "instrument graph input sum is nonfinite".into(),
-                ));
-            }
-        }
-    }
-    Ok(sum)
-}
-
 fn pluck_resource_error(message: &str) -> RenderError {
     RenderError::Plan(crate::plan::PlanError {
         code: "E_RESOURCE_LIMIT".into(),
@@ -2485,5 +2716,146 @@ node sound {{ instrument = &string; }}
                 expected.sample(480.0, 3.0, 0.5, 1.0).unwrap()
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod block_tests {
+    use super::*;
+
+    fn program(source: &str, name: &str) -> Arc<CompiledInstrument> {
+        let plan = crate::compile_bundle(&crate::SourceBundle::new("main.maac", source)).unwrap();
+        let resources = plan.instruments.as_ref().unwrap();
+        let program = resources
+            .programs
+            .iter()
+            .find(|program| program.source.object == name)
+            .unwrap();
+        Arc::new(CompiledInstrument::compile(program, &BTreeMap::new()).unwrap())
+    }
+
+    /// Notes on and off at fixed frames; returns every rendered frame, or the
+    /// frame and error where rendering stopped. `ahead` renders up to the next
+    /// event instead of one frame at a time.
+    fn play(
+        compiled: &Arc<CompiledInstrument>,
+        frames: u64,
+        ahead: bool,
+    ) -> (Vec<Vec<f64>>, Option<(u64, RenderError)>, usize) {
+        let ons = [
+            (0, "a", 220.0, 0.9),
+            (100, "b", 330.0, 0.4),
+            (2100, "c", 880.0, 1.0),
+        ];
+        let offs = [(700, "a"), (2000, "b"), (2400, "c")];
+        let events: Vec<u64> = vec![0, 100, 700, 2000, 2100, 2400];
+        let mut runtime =
+            InstrumentRuntime::new(Arc::clone(compiled), 8, 48000.0, &BTreeMap::new()).unwrap();
+        let mut rendered = Vec::new();
+        for frame in 0..frames {
+            for (at, address) in offs {
+                if at == frame {
+                    runtime.note_off(address, frame).unwrap();
+                }
+            }
+            runtime.prune_finished(frame).unwrap();
+            for (at, address, pitch, velocity) in ons {
+                if at == frame {
+                    runtime.note_on(address, pitch, velocity, frame).unwrap();
+                }
+            }
+            let horizon = if ahead {
+                events
+                    .iter()
+                    .copied()
+                    .find(|&event| event > frame)
+                    .unwrap_or(frames)
+            } else {
+                frame + 1
+            };
+            match runtime.render_until(frame, horizon) {
+                Ok(output) => rendered.push(output.to_vec()),
+                Err(error) => return (rendered, Some((frame, error)), runtime.voices.len()),
+            }
+        }
+        let voices = runtime.voices.len();
+        (rendered, None, voices)
+    }
+
+    #[test]
+    fn rendering_ahead_matches_frame_by_frame_rendering() {
+        let source = r#"maac 1;
+project p { score = [0q, 1q]; rate = 48000Hz; tempo = &clock; meter = &metre; output = &keys:out; }
+tempo clock { points = [(0q, 120bpm, step)]; }
+meter metre { points = [(0q, 4, 4)]; }
+import studio { builtin = "std/studio/1.0.0"; }
+node keys { instrument = &studio.electric_piano; }
+"#;
+        let compiled = program(source, "electric_piano");
+        // The last release ends near frame 2400 + 300 ms, so the voices retire
+        // inside a block.
+        let (frame_by_frame, error, voices) = play(&compiled, 20_000, false);
+        assert!(error.is_none());
+        let (ahead, error, voices_ahead) = play(&compiled, 20_000, true);
+        assert!(error.is_none());
+        assert_eq!(voices, 0);
+        assert_eq!(voices_ahead, 0);
+        assert_eq!(frame_by_frame.len(), ahead.len());
+        for (frame, (expected, actual)) in frame_by_frame.iter().zip(&ahead).enumerate() {
+            let bits = |frame: &Vec<f64>| frame.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+            assert_eq!(bits(expected), bits(actual), "frame {frame}");
+        }
+    }
+
+    #[test]
+    fn rendering_ahead_reports_the_same_error_at_the_same_frame() {
+        // A 3 Hz LFO swings the cutoff below zero about 70 ms into each note.
+        let source = r#"maac 1;
+project p { score = [0q, 1q]; rate = 48000Hz; tempo = &clock; meter = &metre; output = &sound:out; }
+tempo clock { points = [(0q, 120bpm, step)]; }
+meter metre { points = [(0q, 4, 4)]; }
+instrument swept { channels = 1;
+  voice v { channels = 1; amplitude = &amp; output = &tone:out;
+    node amp { type = "synth.adsr/1"; params = { sustain = 1; release = 50ms; }; }
+    node osc { type = "synth.saw/1"; }
+    node sweep { type = "synth.lfo/1"; params = { frequency = 3Hz; }; }
+    node tone { type = "synth.svf/1"; config = { channels = 1; mode = lowpass; }; params = { cutoff = 1000Hz; }; }
+    connect osc_tone { from = &osc:out; to = &tone:in; }
+    modulate swing { from = &sweep:out; to = &tone.params.cutoff; depth = -2000Hz; }
+  }
+}
+node sound { instrument = &swept; }
+"#;
+        let compiled = program(source, "swept");
+        let (frame_by_frame, expected, _) = play(&compiled, 20_000, false);
+        let (ahead, actual, _) = play(&compiled, 20_000, true);
+        let (expected_frame, expected_error) = expected.expect("the sweep fails");
+        let (actual_frame, actual_error) = actual.expect("the sweep fails");
+        assert_eq!(expected_frame, actual_frame);
+        assert_eq!(expected_error, actual_error);
+        assert_eq!(frame_by_frame, ahead);
+    }
+
+    #[test]
+    fn a_change_inside_a_block_rendered_ahead_is_refused() {
+        let source = r#"maac 1;
+project p { score = [0q, 1q]; rate = 48000Hz; tempo = &clock; meter = &metre; output = &keys:out; }
+tempo clock { points = [(0q, 120bpm, step)]; }
+meter metre { points = [(0q, 4, 4)]; }
+import studio { builtin = "std/studio/1.0.0"; }
+node keys { instrument = &studio.electric_piano; }
+"#;
+        let compiled = program(source, "electric_piano");
+        let mut runtime = InstrumentRuntime::new(compiled, 4, 48000.0, &BTreeMap::new()).unwrap();
+        runtime.note_on("a", 220.0, 0.5, 0).unwrap();
+        runtime.render_until(0, 64).unwrap();
+        assert!(matches!(
+            runtime.note_on("b", 330.0, 0.5, 10),
+            Err(RenderError::RenderState(_))
+        ));
+        assert!(matches!(
+            runtime.note_off("a", 10),
+            Err(RenderError::RenderState(_))
+        ));
     }
 }

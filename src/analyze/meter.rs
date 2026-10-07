@@ -101,6 +101,13 @@ impl SourceMeter {
         }
     }
 
+    /// Count frames from `frame` instead of 0, so block starts are positions
+    /// in the piece when only a window is measured.
+    pub fn starting_at(mut self, frame: u64) -> Self {
+        self.frame = frame;
+        self
+    }
+
     pub fn push(&mut self, frame: &[f64]) {
         if frame.len() != self.channels {
             self.error

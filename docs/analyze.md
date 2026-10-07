@@ -8,6 +8,8 @@ the proposal text, which is kept below as written.
 ```sh
 maac analyze examples/showcase/showcase.maac --project-root . --disk-media --profile song --images analysis/
 maac analyze main.maac --json --section bars:8 --source pad:out
+maac analyze main.maac --window region:b --json            # one section, exact
+maac analyze main.maac --window bars:13-16 --preroll 4     # quick preview
 ```
 
 ## Goal
@@ -183,6 +185,41 @@ The profile identifier changed with them; the report schema did not.
 - **Drums in the piano roll:** synthesized drums are all struck on C2, so
   kick, snare and hats shared one row. A part that strikes a single pitch at
   least four times now gets its own lane.
+
+## Windows (2026-10-07)
+
+`--window` measures one part of the piece instead of all of it:
+
+- `region:ID` is a declared region;
+- `bars:FIRST-LAST` is a range of whole bars from the meter, inclusive.
+
+The window is cut to the score. The report gains a `window` object with its
+score bounds and frames, `frames` and `seconds` count the window, every
+measurement and finding covers the window only, and sections are the ones
+that overlap it, cut at its edges. Positions keep their place in the piece:
+a peak in bar 14 is still reported in bar 14. Images show the window.
+
+By default a window is **exact**. Rendering still starts at the beginning,
+because reverbs, delays, compressors and sounding notes carry state into the
+window, but it stops at the window's end instead of the piece's. The frames
+measured are the same frames a full render produces, so the numbers match
+what a whole-piece analysis would find for that stretch, apart from the
+100 ms measurement blocks now starting at the window's first frame. An early
+window is cheap; a late one costs nearly a full render.
+
+`--preroll SECONDS` trades exactness for speed. Rendering starts that many
+seconds before the window, from reset state:
+
+- every note that started earlier and is still sounding there starts again
+  at that frame, at its velocity but with a fresh envelope;
+- earlier hits and notes that have ended are dropped;
+- reverb, delay and dynamics start empty.
+
+A preroll at least as long as the longest reverb tail and release makes the
+window close to a full render's, but not equal. The report marks it:
+`window.approximate` is `true` and `window.render_start_frame` says where
+rendering began. Use it to iterate on one section; confirm the final mix
+without it.
 
 ## Deferred to later versions
 

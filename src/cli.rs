@@ -108,6 +108,14 @@ pub enum Command {
         /// Sections: auto (regions, else 4-bar blocks), regions, whole, or bars:N.
         #[arg(long, default_value = "auto")]
         section: String,
+        /// Analyse only a window: region:ID or bars:FIRST-LAST. Rendering
+        /// stops at the window's end, and the result is exact.
+        #[arg(long)]
+        window: Option<String>,
+        /// With --window: start rendering this many seconds before the window,
+        /// from reset state. Faster, but approximate.
+        #[arg(long, value_name = "SECONDS", requires = "window")]
+        preroll: Option<f64>,
         /// Analyse this `node:port` besides the project output; repeat to add
         /// more (default: every output port that reaches the project output).
         #[arg(long = "source")]
@@ -1116,12 +1124,14 @@ fn execute_disk_media(
         }
         Command::Analyze {
             section,
+            window,
+            preroll,
             sources,
             images,
             force,
             ..
         } => {
-            let options = analyze_options(section, sources, images, *force)?;
+            let options = analyze_options(section, window, *preroll, sources, images, *force)?;
             let meter = entry_meter(project.bundle());
             let report =
                 crate::analyze::analyze_disk_media(&plan, meter.as_ref(), &options, &limits)
@@ -1207,11 +1217,18 @@ fn format_analysis(input: &str, report: &crate::analyze::AnalysisReport) -> Stri
 
 fn analyze_options(
     section: &str,
+    window: &Option<String>,
+    preroll: Option<f64>,
     sources: &[String],
     images: &Option<PathBuf>,
     force: bool,
 ) -> Result<crate::analyze::AnalyzeOptions, CliError> {
     let sections = crate::analyze::SectionMode::parse(section).map_err(analyze_error)?;
+    let window = window
+        .as_deref()
+        .map(crate::analyze::Window::parse)
+        .transpose()
+        .map_err(analyze_error)?;
     let sources = sources
         .iter()
         .map(|text| {
@@ -1224,6 +1241,8 @@ fn analyze_options(
         .collect::<Result<Vec<_>, _>>()?;
     Ok(crate::analyze::AnalyzeOptions {
         sections,
+        window,
+        preroll_seconds: preroll,
         sources,
         images: images.clone(),
         force,
@@ -1480,6 +1499,8 @@ fn execute_impl(
         Command::Analyze {
             input,
             section,
+            window,
+            preroll,
             sources,
             images,
             force,
@@ -1487,7 +1508,7 @@ fn execute_impl(
             profile,
         } => {
             let limits = profile.limits();
-            let options = analyze_options(section, sources, images, *force)?;
+            let options = analyze_options(section, window, *preroll, sources, images, *force)?;
             let (resolved, root) = resolve_source_input(input.as_deref(), project_root.as_deref());
             let bytes = read_bounded(&resolved)?;
             let (plan, meter) = if bytes

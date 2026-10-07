@@ -58,7 +58,13 @@ listen before you call a track finished.
 maac analyze main.maac --section regions --json > analysis.json
 maac analyze main.maac --source master:out --json   # faster, for loudness passes
 maac analyze main.maac --images analysis/           # spectrogram and piano roll
+maac analyze main.maac --window region:b --json     # one section, exact
+maac analyze main.maac --window region:b --preroll 4 --json   # quick, approximate
 ```
+
+- **Work section by section.** While you change one section, analyse it with
+  `--window`; add `--preroll 4` for fast iterations. A preroll result is
+  marked `approximate`, so finish with a whole-piece analysis.
 
 - **Findings first.** Read `findings` before anything else. Fix every `error`
   and `warning`, or decide that one is intended. For example, a deliberately

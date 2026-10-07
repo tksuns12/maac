@@ -301,6 +301,19 @@ impl DiskMediaPlan {
         self.engine()?.render_ports(ports, callback)
     }
 
+    /// Capture selected ports over a span of a disk-backed execution.
+    pub(crate) fn render_ports_span<F>(
+        &self,
+        ports: &[PortRef],
+        span: dsp::RenderSpan,
+        callback: F,
+    ) -> dsp::Result<()>
+    where
+        F: FnMut(&[Vec<f64>]) -> dsp::Result<()>,
+    {
+        self.engine()?.render_ports_span(ports, span, callback)
+    }
+
     pub(crate) fn render<F>(&self, callback: F) -> dsp::Result<()>
     where
         F: FnMut(&[f64]) -> dsp::Result<()>,
