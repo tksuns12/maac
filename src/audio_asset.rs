@@ -77,8 +77,8 @@ impl AudioAsset {
                 "disk media must not carry embedded PCM bytes",
             ));
         }
-        for bytes in self.bytes.chunks_exact(4) {
-            if !f32::from_le_bytes(bytes.try_into().unwrap()).is_finite() {
+        for bytes in self.bytes.as_chunks::<4>().0 {
+            if !f32::from_le_bytes(*bytes).is_finite() {
                 return Err(fail("E_ASSET", "audio asset sample must be finite"));
             }
         }
@@ -106,8 +106,10 @@ impl AudioAsset {
             })?;
         samples.extend(
             self.bytes
-                .chunks_exact(4)
-                .map(|bytes| f32::from_le_bytes(bytes.try_into().unwrap())),
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|bytes| f32::from_le_bytes(*bytes)),
         );
         Ok(samples.into())
     }

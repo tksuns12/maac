@@ -294,8 +294,8 @@ impl GenericLock {
                 "PCM byte length differs from crop × channels × 4",
             ));
         }
-        for chunk in pcm.chunks_exact(4) {
-            if !f32::from_le_bytes(chunk.try_into().unwrap()).is_finite() {
+        for chunk in pcm.as_chunks::<4>().0 {
+            if !f32::from_le_bytes(*chunk).is_finite() {
                 return Err(LockError::new(
                     "E_EVIDENCE",
                     "PCM contains nonfinite binary32",

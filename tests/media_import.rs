@@ -43,8 +43,10 @@ fn pcm16_crop_imports_as_compilable_native_audio_with_provenance() {
 
     let pcm = imported.pcm_bytes();
     let values = pcm
-        .chunks_exact(4)
-        .map(|bytes| f32::from_le_bytes(bytes.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|bytes| f32::from_le_bytes(*bytes))
         .collect::<Vec<_>>();
     assert_eq!(values, [0.5, -0.5, 0.0, 1.0 / 32768.0]);
 
@@ -93,8 +95,10 @@ fn float32_import_preserves_signed_zero_and_subnormal_bits() {
     assert_eq!(
         imported
             .pcm_bytes()
-            .chunks_exact(4)
-            .map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap()))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|bytes| u32::from_le_bytes(*bytes))
             .collect::<Vec<_>>(),
         bits[..3]
     );
@@ -119,8 +123,10 @@ fn pcm24_import_uses_signed_full_scale_without_gain_adjustment() {
     let imported = import_wav_file(&input, None).unwrap();
     let values = imported
         .pcm_bytes()
-        .chunks_exact(4)
-        .map(|bytes| f32::from_le_bytes(bytes.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|bytes| f32::from_le_bytes(*bytes))
         .collect::<Vec<_>>();
     assert_eq!(imported.source_encoding(), "pcm_s24le");
     assert_eq!(values, [8_388_607.0 / 8_388_608.0, -1.0, 0.5, -0.5]);

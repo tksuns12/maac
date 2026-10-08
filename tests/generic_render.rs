@@ -261,8 +261,10 @@ fn stereo_channel_order_is_an_exact_permutation() {
     let reversed = render(&plan, output, (0, 80), vec![1, 0]);
     for (a, b) in natural
         .pcm
-        .chunks_exact(8)
-        .zip(reversed.pcm.chunks_exact(8))
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .zip(reversed.pcm.as_chunks::<8>().0)
     {
         assert_eq!(&a[..4], &b[4..]);
         assert_eq!(&a[4..], &b[..4]);

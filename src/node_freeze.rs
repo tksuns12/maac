@@ -1482,16 +1482,15 @@ fn copy_checked(
                 continue;
             }
         }
-        let mut chunks = block[offset..count].chunks_exact(8);
-        for sample in &mut chunks {
-            if !f64::from_le_bytes(sample.try_into().expect("eight bytes")).is_finite() {
+        let (samples, remainder) = block[offset..count].as_chunks::<8>();
+        for sample in samples {
+            if !f64::from_le_bytes(*sample).is_finite() {
                 return Err(fail(
                     DiagnosticCode::Nonfinite,
                     "node freeze output contains nonfinite PCM",
                 ));
             }
         }
-        let remainder = chunks.remainder();
         pending[..remainder.len()].copy_from_slice(remainder);
         pending_len = remainder.len();
     }

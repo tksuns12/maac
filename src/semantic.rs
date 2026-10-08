@@ -3812,7 +3812,6 @@ impl<'a> Validator<'a> {
             node,
             parameter,
             unit,
-            rate: _,
             ..
         }) = target
         else {
