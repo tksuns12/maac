@@ -116,10 +116,9 @@ The [project-entrypoint guide](docs/project-entrypoint.md) specifies conventiona
 larger projects. Existing explicit-file commands remain compatible.
 
 The MaaC/1 language uses the `.maac` extension, and source files begin with the
-canonical `maac 1;` header. The current tree is an
-experimental v0.1.0 MaaC source-only release prepared for
-GitHub. Build the executable locally; this repository does not promise binary,
-rendered audio, or other generated release artifacts. The starter library's
+canonical `maac 1;` header. MaaC 0.1.0 (2026-10-08) is an experimental,
+source-only release. Build the executable locally; this repository does not
+promise binary, rendered audio, or other generated release artifacts. The starter library's
 small wavetable WAV is authored source data. The MaaC language specification is a
 design draft, and the Rust implementation deliberately covers a smaller,
 documented subset.

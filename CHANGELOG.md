@@ -3,36 +3,14 @@
 This file records user-visible changes. The project is experimental and has no
 promise of compatibility beyond the documented interfaces.
 
-## [Unreleased] — experimental v0.1.0 source preparation
+## [Unreleased]
 
-This entry describes the current source tree prepared for a GitHub source-only
-release. It may be moved to a dated `0.1.0` release entry when a release is
-actually published; no release tag or publication date is asserted here.
+## [0.1.0] — 2026-10-08
 
-### Changed
-
-- Rendering is about three times faster, with byte-identical output. Nodes
-  whose parameters cannot change are evaluated once per render instead of
-  every frame; per-frame clones and allocations are gone; voice nodes
-  recompute their parameters only when a control changes; and the reverb,
-  curved envelopes and drive reuse values computed from unchanged inputs.
-  An instrument with fixed parameters now renders ahead to its next event,
-  each voice graph node by node over the block, with errors reported at the
-  same frame as before. Measured together on one machine, "Late Window" went
-  from 113.9 to 36.5 billion CPU cycles (3.12 times fewer) and from 48.5 s to
-  14.8 s of CPU time. See [render speed](docs/render-speed.md).
-
-### Removed
-
-- The macOS host tools `maac play`, `maac inputs` and `maac record` (with
-  live monitoring), the microphone permission bridge, and the native plug-in
-  execution host (`maac::external_host`, `maac::external_native`, the
-  `maac.native-c-abi/1` ABI and the single-generator external render bridge).
-  They were never released. Device capture, playback and plug-in hosting are
-  out of scope for MaaC, so the build no longer needs Xcode or links Apple's
-  audio frameworks. External processor descriptors and lock checks (§17) and
-  the MIDI export remain. Deferred host and product roadmaps were removed from
-  the documentation.
+The first public source release, experimental. It publishes the MaaC/1
+language specification as a design draft and the Rust `maac` library and
+command that implement its documented foundation subset. There are no binary
+or rendered-audio release artifacts: build the executable from source.
 
 ### Added
 
@@ -297,6 +275,17 @@ actually published; no release tag or publication date is asserted here.
 
 ### Changed
 
+- Rendering is about three times faster, with byte-identical output. Nodes
+  whose parameters cannot change are evaluated once per render instead of
+  every frame; per-frame clones and allocations are gone; voice nodes
+  recompute their parameters only when a control changes; and the reverb,
+  curved envelopes and drive reuse values computed from unchanged inputs.
+  An instrument with fixed parameters now renders ahead to its next event,
+  each voice graph node by node over the block, with errors reported at the
+  same frame as before. Measured together on one machine, "Late Window" went
+  from 113.9 to 36.5 billion CPU cycles (3.12 times fewer) and from 48.5 s to
+  14.8 s of CPU time. See [render speed](docs/render-speed.md).
+
 - `maac analyze` uses the `maac.analyze.default/2` findings profile, from the
   T2 trial:
   - sources have graph roles (`output`, `bus`, `stem`, `chain`), so a
@@ -343,6 +332,18 @@ actually published; no release tag or publication date is asserted here.
   and document header use MaaC naming (`maac` / `.maac` / `maac 1;`).
 - The draft `core.noise/1` hash prefix is now `maac-noise-1`, changing its
   deterministic reference values.
+
+### Removed
+
+- The macOS host tools `maac play`, `maac inputs` and `maac record` (with
+  live monitoring), the microphone permission bridge, and the native plug-in
+  execution host (`maac::external_host`, `maac::external_native`, the
+  `maac.native-c-abi/1` ABI and the single-generator external render bridge).
+  They were never released. Device capture, playback and plug-in hosting are
+  out of scope for MaaC, so the build no longer needs Xcode or links Apple's
+  audio frameworks. External processor descriptors and lock checks (§17) and
+  the MIDI export remain. Deferred host and product roadmaps were removed from
+  the documentation.
 
 ### Fixed
 
