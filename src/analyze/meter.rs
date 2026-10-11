@@ -16,6 +16,15 @@ const CLIP_LEVEL: f64 = 1.0;
 const ACTIVE_MEAN_SQUARE: f64 = 1e-6;
 /// Reported instead of minus infinity for an exact zero.
 const FLOOR_DB: f64 = -120.0;
+/// Like the BS.1770 absolute gate, blocks at or below -70 LUFS do not count
+/// toward the floor or the block range.
+const GATE_LUFS: f64 = -70.0;
+/// The floor is the quietest tenth of the gated blocks, and needs at least
+/// one second of them.
+const FLOOR_FRACTION: f64 = 0.1;
+const FLOOR_MIN_BLOCKS: usize = 10;
+/// The block range runs from the floor percentile to this one.
+const RANGE_HIGH: f64 = 0.95;
 
 #[derive(Clone, Debug, Default)]
 pub(super) struct Block {
@@ -199,7 +208,98 @@ impl SourceMeter {
     }
 }
 
-fn db_power(ratio: f64) -> f64 {
+impl Block {
+    /// BS.1770 energy: K-weighted mean square summed over channels.
+    fn energy(&self) -> f64 {
+        if self.frames == 0 {
+            0.0
+        } else {
+            self.k / self.frames as f64
+        }
+    }
+}
+
+/// The full blocks above the gate, as (index, loudness), quietest first; ties
+/// keep block order.
+fn gated(blocks: &[Block], hop: u64) -> Vec<(usize, f64)> {
+    let mut gated: Vec<(usize, f64)> = blocks
+        .iter()
+        .enumerate()
+        .filter(|(_, block)| block.frames == hop && block.energy() > 0.0)
+        .filter_map(|(index, block)| loudness(block.energy()).ok().map(|l| (index, l)))
+        .filter(|(_, loudness)| *loudness > GATE_LUFS)
+        .collect();
+    gated.sort_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)));
+    gated
+}
+
+/// The nearest-rank percentile `p` of ascending `values`.
+fn percentile(values: &[(usize, f64)], p: f64) -> f64 {
+    let rank = (p * values.len() as f64).ceil() as usize;
+    values[rank.clamp(1, values.len()) - 1].1
+}
+
+/// The indices of the quietest tenth of the gated blocks, in block order, or
+/// `None` with fewer than [`FLOOR_MIN_BLOCKS`] gated blocks.
+pub(super) fn floor_blocks(blocks: &[Block], hop: u64) -> Option<Vec<usize>> {
+    let gated = gated(blocks, hop);
+    if gated.len() < FLOOR_MIN_BLOCKS {
+        return None;
+    }
+    let count = (FLOOR_FRACTION * gated.len() as f64).ceil() as usize;
+    let mut floor: Vec<usize> = gated[..count].iter().map(|(index, _)| *index).collect();
+    floor.sort_unstable();
+    Some(floor)
+}
+
+/// The mean BS.1770 energy of `floor`'s blocks, per channel.
+pub(super) fn floor_energy(blocks: &[Block], floor: &[usize], channels: u8) -> f64 {
+    floor.iter().map(|&i| blocks[i].energy()).sum::<f64>()
+        / floor.len() as f64
+        / f64::from(channels)
+}
+
+/// Loudness of a BS.1770 energy, if it is positive.
+pub(super) fn loudness_of(energy: f64) -> Option<f64> {
+    (energy > 0.0).then(|| loudness(energy).ok()).flatten()
+}
+
+/// The loudness of `floor`'s blocks taken together.
+pub(super) fn floor_loudness(blocks: &[Block], floor: &[usize]) -> Option<f64> {
+    let energy = floor.iter().map(|&i| blocks[i].energy()).sum::<f64>() / floor.len() as f64;
+    loudness(energy).ok()
+}
+
+/// How far block loudness spreads, from the floor percentile to the 95th, in
+/// LU; `None` with too few gated blocks.
+pub(super) fn block_range_lu(blocks: &[Block], hop: u64) -> Option<f64> {
+    let gated = gated(blocks, hop);
+    (gated.len() >= FLOOR_MIN_BLOCKS)
+        .then(|| percentile(&gated, RANGE_HIGH) - percentile(&gated, FLOOR_FRACTION))
+}
+
+/// The fraction of full blocks above the gate.
+pub(super) fn presence(blocks: &[Block], hop: u64) -> f64 {
+    let full = blocks.iter().filter(|block| block.frames == hop).count();
+    if full == 0 {
+        0.0
+    } else {
+        gated(blocks, hop).len() as f64 / full as f64
+    }
+}
+
+/// Octave-band energy summed over `indices`, per channel.
+pub(super) fn band_energy(blocks: &[Block], indices: &[usize], channels: u8) -> [f64; 10] {
+    let mut bands = [0.0; 10];
+    for &index in indices {
+        for (total, value) in bands.iter_mut().zip(blocks[index].bands) {
+            *total += value;
+        }
+    }
+    bands.map(|value| value / f64::from(channels))
+}
+
+pub(super) fn db_power(ratio: f64) -> f64 {
     if ratio > 0.0 {
         10.0 * ratio.log10()
     } else {
@@ -298,6 +398,18 @@ pub(super) fn measures(
             .collect()
     });
 
+    let floor = floor_blocks(blocks, hop);
+    let floor_lufs = floor
+        .as_ref()
+        .and_then(|floor| floor_loudness(blocks, floor));
+    let floor_bands_db = floor.as_ref().map(|floor| {
+        let bands = band_energy(blocks, floor, channels);
+        let total: f64 = bands.iter().sum();
+        (0..10)
+            .map(|b| (available[b] && total > 0.0).then(|| round2(db_power(bands[b] / total))))
+            .collect()
+    });
+
     let stereo = (channels == 2).then(|| {
         let (l, r) = (sq[0], sq[1]);
         let mid = (l + r + 2.0 * lr) / 4.0;
@@ -345,6 +457,9 @@ pub(super) fn measures(
         first_clip: first_clip.map(|frame| positions.at(frame)),
         bands_db,
         master_share,
+        floor_lufs: floor_lufs.map(round2),
+        block_range_lu: block_range_lu(blocks, hop).map(round2),
+        floor_bands_db,
         stereo,
         active_fraction: if active.is_empty() {
             0.0

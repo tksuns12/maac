@@ -23,16 +23,19 @@ use crate::plan_artifact::PlanArtifact;
 use crate::plan_v3::TimingContext;
 
 use image::{Mark, Spectrogram};
-use meter::{measures, Block, SourceMeter};
+use meter::{
+    band_energy, block_range_lu, db_power, floor_blocks, floor_energy, floor_loudness, loudness_of,
+    measures, presence, Block, SourceMeter,
+};
 
 pub const SCHEMA: &str = "maac.analysis-report/1";
-pub const PROFILE: &str = "maac.analyze.default/2";
+pub const PROFILE: &str = "maac.analyze.default/3";
 pub const BANDS: &str = "maac.analyze.octave-bands/1";
 pub const BAND_CENTERS_HZ: [f64; 10] = [
     31.5, 63.0, 125.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 16000.0,
 ];
 
-// Findings profile `maac.analyze.default/2`: stated limits, not taste.
+// Findings profile `maac.analyze.default/3`: stated limits, not taste.
 const TRUE_PEAK_LIMIT_DBTP: f64 = -1.0;
 const LOUDNESS_JUMP_LU: f64 = 6.0;
 const BALANCE_LIMIT_DB: f64 = 3.0;
@@ -51,6 +54,18 @@ const MAX_FINDINGS: usize = 50;
 /// straight off-beat eighths (x + 1/2q) and another this many swung ones
 /// (x + 2/3q).
 const GROOVE_MIN_ONSETS: usize = 4;
+/// A stem is steady when its block range is at most this many LU and it is
+/// above -70 LUFS in at least this fraction of the section's blocks.
+const NOISE_MAX_RANGE_LU: f64 = 6.0;
+const NOISE_MIN_PRESENCE: f64 = 0.9;
+/// In the output's floor blocks, a steady stem is exposed when it supplies at
+/// least this share of its mix point's energy in a band within
+/// `NOISE_BAND_SPAN_DB` of the mix point's strongest band...
+const NOISE_MIN_SHARE: f64 = 0.1;
+const NOISE_BAND_SPAN_DB: f64 = 30.0;
+/// ...and the stem's estimated loudness at the output in those blocks is
+/// above this.
+const NOISE_AUDIBLE_LUFS: f64 = -50.0;
 
 /// How the piece is divided into sections.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -281,6 +296,15 @@ pub struct Measures {
     /// are approximate, because later processing changes the sum.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub master_share: Option<Vec<Option<f64>>>,
+    /// Loudness of the quietest tenth of the blocks above -70 LUFS: the floor
+    /// that quiet passages fall to. `None` with under one second of them.
+    pub floor_lufs: Option<f64>,
+    /// The 95th percentile of block loudness minus the floor percentile. A
+    /// steady source has a small range.
+    pub block_range_lu: Option<f64>,
+    /// Octave-band energy of the floor blocks, relative to their total.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub floor_bands_db: Option<Vec<Option<f64>>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stereo: Option<Stereo>,
     pub active_fraction: f64,
@@ -594,7 +618,11 @@ fn analyze_view(
             }
         })
         .collect();
+    let noise = noise_findings(
+        &sources, &blocks, &sections, &ranges, hop, available, &positions,
+    );
     let (findings, findings_omitted) = findings(
+        noise,
         &reports,
         &sections,
         &positions,
@@ -830,6 +858,11 @@ struct Source {
     port: PortRef,
     channels: u8,
     role: &'static str,
+    /// For a stem, the mix-point nodes it feeds directly.
+    mixes: Vec<String>,
+    /// Whether a node that receives score events lies at or upstream of this
+    /// port, so that notes or hits drive what it plays.
+    driven: bool,
 }
 
 fn port_name(port: &PortRef) -> String {
@@ -864,6 +897,25 @@ fn sources(view: &PlanView<'_>, requested: &[PortRef]) -> Result<Vec<Source>, An
         let mut pending = vec![node];
         while let Some(current) = pending.pop() {
             if current != output.node && is_mix(current) {
+                return true;
+            }
+            for connection in view.connections {
+                if connection.to.node == current && seen.insert(connection.from.node.as_str()) {
+                    pending.push(connection.from.node.as_str());
+                }
+            }
+        }
+        false
+    };
+    let targets: BTreeSet<&str> = view
+        .events()
+        .map(|event| event.target.node.as_str())
+        .collect();
+    let driven = |node: &str| {
+        let mut seen = BTreeSet::from([node]);
+        let mut pending = vec![node];
+        while let Some(current) = pending.pop() {
+            if targets.contains(current) {
                 return true;
             }
             for connection in view.connections {
@@ -909,11 +961,27 @@ fn sources(view: &PlanView<'_>, requested: &[PortRef]) -> Result<Vec<Source>, An
         }))
     {
         match view.audio_output_channels(&port) {
-            Ok(channels @ 1..=2) => result.push(Source {
-                port,
-                channels,
-                role,
-            }),
+            Ok(channels @ 1..=2) => {
+                let mixes = if role == "stem" {
+                    view.connections
+                        .iter()
+                        .filter(|connection| connection.from == port && is_mix(&connection.to.node))
+                        .map(|connection| connection.to.node.clone())
+                        .collect::<BTreeSet<_>>()
+                        .into_iter()
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                let driven = driven(&port.node);
+                result.push(Source {
+                    port,
+                    channels,
+                    role,
+                    mixes,
+                    driven,
+                })
+            }
             Ok(_) if requested.is_empty() && role != "output" => {}
             Err(_) if requested.is_empty() && role != "output" => {}
             Ok(channels) => {
@@ -1020,6 +1088,125 @@ fn groove_findings(
     found
 }
 
+/// Steady stems that no note drives and that fill a band in the quietest
+/// passages (F13). The share is
+/// read at the stem's mix point, a plain sum, where it is close to exact;
+/// audibility is read at the output, after any compression has lifted the
+/// quiet passages.
+fn noise_findings(
+    sources: &[Source],
+    blocks: &[Vec<Block>],
+    sections: &[Section],
+    ranges: &[std::ops::Range<usize>],
+    hop: u64,
+    available: [bool; 10],
+    positions: &PositionMap<'_>,
+) -> Vec<Finding> {
+    let whole = [(None, 0..blocks[0].len())];
+    let groups: Vec<(Option<&Section>, std::ops::Range<usize>)> = if sections.is_empty() {
+        whole.to_vec()
+    } else {
+        sections
+            .iter()
+            .map(Some)
+            .zip(ranges.iter().cloned())
+            .collect()
+    };
+    let mut found = Vec::new();
+    for (section, range) in groups {
+        let output = &blocks[0][range.clone()];
+        let Some(floor) = floor_blocks(output, hop) else {
+            continue;
+        };
+        let Some(output_floor) = floor_loudness(output, &floor) else {
+            continue;
+        };
+        let output_energy = floor_energy(output, &floor, sources[0].channels);
+        // Notes make music the author wrote, and its steadiness is a choice;
+        // a stem that sounds without them is texture or noise.
+        for (stem, stem_blocks) in sources
+            .iter()
+            .zip(blocks)
+            .filter(|(s, _)| s.role == "stem" && !s.driven)
+        {
+            let stem_blocks = &stem_blocks[range.clone()];
+            if presence(stem_blocks, hop) < NOISE_MIN_PRESENCE {
+                continue;
+            }
+            let Some(spread) =
+                block_range_lu(stem_blocks, hop).filter(|r| *r <= NOISE_MAX_RANGE_LU)
+            else {
+                continue;
+            };
+            let stem_bands = band_energy(stem_blocks, &floor, stem.channels);
+            // The band where the stem holds the largest share of any mix point.
+            let mut worst: Option<(f64, usize, &Source)> = None;
+            for mix in sources.iter().filter(|s| stem.mixes.contains(&s.port.node)) {
+                let index = sources
+                    .iter()
+                    .position(|s| s.port == mix.port)
+                    .expect("listed");
+                let mix_bands = band_energy(&blocks[index][range.clone()], &floor, mix.channels);
+                let strongest = (0..10)
+                    .filter(|&b| available[b])
+                    .map(|b| mix_bands[b])
+                    .fold(0.0, f64::max);
+                for band in (0..10).filter(|&b| available[b] && mix_bands[b] > 0.0) {
+                    if db_power(mix_bands[band] / strongest) < -NOISE_BAND_SPAN_DB {
+                        continue;
+                    }
+                    let share = stem_bands[band] / mix_bands[band];
+                    if worst.is_none_or(|(best, _, _)| share > best) {
+                        worst = Some((share, band, mix));
+                    }
+                }
+            }
+            let Some((share, band, mix)) = worst.filter(|(share, _, _)| *share >= NOISE_MIN_SHARE)
+            else {
+                continue;
+            };
+            // The stem's K-weighted share of its mix point, carried to the
+            // output: later gain and compression scale both alike.
+            let index = sources
+                .iter()
+                .position(|s| s.port == mix.port)
+                .expect("listed");
+            let mix_energy = floor_energy(&blocks[index][range.clone()], &floor, mix.channels);
+            let stem_energy = floor_energy(stem_blocks, &floor, stem.channels);
+            if mix_energy <= 0.0 || stem_energy <= 0.0 {
+                continue;
+            }
+            let Some(heard) = loudness_of(
+                stem_energy / mix_energy * output_energy * f64::from(sources[0].channels),
+            )
+            .filter(|l| *l > NOISE_AUDIBLE_LUFS) else {
+                continue;
+            };
+            let at = positions.at(output[floor[0]].start);
+            found.push(Finding {
+                kind: "exposed_noise",
+                severity: "warning",
+                source: port_name(&stem.port),
+                section: section.map(|s| s.id.clone()),
+                at: Some(at),
+                value: round2(db_power(share)),
+                threshold: round2(db_power(NOISE_MIN_SHARE)),
+                message: format!(
+                    "`{}` is steady (range {} LU), no note plays it, and it makes up {}% of the {} Hz band at `{}` in the quietest passages; there it reaches about {} LUFS at the output, whose floor is {} LUFS",
+                    port_name(&stem.port),
+                    round2(spread),
+                    (share * 100.0).round(),
+                    BAND_CENTERS_HZ[band],
+                    port_name(&mix.port),
+                    round2(heard),
+                    round2(output_floor)
+                ),
+            });
+        }
+    }
+    found
+}
+
 fn severity_rank(severity: &str) -> u8 {
     match severity {
         "error" => 0,
@@ -1029,6 +1216,7 @@ fn severity_rank(severity: &str) -> u8 {
 }
 
 fn findings(
+    noise: Vec<Finding>,
     reports: &[SourceReport],
     sections: &[Section],
     positions: &PositionMap<'_>,
@@ -1036,6 +1224,7 @@ fn findings(
     analysed: (u64, u64),
 ) -> (Vec<Finding>, usize) {
     let mut found = groove_findings(view, sections, positions, analysed);
+    found.extend(noise);
     let output = &reports[0];
     let section_start = |id: &str| {
         sections

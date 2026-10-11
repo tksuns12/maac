@@ -7,6 +7,20 @@ promise of compatibility beyond the documented interfaces.
 
 ### Added
 
+- `maac analyze` measures the noise floor (finding F13 of the
+  [production trial](docs/ai-production-trial.md)). Every source and section
+  reports `floor_lufs`, the loudness of its quietest blocks; `block_range_lu`,
+  how steady it is; and `floor_bands_db`, the spectrum of the floor. The new
+  `exposed_noise` warning names a steady stem that no note plays when it fills
+  a band at its mix point in the quietest passages and can be heard at the
+  output. The trial's vinyl hiss, restored in "Late Window", fires in every
+  region; the released mix and every other example fire nothing. The profile
+  is now `maac.analyze.default/3`; the report schema is unchanged. See the
+  [proposal](docs/perception-gaps-proposal.md) and
+  [analyze.md](docs/analyze.md#profile-maacanalyzedefault3-2026-10-11).
+
+### Added
+
 - **Built-in extension schemas** (finding F11 of the
   [production trial](docs/ai-production-trial.md)). A descriptor asset can
   name the schema that the host embeds instead of a copied, hash-pinned file:

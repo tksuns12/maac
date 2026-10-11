@@ -431,3 +431,181 @@ fn mixed_swing_is_reported_and_one_grid_is_not() {
     let report = analyze(&swung, &AnalyzeOptions::default());
     assert!(report.findings.iter().all(|f| f.kind != "groove_mismatch"));
 }
+
+/// Four seconds at 60 bpm: a sine note through `bus` for the first two
+/// seconds, then only steady noise at `hiss_gain`. The note can instead be
+/// held for all four seconds.
+fn noisy(hiss_gain: &str, note_q: u32) -> String {
+    format!(
+        r#"maac 1;
+project p {{ score = [0q, 4q]; rate = 48000Hz; tempo = &clock; meter = &metre; output = &out:out; }}
+tempo clock {{ points = [(0q, 60bpm, step)]; }}
+meter metre {{ points = [(0q, 4, 4)]; }}
+node s {{ type = "core.sine/1"; params = {{ attack = 0s; release = 0s; level = 0.5; }}; }}
+node noise {{ type = "core.noise/1"; config = {{ channels = 1; }}; }}
+node hiss {{ type = "core.gain/1"; config = {{ channels = 1; }}; params = {{ gain = {hiss_gain}; }}; }}
+node bus {{ type = "core.sum/1"; config = {{ channels = 1; }}; }}
+node out {{ type = "core.gain/1"; config = {{ channels = 1; }}; params = {{ gain = 1; }}; }}
+connect a {{ from = &s:out; to = &bus:in; }}
+connect b {{ from = &noise:out; to = &hiss:in; }}
+connect c {{ from = &hiss:out; to = &bus:in; }}
+connect d {{ from = &bus:out; to = &out:in; }}
+pattern tone {{ length = 4q; note a {{ at = 0q; dur = {note_q}q; pitch = A4; }} }}
+track melody {{ target = &s:events; }}
+place play {{ pattern = &tone; track = &melody; at = 0q; }}
+"#
+    )
+}
+
+fn exposed(report: &AnalysisReport) -> Vec<&maac::analyze::Finding> {
+    report
+        .findings
+        .iter()
+        .filter(|finding| finding.kind == "exposed_noise")
+        .collect()
+}
+
+#[test]
+fn the_floor_and_block_range_measure_quiet_passages_and_steadiness() {
+    let report = analyze(&noisy("0.03", 2), &AnalyzeOptions::default());
+    let source = |port: &str| {
+        &report
+            .sources
+            .iter()
+            .find(|source| source.port == port)
+            .unwrap()
+            .whole
+    };
+    // The noise varies by well under 1 LU; the output swings from the note
+    // down to the noise alone, which sets its floor.
+    let hiss = source("hiss:out");
+    assert!(
+        hiss.block_range_lu.unwrap() < 1.0,
+        "{:?}",
+        hiss.block_range_lu
+    );
+    let output = source("out:out");
+    assert!(
+        output.block_range_lu.unwrap() > 10.0,
+        "{:?}",
+        output.block_range_lu
+    );
+    let floor = output.floor_lufs.unwrap();
+    assert!((floor - hiss.floor_lufs.unwrap()).abs() < 0.5, "{floor}");
+    // The floor's spectrum is the noise's: brightest at the top.
+    let bands = output.floor_bands_db.as_ref().unwrap();
+    let strongest = (0..10)
+        .max_by(|&a, &b| {
+            bands[a]
+                .unwrap_or(-999.0)
+                .total_cmp(&bands[b].unwrap_or(-999.0))
+        })
+        .unwrap();
+    assert_eq!(report.band_centers_hz[strongest], 16000.0);
+}
+
+#[test]
+fn steady_noise_left_alone_in_quiet_passages_is_exposed() {
+    let report = analyze(&noisy("0.03", 2), &AnalyzeOptions::default());
+    let found = exposed(&report);
+    assert_eq!(found.len(), 1, "{:?}", kinds(&report));
+    let finding = found[0];
+    assert_eq!(finding.source, "hiss:out");
+    assert_eq!(finding.severity, "warning");
+    // Alone in the gap, the noise is the whole band at its mix point.
+    assert!(finding.value > -0.5, "{}", finding.value);
+    assert_eq!(finding.threshold, -10.0);
+    assert!(finding.at.as_ref().unwrap().seconds >= 2.0);
+    assert!(finding.message.contains("`bus:out`"), "{}", finding.message);
+}
+
+#[test]
+fn faint_noise_and_note_driven_parts_are_not_exposed() {
+    // At -80 dB the noise cannot be heard at the output.
+    let faint = analyze(&noisy("0.0001", 2), &AnalyzeOptions::default());
+    assert!(exposed(&faint).is_empty(), "{:?}", kinds(&faint));
+    // A held note is as steady as noise, but notes play it: a choice.
+    let held = analyze(&noisy("0.0001", 4), &AnalyzeOptions::default());
+    let s = &held
+        .sources
+        .iter()
+        .find(|s| s.port == "s:out")
+        .unwrap()
+        .whole;
+    assert!(s.block_range_lu.unwrap() < 1.0, "{:?}", s.block_range_lu);
+    assert!(exposed(&held).is_empty(), "{:?}", kinds(&held));
+}
+
+#[test]
+fn exposed_noise_is_reported_per_section() {
+    let source = noisy("0.03", 2).replace(
+        "track melody",
+        "region sounding { span = [0q, 2q]; }\nregion gap { span = [2q, 4q]; }\ntrack melody",
+    );
+    let report = analyze(&source, &AnalyzeOptions::default());
+    let found: Vec<(Option<&str>, f64)> = exposed(&report)
+        .iter()
+        .map(|finding| {
+            (
+                finding.section.as_deref(),
+                finding.at.as_ref().unwrap().seconds,
+            )
+        })
+        .collect();
+    // A pure tone masks nothing at 16 kHz, so the noise is exposed under the
+    // note too; each finding lies in its own region.
+    assert_eq!(found.len(), 2, "{:?}", kinds(&report));
+    assert_eq!(found[0].0, Some("sounding"));
+    assert!(found[0].1 < 2.0, "{found:?}");
+    assert_eq!(found[1].0, Some("gap"));
+    assert!(found[1].1 >= 2.0, "{found:?}");
+}
+
+/// "Late Window" with or without the T2 trial's vinyl hiss (F13): noise
+/// through a high-pass into the mix bus, about 24 dB under the music, ahead of
+/// the glue compressor and the limiter's gain. Only the first two bars, in
+/// the intro, are analysed.
+fn late_window_intro(hiss: bool) -> AnalysisReport {
+    let mut source = include_str!("../examples/lofi/lofi.maac").to_owned();
+    if hiss {
+        let chain = r#"node hiss { type = "core.noise/1"; config = { channels = 2; }; }
+node hiss_tone { type = "fx.eq/1"; config = { channels = 2; mode = high_pass; }; params = { frequency = 3000Hz; }; }
+node vinyl { type = "core.gain/1"; config = { channels = 2; }; params = { gain = 0.003; }; }
+connect hiss_eq { from = &hiss:out; to = &hiss_tone:in; }
+connect eq_vinyl { from = &hiss_tone:out; to = &vinyl:in; }
+connect vinyl_bus { from = &vinyl:out; to = &bus:in; }
+"#;
+        source = source.replacen("connect keys_bus", &format!("{chain}connect keys_bus"), 1);
+    }
+    let limits = PlanLimits::song();
+    let plan = maac::compiler::compile_bundle_artifact_with_limits(
+        &SourceBundle::new("main.maac", &source),
+        &limits,
+    )
+    .unwrap_or_else(|e| panic!("Late Window compiles: {e}"));
+    let meter = maac::analyze::meter_of(&maac::parse(&source).unwrap());
+    let options = AnalyzeOptions {
+        window: Some(maac::analyze::Window::parse("bars:1-2").unwrap()),
+        ..AnalyzeOptions::default()
+    };
+    analyze_artifact(&plan, meter.as_ref(), &options, &limits).unwrap()
+}
+
+#[test]
+fn the_trial_hiss_in_late_window_is_exposed_and_the_released_mix_is_clean() {
+    let (clean, hissy) = std::thread::scope(|scope| {
+        let clean = scope.spawn(|| late_window_intro(false));
+        let hissy = scope.spawn(|| late_window_intro(true));
+        (clean.join().unwrap(), hissy.join().unwrap())
+    });
+    assert!(exposed(&clean).is_empty(), "{:?}", kinds(&clean));
+    let found = exposed(&hissy);
+    assert_eq!(found.len(), 1, "{:?}", kinds(&hissy));
+    assert_eq!(found[0].source, "vinyl:out");
+    assert_eq!(found[0].section.as_deref(), Some("intro"));
+    assert!(
+        found[0].message.contains("16000 Hz"),
+        "{}",
+        found[0].message
+    );
+}

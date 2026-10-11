@@ -221,11 +221,42 @@ window close to a full render's, but not equal. The report marks it:
 rendering began. Use it to iterate on one section; confirm the final mix
 without it.
 
+## Profile `maac.analyze.default/3` (2026-10-11)
+
+The [perception gaps proposal](perception-gaps-proposal.md), part A, adds a
+noise floor for F13 of the [T2 trial](ai-production-trial.md): a hiss 27 dB
+under the music read as a constant "sssss", and no finding fired. The report
+schema is unchanged; every source and section gains three measurements:
+
+- `floor_lufs`: the loudness of the quietest tenth of the 100 ms blocks above
+  −70 LUFS. It needs at least one second of such blocks.
+- `block_range_lu`: the 95th percentile of block loudness minus the floor
+  percentile. A steady source has a small range.
+- `floor_bands_db`: the octave spectrum of the floor blocks.
+
+The new `exposed_noise` warning fires for a stem in a section when:
+
+1. no note drives it: no node that receives score events lies at or upstream
+   of it;
+2. it is steady: `block_range_lu` is at most 6 LU, and it is above −70 LUFS
+   in at least 90% of the blocks;
+3. in the output's floor blocks, it supplies at least 10% of its mix point's
+   energy in an octave band within 30 dB of that mix point's strongest band;
+4. its estimated loudness at the output in those blocks is above −50 LUFS.
+   The estimate is its K-weighted share of the mix point times the output's
+   energy, so compression after the mix point still counts.
+
+The message names the stem, the band, the mix point and both levels. A
+deliberate steady texture, such as a drone that no note plays, also fires;
+it is a warning, so keep the texture if you meant it.
+
 ## Deferred to later versions
 
 - **Score–audio agreement:** whether each note is audible in the mix, the
   pitch actually sounding against the written pitch for monophonic parts, and
-  onset alignment.
+  onset alignment. Part B of the
+  [perception gaps proposal](perception-gaps-proposal.md) covers the first
+  two.
 - **Reference profiles:** comparing against a genre or reference track's
   loudness and spectral targets. A reference profile would be a pinned asset,
   not a built-in taste.

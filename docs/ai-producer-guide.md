@@ -100,6 +100,8 @@ maac analyze main.maac --window region:b --preroll 4 --json   # quick, approxima
 - **Noise.** Steady broadband noise, such as hiss, is far more noticeable than
   its loudness suggests, especially after compression. In the trial, hiss 27
   dB under the music still annoyed the listener, so leave it out unless asked.
+  `exposed_noise` reports a steady stem that no note plays when it fills a
+  band in the quietest passages.
 - **Target.** About -16 to -14 LUFS integrated at no more than -1 dBTP suits
   streaming; calm genres can sit lower.
 
@@ -126,7 +128,7 @@ ask for a verdict.
 | Symptom from the listener | Cause | Detection |
 | --- | --- | --- |
 | "The melody and the beat keep missing each other" | Some parts swung, others straight | `groove_mismatch`; count onset fractions from `query-events` |
-| "A constant sssss in the background" | Low-level steady noise lifted by compression | Not measured yet; avoid steady noise |
+| "A constant sssss in the background" | Low-level steady noise lifted by compression | `exposed_noise`; the source's `floor_lufs` and `block_range_lu` |
 | "The instruments sound tacky" | std/basic synthesized timbres that ignore velocity | Not measurable; use std/studio and std/acoustic, and vary velocity |
 | Lead melody gets lost | Melody 6 dB under the comping | Per-stem `max_short_term_lufs` by region |
 | True peak over the limit after a sound change | Plucked attacks through compressors standing in for a limiter | `true_peak_over`; master through `fx.limiter/1` with its ceiling under the limit |

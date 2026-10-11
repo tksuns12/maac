@@ -76,7 +76,7 @@ owner heard, every point of friction, and what to build next.
 | F9, F10, F16 | There is no limiter. Two compressors stand in for one, the crest factor stays high, and the plucked guitar's attacks pushed the true peak over 0 dBTP until the stand-in was re-tuned | Fixed: [`fx.limiter/1`](production.md#6-limiter--fxlimiter1). One limiter replaced the stand-in: -14.73 LUFS at -1.10 dBTP against -15.58 LUFS at -2.07 dBTP |
 | F11 | A delivery needs a copied schema file and its hash pin. Its path is project-root relative, while sample paths are source relative | Fixed: a descriptor can name the [built-in schema](delivery-schema-proposal.md), `builtin = "maac.production/1"`, with no file, hash or path. "Late Window" uses it |
 | F12 | Mixed swing and straight grids went unnoticed by every tool; the owner's ears caught them | Fixed: `groove_mismatch` |
-| F13 | A vinyl hiss 27 dB under the music still read as a constant, annoying "sssss" once the compressors lifted quiet passages. The numbers could not show that steady noise is salient | Gap: perception |
+| F13 | A vinyl hiss 27 dB under the music still read as a constant, annoying "sssss" once the compressors lifted quiet passages. The numbers could not show that steady noise is salient | Fixed: [`exposed_noise`](analyze.md#profile-maacanalyzedefault3-2026-10-11) in `default/3` reports a steady stem that no note plays when it fills a band in the quietest passages. The trial's hiss, restored, fires in every region |
 | F14 | The std/basic instruments sound dated, and they limit how good any track can sound | Addressed by [`std/studio/1.0.0`](studio-instruments.md): new building blocks and an electric piano, bass, pad and kit whose timbre follows velocity. "Late Window" now plays them. Accepted on measurements; no one has judged it by ear |
 | F15 | `level` has no common loudness scale across libraries; the guitar started 10–14 dB too quiet | Fixed within std/studio: every default puts a reference phrase at velocity 0.7 at −20 LUFS. std/basic and std/acoustic keep their released scales |
 
@@ -108,7 +108,9 @@ owner heard, every point of friction, and what to build next.
    `level = 1`, or calibrate `level` to a common reference. Done for
    std/studio, whose defaults share a −20 LUFS reference.
 6. **Perception gaps (F13).** Measure the noise floor of quiet passages, and
-   add the deferred score–audio checks (audible notes, sounding pitch).
+   add the deferred score–audio checks (audible notes, sounding pitch). See
+   the [proposal](perception-gaps-proposal.md). The noise floor landed on
+   2026-10-11 as profile `default/3`; the score–audio checks are part B.
 7. **Delivery boilerplate (F11).** A built-in production schema reference
    instead of a copied, pinned file. Done on 2026-10-08; see the
    [proposal](delivery-schema-proposal.md).
