@@ -10,6 +10,7 @@ maac analyze examples/showcase/showcase.maac --project-root . --disk-media --pro
 maac analyze main.maac --json --section bars:8 --source pad:out
 maac analyze main.maac --window region:b --json            # one section, exact
 maac analyze main.maac --window bars:13-16 --preroll 4     # quick preview
+maac analyze main.maac --json --notes                      # every note's checks
 ```
 
 ## Goal
@@ -250,13 +251,37 @@ The message names the stem, the band, the mix point and both levels. A
 deliberate steady texture, such as a drone that no note plays, also fires;
 it is a warning, so keep the texture if you meant it.
 
+## Profile `maac.analyze.default/4` (2026-10-11)
+
+Part B of the [perception gaps proposal](perception-gaps-proposal.md) compares
+the score with the audio. Each note or hit whose target node is an analysed
+source is measured over a window: a note from its onset to its release, at
+most 2 s; a hit for 250 ms. Three warnings or notes can follow, each grouped
+by part and section and naming the worst note's source address in `event`:
+
+- `silent_note` (warning): the target's K-weighted loudness over the note is
+  at most −70 LUFS.
+- `buried_note` (info): in the octave band where the target is strongest over
+  the note, it holds −20 dB or less of its mix point. A node playing a chord
+  is measured as a whole, so a quiet note inside a loud chord on the same node
+  is not reported.
+- `pitch_mismatch` (warning): a note that no other note on its node overlaps,
+  with no pitch expression, sounds more than 50 cents from its written pitch.
+  Pitch comes from YIN over four periods after a 30 ms attack, searching an
+  octave either side. An octave error reads ±1200. A sub-octave layer reads at
+  the written pitch. A note whose best dip is above 0.03, which includes bells,
+  toms, tines and other inharmonic sounds, is `unpitched` and not checked.
+
+Every source that receives events gets a `notes` summary for the whole piece
+and each section: measured, silent, buried, pitched, unpitched and
+mismatched counts, and the median and largest pitch deviation. `--notes` adds
+a `notes` list with each note's level, band share, cents, aperiodicity and
+status.
+
 ## Deferred to later versions
 
-- **Score–audio agreement:** whether each note is audible in the mix, the
-  pitch actually sounding against the written pitch for monophonic parts, and
-  onset alignment. Part B of the
-  [perception gaps proposal](perception-gaps-proposal.md) covers the first
-  two.
+- **Onset alignment:** whether written and sounding attacks line up.
+  `groove_mismatch` covers the error the trial hit.
 - **Reference profiles:** comparing against a genre or reference track's
   loudness and spectral targets. A reference profile would be a pinned asset,
   not a built-in taste.

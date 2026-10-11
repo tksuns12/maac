@@ -8,6 +8,7 @@
 use crate::production_analysis::{integrated, k_weighting, loudness, Biquad, Interpolator};
 
 use super::image::Spectrogram;
+use super::notes::FrameValues;
 use super::{round2, round3, Measures, Position, PositionMap, Stereo, BAND_CENTERS_HZ};
 
 /// Samples at or beyond full scale clip when encoded as PCM.
@@ -117,11 +118,13 @@ impl SourceMeter {
         self
     }
 
-    pub fn push(&mut self, frame: &[f64]) {
+    /// Measure one frame, and return what it adds to a note window.
+    pub fn push(&mut self, frame: &[f64]) -> FrameValues {
+        let mut values = FrameValues::default();
         if frame.len() != self.channels {
             self.error
                 .get_or_insert_with(|| "rendered port changed its channel count".into());
-            return;
+            return values;
         }
         let mut input = [0.0; 2];
         let block = &mut self.current;
@@ -136,15 +139,24 @@ impl SourceMeter {
             block.sq[c] += x * x;
             let [shelf, pass] = &mut self.k[c];
             match shelf.process(x).and_then(|y| pass.process(y)) {
-                Ok(y) => block.k += y * y,
+                Ok(y) => {
+                    block.k += y * y;
+                    values.k += y * y;
+                }
                 Err(failure) => {
                     self.error.get_or_insert(failure.message);
                 }
             }
-            for (energy, band) in block.bands.iter_mut().zip(self.bands[c].iter_mut()) {
+            for ((energy, value), band) in block
+                .bands
+                .iter_mut()
+                .zip(values.bands.iter_mut())
+                .zip(self.bands[c].iter_mut())
+            {
                 if let Some(band) = band {
                     let y = band.process(x);
                     *energy += y * y;
+                    *value += y * y;
                 }
             }
         }
@@ -163,8 +175,9 @@ impl SourceMeter {
                 self.error.get_or_insert(failure.message);
             }
         }
+        values.mono = frame.iter().sum::<f64>() / self.channels as f64;
         if let Some(spectrogram) = &mut self.spectrogram {
-            spectrogram.push(frame.iter().sum::<f64>() / self.channels as f64);
+            spectrogram.push(values.mono);
         }
         block.frames += 1;
         self.frame += 1;
@@ -175,6 +188,7 @@ impl SourceMeter {
             };
             self.blocks.push(std::mem::replace(&mut self.current, next));
         }
+        values
     }
 
     /// Flush the true-peak interpolator into the last block.
@@ -461,6 +475,7 @@ pub(super) fn measures(
         block_range_lu: block_range_lu(blocks, hop).map(round2),
         floor_bands_db,
         stereo,
+        notes: None,
         active_fraction: if active.is_empty() {
             0.0
         } else {

@@ -7,6 +7,19 @@ promise of compatibility beyond the documented interfaces.
 
 ### Added
 
+- `maac analyze` compares the score with the audio. Each note or hit is
+  measured on its target: `silent_note` when it makes no sound, `buried_note`
+  when its part holds −20 dB or less of its strongest band at its mix point,
+  and `pitch_mismatch` when a lone, clearly pitched note sounds more than 50
+  cents from its written pitch (±1200 for an octave). Findings are grouped per
+  part and section and name the worst note in a new `event` field. Every
+  source that receives events gets a `notes` summary, and `--notes` lists each
+  note. Inharmonic sounds such as bells and toms read `unpitched` and are not
+  checked, and sub-octave layers read at the written pitch. Every example gives
+  no silent or mistuned note. The profile is now `maac.analyze.default/4`. See
+  the [proposal](docs/perception-gaps-proposal.md#results-part-b) and
+  [analyze.md](docs/analyze.md#profile-maacanalyzedefault4-2026-10-11).
+
 - `maac analyze` measures the noise floor (finding F13 of the
   [production trial](docs/ai-production-trial.md)). Every source and section
   reports `floor_lufs`, the loudness of its quietest blocks; `block_range_lu`,

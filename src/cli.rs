@@ -126,6 +126,10 @@ pub enum Command {
         /// Replace existing image files.
         #[arg(long)]
         force: bool,
+        /// List every measured note: its level, its share of its band, and
+        /// its pitch.
+        #[arg(long)]
+        notes: bool,
         /// Root used to resolve project-relative imports and assets.
         #[arg(long)]
         project_root: Option<PathBuf>,
@@ -1129,9 +1133,18 @@ fn execute_disk_media(
             sources,
             images,
             force,
+            notes: list_notes,
             ..
         } => {
-            let options = analyze_options(section, window, *preroll, sources, images, *force)?;
+            let options = analyze_options(
+                section,
+                window,
+                *preroll,
+                sources,
+                images,
+                *force,
+                *list_notes,
+            )?;
             let meter = entry_meter(project.bundle());
             let report =
                 crate::analyze::analyze_disk_media(&plan, meter.as_ref(), &options, &limits)
@@ -1222,6 +1235,7 @@ fn analyze_options(
     sources: &[String],
     images: &Option<PathBuf>,
     force: bool,
+    notes: bool,
 ) -> Result<crate::analyze::AnalyzeOptions, CliError> {
     let sections = crate::analyze::SectionMode::parse(section).map_err(analyze_error)?;
     let window = window
@@ -1246,6 +1260,7 @@ fn analyze_options(
         sources,
         images: images.clone(),
         force,
+        notes,
     })
 }
 
@@ -1504,11 +1519,20 @@ fn execute_impl(
             sources,
             images,
             force,
+            notes: list_notes,
             project_root,
             profile,
         } => {
             let limits = profile.limits();
-            let options = analyze_options(section, window, *preroll, sources, images, *force)?;
+            let options = analyze_options(
+                section,
+                window,
+                *preroll,
+                sources,
+                images,
+                *force,
+                *list_notes,
+            )?;
             let (resolved, root) = resolve_source_input(input.as_deref(), project_root.as_deref());
             let bytes = read_bounded(&resolved)?;
             let (plan, meter) = if bytes

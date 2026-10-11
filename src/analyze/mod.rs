@@ -8,6 +8,9 @@
 
 mod image;
 mod meter;
+mod notes;
+
+pub use notes::{NoteReport, NoteSummary};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -29,13 +32,13 @@ use meter::{
 };
 
 pub const SCHEMA: &str = "maac.analysis-report/1";
-pub const PROFILE: &str = "maac.analyze.default/3";
+pub const PROFILE: &str = "maac.analyze.default/4";
 pub const BANDS: &str = "maac.analyze.octave-bands/1";
 pub const BAND_CENTERS_HZ: [f64; 10] = [
     31.5, 63.0, 125.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 16000.0,
 ];
 
-// Findings profile `maac.analyze.default/3`: stated limits, not taste.
+// Findings profile `maac.analyze.default/4`: stated limits, not taste.
 const TRUE_PEAK_LIMIT_DBTP: f64 = -1.0;
 const LOUDNESS_JUMP_LU: f64 = 6.0;
 const BALANCE_LIMIT_DB: f64 = 3.0;
@@ -66,6 +69,14 @@ const NOISE_BAND_SPAN_DB: f64 = 30.0;
 /// ...and the stem's estimated loudness at the output in those blocks is
 /// above this.
 const NOISE_AUDIBLE_LUFS: f64 = -50.0;
+/// A note is silent when its target's K-weighted loudness over the note is
+/// at most this.
+const SILENT_NOTE_LUFS: f64 = -70.0;
+/// A note is buried when its target holds at most this share of its mix
+/// point in the written pitch's octave band (broadband for a hit), in dB.
+const BURIED_NOTE_DB: f64 = -20.0;
+/// A lone note sounds off its written pitch beyond this many cents.
+const PITCH_LIMIT_CENTS: f64 = 50.0;
 
 /// How the piece is divided into sections.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -115,6 +126,8 @@ pub struct AnalyzeOptions {
     pub images: Option<PathBuf>,
     /// Replace existing image files.
     pub force: bool,
+    /// List every measured note in the report.
+    pub notes: bool,
 }
 
 impl Default for AnalyzeOptions {
@@ -126,6 +139,7 @@ impl Default for AnalyzeOptions {
             sources: Vec::new(),
             images: None,
             force: false,
+            notes: false,
         }
     }
 }
@@ -181,6 +195,9 @@ pub struct AnalysisReport {
     pub sources: Vec<SourceReport>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<ImageFile>,
+    /// Every measured note, with `--notes`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<NoteReport>,
     /// The analysed window, when not the whole piece.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub window: Option<WindowReport>,
@@ -307,6 +324,9 @@ pub struct Measures {
     pub floor_bands_db: Option<Vec<Option<f64>>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stereo: Option<Stereo>,
+    /// Score–audio agreement for the notes and hits this source receives.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notes: Option<NoteSummary>,
     pub active_fraction: f64,
     pub leading_silence_s: f64,
     pub trailing_silence_s: f64,
@@ -334,6 +354,9 @@ pub struct Position {
 #[derive(Clone, Debug, Serialize)]
 pub struct Finding {
     pub kind: &'static str,
+    /// The source address of the note a score–audio finding names first.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub event: Option<String>,
     /// `error`, `warning`, or `info`.
     pub severity: &'static str,
     pub source: String,
@@ -554,12 +577,28 @@ fn analyze_view(
             SourceMeter::new(rate, source.channels, hop, spectrogram).starting_at(window_start)
         })
         .collect();
+    let mut windows = note_windows(&view, &sources, rate, window_start, window_end);
+    let mut next_window = 0;
+    let mut active: Vec<usize> = Vec::new();
+    let mut values = vec![notes::FrameValues::default(); meters.len()];
     let mut frame_index = render_start;
     render(&ports, span, &mut |frame| {
         if frame_index >= window_start {
-            for (meter, values) in meters.iter_mut().zip(frame) {
-                meter.push(values);
+            for ((meter, frame), value) in meters.iter_mut().zip(frame).zip(values.iter_mut()) {
+                *value = meter.push(frame);
             }
+            while next_window < windows.len() && windows[next_window].start <= frame_index {
+                active.push(next_window);
+                next_window += 1;
+            }
+            active.retain(|&index| {
+                let window = &mut windows[index];
+                if frame_index >= window.end {
+                    return false;
+                }
+                window.add(frame_index, &values);
+                true
+            });
         }
         frame_index += 1;
         Ok(())
@@ -580,7 +619,7 @@ fn analyze_view(
         .iter()
         .map(|section| block_range(&blocks[0], section.start_frame, section.end_frame))
         .collect();
-    let reports: Vec<SourceReport> = sources
+    let mut reports: Vec<SourceReport> = sources
         .iter()
         .zip(&blocks)
         .enumerate()
@@ -618,11 +657,15 @@ fn analyze_view(
             }
         })
         .collect();
+    let note_list = note_reports(&windows, &sources, &sections, rate);
+    let mut extra = note_findings(&note_list, &positions);
+    attach_note_summaries(&mut reports, &note_list);
     let noise = noise_findings(
         &sources, &blocks, &sections, &ranges, hop, available, &positions,
     );
+    extra.extend(noise);
     let (findings, findings_omitted) = findings(
-        noise,
+        extra,
         &reports,
         &sections,
         &positions,
@@ -662,6 +705,7 @@ fn analyze_view(
         sections,
         sources: reports,
         images,
+        notes: if options.notes { note_list } else { Vec::new() },
         window: window.map(|(start_q, end_q, start_frame, end_frame)| WindowReport {
             start_q: start_q.to_string(),
             end_q: end_q.to_string(),
@@ -860,6 +904,8 @@ struct Source {
     role: &'static str,
     /// For a stem, the mix-point nodes it feeds directly.
     mixes: Vec<String>,
+    /// The first mix point downstream of this port, or the output.
+    mix_point: Option<String>,
     /// Whether a node that receives score events lies at or upstream of this
     /// port, so that notes or hits drive what it plays.
     driven: bool,
@@ -906,6 +952,22 @@ fn sources(view: &PlanView<'_>, requested: &[PortRef]) -> Result<Vec<Source>, An
             }
         }
         false
+    };
+    // Breadth first downstream, in connection order.
+    let mix_point = |node: &str| -> Option<String> {
+        let mut seen = BTreeSet::from([node]);
+        let mut pending = std::collections::VecDeque::from([node]);
+        while let Some(current) = pending.pop_front() {
+            for connection in view.connections {
+                if connection.from.node == current && seen.insert(connection.to.node.as_str()) {
+                    if is_mix(&connection.to.node) {
+                        return Some(connection.to.node.clone());
+                    }
+                    pending.push_back(connection.to.node.as_str());
+                }
+            }
+        }
+        None
     };
     let targets: BTreeSet<&str> = view
         .events()
@@ -974,12 +1036,14 @@ fn sources(view: &PlanView<'_>, requested: &[PortRef]) -> Result<Vec<Source>, An
                     Vec::new()
                 };
                 let driven = driven(&port.node);
+                let mix_point = mix_point(&port.node);
                 result.push(Source {
                     port,
                     channels,
                     role,
                     mixes,
                     driven,
+                    mix_point,
                 })
             }
             Ok(_) if requested.is_empty() && role != "output" => {}
@@ -1072,6 +1136,7 @@ fn groove_findings(
             .expect("nonempty");
         found.push(Finding {
             kind: "groove_mismatch",
+            event: None,
             severity: "warning",
             source: format!("{part}:events"),
             section: section.map(|s| s.id.clone()),
@@ -1086,6 +1151,275 @@ fn groove_findings(
         });
     }
     found
+}
+
+/// A window for every note and hit whose onset lies in `[start, end)` and
+/// whose target is an analysed source, in onset order.
+fn note_windows(
+    view: &PlanView<'_>,
+    sources: &[Source],
+    rate: u32,
+    start: u64,
+    end: u64,
+) -> Vec<notes::Window> {
+    let seconds = |s: f64| (s * f64::from(rate)).round() as u64;
+    let (note_max, hit_length) = (seconds(notes::NOTE_MAX_S), seconds(notes::HIT_S));
+    let events: Vec<_> = view
+        .events()
+        .filter(|event| !matches!(event.kind, EventKind::Message { .. }))
+        .collect();
+    // Each node's events, to find notes that no other note overlaps.
+    let mut by_node: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
+    for (index, event) in events.iter().enumerate() {
+        by_node
+            .entry(event.target.node.as_str())
+            .or_default()
+            .push(index);
+    }
+    let sounding = |index: usize| {
+        let event = &events[index];
+        let off = event.off_frame.unwrap_or(event.on_frame + hit_length);
+        (event.on_frame, off.max(event.on_frame + 1))
+    };
+    let mut windows = Vec::new();
+    for (index, event) in events.iter().enumerate() {
+        if event.on_frame < start || event.on_frame >= end {
+            continue;
+        }
+        let Some(target) = sources
+            .iter()
+            .position(|source| source.port.node == *event.target.node)
+        else {
+            continue;
+        };
+        let mix = sources[target]
+            .mix_point
+            .as_ref()
+            .and_then(|node| sources.iter().position(|source| &source.port.node == node));
+        let window_end = match event.off_frame {
+            Some(off) => off.min(event.on_frame + note_max),
+            None => event.on_frame + hit_length,
+        }
+        .min(end);
+        if window_end <= event.on_frame {
+            continue;
+        }
+        let (pitch_hz, expressed) = match event.kind {
+            EventKind::Note {
+                pitch_hz,
+                pitch_expression,
+                ..
+            } => (Some(*pitch_hz), pitch_expression.is_some()),
+            _ => (None, false),
+        };
+        // Lone while the pitch is measured: from the onset to the end of the
+        // samples the estimate needs.
+        let pitch_end = pitch_hz.map_or(event.on_frame, |hz| {
+            event.on_frame + notes::pitch_skip(rate) + notes::pitch_samples(hz, rate)
+        });
+        let lone = !expressed
+            && by_node[event.target.node.as_str()].iter().all(|&other| {
+                let (on, off) = sounding(other);
+                other == index || on >= pitch_end || off <= event.on_frame
+            });
+        windows.push(notes::Window::new(
+            event.address.clone(),
+            target,
+            mix,
+            event.on_frame,
+            window_end,
+            pitch_hz,
+            lone,
+            rate,
+        ));
+    }
+    windows.sort_by_key(|window| window.start);
+    windows
+}
+
+fn note_reports(
+    windows: &[notes::Window],
+    sources: &[Source],
+    sections: &[Section],
+    rate: u32,
+) -> Vec<NoteReport> {
+    let channels: Vec<u8> = sources.iter().map(|source| source.channels).collect();
+    windows
+        .iter()
+        .map(|window| {
+            let outcome = notes::outcome(window, &channels, rate);
+            let periodic = outcome
+                .pitch
+                .as_ref()
+                .filter(|pitch| pitch.aperiodicity <= notes::APERIODIC);
+            let status = if outcome
+                .level_lufs
+                .is_none_or(|level| level <= SILENT_NOTE_LUFS)
+            {
+                "silent"
+            } else if periodic.is_some_and(|pitch| pitch.cents.abs() > PITCH_LIMIT_CENTS) {
+                "pitch_mismatch"
+            } else if outcome
+                .share_db
+                .is_some_and(|share| share <= BURIED_NOTE_DB)
+            {
+                "buried"
+            } else if outcome.pitch.is_some() && periodic.is_none() {
+                "unpitched"
+            } else {
+                "ok"
+            };
+            NoteReport {
+                event: window.address.clone(),
+                source: port_name(&sources[window.target].port),
+                start_frame: window.start,
+                section: sections
+                    .iter()
+                    .find(|s| s.start_frame <= window.start && window.start < s.end_frame)
+                    .map(|s| s.id.clone()),
+                level_lufs: outcome.level_lufs.filter(|level| *level > SILENT_NOTE_LUFS),
+                share_db: outcome.share_db,
+                cents: outcome.pitch.as_ref().map(|pitch| pitch.cents),
+                aperiodicity: outcome.pitch.as_ref().map(|pitch| pitch.aperiodicity),
+                status,
+            }
+        })
+        .collect()
+}
+
+fn is_silent(note: &NoteReport) -> bool {
+    note.level_lufs.is_none()
+}
+
+fn is_buried(note: &NoteReport) -> bool {
+    !is_silent(note) && note.share_db.is_some_and(|share| share <= BURIED_NOTE_DB)
+}
+
+fn pitched_cents(note: &NoteReport) -> Option<f64> {
+    note.cents
+        .filter(|_| note.aperiodicity.is_some_and(|a| a <= notes::APERIODIC) && !is_silent(note))
+}
+
+fn summary<'n>(notes: impl Iterator<Item = &'n NoteReport>) -> Option<NoteSummary> {
+    let notes: Vec<&NoteReport> = notes.collect();
+    if notes.is_empty() {
+        return None;
+    }
+    let mut cents: Vec<f64> = notes
+        .iter()
+        .filter_map(|note| pitched_cents(note))
+        .collect();
+    cents.sort_by(f64::total_cmp);
+    let median = (!cents.is_empty()).then(|| {
+        let middle = cents.len() / 2;
+        if cents.len() % 2 == 1 {
+            cents[middle]
+        } else {
+            round2((cents[middle - 1] + cents[middle]) / 2.0)
+        }
+    });
+    Some(NoteSummary {
+        measured: notes.len(),
+        silent: notes.iter().filter(|note| is_silent(note)).count(),
+        buried: notes.iter().filter(|note| is_buried(note)).count(),
+        pitched: cents.len(),
+        unpitched: notes
+            .iter()
+            .filter(|note| note.aperiodicity.is_some() && pitched_cents(note).is_none())
+            .count(),
+        pitch_mismatches: cents.iter().filter(|c| c.abs() > PITCH_LIMIT_CENTS).count(),
+        median_cents: median,
+        max_abs_cents: cents.iter().map(|c| c.abs()).reduce(f64::max),
+    })
+}
+
+fn attach_note_summaries(reports: &mut [SourceReport], notes: &[NoteReport]) {
+    for report in reports.iter_mut() {
+        report.whole.notes = summary(notes.iter().filter(|note| note.source == report.port));
+        for section in &mut report.sections {
+            section.measures.notes = summary(
+                notes
+                    .iter()
+                    .filter(|note| note.source == report.port)
+                    .filter(|note| note.section.as_deref() == Some(section.section.as_str())),
+            );
+        }
+    }
+}
+
+/// One finding per kind, part and section, naming the worst note.
+fn note_findings(notes: &[NoteReport], positions: &PositionMap<'_>) -> Vec<Finding> {
+    // (kind, source, section) -> (count, worst note, its value, badness)
+    type Group<'n> = (usize, &'n NoteReport, f64, f64);
+    let mut groups: BTreeMap<(&'static str, &str, Option<&str>), Group<'_>> = BTreeMap::new();
+    for note in notes {
+        let mut push = |kind: &'static str, value: f64, badness: f64| {
+            let entry = groups
+                .entry((kind, note.source.as_str(), note.section.as_deref()))
+                .or_insert((0, note, value, badness));
+            entry.0 += 1;
+            if badness > entry.3 {
+                (entry.1, entry.2, entry.3) = (note, value, badness);
+            }
+        };
+        if is_silent(note) {
+            push("silent_note", -120.0, 120.0);
+            continue;
+        }
+        if let Some(share) = note.share_db.filter(|share| *share <= BURIED_NOTE_DB) {
+            push("buried_note", share, -share);
+        }
+        if let Some(cents) = pitched_cents(note).filter(|c| c.abs() > PITCH_LIMIT_CENTS) {
+            push("pitch_mismatch", cents, cents.abs());
+        }
+    }
+    groups
+        .into_iter()
+        .map(|((kind, source, section), (count, note, value, _))| {
+            let (notes_text, verb) = if count == 1 {
+                ("1 note".to_owned(), "s")
+            } else {
+                (format!("{count} notes"), "")
+            };
+            let (severity, threshold, message) = match kind {
+                "silent_note" => (
+                    "warning",
+                    SILENT_NOTE_LUFS,
+                    format!(
+                        "{notes_text} on `{source}` produce{verb} no sound; the first is `{}`",
+                        note.event
+                    ),
+                ),
+                "buried_note" => (
+                    "info",
+                    BURIED_NOTE_DB,
+                    format!(
+                        "{notes_text} on `{source}` hold{verb} {BURIED_NOTE_DB} dB or less of the band at the mix point; `{}` holds {value} dB",
+                        note.event
+                    ),
+                ),
+                _ => (
+                    "warning",
+                    PITCH_LIMIT_CENTS,
+                    format!(
+                        "{notes_text} on `{source}` sound{verb} more than {PITCH_LIMIT_CENTS} cents off the written pitch; `{}` is {value:+} cents",
+                        note.event
+                    ),
+                ),
+            };
+            Finding {
+                kind,
+                event: Some(note.event.clone()),
+                severity,
+                source: source.to_owned(),
+                section: section.map(str::to_owned),
+                at: Some(positions.at(note.start_frame)),
+                value,
+                threshold,
+                message,
+            }
+        })
+        .collect()
 }
 
 /// Steady stems that no note drives and that fill a band in the quietest
@@ -1185,6 +1519,7 @@ fn noise_findings(
             let at = positions.at(output[floor[0]].start);
             found.push(Finding {
                 kind: "exposed_noise",
+                event: None,
                 severity: "warning",
                 source: port_name(&stem.port),
                 section: section.map(|s| s.id.clone()),
@@ -1216,7 +1551,7 @@ fn severity_rank(severity: &str) -> u8 {
 }
 
 fn findings(
-    noise: Vec<Finding>,
+    extra: Vec<Finding>,
     reports: &[SourceReport],
     sections: &[Section],
     positions: &PositionMap<'_>,
@@ -1224,7 +1559,7 @@ fn findings(
     analysed: (u64, u64),
 ) -> (Vec<Finding>, usize) {
     let mut found = groove_findings(view, sections, positions, analysed);
-    found.extend(noise);
+    found.extend(extra);
     let output = &reports[0];
     let section_start = |id: &str| {
         sections
@@ -1235,6 +1570,7 @@ fn findings(
     if output.whole.clipped_samples > 0 {
         found.push(Finding {
             kind: "clipping",
+            event: None,
             severity: "error",
             source: output.port.clone(),
             section: output.whole.first_clip.as_ref().and_then(|clip| {
@@ -1260,6 +1596,7 @@ fn findings(
     {
         found.push(Finding {
             kind: "true_peak_over",
+            event: None,
             severity: "warning",
             source: output.port.clone(),
             section: None,
@@ -1292,6 +1629,7 @@ fn findings(
             if jump.abs() > LOUDNESS_JUMP_LU {
                 found.push(Finding {
                     kind: "loudness_jump",
+                    event: None,
                     severity: "info",
                     source: output.port.clone(),
                     section: Some(pair[1].id.clone()),
@@ -1326,6 +1664,7 @@ fn findings(
             if balance.abs() > BALANCE_LIMIT_DB {
                 found.push(Finding {
                     kind: "stereo_imbalance",
+                    event: None,
                     severity: "warning",
                     source: report.port.clone(),
                     section: Some(section.section.clone()),
@@ -1354,6 +1693,7 @@ fn findings(
             if loss < MONO_LOSS_LIMIT_DB {
                 found.push(Finding {
                     kind: "mono_cancellation",
+                    event: None,
                     severity: "warning",
                     source: report.port.clone(),
                     section: Some(section.section.clone()),
@@ -1398,6 +1738,7 @@ fn findings(
                     if difference >= DOMINANCE_DB {
                         found.push(Finding {
                             kind: "band_dominance",
+                            event: None,
                             severity: "info",
                             source: top.port.clone(),
                             section: Some(section.id.clone()),
@@ -1418,6 +1759,7 @@ fn findings(
         if !report.whole.is_active() {
             found.push(Finding {
                 kind: "silent_source",
+                event: None,
                 severity: "warning",
                 source: report.port.clone(),
                 section: None,

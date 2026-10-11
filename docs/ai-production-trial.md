@@ -109,8 +109,9 @@ owner heard, every point of friction, and what to build next.
    std/studio, whose defaults share a −20 LUFS reference.
 6. **Perception gaps (F13).** Measure the noise floor of quiet passages, and
    add the deferred score–audio checks (audible notes, sounding pitch). See
-   the [proposal](perception-gaps-proposal.md). The noise floor landed on
-   2026-10-11 as profile `default/3`; the score–audio checks are part B.
+   the [proposal](perception-gaps-proposal.md). Both landed on 2026-10-11: the
+   noise floor as profile `default/3`, and `silent_note`, `buried_note` and
+   `pitch_mismatch` as `default/4`.
 7. **Delivery boilerplate (F11).** A built-in production schema reference
    instead of a copied, pinned file. Done on 2026-10-08; see the
    [proposal](delivery-schema-proposal.md).

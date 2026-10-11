@@ -609,3 +609,162 @@ fn the_trial_hiss_in_late_window_is_exposed_and_the_released_mix_is_clean() {
         found[0].message
     );
 }
+
+/// Two seconds at 120 bpm: three separate lead notes (A3, C4, E4) on a saw
+/// whose oscillator `ratio` detunes it, over a held A3 sine pad, both into
+/// `bus`. `lead_level` sets the saw's level and `velocity` the first note's.
+fn tuned(ratio: &str, lead_level: &str, velocity: &str) -> String {
+    format!(
+        r#"maac 1;
+project p {{ score = [0q, 4q]; rate = 48000Hz; tempo = &clock; meter = &metre; output = &out:out; }}
+tempo clock {{ points = [(0q, 120bpm, step)]; }}
+meter metre {{ points = [(0q, 4, 4)]; }}
+instrument saw_lead {{
+  channels = 1;
+  voice v {{
+    channels = 1; amplitude = &amp; output = &osc:out;
+    node amp {{ type = "synth.adsr/1"; params = {{ attack = 5ms; sustain = 1; release = 20ms; }}; }}
+    node osc {{ type = "synth.saw/1"; params = {{ ratio = {ratio}; level = {lead_level}; }}; }}
+  }}
+}}
+node lead {{ instrument = &saw_lead; }}
+node pad {{ type = "core.sine/1"; params = {{ attack = 0s; release = 0s; level = 0.5; }}; }}
+node bus {{ type = "core.sum/1"; config = {{ channels = 1; }}; }}
+node out {{ type = "core.gain/1"; config = {{ channels = 1; }}; params = {{ gain = 0.5; }}; }}
+connect a {{ from = &lead:out; to = &bus:in; }}
+connect b {{ from = &pad:out; to = &bus:in; }}
+connect c {{ from = &bus:out; to = &out:in; }}
+pattern melody {{
+  length = 4q;
+  note n0 {{ at = 0q; dur = 3/4q; pitch = A3; velocity = {velocity}; }}
+  note n1 {{ at = 1q; dur = 3/4q; pitch = C4; }}
+  note n2 {{ at = 2q; dur = 3/4q; pitch = E4; }}
+}}
+pattern drone {{ length = 4q; note hold {{ at = 0q; dur = 4q; pitch = A3; }} }}
+track leads {{ target = &lead:events; }}
+track pads {{ target = &pad:events; }}
+place tune {{ pattern = &melody; track = &leads; at = 0q; }}
+place under {{ pattern = &drone; track = &pads; at = 0q; }}
+"#
+    )
+}
+
+fn note_kinds(report: &AnalysisReport) -> Vec<(&str, &str, Option<&str>, f64)> {
+    report
+        .findings
+        .iter()
+        .filter(|f| matches!(f.kind, "silent_note" | "buried_note" | "pitch_mismatch"))
+        .map(|f| (f.kind, f.source.as_str(), f.event.as_deref(), f.value))
+        .collect()
+}
+
+fn lead_notes(report: &AnalysisReport) -> &maac::analyze::NoteSummary {
+    report
+        .sources
+        .iter()
+        .find(|source| source.port == "lead:out")
+        .unwrap()
+        .whole
+        .notes
+        .as_ref()
+        .unwrap()
+}
+
+#[test]
+fn notes_in_tune_and_in_balance_give_no_findings() {
+    let report = analyze(&tuned("1", "0.3", "1"), &AnalyzeOptions::default());
+    assert!(note_kinds(&report).is_empty(), "{:?}", note_kinds(&report));
+    let notes = lead_notes(&report);
+    assert_eq!((notes.measured, notes.silent, notes.buried), (3, 0, 0));
+    assert_eq!(notes.pitched, 3, "{notes:?}");
+    assert!(notes.max_abs_cents.unwrap() < 5.0, "{notes:?}");
+}
+
+#[test]
+fn a_detuned_part_is_reported_at_its_interval() {
+    // One semitone sharp, as from a sample declared with the wrong root.
+    let report = analyze(
+        &tuned("1.0594630943592953", "0.3", "1"),
+        &AnalyzeOptions::default(),
+    );
+    let found = note_kinds(&report);
+    assert_eq!(found.len(), 1, "{found:?}");
+    let (kind, source, event, cents) = found[0];
+    assert_eq!((kind, source), ("pitch_mismatch", "lead:out"));
+    assert!(event.unwrap().starts_with("tune/"), "{event:?}");
+    assert!((cents - 100.0).abs() < 5.0, "{cents}");
+    let finding = report
+        .findings
+        .iter()
+        .find(|f| f.kind == "pitch_mismatch")
+        .unwrap();
+    assert!(
+        finding.message.starts_with("3 notes"),
+        "{}",
+        finding.message
+    );
+    assert_eq!(lead_notes(&report).pitch_mismatches, 3);
+
+    // An octave up reads +1200.
+    let octave = analyze(&tuned("2", "0.3", "1"), &AnalyzeOptions::default());
+    let (_, _, _, cents) = note_kinds(&octave)[0];
+    assert!((cents - 1200.0).abs() < 5.0, "{cents}");
+}
+
+#[test]
+fn a_small_detune_is_measured_without_a_finding() {
+    // Thirty cents sharp: under the 50-cent limit.
+    let report = analyze(
+        &tuned("1.0174796921026863", "0.3", "1"),
+        &AnalyzeOptions::default(),
+    );
+    assert!(note_kinds(&report).is_empty(), "{:?}", note_kinds(&report));
+    let median = lead_notes(&report).median_cents.unwrap();
+    assert!((median - 30.0).abs() < 3.0, "{median}");
+}
+
+#[test]
+fn a_note_that_makes_no_sound_is_named() {
+    let report = analyze(&tuned("1", "0.3", "0"), &AnalyzeOptions::default());
+    let found = note_kinds(&report);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].0, "silent_note");
+    assert_eq!(found[0].2, Some("tune/0/n0"));
+    assert_eq!(lead_notes(&report).silent, 1);
+}
+
+#[test]
+fn a_part_buried_in_its_band_is_reported_once() {
+    // Forty dB under the pad in the same octave.
+    let report = analyze(&tuned("1", "0.003", "1"), &AnalyzeOptions::default());
+    let found = note_kinds(&report);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!((found[0].0, found[0].1), ("buried_note", "lead:out"));
+    assert!(found[0].3 <= -20.0, "{found:?}");
+    assert_eq!(lead_notes(&report).buried, 3);
+}
+
+#[test]
+fn every_note_is_listed_on_request() {
+    let quiet = analyze(&tuned("1", "0.3", "1"), &AnalyzeOptions::default());
+    assert!(quiet.notes.is_empty());
+    let options = AnalyzeOptions {
+        notes: true,
+        ..AnalyzeOptions::default()
+    };
+    let report = analyze(&tuned("1", "0.3", "1"), &options);
+    let events: Vec<(&str, &str, &str)> = report
+        .notes
+        .iter()
+        .map(|note| (note.event.as_str(), note.source.as_str(), note.status))
+        .collect();
+    assert_eq!(
+        events,
+        [
+            ("tune/0/n0", "lead:out", "ok"),
+            ("under/0/hold", "pad:out", "ok"),
+            ("tune/0/n1", "lead:out", "ok"),
+            ("tune/0/n2", "lead:out", "ok"),
+        ]
+    );
+}

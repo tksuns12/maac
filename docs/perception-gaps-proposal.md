@@ -1,9 +1,10 @@
 # Perception gaps: proposal
 
-**Status:** accepted 2026-10-11; the owner accepted every recommendation.
-Part A is implemented as profile `maac.analyze.default/3`; its
-[results](#results-part-a) record two rules that changed during tuning. Part B
-is not started. This is item 6 of [what to build next](ai-production-trial.md#what-to-build-next-in-order),
+**Status:** accepted and implemented, 2026-10-11; the owner accepted every
+recommendation. Part A is profile `maac.analyze.default/3` and part B is
+`default/4`. Their results ([A](#results-part-a), [B](#results-part-b)) record
+the rules that changed during tuning; the proposal text above them is kept as
+written. This is item 6 of [what to build next](ai-production-trial.md#what-to-build-next-in-order),
 the last open item from the T2 production trial.
 
 ## Why
@@ -287,3 +288,54 @@ Hiss added to "Late Window" (noise → 3 kHz high-pass → gain → `bus`):
 Every other example, including the stereo showcase, gives no
 `exposed_noise`. The regression test analyses bars 1–2 of "Late Window" with
 and without the hiss, to keep its debug-build time near 30 seconds.
+
+## Results: part B
+
+Implemented as profile `maac.analyze.default/4`, with no change to the report
+schema beyond additions. `src/analyze/notes.rs` holds the note windows and the
+pitch estimator; `SourceMeter::push` now returns each frame's K-weighted and
+band energy, so note windows reuse the meter's filters. `maac analyze --notes`
+lists every note. Findings carry an `event` address.
+
+The first run over every example flagged 24 notes as off pitch and 147 as
+buried, nearly all wrongly. Tuning changed these rules from the text above:
+
+1. **Clearly periodic means aperiodicity at most 0.03, not 0.2.** Clean
+   harmonic tones measured under about 0.03 and within a few cents. Bells,
+   toms, electric-piano tines and a driven resonant filter measured 0.03 to
+   0.2 and read 45 to 1065 cents off: inharmonic by design, not mistuned. They
+   now read `unpitched` and get no pitch check.
+2. **The estimator handles octaves explicitly.** A sub-octave layer, such as
+   std/basic's synth bass and warm pad, makes the waveform repeat at twice the
+   written period, and plain YIN read them an octave low. A dip within 1.5
+   semitones of the written period whose normalized difference is at most 0.5
+   is now taken as the period, after first checking for a dip under 0.15 at
+   half the period, which means an octave too high. Notes that really sound an
+   octave low measure about 1.5 at the written period and are still caught.
+3. **Notes are measured until their release, at most 2 s, not 250 ms.** A
+   pad's slow attack made its first 250 ms read as buried. Hits keep 250 ms.
+4. **A part is judged in its own strongest band, at its mix point.** Hats
+   played as notes on a nominal pitch were "buried" in the written pitch's
+   band, 65 Hz, where they have no energy; hits judged broadband were buried
+   for the same reason. As with `exposed_noise`, the share is read at the
+   target's mix point rather than the master, where later gain and compression
+   change it.
+5. **Every score–audio finding is grouped** by kind, part and section, and
+   names the worst note. A wrong root would otherwise give one finding per
+   note and push the rest out of the 50-finding list.
+6. **A note is "lone" while its pitch is measured**, from its onset to the end
+   of the samples the estimate needs, rather than over its whole window.
+7. **The silent fixture is a note with velocity 0**, which §18.7 makes valid
+   and silent, instead of an automation.
+
+After tuning, every example gives no `silent_note` or `pitch_mismatch`. One
+`buried_note` remains: a hi-hat in the showcase intro at −20.2 dB against the
+−20 dB limit, an info finding on a quiet part. Of 1,331 measured notes, 1,222
+are `ok`, 108 `unpitched` and 1 `buried`.
+
+Tests: unit tests for the estimator (tones from 41 Hz to 1.76 kHz, a semitone
+and an octave either way, a sub-octave layer, noise) and known-answer tests in
+[`tests/analyze.rs`](../tests/analyze.rs): notes in tune, a semitone and an
+octave sharp, a 30-cent detune with no finding, a silent note, a buried part,
+and `--notes`. Analysing "Late Window" in a release build takes about 3%
+longer than with `default/3`.

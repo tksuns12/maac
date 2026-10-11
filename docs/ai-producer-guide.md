@@ -129,6 +129,8 @@ ask for a verdict.
 | --- | --- | --- |
 | "The melody and the beat keep missing each other" | Some parts swung, others straight | `groove_mismatch`; count onset fractions from `query-events` |
 | "A constant sssss in the background" | Low-level steady noise lifted by compression | `exposed_noise`; the source's `floor_lufs` and `block_range_lu` |
+| A note never sounds, or a part is lost under another | A zero velocity or level; a part far under another in its register | `silent_note`, `buried_note`; `--notes` for each note |
+| A part sounds out of tune | A sample's `root`, a detuned oscillator, a wrong transposition | `pitch_mismatch` gives the cents; ±1200 is an octave |
 | "The instruments sound tacky" | std/basic synthesized timbres that ignore velocity | Not measurable; use std/studio and std/acoustic, and vary velocity |
 | Lead melody gets lost | Melody 6 dB under the comping | Per-stem `max_short_term_lufs` by region |
 | True peak over the limit after a sound change | Plucked attacks through compressors standing in for a limiter | `true_peak_over`; master through `fx.limiter/1` with its ceiling under the limit |
