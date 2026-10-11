@@ -2,8 +2,9 @@
 
 How an AI can produce a finished track with MaaC: write source, render it,
 perceive it through measurements and images, revise, master and deliver.
-Every step below was used in the [T2 production trial](ai-production-trial.md),
-and the pitfalls are ones that trial hit.
+Every step below was used in the [T2](ai-production-trial.md) or
+[T3](ai-production-trial-t3.md) production trial, and the pitfalls are ones
+those trials hit.
 
 You cannot hear your own render. `maac analyze` is your measurement of what
 you would otherwise hear, and the person you work for is the final judge of
@@ -35,6 +36,10 @@ listen before you call a track finished.
   Give `velocity` or `onset_offset` a list to voice or strum it.
 - Write one-bar chord patterns and assemble progressions with `use`. Place
   progressions with `count` for repeats.
+- Reuse one shape at other pitches with `transpose` on `use`, in cents:
+  `use d_bar { pattern = &g_bar; at = 4q; transpose = 700ct; }` plays a G
+  pattern as D. A bass line or a guitar shape needs only one pattern per
+  chord quality.
 - Play drums from one kit node: import `std/studio/1.0.0`, add
   `node drums { instrument = &studio.drums; }`, and write `hit` leaves such as
   `hit k1 { at = 0q; key = "kick"; velocity = 0.85; }`. Keys are `kick`,
@@ -132,5 +137,7 @@ ask for a verdict.
 | A note never sounds, or a part is lost under another | A zero velocity or level; a part far under another in its register | `silent_note`, `buried_note`; `--notes` for each note |
 | A part sounds out of tune | A sample's `root`, a detuned oscillator, a wrong transposition | `pitch_mismatch` gives the cents; ±1200 is an octave |
 | "The instruments sound tacky" | std/basic synthesized timbres that ignore velocity | Not measurable; use std/studio and std/acoustic, and vary velocity |
-| Lead melody gets lost | Melody 6 dB under the comping | Per-stem `max_short_term_lufs` by region |
+| Lead melody gets lost | Melody 6 dB under the comping | Per-stem `max_short_term_lufs` by region; `buried_note` does not catch it |
+| Lead drops in the quiet sections | Less amp `drive` also means less amp output | Per-stem loudness by region; automate the level with the drive |
+| The chorus does not lift | Glue and limiter flatten the louder section | Compare the master's `max_short_term_lufs` per region; aim for 2 LU or more |
 | True peak over the limit after a sound change | Plucked attacks through compressors standing in for a limiter | `true_peak_over`; master through `fx.limiter/1` with its ceiling under the limit |

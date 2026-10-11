@@ -411,6 +411,28 @@ somewhat better than the first version's flute and bell, and the remaining
 std/basic instruments still sound dated. This is not an approval of the
 track's sound.
 
+# Morning Ferry: a rock ballad
+
+[`ferry/ferry.maac`](ferry/ferry.maac) is a 137-second, 72 bpm rock ballad.
+An AI wrote, mixed and mastered it during the
+[T3 production trial](../docs/ai-production-trial-t3.md):
+
+- picked steel-guitar verses and overdriven power-chord choruses;
+- the melody on an electric guitar defined in the file: plucked strings into
+  a drive and a cabinet filter, with its drive and level automated per
+  section;
+- studio bass, kit and pad, and a snare into a hall reverb.
+
+```sh
+maac build examples/ferry/ferry.maac --profile song -o morning-ferry.wav --format pcm16
+maac analyze examples/ferry/ferry.maac --profile song --section regions
+maac deliver examples/ferry/ferry.maac --delivery release --output-dir out --profile song
+```
+
+The release delivery measured -14.56 LUFS and -1.10 dBTP and passed its
+limits. The owner's informal verdict on this version: "Good. It's good." They
+also said the library instruments still sound a bit like old game music.
+
 # Audio inside patterns
 
 [`pattern-audio.maac`](pattern-audio.maac) builds a one-bar drum loop from

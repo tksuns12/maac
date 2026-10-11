@@ -1,0 +1,494 @@
+maac 1;
+
+// "Morning Ferry", rock-ballad version: 72 bpm, G major, 40 bars (~133 s).
+// Written directly in MaaC by an AI producer as the T3 production trial. The
+// first version was 112 bpm folk-pop; the owner asked for a rock ballad.
+//
+//  1-4   intro: picked acoustic arpeggios and a swelling pad
+//  5-12  verse: G D Em C twice; bass, kick, hats and snare; the melody on a
+//        lightly driven electric guitar
+// 13-20  chorus: C G D Em, C G D D; overdriven power chords, crashes, a big
+//        snare, the lead pushed harder into its amp
+// 21-28  verse 2
+// 29-36  chorus 2
+// 37-40  outro: arpeggios and pad, ending on a slow G strum
+
+project morning_ferry {
+  score = [0q, 160q]; rate = 48000Hz; tail = 4s;
+  tempo = &clock; meter = &metre; output = &master:out;
+  requires = ["maac.production/1"];
+}
+tempo clock { points = [(0q, 72bpm, step)]; }
+meter metre { points = [(0q, 4, 4)]; }
+import studio { builtin = "std/studio/1.0.0"; }
+import acoustic { builtin = "std/acoustic/1.0.0"; }
+
+region intro { span = [bar(1, 1), bar(5, 1)]; }
+region verse1 { span = [bar(5, 1), bar(13, 1)]; }
+region chorus1 { span = [bar(13, 1), bar(21, 1)]; }
+region verse2 { span = [bar(21, 1), bar(29, 1)]; }
+region chorus2 { span = [bar(29, 1), bar(37, 1)]; }
+region outro { span = [bar(37, 1), bar(41, 1)]; }
+
+// ---------------------------------------------------------------- electric guitar
+// A plucked string per voice; the voices are summed and then go through the
+// amp together, as strings do into a real amplifier: a low cut, a biased
+// tanh drive, a DC cut, and a resonant low-pass for the speaker cabinet.
+instrument drive_guitar {
+  channels = 2;
+  voice voice {
+    channels = 1; amplitude = &amp; output = &string:out;
+    node amp { type = "synth.adsr/1"; params = { attack = 2ms; sustain = 1; release = 150ms; }; }
+    node string {
+      type = "synth.pluck/1"; config = { seed = 2654435761; };
+      params = { ratio = 1; decay = 10s; damping = 0.2; level = 1; };
+    }
+    node vibrato { type = "synth.lfo/1"; params = { frequency = 5.5Hz; level = 0; }; }
+    modulate string_vibrato { from = &vibrato:out; to = &string.params.ratio; depth = 0.0145; }
+  }
+  shared amp_stage {
+    channels = 2; output = &output_gain:out;
+    node low_cut { type = "synth.highpass/1"; config = { channels = 1; }; params = { cutoff = 110Hz; }; }
+    node drive { type = "synth.drive/1"; config = { channels = 1; }; params = { drive = 6; bias = 0.2; level = 0.5; }; }
+    node dc_cut { type = "synth.highpass/1"; config = { channels = 1; }; params = { cutoff = 30Hz; }; }
+    node cabinet { type = "synth.svf/1"; config = { channels = 1; mode = lowpass; }; params = { cutoff = 3800Hz; q = 1.2; }; }
+    node fizz_cut { type = "synth.onepole/1"; config = { channels = 1; }; params = { cutoff = 7000Hz; }; }
+    node stereo { type = "synth.pan/1"; params = { pan = 0; }; }
+    node output_gain { type = "synth.gain/1"; config = { channels = 2; }; params = { level = 0.3; }; }
+    connect input_cut { from = &input:out; to = &low_cut:in; }
+    connect cut_drive { from = &low_cut:out; to = &drive:in; }
+    connect drive_dc { from = &drive:out; to = &dc_cut:in; }
+    connect dc_cabinet { from = &dc_cut:out; to = &cabinet:in; }
+    connect cabinet_fizz { from = &cabinet:out; to = &fizz_cut:in; }
+    connect fizz_stereo { from = &fizz_cut:out; to = &stereo:in; }
+    connect stereo_output { from = &stereo:out; to = &output_gain:in; }
+  }
+  control level { target = &amp_stage.output_gain.params.level; default = 0.3; }
+  control drive { target = &amp_stage.drive.params.drive; default = 6; }
+  control tone { target = &amp_stage.cabinet.params.cutoff; default = 3800Hz; }
+  control pan { target = &amp_stage.stereo.params.pan; default = 0; }
+  control release { target = &voice.amp.params.release; default = 150ms; }
+  control vibrato_amount { target = &voice.vibrato.params.level; default = 0; }
+}
+
+// ---------------------------------------------------------------- acoustic arpeggios
+node picking {
+  instrument = &acoustic.steel_guitar; config = { voices = 24; };
+  params = { level = 0.6; brightness = 6000Hz; release = 400ms; pan = 0.2; };
+}
+// One bar of eighths across a G shape, each string left ringing; transposed
+// for D and C. Em has its own minor shape.
+pattern arp_g { length = 4q;
+  note n1 { at = 0q; dur = 2q; pitch = G2; velocity = 0.7; }
+  note n2 { at = 1/2q; dur = 3/2q; pitch = D3; velocity = 0.5; }
+  note n3 { at = 1q; dur = 3/2q; pitch = G3; velocity = 0.55; }
+  note n4 { at = 3/2q; dur = 3/2q; pitch = B3; velocity = 0.5; }
+  note n5 { at = 2q; dur = 3/2q; pitch = D4; velocity = 0.6; }
+  note n6 { at = 5/2q; dur = 1q; pitch = B3; velocity = 0.48; }
+  note n7 { at = 3q; dur = 1q; pitch = G3; velocity = 0.52; }
+  note n8 { at = 7/2q; dur = 1/2q; pitch = D3; velocity = 0.46; }
+}
+pattern arp_em { length = 4q;
+  note n1 { at = 0q; dur = 2q; pitch = E2; velocity = 0.7; }
+  note n2 { at = 1/2q; dur = 3/2q; pitch = B2; velocity = 0.5; }
+  note n3 { at = 1q; dur = 3/2q; pitch = E3; velocity = 0.55; }
+  note n4 { at = 3/2q; dur = 3/2q; pitch = G3; velocity = 0.5; }
+  note n5 { at = 2q; dur = 3/2q; pitch = B3; velocity = 0.6; }
+  note n6 { at = 5/2q; dur = 1q; pitch = G3; velocity = 0.48; }
+  note n7 { at = 3q; dur = 1q; pitch = E3; velocity = 0.52; }
+  note n8 { at = 7/2q; dur = 1/2q; pitch = B2; velocity = 0.46; }
+}
+pattern arps_verse { length = 16q;
+  use b1 { pattern = &arp_g; at = 0q; }
+  use b2 { pattern = &arp_g; at = 4q; transpose = -500ct; }
+  use b3 { pattern = &arp_em; at = 8q; }
+  use b4 { pattern = &arp_g; at = 12q; transpose = -700ct; }
+}
+pattern st_g_end { length = 4q;
+  chord last { at = 0q; dur = 4q; pitches = [G2, B2, D3, G3, B3, G4]; velocity = [0.66, 0.62, 0.6, 0.58, 0.56, 0.54]; onset_offset = [0ms, 30ms, 60ms, 90ms, 120ms, 150ms]; }
+}
+pattern arps_outro { length = 16q;
+  use b1 { pattern = &arp_g; at = 0q; }
+  use b2 { pattern = &arp_g; at = 4q; transpose = -500ct; }
+  use b3 { pattern = &arp_g; at = 8q; transpose = -700ct; }
+  use b4 { pattern = &st_g_end; at = 12q; }
+}
+track arps { target = &picking:events; }
+place arps_intro { pattern = &arps_verse; track = &arps; at = 0q; }
+place arps_verse1 { pattern = &arps_verse; track = &arps; at = 16q; count = 2; }
+place arps_verse2 { pattern = &arps_verse; track = &arps; at = 80q; count = 2; }
+place arps_outro1 { pattern = &arps_outro; track = &arps; at = 144q; }
+
+// ---------------------------------------------------------------- power chords
+node rhythm {
+  instrument = &drive_guitar; config = { voices = 24; };
+  params = { level = 0.3; drive = 7; tone = 3400Hz; pan = -0.3; release = 80ms; };
+}
+// A G5 (root, fifth, octave) bar: a long chord on 1, a push on the and of 2,
+// then quarter and eighth chugs; transposed to C5, D5 and E5.
+pattern pc_g { length = 4q;
+  chord p1 { at = 0q; dur = 3/2q; pitches = [G2, D3, G3]; velocity = 0.82; }
+  chord p2 { at = 3/2q; dur = 1/2q; pitches = [G2, D3, G3]; velocity = 0.58; }
+  chord p3 { at = 2q; dur = 1q; pitches = [G2, D3, G3]; velocity = 0.76; }
+  chord p4 { at = 3q; dur = 1/2q; pitches = [G2, D3, G3]; velocity = 0.62; }
+  chord p5 { at = 7/2q; dur = 1/2q; pitches = [G2, D3, G3]; velocity = 0.58; }
+}
+pattern power_chorus_a { length = 16q;
+  use b1 { pattern = &pc_g; at = 0q; transpose = 500ct; }
+  use b2 { pattern = &pc_g; at = 4q; }
+  use b3 { pattern = &pc_g; at = 8q; transpose = 700ct; }
+  use b4 { pattern = &pc_g; at = 12q; transpose = -300ct; }
+}
+pattern power_chorus_b { length = 16q;
+  use b1 { pattern = &pc_g; at = 0q; transpose = 500ct; }
+  use b2 { pattern = &pc_g; at = 4q; }
+  use b3 { pattern = &pc_g; at = 8q; transpose = 700ct; }
+  use b4 { pattern = &pc_g; at = 12q; transpose = 700ct; }
+}
+track power { target = &rhythm:events; }
+place power_chorus1a { pattern = &power_chorus_a; track = &power; at = 48q; }
+place power_chorus1b { pattern = &power_chorus_b; track = &power; at = 64q; }
+place power_chorus2a { pattern = &power_chorus_a; track = &power; at = 112q; }
+place power_chorus2b { pattern = &power_chorus_b; track = &power; at = 128q; }
+
+// ---------------------------------------------------------------- bass
+node bass {
+  instrument = &studio.bass; config = { voices = 6; };
+  params = { release = 200ms; };
+}
+// Verse: a held root, a root on 3 and a fifth on 4; written on G.
+pattern bv_g { length = 4q;
+  note r1 { at = 0q; dur = 2q; pitch = G2; velocity = 0.7; }
+  note r2 { at = 2q; dur = 1q; pitch = G2; velocity = 0.58; }
+  note f1 { at = 3q; dur = 1q; pitch = D3; velocity = 0.55; }
+}
+pattern bass_verse { length = 16q;
+  use b1 { pattern = &bv_g; at = 0q; }
+  use b2 { pattern = &bv_g; at = 4q; transpose = -500ct; }
+  use b3 { pattern = &bv_g; at = 8q; transpose = -300ct; }
+  use b4 { pattern = &bv_g; at = 12q; transpose = -700ct; }
+}
+// Chorus: driving eighths with a passing note into each bar.
+pattern bc_c { length = 4q;
+  note e1 { at = 0q; dur = 1/2q; pitch = C2; velocity = 0.8; }
+  note e2 { at = 1/2q; dur = 1/2q; pitch = C2; velocity = 0.5; }
+  note e3 { at = 1q; dur = 1/2q; pitch = C2; velocity = 0.68; }
+  note e4 { at = 3/2q; dur = 1/2q; pitch = C2; velocity = 0.5; }
+  note e5 { at = 2q; dur = 1/2q; pitch = C3; velocity = 0.7; }
+  note e6 { at = 5/2q; dur = 1/2q; pitch = C2; velocity = 0.5; }
+  note e7 { at = 3q; dur = 1/2q; pitch = C2; velocity = 0.66; }
+  note e8 { at = 7/2q; dur = 1/2q; pitch = D2; velocity = 0.55; }
+}
+pattern bc_g { length = 4q;
+  note e1 { at = 0q; dur = 1/2q; pitch = G2; velocity = 0.8; }
+  note e2 { at = 1/2q; dur = 1/2q; pitch = G2; velocity = 0.5; }
+  note e3 { at = 1q; dur = 1/2q; pitch = G2; velocity = 0.68; }
+  note e4 { at = 3/2q; dur = 1/2q; pitch = G2; velocity = 0.5; }
+  note e5 { at = 2q; dur = 1/2q; pitch = D3; velocity = 0.7; }
+  note e6 { at = 5/2q; dur = 1/2q; pitch = G2; velocity = 0.5; }
+  note e7 { at = 3q; dur = 1/2q; pitch = G2; velocity = 0.66; }
+  note e8 { at = 7/2q; dur = 1/2q; pitch = C#3; velocity = 0.55; }
+}
+pattern bc_d { length = 4q;
+  note e1 { at = 0q; dur = 1/2q; pitch = D2; velocity = 0.8; }
+  note e2 { at = 1/2q; dur = 1/2q; pitch = D2; velocity = 0.5; }
+  note e3 { at = 1q; dur = 1/2q; pitch = D2; velocity = 0.68; }
+  note e4 { at = 3/2q; dur = 1/2q; pitch = D2; velocity = 0.5; }
+  note e5 { at = 2q; dur = 1/2q; pitch = A2; velocity = 0.7; }
+  note e6 { at = 5/2q; dur = 1/2q; pitch = D2; velocity = 0.5; }
+  note e7 { at = 3q; dur = 1/2q; pitch = D2; velocity = 0.66; }
+  note e8 { at = 7/2q; dur = 1/2q; pitch = D#2; velocity = 0.55; }
+}
+pattern bc_em { length = 4q;
+  note e1 { at = 0q; dur = 1/2q; pitch = E2; velocity = 0.8; }
+  note e2 { at = 1/2q; dur = 1/2q; pitch = E2; velocity = 0.5; }
+  note e3 { at = 1q; dur = 1/2q; pitch = E2; velocity = 0.68; }
+  note e4 { at = 3/2q; dur = 1/2q; pitch = E2; velocity = 0.5; }
+  note e5 { at = 2q; dur = 1/2q; pitch = B2; velocity = 0.7; }
+  note e6 { at = 5/2q; dur = 1/2q; pitch = E2; velocity = 0.5; }
+  note e7 { at = 3q; dur = 1/2q; pitch = E2; velocity = 0.66; }
+  note e8 { at = 7/2q; dur = 1/2q; pitch = B1; velocity = 0.55; }
+}
+pattern bass_chorus_a { length = 16q;
+  use b1 { pattern = &bc_c; at = 0q; }
+  use b2 { pattern = &bc_g; at = 4q; }
+  use b3 { pattern = &bc_d; at = 8q; }
+  use b4 { pattern = &bc_em; at = 12q; }
+}
+pattern bass_chorus_b { length = 16q;
+  use b1 { pattern = &bc_c; at = 0q; }
+  use b2 { pattern = &bc_g; at = 4q; }
+  use b3 { pattern = &bc_d; at = 8q; }
+  use b4 { pattern = &bc_d; at = 12q; }
+}
+pattern bass_outro { length = 16q;
+  note g { at = 0q; dur = 4q; pitch = G2; velocity = 0.56; }
+  note d { at = 4q; dur = 4q; pitch = D2; velocity = 0.52; }
+  note c { at = 8q; dur = 4q; pitch = C2; velocity = 0.52; }
+  note end { at = 12q; dur = 4q; pitch = G1; velocity = 0.56; }
+}
+track bass_notes { target = &bass:events; }
+place bass_verse1 { pattern = &bass_verse; track = &bass_notes; at = 16q; count = 2; }
+place bass_chorus1a { pattern = &bass_chorus_a; track = &bass_notes; at = 48q; }
+place bass_chorus1b { pattern = &bass_chorus_b; track = &bass_notes; at = 64q; }
+place bass_verse2 { pattern = &bass_verse; track = &bass_notes; at = 80q; count = 2; }
+place bass_chorus2a { pattern = &bass_chorus_a; track = &bass_notes; at = 112q; }
+place bass_chorus2b { pattern = &bass_chorus_b; track = &bass_notes; at = 128q; }
+place bass_outro1 { pattern = &bass_outro; track = &bass_notes; at = 144q; }
+
+// ---------------------------------------------------------------- drums
+// The kit plays kick, hats, toms and crash. The snare is its own node so that
+// it alone can feed the big reverb.
+node drums {
+  instrument = &studio.drums;
+  params = { hat_pan = 0.25; open_hat_pan = 0.25; low_tom_pan = -0.2; high_tom_pan = 0.2; };
+}
+node snare { instrument = &studio.snare; config = { voices = 6; }; params = { pan = 0.05; }; }
+pattern hats8 { length = 4q;
+  hit h1 { at = 0q; key = "hat"; velocity = 0.55; }
+  hit h2 { at = 1/2q; key = "hat"; velocity = 0.34; }
+  hit h3 { at = 1q; key = "hat"; velocity = 0.5; }
+  hit h4 { at = 3/2q; key = "hat"; velocity = 0.34; }
+  hit h5 { at = 2q; key = "hat"; velocity = 0.54; }
+  hit h6 { at = 5/2q; key = "hat"; velocity = 0.34; }
+  hit h7 { at = 3q; key = "hat"; velocity = 0.5; }
+  hit h8 { at = 7/2q; key = "hat"; velocity = 0.38; }
+}
+pattern kit_verse { length = 4q;
+  hit k1 { at = 0q; key = "kick"; velocity = 0.82; }
+  hit k2 { at = 5/2q; key = "kick"; velocity = 0.66; }
+  use hats { pattern = &hats8; at = 0q; }
+}
+// Chorus: kick on 1, the and of 1 and 3, an open hat washing on each beat.
+pattern kit_chorus { length = 4q;
+  hit k1 { at = 0q; key = "kick"; velocity = 0.88; }
+  hit k2 { at = 1/2q; key = "kick"; velocity = 0.6; }
+  hit k3 { at = 2q; key = "kick"; velocity = 0.82; }
+  hit k4 { at = 5/2q; key = "kick"; velocity = 0.62; }
+  hit o1 { at = 0q; key = "open_hat"; velocity = 0.42; }
+  hit o2 { at = 1q; key = "open_hat"; velocity = 0.36; }
+  hit o3 { at = 2q; key = "open_hat"; velocity = 0.42; }
+  hit o4 { at = 3q; key = "open_hat"; velocity = 0.36; }
+}
+// The last bar of a verse: two beats of time, then a tom run into the chorus.
+pattern kit_fill { length = 4q;
+  hit k1 { at = 0q; key = "kick"; velocity = 0.82; }
+  hit h1 { at = 0q; key = "hat"; velocity = 0.5; }
+  hit h2 { at = 1q; key = "hat"; velocity = 0.45; }
+  hit t1 { at = 2q; key = "high_tom"; velocity = 0.62; }
+  hit t2 { at = 9/4q; key = "high_tom"; velocity = 0.56; }
+  hit t3 { at = 5/2q; key = "high_tom"; velocity = 0.6; }
+  hit t4 { at = 11/4q; key = "low_tom"; velocity = 0.62; }
+  hit t5 { at = 3q; key = "low_tom"; velocity = 0.68; }
+  hit t6 { at = 13/4q; key = "low_tom"; velocity = 0.64; }
+  hit k2 { at = 7/2q; key = "kick"; velocity = 0.75; }
+}
+pattern kit_verse_8 { length = 32q;
+  use b { pattern = &kit_verse; at = 0q; count = 7; }
+  use f { pattern = &kit_fill; at = 28q; }
+}
+pattern kit_chorus_8 { length = 32q;
+  hit crash1 { at = 0q; key = "crash"; velocity = 0.75; }
+  hit crash2 { at = 16q; key = "crash"; velocity = 0.68; }
+  use b { pattern = &kit_chorus; at = 0q; count = 8; }
+}
+track kit_hits { target = &drums:events; }
+place kit_intro { pattern = &hats8; track = &kit_hits; at = 8q; count = 2; }
+place kit_verse1 { pattern = &kit_verse_8; track = &kit_hits; at = 16q; }
+place kit_chorus1 { pattern = &kit_chorus_8; track = &kit_hits; at = 48q; }
+place kit_verse2 { pattern = &kit_verse_8; track = &kit_hits; at = 80q; }
+place kit_chorus2 { pattern = &kit_chorus_8; track = &kit_hits; at = 112q; }
+pattern outro_crash { length = 4q; hit crash { at = 0q; key = "crash"; velocity = 0.62; } }
+place crash_outro { pattern = &outro_crash; track = &kit_hits; at = 144q; }
+
+pattern snare_verse { length = 4q;
+  note s1 { at = 1q; dur = 1/4q; pitch = C2; velocity = 0.6; }
+  note s2 { at = 3q; dur = 1/4q; pitch = C2; velocity = 0.64; }
+}
+pattern snare_chorus { length = 4q;
+  note s1 { at = 1q; dur = 1/4q; pitch = C2; velocity = 0.86; }
+  note s2 { at = 3q; dur = 1/4q; pitch = C2; velocity = 0.9; }
+}
+// The fill's snare: beat 2, then a sixteenth flam into the chorus.
+pattern snare_fill { length = 4q;
+  note s1 { at = 1q; dur = 1/4q; pitch = C2; velocity = 0.64; }
+  note s2 { at = 7/2q; dur = 1/4q; pitch = C2; velocity = 0.74; }
+  note s3 { at = 15/4q; dur = 1/4q; pitch = C2; velocity = 0.84; }
+}
+pattern snare_verse_8 { length = 32q;
+  use b { pattern = &snare_verse; at = 0q; count = 7; }
+  use f { pattern = &snare_fill; at = 28q; }
+}
+track snare_notes { target = &snare:events; }
+place snare_verse1 { pattern = &snare_verse_8; track = &snare_notes; at = 16q; }
+place snare_chorus1 { pattern = &snare_chorus; track = &snare_notes; at = 48q; count = 8; }
+place snare_verse2 { pattern = &snare_verse_8; track = &snare_notes; at = 80q; }
+place snare_chorus2 { pattern = &snare_chorus; track = &snare_notes; at = 112q; count = 8; }
+
+// ---------------------------------------------------------------- lead guitar
+// The same melody as the folk-pop version, on the electric guitar. The verse
+// is lightly driven; the chorus pushes the amp harder.
+node lead {
+  instrument = &drive_guitar; config = { voices = 6; };
+  params = { level = 0.3; drive = 3; tone = 3200Hz; pan = 0.15; release = 250ms; vibrato_amount = 0.5; };
+}
+curve lead_drive {
+  clock = score;
+  points = [(0q, 3, step), (48q, 9, step), (80q, 3, step), (112q, 9, step), (144q, 3, step)];
+}
+automation lead_push { target = &lead.params.drive; curve = &lead_drive; at = 0q; }
+// Less drive also means less output from the amp, so the level rises in the
+// verses to keep the melody on top.
+curve lead_gain {
+  clock = score;
+  points = [(0q, 1.1, step), (48q, 0.65, step), (80q, 1.1, step), (112q, 0.65, step), (144q, 1.1, step)];
+}
+automation lead_level { target = &lead.params.level; curve = &lead_gain; at = 0q; }
+pattern melody_verse { length = 32q;
+  note a1 { at = 0q; dur = 1q; pitch = B4; velocity = 0.6; }
+  note a2 { at = 1q; dur = 1/2q; pitch = D5; velocity = 0.55; }
+  note a3 { at = 3/2q; dur = 1/2q; pitch = B4; velocity = 0.5; }
+  note a4 { at = 2q; dur = 2q; pitch = G4; velocity = 0.58; }
+  note b1 { at = 4q; dur = 1q; pitch = A4; velocity = 0.58; }
+  note b2 { at = 5q; dur = 1q; pitch = D5; velocity = 0.6; }
+  note b3 { at = 6q; dur = 1/2q; pitch = F#4; velocity = 0.5; }
+  note b4 { at = 13/2q; dur = 3/2q; pitch = A4; velocity = 0.56; }
+  note c1 { at = 8q; dur = 1/2q; pitch = G4; velocity = 0.52; }
+  note c2 { at = 17/2q; dur = 1/2q; pitch = B4; velocity = 0.54; }
+  note c3 { at = 9q; dur = 3/2q; pitch = E5; velocity = 0.62; }
+  note c4 { at = 21/2q; dur = 1/2q; pitch = D5; velocity = 0.52; }
+  note c5 { at = 11q; dur = 1q; pitch = B4; velocity = 0.55; }
+  note d1 { at = 12q; dur = 3/2q; pitch = C5; velocity = 0.6; }
+  note d2 { at = 27/2q; dur = 1/2q; pitch = B4; velocity = 0.5; }
+  note d3 { at = 14q; dur = 1q; pitch = A4; velocity = 0.54; }
+  note d4 { at = 15q; dur = 1q; pitch = G4; velocity = 0.52; }
+  note e1 { at = 16q; dur = 1q; pitch = B4; velocity = 0.6; }
+  note e2 { at = 17q; dur = 1/2q; pitch = D5; velocity = 0.56; }
+  note e3 { at = 35/2q; dur = 3/2q; pitch = G5; velocity = 0.64; }
+  note e4 { at = 19q; dur = 1/2q; pitch = F#5; velocity = 0.54; }
+  note e5 { at = 39/2q; dur = 1/2q; pitch = E5; velocity = 0.52; }
+  note f1 { at = 20q; dur = 2q; pitch = D5; velocity = 0.6; }
+  note f2 { at = 22q; dur = 1q; pitch = A4; velocity = 0.52; }
+  note f3 { at = 23q; dur = 1q; pitch = B4; velocity = 0.54; }
+  note g1 { at = 24q; dur = 1/2q; pitch = G4; velocity = 0.52; }
+  note g2 { at = 49/2q; dur = 1/2q; pitch = B4; velocity = 0.54; }
+  note g3 { at = 25q; dur = 1q; pitch = E5; velocity = 0.6; }
+  note g4 { at = 26q; dur = 1q; pitch = G5; velocity = 0.62; }
+  note g5 { at = 27q; dur = 1/2q; pitch = F#5; velocity = 0.54; }
+  note g6 { at = 55/2q; dur = 1/2q; pitch = E5; velocity = 0.52; }
+  note h1 { at = 28q; dur = 1q; pitch = D5; velocity = 0.58; }
+  note h2 { at = 29q; dur = 1/2q; pitch = C5; velocity = 0.52; }
+  note h3 { at = 59/2q; dur = 1/2q; pitch = B4; velocity = 0.5; }
+  note h4 { at = 30q; dur = 2q; pitch = A4; velocity = 0.56; }
+}
+pattern melody_chorus { length = 32q;
+  note a1 { at = 0q; dur = 1q; pitch = E5; velocity = 0.66; }
+  note a2 { at = 1q; dur = 1q; pitch = G5; velocity = 0.7; }
+  note a3 { at = 2q; dur = 1/2q; pitch = E5; velocity = 0.6; }
+  note a4 { at = 5/2q; dur = 1/2q; pitch = D5; velocity = 0.56; }
+  note a5 { at = 3q; dur = 1q; pitch = C5; velocity = 0.6; }
+  note b1 { at = 4q; dur = 1/2q; pitch = D5; velocity = 0.6; }
+  note b2 { at = 9/2q; dur = 1/2q; pitch = B4; velocity = 0.54; }
+  note b3 { at = 5q; dur = 1q; pitch = D5; velocity = 0.62; }
+  note b4 { at = 6q; dur = 2q; pitch = G5; velocity = 0.7; }
+  note c1 { at = 8q; dur = 1q; pitch = F#5; velocity = 0.66; }
+  note c2 { at = 9q; dur = 1/2q; pitch = E5; velocity = 0.58; }
+  note c3 { at = 19/2q; dur = 1/2q; pitch = D5; velocity = 0.56; }
+  note c4 { at = 10q; dur = 3/2q; pitch = A5; velocity = 0.72; }
+  note c5 { at = 23/2q; dur = 1/2q; pitch = F#5; velocity = 0.58; }
+  note d1 { at = 12q; dur = 2q; pitch = G5; velocity = 0.68; }
+  note d2 { at = 14q; dur = 1q; pitch = E5; velocity = 0.6; }
+  note d3 { at = 15q; dur = 1q; pitch = B4; velocity = 0.56; }
+  note e1 { at = 16q; dur = 1q; pitch = E5; velocity = 0.66; }
+  note e2 { at = 17q; dur = 1q; pitch = G5; velocity = 0.7; }
+  note e3 { at = 18q; dur = 1q; pitch = A5; velocity = 0.72; }
+  note e4 { at = 19q; dur = 1/2q; pitch = G5; velocity = 0.6; }
+  note e5 { at = 39/2q; dur = 1/2q; pitch = E5; velocity = 0.58; }
+  note f1 { at = 20q; dur = 1q; pitch = D5; velocity = 0.62; }
+  note f2 { at = 21q; dur = 1q; pitch = G5; velocity = 0.68; }
+  note f3 { at = 22q; dur = 2q; pitch = B5; velocity = 0.74; }
+  note g1 { at = 24q; dur = 1q; pitch = A5; velocity = 0.7; }
+  note g2 { at = 25q; dur = 1/2q; pitch = F#5; velocity = 0.6; }
+  note g3 { at = 51/2q; dur = 1/2q; pitch = E5; velocity = 0.58; }
+  note g4 { at = 26q; dur = 1q; pitch = D5; velocity = 0.6; }
+  note g5 { at = 27q; dur = 1q; pitch = E5; velocity = 0.62; }
+  note h1 { at = 28q; dur = 3q; pitch = F#5; velocity = 0.66; }
+}
+track melody { target = &lead:events; }
+place melody_verse1 { pattern = &melody_verse; track = &melody; at = 16q; }
+place melody_chorus1 { pattern = &melody_chorus; track = &melody; at = 48q; }
+place melody_verse2 { pattern = &melody_verse; track = &melody; at = 80q; }
+place melody_chorus2 { pattern = &melody_chorus; track = &melody; at = 112q; }
+
+// ---------------------------------------------------------------- pad
+node pad {
+  instrument = &studio.pad; config = { voices = 12; };
+  params = { attack = 1s; release = 2.5s; };
+}
+pattern pad_intro { length = 16q;
+  chord g { at = 0q; dur = 8q; pitches = [B2, D3, G3]; velocity = 0.3; }
+  chord e { at = 8q; dur = 4q; pitches = [B2, E3, G3]; velocity = 0.3; }
+  chord c { at = 12q; dur = 4q; pitches = [C3, G3, E4]; velocity = 0.32; }
+}
+pattern pad_chorus { length = 32q;
+  chord c1 { at = 0q; dur = 4q; pitches = [C3, G3, E4]; velocity = 0.4; }
+  chord g1 { at = 4q; dur = 4q; pitches = [B2, D3, G3]; velocity = 0.4; }
+  chord d1 { at = 8q; dur = 4q; pitches = [A2, D3, F#3]; velocity = 0.4; }
+  chord e1 { at = 12q; dur = 4q; pitches = [B2, E3, G3]; velocity = 0.4; }
+  chord c2 { at = 16q; dur = 4q; pitches = [C3, G3, E4]; velocity = 0.42; }
+  chord g2 { at = 20q; dur = 4q; pitches = [B2, D3, G3]; velocity = 0.42; }
+  chord d2 { at = 24q; dur = 8q; pitches = [A2, D3, F#3]; velocity = 0.44; }
+}
+pattern pad_outro { length = 16q;
+  chord g { at = 0q; dur = 4q; pitches = [B2, D3, G3]; velocity = 0.36; }
+  chord d { at = 4q; dur = 4q; pitches = [A2, D3, F#3]; velocity = 0.34; }
+  chord c { at = 8q; dur = 4q; pitches = [C3, G3, E4]; velocity = 0.34; }
+  chord end { at = 12q; dur = 4q; pitches = [B2, D3, G3]; velocity = 0.32; }
+}
+track pad_notes { target = &pad:events; }
+place pad_intro1 { pattern = &pad_intro; track = &pad_notes; at = 0q; }
+place pad_chorus1 { pattern = &pad_chorus; track = &pad_notes; at = 48q; }
+place pad_chorus2 { pattern = &pad_chorus; track = &pad_notes; at = 112q; }
+place pad_outro1 { pattern = &pad_outro; track = &pad_notes; at = 144q; }
+
+// ---------------------------------------------------------------- mix
+node bus { type = "core.sum/1"; config = { channels = 2; }; }
+node send { type = "core.sum/1"; config = { channels = 2; }; }
+node hall { type = "fx.reverb/1"; config = { channels = 2; predelay = 25ms; damping = 0.45; }; params = { mix = 1; decay = 2.6s; }; }
+node send_level { type = "core.gain/1"; config = { channels = 2; }; params = { gain = 0.3; }; }
+node glue { type = "fx.compressor/1"; config = { channels = 2; }; params = { threshold = -18dB; ratio = 1.5; knee = 6dB; attack = 20ms; release = 150ms; makeup = 0dB; }; }
+node master { type = "fx.limiter/1"; config = { channels = 2; }; params = { gain = 2dB; ceiling = -1.1dB; release = 150ms; }; }
+
+connect picking_bus { from = &picking:out; to = &bus:in; }
+connect rhythm_bus { from = &rhythm:out; to = &bus:in; }
+connect bass_bus { from = &bass:out; to = &bus:in; }
+connect drums_bus { from = &drums:out; to = &bus:in; }
+connect snare_bus { from = &snare:out; to = &bus:in; }
+connect lead_bus { from = &lead:out; to = &bus:in; }
+connect pad_bus { from = &pad:out; to = &bus:in; }
+connect picking_send { from = &picking:out; to = &send:in; }
+connect lead_send { from = &lead:out; to = &send:in; }
+connect snare_send { from = &snare:out; to = &send:in; }
+connect send_hall { from = &send:out; to = &hall:in; }
+connect hall_level { from = &hall:out; to = &send_level:in; }
+connect return_bus { from = &send_level:out; to = &bus:in; }
+connect bus_glue { from = &bus:out; to = &glue:in; }
+connect glue_master { from = &glue:out; to = &master:in; }
+
+// ---------------------------------------------------------------- delivery
+// `maac deliver examples/ferry/ferry.maac --delivery release --output-dir out --profile song`
+asset schema { kind = descriptor; builtin = "maac.production/1"; }
+extension deliveries {
+  namespace = "maac.production/1"; schema = &schema; render_affecting = true;
+  data = { deliveries = { release = {
+    rate = 48000Hz; resampler = "maac.src.kaiser/1";
+    targets = { master = {
+      role = master; output = &master:out; encoding = wav_pcm24le;
+      dither = { type = tpdf; seed = 2026; };
+      limits = {
+        integrated_loudness = { unit = LUFS; min = -16; max = -13; };
+        true_peak = { unit = dBTP; max = -1; };
+      };
+    }; };
+  }; }; };
+}

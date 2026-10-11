@@ -44,6 +44,13 @@ promise of compatibility beyond the documented interfaces.
   archives list under `builtins`. See [§14.1](MaaC-1-Specification.md#141-immutable-assets)
   and the [proposal](docs/delivery-schema-proposal.md).
 
+- "Morning Ferry" ([`examples/ferry/ferry.maac`](examples/ferry/ferry.maac)),
+  a 72 bpm rock ballad with an inline overdriven electric guitar, from the
+  [T3 production trial](docs/ai-production-trial-t3.md). The trial ranks what
+  to build next: an electric guitar and piano, a lead role in the analysis,
+  and a strum shorthand. The [AI producer guide](docs/ai-producer-guide.md)
+  now covers `transpose` on `use` and two more pitfalls.
+
 ### Changed
 
 - "Late Window" ([`examples/lofi/lofi.maac`](examples/lofi/lofi.maac)) and the
