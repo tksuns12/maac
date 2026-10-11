@@ -29,6 +29,12 @@ tempfile = "3.27"
 
 [dev-dependencies]
 
+# The tests render audio, which runs 10-20 times slower unoptimized: the suite
+# took about 980 s of test time at opt-level 0 and 89 s at 2. Debug assertions
+# and overflow checks stay on, and rendered output is unchanged.
+[profile.dev]
+opt-level = 2
+
 [profile.release]
 codegen-units = 1
 lto = true
