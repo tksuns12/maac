@@ -59,14 +59,69 @@ impl Pluck {
         })
     }
 
+    /// Shape the note-on fill. The string first reads the last
+    /// `P = round(48000 / f)` cells, its first period. The whole ring passes
+    /// a one-pole low-pass with coefficient `hardness`, in index order. The
+    /// first period is then combed circularly, `y[j] = x[j] - x[(j - M) mod P]`
+    /// with `M = max(1, round(position * 48000 / f))`, so the harmonics at
+    /// multiples of `P / M` vanish from it. Last, the ring is rescaled so the
+    /// first period keeps its raw root mean square. `hardness = 1` and
+    /// `position = 0` leave the fill untouched.
+    pub(crate) fn excite(&mut self, frequency_hz: f64, hardness: f64, position: f64) -> Result<()> {
+        if !frequency_hz.is_finite()
+            || !(20.0..=4000.0).contains(&frequency_hz)
+            || !hardness.is_finite()
+            || !(0.01..=1.0).contains(&hardness)
+            || !position.is_finite()
+            || !(0.0..=0.5).contains(&position)
+        {
+            return Err(RenderError::Nonfinite(
+                "pluck excitation frequency or parameter is outside its finite range".into(),
+            ));
+        }
+        if hardness == 1.0 && position == 0.0 {
+            return Ok(());
+        }
+        let period = ((48000.0 / frequency_hz).round() as usize).min(DELAY_CELLS);
+        let start = DELAY_CELLS - period;
+        let power = |ring: &[f64]| ring[start..].iter().map(|value| value * value).sum::<f64>();
+        let raw_power = power(&self.ring);
+        if hardness < 1.0 {
+            let mut filtered = 0.0;
+            for cell in &mut self.ring {
+                filtered += hardness * (*cell - filtered);
+                *cell = filtered;
+            }
+        }
+        if position > 0.0 {
+            let offset = pickup_offset(frequency_hz, position);
+            let mut source = allocate_ring(period)?;
+            source.extend_from_slice(&self.ring[start..]);
+            for (index, cell) in self.ring[start..].iter_mut().enumerate() {
+                *cell = source[index] - source[(index + period - offset) % period];
+            }
+        }
+        let scale = (raw_power / power(&self.ring)).sqrt();
+        if !scale.is_finite() || scale <= 0.0 {
+            return Err(RenderError::Nonfinite(
+                "pluck excitation has no power to rescale".into(),
+            ));
+        }
+        for cell in &mut self.ring {
+            *cell *= scale;
+        }
+        Ok(())
+    }
+
     pub(crate) fn sample(
         &mut self,
         frequency_hz: f64,
         decay: f64,
         damping: f64,
         level: f64,
+        pickup: f64,
     ) -> Result<f64> {
-        let prepared = self.prepare(frequency_hz, decay, damping, level)?;
+        let prepared = self.prepare(frequency_hz, decay, damping, level, pickup)?;
         Ok(self.commit(prepared))
     }
 
@@ -76,8 +131,11 @@ impl Pluck {
         decay: f64,
         damping: f64,
         level: f64,
+        pickup: f64,
     ) -> Result<f64> {
-        Ok(self.prepare(frequency_hz, decay, damping, level)?.output)
+        Ok(self
+            .prepare(frequency_hz, decay, damping, level, pickup)?
+            .output)
     }
 
     fn prepare(
@@ -86,6 +144,7 @@ impl Pluck {
         decay: f64,
         damping: f64,
         level: f64,
+        pickup: f64,
     ) -> Result<PreparedSample> {
         if !frequency_hz.is_finite()
             || !(20.0..=4000.0).contains(&frequency_hz)
@@ -95,6 +154,8 @@ impl Pluck {
             || !(0.0..=1.0).contains(&damping)
             || !level.is_finite()
             || !(0.0..=16.0).contains(&level)
+            || !pickup.is_finite()
+            || !(0.0..=0.5).contains(&pickup)
         {
             return Err(RenderError::Nonfinite(
                 "pluck frequency or parameter is outside its finite range".into(),
@@ -105,7 +166,8 @@ impl Pluck {
             Some((cached_key, coefficients)) if key == cached_key => coefficients,
             _ => Coefficients::new(frequency_hz, decay, damping)?,
         };
-        let (value, next, output) = self.read(coefficients, level)?;
+        let pickup = (pickup > 0.0).then(|| pickup_offset(frequency_hz, pickup));
+        let (value, next, output) = self.read(coefficients, level, pickup)?;
         Ok(PreparedSample {
             key,
             coefficients,
@@ -123,15 +185,39 @@ impl Pluck {
         prepared.output
     }
 
-    fn read(&self, coefficients: Coefficients, level: f64) -> Result<(f64, f64, f64)> {
-        let i0 = (self.write + DELAY_CELLS - coefficients.delay) % DELAY_CELLS;
-        let i1 = (self.write + DELAY_CELLS - coefficients.delay - 1) % DELAY_CELLS;
-        let value =
-            (1.0 - coefficients.fraction) * self.ring[i0] + coefficients.fraction * self.ring[i1];
+    /// The string value `ahead` samples before its loop delay, interpolated
+    /// like the loop's own read; `ahead = 0` is the loop's read.
+    fn tap(&self, coefficients: Coefficients, ahead: usize) -> f64 {
+        let delay = coefficients.delay - ahead;
+        let i0 = (self.write + DELAY_CELLS - delay) % DELAY_CELLS;
+        let i1 = (self.write + DELAY_CELLS - delay - 1) % DELAY_CELLS;
+        (1.0 - coefficients.fraction) * self.ring[i0] + coefficients.fraction * self.ring[i1]
+    }
+
+    fn read(
+        &self,
+        coefficients: Coefficients,
+        level: f64,
+        pickup: Option<usize>,
+    ) -> Result<(f64, f64, f64)> {
+        let value = self.tap(coefficients, 0);
         let filtered =
             coefficients.current_weight * value + coefficients.previous_weight * self.previous;
         let next = coefficients.gain * filtered;
-        let output = value * level;
+        // The pickup hears the string at two points: the loop's read and the
+        // value the loop will read `offset` samples later, which the ring
+        // already holds.
+        let output = match pickup {
+            None => value * level,
+            Some(offset) => {
+                if offset >= coefficients.delay {
+                    return Err(RenderError::Nonfinite(
+                        "pluck pickup offset reaches the loop delay".into(),
+                    ));
+                }
+                (value - self.tap(coefficients, offset)) * level
+            }
+        };
         if !value.is_finite() || !filtered.is_finite() || !next.is_finite() || !output.is_finite() {
             return Err(RenderError::Nonfinite(
                 "pluck string state or output is nonfinite".into(),
@@ -191,6 +277,12 @@ impl Coefficients {
     }
 }
 
+/// `max(1, round(fraction * 48000 / f))` samples: a point `fraction` of the
+/// way along a string of period `48000 / f`.
+fn pickup_offset(frequency_hz: f64, fraction: f64) -> usize {
+    ((fraction * 48000.0 / frequency_hz).round() as usize).max(1)
+}
+
 fn allocate_ring(cells: usize) -> Result<Vec<f64>> {
     let mut ring = Vec::new();
     ring.try_reserve_exact(cells).map_err(|_| {
@@ -236,7 +328,7 @@ mod tests {
         ] {
             let mut pluck = Pluck::new(seed).unwrap();
             for value in expected {
-                assert_eq!(pluck.sample(480.0, 3.0, 0.0, 1.0).unwrap(), value);
+                assert_eq!(pluck.sample(480.0, 3.0, 0.0, 1.0, 0.0).unwrap(), value);
             }
         }
     }
@@ -245,8 +337,8 @@ mod tests {
     fn preview_repeats_without_state_change_and_matches_next_sample() {
         let mut pluck = Pluck::new(1).unwrap();
         let snapshot = pluck.clone();
-        let first = pluck.preview(440.0, 3.0, 0.5, 1.0).unwrap();
-        let repeated = pluck.preview(440.0, 3.0, 0.5, 1.0).unwrap();
+        let first = pluck.preview(440.0, 3.0, 0.5, 1.0, 0.0).unwrap();
+        let repeated = pluck.preview(440.0, 3.0, 0.5, 1.0, 0.0).unwrap();
 
         assert_eq!(first.to_bits(), repeated.to_bits());
         assert_eq!(pluck.ring, snapshot.ring);
@@ -254,7 +346,7 @@ mod tests {
         assert_eq!(pluck.previous, snapshot.previous);
         assert_eq!(pluck.cached, snapshot.cached);
         assert_eq!(
-            pluck.sample(440.0, 3.0, 0.5, 1.0).unwrap().to_bits(),
+            pluck.sample(440.0, 3.0, 0.5, 1.0, 0.0).unwrap().to_bits(),
             first.to_bits()
         );
     }
@@ -263,23 +355,23 @@ mod tests {
     fn preview_parameter_change_does_not_mutate_cache_or_ring() {
         let mut previewed = Pluck::new(1).unwrap();
         let mut expected = Pluck::new(1).unwrap();
-        previewed.sample(440.0, 3.0, 0.5, 1.0).unwrap();
-        expected.sample(440.0, 3.0, 0.5, 1.0).unwrap();
+        previewed.sample(440.0, 3.0, 0.5, 1.0, 0.0).unwrap();
+        expected.sample(440.0, 3.0, 0.5, 1.0, 0.0).unwrap();
         let snapshot = previewed.clone();
         let params = (880.0, 0.8, 1.0, 0.25);
 
         let preview = previewed
-            .preview(params.0, params.1, params.2, params.3)
+            .preview(params.0, params.1, params.2, params.3, 0.0)
             .unwrap();
         assert_eq!(previewed.ring, snapshot.ring);
         assert_eq!(previewed.write, snapshot.write);
         assert_eq!(previewed.previous, snapshot.previous);
         assert_eq!(previewed.cached, snapshot.cached);
         let actual = previewed
-            .sample(params.0, params.1, params.2, params.3)
+            .sample(params.0, params.1, params.2, params.3, 0.0)
             .unwrap();
         let expected_first = expected
-            .sample(params.0, params.1, params.2, params.3)
+            .sample(params.0, params.1, params.2, params.3, 0.0)
             .unwrap();
         assert_eq!(actual.to_bits(), preview.to_bits());
         assert_eq!(actual.to_bits(), expected_first.to_bits());
@@ -289,11 +381,11 @@ mod tests {
         assert_eq!(previewed.cached, expected.cached);
         assert_eq!(
             previewed
-                .sample(params.0, params.1, params.2, params.3)
+                .sample(params.0, params.1, params.2, params.3, 0.0)
                 .unwrap()
                 .to_bits(),
             expected
-                .sample(params.0, params.1, params.2, params.3)
+                .sample(params.0, params.1, params.2, params.3, 0.0)
                 .unwrap()
                 .to_bits()
         );
@@ -302,7 +394,7 @@ mod tests {
     #[test]
     fn failed_preview_preserves_ring_scalars_and_cache() {
         let mut pluck = Pluck::new(1).unwrap();
-        pluck.sample(440.0, 3.0, 0.5, 1.0).unwrap();
+        pluck.sample(440.0, 3.0, 0.5, 1.0, 0.0).unwrap();
         let snapshot = pluck.clone();
         for args in [
             [19.999, 3.0, 0.5, 1.0],
@@ -317,7 +409,7 @@ mod tests {
         ] {
             assert_eq!(
                 pluck
-                    .preview(args[0], args[1], args[2], args[3])
+                    .preview(args[0], args[1], args[2], args[3], 0.0)
                     .unwrap_err()
                     .code(),
                 "E_NONFINITE"
@@ -346,7 +438,7 @@ mod tests {
             gain: 0.5,
         };
         // Read = .75*.75 + .25*(-.25) = .5; filtered = .75*.5-.25*.5 = .25.
-        let (value, next, output) = pluck.read(coefficients, 2.0).unwrap();
+        let (value, next, output) = pluck.read(coefficients, 2.0, None).unwrap();
         assert_eq!(
             pluck.commit(PreparedSample {
                 key: [0; 3],
@@ -427,7 +519,7 @@ mod tests {
                 10.0_f64.powf(-3.0 / (frequency * decay)) * ((1.0 - q) * read + q * previous);
             previous = read;
             assert!(
-                (pluck.sample(frequency, decay, damping, 1.0).unwrap() - read).abs() < 2e-12,
+                (pluck.sample(frequency, decay, damping, 1.0, 0.0).unwrap() - read).abs() < 2e-12,
                 "frame {frame}"
             );
         }
@@ -437,7 +529,7 @@ mod tests {
     fn invalid_values_do_not_update_ring_scalar_state_or_cache() {
         assert_eq!(Pluck::new(0).unwrap_err().code(), "E_RANGE");
         let mut pluck = Pluck::new(1).unwrap();
-        pluck.sample(440.0, 3.0, 0.5, 1.0).unwrap();
+        pluck.sample(440.0, 3.0, 0.5, 1.0, 0.0).unwrap();
         let snapshot = pluck.clone();
         for args in [
             [19.999, 3.0, 0.5, 1.0],
@@ -455,7 +547,7 @@ mod tests {
         ] {
             assert_eq!(
                 pluck
-                    .sample(args[0], args[1], args[2], args[3])
+                    .sample(args[0], args[1], args[2], args[3], 0.0)
                     .unwrap_err()
                     .code(),
                 "E_NONFINITE"
@@ -484,8 +576,8 @@ mod tests {
             let damping = if frame % 37 == 0 { 0.0 } else { 0.5 };
             uncached.cached = None;
             assert_eq!(
-                cached.sample(f, 3.0, damping, 1.0).unwrap(),
-                uncached.sample(f, 3.0, damping, 1.0).unwrap()
+                cached.sample(f, 3.0, damping, 1.0, 0.0).unwrap(),
+                uncached.sample(f, 3.0, damping, 1.0, 0.0).unwrap()
             );
         }
     }
@@ -525,7 +617,7 @@ mod tests {
             };
             let damping = if frame % 2 == 0 { 0.0 } else { 1.0 };
             let decay = if frame % 3 == 0 { 0.05 } else { 30.0 };
-            let value = pluck.sample(frequency, decay, damping, 16.0).unwrap();
+            let value = pluck.sample(frequency, decay, damping, 16.0, 0.0).unwrap();
             assert!(value.is_finite() && value.abs() <= 16.0 + 1e-12);
             if frame % 1000 == 0 {
                 assert!(pluck
@@ -564,10 +656,10 @@ mod tests {
             let expected = 440.0 * 2.0_f64.powf((midi as f64 - 69.0) / 12.0);
             let mut pluck = Pluck::new(1831565813).unwrap();
             for _ in 0..4800 {
-                pluck.sample(expected, 3.0, 0.5, 1.0).unwrap();
+                pluck.sample(expected, 3.0, 0.5, 1.0, 0.0).unwrap();
             }
             let samples: Vec<_> = (0..16384)
-                .map(|_| pluck.sample(expected, 3.0, 0.5, 1.0).unwrap())
+                .map(|_| pluck.sample(expected, 3.0, 0.5, 1.0, 0.0).unwrap())
                 .collect();
             let (cents, _) = (-40..=40)
                 .map(|step| {
@@ -588,7 +680,7 @@ mod tests {
     fn upper_partials_decay_faster_than_lower_partials() {
         let mut pluck = Pluck::new(1831565813).unwrap();
         let samples: Vec<_> = (0..32000)
-            .map(|_| pluck.sample(110.0, 3.0, 0.5, 1.0).unwrap())
+            .map(|_| pluck.sample(110.0, 3.0, 0.5, 1.0, 0.0).unwrap())
             .collect();
         let ratio = |window: &[f64]| {
             let low: f64 = (1..=3)
@@ -617,13 +709,13 @@ mod tests {
             -0.03659906983375549,
         ];
         for value in expected {
-            assert_eq!(pluck.sample(480.0, 3.0, 0.0, 1.0).unwrap(), value);
+            assert_eq!(pluck.sample(480.0, 3.0, 0.0, 1.0, 0.0).unwrap(), value);
         }
         for _ in 6..100 {
-            pluck.sample(480.0, 3.0, 0.0, 1.0).unwrap();
+            pluck.sample(480.0, 3.0, 0.0, 1.0, 0.0).unwrap();
         }
         let expected = expected[0] * 0.9952144352021834;
-        assert!((pluck.sample(480.0, 3.0, 0.0, 1.0).unwrap() - expected).abs() < 1e-15);
+        assert!((pluck.sample(480.0, 3.0, 0.0, 1.0, 0.0).unwrap() - expected).abs() < 1e-15);
     }
 
     #[test]
@@ -632,10 +724,10 @@ mod tests {
         let mut muted = Pluck::new(1831565813).unwrap();
         let mut replay = Pluck::new(1831565813).unwrap();
         for frame in 0..800 {
-            let expected = reference.sample(440.0, 3.0, 0.5, 1.0).unwrap();
-            assert_eq!(replay.sample(440.0, 3.0, 0.5, 1.0).unwrap(), expected);
+            let expected = reference.sample(440.0, 3.0, 0.5, 1.0, 0.0).unwrap();
+            assert_eq!(replay.sample(440.0, 3.0, 0.5, 1.0, 0.0).unwrap(), expected);
             let actual = muted
-                .sample(440.0, 3.0, 0.5, if frame < 300 { 0.0 } else { 1.0 })
+                .sample(440.0, 3.0, 0.5, if frame < 300 { 0.0 } else { 1.0 }, 0.0)
                 .unwrap();
             if frame < 300 {
                 assert_eq!(actual, 0.0);
@@ -643,5 +735,142 @@ mod tests {
                 assert_eq!(actual, expected);
             }
         }
+    }
+
+    /// Power of each listed harmonic of `frequency`, Hann-windowed.
+    fn harmonic_db(samples: &[f64], frequency: f64, harmonic: usize) -> f64 {
+        10.0 * spectral_power(samples, frequency * harmonic as f64).log10()
+    }
+
+    /// How far the notched harmonics sit under the mean of their neighbours.
+    fn notch_depth_db(samples: &[f64], frequency: f64, notched: &[usize]) -> f64 {
+        notched
+            .iter()
+            .map(|&harmonic| {
+                let neighbours = 0.5
+                    * (harmonic_db(samples, frequency, harmonic - 1)
+                        + harmonic_db(samples, frequency, harmonic + 1));
+                neighbours - harmonic_db(samples, frequency, harmonic)
+            })
+            .fold(f64::INFINITY, f64::min)
+    }
+
+    fn first_period_rms(pluck: &Pluck, frequency: f64) -> f64 {
+        let period = (48000.0 / frequency).round() as usize;
+        let cells = &pluck.ring[DELAY_CELLS - period..];
+        (cells.iter().map(|value| value * value).sum::<f64>() / period as f64).sqrt()
+    }
+
+    #[test]
+    fn default_excitation_leaves_the_fill_bit_identical() {
+        let mut excited = Pluck::new(7).unwrap();
+        excited.excite(440.0, 1.0, 0.0).unwrap();
+        let plain = Pluck::new(7).unwrap();
+        assert!(excited
+            .ring
+            .iter()
+            .zip(&plain.ring)
+            .all(|(a, b)| a.to_bits() == b.to_bits()));
+    }
+
+    #[test]
+    fn hardness_darkens_the_fill_and_keeps_its_first_period_level() {
+        let frequency = 220.0;
+        let plain = Pluck::new(7).unwrap();
+        // Energy of the first difference over energy: a brightness measure.
+        let brightness = |pluck: &Pluck| {
+            let cells = &pluck.ring[DELAY_CELLS - 218..];
+            let difference: f64 = cells.windows(2).map(|w| (w[1] - w[0]).powi(2)).sum();
+            difference / cells.iter().map(|value| value * value).sum::<f64>()
+        };
+        let mut previous = brightness(&plain);
+        for hardness in [0.5, 0.2, 0.05] {
+            let mut soft = Pluck::new(7).unwrap();
+            soft.excite(frequency, hardness, 0.0).unwrap();
+            let rms = first_period_rms(&soft, frequency);
+            let raw = first_period_rms(&plain, frequency);
+            assert!((rms - raw).abs() <= 1e-12 * raw, "{hardness}: {rms} {raw}");
+            let current = brightness(&soft);
+            assert!(current < previous, "{hardness}: {current} {previous}");
+            previous = current;
+        }
+    }
+
+    #[test]
+    fn pluck_position_removes_the_harmonics_at_its_nodes() {
+        // 480 Hz has a 100-sample period; a fifth of it is 20 samples, so
+        // the 5th, 10th and 15th harmonics vanish from the first period.
+        let mut pluck = Pluck::new(1831565813).unwrap();
+        pluck.excite(480.0, 1.0, 0.2).unwrap();
+        let samples: Vec<_> = (0..4800)
+            .map(|_| pluck.sample(480.0, 3.0, 0.0, 1.0, 0.0).unwrap())
+            .collect();
+        let depth = notch_depth_db(&samples, 480.0, &[5, 10, 15]);
+        eprintln!("pluck position 1/5: notches {depth:.1} dB under neighbours");
+        assert!(depth >= 20.0, "{depth}");
+    }
+
+    #[test]
+    fn pickup_notches_follow_the_pitch() {
+        let mut pluck = Pluck::new(1831565813).unwrap();
+        let first: Vec<_> = (0..4800)
+            .map(|_| pluck.sample(480.0, 3.0, 0.0, 1.0, 0.2).unwrap())
+            .collect();
+        // A bend to 600 Hz: an 80-sample period, a 16-sample offset, so the
+        // notches stay on the 5th, 10th and 15th harmonics.
+        for _ in 0..2400 {
+            pluck.sample(600.0, 3.0, 0.0, 1.0, 0.2).unwrap();
+        }
+        let bent: Vec<_> = (0..4800)
+            .map(|_| pluck.sample(600.0, 3.0, 0.0, 1.0, 0.2).unwrap())
+            .collect();
+        for (samples, frequency) in [(&first, 480.0), (&bent, 600.0)] {
+            let depth = notch_depth_db(samples, frequency, &[5, 10, 15]);
+            eprintln!("pickup 1/5 at {frequency} Hz: notches {depth:.1} dB under neighbours");
+            assert!(depth >= 20.0, "{frequency}: {depth}");
+        }
+    }
+
+    #[test]
+    fn shaped_strings_keep_their_pitch_within_two_cents() {
+        for midi in [40, 64, 88] {
+            let expected = 440.0 * 2.0_f64.powf((midi as f64 - 69.0) / 12.0);
+            let mut pluck = Pluck::new(1831565813).unwrap();
+            pluck.excite(expected, 0.3, 0.15).unwrap();
+            for _ in 0..4800 {
+                pluck.sample(expected, 3.0, 0.5, 1.0, 0.1).unwrap();
+            }
+            let samples: Vec<_> = (0..16384)
+                .map(|_| pluck.sample(expected, 3.0, 0.5, 1.0, 0.1).unwrap())
+                .collect();
+            let (cents, _) = (-40..=40)
+                .map(|step| {
+                    let cents = step as f64 / 4.0;
+                    (
+                        cents,
+                        spectral_power(&samples, expected * 2.0_f64.powf(cents / 1200.0)),
+                    )
+                })
+                .max_by(|a, b| a.1.total_cmp(&b.1))
+                .unwrap();
+            assert!(cents.abs() <= 2.0, "MIDI{midi}: {cents} cents");
+        }
+    }
+
+    #[test]
+    fn invalid_excitation_values_fail_without_changing_the_fill() {
+        for (frequency, hardness, position) in [
+            (19.0, 1.0, 0.0),
+            (440.0, 0.0, 0.0),
+            (440.0, 1.5, 0.0),
+            (440.0, 1.0, 0.6),
+            (440.0, f64::NAN, 0.0),
+        ] {
+            let mut pluck = Pluck::new(7).unwrap();
+            assert!(pluck.excite(frequency, hardness, position).is_err());
+            assert_eq!(pluck.ring, Pluck::new(7).unwrap().ring);
+        }
+        let pluck = Pluck::new(7).unwrap();
+        assert!(pluck.preview(440.0, 3.0, 0.5, 1.0, 0.6).is_err());
     }
 }

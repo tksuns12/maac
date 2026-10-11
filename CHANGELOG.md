@@ -7,6 +7,16 @@ promise of compatibility beyond the documented interfaces.
 
 ### Added
 
+- `synth.pluck/1` gains `hardness` (pick brightness, captured at note-on),
+  `position` (pluck point, captured at note-on) and `pickup` (pickup point).
+  A softer pick darkens the excitation without lowering its level; a pluck or
+  pickup point removes the harmonics at its nodes, at 1/5 the 5th, 10th and
+  15th. Velocity can modulate `hardness`. `synth.drive/1` gains `reference`,
+  which keeps a signal's peaks at the same level as `drive` changes (F22 of
+  the [T3 trial](docs/ai-production-trial-t3.md)). All four default to the
+  previous sound bit for bit. See the
+  [proposal](docs/electric-guitar-piano-proposal.md#results-part-1).
+
 - `maac analyze` compares the score with the audio. Each note or hit is
   measured on its target: `silent_note` when it makes no sound, `buried_note`
   when its part holds −20 dB or less of its strongest band at its mix point,

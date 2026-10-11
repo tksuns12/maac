@@ -328,7 +328,7 @@ is rejected, including mixed audio/modulation cycles.
 | `synth.onepole/1` | `cutoff` (1000 Hz; strictly between 0 and 24000 Hz); required `config.channels` | Same channels as input |
 | `synth.highpass/1` | `cutoff` (1000 Hz; strictly between 0 and 24000 Hz); required `config.channels` | Same channels as input |
 | `synth.svf/1` | `cutoff` (1000 Hz; 0 up to but not including 24000 Hz), `ratio` (0; 0…64, and 0 in a shared graph), `q` (707/1000; 1/10…40); required `config.channels` and `config.mode` (`lowpass`, `bandpass` or `highpass`) | Same channels as input |
-| `synth.drive/1` | `drive` (1; 0…64), `bias` (0; −4…4), `level` (1; 0…16); required `config.channels` | Same channels as input |
+| `synth.drive/1` | `drive` (1; 0…64), `bias` (0; −4…4), `level` (1; 0…16), `reference` (0; 0…1); required `config.channels` | Same channels as input |
 | `synth.mix/1` | Required `config.channels`; no parameters | Mono/stereo sum |
 | `synth.pan/1` | `pan` (0; −1…1) | Equal-power stereo from mono |
 
@@ -563,6 +563,19 @@ ends of the step use the current `drive` and `bias`; the only state is each
 channel's previous input, initially zero and reset like the filters. The
 average delays the output by half a sample, and it needs no oversampling
 filter whose design would also have to be fixed.
+
+A positive `reference` holds the output level while `drive` changes. The
+output is divided by
+
+```text
+n = (tanh(drive * reference + bias) - tanh(bias)) / reference
+```
+
+so an input held at `reference` leaves at `level * reference` at every drive.
+More drive then adds harmonics and compression without raising the peaks of
+a signal near `reference`. `reference = 0`, the default, leaves the output
+bit-identical; a positive `reference` with `drive = 0` fails at render. Set
+`reference` near the input's typical peak.
 
 The averaging suppresses most strongly the harmonics that would fold down
 into the low and middle band, where they sound like out-of-tune tones, and

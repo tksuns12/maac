@@ -89,7 +89,7 @@ from T2.
 | F19 | The [producer guide](ai-producer-guide.md) never mentioned `transpose` on `use`; the AI found it in the specification | Fixed: the guide now shows it |
 | F20 | `analyze` cannot report gain reduction per section, so a glue or limiter flattening the chorus was found only by comparing region loudness | Open |
 | F21 | A lead 11 dB under its accompaniment raised no finding. `buried_note` judges each part in its own strongest band, and no part is marked as the lead | Open |
-| F22 | Raising the amp's `drive` also raises its output, so a drive automation needs a matching level automation | Open; a level-compensated drive would remove it |
+| F22 | Raising the amp's `drive` also raises its output, so a drive automation needs a matching level automation | Partly fixed: `synth.drive/1` has a [`reference`](instruments.md#saturation) that holds the level. The library guitar uses it in [part 2](electric-guitar-piano-proposal.md#plan) |
 | F23 | Imports and nodes share one ID namespace, so a node cannot be named after an import | Open; the diagnostic is clear |
 | F24 | `band_dominance` reports spurious changes at section edges, where one 100 ms block holds both sections | Open, informational only |
 | F25 | Half of the draft-1 nylon melody's notes (64 of 132) read `unpitched` at the 0.03 aperiodicity limit, so `pitch_mismatch` did not check them | Open |
@@ -100,6 +100,7 @@ from T2.
    both trials. Candidates: an electric guitar with an amp stage, as a
    library instrument with a level-compensated drive (F22); an acoustic
    piano; and a review of the std/studio and std/acoustic timbres by ear.
+   See the [proposal](electric-guitar-piano-proposal.md).
 2. **A lead role in the analysis (F21, F20).** Let the score mark a part as
    the lead, so `analyze` can compare it with the accompaniment per section.
    Add gain reduction per section for the dynamics processors.

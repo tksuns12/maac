@@ -1281,6 +1281,9 @@ fn normalize_node_fields(fields: &mut Map<String, Value>, project_seed: &Value) 
                     ("decay", quantity(3, 1, Unit::S)),
                     ("damping", number(1, 2)),
                     ("level", number(1, 1)),
+                    ("hardness", number(1, 1)),
+                    ("position", number(0, 1)),
+                    ("pickup", number(0, 1)),
                 ] {
                     params.entry(name).or_insert(value);
                 }
@@ -1327,6 +1330,7 @@ fn normalize_node_fields(fields: &mut Map<String, Value>, project_seed: &Value) 
                     ("drive", number(1, 1)),
                     ("bias", number(0, 1)),
                     ("level", number(1, 1)),
+                    ("reference", number(0, 1)),
                 ] {
                     params.entry(name).or_insert(value);
                 }

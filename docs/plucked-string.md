@@ -13,9 +13,11 @@ string with changing partial decay. It adds one mono voice-only processor,
 graph DAG rules, scheduling, ADSRs, plan versions, and the released bytes and
 default discovery behavior of `std/basic/1.0.0` remain unchanged.
 
-It models a string, not recorded audio or a complete guitar body. Pluck
-position, excitation hardness, a new body resonator, and velocity-dependent
-timbre are excluded. Existing filters may provide body weighting. Improved
+It models a string, not recorded audio or a complete guitar body. A body
+resonator is excluded; existing filters may provide body weighting. Pluck
+position, excitation hardness and pickup position were added on 2026-10-11;
+see [excitation and pickup](#excitation-and-pickup-2026-10-11). Velocity can
+reach the excitation through a `synth.velocity/1` modulation of `hardness`. Improved
 acoustic realism requires the user's listening assessment; numerical success
 does not establish it.
 
@@ -34,6 +36,9 @@ control or automation target. Unknown configuration fields fail.
 | `decay` | Seconds | 3 s | 1/20…30 s | Sample |
 | `damping` | Dimensionless | 1/2 | 0…1 | Sample |
 | `level` | Dimensionless | 1 | 0…16 | Sample |
+| `hardness` | Dimensionless | 1 | 1/100…1 | Note-on |
+| `position` | Dimensionless | 0 | 0…1/2 | Note-on |
+| `pickup` | Dimensionless | 0 | 0…1/2 | Sample |
 
 Existing rational unit/range validation, public controls, and mono sample-rate
 modulation apply to all four parameters. There is no oscillator `phase` or
@@ -156,6 +161,55 @@ Coefficient caching is permitted only for identical evaluated
 `(f, decay, damping)` values with unchanged reference samples. Resource
 accounting assumes coefficients may change every sample. Per-sample allocation
 is prohibited.
+
+## Excitation and pickup (2026-10-11)
+
+Three parameters from the [electric guitar and piano proposal](electric-guitar-piano-proposal.md)
+shape the string. Their defaults, `hardness = 1`, `position = 0` and
+`pickup = 0`, skip every step below, so existing sources and plans render
+bit-identically.
+
+**Excitation.** At note-on, after the seeded fill, let `f` be the note's
+expressed frequency at note-on times `ratio` before modulation (a control on
+`ratio` applies), `P = round(48000 / f)` and `start = 2402 - P`. The cells
+`start…2401` are the ones the loop reads in its first period.
+
+1. Record `R0`, the sum of squares of cells `start…2401`.
+2. If `hardness < 1`, filter the whole ring in index order from `y = 0`:
+   `y = y + hardness * (B[i] - y); B[i] = y`.
+3. If `position > 0`, let `M = max(1, round(position * 48000 / f))` and comb
+   the first period circularly from a copy `x` of it:
+   `B[start + j] = x[j] - x[(j + P - M) mod P]` for `j` in `0…P-1`. The
+   harmonics at multiples of `P / M` vanish from the first period: at
+   `position = 1/5`, the 5th, 10th and 15th.
+4. Multiply every cell by `sqrt(R0 / R1)`, where `R1` is the sum of squares of
+   cells `start…2401` now. The first period keeps its raw level, so `hardness`
+   and `position` change tone and not loudness. A nonfinite or nonpositive
+   factor fails.
+
+`hardness` and `position` are captured once, at note-on, from controls and
+note-on modulation; later changes do not refill the string. A
+`synth.velocity/1` modulation of `hardness` makes harder notes brighter.
+
+**Pickup.** With `pickup > 0`, let `K = max(1, round(pickup * 48000 / f))`
+for the current frame's `f`. The output is
+
+```text
+v_K    = (1 - mu) * B[(w + C - (N - K)) % C] + mu * B[(w + C - (N - K) - 1) % C]
+output = (v - v_K) * level
+```
+
+`v_K` is the value the loop will read `K` frames later at the current
+coefficients, which the ring already holds, so the pickup needs no memory.
+The difference notches harmonics at multiples of `P / K`, as a pickup at that
+point on the string does. `K` follows `f` every frame, so the notches stay on
+the same harmonics through a bend. `K < N` always holds within the valid
+ranges; a violation fails. The loop's own read, write and state do not
+change: `pickup` affects only the output.
+
+The execution charge is unchanged. On an Apple M1 release build, twelve
+voices ringing for 32 s rendered in 0.92 s of CPU time without a pickup and
+0.95 s with one, under one unit of the 16-unit charge.
 
 ## Automation, lifecycle, and reset
 

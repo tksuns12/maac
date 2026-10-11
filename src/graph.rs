@@ -626,6 +626,21 @@ pub fn parameter_descriptor(processor: &GraphProcessor, name: &str) -> Option<Pa
                 Some(result)
             }
             "level" => Some(dimensionless(ParameterRate::Sample, 1, 0, 16)),
+            "hardness" => {
+                let mut result = dimensionless(ParameterRate::NoteOn, 1, 0, 1);
+                result.min = Rational::new(1.into(), 100.into());
+                Some(result)
+            }
+            "position" => {
+                let mut result = dimensionless(ParameterRate::NoteOn, 0, 0, 1);
+                result.max = Rational::new(1.into(), 2.into());
+                Some(result)
+            }
+            "pickup" => {
+                let mut result = dimensionless(ParameterRate::Sample, 0, 0, 1);
+                result.max = Rational::new(1.into(), 2.into());
+                Some(result)
+            }
             _ => None,
         },
         GraphProcessor::Adsr => match name {
@@ -712,6 +727,7 @@ pub fn parameter_descriptor(processor: &GraphProcessor, name: &str) -> Option<Pa
             "drive" => Some(dimensionless(ParameterRate::Sample, 1, 0, 64)),
             "bias" => Some(dimensionless(ParameterRate::Sample, 0, -4, 4)),
             "level" => Some(dimensionless(ParameterRate::Sample, 1, 0, 16)),
+            "reference" => Some(dimensionless(ParameterRate::Sample, 0, 0, 1)),
             _ => None,
         },
         GraphProcessor::Pan => {
@@ -1060,6 +1076,7 @@ fn validate_graph_inner(
                     | GraphProcessor::Triangle
                     | GraphProcessor::Wavetable { .. }
                     | GraphProcessor::Lfo
+                    | GraphProcessor::Pluck { .. }
             )
             && matches!(spec.rate, ParameterRate::NoteOn | ParameterRate::NoteOff);
         let shared_lfo_reset = stage == GraphStage::Shared

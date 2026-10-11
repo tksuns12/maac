@@ -14,7 +14,7 @@ use num_traits::ToPrimitive;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-const MAX_PARAMETER_SLOTS: usize = 5;
+const MAX_PARAMETER_SLOTS: usize = 7;
 
 /// Immutable executable code shared by every instance of one instrument.
 #[derive(Debug)]
@@ -493,6 +493,12 @@ impl InstrumentRuntime {
                 pressure,
             )?;
         }
+        if voice.graph.has_unmodulated_excitation(&self.program.voice) {
+            let (pitch_hz, _, _) = voice.expression_inputs(frame, self.rate)?;
+            voice
+                .graph
+                .excite_unmodulated(&self.program.voice, &self.controls, pitch_hz)?;
+        }
         let insertion = match self
             .voices
             .binary_search_by(|existing| existing.address.as_bytes().cmp(voice.address.as_bytes()))
@@ -942,6 +948,38 @@ impl GraphState {
         })
     }
 
+    /// Whether a plucked string without note-on modulation shapes its fill;
+    /// a modulated one is shaped during the note-on capture.
+    fn has_unmodulated_excitation(&self, graph: &CompiledGraph) -> bool {
+        graph
+            .nodes
+            .iter()
+            .zip(&self.nodes)
+            .any(|(compiled, runtime)| {
+                matches!(compiled.processor, ProcessorCode::Pluck(_))
+                    && !compiled.has_note_on_modulations
+                    && plucked_fill_is_shaped(&runtime.params)
+            })
+    }
+
+    fn excite_unmodulated(
+        &mut self,
+        graph: &CompiledGraph,
+        controls: &[f64],
+        pitch_hz: f64,
+    ) -> Result<()> {
+        for (compiled, runtime) in graph.nodes.iter().zip(&mut self.nodes) {
+            if compiled.has_note_on_modulations || !plucked_fill_is_shaped(&runtime.params) {
+                continue;
+            }
+            if let ProcessorState::Pluck(pluck) = &mut runtime.state {
+                let ratio = note_on_ratio(compiled, controls, runtime.params[0]);
+                pluck.excite(pitch_hz * ratio, runtime.params[4], runtime.params[5])?;
+            }
+        }
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn capture_note_on(
         &mut self,
@@ -1132,6 +1170,13 @@ impl GraphState {
                     (ProcessorCode::Lfo, ProcessorState::Lfo(oscillator)) => {
                         validate_event_parameter(compiled, 1, event_params[1])?;
                         oscillator.reset(event_params[1])?;
+                    }
+                    (ProcessorCode::Pluck(_), ProcessorState::Pluck(pluck)) => {
+                        for parameter in [4, 5] {
+                            validate_event_parameter(compiled, parameter, event_params[parameter])?;
+                        }
+                        let ratio = note_on_ratio(compiled, controls, compiled.base_params[0]);
+                        pluck.excite(pitch_hz * ratio, event_params[4], event_params[5])?;
                     }
                     _ => {
                         return Err(RenderError::RenderState(format!(
@@ -1417,6 +1462,20 @@ fn mark_source(required: &mut [bool; MAX_GRAPH_NODES], source: Source) {
     }
 }
 
+/// Whether a pluck's note-on `hardness` and `position` change its fill.
+fn plucked_fill_is_shaped(params: &[f64]) -> bool {
+    params[4] != 1.0 || params[5] != 0.0
+}
+
+/// A pluck's `ratio` at note-on: `base` with any control on it, before
+/// modulation.
+fn note_on_ratio(node: &CompiledNode, controls: &[f64], base: f64) -> f64 {
+    node.controls
+        .iter()
+        .filter(|binding| binding.parameter == 0)
+        .fold(base, |_, binding| controls[binding.control])
+}
+
 fn parameter_scratch(node: &CompiledNode) -> [f64; MAX_PARAMETER_SLOTS] {
     let mut params = [0.0; MAX_PARAMETER_SLOTS];
     params[..node.base_params.len()].copy_from_slice(&node.base_params);
@@ -1557,9 +1616,21 @@ fn process_graph_node(
         }
         (ProcessorCode::Pluck(_), ProcessorState::Pluck(pluck)) => {
             output[0] = if commit {
-                pluck.sample(pitch_hz * params[0], params[1], params[2], params[3])?
+                pluck.sample(
+                    pitch_hz * params[0],
+                    params[1],
+                    params[2],
+                    params[3],
+                    params[6],
+                )?
             } else {
-                pluck.preview(pitch_hz * params[0], params[1], params[2], params[3])?
+                pluck.preview(
+                    pitch_hz * params[0],
+                    params[1],
+                    params[2],
+                    params[3],
+                    params[6],
+                )?
             };
         }
         (ProcessorCode::Oscillator(_), ProcessorState::Oscillator(oscillator)) => {
@@ -1716,6 +1787,12 @@ fn process_graph_node(
             }
         }
         (ProcessorCode::Drive(channels), ProcessorState::Drive(states)) => {
+            if params[3] > 0.0 && params[0] == 0.0 {
+                return Err(RenderError::Nonfinite(format!(
+                    "drive node {} needs a positive drive when reference is set",
+                    compiled.id
+                )));
+            }
             let mut next = *states;
             for ((output, state), input) in output
                 .iter_mut()
@@ -1723,7 +1800,8 @@ fn process_graph_node(
                 .zip(audio_input)
                 .take(*channels)
             {
-                let (value, after) = state.sample(input, params[0], params[1], params[2]);
+                let (value, after) =
+                    state.sample(input, params[0], params[1], params[2], params[3]);
                 *output = value;
                 *state = after;
             }
@@ -1892,7 +1970,9 @@ fn compile_processor(
         GraphProcessor::Triangle => (OSCILLATOR, ProcessorCode::Oscillator(Waveform::Triangle)),
         GraphProcessor::Noise { seed } => (&["level"], ProcessorCode::Noise(*seed)),
         GraphProcessor::Pluck { seed } => (
-            &["ratio", "decay", "damping", "level"],
+            &[
+                "ratio", "decay", "damping", "level", "hardness", "position", "pickup",
+            ],
             ProcessorCode::Pluck(*seed),
         ),
         GraphProcessor::Wavetable { table } => (
@@ -1945,7 +2025,7 @@ fn compile_processor(
             ProcessorCode::Svf(*channels as usize, *mode),
         ),
         GraphProcessor::Drive { channels } => (
-            &["drive", "bias", "level"],
+            &["drive", "bias", "level", "reference"],
             ProcessorCode::Drive(*channels as usize),
         ),
         GraphProcessor::Mix { channels } => (&[], ProcessorCode::Mix(*channels as usize)),
@@ -1956,7 +2036,9 @@ fn compile_processor(
 fn parameter_slot(processor: &ProcessorCode, name: &str) -> Option<usize> {
     let names: &[&str] = match processor {
         ProcessorCode::Oscillator(_) => &["ratio", "frequency", "phase", "level"],
-        ProcessorCode::Pluck(_) => &["ratio", "decay", "damping", "level"],
+        ProcessorCode::Pluck(_) => &[
+            "ratio", "decay", "damping", "level", "hardness", "position", "pickup",
+        ],
         ProcessorCode::Wavetable(_) => &["ratio", "frequency", "phase", "level", "position"],
         ProcessorCode::Sample(_) => &["ratio", "frequency", "level"],
         ProcessorCode::Adsr => &["attack", "decay", "sustain", "release", "curve"],
@@ -1964,7 +2046,7 @@ fn parameter_slot(processor: &ProcessorCode, name: &str) -> Option<usize> {
         ProcessorCode::Gain(_) | ProcessorCode::Noise(_) => &["level"],
         ProcessorCode::OnePole(_) | ProcessorCode::HighPass(_) => &["cutoff"],
         ProcessorCode::Svf(..) => &["cutoff", "ratio", "q"],
-        ProcessorCode::Drive(_) => &["drive", "bias", "level"],
+        ProcessorCode::Drive(_) => &["drive", "bias", "level", "reference"],
         ProcessorCode::Mix(_)
         | ProcessorCode::Timbre
         | ProcessorCode::Pressure
@@ -2695,7 +2777,7 @@ node sound {{ instrument = &string; }}
             let mut expected = crate::pluck::Pluck::new(1).unwrap();
             for frame in 0..128 {
                 assert_eq!(runtime.render(frame).unwrap(), &[0.0]);
-                expected.sample(480.0, 3.0, 0.5, 1.0).unwrap();
+                expected.sample(480.0, 3.0, 0.5, 1.0, 0.0).unwrap();
             }
             // Private state inspection distinguishes silent-but-running from a
             // shortcut that skipped the generator under velocity/envelope mute.
@@ -2712,8 +2794,8 @@ node sound {{ instrument = &string; }}
                 })
                 .unwrap();
             assert_eq!(
-                actual.sample(480.0, 3.0, 0.5, 1.0).unwrap(),
-                expected.sample(480.0, 3.0, 0.5, 1.0).unwrap()
+                actual.sample(480.0, 3.0, 0.5, 1.0, 0.0).unwrap(),
+                expected.sample(480.0, 3.0, 0.5, 1.0, 0.0).unwrap()
             );
         }
     }

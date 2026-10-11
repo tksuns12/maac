@@ -4,7 +4,7 @@
 use maac::bundle::SourceBundle;
 use maac::graph::{GraphProcessor, InstrumentProgram};
 use maac::library::LibrarySet;
-use maac::synth::{drive_sample, log_cosh};
+use maac::synth::{drive_normalizer, drive_sample, log_cosh, DriveState};
 use maac::voice::{CompiledInstrument, InstrumentRuntime};
 use std::collections::BTreeMap;
 use std::f64::consts::PI;
@@ -154,6 +154,8 @@ fn source_configuration_and_parameters_are_strict() {
         "config = { channels = 1; };",
         "config = { channels = 1; }; params = { drive = 64; bias = -4; level = 16; };",
         "config = { channels = 1; }; params = { drive = 0; bias = 4; level = 0; };",
+        "config = { channels = 1; }; params = { reference = 1; };",
+        "config = { channels = 1; }; params = { drive = 6; reference = 1/4; };",
     ] {
         library(node).unwrap_or_else(|error| panic!("{node}: {error:?}"));
     }
@@ -166,6 +168,8 @@ fn source_configuration_and_parameters_are_strict() {
         "config = { channels = 1; }; params = { drive = -1; };",
         "config = { channels = 1; }; params = { bias = 5; };",
         "config = { channels = 1; }; params = { level = 17; };",
+        "config = { channels = 1; }; params = { reference = 3/2; };",
+        "config = { channels = 1; }; params = { reference = -1/10; };",
         "config = { channels = 1; }; params = { cutoff = 1000Hz; };",
     ] {
         assert!(library(node).is_err(), "{node}");
@@ -216,4 +220,75 @@ fn a_voice_drive_matches_the_kernel_on_its_input() {
     for (frame, expected) in expected.iter().enumerate() {
         assert_eq!(driven.render(frame as u64).unwrap()[0], *expected);
     }
+}
+
+#[test]
+fn reference_keeps_a_reference_peak_at_level_times_reference() {
+    // A held input skips the anti-aliasing quotient, so the output is the
+    // curve itself: a peak of `reference` leaves at `level * reference`.
+    for bias in [0.0, 0.2, -1.0] {
+        for drive in [1.0, 4.0, 16.0, 64.0] {
+            let (reference, level) = (0.25, 0.8);
+            let mut state = DriveState::default();
+            let mut output = 0.0;
+            for _ in 0..3 {
+                let (value, after) = state.sample(reference, drive, bias, level, reference);
+                output = value;
+                state = after;
+            }
+            assert!(
+                (output - level * reference).abs() < 1e-12,
+                "bias {bias} drive {drive}: {output}"
+            );
+        }
+    }
+}
+
+#[test]
+fn zero_reference_is_the_plain_drive_bit_for_bit() {
+    let input: Vec<f64> = (0..2_000)
+        .map(|n| 0.9 * (2.0 * PI * 997.0 * f64::from(n) / RATE).sin())
+        .collect();
+    let expected = drive_signal(&input, 7.0, 0.3, 0.6);
+    let mut state = DriveState::default();
+    for (sample, expected) in input.iter().zip(expected) {
+        let (value, after) = state.sample(*sample, 7.0, 0.3, 0.6, 0.0);
+        assert_eq!(value.to_bits(), expected.to_bits());
+        state = after;
+    }
+}
+
+#[test]
+fn a_referenced_voice_drive_divides_the_kernel_by_its_normalizer() {
+    let program = program(
+        "config = { channels = 1; }; params = { drive = 5; bias = 1/4; level = 1/2; reference = 1/4; };",
+    );
+    let mut plain = program.clone();
+    plain.voice.output = maac::plan::PortRef::new("osc", "out").unwrap();
+    let compile = |program: &InstrumentProgram| {
+        let compiled = CompiledInstrument::compile(program, &BTreeMap::new()).unwrap();
+        InstrumentRuntime::new(Arc::new(compiled), 1, RATE, &BTreeMap::new()).unwrap()
+    };
+    let mut source = compile(&plain);
+    let mut driven = compile(&program);
+    source.note_on("note", 440.0, 1.0, 0).unwrap();
+    driven.note_on("note", 440.0, 1.0, 0).unwrap();
+    let input: Vec<f64> = (0..512)
+        .map(|frame| source.render(frame).unwrap()[0])
+        .collect();
+    let normalizer = drive_normalizer(5.0, 0.25, 0.25);
+    for (frame, expected) in drive_signal(&input, 5.0, 0.25, 0.5).iter().enumerate() {
+        let actual = driven.render(frame as u64).unwrap()[0];
+        assert!((actual - expected / normalizer).abs() < 1e-15, "{frame}");
+    }
+}
+
+#[test]
+fn a_reference_without_drive_fails_at_render() {
+    let program = program("config = { channels = 1; }; params = { drive = 0; reference = 1/4; };");
+    let compiled = CompiledInstrument::compile(&program, &BTreeMap::new()).unwrap();
+    let mut runtime =
+        InstrumentRuntime::new(Arc::new(compiled), 1, RATE, &BTreeMap::new()).unwrap();
+    runtime.note_on("note", 440.0, 1.0, 0).unwrap();
+    assert_eq!(runtime.render(0).unwrap_err().code(), "E_NONFINITE");
 }

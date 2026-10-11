@@ -359,11 +359,30 @@ pub struct DriveState {
     previous_log_cosh: Option<(u64, u64, f64)>,
     /// `tanh(bias)` with the bits of bias.
     bias_tanh: Option<(u64, f64)>,
+    /// [`drive_normalizer`] with the bits of drive, bias and reference.
+    normalizer: Option<(u64, u64, u64, f64)>,
+}
+
+/// The divisor that makes a positive peak of `reference` leave
+/// `synth.drive/1` at `level * reference`:
+/// `(tanh(drive * reference + bias) - tanh(bias)) / reference`. It is
+/// positive when `drive` and `reference` are.
+pub fn drive_normalizer(drive: f64, bias: f64, reference: f64) -> f64 {
+    ((drive * reference + bias).tanh() - bias.tanh()) / reference
 }
 
 impl DriveState {
     /// The next output and the state after it, leaving `self` unchanged.
-    pub fn sample(&self, input: f64, drive: f64, bias: f64, level: f64) -> (f64, Self) {
+    /// A positive `reference` divides the output by [`drive_normalizer`];
+    /// 0 leaves it as [`drive_sample`] computes it.
+    pub fn sample(
+        &self,
+        input: f64,
+        drive: f64,
+        bias: f64,
+        level: f64,
+        reference: f64,
+    ) -> (f64, Self) {
         let u = drive * input + bias;
         let previous_u = drive * self.previous + bias;
         let delta = u - previous_u;
@@ -371,6 +390,7 @@ impl DriveState {
             previous: input,
             previous_log_cosh: None,
             bias_tanh: self.bias_tanh,
+            normalizer: self.normalizer,
         };
         let shaped = if delta.abs() < DRIVE_ADAA_EPSILON {
             (0.5 * (u + previous_u)).tanh()
@@ -392,7 +412,19 @@ impl DriveState {
                 value
             }
         };
-        (level * (shaped - offset), after)
+        if reference == 0.0 {
+            return (level * (shaped - offset), after);
+        }
+        let keys = (drive.to_bits(), bias.to_bits(), reference.to_bits());
+        let normalizer = match self.normalizer {
+            Some((d, b, r, value)) if (d, b, r) == keys => value,
+            _ => {
+                let value = drive_normalizer(drive, bias, reference);
+                after.normalizer = Some((keys.0, keys.1, keys.2, value));
+                value
+            }
+        };
+        (level * (shaped - offset) / normalizer, after)
     }
 }
 
