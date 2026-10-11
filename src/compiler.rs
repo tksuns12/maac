@@ -5668,6 +5668,7 @@ fn local_resolved(document: &Document) -> ResolvedBundle {
             path: entry,
             hash: sha256_digest(document.source().as_bytes()),
         }],
+        builtin_schemas: Vec::new(),
     }
 }
 

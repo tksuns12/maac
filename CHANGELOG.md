@@ -5,6 +5,25 @@ promise of compatibility beyond the documented interfaces.
 
 ## [Unreleased]
 
+### Added
+
+- **Built-in extension schemas** (finding F11 of the
+  [production trial](docs/ai-production-trial.md)). A descriptor asset can
+  name the schema that the host embeds instead of a copied, hash-pinned file:
+  `asset schema { kind = descriptor; builtin = "maac.production/1"; }`. This
+  works for `maac.production/1`, `maac.takes/1` and `maac.takes/2`. Both forms
+  record the same schema hash and render identically; the copied form stays
+  valid. The resolved identity is `@builtin/schema/<namespace>.json`, which
+  archives list under `builtins`. See [§14.1](MaaC-1-Specification.md#141-immutable-assets)
+  and the [proposal](docs/delivery-schema-proposal.md).
+
+### Changed
+
+- "Late Window" ([`examples/lofi/lofi.maac`](examples/lofi/lofi.maac)) and the
+  [AI producer guide](docs/ai-producer-guide.md) use the built-in production
+  schema; the example no longer carries a copy of `production.schema.json`.
+  Its delivered WAV is byte-identical.
+
 ## [0.1.0] — 2026-10-08
 
 The first public source release, experimental. It publishes the MaaC/1

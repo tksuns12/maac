@@ -140,7 +140,9 @@ for analyzer `maac.analysis.bs1770-5/2` and true-peak profile
 commands do not advertise full ITU/EBU conformance.
 
 For the repository example, use `--project-root .`: its descriptor asset path
-is package-relative while the source is in `examples/`. For example:
+is package-relative while the source is in `examples/`. A source whose
+descriptor names the built-in schema (`builtin = "maac.production/1"`) needs
+no project root for it. For example:
 
 ```sh
 maac deliver examples/production.maac --project-root . --profile song --delivery release_cd --output-dir production-output

@@ -19,6 +19,11 @@ its execution record distinguishes inspected evidence from freshly run gates.
 
 **Supported extension identifiers (§1.2):** `maac.production/1`, `maac.takes/1`, `maac.takes/2`
 
+**Built-in schemas (§14.1):** each supported extension's schema is embedded. A
+descriptor asset names it with `builtin = "<namespace>"` instead of a copied,
+hash-pinned file; its identity is `@builtin/schema/<namespace>.json`, and
+archives list it under `builtins` rather than as a member.
+
 An `extension` with any other namespace, or a namespace that
 `project.requires` does not list, is preserved for Document-only inspection
 (parsing, the authored tree and its revision hash) and refused elsewhere, at its

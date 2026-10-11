@@ -11,6 +11,7 @@ import copy
 import hashlib
 import json
 import math
+import re
 from fractions import Fraction
 from pathlib import Path
 
@@ -255,8 +256,13 @@ def validate_extension(ef, objects, schema):
     require(asset_id in objects and asset_port is None and objects[asset_id]["kind"] == "asset", "E_REFERENCE")
     af = objects[asset_id]["fields"]
     require(scalar(af.get("kind", {})) == "descriptor", "E_SCHEMA_ASSET")
-    require(scalar(af.get("path", {})) == "production.schema.json", "E_SCHEMA_ASSET")
-    require(scalar(af.get("hash", {})) == "sha256:" + hashlib.sha256((ROOT / "production.schema.json").read_bytes()).hexdigest(), "E_HASH")
+    if "builtin" in af:
+        # The built-in form names the embedded schema instead of a file (§14.1).
+        require(set(af) - {"label"} == {"kind", "builtin"}, "E_SCHEMA_ASSET")
+        require(af["builtin"] == {"t": "string", "v": "maac.production/1"}, "E_SCHEMA_ASSET")
+    else:
+        require(scalar(af.get("path", {})) == "production.schema.json", "E_SCHEMA_ASSET")
+        require(scalar(af.get("hash", {})) == "sha256:" + hashlib.sha256((ROOT / "production.schema.json").read_bytes()).hexdigest(), "E_HASH")
     local_schema(schema)
     try:
         Draft202012Validator(schema).validate(ef["data"])
@@ -511,6 +517,23 @@ def main():
     del rf["predelay"], rf["damping"]
     validate(defaults, schema)
     valid_count += 1
+    copied = re.search(r"asset production_schema \{[^}]*\}", source).group(0)
+    pinned = 'builtin = "maac.production/1";'
+    builtin = source.replace(copied, "asset production_schema { kind = descriptor; " + pinned + " }")
+    validate(parse(builtin), schema)
+    valid_count += 1
+    builtin_cases = [
+        ('builtin = "maac.takes/1";', "E_SCHEMA_ASSET"),
+        (pinned + ' path = "production.schema.json";', "E_SCHEMA_ASSET"),
+        (pinned + ' hash = "sha256:' + "0" * 64 + '";', "E_SCHEMA_ASSET"),
+    ]
+    for replacement, error in builtin_cases:
+        try:
+            validate(parse(builtin.replace(pinned, replacement, 1)), schema)
+        except Invalid as exc:
+            assert str(exc) == error, (replacement, str(exc), error)
+        else:
+            raise AssertionError("Accepted invalid built-in descriptor: " + replacement)
     for case in fixtures["invalid_source_mutations"]:
         assert case["replace"] in source, case["id"]
         changed = source.replace(case["replace"], case["with"], 1)
@@ -529,7 +552,7 @@ def main():
     else:
         raise AssertionError("Accepted remote schema reference")
     counts = arithmetic(fixtures)
-    print(json.dumps({"status": "pass", "scope": "production specification smoke checks only; Rust renderer verification is separate", "valid_documents": valid_count, "invalid_documents": len(fixtures["invalid_source_mutations"]), "schema_reference_checks": 1, "arithmetic_cases": counts, "tracked_artifact_writes": 0}, indent=2))
+    print(json.dumps({"status": "pass", "scope": "production specification smoke checks only; Rust renderer verification is separate", "valid_documents": valid_count, "invalid_documents": len(fixtures["invalid_source_mutations"]) + len(builtin_cases), "schema_reference_checks": 1, "arithmetic_cases": counts, "tracked_artifact_writes": 0}, indent=2))
 
 
 if __name__ == "__main__":

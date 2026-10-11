@@ -105,9 +105,14 @@ maac analyze main.maac --window region:b --preroll 4 --json   # quick, approxima
 
 ## 5. Deliver
 
-Add a `maac.production/1` extension with a delivery, its limits and a pinned
-copy of `production.schema.json`. [`examples/lofi/lofi.maac`](../examples/lofi/lofi.maac)
-shows the shape. Then run:
+Add a `maac.production/1` extension with a delivery and its limits. Its schema
+is built in, so no file is copied:
+
+```maac
+asset schema { kind = descriptor; builtin = "maac.production/1"; }
+```
+
+[`examples/lofi/lofi.maac`](../examples/lofi/lofi.maac) shows the shape. Then run:
 
 ```sh
 maac deliver main.maac --delivery release --output-dir out --profile song

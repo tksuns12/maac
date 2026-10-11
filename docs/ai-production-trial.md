@@ -74,7 +74,7 @@ owner heard, every point of friction, and what to build next.
 | F7 | Rendering runs at about real time (65 s for 78 s), so each iteration costs over a minute; `analyze` cannot render one section | Fixed: the [render-speed work](render-speed.md) cut a "Late Window" render's CPU cycles 3.1 times with byte-identical output, and `analyze --window` measures one section, exactly or with an approximate `--preroll` |
 | F8 | Drums struck on one pitch shared a piano-roll row | Fixed in `default/2` |
 | F9, F10, F16 | There is no limiter. Two compressors stand in for one, the crest factor stays high, and the plucked guitar's attacks pushed the true peak over 0 dBTP until the stand-in was re-tuned | Fixed: [`fx.limiter/1`](production.md#6-limiter--fxlimiter1). One limiter replaced the stand-in: -14.73 LUFS at -1.10 dBTP against -15.58 LUFS at -2.07 dBTP |
-| F11 | A delivery needs a copied schema file and its hash pin. Its path is project-root relative, while sample paths are source relative | Gap: delivery boilerplate |
+| F11 | A delivery needs a copied schema file and its hash pin. Its path is project-root relative, while sample paths are source relative | Fixed: a descriptor can name the [built-in schema](delivery-schema-proposal.md), `builtin = "maac.production/1"`, with no file, hash or path. "Late Window" uses it |
 | F12 | Mixed swing and straight grids went unnoticed by every tool; the owner's ears caught them | Fixed: `groove_mismatch` |
 | F13 | A vinyl hiss 27 dB under the music still read as a constant, annoying "sssss" once the compressors lifted quiet passages. The numbers could not show that steady noise is salient | Gap: perception |
 | F14 | The std/basic instruments sound dated, and they limit how good any track can sound | Addressed by [`std/studio/1.0.0`](studio-instruments.md): new building blocks and an electric piano, bass, pad and kit whose timbre follows velocity. "Late Window" now plays them. Accepted on measurements; no one has judged it by ear |
@@ -110,7 +110,8 @@ owner heard, every point of friction, and what to build next.
 6. **Perception gaps (F13).** Measure the noise floor of quiet passages, and
    add the deferred score–audio checks (audible notes, sounding pitch).
 7. **Delivery boilerplate (F11).** A built-in production schema reference
-   instead of a copied, pinned file.
+   instead of a copied, pinned file. Done on 2026-10-08; see the
+   [proposal](delivery-schema-proposal.md).
 
 The [AI producer guide](ai-producer-guide.md) turns the working practice
 from this trial into steps for the next AI producer.

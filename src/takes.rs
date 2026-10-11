@@ -385,6 +385,10 @@ fn descriptor<'a>(
         .get(id)
         .filter(|object| object.kind == "asset")
         .ok_or_else(|| schema.error("E_ASSET", "schema must reference a descriptor asset"))?;
+    if descriptor.field("builtin").is_some() {
+        crate::extensions::builtin_descriptor(descriptor, version.capability())?;
+        return Ok(descriptor);
+    }
     let fields = object_fields(descriptor, &["kind", "path", "hash"], NOUN, NOUN)?;
     let kind = fields.get("kind")?;
     if kind.symbol()? != "descriptor" {

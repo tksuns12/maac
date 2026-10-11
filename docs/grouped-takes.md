@@ -14,9 +14,11 @@ warped/reversed comps, and automatic crossfades remain outside this capability.
 
 A project must require `"maac.takes/2"` and provide one extension with that
 namespace, `render_affecting=true`, and a top-level descriptor reference. The
-schema pin and bytes must match [`takes-v2.schema.json`](../takes-v2.schema.json).
-The descriptor path resolves from the package root, including for nested source
-entries. The schema describes tagged syntax data; semantic validation also
+descriptor either names the built-in schema,
+`asset schema { kind=descriptor; builtin="maac.takes/2"; }`, or pins a copy
+whose bytes match [`takes-v2.schema.json`](../takes-v2.schema.json)
+([§14.1](../MaaC-1-Specification.md#141-immutable-assets)). A copy's path
+resolves from the package root, including for nested source entries. The schema describes tagged syntax data; semantic validation also
 checks assets, timing, references, bounds, and selected clips.
 
 The original [`maac.takes/1`](takes-and-comping.md) schema and meaning remain

@@ -968,6 +968,11 @@ impl<'a> Validator<'a> {
                 &["target", "from", "amount"],
                 &["target", "from", "amount", "label"],
             ),
+            // `validate_asset_shape` reports `path` or `hash` beside `builtin`.
+            "asset" if object.fields.contains_key("builtin") => (
+                &["kind", "builtin"],
+                &["kind", "builtin", "path", "hash", "label"],
+            ),
             "asset" => (
                 &["kind", "path", "hash"],
                 &[
@@ -3879,6 +3884,10 @@ impl<'a> Validator<'a> {
                 &["audio", "blob", "descriptor", "module"],
             );
         }
+        if let Some(field) = object.field("builtin") {
+            self.validate_builtin_descriptor(object, field, kind.as_deref(), path);
+            return;
+        }
         if let Some(field) = object.field("path") {
             self.expect_string(field, path, "path");
         }
@@ -4479,6 +4488,48 @@ impl<'a> Validator<'a> {
         }
     }
 
+    /// A descriptor asset that names a built-in schema instead of a file
+    /// (§14.1).
+    fn validate_builtin_descriptor(
+        &mut self,
+        object: &Object,
+        field: &Field,
+        kind: Option<&str>,
+        path: &[String],
+    ) {
+        for name in ["path", "hash"] {
+            if let Some(mixed) = object.field(name) {
+                self.push(
+                    DiagnosticCode::Asset,
+                    "an asset uses either `path` and `hash`, or `builtin`",
+                    Some(mixed.span),
+                    path.to_vec(),
+                    vec![name.into()],
+                );
+            }
+        }
+        if kind.is_some_and(|kind| kind != "descriptor") {
+            self.push(
+                DiagnosticCode::Asset,
+                "only a descriptor asset can name a built-in schema",
+                Some(field.span),
+                path.to_vec(),
+                vec!["builtin".into()],
+            );
+        }
+        if let Some(id) = self.expect_string(field, path, "builtin") {
+            if crate::extensions::builtin_schema(&id).is_none() {
+                self.push(
+                    DiagnosticCode::Reference,
+                    format!("unknown built-in schema `{id}`"),
+                    Some(field.value.span),
+                    path.to_vec(),
+                    vec!["builtin".into()],
+                );
+            }
+        }
+    }
+
     fn validate_extension_shape(&mut self, object: &Object, path: &[String]) {
         if let Some(field) = object.field("namespace") {
             self.expect_string(field, path, "namespace");
@@ -4496,6 +4547,30 @@ impl<'a> Validator<'a> {
         }
         if let Some(field) = object.field("schema") {
             self.expect_object_ref(field, "schema", &["asset"], path);
+            // A built-in schema belongs to exactly one namespace.
+            let document = self.document;
+            let builtin = field
+                .value
+                .reference()
+                .filter(|reference| reference.path.len() == 1 && reference.port.is_none())
+                .and_then(|reference| document.object(&reference.path[0]))
+                .and_then(|asset| asset.field("builtin"))
+                .and_then(|builtin| builtin.value.as_string())
+                .filter(|builtin| crate::extensions::builtin_schema(builtin).is_some());
+            let namespace = object
+                .field("namespace")
+                .and_then(|namespace| namespace.value.as_string());
+            if let (Some(builtin), Some(namespace)) = (builtin, namespace) {
+                if builtin != namespace {
+                    self.push(
+                        DiagnosticCode::Asset,
+                        format!("schema must be the built-in schema of `{namespace}`"),
+                        Some(field.value.span),
+                        path.to_vec(),
+                        vec!["schema".into()],
+                    );
+                }
+            }
         }
         if let Some(field) = object.field("render_affecting") {
             self.expect_boolean(field, path, "render_affecting");

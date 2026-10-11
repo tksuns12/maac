@@ -85,7 +85,8 @@ master/stem deliveries,
 resampling, encoding, and final-artifact loudness analysis. These processors
 use existing `node` syntax and require no external executable implementation
 asset. Named deliveries use an existing render-affecting `extension` object
-with a hash-pinned, self-contained [schema](production.schema.json).
+with a self-contained [schema](production.schema.json), either hash-pinned or
+named as a built-in descriptor (§14.1).
 
 This capability preserves `maac 1` semantics and all Core Audio conformance
 obligations; supporting it does not establish Core Audio conformance. The
@@ -660,6 +661,14 @@ asset take {
 The hash text above is an explanatory placeholder, not a valid literal digest. A usable asset declaration must contain the actual digest of the complete asset bytes.
 
 An `asset` requires `kind`, `path`, and `hash`. Kind is `audio`, `blob`, `descriptor`, or `module`. Path is a package-relative retrieval hint; hash is identity. Audio also requires `format`, positive integer-Hz `rate`, positive integer `channels`, and nonnegative integer `frames`. Other kinds do not carry audio fields.
+
+A descriptor asset may instead name a **built-in schema**: `kind = descriptor` and an exact string `builtin`, with no `path` or `hash`.
+
+```maac
+asset schema { kind = descriptor; builtin = "maac.production/1"; }
+```
+
+The `builtin` value is the namespace of an extension whose published schema the host embeds. A built-in descriptor may only be the `schema` of an extension with that same namespace. Its resolved identity is `@builtin/schema/<namespace>.json` with the SHA-256 of the embedded bytes; the reserved `@builtin/` namespace means no source or asset map can supply or replace it. A built-in schema is frozen by its namespace version. It identifies the same bytes as a copied file pinned by their hash, so both forms produce the same schema identity. Mixing `builtin` with `path` or `hash`, or using it on another kind or for another namespace, is `E_ASSET`. An unknown built-in schema is `E_REFERENCE`. This implementation embeds the schemas of `maac.production/1`, `maac.takes/1`, and `maac.takes/2`.
 
 The core audio format is interleaved IEEE-754 binary32 samples, little-endian, with no header. File byte length must equal `frames * channels * 4`. Samples must be finite; NaN and infinity are invalid. Subnormal and signed-zero samples are valid source data. Values outside [-1,1] are not automatically clipped. The same exact bytes and metadata always describe the same source signal.
 
@@ -1318,7 +1327,7 @@ formats or current production/import identities. A receiver requiring protocol
 or mutating the document and must not silently reinterpret or convert its base
 hash.
 
-An `extension` requires `namespace`, an exact versioned identifier string; `schema`, a descriptor-asset reference; `render_affecting`, boolean; and `data`, a record. Its namespace must appear in `project.requires`. An extension whose namespace the host does not support is reported with `E_CAPABILITY`, and an extension whose namespace `project.requires` does not list with `E_REFERENCE`, both at the extension's `namespace` field. A host that does not understand a required extension may preserve it for Document-only inspection but must not claim semantic normalization or faithful rendering of that document. In particular, it must not trust an unknown schema's assertion that arbitrary data is non-rendering merely to omit it from a hash.
+An `extension` requires `namespace`, an exact versioned identifier string; `schema`, a descriptor-asset reference, which may name a built-in schema (§14.1); `render_affecting`, boolean; and `data`, a record. Its namespace must appear in `project.requires`. An extension whose namespace the host does not support is reported with `E_CAPABILITY`, and an extension whose namespace `project.requires` does not list with `E_REFERENCE`, both at the extension's `namespace` field. A host that does not understand a required extension may preserve it for Document-only inspection but must not claim semantic normalization or faithful rendering of that document. In particular, it must not trust an unknown schema's assertion that arbitrary data is non-rendering merely to omit it from a hash.
 
 Extensions may add explicitly namespaced object structures or capabilities only through their published schemas and adapters. They cannot redefine core units, mutate another object's behavior implicitly, shadow core IDs, or grant execution permission. Compatibility is demonstrated by conformance tests, not inferred from a shared filename extension.
 

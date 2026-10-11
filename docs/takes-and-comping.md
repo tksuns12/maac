@@ -17,9 +17,13 @@ microphone-file lanes while preserving this schema and v1 behavior.
 A project using this capability must list `"maac.takes/1"` in `project.requires`
 and contain exactly one extension with that namespace. The extension requires
 `render_affecting=true`, a `schema` reference to a top-level descriptor asset,
-and `data`. The descriptor's hash and bytes must match the shipped
-[`takes.schema.json`](../takes.schema.json). Its path is relative to the package
-root, including when the composition entry is in a subdirectory. One v1 take
+and `data`. The descriptor either names the built-in schema,
+`asset schema { kind=descriptor; builtin="maac.takes/1"; }`, or pins a copy
+whose hash and bytes match the shipped
+[`takes.schema.json`](../takes.schema.json)
+([§14.1](../MaaC-1-Specification.md#141-immutable-assets)). A copy's path is
+relative to the package root, including when the composition entry is in a
+subdirectory. One v1 take
 extension can coexist with one v2 take extension and the existing production
 delivery extension. Each version needs its matching required capability.
 

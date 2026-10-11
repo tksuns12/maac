@@ -459,12 +459,16 @@ impl ProductionSettings {
             .filter(|path| path.len() == 1)
             .and_then(|path| path[0].as_str());
         let descriptor = path.map(|id| &source["objects"][id]);
+        // The pinned copy and the built-in form name the same schema bytes.
+        let builtin = self.schema_hash == sha256_digest(SCHEMA_BYTES);
         if schema["t"] != "ref"
             || !schema["port"].is_null()
             || !descriptor.is_some_and(|asset| {
                 asset["kind"] == "asset"
                     && asset["fields"]["kind"] == json!({"t":"symbol","v":"descriptor"})
-                    && asset["fields"]["hash"] == json!({"t":"string","v":self.schema_hash})
+                    && (asset["fields"]["hash"] == json!({"t":"string","v":self.schema_hash})
+                        || (builtin
+                            && asset["fields"]["builtin"] == json!({"t":"string","v":CAPABILITY})))
             })
         {
             return Err(error(
@@ -722,31 +726,36 @@ fn prepare(
     if descriptor.kind != "asset" {
         return Err(schema.error("E_ASSET", "schema must reference an asset"));
     }
-    let descriptor_fields = object_fields(descriptor, &["kind", "path", "hash"], NOUN, NOUN)?;
-    let kind = descriptor_fields.get("kind")?;
-    if kind.symbol()? != "descriptor" {
-        return Err(kind.error("E_ASSET", "schema asset must have descriptor kind"));
-    }
-    let path_field = descriptor_fields.get("path")?;
-    let path = normalize_file_reference("package.maac", path_field.string()?).map_err(|_| {
-        path_field.error(
-            "E_REFERENCE",
-            "schema path must remain inside the package root",
-        )
-    })?;
-    let supplied = assets.get(&path).ok_or_else(|| {
-        path_field.error("E_ASSET", "schema asset bytes are missing from the bundle")
-    })?;
     let expected_hash = sha256_digest(SCHEMA_BYTES);
-    let hash = descriptor_fields.get("hash")?;
-    if hash.string()? != expected_hash
-        || supplied.as_slice() != SCHEMA_BYTES
-        || sha256_digest(supplied) != expected_hash
-    {
-        return Err(hash.error(
-            "E_HASH",
-            "schema pin and bytes must match the recognized self-contained schema",
-        ));
+    if descriptor.field("builtin").is_some() {
+        crate::extensions::builtin_descriptor(descriptor, CAPABILITY)?;
+    } else {
+        let descriptor_fields = object_fields(descriptor, &["kind", "path", "hash"], NOUN, NOUN)?;
+        let kind = descriptor_fields.get("kind")?;
+        if kind.symbol()? != "descriptor" {
+            return Err(kind.error("E_ASSET", "schema asset must have descriptor kind"));
+        }
+        let path_field = descriptor_fields.get("path")?;
+        let path =
+            normalize_file_reference("package.maac", path_field.string()?).map_err(|_| {
+                path_field.error(
+                    "E_REFERENCE",
+                    "schema path must remain inside the package root",
+                )
+            })?;
+        let supplied = assets.get(&path).ok_or_else(|| {
+            path_field.error("E_ASSET", "schema asset bytes are missing from the bundle")
+        })?;
+        let hash = descriptor_fields.get("hash")?;
+        if hash.string()? != expected_hash
+            || supplied.as_slice() != SCHEMA_BYTES
+            || sha256_digest(supplied) != expected_hash
+        {
+            return Err(hash.error(
+                "E_HASH",
+                "schema pin and bytes must match the recognized self-contained schema",
+            ));
+        }
     }
     let data_value = fields.get("data")?;
     let data = data_value.record()?;

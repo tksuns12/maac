@@ -153,6 +153,7 @@ impl SourceBundle {
             resolved_disk_assets: BTreeMap::new(),
             dependencies: Vec::new(),
             source_files: Vec::new(),
+            builtin_schemas: BTreeMap::new(),
         };
         resolver.visit(&entry, 0)?;
 
@@ -164,6 +165,11 @@ impl SourceBundle {
             disk_assets: resolver.resolved_disk_assets,
             dependencies: resolver.dependencies,
             source_files: resolver.source_files,
+            builtin_schemas: resolver
+                .builtin_schemas
+                .into_iter()
+                .map(|(path, hash)| SourceIdentity { path, hash })
+                .collect(),
         })
     }
 
@@ -275,6 +281,8 @@ pub struct ResolvedBundle {
     pub(crate) disk_assets: BTreeMap<String, std::sync::Arc<crate::disk_media::DiskAsset>>,
     pub dependencies: Vec<DependencyIdentity>,
     pub source_files: Vec<SourceIdentity>,
+    /// Built-in schemas that descriptor assets name, in path order (§14.1).
+    pub builtin_schemas: Vec<SourceIdentity>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -372,6 +380,8 @@ impl PinnedReference {
 pub(crate) struct DocumentReferences {
     pub imports: Vec<ImportReference>,
     pub assets: Vec<PinnedReference>,
+    /// Built-in schemas named by descriptor assets; they need no bytes.
+    pub schemas: Vec<SourceIdentity>,
 }
 
 pub(crate) enum ImportReference {
@@ -425,6 +435,7 @@ struct Resolver<'a> {
     resolved_disk_assets: BTreeMap<String, std::sync::Arc<crate::disk_media::DiskAsset>>,
     dependencies: Vec<DependencyIdentity>,
     source_files: Vec<SourceIdentity>,
+    builtin_schemas: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -596,6 +607,9 @@ impl Resolver<'_> {
             self.visit(&target, depth + 1)?;
         }
 
+        for schema in references.schemas {
+            self.builtin_schemas.insert(schema.path, schema.hash);
+        }
         for asset in references.assets {
             let declared = asset.declared.as_ref();
             let target = asset
@@ -680,6 +694,7 @@ pub(crate) fn discover_document_references(
 fn discover(source_path: &str, document: &Document) -> Result<DocumentReferences, Diagnostics> {
     let mut imports = Vec::new();
     let mut assets = Vec::new();
+    let mut schemas = Vec::new();
     for object in document.objects.values() {
         match object.kind.as_str() {
             "import" => imports.push(exact_import_reference(source_path, object)?),
@@ -695,6 +710,18 @@ fn discover(source_path: &str, document: &Document) -> Result<DocumentReferences
                     .and_then(|field| field.value.as_symbol())
                     == Some("audio") =>
             {
+                if let Some(field) = object.field("builtin") {
+                    let mut diagnostics = Diagnostics::new();
+                    diagnostics.push(
+                        Location::object(object)
+                            .at("builtin", field.name_span)
+                            .error(
+                                "E_ASSET",
+                                "only a descriptor asset can name a built-in schema",
+                            ),
+                    );
+                    return Err(diagnostics);
+                }
                 let mut reference = asset_reference(source_path, object)?;
                 reference.base = ReferenceBase::PackageRoot;
                 assets.push(reference);
@@ -767,11 +794,31 @@ fn discover(source_path: &str, document: &Document) -> Result<DocumentReferences
             };
             return Err(failure(&at, "E_ASSET", message));
         }
+        // A built-in schema is embedded, so no file is read (§14.1).
+        if descriptor.field("builtin").is_some() {
+            let namespace = namespace.unwrap_or_default();
+            let schema = crate::extensions::builtin_descriptor(descriptor, namespace).map_err(
+                |diagnostic| {
+                    let mut diagnostics = Diagnostics::new();
+                    diagnostics.push(diagnostic);
+                    diagnostics
+                },
+            )?;
+            schemas.push(SourceIdentity {
+                path: schema.path.to_owned(),
+                hash: sha256_digest(schema.bytes),
+            });
+            continue;
+        }
         let mut reference = pinned_fields(source_path, descriptor, DiagnosticCode::Asset)?;
         reference.base = ReferenceBase::PackageRoot;
         assets.push(reference);
     }
-    Ok(DocumentReferences { imports, assets })
+    Ok(DocumentReferences {
+        imports,
+        assets,
+        schemas,
+    })
 }
 
 fn exact_import_reference(

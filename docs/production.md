@@ -28,9 +28,17 @@ similarly named plug-in. Unsupported required capabilities fail before rendering
 
 Named deliveries use exactly one `extension` with
 `namespace = "maac.production/1"`, `render_affecting = true`, and a `schema`
-reference to a descriptor asset containing the self-contained
-[`production.schema.json`](../production.schema.json), pinned by its exact byte
-SHA-256. The schema validates the tagged canonical syntax-tree representation
+reference to a descriptor asset for the self-contained
+[`production.schema.json`](../production.schema.json). The descriptor either
+names the built-in schema, which needs no file:
+
+```maac
+asset schema { kind = descriptor; builtin = "maac.production/1"; }
+```
+
+or pins a copy of the file by its exact byte SHA-256, with a `path` from the
+package root. Both forms identify the same bytes and record the same schema
+hash ([§14.1](../MaaC-1-Specification.md#141-immutable-assets)). The schema validates the tagged canonical syntax-tree representation
 of this extension's `data`, not the entire document. Schema validation does not
 replace reference resolution, exact unit conversion, or the semantic checks in
 this contract. Native processing without named deliveries does not require an
@@ -682,7 +690,9 @@ full source IDs remain authoritative in delivery data and manifests.
 The [complete example](../examples/production.maac) uses the repository as its
 package root; its descriptor asset path `production.schema.json` resolves from
 that root. The schema is self-contained and its exact bytes must match the
-example's asset hash. The example runs through the experimental implementation:
+example's asset hash. [`examples/lofi/lofi.maac`](../examples/lofi/lofi.maac)
+names the built-in schema instead and needs no copy. The example runs through
+the experimental implementation:
 
 ```sh
 maac deliver examples/production.maac --project-root . --profile song --delivery release_cd --output-dir production-output

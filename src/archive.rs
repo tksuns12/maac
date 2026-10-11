@@ -279,6 +279,22 @@ impl ArchiveSnapshot {
                 });
             }
         }
+        // Built-in schemas are embedded like built-in libraries, so they are
+        // identities rather than members (§14.1).
+        for schema in &resolved.builtin_schemas {
+            let Some(current) = crate::extensions::builtin_schema_at(&schema.path) else {
+                return Err(fail(
+                    DiagnosticCode::Reference,
+                    format!("unknown built-in schema `{}`", schema.path),
+                ));
+            };
+            builtins.push(Builtin {
+                path: schema.path.clone(),
+                bytes: current.bytes.len() as u64,
+                sha256: schema.hash.clone(),
+            });
+        }
+        builtins.sort_by(|a, b| a.path.cmp(&b.path));
 
         let mut data = BTreeMap::new();
         let mut members = Vec::new();
@@ -1292,15 +1308,18 @@ fn validate_manifest(manifest: &Manifest) -> Result<(), Diagnostics> {
         }
         prior_builtin = Some(&builtin.path);
         crate::bundle::validate_hash_pin(&builtin.sha256, "built-in hash")?;
-        let Some(current) = crate::stdlib::lookup_path(&builtin.path) else {
+        let current = crate::stdlib::lookup_path(&builtin.path)
+            .map(|library| library.source.as_bytes())
+            .or_else(|| {
+                crate::extensions::builtin_schema_at(&builtin.path).map(|schema| schema.bytes)
+            });
+        let Some(current) = current else {
             return Err(fail(
                 DiagnosticCode::Reference,
                 "archive references an unknown built-in",
             ));
         };
-        if builtin.bytes != current.source.len() as u64
-            || builtin.sha256 != sha256_digest(current.source.as_bytes())
-        {
+        if builtin.bytes != current.len() as u64 || builtin.sha256 != sha256_digest(current) {
             return Err(fail(
                 DiagnosticCode::Hash,
                 "archive built-in identity differs from this runtime",
@@ -2298,5 +2317,53 @@ mod tests {
         snapshot.stage(archive.path()).unwrap();
         symlink("main.maac", archive.path().join("link.maac")).unwrap();
         assert!(ArchiveSnapshot::verify(archive.path()).is_err());
+    }
+
+    #[test]
+    fn builtin_schema_is_an_identity_and_must_match_this_runtime() {
+        let source_dir = tempfile::tempdir().unwrap();
+        let text = source(None).replace(
+            "output=&tone:out; }",
+            "output=&tone:out; requires=[\"maac.production/1\"]; }",
+        ) + "asset schema { kind=descriptor; builtin=\"maac.production/1\"; }\n\
+            extension deliveries { namespace=\"maac.production/1\"; schema=&schema; render_affecting=true; data={ deliveries={ release={ rate=48000Hz; resampler=\"maac.src.kaiser/1\"; targets={ main={ role=master; output=&tone:out; encoding=wav_f32le; dither={ type=none; }; }; }; }; }; }; }\n";
+        fs::write(source_dir.path().join("main.maac"), text).unwrap();
+        let snapshot =
+            ArchiveSnapshot::capture(Path::new("main.maac"), source_dir.path(), "default").unwrap();
+        let schema = crate::extensions::builtin_schema("maac.production/1").unwrap();
+        assert_eq!(
+            snapshot.manifest.builtins,
+            [Builtin {
+                path: schema.path.into(),
+                bytes: schema.bytes.len() as u64,
+                sha256: sha256_digest(schema.bytes),
+            }]
+        );
+        let members: Vec<_> = snapshot.manifest.members.iter().map(|m| &m.path).collect();
+        assert_eq!(members, ["main.maac"]);
+        let archive = tempfile::tempdir().unwrap();
+        snapshot.stage(archive.path()).unwrap();
+        assert_eq!(
+            ArchiveSnapshot::verify(archive.path()).unwrap().digest(),
+            snapshot.digest()
+        );
+
+        let code = |forged: &Manifest| {
+            validate_manifest(forged)
+                .unwrap_err()
+                .iter()
+                .next()
+                .unwrap()
+                .code
+        };
+        let mut forged = snapshot.manifest.clone();
+        forged.builtins[0].sha256 = sha256_digest(b"{}");
+        assert_eq!(code(&forged), DiagnosticCode::Hash);
+        let mut forged = snapshot.manifest.clone();
+        forged.builtins[0].bytes += 1;
+        assert_eq!(code(&forged), DiagnosticCode::Hash);
+        let mut forged = snapshot.manifest.clone();
+        forged.builtins[0].path = "@builtin/schema/maac.production/2.json".into();
+        assert_eq!(code(&forged), DiagnosticCode::Reference);
     }
 }

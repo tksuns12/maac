@@ -325,3 +325,67 @@ fn production_preconditions_share_fx_execution_defaults() {
         json!({"t":"quantity","n":"1","d":"100","u":"s"})
     );
 }
+
+#[test]
+fn copied_production_schema_can_become_the_builtin_form() {
+    let bundle = production_bundle();
+    let context = BundleEditContext::new(&bundle).unwrap();
+    let mut document = authored(&bundle);
+    let pin = sha256_digest(maac::production_data::SCHEMA_BYTES);
+    let tx = Transaction::new(
+        document.revision().to_owned(),
+        vec![
+            Operation::Unset {
+                object: vec!["schema".into()],
+                field: vec!["path".into()],
+                expect: Some(json!({"t":"string","v":"production.schema.json"})),
+            },
+            Operation::Unset {
+                object: vec!["schema".into()],
+                field: vec!["hash".into()],
+                expect: Some(json!({"t":"string","v":pin})),
+            },
+            Operation::Set {
+                object: vec!["schema".into()],
+                field: vec!["builtin".into()],
+                value: json!({"t":"string","v":"maac.production/1"}),
+                expect: None,
+                expect_absent: true,
+            },
+        ],
+    )
+    .unwrap();
+    apply_transaction(&mut document, &tx, &context).unwrap();
+    let fields = &document.tree()["objects"]["schema"]["fields"];
+    assert_eq!(
+        fields,
+        &json!({
+            "kind": {"t":"symbol","v":"descriptor"},
+            "builtin": {"t":"string","v":"maac.production/1"},
+        })
+    );
+
+    // The built-in form edits without any schema bytes in the bundle.
+    let source = bundle.sources["main.maac"].replace(
+        &format!(
+            "asset schema {{ kind=descriptor; path=\"production.schema.json\"; hash=\"{pin}\"; }}"
+        ),
+        "asset schema { kind=descriptor; builtin=\"maac.production/1\"; }",
+    );
+    let builtin = SourceBundle::new("main.maac", source);
+    maac::compiler::check_bundle_artifact(&builtin).unwrap();
+    let context = BundleEditContext::new(&builtin).unwrap();
+    let mut document = authored(&builtin);
+    let tx = Transaction::new(
+        document.revision().to_owned(),
+        vec![Operation::Set {
+            object: vec!["room".into()],
+            field: vec!["params".into(), "mix".into()],
+            value: json!({"t":"number","n":"1","d":"4"}),
+            expect: Some(json!({"t":"number","n":"1","d":"2"})),
+            expect_absent: false,
+        }],
+    )
+    .unwrap();
+    apply_transaction(&mut document, &tx, &context).unwrap();
+}

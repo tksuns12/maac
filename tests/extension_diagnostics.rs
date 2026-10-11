@@ -830,3 +830,129 @@ audio late_room {{ asset=&fourth; at=1/24000s; source=[5frame,7frame]; mode=rate
     ];
     run(&base, &assets, &cases);
 }
+
+/// Replace `base`'s pinned descriptor with the built-in form (§14.1) and drop
+/// the copied schema file.
+fn builtin(
+    (source, mut assets): (String, BTreeMap<String, Vec<u8>>),
+    file: &str,
+    namespace: &str,
+) -> (String, BTreeMap<String, Vec<u8>>) {
+    let schema = assets.remove(file).unwrap();
+    let pinned = [
+        format!(
+            "asset schema {{ kind = descriptor; path = \"{file}\"; hash = \"{}\"; }}",
+            sha256_digest(&schema)
+        ),
+        format!(
+            "asset schema {{ kind=descriptor; path=\"{file}\"; hash=\"{}\"; }}",
+            sha256_digest(&schema)
+        ),
+    ];
+    let pinned = pinned
+        .iter()
+        .find(|pinned| source.contains(pinned.as_str()))
+        .unwrap();
+    let source = source.replace(
+        pinned,
+        &format!("asset schema {{ kind = descriptor; builtin = \"{namespace}\"; }}"),
+    );
+    (source, assets)
+}
+
+fn builtin_cases(namespace: &'static str, other: &'static str) -> Vec<Case> {
+    let builtin = leak(format!("builtin = \"{namespace}\";"));
+    let with = |extra: &str| leak(format!("builtin = \"{namespace}\"; {extra}"));
+    vec![
+        Case {
+            name: "builtin with path",
+            from: builtin,
+            to: with("path = \"schema.json\";"),
+            code: "E_ASSET",
+            object: &["schema"],
+            field: &["path"],
+            text: "path",
+        },
+        Case {
+            name: "builtin with hash",
+            from: builtin,
+            to: with("hash = \"sha256:0000000000000000000000000000000000000000000000000000000000000000\";"),
+            code: "E_ASSET",
+            object: &["schema"],
+            field: &["hash"],
+            text: "hash",
+        },
+        Case {
+            name: "builtin with an audio field",
+            from: builtin,
+            to: with("frames = 0;"),
+            code: "E_ASSET",
+            object: &["schema"],
+            field: &["frames"],
+            text: "frames",
+        },
+        Case {
+            name: "unknown builtin",
+            from: builtin,
+            to: "builtin = \"maac.unknown/1\";",
+            code: "E_REFERENCE",
+            object: &["schema"],
+            field: &["builtin"],
+            text: "\"maac.unknown/1\"",
+        },
+        Case {
+            name: "builtin of another namespace",
+            from: builtin,
+            to: leak(format!("builtin = \"{other}\";")),
+            code: "E_ASSET",
+            object: &["schema"],
+            field: &["builtin"],
+            text: leak(format!("\"{other}\"")),
+        },
+        Case {
+            name: "builtin is not a string",
+            from: builtin,
+            to: "builtin = production;",
+            code: "E_RANGE",
+            object: &["schema"],
+            field: &["builtin"],
+            text: "production",
+        },
+        Case {
+            name: "builtin on a blob",
+            from: "kind = descriptor; builtin",
+            to: "kind = blob; builtin",
+            code: "E_ASSET",
+            object: &["schema"],
+            field: &["kind"],
+            text: "blob",
+        },
+        Case {
+            name: "builtin on an audio asset",
+            from: "asset schema",
+            to: leak(format!("asset spare {{ kind = audio; builtin = \"{namespace}\"; }}\nasset schema")),
+            code: "E_ASSET",
+            object: &["spare"],
+            field: &["builtin"],
+            text: "builtin",
+        },
+    ]
+}
+
+#[test]
+fn builtin_schema_diagnostics_are_located_in_the_source() {
+    for ((base, assets), namespace, other) in [
+        (
+            builtin(production(), "production.schema.json", "maac.production/1"),
+            "maac.production/1",
+            "maac.takes/1",
+        ),
+        (
+            builtin(takes(), "takes.schema.json", "maac.takes/1"),
+            "maac.takes/1",
+            "maac.takes/2",
+        ),
+    ] {
+        run(&base, &assets, &builtin_cases(namespace, other));
+    }
+}
