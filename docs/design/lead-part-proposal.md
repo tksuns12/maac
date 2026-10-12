@@ -1,8 +1,11 @@
 # Lead part: proposal
 
-**Status:** accepted 2026-10-12; the owner accepted every recommendation in
-[Decisions](#decisions). The listening round of decision 3 comes first, to
-set the limit. This is the first half of item 2 of
+**Status:** accepted and implemented 2026-10-12 as profile
+`maac.analyze.default/5`; the owner accepted every recommendation in
+[Decisions](#decisions). The [listening round](#results-listening-round) set
+the limit at −8.5 dB instead of the −6 dB starting value, and the
+[implementation results](#results-implementation) record the other changes;
+the proposal text above them is kept as written. This is the first half of item 2 of
 [what to build next](../reports/ai-production-trial-t3.md#what-to-build-next-in-order)
 in the T3 trial: F21, a lead role in the analysis. The second half, gain
 reduction per section (F20), measures something else and gets its own
@@ -325,3 +328,80 @@ The owner accepted every recommendation on 2026-10-12:
 5. **Report:** profile `maac.analyze.default/5` and schema
    `maac.analysis-report/1`, with additions only. *Recommended*, as for
    `default/3` and `default/4`.
+
+## Results: listening round
+
+On 2026-10-12 the owner heard the four files on a phone, each 26.7 s of
+"Morning Ferry"'s first verse, matched to −15.7 LUFS:
+
+| File | Lead | Median margin | SHA-256 of the file sent |
+| --- | --- | --- | --- |
+| `ferry-lead-1.m4a` | As released | −1.6 dB | `65256dd9…` |
+| `ferry-lead-2.m4a` | −3 dB | −4.4 dB | `ab26b678…` |
+| `ferry-lead-3.m4a` | −6 dB | −7.2 dB | `65e51e34…` |
+| `ferry-lead-4.m4a` | −9 dB | −10.1 dB | `1f4b9f82…` |
+
+The verdict: "From 4 it's definitely buried." File 3 still leads and file 4
+does not, so the limit goes between them, at **−8.5 dB**, replacing the −6 dB
+starting value. Against the measurements above:
+
+- No approved section comes near it; the lowest is −1.6 dB.
+- The buried T3 verses, at −11.3 and −11.4 dB, fire.
+- The buried T3 choruses, at −7.7 dB, no longer fire. They sit just under
+  file 3, which the owner heard as still leading.
+- The stricter rule stays rejected for other parts: at −8.5 dB it still flags
+  "Morning Ferry"'s chorus pads (−9.5 dB) and "Late Window"'s pad in `b`
+  (−17.2 dB).
+
+## Results: implementation
+
+Implemented as profile `maac.analyze.default/5`.
+[`src/analyze/lead.rs`](../../src/analyze/lead.rs) holds the lead windows,
+margins and summaries; [`src/analyze/mod.rs`](../../src/analyze/mod.rs)
+checks the leads, finds their mix points and adds `lead_under`; `maac
+analyze` takes `--lead`. The implementation differs from the text above in
+these ways:
+
+1. **The limit is −8.5 dB**, from the [listening round](#results-listening-round).
+2. **A clear note** is one whose rest holds at most 1% of the mix point's
+   energy in the lead's band, not only one whose rest is silent. The
+   subtraction is only as exact as the parts are uncorrelated. In a fixture
+   with two leads a third apart, a bass three octaves down left a rest under
+   1%, which is within that error.
+3. **The median of an even count is the lower middle note**, so that clear
+   notes, which have no margin, can rank above every margin. "Late Window"'s
+   `b` reads +0.6 dB instead of +0.8 dB.
+4. **Rule 2 needs no check of its own.** Every port that reaches the output
+   has a mix point, the output at worst, so there is no "no mix point" error.
+5. **Lead notes are listed in their own `lead_notes` list** with `--notes`,
+   not as a `lead_db` on each note. A lead port after its instrument, such as
+   an EQ's output, has no per-note entry of its own to carry it.
+6. **A silent lead note** gets no margin and is left out of the summary, as
+   `silent_note` covers it. Naming the same port twice names it once.
+
+On the songs, with `--lead lead:out` for "Morning Ferry" and
+`--lead guitar:out` for "Late Window":
+
+| Version | Median margin per section | `lead_under` |
+| --- | --- | --- |
+| ferry | verses −1.6, choruses −1.5 dB | none |
+| t3 | verses −1.0, choruses −1.6 dB | none |
+| t3 buried | verses −11.3 and −11.4, choruses −7.7 dB | `verse1`, `verse2`; the quietest note is `melody_verse1/0/c3` at −16.1 dB |
+| lofi | `b` +0.6, `a2` +2.5 dB | none |
+| Listening files 1 to 4, `verse1` | −1.6, −4.4, −7.2, −10.1 dB | file 4 only |
+
+Analysing "Morning Ferry" in a release build took 40.2 s without `--lead`
+and 40.3 to 40.9 s with it.
+
+Tests in [`tests/analyze_lead.rs`](../../tests/analyze_lead.rs) cover:
+
+- a lead level with a pad in its band, with no finding;
+- the lead 20 dB down: the margin drops by 20 dB, `lead_under` fires in the
+  eight-note section only, and the three-note section gets a summary but no
+  finding;
+- a bass 10 dB louder three octaves below the lead, with no finding;
+- two leads, each compared without the other, and a mix of only leads, in
+  which every note is clear;
+- `--notes`, a report without `--lead`, the usage errors and the CLI;
+- "Morning Ferry"'s first verse at the levels of files 3 and 4: no finding,
+  then `lead_under`.

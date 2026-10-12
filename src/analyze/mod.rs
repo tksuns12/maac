@@ -7,9 +7,11 @@
 //! `docs/analyze.md`.
 
 mod image;
+mod lead;
 mod meter;
 mod notes;
 
+pub use lead::{LeadNote, LeadSummary};
 pub use notes::{NoteReport, NoteSummary};
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -32,13 +34,13 @@ use meter::{
 };
 
 pub const SCHEMA: &str = "maac.analysis-report/1";
-pub const PROFILE: &str = "maac.analyze.default/4";
+pub const PROFILE: &str = "maac.analyze.default/5";
 pub const BANDS: &str = "maac.analyze.octave-bands/1";
 pub const BAND_CENTERS_HZ: [f64; 10] = [
     31.5, 63.0, 125.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 16000.0,
 ];
 
-// Findings profile `maac.analyze.default/4`: stated limits, not taste.
+// Findings profile `maac.analyze.default/5`: stated limits, not taste.
 const TRUE_PEAK_LIMIT_DBTP: f64 = -1.0;
 const LOUDNESS_JUMP_LU: f64 = 6.0;
 const BALANCE_LIMIT_DB: f64 = 3.0;
@@ -77,6 +79,12 @@ const SILENT_NOTE_LUFS: f64 = -70.0;
 const BURIED_NOTE_DB: f64 = -20.0;
 /// A lone note sounds off its written pitch beyond this many cents.
 const PITCH_LIMIT_CENTS: f64 = 50.0;
+/// A lead is under its accompaniment in a section when the median of its
+/// notes' margins is at most this many dB. The owner's listening round put it
+/// between a lead that still led (-7.2 dB) and one that was buried (-10.1 dB).
+const LEAD_UNDER_DB: f64 = -8.5;
+/// ...over at least this many of the lead's notes in the section.
+const LEAD_MIN_NOTES: usize = 4;
 
 /// How the piece is divided into sections.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -128,6 +136,8 @@ pub struct AnalyzeOptions {
     pub force: bool,
     /// List every measured note in the report.
     pub notes: bool,
+    /// Parts meant to lead, each compared with the rest of its mix point.
+    pub leads: Vec<PortRef>,
 }
 
 impl Default for AnalyzeOptions {
@@ -140,6 +150,7 @@ impl Default for AnalyzeOptions {
             images: None,
             force: false,
             notes: false,
+            leads: Vec::new(),
         }
     }
 }
@@ -198,6 +209,12 @@ pub struct AnalysisReport {
     /// Every measured note, with `--notes`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<NoteReport>,
+    /// The ports named with `--lead`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub leads: Vec<String>,
+    /// Every measured lead note, with `--notes`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub lead_notes: Vec<LeadNote>,
     /// The analysed window, when not the whole piece.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub window: Option<WindowReport>,
@@ -327,6 +344,9 @@ pub struct Measures {
     /// Score–audio agreement for the notes and hits this source receives.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notes: Option<NoteSummary>,
+    /// For a lead, its margin over the rest of its mix point.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lead: Option<LeadSummary>,
     pub active_fraction: f64,
     pub leading_silence_s: f64,
     pub trailing_silence_s: f64,
@@ -562,7 +582,14 @@ fn analyze_view(
         sections(&view, meter, &options.sections, &frame_at)?,
         window.as_ref(),
     );
-    let sources = sources(&view, &options.sources)?;
+    let mut lead_ports: Vec<PortRef> = Vec::new();
+    for port in &options.leads {
+        if !lead_ports.contains(port) {
+            lead_ports.push(port.clone());
+        }
+    }
+    let sources = sources(&view, &options.sources, &lead_ports)?;
+    let leads = resolve_leads(&sources, &lead_ports)?;
     let analysed_frames = window_end - window_start;
 
     let columns_hop = image::frames_per_column(analysed_frames);
@@ -580,6 +607,9 @@ fn analyze_view(
     let mut windows = note_windows(&view, &sources, rate, window_start, window_end);
     let mut next_window = 0;
     let mut active: Vec<usize> = Vec::new();
+    let mut lead_windows = lead_windows(&view, &sources, &leads, rate, window_start, window_end);
+    let mut next_lead = 0;
+    let mut lead_active: Vec<usize> = Vec::new();
     let mut values = vec![notes::FrameValues::default(); meters.len()];
     let mut frame_index = render_start;
     render(&ports, span, &mut |frame| {
@@ -597,6 +627,18 @@ fn analyze_view(
                     return false;
                 }
                 window.add(frame_index, &values);
+                true
+            });
+            while next_lead < lead_windows.len() && lead_windows[next_lead].start <= frame_index {
+                lead_active.push(next_lead);
+                next_lead += 1;
+            }
+            lead_active.retain(|&index| {
+                let window = &mut lead_windows[index];
+                if frame_index >= window.end {
+                    return false;
+                }
+                window.add(&values);
                 true
             });
         }
@@ -660,6 +702,9 @@ fn analyze_view(
     let note_list = note_reports(&windows, &sources, &sections, rate);
     let mut extra = note_findings(&note_list, &positions);
     attach_note_summaries(&mut reports, &note_list);
+    let lead_notes = lead_reports(&lead_windows, &leads, &sections);
+    extra.extend(lead_findings(&lead_notes, &leads, &positions));
+    attach_lead_summaries(&mut reports, &lead_notes, &leads);
     let noise = noise_findings(
         &sources, &blocks, &sections, &ranges, hop, available, &positions,
     );
@@ -706,6 +751,12 @@ fn analyze_view(
         sources: reports,
         images,
         notes: if options.notes { note_list } else { Vec::new() },
+        leads: leads.iter().map(|lead| lead.port.clone()).collect(),
+        lead_notes: if options.notes {
+            lead_notes
+        } else {
+            Vec::new()
+        },
         window: window.map(|(start_q, end_q, start_frame, end_frame)| WindowReport {
             start_q: start_q.to_string(),
             end_q: end_q.to_string(),
@@ -909,6 +960,16 @@ struct Source {
     /// Whether a node that receives score events lies at or upstream of this
     /// port, so that notes or hits drive what it plays.
     driven: bool,
+    /// For a port named with `--lead`, where it is read and whose notes it
+    /// plays.
+    lead: Option<LeadRoute>,
+}
+
+struct LeadRoute {
+    /// The mix point the lead is compared at.
+    mix: String,
+    /// The nodes at or upstream of the lead that receive notes.
+    nodes: BTreeSet<String>,
 }
 
 fn port_name(port: &PortRef) -> String {
@@ -916,8 +977,12 @@ fn port_name(port: &PortRef) -> String {
 }
 
 /// The project output first, then every connected output port upstream of it
-/// (or the requested ports), in name order.
-fn sources(view: &PlanView<'_>, requested: &[PortRef]) -> Result<Vec<Source>, AnalyzeError> {
+/// (or the requested ports, the leads and their mix points), in name order.
+fn sources(
+    view: &PlanView<'_>,
+    requested: &[PortRef],
+    leads: &[PortRef],
+) -> Result<Vec<Source>, AnalyzeError> {
     let output = &view.output.output;
     let mut upstream = BTreeSet::from([output.node.clone()]);
     loop {
@@ -988,6 +1053,17 @@ fn sources(view: &PlanView<'_>, requested: &[PortRef]) -> Result<Vec<Source>, An
         }
         false
     };
+    let routes = lead_routes(view, leads, &upstream, &is_mix)?;
+    // The output port of a lead's mix point; the project output is always
+    // analysed.
+    let mix_port = |mix: &str| -> Option<PortRef> {
+        view.connections
+            .iter()
+            .find(|connection| {
+                connection.from.node == mix && upstream.contains(&connection.to.node)
+            })
+            .map(|connection| connection.from.clone())
+    };
     let role = |port: &PortRef| -> &'static str {
         if fed_from_mix(&port.node) {
             "bus"
@@ -1011,10 +1087,13 @@ fn sources(view: &PlanView<'_>, requested: &[PortRef]) -> Result<Vec<Source>, An
     } else {
         requested
             .iter()
+            .chain(leads)
             .filter(|port| *port != output)
             .cloned()
+            .chain(routes.values().filter_map(|route| mix_port(&route.mix)))
             .collect()
     };
+    let mut routes = routes;
     let mut result = Vec::with_capacity(candidates.len() + 1);
     for (port, role) in
         std::iter::once((output.clone(), "output")).chain(candidates.into_iter().map(|port| {
@@ -1037,6 +1116,7 @@ fn sources(view: &PlanView<'_>, requested: &[PortRef]) -> Result<Vec<Source>, An
                 };
                 let driven = driven(&port.node);
                 let mix_point = mix_point(&port.node);
+                let lead = routes.remove(&port);
                 result.push(Source {
                     port,
                     channels,
@@ -1044,6 +1124,7 @@ fn sources(view: &PlanView<'_>, requested: &[PortRef]) -> Result<Vec<Source>, An
                     mixes,
                     driven,
                     mix_point,
+                    lead,
                 })
             }
             Ok(_) if requested.is_empty() && role != "output" => {}
@@ -1061,6 +1142,119 @@ fn sources(view: &PlanView<'_>, requested: &[PortRef]) -> Result<Vec<Source>, An
         }
     }
     Ok(result)
+}
+
+/// Checks each `--lead` port and finds its mix point and its notes. A lead is
+/// a mono or stereo port that reaches the project output and is not the
+/// output, and notes reach it; no two leads play the same notes. Its mix point
+/// is the nearest one downstream and, of several at the same distance, the
+/// one nearest the output, so a lead feeding a bus and a reverb send is read
+/// at the bus.
+fn lead_routes(
+    view: &PlanView<'_>,
+    leads: &[PortRef],
+    upstream: &BTreeSet<String>,
+    is_mix: &dyn Fn(&str) -> bool,
+) -> Result<BTreeMap<PortRef, LeadRoute>, AnalyzeError> {
+    let output = &view.output.output;
+    let usage = |message: String| AnalyzeError::new("E_USAGE", message);
+    let note_targets: BTreeSet<&str> = view
+        .events()
+        .filter(|event| matches!(event.kind, EventKind::Note { .. }))
+        .map(|event| event.target.node.as_str())
+        .collect();
+    // Each downstream step from `node`, nearest first.
+    let downstream = |node: &str| -> Vec<Vec<String>> {
+        let mut seen = BTreeSet::from([node.to_owned()]);
+        let mut levels = Vec::new();
+        let mut level = vec![node.to_owned()];
+        while !level.is_empty() {
+            let mut next = Vec::new();
+            for current in &level {
+                for connection in view.connections {
+                    if &connection.from.node == current && seen.insert(connection.to.node.clone()) {
+                        next.push(connection.to.node.clone());
+                    }
+                }
+            }
+            if !next.is_empty() {
+                levels.push(next.clone());
+            }
+            level = next;
+        }
+        levels
+    };
+    let hops_to_output = |node: &str| {
+        if node == output.node {
+            return 0;
+        }
+        downstream(node)
+            .iter()
+            .position(|level| level.contains(&output.node))
+            .map_or(usize::MAX, |index| index + 1)
+    };
+    let mut routes: BTreeMap<PortRef, LeadRoute> = BTreeMap::new();
+    for lead in leads {
+        let name = port_name(lead);
+        if lead == output {
+            return Err(usage(format!(
+                "`{name}` is the project output; a lead is one part of the mix"
+            )));
+        }
+        match view.audio_output_channels(lead) {
+            Ok(1..=2) => {}
+            Ok(channels) => {
+                return Err(AnalyzeError::new(
+                    "E_PORT_TYPE",
+                    format!("`{name}` has {channels} channels; analysis supports mono or stereo"),
+                ))
+            }
+            Err(failure) => return Err(AnalyzeError::plan(failure)),
+        }
+        if !view
+            .connections
+            .iter()
+            .any(|connection| &connection.from == lead && upstream.contains(&connection.to.node))
+        {
+            return Err(usage(format!("`{name}` does not reach the project output")));
+        }
+        let mut nodes = BTreeSet::from([lead.node.clone()]);
+        let mut pending = vec![lead.node.clone()];
+        while let Some(current) = pending.pop() {
+            for connection in view.connections {
+                if connection.to.node == current && nodes.insert(connection.from.node.clone()) {
+                    pending.push(connection.from.node.clone());
+                }
+            }
+        }
+        nodes.retain(|node| note_targets.contains(node.as_str()));
+        if nodes.is_empty() {
+            return Err(usage(format!(
+                "no notes reach `{name}`; a lead must play notes"
+            )));
+        }
+        if let Some((other, _)) = routes
+            .iter()
+            .find(|(other, route)| *other != lead && !route.nodes.is_disjoint(&nodes))
+        {
+            return Err(usage(format!(
+                "`{}` and `{name}` play the same notes; name one of them as the lead",
+                port_name(other)
+            )));
+        }
+        // Every port that reaches the output has one: the output at worst.
+        let mix = downstream(&lead.node)
+            .into_iter()
+            .find_map(|level| {
+                level
+                    .into_iter()
+                    .filter(|node| is_mix(node))
+                    .min_by_key(|node| hops_to_output(node))
+            })
+            .expect("a port that reaches the output has a mix point");
+        routes.insert(lead.clone(), LeadRoute { mix, nodes });
+    }
+    Ok(routes)
 }
 
 /// Parts that disagree about swing in one section: some play off-beat eighths
@@ -1418,6 +1612,178 @@ fn note_findings(notes: &[NoteReport], positions: &PositionMap<'_>) -> Vec<Findi
                 threshold,
                 message,
             }
+        })
+        .collect()
+}
+
+/// The named leads with their sources and mix points, in the order named.
+fn resolve_leads(sources: &[Source], ports: &[PortRef]) -> Result<Vec<lead::Lead>, AnalyzeError> {
+    let find = |port: &PortRef| {
+        sources
+            .iter()
+            .position(|source| &source.port == port)
+            .and_then(|index| sources[index].lead.as_ref().map(|route| (index, route)))
+            .expect("every lead is an analysed source")
+    };
+    ports
+        .iter()
+        .map(|port| {
+            let (source, route) = find(port);
+            let mix = sources
+                .iter()
+                .position(|source| source.port.node == route.mix)
+                .ok_or_else(|| {
+                    AnalyzeError::new(
+                        "E_USAGE",
+                        format!(
+                            "the mix point `{}` of lead `{}` is not a mono or stereo source",
+                            route.mix,
+                            port_name(port)
+                        ),
+                    )
+                })?;
+            let others = ports
+                .iter()
+                .filter(|other| *other != port)
+                .map(find)
+                .filter(|(_, other)| other.mix == route.mix)
+                .map(|(index, _)| index)
+                .collect();
+            Ok(lead::Lead {
+                port: port_name(port),
+                source,
+                mix_node: route.mix.clone(),
+                mix,
+                others,
+                nodes: route.nodes.clone(),
+            })
+        })
+        .collect()
+}
+
+/// A window for every note whose onset lies in `[start, end)` and that
+/// reaches a lead, in onset order.
+fn lead_windows(
+    view: &PlanView<'_>,
+    sources: &[Source],
+    leads: &[lead::Lead],
+    rate: u32,
+    start: u64,
+    end: u64,
+) -> Vec<lead::LeadWindow> {
+    let note_max = (notes::NOTE_MAX_S * f64::from(rate)).round() as u64;
+    let channels: Vec<u8> = sources.iter().map(|source| source.channels).collect();
+    let mut windows: Vec<lead::LeadWindow> = view
+        .events()
+        .filter(|event| matches!(event.kind, EventKind::Note { .. }))
+        .filter(|event| start <= event.on_frame && event.on_frame < end)
+        .filter_map(|event| {
+            let index = leads
+                .iter()
+                .position(|lead| lead.nodes.contains(event.target.node.as_str()))?;
+            let window_end = event
+                .off_frame
+                .map_or(event.on_frame + note_max, |off| {
+                    off.min(event.on_frame + note_max)
+                })
+                .min(end);
+            (window_end > event.on_frame).then(|| {
+                lead::LeadWindow::new(
+                    event.address.clone(),
+                    index,
+                    &leads[index],
+                    &channels,
+                    event.on_frame,
+                    window_end,
+                )
+            })
+        })
+        .collect();
+    windows.sort_by_key(|window| window.start);
+    windows
+}
+
+fn lead_reports(
+    windows: &[lead::LeadWindow],
+    leads: &[lead::Lead],
+    sections: &[Section],
+) -> Vec<LeadNote> {
+    windows
+        .iter()
+        .map(|window| {
+            let (margin_db, status) = window.outcome(LEAD_UNDER_DB);
+            LeadNote {
+                event: window.address.clone(),
+                lead: leads[window.lead].port.clone(),
+                start_frame: window.start,
+                section: sections
+                    .iter()
+                    .find(|s| s.start_frame <= window.start && window.start < s.end_frame)
+                    .map(|s| s.id.clone()),
+                margin_db,
+                status,
+            }
+        })
+        .collect()
+}
+
+fn attach_lead_summaries(reports: &mut [SourceReport], notes: &[LeadNote], leads: &[lead::Lead]) {
+    for lead in leads {
+        let report = &mut reports[lead.source];
+        let of_lead = || notes.iter().filter(|note| note.lead == lead.port);
+        report.whole.lead = lead::summary(&lead.mix_node, of_lead());
+        for section in &mut report.sections {
+            section.measures.lead = lead::summary(
+                &lead.mix_node,
+                of_lead().filter(|note| note.section.as_deref() == Some(section.section.as_str())),
+            );
+        }
+    }
+}
+
+/// One `lead_under` per lead and section whose median note sits at or below
+/// the limit under the rest of its mix point, naming the quietest note.
+fn lead_findings(
+    notes: &[LeadNote],
+    leads: &[lead::Lead],
+    positions: &PositionMap<'_>,
+) -> Vec<Finding> {
+    let mut groups: BTreeMap<(&str, Option<&str>), Vec<&LeadNote>> = BTreeMap::new();
+    for note in notes {
+        groups
+            .entry((note.lead.as_str(), note.section.as_deref()))
+            .or_default()
+            .push(note);
+    }
+    groups
+        .into_iter()
+        .filter_map(|((port, section), group)| {
+            let lead = leads.iter().find(|lead| lead.port == port)?;
+            let summary = lead::summary(&lead.mix_node, group.iter().copied())?;
+            let median = summary
+                .median_db
+                .filter(|median| summary.notes >= LEAD_MIN_NOTES && *median <= LEAD_UNDER_DB)?;
+            let (quietest, lowest) = group
+                .iter()
+                .filter_map(|note| note.margin_db.map(|margin| (note, margin)))
+                .min_by(|a, b| a.1.total_cmp(&b.1))?;
+            Some(Finding {
+                kind: "lead_under",
+                event: Some(quietest.event.clone()),
+                severity: "warning",
+                source: port.to_owned(),
+                section: section.map(str::to_owned),
+                at: Some(positions.at(quietest.start_frame)),
+                value: median,
+                threshold: LEAD_UNDER_DB,
+                message: format!(
+                    "lead `{port}` sits {} dB under the rest of `{}` in its strongest band, the median of {} notes; the quietest is `{}` at {lowest} dB",
+                    round2(-median),
+                    lead.mix_node,
+                    summary.notes,
+                    quietest.event
+                ),
+            })
         })
         .collect()
 }

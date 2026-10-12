@@ -476,6 +476,7 @@ pub(super) fn measures(
         floor_bands_db,
         stereo,
         notes: None,
+        lead: None,
         active_fraction: if active.is_empty() {
             0.0
         } else {

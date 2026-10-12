@@ -63,7 +63,7 @@ listen before you call a track finished.
 ## 3. Listen through measurements
 
 ```sh
-maac analyze main.maac --section regions --json > analysis.json
+maac analyze main.maac --section regions --lead melody:out --json > analysis.json
 maac analyze main.maac --source master:out --json   # faster, for loudness passes
 maac analyze main.maac --images analysis/           # spectrogram and piano roll
 maac analyze main.maac --window region:b --json     # one section, exact
@@ -77,9 +77,13 @@ maac analyze main.maac --window region:b --preroll 4 --json   # quick, approxima
 - **Findings first.** Read `findings` before anything else. Fix every `error`
   and `warning`, or decide that one is intended. For example, a deliberately
   hard-panned mix triggers `stereo_imbalance`.
-- **Balance.** Compare `max_short_term_lufs` of each `stem` per region. In the
-  trial, a lead melody 6 dB under the comping did not read as a lead, so aim
-  for the lead within about 2 dB of the main accompaniment.
+- **Balance.** Name the melody's node output with `--lead`. A `lead_under`
+  warning means the median lead note sits 8.5 dB or more under the rest of
+  its mix point, in the octave band where the lead is strongest. Raise the
+  lead, or lower the parts that share its register. The lead source's `lead`
+  object gives the margin per section: the trials' approved mixes sit at −2
+  to +3 dB, and in a listening round the lead was buried at −10 dB. For the
+  other parts, compare `max_short_term_lufs` of each `stem` per region.
 - **Groove.** A `groove_mismatch` warning means parts disagree about swing.
   Usually a placement lacks the shared `groove` reference, or a part was
   written at hand-swung positions under a groove that swings them again.
@@ -140,7 +144,7 @@ ask for a verdict.
 | A note never sounds, or a part is lost under another | A zero velocity or level; a part far under another in its register | `silent_note`, `buried_note`; `--notes` for each note |
 | A part sounds out of tune | A sample's `root`, a detuned oscillator, a wrong transposition | `pitch_mismatch` gives the cents; ±1200 is an octave |
 | "The instruments sound tacky" | std/basic synthesized timbres that ignore velocity | Not measurable; use std/studio and std/acoustic, and vary velocity |
-| Lead melody gets lost | Melody 6 dB under the comping | Per-stem `max_short_term_lufs` by region; `buried_note` does not catch it |
-| Lead drops in the quiet sections | Less amp `drive` also means less amp output | Per-stem loudness by region; automate the level with the drive |
+| Lead melody gets lost | Melody 6 dB under the comping | `lead_under` with `--lead`; `buried_note` does not catch it |
+| Lead drops in the quiet sections | Less amp `drive` also means less amp output | `lead_under` in those sections; give `synth.drive/1` a `reference`, or automate the level with the drive |
 | The chorus does not lift | Glue and limiter flatten the louder section | Compare the master's `max_short_term_lufs` per region; aim for 2 LU or more |
 | True peak over the limit after a sound change | Plucked attacks through compressors standing in for a limiter | `true_peak_over`; master through `fx.limiter/1` with its ceiling under the limit |

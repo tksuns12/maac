@@ -130,6 +130,10 @@ pub enum Command {
         /// its pitch.
         #[arg(long)]
         notes: bool,
+        /// A `node:port` meant to lead, compared with the rest of its mix
+        /// point in each section; repeat for more than one lead.
+        #[arg(long = "lead")]
+        leads: Vec<String>,
         /// Root used to resolve project-relative imports and assets.
         #[arg(long)]
         project_root: Option<PathBuf>,
@@ -1134,6 +1138,7 @@ fn execute_disk_media(
             images,
             force,
             notes: list_notes,
+            leads,
             ..
         } => {
             let options = analyze_options(
@@ -1141,6 +1146,7 @@ fn execute_disk_media(
                 window,
                 *preroll,
                 sources,
+                leads,
                 images,
                 *force,
                 *list_notes,
@@ -1219,6 +1225,33 @@ fn format_analysis(input: &str, report: &crate::analyze::AnalysisReport) -> Stri
             ));
         }
     }
+    for lead in &report.leads {
+        let Some(source) = report.sources.iter().find(|source| &source.port == lead) else {
+            continue;
+        };
+        let Some(whole) = &source.whole.lead else {
+            text.push_str(&format!("\nlead {lead}: no notes measured"));
+            continue;
+        };
+        text.push_str(&format!(
+            "\nlead {lead} against the rest of {}: median {} dB over {} notes",
+            whole.mix_point,
+            value(whole.median_db),
+            whole.notes
+        ));
+        for section in &source.sections {
+            if let Some(summary) = &section.measures.lead {
+                text.push_str(&format!(
+                    "\n  {}: median {} dB, lowest {} dB, {} of {} notes at or under the limit",
+                    section.section,
+                    value(summary.median_db),
+                    value(summary.min_db),
+                    summary.under,
+                    summary.notes
+                ));
+            }
+        }
+    }
     for image in &report.images {
         text.push_str(&format!(
             "\nimage {} ({}x{})",
@@ -1228,11 +1261,13 @@ fn format_analysis(input: &str, report: &crate::analyze::AnalysisReport) -> Stri
     text
 }
 
+#[allow(clippy::too_many_arguments)]
 fn analyze_options(
     section: &str,
     window: &Option<String>,
     preroll: Option<f64>,
     sources: &[String],
+    leads: &[String],
     images: &Option<PathBuf>,
     force: bool,
     notes: bool,
@@ -1243,24 +1278,27 @@ fn analyze_options(
         .map(crate::analyze::Window::parse)
         .transpose()
         .map_err(analyze_error)?;
-    let sources = sources
-        .iter()
-        .map(|text| {
-            let text = text.strip_prefix('&').unwrap_or(text);
-            let (node, port) = text.split_once(':').ok_or_else(|| {
-                CliError::new("E_USAGE", format!("--source `{text}` must be node:port"))
-            })?;
-            PortRef::new(node, port).map_err(CliError::from_plan)
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let ports = |flag: &str, texts: &[String]| {
+        texts
+            .iter()
+            .map(|text| {
+                let text = text.strip_prefix('&').unwrap_or(text);
+                let (node, port) = text.split_once(':').ok_or_else(|| {
+                    CliError::new("E_USAGE", format!("{flag} `{text}` must be node:port"))
+                })?;
+                PortRef::new(node, port).map_err(CliError::from_plan)
+            })
+            .collect::<Result<Vec<_>, _>>()
+    };
     Ok(crate::analyze::AnalyzeOptions {
         sections,
         window,
         preroll_seconds: preroll,
-        sources,
+        sources: ports("--source", sources)?,
         images: images.clone(),
         force,
         notes,
+        leads: ports("--lead", leads)?,
     })
 }
 
@@ -1520,6 +1558,7 @@ fn execute_impl(
             images,
             force,
             notes: list_notes,
+            leads,
             project_root,
             profile,
         } => {
@@ -1529,6 +1568,7 @@ fn execute_impl(
                 window,
                 *preroll,
                 sources,
+                leads,
                 images,
                 *force,
                 *list_notes,

@@ -11,6 +11,7 @@ maac analyze main.maac --json --section bars:8 --source pad:out
 maac analyze main.maac --window region:b --json            # one section, exact
 maac analyze main.maac --window bars:13-16 --preroll 4     # quick preview
 maac analyze main.maac --json --notes                      # every note's checks
+maac analyze main.maac --section regions --lead lead:out   # is the melody on top?
 ```
 
 ## Goal
@@ -277,6 +278,68 @@ and each section: measured, silent, buried, pitched, unpitched and
 mismatched counts, and the median and largest pitch deviation. `--notes` adds
 a `notes` list with each note's level, band share, cents, aperiodicity and
 status.
+
+## Profile `maac.analyze.default/5` (2026-10-12)
+
+The [lead part proposal](design/lead-part-proposal.md) adds a lead role, for
+F21 of the [T3 trial](reports/ai-production-trial-t3.md): a melody 11 dB
+under its accompaniment raised no finding. `buried_note` holds every part to
+the same floor, and nothing said which part was meant to lead.
+
+```sh
+maac analyze main.maac --section regions --lead lead:out
+```
+
+`--lead NODE:PORT` names a part meant to lead; repeat it for more than one.
+A lead is a mono or stereo port that reaches the project output and is not
+the output itself, and notes reach it from a node at or upstream of it. No
+two leads may play the same notes. Otherwise `--lead` is `E_USAGE`, or
+`E_REFERENCE` for an unknown port. `--lead` adds the lead and its mix point
+to the analysed sources, so it also works with `--source`.
+
+A lead is read at its **mix point**: the nearest one downstream and, of
+several at the same distance, the one nearest the output. A lead that feeds
+a bus and a reverb send is read at the bus.
+
+Each lead note is measured from its onset to its release, at most 2 s. Its
+**margin** is the lead's energy over the rest of the mix point, in the
+octave band where the lead is strongest over the note, in dB:
+
+- **The rest** is the mix point less every lead that feeds it, so two leads
+  playing together are each compared with the accompaniment. The subtraction
+  treats the parts as uncorrelated, and a lead's own reverb return counts as
+  accompaniment.
+- **A clear note:** when the rest holds at most 1% of the mix point's energy
+  in that band, the note is `clear` and has no margin.
+- **A silent note** has no margin; `silent_note` reports it.
+
+The new `lead_under` warning fires for a lead in a section that holds at
+least 4 of its notes, when their median margin is −8.5 dB or less. The owner
+set the limit in a listening round: "Morning Ferry"'s lead still led at a
+median margin of −7.2 dB and was buried at −10.1 dB. The finding names the
+quietest note in `event`.
+
+The report gains:
+
+- `leads`: the named ports;
+- in a lead source's `whole` and in each section, a `lead` object:
+  `mix_point`, `notes`, `clear`, `median_db`, `min_db`, and `under`, the notes
+  at or below the limit. `median_db` is the lower middle margin for an even
+  count, with clear notes above every margin, and is absent when that note is
+  clear;
+- with `--notes`, a `lead_notes` list with each lead note's `event`, `lead`,
+  `section`, `margin_db` and `status`: `ok`, `under`, `clear` or `silent`.
+
+Without `--lead`, a report is the same as under `default/4` apart from the
+profile identifier.
+
+**Limits:**
+
+- A lead needs its own node. A piano playing melody and chords on one node is
+  measured as a whole.
+- A lead routed with its harmonies into a sub-bus is compared with the
+  harmonies only.
+- A lead without notes, such as an audio clip, cannot be named.
 
 ## Deferred to later versions
 

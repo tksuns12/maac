@@ -5,6 +5,16 @@ promise of compatibility beyond the documented interfaces.
 
 ## [Unreleased]
 
+### Added
+
+- `maac analyze --lead NODE:PORT` names a part meant to lead. Each of its
+  notes gets a margin: its level over the rest of its mix point, in the band
+  where it is strongest. A new `lead_under` warning fires when a section's
+  median lead note sits 8.5 dB or more under; the owner set that limit in a
+  listening round. The profile is now `maac.analyze.default/5`; without
+  `--lead`, reports are unchanged. See the
+  [lead part proposal](docs/design/lead-part-proposal.md).
+
 ### Changed
 
 - The owner approved the `std/studio/1.0.0` exports and the
