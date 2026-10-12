@@ -23,3 +23,11 @@ the absence of a published disclosure is not a security guarantee. The
 [capability matrix](docs/capabilities.md) documents resource bounds and
 unsupported features; callers should validate untrusted plan files through the
 public APIs and keep generated output under appropriate filesystem permissions.
+
+## Dependencies
+
+Dependabot alerts and security updates are enabled for this repository, and
+[Dependabot](.github/dependabot.yml) proposes Cargo, GitHub Actions and
+Python checker updates weekly. Every update runs through CI, including the
+tests that pin rendered output, before it is merged. The workflows pin each
+third-party action to a commit.
