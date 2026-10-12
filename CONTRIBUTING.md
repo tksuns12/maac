@@ -1,9 +1,33 @@
 # Contributing to MaaC
 
-MaaC is a maintainer-led experimental project. Keep changes focused on the
-documented foundation scope, explain behavior changes in the pull request, and
+Thanks for your interest. MaaC is an experimental project with one
+maintainer, and contributions of every size are welcome. Everyone taking part
+follows the [code of conduct](CODE_OF_CONDUCT.md).
+
+## Ways to help
+
+- **Report a bug.** A small `.maac` file and the command that goes wrong are
+  usually enough: rendering is deterministic, so the same source reproduces
+  the same result. Use the bug report form in
+  [issues](https://github.com/tksuns12/maac/issues/new/choose).
+- **Listen.** Most built-in instruments were tuned by measurement, and only
+  some have been checked by ear. Tell us which ones sound wrong, dated or
+  unconvincing, with the instrument sound form.
+- **Write music.** A composition that pushes the language, or one that
+  cannot be written yet, shows what to build next. Share it in
+  [discussions](https://github.com/tksuns12/maac/discussions).
+- **Try another platform.** CI covers macOS on Apple silicon and Linux.
+  Reports from Windows, Intel Macs and other Linux systems help.
+- **Improve the documentation.** Fix what was unclear to you.
+- **Change the code.** For a small fix, open a pull request. For a new
+  feature or a language change, open an issue first, so we can agree on where
+  it belongs before you build it.
+
+## Pull requests
+
+Keep changes focused, explain behavior changes in the pull request, and
 update the relevant public documentation when an interface or limitation
-changes.
+changes. The pull request template lists the checks.
 
 Follow the [design principles](docs/design-principles.md) when proposing features.
 Identify what belongs in the musical core, a library, an engine extension, or a
@@ -122,7 +146,7 @@ independent SRC verification, and listening acceptance remain distinct gates.
 The [metering audit](docs/production-metering-evidence.md) records applicable
 current 4× profile fixtures and the historical 16× profile's failed gate.
 
-## Contributions
+## Contribution terms
 
 Open a change with a clear description of the user-visible or technical
 behavior, the tests that cover it, and any remaining limitation. Keep source

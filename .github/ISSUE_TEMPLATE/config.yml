@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and help
+    url: https://github.com/tksuns12/maac/discussions
+    about: Ask how to write or render something, or share what you made.
+  - name: Security problem
+    url: https://github.com/tksuns12/maac/security/advisories/new
+    about: Report a vulnerability privately; see SECURITY.md.

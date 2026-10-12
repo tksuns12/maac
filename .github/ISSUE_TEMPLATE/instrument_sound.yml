@@ -1,0 +1,32 @@
+name: Instrument sound
+description: Tell us how a built-in instrument sounds, especially if it sounds wrong, dated or unconvincing.
+labels: ["sound"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Most built-in instruments were tuned by measurement, and only some have been checked by ear ([studio instruments](https://github.com/tksuns12/maac/blob/main/docs/studio-instruments.md)). Listening reports are among the most useful contributions.
+  - type: input
+    id: instrument
+    attributes:
+      label: Instrument
+      description: The library and export, such as `std/studio/1.1.0` `piano`.
+    validations:
+      required: true
+  - type: textarea
+    id: sound
+    attributes:
+      label: What you hear
+      description: What sounds wrong or unconvincing, and in which register or at which velocity. Comparisons to real instruments help.
+    validations:
+      required: true
+  - type: textarea
+    id: source
+    attributes:
+      label: Source that plays it
+      description: The `.maac` source, or the example file, you listened to.
+  - type: input
+    id: playback
+    attributes:
+      label: How you listened
+      description: Headphones, speakers or a phone, for example.

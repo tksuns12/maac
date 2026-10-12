@@ -206,10 +206,13 @@ limits.
 
 ## Contributing
 
-Bug reports, questions and ideas are welcome in
-[issues](https://github.com/tksuns12/maac/issues). The
-[contribution guide](CONTRIBUTING.md) explains the development setup, the
-checks CI runs and the contribution terms. Report security issues privately,
+Bug reports, ideas and reports on how the instruments sound are welcome in
+[issues](https://github.com/tksuns12/maac/issues/new/choose); questions and
+music made with MaaC in
+[discussions](https://github.com/tksuns12/maac/discussions). The
+[contribution guide](CONTRIBUTING.md) explains the ways to help, the
+development setup and the checks CI runs. Everyone taking part follows the
+[code of conduct](CODE_OF_CONDUCT.md). Report security issues privately,
 as described in [SECURITY.md](SECURITY.md).
 
 ## License

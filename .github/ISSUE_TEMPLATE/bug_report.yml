@@ -1,0 +1,64 @@
+name: Bug report
+description: maac crashes, rejects valid source, accepts invalid source, or renders or measures something wrong.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Rendering is deterministic, so the smallest `.maac` source that shows the problem, with the exact command, is usually all it takes to reproduce it.
+
+        For a security problem, do not open an issue: report it privately as described in [SECURITY.md](https://github.com/tksuns12/maac/blob/main/SECURITY.md).
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The output of `maac --version`, or the commit you built.
+      placeholder: maac 0.2.0
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - macOS, Apple silicon
+        - Linux, x86_64
+        - Linux, arm64
+        - Other (say which below)
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: Installed from
+      options:
+        - A release archive
+        - Source (cargo install or cargo build)
+    validations:
+      required: true
+  - type: textarea
+    id: happened
+    attributes:
+      label: What happened
+      description: Include the full diagnostic or command output.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      description: The smallest source that shows the problem, and the exact command. Attach a file if it is long.
+      placeholder: |
+        maac 1;
+        ...
+
+        maac build repro.maac -o repro.wav
+    validations:
+      required: true
