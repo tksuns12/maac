@@ -1,7 +1,8 @@
 # Lead part: proposal
 
-**Status:** proposed 2026-10-12, awaiting the owner's [decisions](#decisions).
-This is the first half of item 2 of
+**Status:** accepted 2026-10-12; the owner accepted every recommendation in
+[Decisions](#decisions). The listening round of decision 3 comes first, to
+set the limit. This is the first half of item 2 of
 [what to build next](../reports/ai-production-trial-t3.md#what-to-build-next-in-order)
 in the T3 trial: F21, a lead role in the analysis. The second half, gain
 reduction per section (F20), measures something else and gets its own
@@ -255,8 +256,9 @@ profile is fixed.
 **Listening**, if [decision 3](#decisions) asks for it
 
 - Four files of "Morning Ferry"'s first verse, with the lead at 0, −3, −6 and
-  −9 dB from the released mix. Their median margins will be about −1.6, −4.6,
-  −7.6 and −10.6 dB.
+  −9 dB from the released mix, matched to the same loudness. Their median
+  margins measure −1.6, −4.4, −7.2 and −10.1 dB. Each step moves the margin
+  by under 3 dB, because the lead's own reverb return falls with it.
 - The owner says from which file the guitar stops leading. The limit goes
   between the last file that leads and the first that does not.
 
@@ -303,7 +305,7 @@ profile is fixed.
 
 ## Decisions
 
-The owner's choices are needed on:
+The owner accepted every recommendation on 2026-10-12:
 
 1. **Where the lead is named:** a `--lead` flag on `maac analyze`.
    *Recommended* over a score field, which is a core language change, and a
