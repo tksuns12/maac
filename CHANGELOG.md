@@ -63,6 +63,12 @@ promise of compatibility beyond the documented interfaces.
 
 ### Changed
 
+- "Morning Ferry" plays the draft std/studio/1.1.0 electric guitar, inline
+  until the library is frozen. Its lead no longer needs a level automation
+  beside the drive automation. The owner's verdict: the Game Boy quality is
+  "definitely mostly gone". See the
+  [proposal](docs/electric-guitar-piano-proposal.md#results-part-3).
+
 - "Late Window" ([`examples/lofi/lofi.maac`](examples/lofi/lofi.maac)) and the
   [AI producer guide](docs/ai-producer-guide.md) use the built-in production
   schema; the example no longer carries a copy of `production.schema.json`.

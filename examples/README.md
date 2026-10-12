@@ -418,8 +418,9 @@ An AI wrote, mixed and mastered it during the
 [T3 production trial](../docs/ai-production-trial-t3.md):
 
 - picked steel-guitar verses and overdriven power-chord choruses;
-- the melody on an electric guitar defined in the file: plucked strings into
-  a drive and a cabinet filter, with its drive and level automated per
+- the melody on an electric guitar defined in the file, the draft of the
+  std/studio/1.1.0 guitar: plucked strings with a pick and a pickup into a
+  level-compensated drive and a cabinet, with its drive automated per
   section;
 - studio bass, kit and pad, and a snare into a hall reverb.
 
@@ -429,7 +430,7 @@ maac analyze examples/ferry/ferry.maac --profile song --section regions
 maac deliver examples/ferry/ferry.maac --delivery release --output-dir out --profile song
 ```
 
-The release delivery measured -14.56 LUFS and -1.10 dBTP and passed its
+The release delivery measured -14.84 LUFS and -1.10 dBTP and passed its
 limits. The owner's informal verdict on this version: "Good. It's good." They
 also said the library instruments still sound a bit like old game music.
 

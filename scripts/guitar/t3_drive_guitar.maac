@@ -1,0 +1,40 @@
+// The inline electric guitar of the T3 "Morning Ferry", as the owner approved
+// it on 2026-10-11 (examples/ferry/ferry.maac at commit 55c2ae8). Kept as the A
+// side of scripts/guitar_auditions.py now that the song uses the draft.
+
+instrument drive_guitar {
+  channels = 2;
+  voice voice {
+    channels = 1; amplitude = &amp; output = &string:out;
+    node amp { type = "synth.adsr/1"; params = { attack = 2ms; sustain = 1; release = 150ms; }; }
+    node string {
+      type = "synth.pluck/1"; config = { seed = 2654435761; };
+      params = { ratio = 1; decay = 10s; damping = 0.2; level = 1; };
+    }
+    node vibrato { type = "synth.lfo/1"; params = { frequency = 5.5Hz; level = 0; }; }
+    modulate string_vibrato { from = &vibrato:out; to = &string.params.ratio; depth = 0.0145; }
+  }
+  shared amp_stage {
+    channels = 2; output = &output_gain:out;
+    node low_cut { type = "synth.highpass/1"; config = { channels = 1; }; params = { cutoff = 110Hz; }; }
+    node drive { type = "synth.drive/1"; config = { channels = 1; }; params = { drive = 6; bias = 0.2; level = 0.5; }; }
+    node dc_cut { type = "synth.highpass/1"; config = { channels = 1; }; params = { cutoff = 30Hz; }; }
+    node cabinet { type = "synth.svf/1"; config = { channels = 1; mode = lowpass; }; params = { cutoff = 3800Hz; q = 1.2; }; }
+    node fizz_cut { type = "synth.onepole/1"; config = { channels = 1; }; params = { cutoff = 7000Hz; }; }
+    node stereo { type = "synth.pan/1"; params = { pan = 0; }; }
+    node output_gain { type = "synth.gain/1"; config = { channels = 2; }; params = { level = 0.3; }; }
+    connect input_cut { from = &input:out; to = &low_cut:in; }
+    connect cut_drive { from = &low_cut:out; to = &drive:in; }
+    connect drive_dc { from = &drive:out; to = &dc_cut:in; }
+    connect dc_cabinet { from = &dc_cut:out; to = &cabinet:in; }
+    connect cabinet_fizz { from = &cabinet:out; to = &fizz_cut:in; }
+    connect fizz_stereo { from = &fizz_cut:out; to = &stereo:in; }
+    connect stereo_output { from = &stereo:out; to = &output_gain:in; }
+  }
+  control level { target = &amp_stage.output_gain.params.level; default = 0.3; }
+  control drive { target = &amp_stage.drive.params.drive; default = 6; }
+  control tone { target = &amp_stage.cabinet.params.cutoff; default = 3800Hz; }
+  control pan { target = &amp_stage.stereo.params.pan; default = 0; }
+  control release { target = &voice.amp.params.release; default = 150ms; }
+  control vibrato_amount { target = &voice.vibrato.params.level; default = 0; }
+}

@@ -3,7 +3,8 @@
 **Status:** accepted 2026-10-11; the owner accepted every
 [decision](#decisions). Plan step 1, the string and drive additions, has
 landed; see [results](#results-part-1). Step 2, the draft electric guitar,
-passed its listening round; see [results](#results-part-2).
+passed its listening round; see [results](#results-part-2). Step 3 moved
+"Morning Ferry" to it; see [results](#results-part-3).
 
 ## Why
 
@@ -323,6 +324,33 @@ auditions.
 - **Tests.** `tests/electric_guitar_draft.rs` renders every semitone from E2
   to E6 at velocities 0.2, 0.5 and 1, checks that harder picks are brighter
   at E2, E3 and E4, and checks the calibration and the bound across `drive`.
+
+## Results: part 3
+
+Done 2026-10-12. "Morning Ferry" plays the draft guitar, inline until the
+freeze, when it becomes an import of `std/studio/1.1.0`.
+
+- **Settings.** The rhythm part keeps `drive` 6 and its pan and release. The
+  lead uses the neck pickup, 0.3, and `tone` 3200 Hz, and its drive
+  automation runs from 3 in the verses to 12 in the choruses. The
+  `lead_gain` automation is gone: with the drive compensated, the lead's
+  verse and chorus needed the same correction, 12.1 and 11.9 dB, so one
+  fixed `level` replaces it.
+- **Balance.** Each guitar part, measured alone per region, is within 0.2 dB
+  of the approved master's. Every other part is unchanged.
+- **Delivery.** −14.84 LUFS and −1.10 dBTP, checks passed. The approved
+  master read −14.56 LUFS: the draft guitar's peaks sit higher relative to its
+  loudness, so the limiter leaves 0.3 dB less level. `maac analyze` reports
+  the same two informational `band_dominance` findings as before.
+- **Cost.** Delivery took 45 s, against 47 s for the approved version, well
+  inside the 1.5× bound.
+- **Compatibility.** The previous song still delivers byte-identically to the
+  approved master. T3's inline guitar is kept in
+  [`scripts/guitar/t3_drive_guitar.maac`](../scripts/guitar/t3_drive_guitar.maac)
+  as the A side of the auditions.
+- **Listening.** An A/B of bars 9 to 20 at matched loudness, the approved
+  master first. The owner: "확실히 게임보이 느낌은 많이 없어졌네" — the Game Boy
+  quality is definitely mostly gone.
 
 ## Cost and risk
 

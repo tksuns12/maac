@@ -2,7 +2,7 @@
 """Render the draft electric guitar against the T3 inline guitar, matched in loudness.
 
 Each audition plays "Morning Ferry" material, or a velocity ladder, through
-the inline `drive_guitar` from examples/ferry/ferry.maac and through the
+T3's inline `drive_guitar`, kept in scripts/guitar/t3_drive_guitar.maac, and
 draft `electric_guitar` in scripts/guitar/electric_guitar.maac. Both renders
 are measured with `maac analyze`, scaled to the same integrated loudness and
 joined into one A/B file: T3 first, a second of silence, then the draft.
@@ -27,6 +27,7 @@ from studio_auditions import RATE, TARGET_LUFS, read_float_wav, run, write_float
 ROOT = Path(__file__).resolve().parent.parent
 FERRY = ROOT / "examples" / "ferry" / "ferry.maac"
 DRAFT = ROOT / "scripts" / "guitar" / "electric_guitar.maac"
+T3 = ROOT / "scripts" / "guitar" / "t3_drive_guitar.maac"
 
 HEADER = """maac 1;
 project audition {{ score = [0q, {length}q]; rate = 48000Hz; tail = 2s; tempo = &clock; meter = &metre; output = &out:out; }}
@@ -50,7 +51,7 @@ def ferry_patterns(*names: str) -> str:
 
 def instruments() -> dict[str, str]:
     return {
-        "t3": block(FERRY.read_text(), "instrument", "drive_guitar"),
+        "t3": block(T3.read_text(), "instrument", "drive_guitar"),
         "draft": block(DRAFT.read_text(), "instrument", "electric_guitar"),
     }
 

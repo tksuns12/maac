@@ -31,44 +31,119 @@ region chorus2 { span = [bar(29, 1), bar(37, 1)]; }
 region outro { span = [bar(37, 1), bar(41, 1)]; }
 
 // ---------------------------------------------------------------- electric guitar
-// A plucked string per voice; the voices are summed and then go through the
-// amp together, as strings do into a real amplifier: a low cut, a biased
-// tanh drive, a DC cut, and a resonant low-pass for the speaker cabinet.
-instrument drive_guitar {
+// The draft std/studio/1.1.0 guitar (electric guitar and piano proposal,
+// part 2), inline until the library is frozen.
+// Electric guitar: a plucked string per voice, picked near the bridge and
+// heard through a pickup, into one amp for all the strings: a low cut, a
+// level-compensated drive, a DC cut, and a speaker cabinet with a resonant
+// low end, 24 dB per octave above the tone cutoff and a presence peak.
+// Harder picks are brighter and drive the amp harder; higher notes decay
+// sooner. `drive` runs from clean at 1 to lead at 12 at about the same
+// loudness.
+instrument electric_guitar {
   channels = 2;
   voice voice {
-    channels = 1; amplitude = &amp; output = &string:out;
-    node amp { type = "synth.adsr/1"; params = { attack = 2ms; sustain = 1; release = 150ms; }; }
-    node string {
-      type = "synth.pluck/1"; config = { seed = 2654435761; };
-      params = { ratio = 1; decay = 10s; damping = 0.2; level = 1; };
+    channels = 1;
+    amplitude = &amp;
+    output = &string:out;
+    node amp {
+      type = "synth.adsr/1";
+      params = { attack = 1ms; sustain = 1; release = 120ms; };
     }
+    node vel { type = "synth.velocity/1"; }
+    node key { type = "synth.key/1"; }
+    node string {
+      type = "synth.pluck/1";
+      config = { seed = 2654435761; };
+      params = { decay = 6s; damping = 1/4; level = 1/2; hardness = 1/10; position = 1/8; pickup = 1/8; };
+    }
+    modulate higher_shorter { from = &key:out; to = &string.params.decay; depth = -1500ms; }
+    // Velocity scales the voice once more before the amp, so its compression
+    // still leaves soft and hard picks apart, and opens up the pick.
+    modulate harder_louder { from = &vel:out; to = &string.params.level; depth = 1/2; }
+    modulate harder_brighter { from = &vel:out; to = &string.params.hardness; depth = 17/20; }
     node vibrato { type = "synth.lfo/1"; params = { frequency = 5.5Hz; level = 0; }; }
     modulate string_vibrato { from = &vibrato:out; to = &string.params.ratio; depth = 0.0145; }
   }
   shared amp_stage {
-    channels = 2; output = &output_gain:out;
-    node low_cut { type = "synth.highpass/1"; config = { channels = 1; }; params = { cutoff = 110Hz; }; }
-    node drive { type = "synth.drive/1"; config = { channels = 1; }; params = { drive = 6; bias = 0.2; level = 0.5; }; }
-    node dc_cut { type = "synth.highpass/1"; config = { channels = 1; }; params = { cutoff = 30Hz; }; }
-    node cabinet { type = "synth.svf/1"; config = { channels = 1; mode = lowpass; }; params = { cutoff = 3800Hz; q = 1.2; }; }
-    node fizz_cut { type = "synth.onepole/1"; config = { channels = 1; }; params = { cutoff = 7000Hz; }; }
+    channels = 2;
+    output = &gain:out;
+    node low_cut {
+      type = "synth.highpass/1";
+      config = { channels = 1; };
+      params = { cutoff = 100Hz; };
+    }
+    node input_trim {
+      type = "synth.gain/1";
+      config = { channels = 1; };
+      params = { level = 1/4; };
+    }
+    node drive {
+      type = "synth.drive/1";
+      config = { channels = 1; };
+      params = { drive = 4; bias = 1/5; level = 1; reference = 1/10; };
+    }
+    node dc_cut {
+      type = "synth.highpass/1";
+      config = { channels = 1; };
+      params = { cutoff = 30Hz; };
+    }
+    // The cabinet: a resonant high-pass for the closed-back thump, two
+    // low-passes for the speaker's steep top, and a presence peak mixed in.
+    node thump {
+      type = "synth.svf/1";
+      config = { channels = 1; mode = highpass; };
+      params = { cutoff = 90Hz; q = 1.4; };
+    }
+    node speaker_a {
+      type = "synth.svf/1";
+      config = { channels = 1; mode = lowpass; };
+      params = { cutoff = 4500Hz; q = 0.9; };
+    }
+    node speaker_b {
+      type = "synth.svf/1";
+      config = { channels = 1; mode = lowpass; };
+      params = { cutoff = 5000Hz; q = 0.6; };
+    }
+    node presence {
+      type = "synth.svf/1";
+      config = { channels = 1; mode = bandpass; };
+      params = { cutoff = 2200Hz; q = 1.2; };
+    }
+    node presence_level {
+      type = "synth.gain/1";
+      config = { channels = 1; };
+      params = { level = 0.35; };
+    }
+    node cabinet { type = "synth.mix/1"; config = { channels = 1; }; }
     node stereo { type = "synth.pan/1"; params = { pan = 0; }; }
-    node output_gain { type = "synth.gain/1"; config = { channels = 2; }; params = { level = 0.3; }; }
+    node gain {
+      type = "synth.gain/1";
+      config = { channels = 2; };
+      params = { level = 1.06; };
+    }
     connect input_cut { from = &input:out; to = &low_cut:in; }
-    connect cut_drive { from = &low_cut:out; to = &drive:in; }
+    connect cut_trim { from = &low_cut:out; to = &input_trim:in; }
+    connect trim_drive { from = &input_trim:out; to = &drive:in; }
     connect drive_dc { from = &drive:out; to = &dc_cut:in; }
-    connect dc_cabinet { from = &dc_cut:out; to = &cabinet:in; }
-    connect cabinet_fizz { from = &cabinet:out; to = &fizz_cut:in; }
-    connect fizz_stereo { from = &fizz_cut:out; to = &stereo:in; }
-    connect stereo_output { from = &stereo:out; to = &output_gain:in; }
+    connect dc_thump { from = &dc_cut:out; to = &thump:in; }
+    connect thump_a { from = &thump:out; to = &speaker_a:in; }
+    connect a_b { from = &speaker_a:out; to = &speaker_b:in; }
+    connect b_cabinet { from = &speaker_b:out; to = &cabinet:in; }
+    connect thump_presence { from = &thump:out; to = &presence:in; }
+    connect presence_trim { from = &presence:out; to = &presence_level:in; }
+    connect presence_cabinet { from = &presence_level:out; to = &cabinet:in; }
+    connect cabinet_stereo { from = &cabinet:out; to = &stereo:in; }
+    connect stereo_gain { from = &stereo:out; to = &gain:in; }
   }
-  control level { target = &amp_stage.output_gain.params.level; default = 0.3; }
-  control drive { target = &amp_stage.drive.params.drive; default = 6; }
-  control tone { target = &amp_stage.cabinet.params.cutoff; default = 3800Hz; }
+  control level { target = &amp_stage.gain.params.level; default = 1.06; }
+  control drive { target = &amp_stage.drive.params.drive; default = 4; }
+  control tone { target = &amp_stage.speaker_a.params.cutoff; default = 4500Hz; }
+  control pickup { target = &voice.string.params.pickup; default = 1/8; }
+  control mute { target = &voice.string.params.damping; default = 1/4; }
   control pan { target = &amp_stage.stereo.params.pan; default = 0; }
-  control release { target = &voice.amp.params.release; default = 150ms; }
-  control vibrato_amount { target = &voice.vibrato.params.level; default = 0; }
+  control release { target = &voice.amp.params.release; default = 120ms; }
+  control vibrato { target = &voice.vibrato.params.level; default = 0; }
 }
 
 // ---------------------------------------------------------------- acoustic arpeggios
@@ -121,8 +196,8 @@ place arps_outro1 { pattern = &arps_outro; track = &arps; at = 144q; }
 
 // ---------------------------------------------------------------- power chords
 node rhythm {
-  instrument = &drive_guitar; config = { voices = 24; };
-  params = { level = 0.3; drive = 7; tone = 3400Hz; pan = -0.3; release = 80ms; };
+  instrument = &electric_guitar; config = { voices = 24; };
+  params = { level = 1.25; drive = 6; pan = -0.3; release = 80ms; };
 }
 // A G5 (root, fifth, octave) bar: a long chord on 1, a push on the and of 2,
 // then quarter and eighth chugs; transposed to C5, D5 and E5.
@@ -329,21 +404,15 @@ place snare_chorus2 { pattern = &snare_chorus; track = &snare_notes; at = 112q; 
 // The same melody as the folk-pop version, on the electric guitar. The verse
 // is lightly driven; the chorus pushes the amp harder.
 node lead {
-  instrument = &drive_guitar; config = { voices = 6; };
-  params = { level = 0.3; drive = 3; tone = 3200Hz; pan = 0.15; release = 250ms; vibrato_amount = 0.5; };
+  instrument = &electric_guitar; config = { voices = 6; };
+  params = { level = 4.2; drive = 3; pickup = 0.3; tone = 3200Hz; pan = 0.15; release = 250ms; vibrato = 0.5; };
 }
+// The amp holds its level as the drive changes, so only the drive moves.
 curve lead_drive {
   clock = score;
-  points = [(0q, 3, step), (48q, 9, step), (80q, 3, step), (112q, 9, step), (144q, 3, step)];
+  points = [(0q, 3, step), (48q, 12, step), (80q, 3, step), (112q, 12, step), (144q, 3, step)];
 }
 automation lead_push { target = &lead.params.drive; curve = &lead_drive; at = 0q; }
-// Less drive also means less output from the amp, so the level rises in the
-// verses to keep the melody on top.
-curve lead_gain {
-  clock = score;
-  points = [(0q, 1.1, step), (48q, 0.65, step), (80q, 1.1, step), (112q, 0.65, step), (144q, 1.1, step)];
-}
-automation lead_level { target = &lead.params.level; curve = &lead_gain; at = 0q; }
 pattern melody_verse { length = 32q;
   note a1 { at = 0q; dur = 1q; pitch = B4; velocity = 0.6; }
   note a2 { at = 1q; dur = 1/2q; pitch = D5; velocity = 0.55; }
