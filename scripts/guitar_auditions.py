@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Render the draft electric guitar against the T3 inline guitar, matched in loudness.
+"""Render the std/studio electric guitar against the T3 inline guitar, matched in loudness.
 
 Each audition plays "Morning Ferry" material, or a velocity ladder, through
 T3's inline `drive_guitar`, kept in scripts/guitar/t3_drive_guitar.maac, and
-draft `electric_guitar` in scripts/guitar/electric_guitar.maac. Both renders
+std/studio/1.1.0 `electric_guitar`, read from its library source. Both renders
 are measured with `maac analyze`, scaled to the same integrated loudness and
-joined into one A/B file: T3 first, a second of silence, then the draft.
+joined into one A/B file: T3 first, a second of silence, then std/studio.
 
-`--measure` instead plays the draft's reference phrase, the "Morning Ferry"
+`--measure` instead plays the guitar's reference phrase, the "Morning Ferry"
 power-chord chorus at velocity 0.7, at its default drive and across `drive`
 1 to 16: the default should read -20 LUFS, and the sweep should stay within
 2 LU. Standard library only; outputs go below target/guitar-auditions.
@@ -26,7 +26,7 @@ from studio_auditions import RATE, TARGET_LUFS, read_float_wav, run, write_float
 
 ROOT = Path(__file__).resolve().parent.parent
 FERRY = ROOT / "examples" / "ferry" / "ferry.maac"
-DRAFT = ROOT / "scripts" / "guitar" / "electric_guitar.maac"
+LIBRARY = ROOT / "stdlib" / "studio" / "1.1.0.maac"
 T3 = ROOT / "scripts" / "guitar" / "t3_drive_guitar.maac"
 
 HEADER = """maac 1;
@@ -52,7 +52,7 @@ def ferry_patterns(*names: str) -> str:
 def instruments() -> dict[str, str]:
     return {
         "t3": block(T3.read_text(), "instrument", "drive_guitar"),
-        "draft": block(DRAFT.read_text(), "instrument", "electric_guitar"),
+        "studio": block(LIBRARY.read_text(), "instrument", "electric_guitar"),
     }
 
 
@@ -81,7 +81,7 @@ AUDITIONS = [
         "patterns": lambda: ferry_patterns("arp_g", "arp_em", "arps_verse"),
         "play": "arps_verse",
         "t3": "drive = 1; tone = 3800Hz; release = 150ms;",
-        "draft": "drive = 1;",
+        "studio": "drive = 1;",
     },
     {
         "name": "crunch",
@@ -89,7 +89,7 @@ AUDITIONS = [
         "patterns": lambda: ferry_patterns("pc_g", "power_chorus_a"),
         "play": "power_chorus_a",
         "t3": "drive = 7; tone = 3400Hz; release = 80ms;",
-        "draft": "drive = 6; release = 80ms;",
+        "studio": "drive = 6; release = 80ms;",
     },
     {
         "name": "lead",
@@ -97,7 +97,7 @@ AUDITIONS = [
         "patterns": lambda: ferry_patterns("melody_chorus"),
         "play": "melody_chorus",
         "t3": "drive = 9; tone = 3200Hz; release = 250ms; vibrato_amount = 0.5;",
-        "draft": "drive = 12; pickup = 0.3; tone = 3200Hz; release = 250ms; vibrato = 0.5;",
+        "studio": "drive = 12; pickup = 0.3; tone = 3200Hz; release = 250ms; vibrato = 0.5;",
     },
     {
         "name": "dynamics",
@@ -105,7 +105,7 @@ AUDITIONS = [
         "patterns": lambda: ladder(["E2", "E3", "E4", "E5"], [0.25, 0.5, 0.8, 1.0]),
         "play": "part",
         "t3": "drive = 4;",
-        "draft": "drive = 4;",
+        "studio": "drive = 4;",
     },
 ]
 
@@ -128,7 +128,7 @@ def analyze(maac: Path, source: Path) -> dict:
 
 
 def measure(maac: Path, out: Path) -> int:
-    instrument = instruments()["draft"]
+    instrument = instruments()["studio"]
     patterns = at_velocity(ferry_patterns("pc_g", "power_chorus_a"), "0.7")
     measured = {}
     for drive in [None, 1, 2, 4, 8, 12, 16]:
@@ -156,14 +156,14 @@ def main() -> int:
     args.out.mkdir(parents=True, exist_ok=True)
     if args.measure:
         return measure(args.maac, args.out)
-    exports = {"t3": "drive_guitar", "draft": "electric_guitar"}
+    exports = {"t3": "drive_guitar", "studio": "electric_guitar"}
     sources = instruments()
     report = []
     for audition in AUDITIONS:
         if args.only and audition["name"] not in args.only:
             continue
         parts, row = [], {"audition": audition["name"]}
-        for variant in ("t3", "draft"):
+        for variant in ("t3", "studio"):
             stem = args.out / f"{audition['name']}-{variant}"
             source = stem.with_suffix(".maac")
             source.write_text(
@@ -198,8 +198,8 @@ def main() -> int:
         report.append(row)
         print(
             f"{audition['name']:9s} t3 {row['t3']['integrated_lufs']:7.2f} LUFS  "
-            f"draft {row['draft']['integrated_lufs']:7.2f} LUFS  "
-            f"matched peaks {row['t3']['matched_peak_dbfs']} / {row['draft']['matched_peak_dbfs']} dBFS"
+            f"studio {row['studio']['integrated_lufs']:7.2f} LUFS  "
+            f"matched peaks {row['t3']['matched_peak_dbfs']} / {row['studio']['matched_peak_dbfs']} dBFS"
         )
     (args.out / "report.json").write_text(json.dumps(report, indent=2) + "\n")
     print(f"A/B files and report.json in {args.out.relative_to(ROOT)}")

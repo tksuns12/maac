@@ -1,6 +1,5 @@
-//! The draft `electric_guitar` in scripts/guitar/electric_guitar.maac, before
-//! it joins std/studio/1.1.0: full-range rendering, velocity response, the
-//! calibrated level and the level held across `drive`.
+//! `std/studio/1.1.0`'s `electric_guitar`: full-range rendering, velocity
+//! response, the calibrated level and the level held across `drive`.
 
 use maac::analyze::{analyze_artifact, AnalyzeOptions, Measures, SectionMode};
 use maac::bundle::SourceBundle;
@@ -8,16 +7,14 @@ use maac::compiler::compile_bundle_artifact_with_limits;
 use maac::plan::PlanLimits;
 use maac::{render_artifact, PlanArtifact};
 
-const DRAFT: &str = include_str!("../scripts/guitar/electric_guitar.maac");
-
 fn composition(quarters: &str, params: &str, body: &str) -> String {
     format!(
         r#"maac 1;
 project p {{ score = [0q, {quarters}q]; rate = 48000Hz; tail = 2s; tempo = &clock; meter = &metre; output = &out:out; }}
 tempo clock {{ points = [(0q, 72bpm, step)]; }}
 meter metre {{ points = [(0q, 4, 4)]; }}
-{DRAFT}
-node out {{ instrument = &electric_guitar; config = {{ voices = 24; }}; params = {{ {params} }}; }}
+import studio {{ builtin = "std/studio/1.1.0"; }}
+node out {{ instrument = &studio.electric_guitar; config = {{ voices = 24; }}; params = {{ {params} }}; }}
 track t {{ target = &out:events; }}
 pattern phrase {{ length = {quarters}q;
 {body}

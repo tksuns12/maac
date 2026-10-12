@@ -1,6 +1,5 @@
-//! The draft `piano` in scripts/piano/piano.maac, before it joins
-//! std/studio/1.1.0: full-range rendering, velocity response, pitch, the
-//! calibrated level and the work a three-minute part costs.
+//! `std/studio/1.1.0`'s `piano`: full-range rendering, velocity response,
+//! pitch, the calibrated level and the work a three-minute part costs.
 
 use maac::analyze::{analyze_artifact, AnalysisReport, AnalyzeOptions, Measures, SectionMode};
 use maac::bundle::SourceBundle;
@@ -8,16 +7,14 @@ use maac::compiler::compile_bundle_artifact_with_limits;
 use maac::plan::PlanLimits;
 use maac::{render_artifact, PlanArtifact};
 
-const DRAFT: &str = include_str!("../scripts/piano/piano.maac");
-
 fn composition(quarters: &str, body: &str) -> String {
     format!(
         r#"maac 1;
 project p {{ score = [0q, {quarters}q]; rate = 48000Hz; tail = 3s; tempo = &clock; meter = &metre; output = &out:out; }}
 tempo clock {{ points = [(0q, 72bpm, step)]; }}
 meter metre {{ points = [(0q, 4, 4)]; }}
-{DRAFT}
-node out {{ instrument = &piano; config = {{ voices = 24; }}; }}
+import studio {{ builtin = "std/studio/1.1.0"; }}
+node out {{ instrument = &studio.piano; config = {{ voices = 24; }}; }}
 track t {{ target = &out:events; }}
 pattern phrase {{ length = {quarters}q;
 {body}

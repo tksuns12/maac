@@ -6,6 +6,10 @@ declined to act as the listening gate ([decision 7](instrument-palette-proposal.
 These measurements show that the instruments behave as designed. They do not
 show that they sound good.
 
+**1.1.0:** `std/studio/1.1.0` adds `electric_guitar` and `piano`, which meet
+their acceptance and passed listening rounds with the owner. It is frozen; see
+[std/studio/1.1.0](#stdstudio110) below.
+
 The [guide](studio-instruments.md) explains how to use the library. This
 report records how it was tuned and what was measured. All renders are
 48 kHz from the release build on an Apple M1, 2026-10-06.
@@ -151,3 +155,84 @@ cargo test --release --test studio_instruments
 
 Each `*-AB.wav` plays std/basic, two seconds of silence, then std/studio, both
 scaled to −20 LUFS. The std/basic side uses the settings "Late Window" used.
+
+## std/studio/1.1.0
+
+Frozen 2026-10-12 under the
+[electric guitar and piano proposal](electric-guitar-piano-proposal.md).
+The source is 1.0.0's with the version changed and two instruments appended,
+SHA-256 `15bdd1591a7e909bb8743151a998836c008bc3c40c83338c6cf6b051f9158263`.
+
+### Acceptance
+
+| Criterion | Evidence | Result |
+| --- | --- | --- |
+| 1.0.0 is unchanged | Every 1.0.0 export's catalog entry and the rendered audio of its usage example, in both versions | Identical |
+| Every new export renders its range | Every semitone, guitar E2–E6 and piano A0–C8, at velocities 0.2, 0.5 and 1 | Finite, peak below full scale |
+| Harder is brighter | Band-weighted mean octave at velocity 0.3 and 1: guitar E2, E3 and E4; piano C2, C4 and C6 | Higher at velocity 1 |
+| Levels are calibrated | Reference phrases at velocity 0.7 | Guitar −20.02 LUFS at −10.7 dBTP; piano −19.99 LUFS at −3.9 dBTP |
+| The guitar holds its level across `drive` | The reference phrase at `drive` 1, 2, 4, 8, 12 and 16 | Within 0.88 LU (bound ±2 LU) |
+| The piano reads as pitched | One note per octave from A0 to C7 through `maac analyze --notes` | Every note pitched, 0 to about 20 cents sharp (bound 50) |
+| The piano fits a song | A three-minute ballad part beside "Morning Ferry" | 2.71 + 5.99 billion of 10 billion work units |
+| Listening | A/B rounds with the owner | Both approved; see the proposal's results for [part 2](electric-guitar-piano-proposal.md#results-part-2) and [part 5](electric-guitar-piano-proposal.md#results-part-5) |
+| The bytes are frozen | Source SHA-256 against `stdlib/studio/1.1.0.sha256` | Matches |
+
+[`tests/studio_1_1.rs`](../tests/studio_1_1.rs),
+[`tests/studio_electric_guitar.rs`](../tests/studio_electric_guitar.rs) and
+[`tests/studio_piano.rs`](../tests/studio_piano.rs) check every row but
+listening.
+
+### Velocity response
+
+Each note's level and brightness, the first difference's equivalent
+frequency, over its first 300 ms.
+
+| Guitar, `drive` 4 | v0.25 | v0.5 | v0.8 | v1 |
+| --- | ---: | ---: | ---: | ---: |
+| E2 | −32.9 dB, 1,556 Hz | −27.5 dB, 1,806 Hz | −24.4 dB, 1,912 Hz | −23.2 dB, 1,941 Hz |
+| E3 | −34.6 dB, 1,551 Hz | −29.5 dB, 1,752 Hz | −26.6 dB, 1,834 Hz | −25.5 dB, 1,850 Hz |
+| E4 | −38.7 dB, 1,713 Hz | −34.0 dB, 1,926 Hz | −31.2 dB, 2,014 Hz | −30.1 dB, 2,027 Hz |
+| E5 | −41.5 dB, 2,418 Hz | −36.4 dB, 2,422 Hz | −33.8 dB, 2,414 Hz | −32.8 dB, 2,412 Hz |
+
+The pick hardness is a fixed low-pass, so on E5 and above velocity changes the
+level but barely the tone.
+
+| Piano | v0.2 | v0.5 | v0.8 | v1 |
+| --- | ---: | ---: | ---: | ---: |
+| A0 | −34.0 dB, 151 Hz | −24.1 dB, 150 Hz | −19.5 dB, 148 Hz | −17.7 dB, 150 Hz |
+| C2 | −36.0 dB, 208 Hz | −25.5 dB, 220 Hz | −20.3 dB, 229 Hz | −18.2 dB, 234 Hz |
+| C4 | −38.5 dB, 398 Hz | −27.4 dB, 461 Hz | −21.2 dB, 523 Hz | −18.5 dB, 570 Hz |
+| C6 | −44.3 dB, 827 Hz | −33.0 dB, 989 Hz | −25.3 dB, 1,136 Hz | −21.8 dB, 1,194 Hz |
+| C8 | −49.2 dB, 402 Hz | −41.0 dB, 1,082 Hz | −35.9 dB, 2,230 Hz | −33.1 dB, 2,898 Hz |
+
+A0 keeps one tone at every velocity. At C8 a soft note is mostly the
+soundboard thump, so its brightness reads low.
+
+### Rendering cost
+
+On the same Apple M1 release build, the guitar's reference phrase, 15.3 s of
+audio, renders in 0.38 s of CPU time and the piano's, 16.3 s, in 1.10 s. A
+piano voice charges 92 work units per sample, of which the two
+resonator banks are 32.
+
+### Limits
+
+- **The piano is synthesized.** Two resonator banks, a hammer pulse and a
+  thump approximate the attack; there is no soundboard, sympathetic
+  resonance or sustain pedal. The owner judged the approved version closest
+  to a piano among five rounds of variants, not indistinguishable from one.
+- **No undamped treble.** Every piano key is damped at release; a release
+  that depends on the key would make the work estimate charge every note
+  1,800 s.
+- **Guitar tone barely follows velocity on high notes**, as above.
+
+### Reproducing
+
+```sh
+cargo build --release
+python3 scripts/guitar_auditions.py            # A/B files against T3's inline guitar
+python3 scripts/guitar_auditions.py --measure  # reference loudness and drive sweep
+python3 scripts/piano_auditions.py             # A/B files against the electric piano
+python3 scripts/piano_auditions.py --measure   # reference loudness and a register ladder
+cargo test --release --test studio_1_1 --test studio_electric_guitar --test studio_piano
+```

@@ -73,7 +73,10 @@ and user listening acceptance remain separate from this design approval.
 
 The separate `std/studio/1.0.0` library builds an electric piano, bass, pad
 and drum kit from the instrument contract's velocity and key sources, curved
-envelopes, resonant filter and drive. It is reusable library content under
+envelopes, resonant filter and drive. `std/studio/1.1.0` adds an electric
+guitar and an acoustic piano built on the plucked string's excitation and
+pickup, the drive's level compensation and the `synth.modal/1` resonator
+bank. It is reusable library content under
 the same extension and changes no core semantics.
 
 ### 1.4 Native production extension

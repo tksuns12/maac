@@ -1,12 +1,11 @@
 # Electric guitar and piano: proposal
 
-**Status:** accepted 2026-10-11; the owner accepted every
-[decision](#decisions). Plan step 1, the string and drive additions, has
-landed; see [results](#results-part-1). Step 2, the draft electric guitar,
-passed its listening round; see [results](#results-part-2). Step 3 moved
-"Morning Ferry" to it; see [results](#results-part-3). Step 4 added
-`synth.modal/1`; see [results](#results-part-4). Step 5, the draft piano,
-passed its listening rounds; see [results](#results-part-5).
+**Status:** done 2026-10-12. The owner accepted every
+[decision](#decisions) on 2026-10-11. All six plan steps have landed, and
+`std/studio/1.1.0`, with the `electric_guitar` and the `piano`, is frozen; see
+the results of [part 1](#results-part-1), [part 2](#results-part-2),
+[part 3](#results-part-3), [part 4](#results-part-4),
+[part 5](#results-part-5) and [part 6](#results-part-6).
 
 ## Why
 
@@ -289,9 +288,9 @@ and the [saturation reference](instruments.md#saturation).
 
 ## Results: part 2
 
-Done 2026-10-12. The draft is
-[`scripts/guitar/electric_guitar.maac`](../scripts/guitar/electric_guitar.maac);
-it joins `std/studio/1.1.0` at the freeze, and
+Done 2026-10-12. The draft was `scripts/guitar/electric_guitar.maac`; it
+became `std/studio/1.1.0`'s `electric_guitar` unchanged at the
+[freeze](#results-part-6), and
 [`scripts/guitar_auditions.py`](../scripts/guitar_auditions.py) renders the
 auditions.
 
@@ -378,9 +377,8 @@ Landed 2026-10-12. The contract is [Modal bank](instruments.md#modal-bank).
 
 ## Results: part 5
 
-Done 2026-10-12. The draft is
-[`scripts/piano/piano.maac`](../scripts/piano/piano.maac); it joins
-`std/studio/1.1.0` at the freeze, and
+Done 2026-10-12. The draft was `scripts/piano/piano.maac`; it became
+`std/studio/1.1.0`'s `piano` unchanged at the [freeze](#results-part-6), and
 [`scripts/piano_auditions.py`](../scripts/piano_auditions.py) renders the
 auditions against the std/studio electric piano.
 
@@ -433,6 +431,22 @@ auditions against the std/studio electric piano.
   velocities 0.2, 0.5 and 1, checks that harder notes are brighter at C2, C4
   and C6, that every octave reads as pitched within 50 cents, the
   calibration and headroom, and the three-minute cost.
+
+## Results: part 6
+
+Frozen 2026-10-12.
+
+- **`std/studio/1.1.0`** is 1.0.0's source with the version changed and the
+  approved `electric_guitar` and `piano` appended unchanged, SHA-256
+  `15bdd159…58263`. Every 1.0.0 export keeps its catalog entry and renders
+  bit-identically in both versions. The drafts in `scripts/` are gone; the
+  audition scripts read the library source.
+- **"Morning Ferry"** imports `std/studio/1.1.0` and plays
+  `studio.electric_guitar`; the inline instrument is gone. Its delivered
+  master is byte-identical to the one the owner approved in part 3.
+- **Records.** The [delivery report](studio-delivery.md#stdstudio110) records
+  the acceptance, the velocity response, the cost and the limits. F17 and F22
+  of the [T3 record](ai-production-trial-t3.md) are updated.
 
 ## Cost and risk
 

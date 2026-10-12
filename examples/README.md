@@ -418,10 +418,9 @@ An AI wrote, mixed and mastered it during the
 [T3 production trial](../docs/ai-production-trial-t3.md):
 
 - picked steel-guitar verses and overdriven power-chord choruses;
-- the melody on an electric guitar defined in the file, the draft of the
-  std/studio/1.1.0 guitar: plucked strings with a pick and a pickup into a
-  level-compensated drive and a cabinet, with its drive automated per
-  section;
+- the melody on the std/studio/1.1.0 electric guitar: plucked strings with
+  a pick and a pickup into a level-compensated drive and a cabinet, with its
+  drive automated per section;
 - studio bass, kit and pad, and a snare into a hall reverb.
 
 ```sh

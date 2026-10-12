@@ -26,6 +26,10 @@ pub const ACOUSTIC_SOURCE: &str = include_str!("../stdlib/acoustic/1.0.0.maac");
 pub const STUDIO_ID: &str = "std/studio/1.0.0";
 pub const STUDIO_SOURCE_PATH: &str = "@builtin/std/studio/1.0.0.maac";
 pub const STUDIO_SOURCE: &str = include_str!("../stdlib/studio/1.0.0.maac");
+/// Adds `electric_guitar` and `piano`; every 1.0.0 export is unchanged.
+pub const STUDIO_1_1_ID: &str = "std/studio/1.1.0";
+pub const STUDIO_1_1_SOURCE_PATH: &str = "@builtin/std/studio/1.1.0.maac";
+pub const STUDIO_1_1_SOURCE: &str = include_str!("../stdlib/studio/1.1.0.maac");
 
 #[derive(Clone, Copy, Debug)]
 pub struct BuiltinSource {
@@ -75,6 +79,15 @@ const DEFINITIONS: &[LibraryDefinition] = &[
             source: STUDIO_SOURCE,
         },
         editorial: include_str!("../stdlib/studio/1.0.0.json"),
+        alias: "studio",
+    },
+    LibraryDefinition {
+        id: STUDIO_1_1_ID,
+        source: BuiltinSource {
+            path: STUDIO_1_1_SOURCE_PATH,
+            source: STUDIO_1_1_SOURCE,
+        },
+        editorial: include_str!("../stdlib/studio/1.1.0.json"),
         alias: "studio",
     },
 ];

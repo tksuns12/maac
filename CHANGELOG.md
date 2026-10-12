@@ -7,6 +7,16 @@ promise of compatibility beyond the documented interfaces.
 
 ### Added
 
+- `std/studio/1.1.0` adds `electric_guitar` and `piano`; every 1.0.0 export
+  is unchanged and renders bit-identically. The guitar is a plucked string
+  with a pick and a pickup into one shared amp whose `drive` holds its
+  loudness from clean to lead; the piano is a felt hammer striking two
+  `synth.modal/1` banks with a soundboard thump. Both were approved by the
+  owner in listening rounds and are calibrated to −20 LUFS at velocity 0.7.
+  See the [guide](docs/studio-instruments.md) and the
+  [delivery report](docs/studio-delivery.md#stdstudio110). This closes the
+  [electric guitar and piano proposal](docs/electric-guitar-piano-proposal.md).
+
 - `synth.modal/1`, a voice-only bank of up to 64 decaying resonators at
   stretched harmonics, `n f √(1 + B n²)`, with up to three detuned copies of
   each. An input pulse strikes it; `decay`, `damping`, `position` and
@@ -71,8 +81,8 @@ promise of compatibility beyond the documented interfaces.
 
 ### Changed
 
-- "Morning Ferry" plays the draft std/studio/1.1.0 electric guitar, inline
-  until the library is frozen. Its lead no longer needs a level automation
+- "Morning Ferry" plays the std/studio/1.1.0 electric guitar, imported from
+  the library; its master is unchanged. Its lead no longer needs a level automation
   beside the drive automation. The owner's verdict: the Game Boy quality is
   "definitely mostly gone". See the
   [proposal](docs/electric-guitar-piano-proposal.md#results-part-3).

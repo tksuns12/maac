@@ -13,10 +13,13 @@ listen before you call a track finished.
 
 ## 1. Plan before writing
 
-- **Instruments.** Start from `std/studio/1.0.0`
-  (`maac instruments --library std/studio/1.0.0`): its electric piano, bass,
-  pad and `drums` kit change timbre with velocity, and their levels share one
-  calibrated scale. Use the `std/acoustic/1.0.0` guitars for guitar parts.
+- **Instruments.** Start from `std/studio/1.1.0`
+  (`maac instruments --library std/studio/1.1.0`): its electric piano,
+  acoustic piano, electric guitar, bass, pad and `drums` kit change timbre
+  with velocity, and their levels share one calibrated scale. Use the
+  `std/acoustic/1.0.0` guitars for acoustic guitar parts. For a guitar lead,
+  set the electric guitar's `pickup = 0.3` and `tone = 3200Hz`, and automate
+  its `drive` alone: the level holds.
   std/basic covers other roles, such as organ, strings, flute and leads, with
   older synthesized timbres that ignore velocity except for loudness.
 - **Form.** Fix the tempo, the meter and the form in bars. Declare each
@@ -40,7 +43,7 @@ listen before you call a track finished.
   `use d_bar { pattern = &g_bar; at = 4q; transpose = 700ct; }` plays a G
   pattern as D. A bass line or a guitar shape needs only one pattern per
   chord quality.
-- Play drums from one kit node: import `std/studio/1.0.0`, add
+- Play drums from one kit node: import `std/studio/1.1.0`, add
   `node drums { instrument = &studio.drums; }`, and write `hit` leaves such as
   `hit k1 { at = 0q; key = "kick"; velocity = 0.85; }`. Keys are `kick`,
   `snare`, `clap`, `hat`, `open_hat`, `low_tom`, `high_tom` and `crash`; set

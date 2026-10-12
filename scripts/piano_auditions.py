@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Render the draft piano against the std/studio electric piano, matched in loudness.
+"""Render the std/studio piano against the std/studio electric piano, matched in loudness.
 
 Each audition plays the same notes through `studio.electric_piano`, the
-closest keyboard in the libraries, and through the draft `piano` in
-scripts/piano/piano.maac. Both renders are measured with `maac analyze`,
+other keyboard in the library, and through std/studio/1.1.0's `piano`, read
+from its library source. Both renders are measured with `maac analyze`,
 scaled to the same integrated loudness and joined into one A/B file: the
-electric piano first, a second of silence, then the draft.
+electric piano first, a second of silence, then the piano.
 
-`--measure` instead plays the draft's reference phrase, four bars of ballad
+`--measure` instead plays the piano's reference phrase, four bars of ballad
 accompaniment across three octaves at velocity 0.7, which the default level
 should put at -20 LUFS, and prints each note's level and brightness on a
 register and velocity ladder. Standard library only; outputs go below
@@ -26,7 +26,7 @@ from guitar_auditions import analyze, at_velocity, block
 from studio_auditions import RATE, read_float_wav, run, write_float_wav
 
 ROOT = Path(__file__).resolve().parent.parent
-DRAFT = ROOT / "scripts" / "piano" / "piano.maac"
+LIBRARY = ROOT / "stdlib" / "studio" / "1.1.0.maac"
 # The A/B files meet here rather than at -20 LUFS: a piano's attacks peak far
 # above its loudness and would clip.
 MATCH_LUFS = -27.0
@@ -89,8 +89,8 @@ def auditions() -> list[dict]:
 
 
 def composition(length: int, variant: str, params: str, patterns: str) -> str:
-    if variant == "draft":
-        instrument = block(DRAFT.read_text(), "instrument", "piano")
+    if variant == "studio":
+        instrument = block(LIBRARY.read_text(), "instrument", "piano")
         node = f"node out {{ instrument = &piano; config = {{ voices = 24; }}; params = {{ {params} }}; }}\n"
     else:
         instrument = ""
@@ -120,14 +120,14 @@ def note_measures(samples: list[float], channels: int, onsets: list[float], span
 
 def measure(maac: Path, out: Path) -> int:
     source = out / "reference.maac"
-    source.write_text(composition(16, "draft", "", at_velocity(ballad(), "0.7")))
+    source.write_text(composition(16, "studio", "", at_velocity(ballad(), "0.7")))
     whole = analyze(maac, source)
     print(f"reference {whole['integrated_lufs']:7.2f} LUFS  true peak {whole['true_peak_dbtp']:6.2f} dBTP  bands {whole['bands_db']}")
     pitches = ["A0", "C2", "C4", "C6", "C8"]
     velocities = [0.2, 0.5, 0.8, 1.0]
     patterns, length = ladder(pitches, velocities, 2)
     source = out / "ladder.maac"
-    source.write_text(composition(length, "draft", "", patterns))
+    source.write_text(composition(length, "studio", "", patterns))
     wav = out / "ladder.wav"
     run(maac, "build", str(source), "--project-root", ".", "--profile", "song", "-o", str(wav), "--force")
     channels, samples = read_float_wav(wav)
@@ -155,7 +155,7 @@ def main() -> int:
         if args.only and audition["name"] not in args.only:
             continue
         parts, row = [], {"audition": audition["name"]}
-        for variant in ("electric_piano", "draft"):
+        for variant in ("electric_piano", "studio"):
             stem = args.out / f"{audition['name']}-{variant}"
             source = stem.with_suffix(".maac")
             source.write_text(composition(audition["length"], variant, "", audition["patterns"]))
@@ -181,8 +181,8 @@ def main() -> int:
         report.append(row)
         print(
             f"{audition['name']:10s} electric piano {row['electric_piano']['integrated_lufs']:7.2f} LUFS  "
-            f"draft {row['draft']['integrated_lufs']:7.2f} LUFS  "
-            f"matched peaks {row['electric_piano']['matched_peak_dbfs']} / {row['draft']['matched_peak_dbfs']} dBFS"
+            f"studio {row['studio']['integrated_lufs']:7.2f} LUFS  "
+            f"matched peaks {row['electric_piano']['matched_peak_dbfs']} / {row['studio']['matched_peak_dbfs']} dBFS"
         )
     (args.out / "report.json").write_text(json.dumps(report, indent=2) + "\n")
     print(f"A/B files and report.json in {args.out.relative_to(ROOT)}")

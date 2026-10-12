@@ -84,12 +84,12 @@ from T2.
 
 | ID | Problem | Status |
 | --- | --- | --- |
-| F17 | The libraries have no electric guitar or piano, and the owner still hears the library timbres as "old game music". The AI had to design an amp chain to get a rock sound | Open. The same ceiling as T2's F14 |
+| F17 | The libraries have no electric guitar or piano, and the owner still hears the library timbres as "old game music". The AI had to design an amp chain to get a rock sound | Fixed in part: `std/studio/1.1.0` adds an `electric_guitar` and a `piano`, each approved in listening rounds. On the song switched to the library guitar the owner said the Game Boy quality is "definitely mostly gone". The piano is synthesized, approved as the closest of five variants. See the [proposal](electric-guitar-piano-proposal.md#results-part-6) |
 | F18 | A strum spells out a pitch, velocity and onset offset per string, and each chord shape is written out. There is no strum or guitar-voicing shorthand | Open |
 | F19 | The [producer guide](ai-producer-guide.md) never mentioned `transpose` on `use`; the AI found it in the specification | Fixed: the guide now shows it |
 | F20 | `analyze` cannot report gain reduction per section, so a glue or limiter flattening the chorus was found only by comparing region loudness | Open |
 | F21 | A lead 11 dB under its accompaniment raised no finding. `buried_note` judges each part in its own strongest band, and no part is marked as the lead | Open |
-| F22 | Raising the amp's `drive` also raises its output, so a drive automation needs a matching level automation | Partly fixed: `synth.drive/1` has a [`reference`](instruments.md#saturation) that holds the level. The library guitar uses it in [part 2](electric-guitar-piano-proposal.md#plan) |
+| F22 | Raising the amp's `drive` also raises its output, so a drive automation needs a matching level automation | Fixed: `synth.drive/1` has a [`reference`](instruments.md#saturation) that holds the level. The `std/studio/1.1.0` guitar uses it: its `drive` runs from 1 to 16 within 0.88 LU, and the song's lead dropped its level automation |
 | F23 | Imports and nodes share one ID namespace, so a node cannot be named after an import | Open; the diagnostic is clear |
 | F24 | `band_dominance` reports spurious changes at section edges, where one 100 ms block holds both sections | Open, informational only |
 | F25 | Half of the draft-1 nylon melody's notes (64 of 132) read `unpitched` at the 0.03 aperiodicity limit, so `pitch_mismatch` did not check them | Open |
