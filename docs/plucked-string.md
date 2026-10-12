@@ -1,7 +1,8 @@
 # Plucked-string extension: implementation contract
 
 **Status: implemented; recorded kernel, instrument, and installed-authoring
-checks passed on the tested host. User listening acceptance remains pending.**
+checks passed on the tested host. The owner approved the std/acoustic guitars
+built on it by ear on 2026-10-12.**
 The [delivery report](reports/acoustic-delivery.md) distinguishes representative
 signal-pitch measurements from full-range phase/range checks and records the
 observed evidence. The approved contract retains the review corrections about

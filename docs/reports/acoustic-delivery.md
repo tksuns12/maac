@@ -2,8 +2,10 @@
 
 The frozen `std/acoustic/1.0.0` collection and `synth.pluck/1` passed the
 numerical and installed-authoring checks described here on the local macOS
-environment. **User listening acceptance remains pending.** These results do
-not claim subjective acoustic realism or cross-platform bit identity.
+environment. The owner approved all three guitars by ear on 2026-10-12 in a
+[listening round](showcase-listening.md#2026-10-12-built-in-instrument-approval-round).
+These results do not claim subjective acoustic realism or cross-platform bit
+identity.
 
 ## Frozen inputs and installation
 
@@ -111,6 +113,7 @@ coverage used rendered range tests and the independent phase equation.
 
 The [author guide](../acoustic-guitars.md) describes supported controls and the
 [implementation contract](../plucked-string.md) fixes processor behavior. A
-level-matched user listening comparison remains necessary before claiming
-improved acoustic realism. Generated audio and numerical results are not a
+level-matched user listening comparison with the std/basic guitars remains
+necessary before claiming improved acoustic realism; the owner's approval on
+2026-10-12 judged each guitar alone. Generated audio and numerical results are not a
 substitute for that assessment.

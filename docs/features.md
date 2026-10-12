@@ -24,7 +24,7 @@ These are synthesized interpretations, with stereo output and common controls.
 The separate [acoustic guitar collection](acoustic-guitars.md) supplies
 three MaaC-native string instruments under `std/acoustic/1.0.0`, with bends
 and vibrato. The [delivery report](reports/acoustic-delivery.md) records numerical
-and installed-example checks; user listening approval remains pending. Basic
+and installed-example checks, and the owner approved all three by ear. Basic
 sounds and default discovery remain unchanged.
 
 The [studio instruments](studio-instruments.md) under `std/studio/1.1.0`
@@ -32,8 +32,7 @@ are an electric piano, an acoustic piano, an electric guitar, a bass, a pad
 and a drum kit whose sound changes with velocity: harder notes bark, pluck,
 strike or hit brighter. Their defaults share one loudness scale (−20 LUFS at
 velocity 0.7), and the drum kit uses the std/basic/1.1.0 kit's keys. The
-guitar and piano were approved by ear; the 1.0.0 exports are measured, not
-listened to.
+owner approved every one of them by ear.
 Try `maac build examples/studio/drums.maac -o studio-drums.wav`.
 
 ## Sound design

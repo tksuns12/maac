@@ -1,9 +1,9 @@
 # MaaC-native acoustic guitars
 
 **Validation status:** kernel, instrument range/control, and fresh installed
-authoring checks passed on the tested host. User listening approval remains
-pending. The [delivery report](reports/acoustic-delivery.md) records exact evidence and
-its limits.
+authoring checks passed on the tested host, and the owner approved all
+three guitars by ear on 2026-10-12. The [delivery report](reports/acoustic-delivery.md)
+records exact evidence and its limits.
 
 `std/acoustic/1.0.0` is a separate collection of three stereo instruments:
 `nylon_guitar`, `steel_guitar`, and `muted_guitar`. Each uses MaaC's internally
@@ -194,6 +194,11 @@ recurrence and acceptance criteria.
 Auditions should compare old basic and new acoustic guitars at matched levels
 with identical notes and velocities, including low/mid/high notes, chords,
 short/long gates, bends, and vibrato. Record both the matching gains and what
-the listener heard. Until the user listens, perceptual acceptance remains
-pending. Finite audio, pitch estimates, or successful WAV generation do not
-establish realism or listening approval.
+the listener heard. Finite audio, pitch estimates, or successful WAV
+generation do not establish realism or listening approval.
+
+On 2026-10-12 the owner approved all three guitars in a
+[listening round](reports/showcase-listening.md#2026-10-12-built-in-instrument-approval-round)
+that played each through the "Morning Ferry" verse picking and a soft-to-hard
+ladder of E2, E3 and E4. That round did not compare them with the std/basic
+guitars.

@@ -1,10 +1,11 @@
 # Studio instruments delivery report
 
 **Result:** `std/studio/1.0.0` meets its numerical acceptance and is frozen.
-No one has approved its sound by ear: after one audition round the owner
-declined to act as the listening gate ([decision 7](../design/instrument-palette-proposal.md#decisions)).
-These measurements show that the instruments behave as designed. They do not
-show that they sound good.
+At the freeze no one had approved its sound by ear: after one audition round
+the owner declined to act as the listening gate ([decision 7](../design/instrument-palette-proposal.md#decisions)).
+The owner approved every export by ear later, on 2026-10-12, in a
+[listening round](showcase-listening.md#2026-10-12-built-in-instrument-approval-round)
+of one file per instrument.
 
 **1.1.0:** `std/studio/1.1.0` adds `electric_guitar` and `piano`, which meet
 their acceptance and passed listening rounds with the owner. It is frozen; see
@@ -133,8 +134,9 @@ cycle counts partly taken on efficiency cores; both have been replaced.
 
 ## Limits
 
-- **Not listened to.** Each number above measures one property. Together
-  they do not establish that an instrument sounds convincing.
+- **One listener.** Each number above measures one property. The owner's
+  approval on 2026-10-12 is one listener on a phone, not a comparison with
+  other instruments.
 - **The clap's second burst swells.** An envelope cannot start late, so the
   second burst rises over 10 ms instead of starting sharply.
 - **The hats are drum-machine metal.** Six square waves through filters, as

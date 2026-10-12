@@ -3,6 +3,35 @@
 This page records informal user listening approvals. They are separate from
 the automated test evidence and do not replace it.
 
+## 2026-10-12: built-in instrument approval round
+
+| Field | Value |
+|---|---|
+| Recorded | 2026-10-12 |
+| Listener | Project owner (tksuns12) |
+| Instruments | The `std/studio/1.0.0` exports `electric_piano`, `bass`, `pad` and `drums`, and the `std/acoustic/1.0.0` guitars `steel_guitar`, `nylon_guitar` and `muted_guitar`: every built-in instrument outside std/basic not yet approved by ear |
+| Source | [`scripts/listening_round.py`](../../scripts/listening_round.py) at commit `142ab84`, with the release build of `maac` 0.2.0 |
+| Files | One per instrument: a phrase from "Late Window" (the studio exports) or "Morning Ferry" (the guitars), 1.5 s of silence, then low, middle and high notes at velocities 0.3, 0.6 and 1; for the kit, its beat and then each piece soft and hard. Each phrase is scaled to −20 LUFS and its ladder by the same gain; the muted guitar's file is lowered to a −1 dBFS peak |
+| Playback | Sent to an Android phone over the tailnet; whether headphones were used was not stated |
+| Verdict | Approved, all seven: "다 졸네", read as "다 좋네" ("all good") |
+
+| File | Length | SHA-256 |
+|---|---:|---|
+| `listen-studio-electric-piano.wav` | 24.2 s | `6934742a71f0a2ee2593dd6b74c72418f4a9fdbf67bad7ff466b4e72b390763b` |
+| `listen-studio-bass.wav` | 26.2 s | `dad12aea18d2c9f593ce8be519e3ca109b4f07d378859ce49ba98bee68c4a70f` |
+| `listen-studio-pad.wav` | 24.2 s | `cda1c86aa4a95f7ec3438cc48c94810ba4fa601896c5608fe71c7a81f147fc5c` |
+| `listen-studio-drums.wav` | 28.8 s | `dceff64b3986aa40f92ae108cf453c511741b0c4ecf2fafa1803a120534256f1` |
+| `listen-acoustic-steel-guitar.wav` | 31.7 s | `1db4ccb2b7fbbc2e001f0898e5c9df4bc8aeab0f81838f077daafb0681d33671` |
+| `listen-acoustic-nylon-guitar.wav` | 31.7 s | `826f07f850f39a119064a708be8fa5dfa6725fd6e2d1cc81bbe650ad987a65dc` |
+| `listen-acoustic-muted-guitar.wav` | 31.7 s | `3e98206c3754a6a4d72a4d2fb7d046b9025c989b9e1ee584ec018230f6077d01` |
+
+One listener on a phone approved each instrument as it is; the round did
+not compare them with other synthesizers or recordings. With the `electric_guitar`
+and `piano` approved in their own rounds
+([proposal](../design/electric-guitar-piano-proposal.md)), every
+`std/studio` and `std/acoustic` instrument has now been approved by ear.
+The 24 `std/basic` instruments have not.
+
 ## 2026-10-02: stereo showcase
 
 | Field | Value |

@@ -5,6 +5,21 @@ promise of compatibility beyond the documented interfaces.
 
 ## [Unreleased]
 
+### Changed
+
+- The owner approved the `std/studio/1.0.0` exports and the
+  `std/acoustic/1.0.0` guitars by ear, in a
+  [listening round](docs/reports/showcase-listening.md) of one file per
+  instrument from [`scripts/listening_round.py`](scripts/listening_round.py).
+  Every std/studio and std/acoustic instrument is now approved; the std/basic
+  instruments are not.
+- The documentation is split: guides and references stay in `docs/`, indexed
+  by [`docs/README.md`](docs/README.md); proposals, decisions and the roadmap
+  move to `docs/design/`, and reports, evidence and the AI production trials
+  to `docs/reports/`.
+- `sha2` 0.11, with digests written by `maac::bundle::lower_hex`; every hash,
+  manifest and file name is unchanged.
+
 ## [0.2.0] — 2026-10-12
 
 The second experimental release. It adds an electric guitar and an acoustic

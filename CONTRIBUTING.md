@@ -10,9 +10,10 @@ follows the [code of conduct](CODE_OF_CONDUCT.md).
   usually enough: rendering is deterministic, so the same source reproduces
   the same result. Use the bug report form in
   [issues](https://github.com/tksuns12/maac/issues/new/choose).
-- **Listen.** Most built-in instruments were tuned by measurement, and only
-  some have been checked by ear. Tell us which ones sound wrong, dated or
-  unconvincing, with the instrument sound form.
+- **Listen.** The built-in instruments were tuned by measurement, and so far
+  only one listener has approved them by ear; the std/basic ones not at all.
+  Tell us which ones sound wrong, dated or unconvincing, with the instrument
+  sound form.
 - **Write music.** A composition that pushes the language, or one that
   cannot be written yet, shows what to build next. Share it in
   [discussions](https://github.com/tksuns12/maac/discussions).

@@ -2,9 +2,9 @@
 
 **Validation status:** the library meets its numerical acceptance:
 full-range renders, brighter sound at higher velocity, and calibrated levels.
-The `electric_guitar` and `piano` added in 1.1.0 were also approved by ear
-in listening rounds with the owner. The 1.0.0 exports were not: the owner
-chose not to act as the listening gate then. The
+Every export has also been approved by ear by the owner: the
+`electric_guitar` and `piano` in their own listening rounds, and the 1.0.0
+exports in a [round on 2026-10-12](reports/showcase-listening.md). The
 [delivery report](reports/studio-delivery.md) records the measurements and their
 limits.
 

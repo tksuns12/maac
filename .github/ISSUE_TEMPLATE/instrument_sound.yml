@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Most built-in instruments were tuned by measurement, and only some have been checked by ear ([studio instruments](https://github.com/tksuns12/maac/blob/main/docs/studio-instruments.md)). Listening reports are among the most useful contributions.
+        The built-in instruments were tuned by measurement, and so far only one listener has approved them by ear; the std/basic ones not at all ([studio instruments](https://github.com/tksuns12/maac/blob/main/docs/studio-instruments.md)). Listening reports are among the most useful contributions.
   - type: input
     id: instrument
     attributes:

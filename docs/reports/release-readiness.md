@@ -66,7 +66,10 @@ or additional dependency set.
   implementation is an explicitly narrower foundation subset.
 - No one has approved the built-in instruments by ear. The owner declined to
   act as the listening gate for `std/studio`, and the `std/acoustic` review
-  is still pending; their documents say so.
+  is still pending; their documents say so. *Update, 2026-10-12:* the owner
+  has since approved every `std/studio` and `std/acoustic` instrument by ear
+  ([record](showcase-listening.md)); the std/basic instruments remain
+  unapproved.
 - The evidence comes from macOS on Apple silicon, locally and in hosted CI.
   It does not establish bit-identical output on other platforms or
   toolchains.
