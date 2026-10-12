@@ -87,7 +87,7 @@ from T2.
 | F17 | The libraries have no electric guitar or piano, and the owner still hears the library timbres as "old game music". The AI had to design an amp chain to get a rock sound | Fixed in part: `std/studio/1.1.0` adds an `electric_guitar` and a `piano`, each approved in listening rounds. On the song switched to the library guitar the owner said the Game Boy quality is "definitely mostly gone". The piano is synthesized, approved as the closest of five variants. See the [proposal](../design/electric-guitar-piano-proposal.md#results-part-6) |
 | F18 | A strum spells out a pitch, velocity and onset offset per string, and each chord shape is written out. There is no strum or guitar-voicing shorthand | Open |
 | F19 | The [producer guide](../ai-producer-guide.md) never mentioned `transpose` on `use`; the AI found it in the specification | Fixed: the guide now shows it |
-| F20 | `analyze` cannot report gain reduction per section, so a glue or limiter flattening the chorus was found only by comparing region loudness | Open |
+| F20 | `analyze` cannot report gain reduction per section, so a glue or limiter flattening the chorus was found only by comparing region loudness | Open; see the [gain reduction proposal](../design/gain-reduction-proposal.md) |
 | F21 | A lead 11 dB under its accompaniment raised no finding. `buried_note` judges each part in its own strongest band, and no part is marked as the lead | Fixed: `maac analyze --lead` names the lead, and `lead_under` (profile `default/5`) warns when its median note sits 8.5 dB or more under the rest of its mix point. See the [proposal](../design/lead-part-proposal.md) |
 | F22 | Raising the amp's `drive` also raises its output, so a drive automation needs a matching level automation | Fixed: `synth.drive/1` has a [`reference`](../instruments.md#saturation) that holds the level. The `std/studio/1.1.0` guitar uses it: its `drive` runs from 1 to 16 within 0.88 LU, and the song's lead dropped its level automation |
 | F23 | Imports and nodes share one ID namespace, so a node cannot be named after an import | Open; the diagnostic is clear |
@@ -105,7 +105,8 @@ from T2.
    the lead, so `analyze` can compare it with the accompaniment per section.
    Add gain reduction per section for the dynamics processors. F21 is done,
    by a flag rather than a mark in the score; see the
-   [lead part proposal](../design/lead-part-proposal.md). F20 remains.
+   [lead part proposal](../design/lead-part-proposal.md). F20 has its own
+   [proposal](../design/gain-reduction-proposal.md).
 3. **Strum and voicing shorthand (F18).** A language change; it needs its own
    proposal, like the [authoring density work](../design/authoring-density-proposal.md).
 4. **Small fixes (F23–F25).** Section-edge blocks in `band_dominance`, the
