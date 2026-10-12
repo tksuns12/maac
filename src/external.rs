@@ -577,7 +577,10 @@ pub struct DiscoveredExternalProcessor {
 }
 
 fn sha_uri(bytes: &[u8]) -> String {
-    format!("sha256:{:x}", Sha256::digest(bytes))
+    format!(
+        "sha256:{}",
+        crate::bundle::lower_hex(&Sha256::digest(bytes))
+    )
 }
 fn dep_key(owner: &[String], slot: &str) -> DependencyIdentity {
     DependencyIdentity {

@@ -186,7 +186,7 @@ impl Converter {
             return Err(ConversionError::ResourceLimit);
         }
         if let Some(expected) = digest {
-            if format!("{:x}", Sha256::digest(table)) != expected
+            if crate::bundle::lower_hex(&Sha256::digest(table)) != expected
                 || table.len() != (half_length as usize + 1) * 8
             {
                 return Err(ConversionError::CoefficientTable);
@@ -511,7 +511,7 @@ mod tests {
                     format!("{DITHER_ID}\n{seed}\n{delivery}\n{target}\n{frame}\n{channel}\n{j}\n");
                 let hash = Sha256::digest(data.as_bytes());
                 assert_eq!(
-                    format!("{hash:x}"),
+                    crate::bundle::lower_hex(&hash),
                     case[format!("sha256_j{j}")].as_str().unwrap()
                 );
                 *u = (u64::from_be_bytes(hash[..8].try_into().unwrap()) >> 11) as f64

@@ -152,7 +152,10 @@ impl AuthoredDocument {
         if canonical.len() > MAX_DOCUMENT_BYTES {
             return Err(error("E_RESOURCE_LIMIT", "canonical document is too large"));
         }
-        let revision = format!("sha256:{:x}", Sha256::digest(&canonical));
+        let revision = format!(
+            "sha256:{}",
+            crate::bundle::lower_hex(&Sha256::digest(&canonical))
+        );
         Ok(Self {
             tree,
             canonical,

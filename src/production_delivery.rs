@@ -218,10 +218,10 @@ fn artifact_filename(delivery: &str, target: &str) -> String {
     hash.update([0]);
     hash.update(target.as_bytes());
     format!(
-        "{}.{}.{:x}.wav",
+        "{}.{}.{}.wav",
         &delivery[..delivery.len().min(80)],
         &target[..target.len().min(80)],
-        hash.finalize()
+        crate::bundle::lower_hex(&hash.finalize())
     )
 }
 
@@ -233,9 +233,9 @@ fn manifest_filename(delivery: &str) -> String {
     hash.update(b"maac.production.manifest-filename/1\0");
     hash.update(delivery.as_bytes());
     format!(
-        "{}.{:x}.manifest.json",
+        "{}.{}.manifest.json",
         &delivery[..delivery.len().min(80)],
-        hash.finalize()
+        crate::bundle::lower_hex(&hash.finalize())
     )
 }
 fn checked_add(total: &mut u64, value: u64) -> Result<(), DeliveryError> {
@@ -858,7 +858,10 @@ fn export_target_with_analyzer(
         writer.flush().map_err(io_error)?;
     }
     temporary.as_file().sync_all().map_err(io_error)?;
-    report.pcm_hash = Some(format!("sha256:{:x}", pcm_hash.finalize()));
+    report.pcm_hash = Some(format!(
+        "sha256:{}",
+        crate::bundle::lower_hex(&pcm_hash.finalize())
+    ));
     report.file_hash = Some(hash_file(temporary.as_file_mut())?);
     let analysis_result = analyze(
         temporary.path(),
@@ -1015,7 +1018,10 @@ fn hash_file(file: &mut File) -> Result<String, DeliveryError> {
         }
         hasher.update(&bytes[..count]);
     }
-    Ok(format!("sha256:{:x}", hasher.finalize()))
+    Ok(format!(
+        "sha256:{}",
+        crate::bundle::lower_hex(&hasher.finalize())
+    ))
 }
 
 pub fn evaluate_limits(

@@ -2016,7 +2016,7 @@ fn write_member(path: &Path, data: &MemberData, member: &Member) -> Result<(), D
             }
         }
     }
-    let actual = format!("sha256:{:x}", digest.finalize());
+    let actual = format!("sha256:{}", crate::bundle::lower_hex(&digest.finalize()));
     if total != member.bytes || actual != member.sha256 {
         return Err(fail(
             DiagnosticCode::Hash,

@@ -1147,5 +1147,33 @@ fn resource_error(message: impl Into<String>) -> Diagnostics {
 
 /// Return the canonical lowercase SHA-256 identity of `bytes`.
 pub fn sha256_digest(bytes: &[u8]) -> String {
-    format!("sha256:{:x}", Sha256::digest(bytes))
+    format!("sha256:{}", lower_hex(&Sha256::digest(bytes)))
+}
+
+/// Lowercase hexadecimal, two digits per byte: how digests are written in
+/// identities, manifests and file names.
+pub fn lower_hex(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let mut text = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        // Writing to a String cannot fail.
+        let _ = write!(text, "{byte:02x}");
+    }
+    text
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn digests_are_written_as_lowercase_hex() {
+        // The FIPS 180-2 test vector for "abc".
+        assert_eq!(
+            sha256_digest(b"abc"),
+            "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert_eq!(lower_hex(&[0x00, 0x0f, 0xa0, 0xff]), "000fa0ff");
+        assert_eq!(lower_hex(&[]), "");
+    }
 }

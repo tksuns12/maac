@@ -567,7 +567,10 @@ pub(crate) fn render_wav_callback_to_path(
             }
             hash.update(&block[..count]);
         }
-        Ok((stats, format!("sha256:{:x}", hash.finalize())))
+        Ok((
+            stats,
+            format!("sha256:{}", crate::bundle::lower_hex(&hash.finalize())),
+        ))
     })
 }
 

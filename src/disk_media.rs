@@ -109,7 +109,7 @@ impl DiskAsset {
                 format!("media `{path}` byte length is not a multiple of four"),
             ));
         }
-        let hash = format!("sha256:{:x}", digest.finalize());
+        let hash = format!("sha256:{}", crate::bundle::lower_hex(&digest.finalize()));
         if hash != expected {
             return Err(fail(
                 DiagnosticCode::Hash,

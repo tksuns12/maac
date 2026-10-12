@@ -72,9 +72,9 @@ fn write_large_pcm_project(root: &Path) {
          project p {{ score=[0q,1/3000q]; tail=0s; rate=48000Hz; tempo=&clock; meter=&metre; output=&clip:out; }}\n\
          tempo clock {{ points=[(0q,120bpm,step)]; }}\n\
          meter metre {{ points=[(0q,4,4)]; }}\n\
-         asset large {{ kind=audio; path=\"large.pcm\"; hash=\"sha256:{:x}\"; format=\"pcm_f32le_interleaved/1\"; rate=24000Hz; channels=1; frames={LARGE_PCM_FRAMES}; }}\n\
+         asset large {{ kind=audio; path=\"large.pcm\"; hash=\"sha256:{}\"; format=\"pcm_f32le_interleaved/1\"; rate=24000Hz; channels=1; frames={LARGE_PCM_FRAMES}; }}\n\
          audio clip {{ asset=&large; at=0q; source=[{}frame,{}frame]; mode=rate; }}\n",
-        hash.finalize(),
+        maac::bundle::lower_hex(&hash.finalize()),
         LARGE_PCM_FRAMES - 2,
         LARGE_PCM_FRAMES,
     );

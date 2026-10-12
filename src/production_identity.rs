@@ -241,7 +241,10 @@ pub fn render_key(
 }
 
 fn digest(bytes: &[u8]) -> String {
-    format!("sha256:{:x}", Sha256::digest(bytes))
+    format!(
+        "sha256:{}",
+        crate::bundle::lower_hex(&Sha256::digest(bytes))
+    )
 }
 fn valid_digest(text: &str) -> bool {
     text.strip_prefix("sha256:").is_some_and(|hex| {

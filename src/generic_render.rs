@@ -72,7 +72,10 @@ fn error(code: &'static str, message: impl Into<String>) -> LockError {
 }
 
 fn sha_uri(bytes: &[u8]) -> String {
-    format!("sha256:{:x}", Sha256::digest(bytes))
+    format!(
+        "sha256:{}",
+        crate::bundle::lower_hex(&Sha256::digest(bytes))
+    )
 }
 
 /// Convert one finite DSP sample to the Generic Interchange v1 binary32 profile.

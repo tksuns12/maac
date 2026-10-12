@@ -93,7 +93,7 @@ fn project(root: &Path) -> String {
     }
     let asset = |name: &str| {
         let pcm = fs::read(root.join("imports").join(name).join("media.pcm")).unwrap();
-        let hash = format!("sha256:{:x}", Sha256::digest(pcm));
+        let hash = format!("sha256:{}", maac::bundle::lower_hex(&Sha256::digest(pcm)));
         format!(
             "asset {name} {{kind=audio;path=\"imports/{name}/media.pcm\";hash=\"{hash}\";format=\"pcm_f32le_interleaved/1\";rate=48000Hz;channels=1;frames=2;}}\n"
         )

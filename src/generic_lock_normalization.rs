@@ -81,7 +81,10 @@ fn canon(value: &Value) -> Result<Vec<u8>, LockError> {
 }
 
 fn sha_uri(bytes: &[u8]) -> String {
-    format!("sha256:{:x}", Sha256::digest(bytes))
+    format!(
+        "sha256:{}",
+        crate::bundle::lower_hex(&Sha256::digest(bytes))
+    )
 }
 
 fn u(value: u64) -> Value {

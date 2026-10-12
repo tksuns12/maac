@@ -662,7 +662,10 @@ fn check_wav(file: &File, m: &FreezeManifest) -> Result<String, Diagnostics> {
             "freeze WAV sample count differs from manifest",
         ));
     }
-    Ok(format!("sha256:{:x}", pcm.finalize()))
+    Ok(format!(
+        "sha256:{}",
+        crate::bundle::lower_hex(&pcm.finalize())
+    ))
 }
 
 fn check_tree(root: &ProjectRoot) -> Result<(), Diagnostics> {
@@ -868,7 +871,10 @@ fn copy_hash(source: &mut File, dest: &mut File, max: u64) -> Result<(u64, Strin
             )
         })?;
     }
-    Ok((total, format!("sha256:{:x}", digest.finalize())))
+    Ok((
+        total,
+        format!("sha256:{}", crate::bundle::lower_hex(&digest.finalize())),
+    ))
 }
 
 /// Bound the executable identity read independently of archive byte limits.
@@ -931,7 +937,10 @@ pub(crate) fn engine_digest() -> Result<String, Diagnostics> {
         }
         digest.update(&block[..count]);
     }
-    Ok(format!("sha256:{:x}", digest.finalize()))
+    Ok(format!(
+        "sha256:{}",
+        crate::bundle::lower_hex(&digest.finalize())
+    ))
 }
 
 fn fail(code: DiagnosticCode, message: impl Into<String>) -> Diagnostics {

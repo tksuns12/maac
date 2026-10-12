@@ -17,6 +17,11 @@ updates:
         update-types:
           - minor
           - patch
+    ignore:
+      # num-rational 0.4 uses num-bigint 0.4, and the two BigInt types do not
+      # mix; move both together when num-rational supports num-bigint 0.5.
+      - dependency-name: num-bigint
+        versions: [">= 0.5"]
 
   # The workflows pin each action to a commit; Dependabot updates the pin and
   # its version comment together.

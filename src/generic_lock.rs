@@ -477,7 +477,7 @@ fn path(v: &Value, c: &str) -> Result<Vec<String>> {
         .collect()
 }
 fn sha_uri(raw: &[u8]) -> String {
-    format!("sha256:{:x}", Sha256::digest(raw))
+    format!("sha256:{}", crate::bundle::lower_hex(&Sha256::digest(raw)))
 }
 fn canon(v: &Value) -> Result<Vec<u8>> {
     canonical_json_bytes(v).map_err(|e| LockError::new("E_SCHEMA", e.to_string()))

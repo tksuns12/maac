@@ -122,8 +122,14 @@ fn descriptor_requires_recognized_exact_bytes_and_matching_pin() {
         .push(b'\n');
     assert!(prepare_document(&document, &bad_assets).is_err());
     let alternate = b"{}".to_vec();
-    let original_hash = format!("sha256:{:x}", Sha256::digest(SCHEMA_BYTES));
-    let alternate_hash = format!("sha256:{:x}", Sha256::digest(&alternate));
+    let original_hash = format!(
+        "sha256:{}",
+        maac::bundle::lower_hex(&Sha256::digest(SCHEMA_BYTES))
+    );
+    let alternate_hash = format!(
+        "sha256:{}",
+        maac::bundle::lower_hex(&Sha256::digest(&alternate))
+    );
     let document = parse(&EXAMPLE.replace(&original_hash, &alternate_hash)).unwrap();
     bad_assets.insert("schemas/production.schema.json".into(), alternate);
     assert!(prepare_document(&document, &bad_assets).is_err());

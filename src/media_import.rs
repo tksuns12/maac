@@ -655,7 +655,7 @@ fn import_wav_open_file_disk(
             .map_err(|error| import_error("E_IO", format!("cannot write PCM snapshot: {error}")))?;
         hasher.update(&buffer);
     }
-    let pcm_hash = format!("sha256:{:x}", hasher.finalize());
+    let pcm_hash = format!("sha256:{}", crate::bundle::lower_hex(&hasher.finalize()));
     Ok(DiskImportedWav {
         input_name,
         input_bytes,
@@ -711,7 +711,9 @@ fn stage_snapshot(
             .map_err(|error| import_error("E_IO", format!("cannot write {name}: {error}")))?;
         hasher.update(&block[..n]);
     }
-    if total != expected_bytes || format!("sha256:{:x}", hasher.finalize()) != expected_hash {
+    if total != expected_bytes
+        || format!("sha256:{}", crate::bundle::lower_hex(&hasher.finalize())) != expected_hash
+    {
         return Err(import_error(
             "E_IMPORT_MISMATCH",
             format!("{name} snapshot changed"),
@@ -776,7 +778,7 @@ fn snapshot_and_hash(mut input: File) -> Result<(NamedTempFile, u64, String), Me
             .map_err(|error| import_error("E_IO", format!("cannot write WAV snapshot: {error}")))?;
         hasher.update(&buffer[..count]);
     }
-    let source_hash = format!("sha256:{:x}", hasher.finalize());
+    let source_hash = format!("sha256:{}", crate::bundle::lower_hex(&hasher.finalize()));
     Ok((snapshot, total, source_hash))
 }
 

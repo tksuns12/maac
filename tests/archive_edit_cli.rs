@@ -268,7 +268,7 @@ fn journaled_edit_accepts_song_profile_with_large_native_pcm() {
     let transaction = temp.path().join("transaction.json");
     fs::create_dir(&project).unwrap();
     let pcm = vec![0u8; 5_000_004];
-    let hash = format!("sha256:{:x}", Sha256::digest(&pcm));
+    let hash = format!("sha256:{}", maac::bundle::lower_hex(&Sha256::digest(&pcm)));
     fs::write(project.join("large.pcm"), &pcm).unwrap();
     let source = format!(
         "maac 1;\n\
@@ -425,7 +425,10 @@ fn dependency_changes_and_bad_pins_are_rejected_without_publication() {
     let bad_pin_file = temp.path().join("bad-pin.json");
     fs::create_dir(&project).unwrap();
     let library = "maac 1;\nlibrary sounds { version=\"1\"; }\n";
-    let hash = format!("sha256:{:x}", Sha256::digest(library.as_bytes()));
+    let hash = format!(
+        "sha256:{}",
+        maac::bundle::lower_hex(&Sha256::digest(library.as_bytes()))
+    );
     let source = format!("{SOURCE}\nimport sounds {{ path=\"sounds.maac\"; hash=\"{hash}\"; }}\n");
     fs::write(project.join("main.maac"), &source).unwrap();
     fs::write(project.join("sounds.maac"), library).unwrap();

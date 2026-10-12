@@ -25,7 +25,7 @@ fn value(relative: &str) -> Value {
 }
 
 fn digest(bytes: &[u8]) -> String {
-    format!("sha256:{:x}", Sha256::digest(bytes))
+    format!("sha256:{}", maac::bundle::lower_hex(&Sha256::digest(bytes)))
 }
 
 fn external_descriptor() -> Vec<u8> {

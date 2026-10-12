@@ -27,7 +27,7 @@ fn value(rel: &str) -> Value {
 }
 
 fn sha_uri(bytes: &[u8]) -> String {
-    format!("sha256:{:x}", Sha256::digest(bytes))
+    format!("sha256:{}", maac::bundle::lower_hex(&Sha256::digest(bytes)))
 }
 
 fn strict_descriptor_bytes() -> Vec<u8> {

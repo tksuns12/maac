@@ -213,7 +213,7 @@ impl NodeFreezeSnapshot {
             boundary,
             channels,
             bytes,
-            format!("sha256:{:x}", hash.finalize()),
+            format!("sha256:{}", crate::bundle::lower_hex(&hash.finalize())),
             engine_digest()?,
         );
         manifest.reuse_identity = Some(reuse_identity(snapshot, &plan, boundary, VERSION)?);
@@ -523,7 +523,8 @@ impl NodeFreezeSnapshot {
         )
         .map_err(render_error)?;
         if next_frame != self.frames()
-            || format!("sha256:{:x}", hash.finalize()) != self.output_digest()
+            || format!("sha256:{}", crate::bundle::lower_hex(&hash.finalize()))
+                != self.output_digest()
         {
             return Err(fail(
                 DiagnosticCode::Hash,
@@ -657,7 +658,10 @@ impl NodeFreezeGroup {
                 &boundary,
                 channels,
                 stream.bytes,
-                format!("sha256:{:x}", stream.hash.finalize()),
+                format!(
+                    "sha256:{}",
+                    crate::bundle::lower_hex(&stream.hash.finalize())
+                ),
                 engine.clone(),
             );
             manifest.reuse_identity = Some(reuse_identity(snapshot, &plan, &boundary, VERSION)?);
@@ -986,7 +990,10 @@ impl NodeFreezeGroup {
         }
         for (index, leaf) in leaves.iter().enumerate() {
             if next_frames[index] != leaf.frames()
-                || format!("sha256:{:x}", hashes[index].clone().finalize()) != leaf.output_digest()
+                || format!(
+                    "sha256:{}",
+                    crate::bundle::lower_hex(&hashes[index].clone().finalize())
+                ) != leaf.output_digest()
             {
                 return Err(fail(
                     DiagnosticCode::Hash,
@@ -1500,7 +1507,10 @@ fn copy_checked(
             "node freeze output length differs from manifest",
         ));
     }
-    Ok((bytes, format!("sha256:{:x}", hash.finalize())))
+    Ok((
+        bytes,
+        format!("sha256:{}", crate::bundle::lower_hex(&hash.finalize())),
+    ))
 }
 
 fn render_error(error: RenderError) -> Diagnostics {

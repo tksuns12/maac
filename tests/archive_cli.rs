@@ -40,7 +40,7 @@ fn hash_file(path: &Path) -> String {
         }
         hash.update(&buffer[..count]);
     }
-    format!("sha256:{:x}", hash.finalize())
+    format!("sha256:{}", maac::bundle::lower_hex(&hash.finalize()))
 }
 
 fn project(root: &Path) {
