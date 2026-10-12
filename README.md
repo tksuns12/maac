@@ -2,343 +2,173 @@
 
 <img src="output/imagegen/maac-logo.png" alt="MaaC logo: a musical note between angle brackets followed by the MaaC wordmark" width="480">
 
-MaaC (Music as a Code) is a Rust library and command-line tool that implements
-MaaC/1 for checking source, compiling an inspectable performance plan, and
-rendering that plan to WAV. The playable foundation targets offline 48 kHz mono
-or stereo rendering with the bounded [capability set](docs/capabilities.md).
+MaaC is a text language for music, and a Rust command-line tool that turns it
+into audio. You write a score, its instruments and its mix as plain `.maac`
+source. `maac` checks it, compiles it to an inspectable performance plan and
+renders a WAV file. The same source always renders to the same bytes, offline,
+with no samples to download.
 
-[`maac analyze`](docs/analyze.md) gives an AI producer, or anyone without
-ears on the render, a way to hear it: per-section and per-source loudness,
-peaks, octave bands and stereo measurements, findings named by the authored
-IDs, and spectrogram and piano-roll images. Try
-`maac analyze examples/showcase/showcase.maac --project-root . --disk-media --profile song --images analysis`.
-The [AI producer guide](docs/ai-producer-guide.md) shows the whole loop, and
-[`examples/lofi`](examples/lofi/) is a track an AI produced with it.
+It is built to be written by people and by AI models alike. `maac analyze`
+reports what a render sounds like in numbers: loudness per section, peaks,
+octave bands, buried or mistuned notes. A producer who cannot listen can
+still check a mix.
 
-The installed executable includes [24 basic instruments](docs/basic-instruments.md):
-keys, guitars, basses, drums, strings, flute, bell, pad and lead. Import
-`std/basic/1.0.0` without downloading sounds or supplying a library directory.
-These are synthesized interpretations, with stereo output and common controls.
+**Status:** experimental, version 0.1.0. Tested on macOS; you build it from
+source. The [changelog](CHANGELOG.md) records what has changed.
 
-The separate [acoustic guitar collection](docs/acoustic-guitars.md) supplies
-three MaaC-native string instruments under `std/acoustic/1.0.0`, with bends
-and vibrato. The [delivery report](docs/acoustic-delivery.md) records numerical
-and installed-example checks; user listening approval remains pending. Basic
-sounds and default discovery remain unchanged.
+## What a score looks like
 
-The [studio instruments](docs/studio-instruments.md) under `std/studio/1.1.0`
-are an electric piano, an acoustic piano, an electric guitar, a bass, a pad
-and a drum kit whose sound changes with velocity: harder notes bark, pluck,
-strike or hit brighter. Their defaults share one loudness scale (−20 LUFS at
-velocity 0.7), and the drum kit uses the std/basic/1.1.0 kit's keys. The
-guitar and piano were approved by ear; the 1.0.0 exports are measured, not
-listened to.
-Try `maac build examples/studio/drums.maac -o studio-drums.wav`.
+[`examples/hello.maac`](examples/hello.maac), a piano and a drum kit:
 
-Reusable [sound libraries](docs/instruments.md) add code-authored instruments,
-presets, sample-wise FM, and morphing wavetables. Import local source files with
-SHA-256 pins, instantiate their instruments, and automate the exposed controls.
-Compiled plans embed everything needed for offline rendering.
+```maac
+maac 1;
 
-[Musical libraries](docs/instruments.md#reusable-musical-declarations) also
-export pinned patterns, curves, and tunings. Their references stay owned by
-the library while each composition supplies its own tempo, placement, and
-targets. [Source module artifacts](docs/musical-module-artifact.md) preserve
-these libraries and their dependency closure for reuse.
+project hello {
+  score = [0q, 16q]; rate = 48000Hz; tail = 3s;
+  tempo = &clock; meter = &metre; output = &mix:out;
+}
+tempo clock { points = [(0q, 84bpm, step)]; }
+meter metre { points = [(0q, 4, 4)]; }
+import studio { builtin = "std/studio/1.1.0"; }
 
-[Tempo ramps](docs/tempo-ramps.md) use the existing `linear` tempo shape to
-accelerate or slow down across score positions. Try
-`maac build examples/tempo-ramps.maac -o tempo-ramps.wav`.
-Ramp scores without sample kits or arranged clips produce version 3 plans; other existing scores
-retain versions 1 and 2.
+node piano { instrument = &studio.piano; config = { voices = 16; }; }
+node drums { instrument = &studio.drums; }
+node mix { type = "core.sum/1"; config = { channels = 2; }; }
+connect piano_mix { from = &piano:out; to = &mix:in; }
+connect drums_mix { from = &drums:out; to = &mix:in; }
 
-[Native hits and sample kits](docs/core-kit.md) play pinned mono/stereo audio
-assets through `core.kit/1`. Hits use the existing pattern, placement, override,
-and tempo machinery. Version 4 plans embed the samples for offline replay.
-Sample preparation stays in external tools; this feature adds no language syntax.
-Try `maac build examples/core-kit.maac --project-root . -o core-kit.wav`.
+pattern chords { length = 4q;
+  chord c { at = 0q; dur = 2q; pitches = [C3, E4, G4]; velocity = 0.6; }
+  chord a { at = 2q; dur = 2q; pitches = [A2, C4, E4]; velocity = 0.5; }
+}
+pattern beat { length = 2q;
+  hit kick  { at = 0q; key = "kick";  velocity = 0.7; }
+  hit hat   { at = 1/2q; key = "hat"; velocity = 0.4; }
+  hit snare { at = 1q; key = "snare"; velocity = 0.6; }
+  hit hat2  { at = 3/2q; key = "hat"; velocity = 0.4; }
+}
+track keys { target = &piano:events; }
+track kit { target = &drums:events; }
+place progression { pattern = &chords; track = &keys; at = 0q; count = 4; }
+place groove { pattern = &beat; track = &kit; at = 0q; count = 8; }
+```
 
-[Arranged audio clips](docs/audio-clips.md) use existing top-level `audio` objects
-for placement, source slicing, playback speed, reverse and explicit fades.
-Connect each clip's `out` port to the processing graph. Version 5 plans retain
-the samples and transport settings for standalone replay; sample importing
-remains external tooling.
-Try `maac build examples/audio-clips.maac --project-root . -o audio-clips.wav`.
+Positions and lengths are exact fractions of a quarter note (`q`), so
+nothing drifts. Patterns are placed on tracks, tracks feed instrument nodes,
+and nodes connect into a mix.
 
-[Warp-rate clips](docs/warp-rate.md) map source frames to musical anchors using
-`mode = warp_rate`. Playback follows the tempo map, changing pitch with speed,
-including tempo changes during the tail. Version 6 plans retain the exact warp
-recipe. `mode = warp_preserve` with `processor = "core.stretch.ola/1"` keeps the
-recorded pitch through the core overlap-add reference stretch; module-asset
-stretchers remain an explicit extension capability.
-Try `maac build examples/warp-rate.maac --project-root . -o warp-rate.wav`.
+## Install
 
-[Core fader](docs/core-fader.md) provides explicit dB gain with sample-rate
-automation and modulation. Try `maac build examples/core-fader.maac -o core-fader.wav`.
-
-[Core matrix](docs/core-matrix.md) provides explicit mono/stereo channel mapping,
-duplication, and downmixing. Try `maac build examples/core-matrix.maac -o core-matrix.wav`.
-
-[Core delay](docs/core-delay.md) provides exact frame delays and causal feedback.
-Try `maac build examples/core-delay.maac -o core-delay.wav`.
-
-[Core reference noise](docs/core-noise.md) provides reproducible seeded mono/stereo
-noise. Try `maac build examples/core-noise.maac -o core-noise.wav`.
-
-The [Core Audio conformance audit](docs/core-audio-conformance-audit.md) tracks
-remaining correctness and profile gaps after the reference-processor slices.
-
-[Core modulation](docs/core-modulation.md) connects score- or seconds-clock LFOs
-and automated constants to continuous sample-rate controls such as cutoff, pan,
-and gain, plus event-rate attack/release and instrument public controls.
-Event-rate values are captured at note-on, note-off, or reset. Existing `modulate` objects
-add their contributions to base automation;
-version 7 plans retain the control graph for standalone replay.
-Try `maac build examples/core-modulation.maac --project-root . -o core-modulation.wav`.
-Reset capture: `maac build examples/reset-rate-modulation.maac -o reset-rate.wav`.
-
-[Internal event modulation](docs/internal-event-modulation.md) captures per-voice
-signals at note-on, note-off, and shared-LFO reset without advancing their audio state twice.
-Try `maac build examples/internal-event-modulation.maac -o internal-event.wav`
-or `maac build examples/internal-phase-modulation.maac -o internal-phase.wav`.
-Shared reset capture: `maac build examples/internal-reset-modulation.maac -o internal-reset.wav`.
-
-[Note sources](docs/instruments.md#note-sources) let a voice graph read the
-note's velocity and key, so harder notes can be brighter and higher notes
-decay sooner. An envelope's `curve` makes decays and releases exponential in
-shape while keeping their durations.
-Try `maac build examples/note-sources.maac -o note-sources.wav`.
-A [resonant filter](docs/instruments.md#resonant-filter) that can track the
-key and anti-aliased [saturation](docs/instruments.md#saturation) give
-instruments filter character and warmth.
-Try `maac build examples/resonant-drive.maac -o resonant-drive.wav`.
-
-The [project-entrypoint guide](docs/project-entrypoint.md) specifies conventional
-`main.maac` discovery and the explicit finite `--profile song` allowance for
-larger projects. Existing explicit-file commands remain compatible.
-
-The MaaC/1 language uses the `.maac` extension, and source files begin with the
-canonical `maac 1;` header. MaaC 0.1.0 (2026-10-08) is an experimental,
-source-only release. Build the executable locally; this repository does not
-promise binary, rendered audio, or other generated release artifacts. The starter library's
-small wavetable WAV is authored source data. The MaaC language specification is a
-design draft, and the Rust implementation deliberately covers a smaller,
-documented subset.
-
-The experimental [native mixing and delivery implementation](docs/production.md)
-adds EQ, compression, algorithmic reverb, and named master/stem deliveries under
-`maac.production/1`. The graph runs at 48 kHz; `maac deliver` exports 44.1, 48,
-or 96 kHz WAV with explicit encoding and dither, then analyzes the final files.
-The [production example](examples/production.maac),
-[delivery schema](production.schema.json), and
-[bounded fixtures](production-conformance.json) describe the contract. The
-[production delivery report](docs/production-delivery.md) records installed-CLI
-acceptance separately from the specification fixtures.
-Metering uses analyzer `maac.analysis.bs1770-5/2` and the approved single-stage
-four-times Annex 2 true-peak profile. See the applicable fixture results and
-historical profile comparison in the [metering evidence](docs/production-metering-evidence.md).
-No professional sound-quality or full ITU/EBU conformance claim is made.
-
-The [take and comp capability](docs/takes-and-comping.md) records alternate
-audio assets, a shared physical origin, and comp regions checked against
-explicit clips. Selection changes use existing atomic edits, inverses, and
-archive history. Try the [synthetic take example](examples/take-comp.maac);
-[v2 take groups](docs/grouped-takes.md) coordinate all lanes of a take.
-Takes are imported audio; MaaC itself does not record, play or monitor audio
-devices. Capture and listen with any audio tool, and bring recordings in with
-`maac import-wav`.
-
-## Quick start
-
-Install a current stable Rust toolchain. From the repository root:
+Install a current stable [Rust toolchain](https://rustup.rs), then:
 
 ```sh
-cargo build --release --locked
+git clone https://github.com/tksuns12/maac.git
+cd maac
 cargo install --path . --locked
 ```
 
-Discover a built-in sound and render a complete example:
+This puts `maac` on your path. It never contacts the network after the
+build.
+
+## Quick start
+
+From the repository root, render the example above and listen to
+`hello.wav` in any audio player:
 
 ```sh
-maac instruments
-maac instruments mellow_piano --json
-maac build examples/basic/mellow_piano.maac -o piano.wav --format pcm16
-maac build examples/basic/full_band.maac -o full-band.wav --format pcm16
+maac build examples/hello.maac -o hello.wav
 ```
 
-Each basic example is standalone: copy its `.maac` file anywhere and use the
-installed executable. The [basic instrument guide](docs/basic-instruments.md)
-includes a complete first composition, pitch guidance and drum conventions.
-
-Then check, compile, and render a composition:
+Hear what the built-in instruments can do with two complete songs, both
+written by an AI producer with MaaC:
 
 ```sh
-maac check example.maac
-maac compile example.maac -o example.performance.json
-maac render example.performance.json -o example.wav
+maac build examples/ferry/ferry.maac --profile song -o ferry.wav   # a rock ballad
+maac build examples/lofi/lofi.maac --profile song -o lofi.wav      # a lo-fi track
 ```
 
-Open the WAV in any audio player to listen.
-
-Render the named production example from the repository root:
+Ask the analyzer how a render sounds, section by section:
 
 ```sh
-maac deliver examples/production.maac --project-root . --profile song \
-  --delivery release_cd --output-dir production-output
-maac compile examples/production.maac --project-root . --profile song -o production.json
-maac deliver production.json --profile song --delivery archive --output-dir archive-output
+maac analyze examples/ferry/ferry.maac --profile song --section regions
 ```
 
-Repeat `--target ID` to select a subset; omitted targets select all. Every
-selected output observes the complete graph, including external sidechains and
-the declared tail. The example's illustrative loudness limits may fail: completed
-WAVs and the manifest remain available, and the command returns failure. Existing
-files are protected unless `--force` is supplied. See the
-[CLI reference](docs/reference.md) for formats, limits, and publication behavior.
-
-The compiler and renderer do not contact the network. Once dependencies are
-cached, `--offline` can be added to Cargo commands. Build/render default to a
-48 kHz float32 WAV; `--format pcm16` selects overload-rejecting PCM16 export.
-Existing destinations require `--force`, and failed operations leave the
-destination intact.
-
-For a one-step build, or a PCM16 render, use:
+Browse the instruments and their controls:
 
 ```sh
-maac build evening-window.maac -o evening-window.wav
-maac build example.maac -o example.pcm16.wav --format pcm16
+maac instruments --library std/studio/1.1.0
+maac instruments piano --library std/studio/1.1.0 --json
 ```
 
-Try the shared FM bell, wavetable pad, and bass library:
+The steps behind `build` are also separate commands:
 
 ```sh
-maac check examples/sounds/studio.maac
-maac build examples/reusable.maac -o reusable.wav
+maac check examples/hello.maac
+maac compile examples/hello.maac -o hello.performance.json
+maac render hello.performance.json -o hello.wav --force
 ```
 
-The [starter sound guide](examples/README.md) explains the presets, multiple
-instances, and wavetable source asset. Use `maac hash FILE` to obtain a source
-or wavetable pin after editing a dependency.
+Renders are 48 kHz float WAV by default; `--format pcm16` writes 16-bit.
+Existing files are kept unless you pass `--force`. Long songs need
+`--profile song`, which raises the render-work allowance.
+
+## What's included
+
+- **A language for scores:** notes, chords and drum hits with exact timing;
+  reusable patterns with transposition and repeats; tempo ramps, meters,
+  grooves and named sections. See the [tutorial](docs/tutorial.md).
+- **Built-in instruments,** all synthesized and needing no downloads:
+  - [studio](docs/studio-instruments.md): electric and acoustic piano,
+    electric guitar, bass, pad and drum kit, whose sound follows velocity;
+  - [acoustic](docs/acoustic-guitars.md): steel, nylon and muted acoustic
+    guitars;
+  - [basic](docs/basic-instruments.md): 24 general-purpose sounds.
+- **Your own instruments:** oscillators, wavetables, FM, plucked strings,
+  resonator banks, filters and saturation, wired as voice graphs with
+  controls and presets ([instruments](docs/instruments.md)).
+- **Recorded audio:** sample kits, arranged clips with fades, and
+  tempo-following warps ([core kit](docs/core-kit.md),
+  [audio clips](docs/audio-clips.md)).
+- **Mixing and delivery:** EQ, compression, reverb and a limiter, and
+  `maac deliver` for masters and stems checked against loudness and peak
+  targets ([production](docs/production.md)).
+- **Per-note expression:** independent pitch bends, swells, timbre and
+  pressure on overlapping notes.
+- **Analysis:** loudness, peaks, spectra, stereo image and per-note findings,
+  plus spectrogram and piano-roll images ([analyze](docs/analyze.md)).
+
+The [feature tour](docs/features.md) walks through each with a runnable
+example, and the [capability matrix](docs/capabilities.md) gives exact
+limits.
 
 ## Documentation
 
-The [design principles](docs/design-principles.md) define the boundary between
-the declarative musical core, reusable libraries, engine extensions, and tools.
+- **Start here:** [quick start](docs/quickstart.md),
+  [tutorial](docs/tutorial.md), [AI producer guide](docs/ai-producer-guide.md)
+- **Reference:** [CLI and library reference](docs/reference.md),
+  [diagnostics](docs/diagnostics.md),
+  [performance-plan format](docs/performance-plan.md),
+  [capability matrix](docs/capabilities.md)
+- **Language:** the [MaaC/1 specification](MaaC-1-Specification.md), its
+  [grammar](grammar.ebnf) and [syntax-tree schema](syntax-tree.schema.json).
+  The specification is a design draft; the implementation covers a
+  documented subset.
+- **Design:** the [design principles](docs/design-principles.md) and the
+  [roadmap](docs/language-specification-plan.md#current-priorities).
+  Proposals, delivery reports and AI production trials in [`docs/`](docs/)
+  record how each feature was decided and measured.
 
-Read the [quick start](docs/quickstart.md), [authoring tutorial](docs/tutorial.md),
-[CLI and library reference](docs/reference.md), and [capability matrix](docs/capabilities.md).
-The [language specification and conformance plan](docs/language-specification-plan.md#current-priorities)
-owns active priorities: portable musical meaning, reusable source data,
-interchange, and evidence for stated conformance boundaries.
-The [Document/Performance evidence map](docs/document-performance-evidence.md)
-connects language obligations to public APIs, fixed tests, and remaining limits.
-The [pitch guide](docs/pitch-expression.md) and [gain guide](docs/gain-expression.md)
-demonstrate independent bends, swells, and fades on overlapping `core.sine/1` voices.
-The [instrument pitch guide](docs/instrument-pitch.md) applies independent bends
-and vibrato to reusable basic, acoustic, and custom voices.
-The [instrument gain guide](docs/instrument-gain.md) applies swells and fades to
-basic, acoustic, and custom instrument voices with a standalone example.
-The [timbre guide](docs/timbre-expression.md) maps independent per-note color
-curves through explicit custom graph sources, with a standalone filtered-oscillator
-and plucked-string example.
-The [pressure guide](docs/pressure-expression.md) completes all four per-note
-expression kinds for explicitly opted-in graphs, with independent pressure
-mappings to oscillator level and brightness in a standalone stereo example.
-The [diagnostics guide](docs/diagnostics.md) explains failures, while the
-[performance-plan format](docs/performance-plan.md) describes the standalone
-JSON interchange artifact. [Implementation decisions](docs/implementation-decisions.md)
-and the [implementation plan](docs/implementation-plan.md) record the current
-technical boundary. The [instrument delivery evidence](docs/instrument-delivery.md)
-and historical [verification report](docs/verification.md) separate automated
-evidence from the pending listening review. The [changelog](CHANGELOG.md)
-records the experimental release scope.
+## Contributing
 
-The full [MaaC-1 specification](MaaC-1-Specification.md),
-[surface grammar](grammar.ebnf), executable [Lark grammar](grammar.lark),
-[syntax-tree schema](syntax-tree.schema.json), and the asset-free
-[example](example.maac) are included in the source tree. The companion
-`check_spec.py` script is a syntax and selected-semantics smoke checker; it is
-not a complete semantic validator, renderer, or proof of specification
-conformance.
-
-## Development
-
-The [contribution guide](CONTRIBUTING.md) lists the local checks and the
-maintainer-led contribution process. CI targets stable Rust on macOS. Python
-3.10 or newer is needed for the development checks, including the source smoke
-checker and acceptance runner; CI exercises Python 3.12. The checker
-dependencies are pinned in `requirements-dev.txt`:
-
-```sh
-python3 -m venv .venv
-source .venv/bin/activate
-python3 -m pip install -r requirements-dev.txt
-python3 check_production.py
-python3 scripts/production_src_coefficients.py --verify
-python3 scripts/acceptance.py
-python3 scripts/production_acceptance.py --profile song
-```
-
-The initial release validation was performed on macOS; other platforms are
-unverified. No minimum supported Rust version (MSRV) is promised.
-
-`check_spec.py` regenerates the tracked `check-results.json`, `conformance.json`,
-and `example.syntax.json` beside itself. Run it from a disposable copy if you
-do not intend to update those fixtures; CI uses a disposable copy and compares
-the generated results without changing the checkout.
-
-`check_production.py` is a separate, nonmutating production-specification check
-using the same pinned dependencies. It validates syntax, schema, selected
-semantics, and bounded numerical fixtures. Passing it does not establish
-renderer support, official ITU/EBU metering conformance, or listening quality;
-the [production contract](docs/production.md) defines the separate renderer gates
-and the [metering audit](docs/production-metering-evidence.md) records their current limits.
-
-For a local disposable run:
-
-```sh
-smoke_dir="$(mktemp -d)"
-cp check_spec.py grammar.lark syntax-tree.schema.json example.maac "$smoke_dir/"
-python3 "$smoke_dir/check_spec.py"
-```
-
-The basic acceptance runner uses only the Python standard library after
-installation and keeps generated files under `target/acceptance`. The production
-runner also uses only the standard library, performs a fresh offline install,
-and defaults to `--profile song`. It checks source/retained deliveries, target
-selection, overwrite protection, and retained byte-identical audio after
-deliberately failing limits. Runs are preserved under
-`target/production-acceptance/run-*`, with the latest report at
-`target/production-acceptance/results.json`. This CI gate does not download
-official audio or replace the [metering audit](docs/production-metering-evidence.md).
-Use `--baseline-report PATH` to compare all six example WAV hashes with an
-earlier successful production report from the same platform. This optional
-regression check does not impose platform-specific hashes on other systems.
-
-The instrument delivery checks also run the installed CLI, retained-plan audio,
-qualified legacy WAV comparisons, and a disposable syntax-checker copy:
-
-```sh
-python3 scripts/instrument_acceptance.py --python .venv/bin/python
-```
-
-These checks use the pinned checker packages and retain evidence under
-`target/instrument-acceptance`. Fixed legacy WAV hashes are qualified to the
-macOS environment recorded in the [delivery report](docs/instrument-delivery.md).
+Bug reports, questions and ideas are welcome in
+[issues](https://github.com/tksuns12/maac/issues). The
+[contribution guide](CONTRIBUTING.md) explains the development setup, the
+checks CI runs and the contribution terms. Report security issues privately,
+as described in [SECURITY.md](SECURITY.md).
 
 ## License
 
-Unless a file states otherwise, the original material in this repository—Rust
-source, the MaaC specification, grammars, schemas, examples, tests, and
-documentation—is copyright 2026 tksuns12 and licensed under the
-[Apache License, Version 2.0](LICENSE). The [NOTICE](NOTICE) file records that
-scope and the treatment of dependencies.
-
-MaaC's Rust dependencies are separate works. Their copyright, attribution,
-and license terms remain with the respective crates and are not replaced by
-this project's Apache license. Redistributors must preserve the notices and
-terms required by each dependency; consult the dependency package contents and
-metadata for the applicable license information.
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution terms and
-[SECURITY.md](SECURITY.md) for the current vulnerability-reporting status.
+Apache License, Version 2.0; see [LICENSE](LICENSE). Unless a file states
+otherwise, this covers the Rust source, specification, grammars, schemas,
+examples, tests and documentation. The [NOTICE](NOTICE) file records the
+scope and how dependencies' own licenses apply.

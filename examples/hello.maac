@@ -1,0 +1,30 @@
+maac 1;
+
+project hello {
+  score = [0q, 16q]; rate = 48000Hz; tail = 3s;
+  tempo = &clock; meter = &metre; output = &mix:out;
+}
+tempo clock { points = [(0q, 84bpm, step)]; }
+meter metre { points = [(0q, 4, 4)]; }
+import studio { builtin = "std/studio/1.1.0"; }
+
+node piano { instrument = &studio.piano; config = { voices = 16; }; }
+node drums { instrument = &studio.drums; }
+node mix { type = "core.sum/1"; config = { channels = 2; }; }
+connect piano_mix { from = &piano:out; to = &mix:in; }
+connect drums_mix { from = &drums:out; to = &mix:in; }
+
+pattern chords { length = 4q;
+  chord c { at = 0q; dur = 2q; pitches = [C3, E4, G4]; velocity = 0.6; }
+  chord a { at = 2q; dur = 2q; pitches = [A2, C4, E4]; velocity = 0.5; }
+}
+pattern beat { length = 2q;
+  hit kick  { at = 0q; key = "kick";  velocity = 0.7; }
+  hit hat   { at = 1/2q; key = "hat"; velocity = 0.4; }
+  hit snare { at = 1q; key = "snare"; velocity = 0.6; }
+  hit hat2  { at = 3/2q; key = "hat"; velocity = 0.4; }
+}
+track keys { target = &piano:events; }
+track kit { target = &drums:events; }
+place progression { pattern = &chords; track = &keys; at = 0q; count = 4; }
+place groove { pattern = &beat; track = &kit; at = 0q; count = 8; }

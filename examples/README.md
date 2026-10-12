@@ -1,3 +1,14 @@
+# Hello
+
+[`hello.maac`](hello.maac) is the score shown in the project README: four
+bars of piano chords over a drum beat from `std/studio/1.1.0`, about 14
+seconds. It is the shortest complete example of a project, instruments, a
+mix, patterns, tracks and placements.
+
+```sh
+maac build examples/hello.maac -o hello.wav
+```
+
 # Native sample kit
 
 [`core-kit.maac`](core-kit.maac) arranges 24 native hits using three small,
