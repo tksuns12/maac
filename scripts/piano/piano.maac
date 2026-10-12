@@ -1,0 +1,160 @@
+// Draft of the std/studio/1.1.0 `piano` (electric guitar and piano proposal,
+// part 5). It stays out of the built-in libraries until the listening round
+// approves it; scripts/piano_auditions.py plays it inline.
+
+// Acoustic piano: a felt hammer presses onto two banks of stretched,
+// decaying modes: a long-ringing pair of detuned strings and a short-lived
+// prompt sound that gives each note its quick first drop. A low thump and
+// knock stand in for the soundboard. The key sets the stretch, which rises
+// steeply towards the treble, the decay, which falls, and the level, which
+// evens out the registers. Harder notes are louder, shorter and brighter
+// hammer strikes. Low notes sit left and high notes right, as the player
+// hears them. Every key is damped at release; hold a note for longer to let
+// it ring.
+instrument piano {
+  channels = 2;
+  voice voice {
+    channels = 2;
+    amplitude = &amp;
+    output = &stereo:out;
+    node amp {
+      type = "synth.adsr/1";
+      params = { sustain = 1; release = 100ms; };
+    }
+    node vel { type = "synth.velocity/1"; }
+    node key { type = "synth.key/1"; }
+
+    // u = key + 13/4, the octaves above A0: zero at A0 and 7.25 at C8.
+    // `one` is a constant 1, a sine LFO held at its peak.
+    node one { type = "synth.lfo/1"; params = { frequency = 0Hz; phase = 1/4; level = 1; }; }
+    node offset { type = "synth.gain/1"; config = { channels = 1; }; params = { level = 13/4; }; }
+    connect one_offset { from = &one:out; to = &offset:in; }
+    node above_a0 { type = "synth.mix/1"; config = { channels = 1; }; }
+    connect key_u { from = &key:out; to = &above_a0:in; }
+    connect offset_u { from = &offset:out; to = &above_a0:in; }
+    // u^2 / 4, then u^4 / 16: each gain's level follows its own input.
+    node square {
+      type = "synth.gain/1";
+      config = { channels = 1; };
+      params = { level = 0; };
+    }
+    connect u_square { from = &above_a0:out; to = &square:in; }
+    modulate square_level { from = &above_a0:out; to = &square.params.level; depth = 1/4; }
+    node fourth {
+      type = "synth.gain/1";
+      config = { channels = 1; };
+      params = { level = 0; };
+    }
+    connect square_fourth { from = &square:out; to = &fourth:in; }
+    modulate fourth_level { from = &square:out; to = &fourth.params.level; depth = 1; }
+
+    // The hammer: a pulse that harder notes make shorter, a touch of felt
+    // noise, and a low-pass that harder notes and higher keys open.
+    node hammer {
+      type = "synth.adsr/1";
+      params = { attack = 6/5ms; decay = 11/5ms; sustain = 0; curve = 2; };
+    }
+    // The felt squeezes onto the string: harder notes and higher keys press
+    // in sooner.
+    modulate harder_sooner { from = &vel:out; to = &hammer.params.attack; depth = -3/10ms; }
+    modulate higher_sooner { from = &above_a0:out; to = &hammer.params.attack; depth = -3/25ms; }
+    modulate harder_shorter { from = &vel:out; to = &hammer.params.decay; depth = -4/5ms; }
+    // Treble hammers leave the string sooner.
+    modulate higher_shorter { from = &above_a0:out; to = &hammer.params.decay; depth = -17/100ms; }
+    node felt { type = "synth.noise/1"; params = { level = 0; }; }
+    modulate felt_burst { from = &hammer:out; to = &felt.params.level; depth = 1/5; }
+    node strike { type = "synth.mix/1"; config = { channels = 1; }; }
+    connect hammer_strike { from = &hammer:out; to = &strike:in; }
+    connect felt_strike { from = &felt:out; to = &strike:in; }
+    node felt_tone {
+      type = "synth.svf/1";
+      config = { channels = 1; mode = lowpass; };
+      params = { cutoff = 1500Hz; ratio = 1; q = 1/2; };
+    }
+    modulate harder_brighter { from = &vel:out; to = &felt_tone.params.cutoff; depth = 3000Hz; }
+    connect strike_tone { from = &strike:out; to = &felt_tone:in; }
+
+    node strings {
+      type = "synth.modal/1";
+      config = { modes = 48; strings = 2; };
+      params = { stretch = 1/50000; decay = 25s; damping = 3/2; position = 3/25; detune = 1; level = 1/1000; };
+    }
+    modulate stiffer_treble { from = &fourth:out; to = &strings.params.stretch; depth = 0.0000568; }
+    modulate shorter_treble { from = &above_a0:out; to = &strings.params.decay; depth = -3240ms; }
+    // Fewer modes and a shorter strike leave the treble quieter; this evens
+    // out the registers.
+    modulate louder_treble { from = &square:out; to = &strings.params.level; depth = 0.000402; }
+    modulate louder_top { from = &fourth:out; to = &strings.params.level; depth = 0.0001278; }
+    // Velocity scales the strike once more, so a shorter, harder pulse
+    // still lands harder.
+    node strike_level { type = "synth.gain/1"; config = { channels = 1; }; params = { level = 3/10; }; }
+    modulate harder_louder { from = &vel:out; to = &strike_level.params.level; depth = 7/10; }
+    connect tone_level { from = &felt_tone:out; to = &strike_level:in; }
+    connect level_strings { from = &strike_level:out; to = &strings:in; }
+
+    // The soundboard knock: a short low thump.
+    node knock { type = "synth.sine/1"; params = { ratio = 0; frequency = 70Hz; level = 0; }; }
+    node knock_env {
+      type = "synth.adsr/1";
+      params = { decay = 60ms; sustain = 0; curve = 3; };
+    }
+    modulate knock_envelope { from = &knock_env:out; to = &knock.params.level; depth = 1/12; }
+    node body { type = "synth.mix/1"; config = { channels = 1; }; }
+    connect strings_body { from = &strings:out; to = &body:in; }
+    connect knock_body { from = &knock:out; to = &body:in; }
+    // The hammer thump: a short burst of low noise, harder for harder notes.
+    node thump_noise { type = "synth.noise/1"; params = { level = 0; }; }
+    modulate thump_burst { from = &knock_env:out; to = &thump_noise.params.level; depth = 0.25; }
+    node thump_tone {
+      type = "synth.svf/1";
+      config = { channels = 1; mode = bandpass; };
+      params = { cutoff = 180Hz; q = 1; };
+    }
+    connect noise_thump { from = &thump_noise:out; to = &thump_tone:in; }
+    connect thump_body { from = &thump_tone:out; to = &body:in; }
+    // The prompt sound: a second, shorter-lived bank that gives the note
+    // its quick first drop before the long aftersound.
+    node prompt {
+      type = "synth.modal/1";
+      config = { modes = 32; strings = 1; };
+      params = { stretch = 1/50000; decay = 3.1250s; damping = 3/2; position = 3/25; level = 0.002000; };
+    }
+    modulate prompt_stiffer { from = &fourth:out; to = &prompt.params.stretch; depth = 0.0000568; }
+    modulate prompt_shorter { from = &above_a0:out; to = &prompt.params.decay; depth = -405.0ms; }
+    modulate prompt_louder { from = &square:out; to = &prompt.params.level; depth = 0.0008040; }
+    modulate prompt_top { from = &fourth:out; to = &prompt.params.level; depth = 0.00025560; }
+    connect level_prompt { from = &strike_level:out; to = &prompt:in; }
+    connect prompt_body { from = &prompt:out; to = &body:in; }
+
+    // Stereo by key: `width` scales the pan per octave from middle C.
+    node spread { type = "synth.gain/1"; config = { channels = 1; }; params = { level = 1/8; }; }
+    connect key_spread { from = &key:out; to = &spread:in; }
+    node stereo { type = "synth.pan/1"; params = { pan = 0; }; }
+    modulate key_pan { from = &spread:out; to = &stereo.params.pan; depth = 1; }
+    connect body_stereo { from = &body:out; to = &stereo:in; }
+  }
+  shared room {
+    channels = 2;
+    output = &gain:out;
+    node dc { type = "synth.highpass/1"; config = { channels = 2; }; params = { cutoff = 25Hz; }; }
+    node lid {
+      type = "synth.svf/1";
+      config = { channels = 2; mode = lowpass; };
+      params = { cutoff = 9000Hz; q = 1/2; };
+    }
+    node gain { type = "synth.gain/1"; config = { channels = 2; }; params = { level = 2.59; }; }
+    connect input_dc { from = &input:out; to = &dc:in; }
+    // Hammer peaks: a level-compensated drive rounds the attacks of low
+    // octaves, whose partials all start in phase, and leaves the body alone.
+    node peaks { type = "synth.drive/1"; config = { channels = 2; }; params = { drive = 4; level = 1; reference = 1/20; }; }
+    connect dc_lid { from = &dc:out; to = &lid:in; }
+    connect lid_peaks { from = &lid:out; to = &peaks:in; }
+    connect peaks_gain { from = &peaks:out; to = &gain:in; }
+  }
+  control level { target = &room.gain.params.level; default = 2.59; }
+  control brightness { target = &voice.felt_tone.params.cutoff; default = 1500Hz; }
+  control release { target = &voice.amp.params.release; default = 100ms; }
+  control width { target = &voice.spread.params.level; default = 1/8; }
+  control hammer { target = &voice.hammer.params.decay; default = 11/5ms; }
+  control tuning_spread { target = &voice.strings.params.detune; default = 1; }
+}

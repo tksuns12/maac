@@ -5,7 +5,8 @@
 landed; see [results](#results-part-1). Step 2, the draft electric guitar,
 passed its listening round; see [results](#results-part-2). Step 3 moved
 "Morning Ferry" to it; see [results](#results-part-3). Step 4 added
-`synth.modal/1`; see [results](#results-part-4).
+`synth.modal/1`; see [results](#results-part-4). Step 5, the draft piano,
+passed its listening rounds; see [results](#results-part-5).
 
 ## Why
 
@@ -374,6 +375,64 @@ Landed 2026-10-12. The contract is [Modal bank](instruments.md#modal-bank).
   about as much as 32 voices of 16 oscillators: one resonator is about a sixth
   of a one-unit node. The charge is one unit per four resonators, rounded up,
   so a 48-mode, 2-string piano voice costs 24 units per sample.
+
+## Results: part 5
+
+Done 2026-10-12. The draft is
+[`scripts/piano/piano.maac`](../scripts/piano/piano.maac); it joins
+`std/studio/1.1.0` at the freeze, and
+[`scripts/piano_auditions.py`](../scripts/piano_auditions.py) renders the
+auditions against the std/studio electric piano.
+
+- **The instrument.** A felt hammer, an ADSR pulse that rises over up to
+  1.2 ms and falls over up to 2.2 ms, both shorter for harder notes and
+  higher keys, passes a low-pass and a velocity gain into two
+  `synth.modal/1` banks:
+  - the strings, 48 modes on 2 strings detuned by 1 cent, with a 60 dB decay
+    from 25 s at A0 down to 1.5 s at C8;
+  - the prompt sound, 32 modes on 1 string at twice the level and an eighth
+    of the decay. Together they drop about 10 dB in the first 0.3 s and then
+    ring on, the double decay of a real piano note.
+
+  A burst of band-passed noise and a 70 Hz sine make the soundboard thump.
+  The key pans the voice, low notes left. In the shared stage, a
+  level-compensated drive (`drive` 4, `reference` 1/20) rounds the peaks of
+  low octaves, whose partials all start in phase, without changing any band
+  by more than 0.2 dB.
+- **Key curves from linear modulation.** Modulation is linear, but stretch
+  and level must rise much faster than linearly towards the treble. The
+  voice builds `u`, the octaves above A0, from the key and a constant (a
+  sine LFO held at its peak), then `u²/4` and `u⁴/16` with gains whose levels
+  follow their own inputs. Stretch is `2×10⁻⁵ + 5.68×10⁻⁵ u⁴/16`: 2×10⁻⁵ at
+  A0, about 4×10⁻⁴ at C4 and 10⁻² at C8, near published values.
+- **Pitch.** With more stretch and a brighter hammer, the analyzer read most
+  notes as `unpitched`: stretched partials made each period differ. The
+  final values read every octave from A0 to C7 as pitched, from 0 to about
+  20 cents sharp, rising towards the treble as a stretch-tuned piano does.
+- **Level and range.** The ballad reference phrase, the "Morning Ferry" verse
+  chords at velocity 0.7, reads −19.99 LUFS at −3.93 dBTP. Velocity 0.2 to 1
+  spans 16 to 23 dB by octave; harder notes are brighter at every octave but A0.
+- **Cost.** A three-minute ballad part costs 2.71 billion work units; with
+  "Morning Ferry", 8.70 billion of the song profile's 10 billion.
+- **Changed from the proposal: no undamped treble.** Lengthening the release
+  of the top octave and a half needed a modulation of the amplitude
+  envelope's release, and the work estimate then charges every note the
+  release's maximum, 1,800 s. Every key is damped at release instead; hold a
+  note longer to let it ring, as for the missing sustain pedal.
+- **Listening rounds.**
+  1. The first draft against the electric piano: "B sounds too much like
+     string instruments".
+  2. B, C (two-stage decay) and D (C plus the thump): D was closest, but
+     still felt like a plucked string.
+  3. D, E and F, removing the pitch and brightness glide of the attack: the
+     owner clarified that the pluck was the problem, not a glide.
+  4. D, G (a felt hammer that rises instead of jumping) and H (G with a
+     softer onset): "G sounds like the most".
+  5. G against G′, G with the peak drive: "the latter sounds better".
+- **Tests.** `tests/piano_draft.rs` renders every semitone from A0 to C8 at
+  velocities 0.2, 0.5 and 1, checks that harder notes are brighter at C2, C4
+  and C6, that every octave reads as pitched within 50 cents, the
+  calibration and headroom, and the three-minute cost.
 
 ## Cost and risk
 
