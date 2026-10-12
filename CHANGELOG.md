@@ -5,7 +5,21 @@ promise of compatibility beyond the documented interfaces.
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-10-12
+
+The second experimental release. It adds an electric guitar and an acoustic
+piano in `std/studio/1.1.0`, built on new string, drive and resonator
+processors; score–audio checks and a noise floor in `maac analyze`; built-in
+extension schemas; and prebuilt binaries for macOS on Apple silicon and Linux
+on x86_64 and arm64.
+
 ### Added
+
+- **Prebuilt binaries.** Each GitHub release carries `maac` for macOS on
+  Apple silicon and Linux on x86_64 and arm64, with SHA-256 checksums, built
+  by `.github/workflows/release.yml` from the release tag. CI also runs
+  Clippy, the tests and the release build on Linux. Windows and Intel Macs
+  are untested; build from source there.
 
 - `std/studio/1.1.0` adds `electric_guitar` and `piano`; every 1.0.0 export
   is unchanged and renders bit-identically. The guitar is a plucked string
@@ -60,8 +74,6 @@ promise of compatibility beyond the documented interfaces.
   [proposal](docs/perception-gaps-proposal.md) and
   [analyze.md](docs/analyze.md#profile-maacanalyzedefault3-2026-10-11).
 
-### Added
-
 - **Built-in extension schemas** (finding F11 of the
   [production trial](docs/ai-production-trial.md)). A descriptor asset can
   name the schema that the host embeds instead of a copied, hash-pinned file:
@@ -80,6 +92,18 @@ promise of compatibility beyond the documented interfaces.
   now covers `transpose` on `use` and two more pitfalls.
 
 ### Changed
+
+- The [README](README.md) is rewritten for newcomers: what MaaC is, demo
+  audio and analysis images, a complete example score
+  ([`examples/hello.maac`](examples/hello.maac)), install steps and a quick
+  start. The previous feature catalogue is the
+  [feature tour](docs/features.md).
+- The repository's top level is tidier. The grammars, syntax-tree schema and
+  smoke checker are in `spec/`, the JSON schemas in `schemas/`,
+  `check_production.py` in `scripts/`, its fixtures in `conformance/`,
+  `evening-window.maac` in `examples/` and the logo in `docs/assets/`.
+  Commands that named these files at the top level use the new paths, and
+  the production and take examples name their schemas under `schemas/`.
 
 - "Morning Ferry" plays the std/studio/1.1.0 electric guitar, imported from
   the library; its master is unchanged. Its lead no longer needs a level automation

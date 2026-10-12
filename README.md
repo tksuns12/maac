@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/tksuns12/maac/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/tksuns12/maac/actions/workflows/ci.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Version 0.1.0, experimental](https://img.shields.io/badge/version-0.1.0%20experimental-orange.svg)](CHANGELOG.md)
+[![Version 0.2.0, experimental](https://img.shields.io/badge/version-0.2.0%20experimental-orange.svg)](CHANGELOG.md)
 [![Written in Rust](https://img.shields.io/badge/written%20in-Rust-b7410e.svg)](https://www.rust-lang.org)
 
 <img src="docs/assets/maac-logo.png" alt="MaaC logo: a musical note between angle brackets followed by the MaaC wordmark" width="480">
@@ -18,8 +18,9 @@ reports what a render sounds like in numbers: loudness per section, peaks,
 octave bands, buried or mistuned notes. A producer who cannot listen can
 still check a mix.
 
-**Status:** experimental, version 0.1.0. Tested on macOS; you build it from
-source. The [changelog](CHANGELOG.md) records what has changed.
+**Status:** experimental, version 0.2.0. Tested on macOS and Linux, with
+prebuilt binaries for both. The [changelog](CHANGELOG.md) records what has
+changed.
 
 ## Listen
 
@@ -87,7 +88,25 @@ and nodes connect into a mix.
 
 ## Install
 
-Install a current stable [Rust toolchain](https://rustup.rs), then:
+**Prebuilt binary.** Download the archive for your platform from the
+[latest release](https://github.com/tksuns12/maac/releases/latest): macOS on
+Apple silicon (`aarch64-apple-darwin`) or Linux on x86_64 or arm64
+(`x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`). Each archive holds
+`maac` and the examples, and has a `.sha256` checksum beside it. On a Mac:
+
+```sh
+curl -LO https://github.com/tksuns12/maac/releases/download/v0.2.0/maac-v0.2.0-aarch64-apple-darwin.tar.gz
+tar -xzf maac-v0.2.0-aarch64-apple-darwin.tar.gz
+cd maac-v0.2.0-aarch64-apple-darwin
+./maac --version
+```
+
+Move `maac` to a directory on your `PATH` to run it from anywhere. macOS
+quarantines a binary downloaded with a web browser; run
+`xattr -d com.apple.quarantine maac` once to allow it.
+
+**From source,** on any platform with a current stable
+[Rust toolchain](https://rustup.rs). Windows and Intel Macs are untested.
 
 ```sh
 git clone https://github.com/tksuns12/maac.git
@@ -95,13 +114,12 @@ cd maac
 cargo install --path . --locked
 ```
 
-This puts `maac` on your path. It never contacts the network after the
-build.
+This puts `maac` on your path. `maac` never contacts the network.
 
 ## Quick start
 
-From the repository root, render the example above and listen to
-`hello.wav` in any audio player:
+From the repository root, or the unpacked archive, render the example above
+and listen to `hello.wav` in any audio player:
 
 ```sh
 maac build examples/hello.maac -o hello.wav

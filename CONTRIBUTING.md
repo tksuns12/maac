@@ -21,7 +21,8 @@ material or include it in repository or remote changes.
 ## Development setup
 
 Use a current stable Rust toolchain and Python 3.10 or newer for the development
-checks. CI exercises Python 3.12 and stable Rust on macOS. From the repository
+checks. CI runs every check with Python 3.12 and stable Rust on macOS, and
+Clippy, the tests and the release build on Linux. From the repository
 root, create an isolated Python environment, install the checker dependencies,
 fetch the locked Cargo dependencies, and run the same checks used by CI:
 
@@ -67,7 +68,8 @@ Cargo may need network access during `cargo fetch --locked` to populate the
 local cache. The later checks use `--offline` and must run only after that fetch
 has completed.
 
-The initial release validation was performed on macOS; other platforms are
+Releases are validated on macOS, with every check, and on Linux, with
+Clippy, the tests and the release build. Windows and Intel Macs are
 unverified. No minimum supported Rust version (MSRV) is promised.
 
 For a local disposable smoke-check run:

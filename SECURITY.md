@@ -1,6 +1,7 @@
 # Security policy
 
-MaaC is an experimental source-only release. The security scope includes
+MaaC is an experimental release, distributed as source and as prebuilt
+binaries. The security scope includes
 the source parser, semantic compiler, imported performance-plan validator, DSP
 renderer, WAV exporter, and command-line file handling.
 

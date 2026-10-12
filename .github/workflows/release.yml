@@ -1,0 +1,131 @@
+name: Release
+
+# Pushing a tag such as v0.2.0 builds `maac` for each tested platform and
+# publishes a GitHub release with the archives, their SHA-256 checksums and
+# the tag's CHANGELOG section. The release stays a draft until every build
+# has uploaded, so a failed build never publishes a partial release.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  draft:
+    name: Create draft release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check the tag matches Cargo.toml
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)"
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match Cargo.toml version $version" >&2
+            exit 1
+          fi
+
+      - name: Extract release notes from CHANGELOG.md
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          # The section runs from "## [version]" to the next "## [" heading.
+          awk -v version="$version" '
+            index($0, "## [" version "]") == 1 { found = 1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "CHANGELOG.md has no section for $version" >&2
+            exit 1
+          fi
+
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create "$GITHUB_REF_NAME"
+          --repo "$GITHUB_REPOSITORY"
+          --draft
+          --verify-tag
+          --title "MaaC $GITHUB_REF_NAME"
+          --notes-file release-notes.md
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: draft
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+          # Ubuntu 22.04 links against an older glibc, so the binaries run
+          # on more distributions.
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-22.04
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-22.04-arm
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install stable Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Build the release binary
+        run: cargo build --release --locked
+
+      - name: Package the archive and its checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="maac-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          mkdir "$name"
+          cp target/release/maac README.md LICENSE NOTICE CHANGELOG.md "$name/"
+          # The examples, and the schemas some of them name, let the README's
+          # quick start run from the unpacked archive.
+          cp -R examples schemas "$name/"
+          tar -czf "$name.tar.gz" "$name"
+          if command -v sha256sum > /dev/null; then
+            sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
+          else
+            shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
+          fi
+          # The packaged binary must run on this runner, on a packaged example.
+          "$name/maac" --version
+          (cd "$name" && ./maac check examples/hello.maac)
+
+      - name: Upload to the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: >
+          gh release upload "$GITHUB_REF_NAME"
+          --repo "$GITHUB_REPOSITORY"
+          "maac-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz"
+          "maac-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz.sha256"
+
+  publish:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish the draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false

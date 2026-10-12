@@ -12,6 +12,35 @@ permissions:
   contents: read
 
 jobs:
+  # The checks that can differ by platform: Clippy, the test suite and the
+  # release build. Formatting and the Python checks run in the macOS gate.
+  linux-tests:
+    name: Linux tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install stable Rust with Clippy
+        run: rustup toolchain install stable --profile minimal --component clippy
+
+      - name: Select stable Rust
+        run: rustup default stable
+
+      - name: Fetch locked Rust dependencies
+        run: cargo fetch --locked
+
+      - name: Run Clippy
+        run: cargo clippy --all-targets --locked --offline -- -D warnings
+
+      - name: Run tests and doctests
+        run: cargo test --locked --offline
+
+      - name: Build release artifact
+        run: cargo build --release --locked --offline
+
   release-gate:
     name: macOS release gate
     runs-on: macos-latest
