@@ -2,7 +2,8 @@
 
 **Status:** accepted 2026-10-11; the owner accepted every
 [decision](#decisions). Plan step 1, the string and drive additions, has
-landed; see [results](#results-part-1).
+landed; see [results](#results-part-1). Step 2, the draft electric guitar,
+passed its listening round; see [results](#results-part-2).
 
 ## Why
 
@@ -282,6 +283,46 @@ and the [saturation reference](instruments.md#saturation).
   the first period, `round(48000 / f)` cells, rather than the loop delay. The
   pickup reads the value the loop will read `K` samples later rather than an
   earlier one, so it needs no more memory than the ring.
+
+## Results: part 2
+
+Done 2026-10-12. The draft is
+[`scripts/guitar/electric_guitar.maac`](../scripts/guitar/electric_guitar.maac);
+it joins `std/studio/1.1.0` at the freeze, and
+[`scripts/guitar_auditions.py`](../scripts/guitar_auditions.py) renders the
+auditions.
+
+- **The instrument** follows [section 4](#4-the-instruments-stdstudio110),
+  with one addition: velocity also scales the string's level, from 1/2 to 1,
+  before the amp. Pick hardness runs from 1/10 to 19/20 with velocity, the
+  pick sits at 1/8 of the string, and the default pickup is the bridge, 1/8.
+  The amp trims its input by 1/4 and drives with `bias` 1/5 and
+  `reference` 1/10.
+- **Level.** The "Morning Ferry" power-chord chorus at velocity 0.7 reads
+  −20.02 LUFS at the default `drive` of 4. From `drive` 1 to 16 it stays
+  within 0.88 LU, inside the ±2 LU bound. The `reference` that holds it is
+  the signal's typical level, not its peak: at 1/2, loudness still rose
+  10 LU from `drive` 1 to 16, because a harder drive also lowers the crest
+  factor.
+- **Listening round.** Four A/B files at matched loudness, T3's inline guitar
+  first: clean picking at `drive` 1, the chorus power chords at 6, the
+  chorus melody at 12 and a velocity ladder at 4. The owner chose the draft
+  for clean, crunch and lead. For the ladder they preferred T3. The first
+  draft's amp compressed velocity 0.25 to 1 into about 7 dB, against T3's 9
+  to 11 dB, and the pick hardness changed the tone little. Adding velocity
+  to the string level and widening the hardness range restored 9 to 10 dB.
+  In a second A/B/C round, T3 against both drafts, the owner chose the
+  revision: "C sounds the best I guess".
+- **Lead settings.** On the default bridge pickup at `drive` 12, the melody
+  sounded thin and fizzy: its 500 Hz band sat 8 dB under T3's. The lead
+  audition used the neck pickup, 0.3, and `tone` 3200 Hz, as a guitarist
+  would. The library guidance should say so.
+- **Open.** The pick hardness is a fixed low-pass, so on high notes, around
+  E5, velocity barely changes the tone. A pitch-relative hardness would need
+  a change to `synth.pluck/1`.
+- **Tests.** `tests/electric_guitar_draft.rs` renders every semitone from E2
+  to E6 at velocities 0.2, 0.5 and 1, checks that harder picks are brighter
+  at E2, E3 and E4, and checks the calibration and the bound across `drive`.
 
 ## Cost and risk
 
