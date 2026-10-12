@@ -67,7 +67,7 @@ audio dependency. An invalid final cycle fails with `E_ALGEBRAIC_LOOP` before
 source projection or CLI publication, including replacement with `--force`.
 This check does not expand a performance or render audio, so supported
 Document-only message editing remains available. The bounded regression evidence
-is recorded under [P3](document-performance-evidence.md#p3-acceptance).
+is recorded under [P3](reports/document-performance-evidence.md#p3-acceptance).
 
 ## Original-source diagnostics
 

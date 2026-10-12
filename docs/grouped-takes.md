@@ -140,5 +140,5 @@ including 64 total bundle assets with descriptors, native graph limits, work
 budgets, and media byte limits. These maxima are not a promise that every
 combination fits those other limits.
 
-See the [verification record](verification.md) for exact-sample switching,
+See the [verification record](reports/verification.md) for exact-sample switching,
 atomic rejection, undo, compatibility, and relocated archive evidence.

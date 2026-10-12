@@ -397,14 +397,14 @@ nothing clips. `maac analyze` found that the earlier finale reached -0.86
 dBTP, over the -1 dBTP limit, with the keys chords as its loudest source.
 Softening those chords fixed it without changing bars 1–20. The owner's
 informal listening approvals of the mono and stereo renders are recorded in the
-[showcase listening record](../docs/showcase-listening.md); the stereo approval
+[showcase listening record](../docs/reports/showcase-listening.md); the stereo approval
 predates this change.
 
 # Late Window: an AI-produced track
 
 [`lofi/lofi.maac`](lofi/lofi.maac) is a 75-second, 90 bpm lo-fi hip-hop track.
 An AI wrote it directly in MaaC and mixed and mastered it with `maac analyze`
-during the [T2 production trial](../docs/ai-production-trial.md):
+during the [T2 production trial](../docs/reports/ai-production-trial.md):
 
 - electric-piano comping and a nylon-guitar melody;
 - finger bass, boom-bap drums and a warm pad;
@@ -426,7 +426,7 @@ track's sound.
 
 [`ferry/ferry.maac`](ferry/ferry.maac) is a 137-second, 72 bpm rock ballad.
 An AI wrote, mixed and mastered it during the
-[T3 production trial](../docs/ai-production-trial-t3.md):
+[T3 production trial](../docs/reports/ai-production-trial-t3.md):
 
 - picked steel-guitar verses and overdriven power-chord choruses;
 - the melody on the std/studio/1.1.0 electric guitar: plucked strings with

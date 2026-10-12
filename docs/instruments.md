@@ -160,7 +160,7 @@ musical export inventory contains only direct entry declarations.
 Artifact export/check/unpack preserves ordinary source imports. Unpacked
 libraries are consumed through existing path/hash declarations; no direct
 artifact import syntax is introduced. The
-[contract validation record](musical-library-contract-validation.md) identifies
+[contract validation record](reports/musical-library-contract-validation.md) identifies
 the fixed semantic cases and their execution evidence separately from these
 normative rules.
 
@@ -835,4 +835,4 @@ Hosted discovery, registries, executable plugins, GUI editing, real-time audio,
 and feedback are outside this implementation. Recorded-sample instruments are
 the [samples](#samples) above. Listening evidence is recorded separately from
 tests; the only record so far is the informal
-[showcase approval](showcase-listening.md).
+[showcase approval](reports/showcase-listening.md).

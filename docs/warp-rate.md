@@ -1,6 +1,6 @@
 # Native warp-rate audio clips
 
-Implemented and [validated](warp-rate-validation.md). This contract implements MaaC/1 §14.3 using the
+Implemented and [validated](reports/warp-rate-validation.md). This contract implements MaaC/1 §14.3 using the
 existing `audio` object syntax and the shared tempo map. It adds no general
 computation or new authoring syntax. Asset conversion remains external tooling.
 Preserve-pitch stretching is available through the core reference stretch (see
@@ -149,7 +149,7 @@ PCM are compared with the committed rate-mode executable. Final verification
 includes formatting, Clippy, the full normal test suite, all three explicit
 metering audits, release/install, Python/specification/SRC checks, and independent
 Sol Max review. Automated checks do not assert human listening acceptance.
-The owner's informal approval of the [showcase render](showcase-listening.md),
+The owner's informal approval of the [showcase render](reports/showcase-listening.md),
 which includes `warp_rate` and `warp_preserve` sections, is the only listening
 record; it does not judge stretcher quality section by section.
 

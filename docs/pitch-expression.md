@@ -94,5 +94,5 @@ expression point scale is 1.
 The governing rules are in [MaaC-1](../MaaC-1-Specification.md),
 sections 6.1, 8.1, 12, and 18.7. This guide states the acceptance contract;
 it does not itself establish test results or listening approval.
-The [delivery report](pitch-expression-delivery.md) records the automated
+The [delivery report](reports/pitch-expression-delivery.md) records the automated
 checks and installed-CLI evidence separately.

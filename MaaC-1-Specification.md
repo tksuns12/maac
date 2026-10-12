@@ -7,7 +7,7 @@
 
 **Central rule:** Every render-affecting value must be an explicit value, a formally defined transformation, or a reference to an identified implementation or immutable asset. Subjective instructions are not executable language constructs.
 
-**Design guidance:** The [project design principles](docs/design-principles.md)
+**Design guidance:** The [project design principles](docs/design/design-principles.md)
 guide future evolution of the musical core, libraries, engine extensions, and
 tools without changing this specification's existing conformance requirements.
 
@@ -100,7 +100,7 @@ remain unchanged. An **experimental Rust implementation** and runnable
 not establish rendering or listening conformance. Analyzer
 `maac.analysis.bs1770-5/2` selects the approved single-stage four-times Annex 2
 true-peak profile. See the applicable fixture evidence and historical 16×
-comparison in the [metering report](docs/production-metering-evidence.md).
+comparison in the [metering report](docs/reports/production-metering-evidence.md).
 
 ## 2. File format and lexical rules
 
@@ -148,7 +148,7 @@ The normative [project-entrypoint contract](docs/project-entrypoint.md) defines
 file input remains compatible. It also defines caller-selected default/song
 execution allowances, separate from §1.2 conformance profiles, while preserving
 all other bounds and the source/plan versions. The
-[entrypoint delivery report](docs/project-entrypoint-delivery.md) records the
+[entrypoint delivery report](docs/reports/project-entrypoint-delivery.md) records the
 implemented contract's integrated checks and native source-free render evidence.
 
 ## 3. Values and types

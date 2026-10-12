@@ -300,7 +300,7 @@ def main() -> int:
               "environment": {"system": platform.system(), "machine": platform.machine(), "platform": platform.platform(),
                               "python": platform.python_version()}, "run_directory": str(run),
               "scope": "real installed CLI delivery; no official meter or listening conformance claim",
-              "metering_evidence": "docs/production-metering-evidence.md",
+              "metering_evidence": "docs/reports/production-metering-evidence.md",
               "baseline_report": str(args.baseline_report) if args.baseline_report is not None else None,
               "source_hash": sha256(ROOT / "examples" / "production.maac"),
               "schema_hash": sha256(ROOT / "schemas" / "production.schema.json"),

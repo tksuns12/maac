@@ -120,5 +120,5 @@ maac render pressure-expression.plan.json -o pressure-expression-from-plan.wav
 Expected output is 91,200 stereo frames at 48 kHz: 1.5 seconds of score plus
 0.4 seconds of tail. Numerical checks do not establish listening approval.
 
-The [delivery report](pressure-expression-delivery.md) records automated
+The [delivery report](reports/pressure-expression-delivery.md) records automated
 validation, independent review, and remaining limits.

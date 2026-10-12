@@ -388,7 +388,7 @@ extension contributes to the execution identity; selected delivery/targets,
 converter/dither/analyzer identities, and numeric environment also enter the
 render identity. The final-artifact manifest keeps artifact completion separate
 from requested-check status. Metering remains experimental; consult the
-[current external-gate evidence](production-metering-evidence.md).
+[current external-gate evidence](reports/production-metering-evidence.md).
 
 These tags and the optional field were introduced without changing versions 1
 and 2, and are also supported in versions 3–7. Older readers may reject the new
@@ -443,7 +443,7 @@ strict resolved-seed validation and separate delay-memory and weighted-work
 bounds. It does not change plan versions or serialize mutable string state.
 The contract records its implemented scope and resource limits.
 
-The [instrument palette](instrument-palette-proposal.md) adds four more
+The [instrument palette](design/instrument-palette-proposal.md) adds four more
 processors to the same representation, again without a new plan version:
 `{"kind":"synth.velocity/1"}`, `{"kind":"synth.key/1"}`,
 `{"kind":"synth.svf/1","channels":1,"mode":"lowpass"}` (or `bandpass`,
@@ -451,7 +451,7 @@ processors to the same representation, again without a new plan version:
 node may carry a `curve` parameter. Older readers reject these as unknown
 processors or parameters rather than rendering them differently.
 
-The [electric guitar and piano proposal](electric-guitar-piano-proposal.md)
+The [electric guitar and piano proposal](design/electric-guitar-piano-proposal.md)
 adds `{"kind":"synth.modal/1","modes":48,"strings":2}` the same way, with
 both fields always present on the wire.
 
@@ -473,7 +473,7 @@ other ceilings remain unchanged. A large retained plan needs that explicit
 allowance on load and render; it carries no profile or authority to elevate
 limits. Implementations must propagate selected limits through every nested
 boundary. The implementation passed the integrated and installed checks
-recorded in the [entrypoint delivery report](project-entrypoint-delivery.md).
+recorded in the [entrypoint delivery report](reports/project-entrypoint-delivery.md).
 
 ## Timbre and pressure graph sources
 

@@ -189,6 +189,8 @@ limits.
 
 ## Documentation
 
+The [documentation index](docs/README.md) lists every guide by topic.
+
 - **Start here:** [quick start](docs/quickstart.md),
   [tutorial](docs/tutorial.md), [AI producer guide](docs/ai-producer-guide.md)
 - **Reference:** [CLI and library reference](docs/reference.md),
@@ -199,10 +201,12 @@ limits.
   [grammar](spec/grammar.ebnf) and [syntax-tree schema](spec/syntax-tree.schema.json).
   The specification is a design draft; the implementation covers a
   documented subset.
-- **Design:** the [design principles](docs/design-principles.md) and the
-  [roadmap](docs/language-specification-plan.md#current-priorities).
-  Proposals, delivery reports and AI production trials in [`docs/`](docs/)
-  record how each feature was decided and measured.
+- **Design and evidence:** the
+  [design principles](docs/design/design-principles.md) and the
+  [roadmap](docs/design/language-specification-plan.md#current-priorities).
+  The proposals and decisions in [`docs/design/`](docs/design/) record why
+  each feature works as it does, and the reports and AI production trials in
+  [`docs/reports/`](docs/reports/) how it was checked.
 
 ## Contributing
 

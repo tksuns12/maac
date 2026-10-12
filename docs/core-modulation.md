@@ -1,7 +1,7 @@
 # Native core modulation
 
 The initial sample-rate slice's qualification is recorded in the
-[validation report](core-modulation-validation.md). Event-rate support extends
+[validation report](reports/core-modulation-validation.md). Event-rate support extends
 that slice with the capture and release-accounting rules below.
 This slice implements existing MaaC/1 §13 and the
 `core.lfo/1` and `core.constant/1` definitions in §18.9–10. It adds no syntax,

@@ -5,19 +5,19 @@ full-range renders, brighter sound at higher velocity, and calibrated levels.
 The `electric_guitar` and `piano` added in 1.1.0 were also approved by ear
 in listening rounds with the owner. The 1.0.0 exports were not: the owner
 chose not to act as the listening gate then. The
-[delivery report](studio-delivery.md) records the measurements and their
+[delivery report](reports/studio-delivery.md) records the measurements and their
 limits.
 
 `std/studio/1.1.0` is a built-in collection of an electric piano, an
 acoustic piano, an electric guitar, a bass, a pad and a drum kit.
 `std/studio/1.0.0` has the same exports without the guitar and the piano.
 The library answers the T2 trial's finding that the std/basic
-keys, bass, drums and pad sound dated ([F14](ai-production-trial.md)). Like
+keys, bass, drums and pad sound dated ([F14](reports/ai-production-trial.md)). Like
 the other built-in libraries, it needs no recordings, downloads, library
 directory or network access.
 
 The difference from std/basic is in the building blocks, not the presets.
-These instruments use the [instrument palette](instrument-palette-proposal.md)
+These instruments use the [instrument palette](design/instrument-palette-proposal.md)
 processors:
 - velocity and key sources, so how hard and how high a note is played changes
   its sound as well as its level;
@@ -26,7 +26,7 @@ processors:
 - the anti-aliased `synth.drive/1` saturation;
 - in 1.1.0, the plucked string's pick hardness, pick position and pickup,
   the drive's level compensation, and the `synth.modal/1` resonator bank
-  ([electric guitar and piano proposal](electric-guitar-piano-proposal.md)).
+  ([electric guitar and piano proposal](design/electric-guitar-piano-proposal.md)).
 
 ## Exports
 
@@ -67,7 +67,7 @@ varying velocity across a part is what makes these instruments sound played.
 
 ## Levels
 
-Every default `level` is calibrated on the same scale ([F15](ai-production-trial.md)):
+Every default `level` is calibrated on the same scale ([F15](reports/ai-production-trial.md)):
 a reference phrase played at velocity 0.7 measures −20 LUFS integrated, within
 ±1 LU.
 
@@ -137,7 +137,7 @@ four resonators, and every other node 1. A piano voice is the most expensive:
 a three-minute ballad part costs about 2.7 billion of the song profile's
 10 billion units. Most of the time
 goes to the engine's per-node overhead, not the DSP. Long arrangements may
-need `--profile song`. The [delivery report](studio-delivery.md) gives
+need `--profile song`. The [delivery report](reports/studio-delivery.md) gives
 measured render times.
 
 ## Versioning

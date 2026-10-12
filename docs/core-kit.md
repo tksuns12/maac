@@ -2,12 +2,12 @@
 
 Status: implemented and validated. Existing Rust APIs remain compatible;
 an additive, extensible plan-artifact API carries the new saved format.
-See the [validation report](core-kit-validation.md) for evidence and limits.
+See the [validation report](reports/core-kit-validation.md) for evidence and limits.
 
 This slice implements existing MaaC/1 sections 6, 8–11, 14.1, and 18.8. It adds
 no source syntax. Shared event timing belongs in the musical core; `core.kit/1`
 defines playback; sample preparation belongs in external tools. Reusable sample
-packaging is a later library concern under the [design principles](design-principles.md).
+packaging is a later library concern under the [design principles](design/design-principles.md).
 
 ## Assets
 

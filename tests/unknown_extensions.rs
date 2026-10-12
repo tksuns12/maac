@@ -1,6 +1,6 @@
 //! Unknown extensions are preserved for inspection and refused everywhere else
 //! (evidence row D16, spec §§1.2, 26; the
-//! [decision](../docs/unknown-extensions-proposal.md)).
+//! [decision](../docs/design/unknown-extensions-proposal.md)).
 
 use maac::bundle::sha256_digest;
 use maac::editing::{AuthoredDocument, BundleEditContext, EditContext, FoundationEditContext};

@@ -1,6 +1,6 @@
 # Native rate-mode audio clips
 
-Implemented and validated. See the [validation report](audio-clips-validation.md).
+Implemented and validated. See the [validation report](reports/audio-clips-validation.md).
 
 This slice implements MaaC/1 §14.2 using existing source syntax. It adds arranged
 audio to the same finite performance and explicit processing graph as notes and

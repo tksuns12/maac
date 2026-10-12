@@ -40,7 +40,7 @@ Without `--library`, discovery continues to select the basic collection.
 
 For a project with a conventional `main.maac`, use these
 [entrypoint commands](project-entrypoint.md), verified through the
-[installed CLI](project-entrypoint-delivery.md):
+[installed CLI](reports/project-entrypoint-delivery.md):
 
 ```sh
 maac check

@@ -1,10 +1,10 @@
 # Tempo ramps: implementation contract
 
-Status: implemented and validated. See the [validation record](tempo-ramps-validation.md)
+Status: implemented and validated. See the [validation record](reports/tempo-ramps-validation.md)
 for test, installed CLI, compatibility, and independent review evidence.
 
 This work implements the existing MaaC/1 sections 5.1 and 6 timing semantics.
-It follows the [design principles](design-principles.md): the tempo map is a
+It follows the [design principles](design/design-principles.md): the tempo map is a
 shared musical coordinate system, with no new source syntax, library export
 kind, or general-purpose expression evaluation.
 

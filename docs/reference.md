@@ -63,7 +63,7 @@ and trailing context. Only the selected frames are written. See the
 
 Optional/directory entry and execution-profile forms above implement the
 [project-entrypoint extension](project-entrypoint.md); see its
-[validation evidence](project-entrypoint-delivery.md). For source commands, omitted `INPUT` selects
+[validation evidence](reports/project-entrypoint-delivery.md). For source commands, omitted `INPUT` selects
 `cwd/main.maac`, and an existing directory selects `DIR/main.maac`. There is no
 recursive or ancestor search. `-o` remains required where shown, and relative
 outputs remain relative to the process cwd. Explicit filenames retain their
@@ -134,7 +134,7 @@ Publication is atomic per file, with overwrite protection unless `--force` is
 present; the complete manifest follows processing and analysis. Publication is
 not a transaction across all files. The [resource bounds](capabilities.md#production-resource-bounds)
 include separate plan and delivery work budgets. The
-[metering audit](production-metering-evidence.md) records applicable fixtures
+[metering audit](reports/production-metering-evidence.md) records applicable fixtures
 for analyzer `maac.analysis.bs1770-5/2` and true-peak profile
 `maac.truepeak.bs1770-5.annex2-4x/1`, plus the historical 16× comparison. These
 commands do not advertise full ITU/EBU conformance.

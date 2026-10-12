@@ -6,14 +6,14 @@ specification remains authoritative; this page describes the implementation scop
 
 This inventory includes language behavior, reference-runtime algorithms, and
 authoring and delivery tools. Its rows are not a language-completeness checklist.
-The [language specification and conformance plan](language-specification-plan.md#current-priorities)
+The [language specification and conformance plan](design/language-specification-plan.md#current-priorities)
 owns active priorities. Device capture, monitoring, playback and plug-in
 hosting are outside MaaC.
 
-The [Core Audio conformance audit](core-audio-conformance-audit.md) records
+The [Core Audio conformance audit](reports/core-audio-conformance-audit.md) records
 processor coverage, confirmed discrepancies, and remaining profile obligations.
 Coverage of every reference processor identifier is not a full-profile claim.
-The [Document/Performance evidence map](document-performance-evidence.md)
+The [Document/Performance evidence map](reports/document-performance-evidence.md)
 records scoped language obligations, public boundaries, and fixed test cases;
 its execution record distinguishes inspected evidence from freshly run gates.
 
@@ -29,7 +29,7 @@ An `extension` with any other namespace, or a namespace that
 (parsing, the authored tree and its revision hash) and refused elsewhere, at its
 `namespace` field: `E_CAPABILITY` for an unsupported namespace and `E_REFERENCE`
 for one missing from `project.requires`. No execution identity is computed for
-it. See the [unknown-extension decision](unknown-extensions-proposal.md).
+it. See the [unknown-extension decision](design/unknown-extensions-proposal.md).
 
 | Feature | Foundation scope |
 | --- | --- |
@@ -56,7 +56,7 @@ it. See the [unknown-extension decision](unknown-extensions-proposal.md).
 | Modulation | Top-level typed control modulation of continuous sample-rate, note-on/note-off, and instrument reset parameters, score/seconds LFOs and automated constants; instrument feed-forward graph modulation, ADSR, voice phase, and shared-LFO reset capture, and sample-wise through-zero linear FM; no oversampling |
 | Built-in instruments | 24 stereo exports in `std/basic/1.0.0` with four common controls, and the same plus the `drums` kit in `std/basic/1.1.0`; three separate `std/acoustic/1.0.0` guitars with six controls; `std/studio/1.0.0` electric piano, bass, pad and an eight-piece `drums` kit whose sound follows velocity, with levels calibrated to −20 LUFS, and the same plus an electric guitar and an acoustic piano in `std/studio/1.1.0`; exact-version CLI/Rust discovery |
 | Local dependencies | Explicit namespace aliases, transitive declaring-file resolution, SHA-256 source/WAV pins, project containment |
-| Musical library reuse | Pinned pattern, curve, and tuning exports resolve in their declaring library and retain alias-qualified source provenance; caller tempo, placement, and global automation remain explicit. `maac.module-source/1` packages their source/asset closure. See the [musical contract](instruments.md#reusable-musical-declarations) and [scoped evidence](musical-library-contract-validation.md). |
+| Musical library reuse | Pinned pattern, curve, and tuning exports resolve in their declaring library and retain alias-qualified source provenance; caller tempo, placement, and global automation remain explicit. `maac.module-source/1` packages their source/asset closure. See the [musical contract](instruments.md#reusable-musical-declarations) and [scoped evidence](reports/musical-library-contract-validation.md). |
 | Wavetables | Explicit mono WAV cycles, cyclic interpolation, adjacent-frame morphing and harmonic-limited banks |
 | Pitched samples | `sample` declarations: mono or stereo WAV (embedded within the shared 262,144-value budget) or mono or stereo core PCM carried as a plan audio asset, inline or `--disk-media` up to 1 GiB, or a composition audio asset shared with clips and kits; mono or stereo `synth.sample/1` nodes whose zones match their channel count; recorded rate, 12-TET root key, optional forward sustain loop; overlapping key zones with velocity layers and linear or equal-power key/velocity crossfades |
 | Regions | Named score intervals retained as non-rendering metadata |
@@ -170,12 +170,12 @@ of the reconstructed final artifact. Failed requested limits retain completed
 audio and produce a failed check result; they do not trigger automatic gain.
 
 Analyzer `maac.analysis.bs1770-5/2` uses the approved single-stage four-times
-Annex 2 true-peak profile. The [metering evidence](production-metering-evidence.md)
+Annex 2 true-peak profile. The [metering evidence](reports/production-metering-evidence.md)
 records applicable current fixtures and the historical 16× profile comparison.
 These results do not establish full ITU/EBU compliance or listening acceptance.
 `scripts/check_production.py` remains a separate syntax/schema/arithmetic smoke checker;
 Rust tests and external metering/SRC gates provide separate implementation
-evidence. The [production delivery report](production-delivery.md) records the
+evidence. The [production delivery report](reports/production-delivery.md) records the
 installed source/retained-plan, selection, publication, and failed-check audio
 retention boundary. Native production leaves Core Audio obligations, grammar,
 and the generic syntax-tree schema unchanged. Tempo ramps separately introduce
@@ -185,7 +185,7 @@ The implemented [project-entrypoint extension](project-entrypoint.md) adds
 conventional `main.maac` discovery for source commands and explicit default/song
 execution profiles. All 323 integrated tests and the installed entrypoint
 checks passed. Full native song build and source-free retained rendering
-produced identical WAV bytes; the [delivery report](project-entrypoint-delivery.md)
+produced identical WAV bytes; the [delivery report](reports/project-entrypoint-delivery.md)
 records the evidence. It changes no import or source grammar
 rules. The existing normative `core.gain/1` algorithm is implemented for
 visible mono/stereo master gain. Its parameter is `gain`, not `level`; finite
@@ -194,7 +194,7 @@ gains above 1 are valid, subject to finite output and separate export headroom c
 The [plucked-string contract](plucked-string.md) defines mono voice-only
 `synth.pluck/1` and the separate three-guitar `std/acoustic/1.0.0` collection.
 The [acoustic guide](acoustic-guitars.md) records authoring behavior and the
-[delivery report](acoustic-delivery.md) records numerical and installed checks.
+[delivery report](reports/acoustic-delivery.md) records numerical and installed checks.
 Its private delay state does
 not permit feedback edges in public audio or modulation graphs.
 
@@ -262,7 +262,7 @@ and sample, including the engine's per-node overhead, gain took 19 ns, a one-pol
 48 ns, a sine oscillator 146 ns, the resonant filter 208 ns and the drive
 278 ns. The one-unit scale already spans gain to oscillators, so the new
 charges round 1.4 and 1.9 times an oscillator up to 2. These times predate
-the [render-speed pass](render-speed.md), which removed much of the fixed
+the [render-speed pass](reports/render-speed.md), which removed much of the fixed
 per-node cost; the charges are unchanged.
 
 Execution work includes every note's gate and maximum possible release, bounded

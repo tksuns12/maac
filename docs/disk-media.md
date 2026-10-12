@@ -1,7 +1,7 @@
 # Opt-in disk media for native PCM compositions
 
 **Status:** Implemented Phase 3 slice. The bounded command and validation
-contract is below; the current test evidence is in [verification](verification.md).
+contract is below; the current test evidence is in [verification](reports/verification.md).
 
 ## Commands and scope
 

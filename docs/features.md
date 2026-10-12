@@ -23,7 +23,7 @@ These are synthesized interpretations, with stereo output and common controls.
 
 The separate [acoustic guitar collection](acoustic-guitars.md) supplies
 three MaaC-native string instruments under `std/acoustic/1.0.0`, with bends
-and vibrato. The [delivery report](acoustic-delivery.md) records numerical
+and vibrato. The [delivery report](reports/acoustic-delivery.md) records numerical
 and installed-example checks; user listening approval remains pending. Basic
 sounds and default discovery remain unchanged.
 
@@ -115,7 +115,7 @@ Try `maac build examples/core-delay.maac -o core-delay.wav`.
 [Core reference noise](core-noise.md) provides reproducible seeded mono/stereo
 noise. Try `maac build examples/core-noise.maac -o core-noise.wav`.
 
-The [Core Audio conformance audit](core-audio-conformance-audit.md) tracks
+The [Core Audio conformance audit](reports/core-audio-conformance-audit.md) tracks
 remaining correctness and profile gaps after the reference-processor slices.
 
 [Core modulation](core-modulation.md) connects score- or seconds-clock LFOs
@@ -148,9 +148,9 @@ or 96 kHz WAV with explicit encoding and dither, then analyzes the final files.
 The [production example](../examples/production.maac),
 [delivery schema](../schemas/production.schema.json), and
 [bounded fixtures](../conformance/production-conformance.json) describe the contract. The
-[production delivery report](production-delivery.md) records installed-CLI
+[production delivery report](reports/production-delivery.md) records installed-CLI
 acceptance separately from the specification fixtures.
 Metering uses analyzer `maac.analysis.bs1770-5/2` and the approved single-stage
 four-times Annex 2 true-peak profile. See the applicable fixture results and
-historical profile comparison in the [metering evidence](production-metering-evidence.md).
+historical profile comparison in the [metering evidence](reports/production-metering-evidence.md).
 No professional sound-quality or full ITU/EBU conformance claim is made.

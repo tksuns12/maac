@@ -159,7 +159,7 @@ writer using stored deflate blocks, both implemented in the repository.
 
 ## Profile `maac.analyze.default/2` (2026-10-04)
 
-The [T2 production trial](ai-production-trial.md) found five problems in v1.
+The [T2 production trial](reports/ai-production-trial.md) found five problems in v1.
 The profile identifier changed with them; the report schema did not.
 
 - **Source roles:** a generator before its gain stage was reported as a mix
@@ -224,8 +224,8 @@ without it.
 
 ## Profile `maac.analyze.default/3` (2026-10-11)
 
-The [perception gaps proposal](perception-gaps-proposal.md), part A, adds a
-noise floor for F13 of the [T2 trial](ai-production-trial.md): a hiss 27 dB
+The [perception gaps proposal](design/perception-gaps-proposal.md), part A, adds a
+noise floor for F13 of the [T2 trial](reports/ai-production-trial.md): a hiss 27 dB
 under the music read as a constant "sssss", and no finding fired. The report
 schema is unchanged; every source and section gains three measurements:
 
@@ -253,7 +253,7 @@ it is a warning, so keep the texture if you meant it.
 
 ## Profile `maac.analyze.default/4` (2026-10-11)
 
-Part B of the [perception gaps proposal](perception-gaps-proposal.md) compares
+Part B of the [perception gaps proposal](design/perception-gaps-proposal.md) compares
 the score with the audio. Each note or hit whose target node is an analysed
 source is measured over a window: a note from its onset to its release, at
 most 2 s; a hit for 250 ms. Three warnings or notes can follow, each grouped
@@ -294,9 +294,9 @@ status.
 
 The language does not change: no grammar, no source kinds, and no plan or
 delivery formats. `analyze` is a tool in the sense of the
-[design principles](design-principles.md#keep-general-computation-in-tools).
+[design principles](design/design-principles.md#keep-general-computation-in-tools).
 It adds a new **AI production tooling** track next to the language track,
-which [the plan](language-specification-plan.md) should record once this is
+which [the plan](design/language-specification-plan.md) should record once this is
 accepted.
 
 ## Cost and risk

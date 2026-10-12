@@ -93,7 +93,7 @@ The combined 65,536-point automation/expression limit and 4,096-bit rational
 limit remain unchanged, including after expansion. Source and retained-plan
 validation enforce the same receiver and resource constraints.
 
-The [delivery report](instrument-pitch-delivery.md) records automated checks,
+The [delivery report](reports/instrument-pitch-delivery.md) records automated checks,
 installed CLI evidence, and remaining validation limits.
 
 Custom voice graphs declaring `synth.timbre/1` may also attach one independent

@@ -28,8 +28,8 @@ on x86_64 and arm64.
   `synth.modal/1` banks with a soundboard thump. Both were approved by the
   owner in listening rounds and are calibrated to −20 LUFS at velocity 0.7.
   See the [guide](docs/studio-instruments.md) and the
-  [delivery report](docs/studio-delivery.md#stdstudio110). This closes the
-  [electric guitar and piano proposal](docs/electric-guitar-piano-proposal.md).
+  [delivery report](docs/reports/studio-delivery.md#stdstudio110). This closes the
+  [electric guitar and piano proposal](docs/design/electric-guitar-piano-proposal.md).
 
 - `synth.modal/1`, a voice-only bank of up to 64 decaying resonators at
   stretched harmonics, `n f √(1 + B n²)`, with up to three detuned copies of
@@ -45,9 +45,9 @@ on x86_64 and arm64.
   pickup point removes the harmonics at its nodes, at 1/5 the 5th, 10th and
   15th. Velocity can modulate `hardness`. `synth.drive/1` gains `reference`,
   which keeps a signal's peaks at the same level as `drive` changes (F22 of
-  the [T3 trial](docs/ai-production-trial-t3.md)). All four default to the
+  the [T3 trial](docs/reports/ai-production-trial-t3.md)). All four default to the
   previous sound bit for bit. See the
-  [proposal](docs/electric-guitar-piano-proposal.md#results-part-1).
+  [proposal](docs/design/electric-guitar-piano-proposal.md#results-part-1).
 
 - `maac analyze` compares the score with the audio. Each note or hit is
   measured on its target: `silent_note` when it makes no sound, `buried_note`
@@ -59,11 +59,11 @@ on x86_64 and arm64.
   note. Inharmonic sounds such as bells and toms read `unpitched` and are not
   checked, and sub-octave layers read at the written pitch. Every example gives
   no silent or mistuned note. The profile is now `maac.analyze.default/4`. See
-  the [proposal](docs/perception-gaps-proposal.md#results-part-b) and
+  the [proposal](docs/design/perception-gaps-proposal.md#results-part-b) and
   [analyze.md](docs/analyze.md#profile-maacanalyzedefault4-2026-10-11).
 
 - `maac analyze` measures the noise floor (finding F13 of the
-  [production trial](docs/ai-production-trial.md)). Every source and section
+  [production trial](docs/reports/ai-production-trial.md)). Every source and section
   reports `floor_lufs`, the loudness of its quietest blocks; `block_range_lu`,
   how steady it is; and `floor_bands_db`, the spectrum of the floor. The new
   `exposed_noise` warning names a steady stem that no note plays when it fills
@@ -71,22 +71,22 @@ on x86_64 and arm64.
   output. The trial's vinyl hiss, restored in "Late Window", fires in every
   region; the released mix and every other example fire nothing. The profile
   is now `maac.analyze.default/3`; the report schema is unchanged. See the
-  [proposal](docs/perception-gaps-proposal.md) and
+  [proposal](docs/design/perception-gaps-proposal.md) and
   [analyze.md](docs/analyze.md#profile-maacanalyzedefault3-2026-10-11).
 
 - **Built-in extension schemas** (finding F11 of the
-  [production trial](docs/ai-production-trial.md)). A descriptor asset can
+  [production trial](docs/reports/ai-production-trial.md)). A descriptor asset can
   name the schema that the host embeds instead of a copied, hash-pinned file:
   `asset schema { kind = descriptor; builtin = "maac.production/1"; }`. This
   works for `maac.production/1`, `maac.takes/1` and `maac.takes/2`. Both forms
   record the same schema hash and render identically; the copied form stays
   valid. The resolved identity is `@builtin/schema/<namespace>.json`, which
   archives list under `builtins`. See [§14.1](MaaC-1-Specification.md#141-immutable-assets)
-  and the [proposal](docs/delivery-schema-proposal.md).
+  and the [proposal](docs/design/delivery-schema-proposal.md).
 
 - "Morning Ferry" ([`examples/ferry/ferry.maac`](examples/ferry/ferry.maac)),
   a 72 bpm rock ballad with an inline overdriven electric guitar, from the
-  [T3 production trial](docs/ai-production-trial-t3.md). The trial ranks what
+  [T3 production trial](docs/reports/ai-production-trial-t3.md). The trial ranks what
   to build next: an electric guitar and piano, a lead role in the analysis,
   and a strum shorthand. The [AI producer guide](docs/ai-producer-guide.md)
   now covers `transpose` on `use` and two more pitfalls.
@@ -109,7 +109,7 @@ on x86_64 and arm64.
   the library; its master is unchanged. Its lead no longer needs a level automation
   beside the drive automation. The owner's verdict: the Game Boy quality is
   "definitely mostly gone". See the
-  [proposal](docs/electric-guitar-piano-proposal.md#results-part-3).
+  [proposal](docs/design/electric-guitar-piano-proposal.md#results-part-3).
 
 - "Late Window" ([`examples/lofi/lofi.maac`](examples/lofi/lofi.maac)) and the
   [AI producer guide](docs/ai-producer-guide.md) use the built-in production
@@ -134,17 +134,17 @@ or rendered-audio release artifacts: build the executable from source.
   `render_ports_artifact_span_with_limits` render a span of frames. See
   [windows](docs/analyze.md#windows-2026-10-07).
 - "Late Window" ([`examples/lofi`](examples/lofi/)) plays `std/studio`, part 4
-  and the end of the [instrument palette](docs/instrument-palette-proposal.md).
+  and the end of the [instrument palette](docs/design/instrument-palette-proposal.md).
   Its electric piano, bass, kick and hats, snare and pad are std/studio
   instruments, and the notes are unchanged. Each part's loudness matches the
   previous master within 0.02 LU. The master measures −14.76 LUFS at
   −1.10 dBTP, against −14.73 LUFS before, and `maac deliver` passes. The
   render takes 45.6 s, 1.7 times the earlier 26.7 s and within the proposal's
   2× limit. The [AI producer guide](docs/ai-producer-guide.md) now starts
-  from std/studio, and the [T2 report](docs/ai-production-trial.md) marks F14
+  from std/studio, and the [T2 report](docs/reports/ai-production-trial.md) marks F14
   addressed and F15 fixed within std/studio.
 - `std/studio/1.0.0`, part 3 of the
-  [instrument palette](docs/instrument-palette-proposal.md): an electric
+  [instrument palette](docs/design/instrument-palette-proposal.md): an electric
   piano, a bass, a pad and an eight-piece `drums` kit built from the palette
   processors. Velocity changes each instrument's sound, not only its level:
   harder electric-piano notes bark through an asymmetric pickup drive,
@@ -153,12 +153,12 @@ or rendered-audio release artifacts: build the executable from source.
   −20 LUFS (F15), and the kit keeps the std/basic/1.1.0 keys, gates and hat
   choke. The library is accepted on measurements only; no one has approved
   its sound by ear. See the [guide](docs/studio-instruments.md), the
-  [delivery report](docs/studio-delivery.md) and
+  [delivery report](docs/reports/studio-delivery.md) and
   [`examples/studio`](examples/studio/). `scripts/studio_auditions.py`
   renders std/basic and std/studio on the same notes at matched loudness,
   and with `--calibrate` measures the reference phrases.
 - A resonant filter and saturation, part 2 of the
-  [instrument palette](docs/instrument-palette-proposal.md).
+  [instrument palette](docs/design/instrument-palette-proposal.md).
   `synth.svf/1` is a trapezoidal state-variable filter with low-pass,
   band-pass and high-pass modes, `q` from 1/10 to 40, and key tracking
   through `ratio`, stable when its cutoff moves every sample.
@@ -168,7 +168,7 @@ or rendered-audio release artifacts: build the executable from source.
   [saturation](docs/instruments.md#saturation) and
   [`examples/resonant-drive.maac`](examples/resonant-drive.maac).
 - Note sources and curved envelopes, part 1 of the
-  [instrument palette](docs/instrument-palette-proposal.md).
+  [instrument palette](docs/design/instrument-palette-proposal.md).
   `synth.velocity/1` and `synth.key/1` are voice-only graph sources: the
   note's velocity, and its base frequency in octaves from C4, following
   per-note pitch. Through ordinary modulation, harder notes can be brighter
@@ -200,7 +200,7 @@ or rendered-audio release artifacts: build the executable from source.
   shift an overridden member are refused. "Late Window" now writes its chords
   this way: the same 629 events in 270 lines instead of 330. See
   [chords](MaaC-1-Specification.md#82-chords) and the
-  [authoring density proposal](docs/authoring-density-proposal.md).
+  [authoring density proposal](docs/design/authoring-density-proposal.md).
 - A native true-peak limiter, `fx.limiter/1`, in the production extension. It
   drives its input by `gain` into a `ceiling` and looks ahead (1.5 ms by
   default, declared as technical latency) with the delivery analyzer's
@@ -212,7 +212,7 @@ or rendered-audio release artifacts: build the executable from source.
   and delivered "Late Window" ([`examples/lofi`](examples/lofi/)), a 75-second
   lo-fi track, and recorded each point of friction with a ranked list of what
   to build next. See [the guide](docs/ai-producer-guide.md) and
-  [the trial](docs/ai-production-trial.md).
+  [the trial](docs/reports/ai-production-trial.md).
 - `maac analyze`, listening tools for AI producers. One render measures the
   project output and every source port that reaches it, per region or bar
   block: BS.1770-5 loudness, peaks with clipping positions, octave bands,
@@ -294,13 +294,13 @@ or rendered-audio release artifacts: build the executable from source.
 - Language conformance evidence: the specification adds edit protocol 2 with
   authored revision identity, timing coordinates, tuning and processor input
   contracts, generic interchange, and bounded L1–L5 quantitative conformance
-  corpora. The [evidence map](docs/document-performance-evidence.md) records
+  corpora. The [evidence map](docs/reports/document-performance-evidence.md) records
   public tests, including a grammar-driven lexical corpus checked against
   `grammar.lark`, spec-derived structure and value-type inventories, the L1
   metadata-role fragment run through the execution projection, a §23
   diagnostic catalog and region vectors.
 - A sampler, warp and stereo [feature showcase](examples/showcase/) with
-  recorded informal [listening approvals](docs/showcase-listening.md).
+  recorded informal [listening approvals](docs/reports/showcase-listening.md).
 
 - Native hits and `core.kit/1` one-shot mono/stereo sample playback using existing
   syntax. Pinned raw float32 assets retain their original rate and exact bytes;
@@ -356,7 +356,7 @@ or rendered-audio release artifacts: build the executable from source.
   existing valid JSON remains unchanged. New Rust struct fields require
   exhaustive literal updates. The [specification](docs/production.md), pinned
   schema, examples, and bounded fixture checker remain distinct from renderer
-  acceptance. The [metering audit](docs/production-metering-evidence.md) records
+  acceptance. The [metering audit](docs/reports/production-metering-evidence.md) records
   applicable current 4× fixtures and historical 16× failures. Analyzer identity
   `maac.analysis.bs1770-5/2` selects the approved single-stage Annex 2 profile
   `maac.truepeak.bs1770-5.annex2-4x/1`; rendered audio is unchanged by this
@@ -395,7 +395,7 @@ or rendered-audio release artifacts: build the executable from source.
   each voice graph node by node over the block, with errors reported at the
   same frame as before. Measured together on one machine, "Late Window" went
   from 113.9 to 36.5 billion CPU cycles (3.12 times fewer) and from 48.5 s to
-  14.8 s of CPU time. See [render speed](docs/render-speed.md).
+  14.8 s of CPU time. See [render speed](docs/reports/render-speed.md).
 
 - `maac analyze` uses the `maac.analyze.default/2` findings profile, from the
   T2 trial:

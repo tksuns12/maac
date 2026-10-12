@@ -3,7 +3,7 @@
 This is the normative contract for the required capability `maac.production/1`.
 An **experimental Rust implementation** is available through native nodes,
 retained plans, and `maac deliver`. The true-peak profile uses one Annex 2
-four-times interpolator; the [metering evidence](production-metering-evidence.md)
+four-times interpolator; the [metering evidence](reports/production-metering-evidence.md)
 records external acceptance results and the superseded two-stage profile.
 Syntax, schema, and bounded arithmetic
 fixtures provide specification evidence only; they do not establish native

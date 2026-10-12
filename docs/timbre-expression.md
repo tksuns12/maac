@@ -142,5 +142,5 @@ Direct build and retained-plan render should produce identical samples in the
 same executable/environment. These commands describe the validation path;
 this guide does not itself establish execution results or listening approval.
 
-The [delivery report](timbre-expression-delivery.md) records the automated
+The [delivery report](reports/timbre-expression-delivery.md) records the automated
 checks, independent review, and remaining validation limits.

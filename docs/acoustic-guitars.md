@@ -2,7 +2,7 @@
 
 **Validation status:** kernel, instrument range/control, and fresh installed
 authoring checks passed on the tested host. User listening approval remains
-pending. The [delivery report](acoustic-delivery.md) records exact evidence and
+pending. The [delivery report](reports/acoustic-delivery.md) records exact evidence and
 its limits.
 
 `std/acoustic/1.0.0` is a separate collection of three stereo instruments:

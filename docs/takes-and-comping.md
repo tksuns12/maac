@@ -130,7 +130,7 @@ Existing source, asset, graph, exact-arithmetic, duration, and work limits also
 apply. Frame offset addition is checked before use. Schema shape validation
 alone does not establish asset identity, alignment, or clip agreement.
 
-The [verification record](verification.md) describes executable acceptance,
+The [verification record](reports/verification.md) describes executable acceptance,
 including exact selected samples, atomic switching and inverse restoration,
 production delivery coexistence, and archive relocation. This capability
 provides the original single-file comp-selection contract.

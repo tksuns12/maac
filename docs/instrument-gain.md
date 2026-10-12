@@ -80,7 +80,7 @@ limit remain unchanged, including after expansion. Source and retained-plan
 validation enforce the same receiver and resource constraints; the
 [performance-plan guide](performance-plan.md) describes the existing wire format.
 
-The [delivery report](instrument-gain-delivery.md) records automated playback,
+The [delivery report](reports/instrument-gain-delivery.md) records automated playback,
 installed CLI verification, and the remaining validation limits.
 
 Custom voice graphs declaring `synth.timbre/1` may also attach one independent

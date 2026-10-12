@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        MaaC keeps a small musical core and puts everything it can in libraries, engine extensions and tools; the [design principles](https://github.com/tksuns12/maac/blob/main/docs/design-principles.md) explain the boundaries. Larger changes usually start as a proposal in `docs/`, so an issue that explains the need is the right first step.
+        MaaC keeps a small musical core and puts everything it can in libraries, engine extensions and tools; the [design principles](https://github.com/tksuns12/maac/blob/main/docs/design/design-principles.md) explain the boundaries. Larger changes usually start as a proposal in `docs/`, so an issue that explains the need is the right first step.
   - type: textarea
     id: need
     attributes:

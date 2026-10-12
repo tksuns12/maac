@@ -2,7 +2,7 @@
 
 **Status: implemented; recorded kernel, instrument, and installed-authoring
 checks passed on the tested host. User listening acceptance remains pending.**
-The [delivery report](acoustic-delivery.md) distinguishes representative
+The [delivery report](reports/acoustic-delivery.md) distinguishes representative
 signal-pitch measurements from full-range phase/range checks and records the
 observed evidence. The approved contract retains the review corrections about
 damping and node-local error behavior; no realism approval is implied.
@@ -164,7 +164,7 @@ is prohibited.
 
 ## Excitation and pickup (2026-10-11)
 
-Three parameters from the [electric guitar and piano proposal](electric-guitar-piano-proposal.md)
+Three parameters from the [electric guitar and piano proposal](design/electric-guitar-piano-proposal.md)
 shape the string. Their defaults, `hardness = 1`, `position = 0` and
 `pickup = 0`, skip every step below, so existing sources and plans render
 bit-identically.
@@ -334,7 +334,7 @@ The [explicit song execution profile](project-entrypoint.md#explicit-finite-song
 permits up to 10,000,000,000 work units by caller selection. It changes neither
 these weights nor pluck memory and other resource limits; source/plan data
 cannot select the larger allowance. Its integrated and native-song validation
-is recorded in the [entrypoint delivery report](project-entrypoint-delivery.md),
+is recorded in the [entrypoint delivery report](reports/project-entrypoint-delivery.md),
 separately from this processor's numerical evidence.
 
 Open-ended direct runtimes enforce memory/capacity and fallible allocation for
@@ -402,7 +402,7 @@ JSON fields and behavior remain unchanged.
 ## Required numerical and listening evidence
 
 These remain the acceptance requirements. Observed results and their scope are
-recorded separately in the [delivery report](acoustic-delivery.md):
+recorded separately in the [delivery report](reports/acoustic-delivery.md):
 
 1. Independent synthetic-ring oracles must verify integer/fractional read
    indices, read-before-write, immediate output, and scalar-history updates.

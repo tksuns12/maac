@@ -98,5 +98,5 @@ These clock rules also apply to [pitch expression](pitch-expression.md).
 The governing rules are in [MaaC-1](../MaaC-1-Specification.md), sections
 6.1, 8.1, 9, 11, 12, and 18.7. This guide states the acceptance contract;
 it does not itself establish test results or listening approval.
-The [delivery report](gain-expression-delivery.md) records the automated
+The [delivery report](reports/gain-expression-delivery.md) records the automated
 checks and installed-CLI evidence separately.

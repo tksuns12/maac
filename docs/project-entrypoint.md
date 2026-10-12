@@ -4,7 +4,7 @@
 entrypoint acceptance, and full native source-free rendering passed.**
 This document defines one discoverable composition entry and a caller-selected,
 finite resource allowance for a complete native song. The command forms, limits
-APIs, and master gain are implemented. The [delivery report](project-entrypoint-delivery.md)
+APIs, and master gain are implemented. The [delivery report](reports/project-entrypoint-delivery.md)
 records measured evidence, including byte-identical full-song retained rendering.
 This extension adds no source grammar, manifest, include mechanism, import
 semantics, or performance-plan version.
@@ -157,7 +157,7 @@ explicit `song` selection. It must compile and render natively from the master
 composition under that finite allowance. An implementation must not bypass
 validation, raise default limits, substitute pre-rendered stems, or add an
 unbounded profile to make that command succeed. The final integrated source's
-actual work and render result are recorded in the [delivery report](project-entrypoint-delivery.md).
+actual work and render result are recorded in the [delivery report](reports/project-entrypoint-delivery.md).
 
 ```sh
 maac check --profile song

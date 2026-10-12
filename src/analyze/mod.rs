@@ -4,7 +4,7 @@
 //! The report gives section-aware measurements named by authored IDs, a short
 //! findings list, and optional spectrogram and piano-roll images. It never
 //! changes the source, and the language and plan formats are unchanged. See
-//! `docs/analyze-proposal.md`.
+//! `docs/analyze.md`.
 
 mod image;
 mod meter;
