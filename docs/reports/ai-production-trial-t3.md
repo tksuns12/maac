@@ -103,7 +103,8 @@ from T2.
    See the [proposal](../design/electric-guitar-piano-proposal.md).
 2. **A lead role in the analysis (F21, F20).** Let the score mark a part as
    the lead, so `analyze` can compare it with the accompaniment per section.
-   Add gain reduction per section for the dynamics processors.
+   Add gain reduction per section for the dynamics processors. F21 has a
+   [proposal](../design/lead-part-proposal.md).
 3. **Strum and voicing shorthand (F18).** A language change; it needs its own
    proposal, like the [authoring density work](../design/authoring-density-proposal.md).
 4. **Small fixes (F23–F25).** Section-edge blocks in `band_dominance`, the
