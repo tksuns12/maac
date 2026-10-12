@@ -1,7 +1,7 @@
 # Gain reduction per section: proposal
 
-**Status:** proposed 2026-10-13; awaiting the owner's [decisions](#decisions).
-This is the second half of item 2 of
+**Status:** accepted 2026-10-13; the owner accepted every recommendation in
+[Decisions](#decisions). The listening round comes next. This is the second half of item 2 of
 [what to build next](../reports/ai-production-trial-t3.md#what-to-build-next-in-order)
 in the T3 trial: F20, gain reduction per section for the dynamics
 processors. The first half, a lead role (F21), landed as the
@@ -319,6 +319,8 @@ The recommendation is A.
   frame. The byte-identical render fixture guards it.
 
 ## Decisions
+
+The owner accepted every recommendation on 2026-10-13:
 
 1. **Where the reduction comes from:** the processors report their own gain
    during the analysis render. *Recommended* over comparing loudness at each
