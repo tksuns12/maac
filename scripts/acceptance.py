@@ -316,12 +316,12 @@ def main() -> int:
     cli_ready = install_ok
     compositions = {
         "example": {
-            "source": ROOT / "example.maac",
+            "source": ROOT / "spec" / "example.maac",
             "notes": 48,
             "frames": 816_000,
         },
         "evening-window": {
-            "source": ROOT / "evening-window.maac",
+            "source": ROOT / "examples" / "evening-window.maac",
             "notes": 182,
             "frames": 1_968_000,
         },
@@ -513,7 +513,7 @@ def main() -> int:
         overwrite_before = overwrite.read_bytes()
         overwrite_attempt = acceptance.command(
             "overwrite_without_force",
-            [binary, "--json", "build", ROOT / "example.maac", "-o", overwrite],
+            [binary, "--json", "build", ROOT / "spec" / "example.maac", "-o", overwrite],
         )
         overwrite_json = parse_json(overwrite_attempt.stdout)
         overwrite_ok = (
@@ -525,7 +525,7 @@ def main() -> int:
         acceptance.check("overwrite_protection", overwrite_ok, overwrite_json or {})
         overwrite_force = acceptance.command(
             "overwrite_with_force",
-            [binary, "--json", "build", ROOT / "example.maac", "-o", overwrite, "--force"],
+            [binary, "--json", "build", ROOT / "spec" / "example.maac", "-o", overwrite, "--force"],
         )
         acceptance.check(
             "overwrite_force", overwrite_force.returncode == 0 and overwrite.stat().st_size > len(overwrite_before),

@@ -357,7 +357,7 @@ fn asset_and_clip_renames_preserve_take_references_and_audio() {
 fn takes_and_production_delivery_coexist_in_retained_plans() {
     let root = tempfile::tempdir().unwrap();
     let (project, source) = project(root.path());
-    let production = include_bytes!("../production.schema.json");
+    let production = include_bytes!("../schemas/production.schema.json");
     fs::write(project.join("production.schema.json"), production).unwrap();
     let source = source.replace(
         "requires=[\"maac.takes/1\"]",

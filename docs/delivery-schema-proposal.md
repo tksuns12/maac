@@ -21,7 +21,7 @@ extension deliveries {
 Each line of that boilerplate costs something:
 
 - **The copy.** The project needs its own copy of
-  [`production.schema.json`](../production.schema.json).
+  [`production.schema.json`](../schemas/production.schema.json).
   [`examples/lofi/`](../examples/lofi/) keeps one next to the source, and so
   does every new song.
 - **The pin.** The hash is 71 characters that the author must copy exactly. It

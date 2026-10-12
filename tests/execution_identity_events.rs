@@ -14,9 +14,10 @@ fn identity_for_source(source: &str) -> ExecutionIdentity {
 
 fn production_artifact(source: &str) -> PlanArtifact {
     let mut bundle = SourceBundle::new("examples/production.maac", source);
-    bundle
-        .assets
-        .insert("production.schema.json".into(), SCHEMA_BYTES.to_vec());
+    bundle.assets.insert(
+        "schemas/production.schema.json".into(),
+        SCHEMA_BYTES.to_vec(),
+    );
     compile_bundle_artifact(&bundle).unwrap()
 }
 

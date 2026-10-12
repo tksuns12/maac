@@ -22,7 +22,7 @@ into a unique directory under `target/production-acceptance`, renders through
 that installed executable, and independently reopens the resulting WAV bytes.
 It preserves command logs, retained plans, audio, manifests, and a JSON report.
 The latest local report is
-[`target/production-acceptance/results.json`](../target/production-acceptance/results.json);
+`target/production-acceptance/results.json`;
 these generated artifacts are not committed.
 
 The default runner profile is `song`. The full CD delivery charged

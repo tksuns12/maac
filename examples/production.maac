@@ -20,7 +20,7 @@ meter metre { points = [(0q, 4, 4)]; }
 
 asset production_schema {
   kind = descriptor;
-  path = "production.schema.json";
+  path = "schemas/production.schema.json";
   hash = "sha256:1f9f3623515e645834fd97ecb300cdf00c5e11f4dd260f5bd85a92d3af91568d";
 }
 

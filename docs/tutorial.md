@@ -82,6 +82,6 @@ stereo pan outputs to a `core.sum/1` node configured with `channels = 2`, then
 name that node's `out` as the project output. There is no implicit track mixer.
 
 For a worked nested pattern and filter automation, read
-[`example.maac`](../example.maac). For a complete sixteen-bar composition,
-read [`evening-window.maac`](../evening-window.maac). Keep output filenames
+[`example.maac`](../spec/example.maac). For a complete sixteen-bar composition,
+read [`evening-window.maac`](../examples/evening-window.maac). Keep output filenames
 new, or add `--force` when deliberately replacing a previous render.

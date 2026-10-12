@@ -12,12 +12,15 @@ import hashlib
 import json
 import math
 import re
+import sys
 from fractions import Fraction
 from pathlib import Path
 
-from check_spec import Draft202012Validator, Lark, ToSyntax, fraction, rational
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "spec"))
 
-ROOT = Path(__file__).resolve().parent
+from check_spec import Draft202012Validator, Lark, ToSyntax, fraction, rational  # noqa: E402
+
 CAPABILITY = "maac.production/1"
 NATIVE = {"fx.eq/1", "fx.compressor/1", "fx.reverb/1", "fx.limiter/1"}
 
@@ -77,7 +80,7 @@ def local_schema(schema):
 
 
 def parse(source):
-    parser = Lark((ROOT / "grammar.lark").read_text(), parser="lalr", maybe_placeholders=False)
+    parser = Lark((ROOT / "spec" / "grammar.lark").read_text(), parser="lalr", maybe_placeholders=False)
     return ToSyntax().transform(parser.parse(source))
 
 
@@ -87,7 +90,7 @@ def validate(doc, schema):
     Port inference covers the native processors and the example's core source,
     gain, pan and sum nodes. Other valid MaaC types require the full validator.
     """
-    Draft202012Validator(json.loads((ROOT / "syntax-tree.schema.json").read_text())).validate(doc)
+    Draft202012Validator(json.loads((ROOT / "spec" / "syntax-tree.schema.json").read_text())).validate(doc)
     objects = doc["objects"]
     projects = [o for o in objects.values() if o["kind"] == "project"]
     require(len(projects) == 1, "E_PROJECT")
@@ -261,8 +264,8 @@ def validate_extension(ef, objects, schema):
         require(set(af) - {"label"} == {"kind", "builtin"}, "E_SCHEMA_ASSET")
         require(af["builtin"] == {"t": "string", "v": "maac.production/1"}, "E_SCHEMA_ASSET")
     else:
-        require(scalar(af.get("path", {})) == "production.schema.json", "E_SCHEMA_ASSET")
-        require(scalar(af.get("hash", {})) == "sha256:" + hashlib.sha256((ROOT / "production.schema.json").read_bytes()).hexdigest(), "E_HASH")
+        require(scalar(af.get("path", {})) == "schemas/production.schema.json", "E_SCHEMA_ASSET")
+        require(scalar(af.get("hash", {})) == "sha256:" + hashlib.sha256((ROOT / "schemas" / "production.schema.json").read_bytes()).hexdigest(), "E_HASH")
     local_schema(schema)
     try:
         Draft202012Validator(schema).validate(ef["data"])
@@ -487,8 +490,8 @@ def arithmetic(fixtures):
 
 def main():
     source = (ROOT / "examples/production.maac").read_text()
-    schema = json.loads((ROOT / "production.schema.json").read_text())
-    fixtures = json.loads((ROOT / "production-conformance.json").read_text())
+    schema = json.loads((ROOT / "schemas" / "production.schema.json").read_text())
+    fixtures = json.loads((ROOT / "conformance" / "production-conformance.json").read_text())
     local_schema(schema)
     Draft202012Validator.check_schema(schema)
     doc = parse(source)
@@ -524,7 +527,7 @@ def main():
     valid_count += 1
     builtin_cases = [
         ('builtin = "maac.takes/1";', "E_SCHEMA_ASSET"),
-        (pinned + ' path = "production.schema.json";', "E_SCHEMA_ASSET"),
+        (pinned + ' path = "schemas/production.schema.json";', "E_SCHEMA_ASSET"),
         (pinned + ' hash = "sha256:' + "0" * 64 + '";', "E_SCHEMA_ASSET"),
     ]
     for replacement, error in builtin_cases:

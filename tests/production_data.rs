@@ -5,7 +5,10 @@ use std::collections::BTreeMap;
 
 const EXAMPLE: &str = include_str!("../examples/production.maac");
 fn assets() -> BTreeMap<String, Vec<u8>> {
-    BTreeMap::from([("production.schema.json".into(), SCHEMA_BYTES.to_vec())])
+    BTreeMap::from([(
+        "schemas/production.schema.json".into(),
+        SCHEMA_BYTES.to_vec(),
+    )])
 }
 fn prepared(
     source: &str,
@@ -85,8 +88,8 @@ fn invalid_source_data_is_rejected_before_objects_are_removed() {
         ("schema = &production_schema;", "schema = &missing;"),
         ("kind = descriptor;", "kind = blob;"),
         (
-            "path = \"production.schema.json\";",
-            "path = \"../production.schema.json\";",
+            "path = \"schemas/production.schema.json\";",
+            "path = \"../schemas/production.schema.json\";",
         ),
         (
             "schema = &production_schema;",
@@ -114,7 +117,7 @@ fn descriptor_requires_recognized_exact_bytes_and_matching_pin() {
     assert!(prepare_document(&document, &BTreeMap::new()).is_err());
     let mut bad_assets = assets();
     bad_assets
-        .get_mut("production.schema.json")
+        .get_mut("schemas/production.schema.json")
         .unwrap()
         .push(b'\n');
     assert!(prepare_document(&document, &bad_assets).is_err());
@@ -122,7 +125,7 @@ fn descriptor_requires_recognized_exact_bytes_and_matching_pin() {
     let original_hash = format!("sha256:{:x}", Sha256::digest(SCHEMA_BYTES));
     let alternate_hash = format!("sha256:{:x}", Sha256::digest(&alternate));
     let document = parse(&EXAMPLE.replace(&original_hash, &alternate_hash)).unwrap();
-    bad_assets.insert("production.schema.json".into(), alternate);
+    bad_assets.insert("schemas/production.schema.json".into(), alternate);
     assert!(prepare_document(&document, &bad_assets).is_err());
 }
 
@@ -251,16 +254,27 @@ fn package_root_descriptor_is_loaded_even_for_nested_entry() {
     let mut bundle = SourceBundle::new("examples/production.maac", EXAMPLE);
     bundle.assets = assets();
     let resolved = bundle.resolve().unwrap();
-    assert_eq!(resolved.assets["production.schema.json"], SCHEMA_BYTES);
+    assert_eq!(
+        resolved.assets["schemas/production.schema.json"],
+        SCHEMA_BYTES
+    );
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir(dir.path().join("examples")).unwrap();
     std::fs::write(dir.path().join("examples/production.maac"), EXAMPLE).unwrap();
-    std::fs::write(dir.path().join("production.schema.json"), SCHEMA_BYTES).unwrap();
+    std::fs::create_dir(dir.path().join("schemas")).unwrap();
+    std::fs::write(
+        dir.path().join("schemas/production.schema.json"),
+        SCHEMA_BYTES,
+    )
+    .unwrap();
     let loaded =
         maac::bundle_fs::load_bundle(std::path::Path::new("examples/production.maac"), dir.path())
             .unwrap();
-    assert_eq!(loaded.assets["production.schema.json"], SCHEMA_BYTES);
-    std::fs::remove_file(dir.path().join("production.schema.json")).unwrap();
+    assert_eq!(
+        loaded.assets["schemas/production.schema.json"],
+        SCHEMA_BYTES
+    );
+    std::fs::remove_file(dir.path().join("schemas/production.schema.json")).unwrap();
     assert!(maac::bundle_fs::load_bundle(
         std::path::Path::new("examples/production.maac"),
         dir.path()
@@ -345,12 +359,12 @@ fn descriptor_unknown_fields_and_traversal_are_rejected() {
             1,
         ),
         EXAMPLE.replacen(
-            "path = \"production.schema.json\";",
-            "path = \"../../production.schema.json\";",
+            "path = \"schemas/production.schema.json\";",
+            "path = \"../../schemas/production.schema.json\";",
             1,
         ),
         EXAMPLE.replacen(
-            "path = \"production.schema.json\";",
+            "path = \"schemas/production.schema.json\";",
             "path = \"https://example.com/schema.json\";",
             1,
         ),
@@ -358,8 +372,8 @@ fn descriptor_unknown_fields_and_traversal_are_rejected() {
         assert!(prepared(&source).is_err());
     }
     let source = EXAMPLE.replacen(
-        "path = \"production.schema.json\";",
-        "path = \"../production.schema.json\";",
+        "path = \"schemas/production.schema.json\";",
+        "path = \"../schemas/production.schema.json\";",
         1,
     );
     let mut bundle = SourceBundle::new("nested/main.maac", source);
@@ -374,9 +388,10 @@ fn descriptor_symlink_cannot_escape_package_root() {
     let outside = tempfile::tempdir().unwrap();
     std::fs::write(root.path().join("main.maac"), EXAMPLE).unwrap();
     std::fs::write(outside.path().join("schema.json"), SCHEMA_BYTES).unwrap();
+    std::fs::create_dir(root.path().join("schemas")).unwrap();
     std::os::unix::fs::symlink(
         outside.path().join("schema.json"),
-        root.path().join("production.schema.json"),
+        root.path().join("schemas/production.schema.json"),
     )
     .unwrap();
     assert!(maac::bundle_fs::load_bundle(std::path::Path::new("main.maac"), root.path()).is_err());

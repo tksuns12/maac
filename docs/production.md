@@ -29,7 +29,7 @@ similarly named plug-in. Unsupported required capabilities fail before rendering
 Named deliveries use exactly one `extension` with
 `namespace = "maac.production/1"`, `render_affecting = true`, and a `schema`
 reference to a descriptor asset for the self-contained
-[`production.schema.json`](../production.schema.json). The descriptor either
+[`production.schema.json`](../schemas/production.schema.json). The descriptor either
 names the built-in schema, which needs no file:
 
 ```maac
@@ -688,7 +688,7 @@ full source IDs remain authoritative in delivery data and manifests.
 ## 12. Conformance and implementation gates
 
 The [complete example](../examples/production.maac) uses the repository as its
-package root; its descriptor asset path `production.schema.json` resolves from
+package root; its descriptor asset path `schemas/production.schema.json` resolves from
 that root. The schema is self-contained and its exact bytes must match the
 example's asset hash. [`examples/lofi/lofi.maac`](../examples/lofi/lofi.maac)
 names the built-in schema instead and needs no copy. The example runs through
@@ -702,8 +702,8 @@ Its requested limits are illustrative, and completed audio is retained if they
 fail. This runnable example does not qualify the current metering profile or
 replace the acceptance gates below.
 
-[`check_production.py`](../check_production.py) and
-[`production-conformance.json`](../production-conformance.json) validate bounded
+[`check_production.py`](../scripts/check_production.py) and
+[`production-conformance.json`](../conformance/production-conformance.json) validate bounded
 syntax/schema and selected semantics and arithmetic. Independent expected
 results cover EQ impulses, compressor knees and time constants, the reverb's
 first wet impulse, limiter configuration ranges, symmetric integer quantization and deterministic dither,

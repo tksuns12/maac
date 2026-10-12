@@ -15,7 +15,7 @@ with warnings denied, all 323 tests across 41 result groups (zero failed or
 ignored), a release build, and a fresh repository-local offline installation.
 The 69 build-input fingerprints were unchanged across those gates;
 the previous installations were preserved. Exact commands, logs, hashes, and
-results are in [the gate report](../target/project-entrypoint-validation/summary.json).
+results are in the gate report (`target/project-entrypoint-validation/summary.json`).
 
 The installed executable passed 206 outer acceptance checks, plus the existing
 38-check legacy and 31-check reusable-instrument harnesses. Checks ran from a
@@ -23,7 +23,7 @@ disposable directory outside the checkout. They covered entry selection and
 containment, explicit profile behavior, source-free plans, generated
 specification files, and compatibility. Disposable specification outputs were
 byte-identical to the checked-in artifacts; established core WAV hashes and
-catalog stdout pins were unchanged. See [installed acceptance](../target/project-entrypoint-validation/installed-acceptance/results.json).
+catalog stdout pins were unchanged. See installed acceptance (`target/project-entrypoint-validation/installed-acceptance/results.json`).
 
 The complete MaaC example in the [entrypoint guide](project-entrypoint.md) was
 checked, compiled, and built using omitted input, then its source was removed.
@@ -44,7 +44,7 @@ control data. The serialized plan is 1,527,620 bytes and schedules 9,620,109
 frames. Its estimated instrument work is 4,165,619,697 units: above the unchanged
 500-million default, within the explicit 10-billion song allowance. Delay
 storage uses 93,678 cells (749,424 payload bytes), within the unchanged pluck
-memory bound. See [the native plan audit](../target/soldier-of-fortune-main/native-plan-audit.json).
+memory bound. See the native plan audit (`target/soldier-of-fortune-main/native-plan-audit.json`).
 
 A byte-identical copy of the freshly installed CLI ran outside the checkout
 with only `main.maac` as source. Omitted-input check, compile, and build passed;
@@ -59,9 +59,9 @@ RMS 0.10853027373425388. Compared with the historical acoustic rendition,
 1,312 of 19,240,218 samples differ, by at most one PCM16 count; RMS difference
 is 0.008257753662750915 counts. This satisfies the declared rounding bounds
 of at most two counts and 0.1 RMS counts. It is numerical comparison evidence,
-not a listening assessment. See [native verification](../target/soldier-of-fortune-main/native-verification.json),
-[standalone plan audit](../target/soldier-of-fortune-main/standalone-plan-audit.json),
-and [exact commands](../target/soldier-of-fortune-main/standalone-commands.json).
+not a listening assessment. See native verification (`target/soldier-of-fortune-main/native-verification.json`),
+standalone plan audit (`target/soldier-of-fortune-main/standalone-plan-audit.json`),
+and exact commands (`target/soldier-of-fortune-main/standalone-commands.json`).
 
 Final identities were rechecked unchanged:
 

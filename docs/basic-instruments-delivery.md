@@ -23,7 +23,7 @@ The frozen [library source](../stdlib/basic/1.0.0.maac) has SHA-256:
 cc7d6e307ed28810f75cdd5c8aa1ed24b08d7db94f78d88cc293d0ceb7ba397b
 ```
 
-The [100-file source-input manifest](../target/basic-acceptance/final-gates/source-manifest-before.json)
+The 100-file source-input manifest (`target/basic-acceptance/final-gates/source-manifest-before.json`)
 covers Rust sources, library source/editorial metadata, examples, tests,
 acceptance scripts, and specification-checker inputs. Its file SHA-256 is
 `eefac6c55917dc44fae0e2a7617d7295af5eee117becf78c72597a42169671d8`.
@@ -53,10 +53,10 @@ interpreter with Lark 1.2.2 and jsonschema 4.25.1.
 | `python3 scripts/basic_instrument_acceptance.py --python /private/tmp/scoreir-ci-venv.VTyCKr/bin/python` | Exit 0; all installed checks passed |
 
 Exact arguments, exit codes, durations, and stdout/stderr are retained in the
-[quality-gate logs](../target/basic-acceptance/final-gates/20260908T051551Z/results.json)
-and [installed acceptance results](../target/basic-acceptance/runs/20260908T051823Z-502f54a1/results.json).
+quality-gate logs (`target/basic-acceptance/final-gates/20260908T051551Z/results.json`)
+and installed acceptance results (`target/basic-acceptance/runs/20260908T051823Z-502f54a1/results.json`).
 Changed Markdown files, including this report, also passed the disposable
-[relative-link, fence, and trailing-whitespace check](../target/basic-acceptance/final-gates/docs-results.json).
+relative-link, fence, and trailing-whitespace check (`target/basic-acceptance/final-gates/docs-results.json`).
 
 The full suite includes six basic-instrument matrix tests and two example tests.
 The matrix covers 777 instrument/pitch cases at velocities 0, 0.35, and 1
@@ -87,19 +87,19 @@ stability checks. From a fresh temporary directory outside this checkout, it:
 - Verified embedded graph programs, source/dependency identities, nonzero u32
   noise seeds, and absence of sample assets.
 
-The [50 audition WAVs](../target/basic-acceptance/auditions/20260908T051823Z-502f54a1/)
+The 50 audition WAVs (`target/basic-acceptance/auditions/20260908T051823Z-502f54a1/`)
 contain 24 individual instruments plus the full band, each in both formats.
 Each format contains 4,848,000 stereo frames in total at 48 kHz. Every output was
 finite, non-silent, and below full scale. Across the examples, float32 peaks were
 0.072843477–0.260073125; normalized PCM16 peaks were 0.072845459–0.260070801.
-The 9.8-second [full-band float32 audition](../target/basic-acceptance/auditions/20260908T051823Z-502f54a1/full_band.float32.wav)
+The 9.8-second full-band float32 audition (`target/basic-acceptance/auditions/20260908T051823Z-502f54a1/full_band.float32.wav`)
 had peak 0.260073125 (the targeted f64 measurement was approximately 0.260073123).
 
 Logs, manifests, plans, and WAVs under `target/` are ignored, reproducible local
 evidence rather than checked-in release contents. The
 [acceptance runner](../scripts/basic_instrument_acceptance.py) namespaces each
 fresh run so old artifacts cannot satisfy a new check; the
-[latest results](../target/basic-acceptance/results.json) point to this run.
+latest results (`target/basic-acceptance/results.json`) point to this run.
 
 ## Limits
 

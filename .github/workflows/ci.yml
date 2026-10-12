@@ -58,13 +58,13 @@ jobs:
           smoke_dir="$(mktemp -d)"
           trap 'rm -rf "$smoke_dir"' EXIT
 
-          cp check_spec.py grammar.lark syntax-tree.schema.json example.maac "$smoke_dir/"
+          cp spec/check_spec.py spec/grammar.lark spec/syntax-tree.schema.json spec/example.maac "$smoke_dir/"
           python "$smoke_dir/check_spec.py" > "$smoke_dir/check-report.json"
 
           for output in check-results.json conformance.json example.syntax.json; do
-            if ! cmp -s "$smoke_dir/$output" "$output"; then
-              echo "Smoke checker drift detected in $output" >&2
-              diff -u "$output" "$smoke_dir/$output" || true
+            if ! cmp -s "$smoke_dir/$output" "spec/$output"; then
+              echo "Smoke checker drift detected in spec/$output" >&2
+              diff -u "spec/$output" "$smoke_dir/$output" || true
               exit 1
             fi
           done
@@ -97,7 +97,7 @@ jobs:
         run: python -m unittest discover -s scripts -p 'test_check_l5_reference.py'
 
       - name: Check production specification and bounded fixtures
-        run: python check_production.py
+        run: python scripts/check_production.py
 
       - name: Verify production SRC coefficient certificates
         run: python scripts/production_src_coefficients.py --verify

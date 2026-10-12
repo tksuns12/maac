@@ -88,7 +88,7 @@ master/stem deliveries,
 resampling, encoding, and final-artifact loudness analysis. These processors
 use existing `node` syntax and require no external executable implementation
 asset. Named deliveries use an existing render-affecting `extension` object
-with a self-contained [schema](production.schema.json), either hash-pinned or
+with a self-contained [schema](schemas/production.schema.json), either hash-pinned or
 named as a built-in descriptor (§14.1).
 
 This capability preserves `maac 1` semantics and all Core Audio conformance
@@ -96,7 +96,7 @@ obligations; supporting it does not establish Core Audio conformance. The
 grammar, generic syntax-tree schema, and implemented performance-plan versions
 remain unchanged. An **experimental Rust implementation** and runnable
 [example](examples/production.maac) are available. The bounded
-[fixtures](production-conformance.json) remain specification evidence; they do
+[fixtures](conformance/production-conformance.json) remain specification evidence; they do
 not establish rendering or listening conformance. Analyzer
 `maac.analysis.bs1770-5/2` selects the approved single-stage four-times Annex 2
 true-peak profile. See the applicable fixture evidence and historical 16×
@@ -1343,7 +1343,7 @@ encoding, resampler, dither, and analyzer identities defined by that contract.
 
 ## 27. Complete worked source
 
-The companion `example.maac` is a self-contained 8-bar, 4/4, 120 BPM Core Audio document. It uses only reference sine instruments and contains no external assets. Its main score is 32q (16 seconds), followed by a one-second tail. There are 48 note occurrences before any expansion of tooling views: 24 bass notes, 16 upper notes, and 8 pulse notes.
+The companion `spec/example.maac` is a self-contained 8-bar, 4/4, 120 BPM Core Audio document. It uses only reference sine instruments and contains no external assets. Its main score is 32q (16 seconds), followed by a one-second tail. There are 48 note occurrences before any expansion of tooling views: 24 bass notes, 16 upper notes, and 8 pulse notes.
 
 The source includes a shared bass riff, an occurrence-only 20ms timing edit, a two-note motif, a one-note pulse pattern, an automated one-pole cutoff, mono-to-stereo pan nodes, and explicit summing. The sound design is intentionally simple so that representation and routing can be inspected without a proprietary synthesizer.
 
@@ -1351,7 +1351,7 @@ The editing example in section 21 changes a shared source note and demonstrates 
 
 ## 28. Conformance vectors
 
-The companion `conformance.json` stores concrete vectors; `check_spec.py` checks the grammar against the worked source and runs a selected set of exact arithmetic and scheduling assertions. It is a **syntax and selected-semantics smoke checker**, not a complete semantic validator, renderer, security sandbox, or proof of this specification's consistency.
+The companion `spec/conformance.json` stores concrete vectors; `spec/check_spec.py` checks the grammar against the worked source and runs a selected set of exact arithmetic and scheduling assertions. It is a **syntax and selected-semantics smoke checker**, not a complete semantic validator, renderer, security sandbox, or proof of this specification's consistency.
 
 Required cases for a full implementation include:
 

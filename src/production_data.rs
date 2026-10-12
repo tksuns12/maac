@@ -14,7 +14,7 @@ use crate::syntax::{Document, Unit, ValueKind};
 
 pub const CAPABILITY: &str = "maac.production/1";
 pub const RESAMPLER: &str = "maac.src.kaiser/1";
-pub const SCHEMA_BYTES: &[u8] = include_bytes!("../production.schema.json");
+pub const SCHEMA_BYTES: &[u8] = include_bytes!("../schemas/production.schema.json");
 pub const MAX_DELIVERIES: usize = 64;
 pub const MAX_TARGETS: usize = 256;
 pub const MAX_TOTAL_TARGETS: usize = 1024;

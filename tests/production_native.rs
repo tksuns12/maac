@@ -214,7 +214,7 @@ fn native_configuration_units_ranges_and_mode_applicability_are_strict() {
         );
         assert!(compile(&parse(&bad).unwrap()).is_err());
     }
-    let core = include_str!("../example.maac")
+    let core = include_str!("../spec/example.maac")
         .replace("requires = [];", "requires = [\"unknown.capability/99\"];");
     assert!(compile(&parse(&core).unwrap())
         .unwrap_err()
@@ -323,15 +323,15 @@ fn named_deliveries_compile_into_retained_plan_without_changing_legacy_json() {
         include_str!("../examples/production.maac"),
     );
     bundle.assets.insert(
-        "production.schema.json".into(),
-        include_bytes!("../production.schema.json").to_vec(),
+        "schemas/production.schema.json".into(),
+        include_bytes!("../schemas/production.schema.json").to_vec(),
     );
     let plan = maac::compile_bundle(&bundle).unwrap();
     assert_eq!(plan.version, 2);
     assert_eq!(plan.production.as_ref().unwrap().deliveries.len(), 2);
     let retained = Plan::from_json(&plan.to_json().unwrap()).unwrap();
     assert_eq!(plan, retained);
-    let legacy = compile_source(include_str!("../example.maac"));
+    let legacy = compile_source(include_str!("../spec/example.maac"));
     let json: serde_json::Value = serde_json::from_slice(&legacy.to_json().unwrap()).unwrap();
     assert!(json.get("production").is_none());
 }
@@ -339,7 +339,7 @@ fn named_deliveries_compile_into_retained_plan_without_changing_legacy_json() {
 #[test]
 fn capture_count_and_copy_work_fail_before_callbacks() {
     use maac::plan::{PlanLimits, PortRef};
-    let p = compile_source(include_str!("../example.maac"));
+    let p = compile_source(include_str!("../spec/example.maac"));
     let output = PortRef::new("master", "out").unwrap();
     let mut calls = 0;
     let error = maac::dsp::render_ports_with_limits(

@@ -208,7 +208,7 @@ targeted regression suite reports 18 passing tests, including the
 missing-required-file RED/GREEN regression. The 20 patch cases are reviewed
 static expected outcomes, not transactions applied by a runtime editor.
 Evidence is recorded in the ignored local
-[stage2 summary](../target/l1-identity-validation/stage2/summary.json). It
+stage2 summary (`target/l1-identity-validation/stage2/summary.json`). It
 establishes static corpus self-consistency and expected-vector behavior, not
 execution by a runtime patch editor or normalizer. The docs/CI work is owned by
 the luna executor, checker/tests/execution by the sol executor, and independent
@@ -256,7 +256,7 @@ tolerance. The L2 specification and fixed outcomes have independent semantic
 and harness clearance at specification hash
 `03fc433593cea4b451e36f818762a087445d3f606d989ef41096c8431bce8b5b`, manifest
 hash `45f44982c2302a2df71319ca56f5983e8c5d644c2963fd4ca62d11b5a953b154`, and
-the [local evidence summary](../target/l2-timing-validation/summary.json).
+the local evidence summary (`target/l2-timing-validation/summary.json`).
 Nine selected existing regression tests, formatting, targeted Clippy, and the
 asset digest gate passed. Luna owns the specification/docs, Sol owns the
 corpus/harness/validation, independent readers cleared semantics and harness
@@ -290,9 +290,9 @@ object/field paths. Two implementation regressions were demonstrated with
 actual RED → GREEN evidence: the old in-steps reference-index restriction and
 the missing tuning object/field context on signed-64 overflow. Forty-one
 selected existing compiler, foundation, music, and semantic regression tests,
-formatting, and targeted Clippy passed. The [L3 tuning evidence](../target/l3-tuning-validation/)
+formatting, and targeted Clippy passed. The L3 tuning evidence (`target/l3-tuning-validation/`)
 contains the focused logs and exits. The combined pan/input/tuning gate passed
-10/10 in the [final integration log](../target/l3-contract-validation/final/combined-l3-tests.log);
+10/10 in the final integration log (`target/l3-contract-validation/final/combined-l3-tests.log`);
 the corresponding integrated summary is maintained at
 `target/l3-contract-validation/integrated-final.json`.
 
@@ -337,9 +337,9 @@ vectors), 15 schema documents, 23 focused L4 tests, and 54 file hashes checked
 by both shasum and OpenSSL. The checker also passed the L1 regression checks
 (20 corpus cases and 18 focused tests); the symlink and capability-ordering
 controls provide the meaningful RED/GREEN evidence, while the initial missing-
-checker failures were setup-only. The reviewed [generic schema](../interchange.schema.json)
+checker failures were setup-only. The reviewed [generic schema](../schemas/interchange.schema.json)
 and [L4 manifest](../conformance/l4/manifest.json) are recorded in the local
-[L4 validation summary](../target/l4-interchange-validation/executor-summary.json),
+L4 validation summary (`target/l4-interchange-validation/executor-summary.json`),
 SHA-256 `afc4ad795f4ec63498ade5469520d0e7e3d9af35a34d4e33b5933fa5ec1a1a81`.
 The independent harness findings on strict boolean typing for manifest
 canonical flags and confinement and symlink checks before reading the fixed
@@ -391,7 +391,7 @@ defines its portable logical conditions.
 The final public compile/retained-plan/replay/f64-render gate passed 7 Rust
 tests across 6 cases, 48 frame rows, and 64 channel samples. The maximum
 observed `E_upper` was approximately `1.5935876903e-16`; all retained replays
-were bit-identical. The ignored [runtime summary](../target/l5-quantitative-validation/runtime/summary.json)
+were bit-identical. The ignored runtime summary (`target/l5-quantitative-validation/runtime/summary.json`)
 records the actual logs and the observation-file SHA-256
 `c4f58b7e0a6ac261fde8214fe694c1aefc29a043e9a510b5ab155a01483d930f`.
 The static L5 verifier passed its 13-test regression suite. The targeted L2/L3
@@ -400,7 +400,7 @@ passed 18 tests, L4 checker/tests passed 23 tests, and the disposable
 syntax/semantics smoke run matched `check-results.json`, `conformance.json`,
 and `example.syntax.json` byte-for-byte.
 
-The root-owned [integrated L5 record](../target/l5-quantitative-validation/integrated-final.json)
+The root-owned integrated L5 record (`target/l5-quantitative-validation/integrated-final.json`)
 binds the final summary hashes, 22 reviewed/candidate file hashes, seven
 manifest pins, and all 179 fixture pins. Luna owns the specification, index,
 and CI documentation; Sol owns the reference corpus, static verifier, and

@@ -58,7 +58,7 @@ The accepted bound is `epsilon = 1/10^14`, inclusive, under policy identifier
 `maac.core-audio.reference-f64/1`. The completed local calibration observed
 `E_upper` approximately `1.5935876903e-16`, with reference interval width at
 most `1e-80`; debug and release builds produced the same local sample bits.
-Its [calibration summary](../target/l5-quantitative-validation/calibration/summary.json),
+Its calibration summary (`target/l5-quantitative-validation/calibration/summary.json`),
 SHA-256 `40f2c14088f6be43e134a5e5d25bda2067df3df2fdb674ea83134de1c72cdb27`,
 is local rationale and records the distribution, derivation, and
 reproducibility limits; it is not proof of broader conformance. The roughly
@@ -140,7 +140,7 @@ fixture pins.
 The targeted L2/L3 cross-slice gate passed 13 tests (3 L2 and 10 L3). Legacy
 L1 checker/tests passed 18 tests, L4 checker/tests passed 23 tests, and the
 disposable syntax/semantics smoke run matched its three tracked JSON outputs
-byte-for-byte. The root-owned [integrated L5 record](../target/l5-quantitative-validation/integrated-final.json)
+byte-for-byte. The root-owned integrated L5 record (`target/l5-quantitative-validation/integrated-final.json`)
 holds the final summary and reviewed-file bindings. Luna owns the normative
 specification and index/CI documentation; Sol owns the reference corpus,
 static verifier, and runtime harness; the L5 reference-test executor owns the

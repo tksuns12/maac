@@ -446,7 +446,7 @@ mod tests {
     use serde_json::Value;
 
     fn fixtures() -> Value {
-        serde_json::from_str(include_str!("../production-conformance.json")).unwrap()
+        serde_json::from_str(include_str!("../conformance/production-conformance.json")).unwrap()
     }
     fn real(value: &Value) -> f64 {
         parse_rational(value.as_str().unwrap())

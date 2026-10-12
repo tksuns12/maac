@@ -139,7 +139,7 @@ fn invalid_keys_receivers_assets_and_limits_fail() {
 }
 #[test]
 fn legacy_bundle_artifact_bytes_are_identical() {
-    let bundle = SourceBundle::new("example.maac", include_str!("../example.maac"));
+    let bundle = SourceBundle::new("example.maac", include_str!("../spec/example.maac"));
     assert_eq!(
         compile_bundle_artifact(&bundle).unwrap().to_json().unwrap(),
         compile_bundle_versioned(&bundle)

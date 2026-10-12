@@ -11,7 +11,7 @@ tempo clock { points = [(0q, 60bpm, step)]; }
 meter metre { points = [(0q, 4, 4)]; }
 asset takes_schema {
   kind = descriptor;
-  path = "takes.schema.json";
+  path = "schemas/takes.schema.json";
   hash = "sha256:11cd8e70cf09aff986f821f88f46ad97056cfb5514a4344eeaa38a6d2e432960";
 }
 asset kick_sample {

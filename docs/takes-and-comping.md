@@ -20,7 +20,7 @@ and contain exactly one extension with that namespace. The extension requires
 and `data`. The descriptor either names the built-in schema,
 `asset schema { kind=descriptor; builtin="maac.takes/1"; }`, or pins a copy
 whose hash and bytes match the shipped
-[`takes.schema.json`](../takes.schema.json)
+[`takes.schema.json`](../schemas/takes.schema.json)
 ([§14.1](../MaaC-1-Specification.md#141-immutable-assets)). A copy's path is
 relative to the package root, including when the composition entry is in a
 subdirectory. One v1 take

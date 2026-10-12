@@ -25,7 +25,7 @@ fn reports_unsupported_version_as_a_maac_diagnostic() {
 
 #[test]
 fn parses_example_and_preserves_source_spans() {
-    let source = fs::read_to_string("example.maac").unwrap();
+    let source = fs::read_to_string("spec/example.maac").unwrap();
     let document = parse(&source).expect("example should be valid surface syntax");
     assert_eq!(document.version, 1);
     assert_eq!(document.source(), source);
@@ -42,16 +42,16 @@ fn parses_example_and_preserves_source_spans() {
 
 #[test]
 fn emits_the_typed_syntax_tree_shape() {
-    let source = fs::read_to_string("example.maac").unwrap();
+    let source = fs::read_to_string("spec/example.maac").unwrap();
     let expected: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string("example.syntax.json").unwrap()).unwrap();
+        serde_json::from_str(&fs::read_to_string("spec/example.syntax.json").unwrap()).unwrap();
     let actual = parse(&source).unwrap().to_syntax_json_value();
     assert_eq!(actual, expected);
 }
 
 #[test]
 fn parses_evening_window() {
-    let source = fs::read_to_string("evening-window.maac").unwrap();
+    let source = fs::read_to_string("examples/evening-window.maac").unwrap();
     let document = parse(&source).expect("evening-window should be valid surface syntax");
     assert_eq!(document.version, 1);
     assert_eq!(document.object("evening_window").unwrap().kind, "project");

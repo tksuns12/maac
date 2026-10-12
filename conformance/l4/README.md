@@ -2,7 +2,7 @@
 
 This directory contains a bounded static corpus for the additive generic
 version-1 interchange schema in
-[`interchange.schema.json`](../../interchange.schema.json). The checker proves
+[`interchange.schema.json`](../../schemas/interchange.schema.json). The checker proves
 canonical-byte, digest, fixed fixture-contract, closure, timing, and optional
 evidence relationships within this corpus. It does not prove that the
 production compiler, normalizer, dependency resolver, capability registry, or

@@ -36,18 +36,18 @@ installation were not edited. Their nested run performed the fresh installation.
 
 | Boundary | Observed result | Evidence |
 | --- | --- | --- |
-| Integrated repository gates | 293 tests passed, zero failed/ignored; formatting, all-target Clippy and release build passed on unchanged inputs | [Gate summary](../target/acoustic-acceptance/gates/summary.json) |
-| Isolated string kernel | 12 tests passed | [Kernel metrics](../target/acoustic-acceptance/gates/kernel-metrics.json) |
-| Source, graph, runtime and plan integration | 11 integration tests plus two integration unit tests passed | [Integration report](../target/acoustic-guitar-design/pluck-integration-evidence.json) |
-| Acoustic instruments | Five tests passed, all 49 E2–E6 semitones per export, endpoint bends/vibrato, long gates and chords | [Instrument report](../target/acoustic-guitar-design/instrument-validation.json) |
-| Existing installed CLI acceptance | 38 checks, 24 command records passed | [CLI report](../target/acoustic-acceptance/installed/legacy/results.json) |
-| Existing reusable-instrument and disposable spec acceptance | 31 checks, 12 command records passed | [Reusable/spec report](../target/acoustic-acceptance/installed/reusable/results.json) |
-| Installed acoustic authoring and compatibility | 319 checks, 60 command records passed | [Authoring report](../target/acoustic-acceptance/installed/authoring-results.json) |
+| Integrated repository gates | 293 tests passed, zero failed/ignored; formatting, all-target Clippy and release build passed on unchanged inputs | Gate summary (`target/acoustic-acceptance/gates/summary.json`) |
+| Isolated string kernel | 12 tests passed | Kernel metrics (`target/acoustic-acceptance/gates/kernel-metrics.json`) |
+| Source, graph, runtime and plan integration | 11 integration tests plus two integration unit tests passed | Integration report (`target/acoustic-guitar-design/pluck-integration-evidence.json`) |
+| Acoustic instruments | Five tests passed, all 49 E2–E6 semitones per export, endpoint bends/vibrato, long gates and chords | Instrument report (`target/acoustic-guitar-design/instrument-validation.json`) |
+| Existing installed CLI acceptance | 38 checks, 24 command records passed | CLI report (`target/acoustic-acceptance/installed/legacy/results.json`) |
+| Existing reusable-instrument and disposable spec acceptance | 31 checks, 12 command records passed | Reusable/spec report (`target/acoustic-acceptance/installed/reusable/results.json`) |
+| Installed acoustic authoring and compatibility | 319 checks, 60 command records passed | Authoring report (`target/acoustic-acceptance/installed/authoring-results.json`) |
 
 Checks include repeated binary fingerprints and other boundary assertions;
 their count is not the number of distinct compositions or audible tests.
 Kernel/integration/instrument test counts are subsets of the integrated suite,
-not extra tests to add to 293. The [installed summary](../target/acoustic-acceptance/installed/report.json)
+not extra tests to add to 293. The installed summary (`target/acoustic-acceptance/installed/report.json`)
 links the distinct installed acceptance scopes.
 The disposable specification checker used Python 3.12.14, Lark 1.2.2 and
 jsonschema 4.25.1. Its three generated reference files matched tracked bytes,

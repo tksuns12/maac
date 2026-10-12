@@ -15,8 +15,8 @@ use crate::syntax::{Document, Object, Unit, ValueKind};
 
 pub const CAPABILITY: &str = "maac.takes/1";
 pub const CAPABILITY_V2: &str = "maac.takes/2";
-pub const SCHEMA_BYTES: &[u8] = include_bytes!("../takes.schema.json");
-pub const SCHEMA_V2_BYTES: &[u8] = include_bytes!("../takes-v2.schema.json");
+pub const SCHEMA_BYTES: &[u8] = include_bytes!("../schemas/takes.schema.json");
+pub const SCHEMA_V2_BYTES: &[u8] = include_bytes!("../schemas/takes-v2.schema.json");
 pub const MAX_LANES: usize = 16;
 pub const MAX_GROUPS: usize = 64;
 pub const MAX_TAKES: usize = 64;

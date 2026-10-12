@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "spec"))
 
 from check_spec import ToSyntax  # noqa: E402  (reference transformer)
 from lark import Lark  # noqa: E402
@@ -35,7 +35,7 @@ CORPUS = ROOT / "tests" / "fixtures" / "lexical" / "corpus.json"
 SCHEMA = "maac.lexical-corpus/1"
 MAX_IDENTIFIER_BYTES = 128
 
-PARSER = Lark((ROOT / "grammar.lark").read_text(), parser="lalr", maybe_placeholders=False)
+PARSER = Lark((ROOT / "spec" / "grammar.lark").read_text(), parser="lalr", maybe_placeholders=False)
 
 
 def identifiers(value: Any) -> Iterator[str]:

@@ -73,16 +73,16 @@ continue to require explicit file inputs.
 Check a composition, compile an inspectable plan, and render it:
 
 ```sh
-maac check example.maac
-maac compile example.maac -o example.performance.json
+maac check spec/example.maac
+maac compile spec/example.maac -o example.performance.json
 maac render example.performance.json -o example.wav
 ```
 
 The same compiler and renderer are available as one operation:
 
 ```sh
-maac build evening-window.maac -o evening-window.wav
-maac build example.maac -o example.pcm16.wav --format pcm16
+maac build examples/evening-window.maac -o evening-window.wav
+maac build spec/example.maac -o example.pcm16.wav --format pcm16
 ```
 
 New WAV files use 48 kHz and float32 samples by default. PCM16 export rejects
@@ -97,7 +97,7 @@ listening status are recorded separately in the release verification report.
 Use `--json` for machine-readable command results and diagnostics:
 
 ```sh
-maac check example.maac --json
+maac check spec/example.maac --json
 ```
 
 Read the [authoring tutorial](tutorial.md), [capability matrix](capabilities.md),

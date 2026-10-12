@@ -51,13 +51,10 @@ class GateFailure(RuntimeError):
 def source_manifest() -> dict[str, str]:
     files = {
         ROOT / name for name in (
-            "Cargo.toml", "Cargo.lock", "check_spec.py", "grammar.lark",
-            "syntax-tree.schema.json", "example.maac", "evening-window.maac",
-            "check-results.json", "conformance.json", "example.syntax.json",
-            "docs/tutorial.md",
+            "Cargo.toml", "Cargo.lock", "docs/tutorial.md",
         )
     }
-    for name in ("src", "stdlib", "examples", "scripts", "tests"):
+    for name in ("src", "stdlib", "examples", "scripts", "tests", "spec", "schemas"):
         files.update(p for p in (ROOT / name).rglob("*")
                      if p.is_file() and "__pycache__" not in p.parts)
     return {str(p.relative_to(ROOT)): sha256(p) for p in sorted(files)}

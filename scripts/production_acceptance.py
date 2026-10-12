@@ -208,7 +208,8 @@ def run_acceptance(evidence: Evidence, profile: str, baseline_report: Path | Non
     (package / "examples").mkdir()
     source = package / "examples" / "production.maac"
     shutil.copyfile(ROOT / "examples" / "production.maac", source)
-    shutil.copyfile(ROOT / "production.schema.json", package / "production.schema.json")
+    (package / "schemas").mkdir()
+    shutil.copyfile(ROOT / "schemas" / "production.schema.json", package / "schemas" / "production.schema.json")
     plan = evidence.run / "production.performance.json"
     cd_ids = {"master", "processed_bass", "pulse"}
     archive_ids = {"master", "bass_with_room", "pulse"}
@@ -302,7 +303,7 @@ def main() -> int:
               "metering_evidence": "docs/production-metering-evidence.md",
               "baseline_report": str(args.baseline_report) if args.baseline_report is not None else None,
               "source_hash": sha256(ROOT / "examples" / "production.maac"),
-              "schema_hash": sha256(ROOT / "production.schema.json"),
+              "schema_hash": sha256(ROOT / "schemas" / "production.schema.json"),
               "commands": evidence.commands, "checks": evidence.checks, "deliveries": evidence.deliveries,
               "failure": failure}
     text = json.dumps(report, indent=2, allow_nan=False) + "\n"

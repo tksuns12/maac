@@ -31,7 +31,7 @@ the `maac` package/library/binary metadata in `Cargo.toml` and `Cargo.lock`,
 pinned `requirements-dev.txt`, the acceptance runners, and the macOS
 stable-Rust workflow. The user confirmed original ownership of the project
 material and `tksuns12` as the copyright owner. The source-only scope
-includes the MaaC logo and generation prompt under `output/imagegen` and
+includes the MaaC logo and generation prompt under `docs/assets` and
 excludes generated binaries, WAV renders, and other build artifacts; small
 audio fixtures and example sounds are authored source data.
 

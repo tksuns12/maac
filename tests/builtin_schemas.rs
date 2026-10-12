@@ -14,7 +14,7 @@ use serde_json::Value;
 const EXAMPLE: &str = include_str!("../examples/production.maac");
 const COPIED: &str = r#"asset production_schema {
   kind = descriptor;
-  path = "production.schema.json";
+  path = "schemas/production.schema.json";
   hash = "sha256:1f9f3623515e645834fd97ecb300cdf00c5e11f4dd260f5bd85a92d3af91568d";
 }"#;
 const BUILTIN: &str =
@@ -27,9 +27,10 @@ fn builtin_example() -> String {
 
 fn copied_bundle() -> SourceBundle {
     let mut bundle = SourceBundle::new("main.maac", EXAMPLE);
-    bundle
-        .assets
-        .insert("production.schema.json".into(), SCHEMA_BYTES.to_vec());
+    bundle.assets.insert(
+        "schemas/production.schema.json".into(),
+        SCHEMA_BYTES.to_vec(),
+    );
     bundle
 }
 
@@ -57,9 +58,9 @@ fn comparable(plan: &impl serde::Serialize) -> Value {
 fn every_supported_namespace_embeds_its_published_schema_file() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let files = [
-        "production.schema.json",
-        "takes.schema.json",
-        "takes-v2.schema.json",
+        "schemas/production.schema.json",
+        "schemas/takes.schema.json",
+        "schemas/takes-v2.schema.json",
     ];
     assert_eq!(SCHEMAS.len(), SUPPORTED.len());
     for ((schema, namespace), file) in SCHEMAS.iter().zip(SUPPORTED).zip(files) {
@@ -125,7 +126,7 @@ fn builtin_form_reads_no_bytes_and_records_the_embedded_identity() {
     let mut bundle = SourceBundle::new("main.maac", builtin_example());
     bundle
         .assets
-        .insert("production.schema.json".into(), b"{}".to_vec());
+        .insert("schemas/production.schema.json".into(), b"{}".to_vec());
     assert!(bundle.resolve().unwrap().assets.is_empty());
     // The copied form records no built-in schema.
     assert!(copied_bundle()
@@ -148,7 +149,7 @@ fn reserved_builtin_schema_paths_cannot_be_supplied() {
     let mut copied = SourceBundle::new(
         "main.maac",
         EXAMPLE.replace(
-            "path = \"production.schema.json\";",
+            "path = \"schemas/production.schema.json\";",
             &format!("path = \"{path}\";"),
         ),
     );
@@ -162,15 +163,15 @@ fn take_examples_compile_identically_in_both_forms() {
     for (example, copied, builtin, file) in [
         (
             "examples/take-comp.maac",
-            "asset takes_schema {\n  kind = descriptor;\n  path = \"takes.schema.json\";\n  hash = \"sha256:11cd8e70cf09aff986f821f88f46ad97056cfb5514a4344eeaa38a6d2e432960\";\n}",
+            "asset takes_schema {\n  kind = descriptor;\n  path = \"schemas/takes.schema.json\";\n  hash = \"sha256:11cd8e70cf09aff986f821f88f46ad97056cfb5514a4344eeaa38a6d2e432960\";\n}",
             "asset takes_schema { kind = descriptor; builtin = \"maac.takes/1\"; }",
-            "takes.schema.json",
+            "schemas/takes.schema.json",
         ),
         (
             "examples/grouped-takes.maac",
-            "asset microphone_schema {\n  kind = descriptor; path = \"takes-v2.schema.json\";\n  hash = \"sha256:4a98b2d72733cd9ba6f90e7c121ea7d67ce79e7d274305a722bbad25ee420e79\";\n}",
+            "asset microphone_schema {\n  kind = descriptor; path = \"schemas/takes-v2.schema.json\";\n  hash = \"sha256:4a98b2d72733cd9ba6f90e7c121ea7d67ce79e7d274305a722bbad25ee420e79\";\n}",
             "asset microphone_schema { kind = descriptor; builtin = \"maac.takes/2\"; }",
-            "takes-v2.schema.json",
+            "schemas/takes-v2.schema.json",
         ),
     ] {
         let bundle = maac::bundle_fs::load_bundle(&root.join(example), root).unwrap();

@@ -1147,8 +1147,8 @@ node s {instrument=&sound;}
             let document = crate::syntax::parse(source).unwrap();
             let mut bundle = crate::bundle::SourceBundle::new("examples/production.maac", source);
             bundle.assets.insert(
-                "production.schema.json".into(),
-                include_bytes!("../production.schema.json").to_vec(),
+                "schemas/production.schema.json".into(),
+                include_bytes!("../schemas/production.schema.json").to_vec(),
             );
             let plan = crate::compiler::compile_bundle(&bundle).unwrap();
             execution_identity(&document, &plan).unwrap()

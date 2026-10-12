@@ -1,6 +1,6 @@
 # MaaC (Music as a Code)
 
-<img src="output/imagegen/maac-logo.png" alt="MaaC logo: a musical note between angle brackets followed by the MaaC wordmark" width="480">
+<img src="docs/assets/maac-logo.png" alt="MaaC logo: a musical note between angle brackets followed by the MaaC wordmark" width="480">
 
 MaaC is a text language for music, and a Rust command-line tool that turns it
 into audio. You write a score, its instruments and its mix as plain `.maac`
@@ -150,7 +150,7 @@ limits.
   [performance-plan format](docs/performance-plan.md),
   [capability matrix](docs/capabilities.md)
 - **Language:** the [MaaC/1 specification](MaaC-1-Specification.md), its
-  [grammar](grammar.ebnf) and [syntax-tree schema](syntax-tree.schema.json).
+  [grammar](spec/grammar.ebnf) and [syntax-tree schema](spec/syntax-tree.schema.json).
   The specification is a design draft; the implementation covers a
   documented subset.
 - **Design:** the [design principles](docs/design-principles.md) and the

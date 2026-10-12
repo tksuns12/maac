@@ -69,7 +69,7 @@ it. See the [unknown-extension decision](unknown-extensions-proposal.md).
 | Native archive | `maac archive create/patch/verify/unpack` captures exact source/media closures. Versions 2–3 add linear checkpoints and retained original WAV imports; version 4 retains and explicitly reuses a verified whole-output freeze; version 5 journals an explicit entry edit and inverse; version 6 retains multiple WAV imports; version 7 journals a direct library edit; version 8 freezes and explicitly substitutes one native effect output, allowing bounded gain/pan edits on branches that cannot feed it in new freezes; version 9 groups independent native effect outputs, with opt-in partial reuse of eligible members; version 10 journals a bounded group of direct library edits with one generated entry repin transaction; version 11 journals edits to shared and transitive local sources with exact pin propagation; version 12 optionally retains verified native processor context. Older versions remain readable. External processor dependencies/state, broader invalidation, and overlapping frozen graph branches are not implemented. |
 
 The normative [generic interchange v1 field contract](generic-interchange.md),
-[generic schema](../interchange.schema.json), and [L4 corpus](../conformance/l4/)
+[generic schema](../schemas/interchange.schema.json), and [L4 corpus](../conformance/l4/)
 define an additive lock/configuration/render-input family. The existing
 production and instrument identity formats remain unchanged. The static
 checker and focused tests cover the fixed schema/corpus relationships, and
@@ -173,7 +173,7 @@ Analyzer `maac.analysis.bs1770-5/2` uses the approved single-stage four-times
 Annex 2 true-peak profile. The [metering evidence](production-metering-evidence.md)
 records applicable current fixtures and the historical 16× profile comparison.
 These results do not establish full ITU/EBU compliance or listening acceptance.
-`check_production.py` remains a separate syntax/schema/arithmetic smoke checker;
+`scripts/check_production.py` remains a separate syntax/schema/arithmetic smoke checker;
 Rust tests and external metering/SRC gates provide separate implementation
 evidence. The [production delivery report](production-delivery.md) records the
 installed source/retained-plan, selection, publication, and failed-check audio

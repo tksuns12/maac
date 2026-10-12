@@ -82,7 +82,7 @@ audio conformance.
 SHA-256 and the L1 **A**/**N(A)** canonicalization rules are fixed, as are the
 accepted render-key boundary and the separation of output evidence. The
 executor evidence is recorded in the local
-[validation record](../target/l4-interchange-validation/executor-summary.json).
+validation record (`target/l4-interchange-validation/executor-summary.json`).
 All evidence must continue to distinguish schema structure, semantic host
 verification, and actual runtime or repeated-render claims. Generic v1 lock
 construction and verification now exist, and `maac::generic_render` supplies the bounded built-in/core execution bridge. This does not constitute full Locked Render coverage: external processors are verified but never executed.

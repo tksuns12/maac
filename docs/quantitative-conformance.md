@@ -119,7 +119,7 @@ version. It must not silently reinterpret results produced under
 This document records the accepted numerical choice and portable logical
 conditions. The companion corpus and checker provide fixed source, asset,
 reference, and provenance evidence; final runtime observations and review
-status are recorded in the [integrated L5 record](../target/l5-quantitative-validation/integrated-final.json).
+status are recorded in the integrated L5 record (`target/l5-quantitative-validation/integrated-final.json`).
 
 ## Bounded evidence status
 

@@ -44,25 +44,25 @@ LEGACY_BASELINE_ENVIRONMENT = {
 }
 LEGACY_BASELINES = (
     {
-        "source": "example.maac",
+        "source": "spec/example.maac",
         "format": "float32",
         "sha256": "0fe1e92b399697f30796af7586e8c1c3b1b82a298ebd336f92d1c57c44a471dd",
         "bytes": 6_528_068,
     },
     {
-        "source": "example.maac",
+        "source": "spec/example.maac",
         "format": "pcm16",
         "sha256": "f8e3d0017bd54c68af7c09af62fcaf8cb79869d31269b5364b99860cf4268a51",
         "bytes": 3_264_044,
     },
     {
-        "source": "evening-window.maac",
+        "source": "examples/evening-window.maac",
         "format": "float32",
         "sha256": "0c053fd2e53e0658ec356e0336a00585522297f1f9922f0b654f870c3b886924",
         "bytes": 15_744_068,
     },
     {
-        "source": "evening-window.maac",
+        "source": "examples/evening-window.maac",
         "format": "pcm16",
         "sha256": "58d0d6cb70100aa1bfb06cd1738ef4fd7550028426a028efe1978b83f71637c8",
         "bytes": 7_872_044,
@@ -572,7 +572,7 @@ def verify_python_smoke(
         shutil.rmtree(smoke)
     smoke.mkdir(parents=True)
     for name in ("check_spec.py", "grammar.lark", "syntax-tree.schema.json", "example.maac"):
-        shutil.copy2(ROOT / name, smoke / name)
+        shutil.copy2(ROOT / "spec" / name, smoke / name)
 
     packages = evidence.command(
         "python_smoke_environment",
@@ -599,7 +599,7 @@ def verify_python_smoke(
     comparisons: list[dict[str, Any]] = []
     for name in ("check-results.json", "conformance.json", "example.syntax.json"):
         generated = smoke / name
-        tracked = ROOT / name
+        tracked = ROOT / "spec" / name
         generated_bytes = generated.read_bytes() if generated.is_file() else None
         tracked_bytes = tracked.read_bytes()
         detail = {

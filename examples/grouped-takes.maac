@@ -10,7 +10,7 @@ project demo {
 tempo clock { points = [(0q, 60bpm, step)]; }
 meter metre { points = [(0q, 4, 4)]; }
 asset microphone_schema {
-  kind = descriptor; path = "takes-v2.schema.json";
+  kind = descriptor; path = "schemas/takes-v2.schema.json";
   hash = "sha256:4a98b2d72733cd9ba6f90e7c121ea7d67ce79e7d274305a722bbad25ee420e79";
 }
 asset first_close {

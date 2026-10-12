@@ -34,14 +34,14 @@ cargo fmt --all -- --check
 cargo clippy --all-targets --locked --offline -- -D warnings
 cargo test --locked --offline
 cargo build --release --locked --offline
-python3 check_production.py
+python3 scripts/check_production.py
 python3 scripts/production_src_coefficients.py --verify
 python3 scripts/acceptance.py
 python3 scripts/production_acceptance.py --profile song
 ```
 
-`check_spec.py` regenerates the tracked `check-results.json`, `conformance.json`,
-and `example.syntax.json` beside itself. Run it from a disposable copy if you
+`spec/check_spec.py` regenerates the tracked `check-results.json`,
+`conformance.json` and `example.syntax.json` beside itself in `spec/`. Run it from a disposable copy if you
 do not intend to update those fixtures; CI uses a disposable copy and compares
 the generated results without changing the checkout. The basic acceptance
 runner is standard-library-only and writes generated artifacts below
@@ -74,7 +74,7 @@ For a local disposable smoke-check run:
 
 ```sh
 smoke_dir="$(mktemp -d)"
-cp check_spec.py grammar.lark syntax-tree.schema.json example.maac "$smoke_dir/"
+cp spec/check_spec.py spec/grammar.lark spec/syntax-tree.schema.json spec/example.maac "$smoke_dir/"
 python3 "$smoke_dir/check_spec.py"
 ```
 
@@ -92,7 +92,7 @@ execution by a production normalizer or editor, nor do they claim full runtime
 revision, patch, or inverse conformance.
 
 For the L4 generic interchange contract, read the [field
-contract](docs/generic-interchange.md), [schema](interchange.schema.json), and
+contract](docs/generic-interchange.md), [schema](schemas/interchange.schema.json), and
 [corpus](conformance/l4/). The additive generic family does not change existing
 production or instrument identities. From the repository root, run the
 standard-library checker and focused tests with:
@@ -109,7 +109,7 @@ complete for this bounded slice; descriptor wire schemas and loss reports are
 separate deferred work, so this result remains specification evidence rather
 than a runtime-support claim.
 
-Run `python3 check_production.py` from the repository root after installing the
+Run `python3 scripts/check_production.py` from the repository root after installing the
 pinned checker dependencies above. This separate checker does not regenerate
 tracked files. It validates the [production specification](docs/production.md)
 example, hash-pinned schema, selected semantics, and bounded numerical fixtures.

@@ -146,8 +146,8 @@ adds EQ, compression, algorithmic reverb, and named master/stem deliveries under
 `maac.production/1`. The graph runs at 48 kHz; `maac deliver` exports 44.1, 48,
 or 96 kHz WAV with explicit encoding and dither, then analyzes the final files.
 The [production example](../examples/production.maac),
-[delivery schema](../production.schema.json), and
-[bounded fixtures](../production-conformance.json) describe the contract. The
+[delivery schema](../schemas/production.schema.json), and
+[bounded fixtures](../conformance/production-conformance.json) describe the contract. The
 [production delivery report](production-delivery.md) records installed-CLI
 acceptance separately from the specification fixtures.
 Metering uses analyzer `maac.analysis.bs1770-5/2` and the approved single-stage

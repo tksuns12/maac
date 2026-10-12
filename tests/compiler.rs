@@ -24,7 +24,7 @@ track t {{ target = &sine:events; }}
 
 #[test]
 fn example_compiles_to_forty_eight_notes_and_expected_frames() {
-    let source = fs::read_to_string("example.maac").expect("example source");
+    let source = fs::read_to_string("spec/example.maac").expect("example source");
     let document = parse(&source).expect("example parses");
     let plan = compile(&document).expect("example compiles");
     assert_eq!(plan.events.len(), 48);
@@ -34,7 +34,7 @@ fn example_compiles_to_forty_eight_notes_and_expected_frames() {
 
 #[test]
 fn evening_window_compiles_to_182_notes_and_expected_frames() {
-    let source = fs::read_to_string("evening-window.maac").expect("evening source");
+    let source = fs::read_to_string("examples/evening-window.maac").expect("evening source");
     let document = parse(&source).expect("evening source parses");
     let plan = compile(&document).expect("evening source compiles");
     assert_eq!(plan.events.len(), 182);

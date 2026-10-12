@@ -64,7 +64,7 @@ The final checker evidence covers 25 complete typed documents structurally
 validated against `syntax-tree.schema.json` and 57 dual-digest checks; 18
 targeted regression tests pass, including the missing-required-file regression.
 The 20 patch cases are reviewed static expected outcomes, not transactions
-applied by a runtime editor. The ignored local [stage2 summary](../target/l1-identity-validation/stage2/summary.json)
+applied by a runtime editor. The ignored local stage2 summary (`target/l1-identity-validation/stage2/summary.json`)
 records this evidence. Independent semantic/specification, compatibility, and
 checker-final-delta review passed. This evidence covers static self-consistency
 and expected vectors, not execution by a runtime patch editor or normalizer.
