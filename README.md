@@ -1,5 +1,10 @@
 # MaaC (Music as a Code)
 
+[![CI](https://github.com/tksuns12/maac/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/tksuns12/maac/actions/workflows/ci.yml)
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Version 0.1.0, experimental](https://img.shields.io/badge/version-0.1.0%20experimental-orange.svg)](CHANGELOG.md)
+[![Written in Rust](https://img.shields.io/badge/written%20in-Rust-b7410e.svg)](https://www.rust-lang.org)
+
 <img src="docs/assets/maac-logo.png" alt="MaaC logo: a musical note between angle brackets followed by the MaaC wordmark" width="480">
 
 MaaC is a text language for music, and a Rust command-line tool that turns it
@@ -15,6 +20,29 @@ still check a mix.
 
 **Status:** experimental, version 0.1.0. Tested on macOS; you build it from
 source. The [changelog](CHANGELOG.md) records what has changed.
+
+## Listen
+
+Two songs written entirely in MaaC source by an AI producer, rendered and
+mastered by `maac` with only the built-in instruments:
+
+- **"Morning Ferry"**, a 72 bpm rock ballad with electric guitars, picked
+  acoustic guitar, bass, drums and pad (2:17):
+  [listen](docs/assets/audio/morning-ferry.m4a) ·
+  [source](examples/ferry/ferry.maac)
+- **"Late Window"**, a 90 bpm lo-fi hip-hop track with electric piano,
+  nylon guitar, bass, drums and pad (1:18):
+  [listen](docs/assets/audio/late-window.m4a) ·
+  [source](examples/lofi/lofi.maac)
+
+`maac analyze --images` draws what it measures. The spectrogram of "Morning
+Ferry"'s master, with its six sections marked:
+
+![Spectrogram of the "Morning Ferry" master: dense choruses between sparser verses](docs/assets/ferry-spectrogram.png)
+
+And its piano roll, one color per part:
+
+![Piano roll of "Morning Ferry": melody, chords, bass and drum hits by part](docs/assets/ferry-piano-roll.png)
 
 ## What a score looks like
 
