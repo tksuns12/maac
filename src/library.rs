@@ -2079,6 +2079,34 @@ fn lower_graph_node(
                 })?;
             GraphProcessor::Svf { channels, mode }
         }
+        "synth.modal/1" => {
+            let fields: &[&str] = if config.is_some_and(|config| config.contains_key("strings")) {
+                &["modes", "strings"]
+            } else {
+                &["modes"]
+            };
+            let config = exact_record(config, fields, file, object, &identity)?;
+            let modes = integer_value(
+                &config["modes"].value,
+                file,
+                object,
+                &config["modes"],
+                1,
+                u32::from(crate::modal::MAX_MODES),
+            )? as u8;
+            let strings = match config.get("strings") {
+                Some(field) => integer_value(
+                    &field.value,
+                    file,
+                    object,
+                    field,
+                    1,
+                    u32::from(crate::modal::MAX_STRINGS),
+                )? as u8,
+                None => 1,
+            };
+            GraphProcessor::Modal { modes, strings }
+        }
         "synth.drive/1" => GraphProcessor::Drive {
             channels: config_channels(config, file, object, &identity)?,
         },

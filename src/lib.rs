@@ -46,6 +46,7 @@ pub use plan_artifact::{
     WindowedEvent,
 };
 mod core_control;
+mod modal;
 pub mod plan_v3;
 mod plan_v4;
 mod plan_v5;

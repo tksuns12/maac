@@ -4,7 +4,8 @@
 [decision](#decisions). Plan step 1, the string and drive additions, has
 landed; see [results](#results-part-1). Step 2, the draft electric guitar,
 passed its listening round; see [results](#results-part-2). Step 3 moved
-"Morning Ferry" to it; see [results](#results-part-3).
+"Morning Ferry" to it; see [results](#results-part-3). Step 4 added
+`synth.modal/1`; see [results](#results-part-4).
 
 ## Why
 
@@ -351,6 +352,28 @@ freeze, when it becomes an import of `std/studio/1.1.0`.
 - **Listening.** An A/B of bars 9 to 20 at matched loudness, the approved
   master first. The owner: "확실히 게임보이 느낌은 많이 없어졌네" — the Game Boy
   quality is definitely mostly gone.
+
+## Results: part 4
+
+Landed 2026-10-12. The contract is [Modal bank](instruments.md#modal-bank).
+
+- **As proposed,** with two changes. `detune` is a number of cents rather than
+  a `ct` quantity, because graph parameters have no cents unit. Every
+  parameter is sampled each frame; none is captured at note-on.
+- **Acceptance.**
+  - A single mode rings within 0.01 cent of its frequency, and its envelope
+    after `decay` seconds is 10⁻³ within 1e-9.
+  - Stretched modes sit at `n f √(1 + B n²)` within 0.1 cent; in a rendered
+    voice, the 1st, 3rd and 5th partials measure within 1 cent.
+  - With `damping`, each mode's 60 dB time matches `T_n` within 1e-9.
+  - Modes at or above 20 kHz are absent: 19 of 64 remain at 1 kHz and 3 at
+    5 kHz, and a note above the ceiling is silent.
+  - A 64-mode, 3-string bank swept up 8 octaves in one second, the frequency
+    changing every sample, stays finite and within its bound.
+- **Cost.** In a release benchmark, 32 voices of a 64-mode, 3-string bank cost
+  about as much as 32 voices of 16 oscillators: one resonator is about a sixth
+  of a one-unit node. The charge is one unit per four resonators, rounded up,
+  so a 48-mode, 2-string piano voice costs 24 units per sample.
 
 ## Cost and risk
 

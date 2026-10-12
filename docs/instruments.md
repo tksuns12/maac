@@ -306,7 +306,7 @@ controls and a runnable composition.
 ## Graph processors
 
 Connections use existing `connect { from = &source:out; to = &destination:in; }`
-fields and require matching channels. Gain, filters, drive, and pan require one input;
+fields and require matching channels. Gain, filters, drive, the modal bank and pan require one input;
 mix accepts zero or more inputs (zero means silence). Every graph must be a DAG
 when both audio and modulation edges are considered. Stable ordering uses node
 IDs for topological ties and connection/modulation IDs for reductions. Feedback
@@ -329,13 +329,14 @@ is rejected, including mixed audio/modulation cycles.
 | `synth.highpass/1` | `cutoff` (1000 Hz; strictly between 0 and 24000 Hz); required `config.channels` | Same channels as input |
 | `synth.svf/1` | `cutoff` (1000 Hz; 0 up to but not including 24000 Hz), `ratio` (0; 0…64, and 0 in a shared graph), `q` (707/1000; 1/10…40); required `config.channels` and `config.mode` (`lowpass`, `bandpass` or `highpass`) | Same channels as input |
 | `synth.drive/1` | `drive` (1; 0…64), `bias` (0; −4…4), `level` (1; 0…16), `reference` (0; 0…1); required `config.channels` | Same channels as input |
+| `synth.modal/1` | `ratio` (1; 1/8…8), `stretch` (0; 0…1/16), `decay` (2 s; 1/100…60 s), `damping` (0; 0…4), `position` (0; 0…1/2), `detune` (0; 0…50, a number of cents), `level` (1; 0…16); required `config.modes` (1…64) and optional `config.strings` (1; 1…3); voice-only (see [Modal bank](#modal-bank)) | Mono |
 | `synth.mix/1` | Required `config.channels`; no parameters | Mono/stereo sum |
 | `synth.pan/1` | `pan` (0; −1…1) | Equal-power stereo from mono |
 
 Numbers are dimensionless; seconds accept `s` and `ms`, hertz accept `Hz` and
 `kHz`. Parameters and controls use exact rationals until the DSP boundary.
 Unknown fields, wrong units, invalid ranges, and nonfinite values fail.
-Oscillators and noise are voice-only; high-pass, the resonant filter and the
+Oscillators, noise and the modal bank are voice-only; high-pass, the resonant filter and the
 drive are allowed in both voice and shared graphs. ADSR attack/decay/sustain/curve and oscillator/LFO phase
 are captured at note-on (shared LFO phase at render reset). Release is captured
 at note-off. Other parameters are sampled each frame. Shared LFO phase controls
@@ -575,7 +576,11 @@ so an input held at `reference` leaves at `level * reference` at every drive.
 More drive then adds harmonics and compression without raising the peaks of
 a signal near `reference`. `reference = 0`, the default, leaves the output
 bit-identical; a positive `reference` with `drive = 0` fails at render. Set
-`reference` near the input's typical peak.
+`reference` near the input's typical level rather than its peak: a harder
+drive also lowers a signal's crest factor, so a reference at the peaks still
+lets loudness rise with `drive`. On the draft electric guitar, a reference at
+the peaks let the loudness rise 10 LU from `drive` 1 to 16; one near the
+typical level held it within 1 LU.
 
 The averaging suppresses most strongly the harmonics that would fold down
 into the low and middle band, where they sound like out-of-tune tones, and
@@ -590,6 +595,56 @@ Band limiting the underlying wave does not eliminate modulation sidebands or
 bank-switching artifacts. Strong/high-frequency FM can still alias; automated
 spectral fixtures must characterize this residual behavior. See Nielsen's
 [DAFx 2020 discussion of through-zero FM and antialiasing](https://karmafx.net/docs/karmafx_DAFx2020_paper_61.pdf).
+
+### Modal bank
+
+`synth.modal/1` is a bank of decaying resonators at stretched harmonics: the
+partials of a stiff string, a bar or a bell. It is voice-only, with one mono
+`in` for an excitation signal and one mono `out`. Nothing sounds until the
+input does: a short pulse from an ADSR with zero attack and a decay of a few
+milliseconds is a hammer or a mallet, and a low-pass on it softens the
+strike.
+
+`config.modes` sets the number of modes `N`, and `config.strings` the number
+of detuned copies `S` of each one. With `f` the voice frequency times
+`ratio`, mode `n` (1…`N`) of copy `k` (0…`S − 1`) has
+
+```text
+f_nk = n f sqrt(1 + stretch n²) × 2^(((k − (S − 1)/2) × detune) / 1200)
+T_n  = decay / (1 + damping (n − 1))
+R_n  = 10^(−3 / (T_n × 48000))
+w_n  = 1 when position = 0, otherwise sin(π n position)
+```
+
+Each mode and copy is a complex one-pole resonator, updated every sample in
+mode-major order from the input `x`:
+
+```text
+s_nk ← R_n e^{iω_nk} s_nk + w_n x,    ω_nk = 2π f_nk / 48000
+y    = level × Σ Im(s_nk) / S
+```
+
+So a unit impulse starts mode `n` at amplitude `w_n`, and its envelope falls
+60 dB in `T_n` seconds. `stretch` is the string's inharmonicity `B`, from
+about 10⁻⁴ in a piano's bass to 10⁻² in its top octave. `damping` makes
+higher modes die sooner. `position` is the strike point as a fraction of the
+length: it removes the modes with a node there. `detune` spreads the copies
+symmetrically in cents, so two or three copies beat like a piano's unison
+strings.
+
+A mode or copy at or above 20 kHz contributes nothing and keeps zero state,
+so high notes use fewer modes; a note whose first mode is above 20 kHz is
+silent rather than an error. The coefficients are recomputed whenever a
+parameter or the voice frequency changes, so pitch expression bends the
+whole bank; a copy that crosses 20 kHz during a bend loses its state. Every
+parameter is sampled each frame. State starts at zero with each voice. The
+frequency `f` must be positive and finite, and a nonfinite output fails the
+render.
+
+The work charge is one unit per sample for every four resonators,
+`ceil(N × S / 4)`, plus the usual unit per edge. In a release benchmark one
+resonator cost about a sixth of a one-unit oscillator node; the charge keeps
+a margin. A 48-mode, two-string bank costs 24 units per sample.
 
 ## Wavetables
 

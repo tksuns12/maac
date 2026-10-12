@@ -31,6 +31,15 @@ pub const PLUCK_SAMPLE_WORK: u64 = 16;
 /// 1.4 and 1.9 times a one-unit oscillator node, rounded up.
 pub const SVF_SAMPLE_WORK: u64 = 2;
 pub const DRIVE_SAMPLE_WORK: u64 = 2;
+/// Resonators of a `synth.modal/1` node per unit of per-sample work. One
+/// resonator measured at about 1/6 of a one-unit oscillator node.
+pub const MODAL_RESONATORS_PER_WORK: u64 = 4;
+
+/// Per-sample work of a `synth.modal/1` node: one unit per four resonators,
+/// rounded up.
+pub const fn modal_sample_work(modes: u8, strings: u8) -> u64 {
+    (modes as u64 * strings as u64).div_ceil(MODAL_RESONATORS_PER_WORK)
+}
 
 pub(crate) fn pluck_delay_cells(capacity: usize, nodes: usize) -> Option<usize> {
     capacity.checked_mul(nodes)?.checked_mul(PLUCK_DELAY_CELLS)
@@ -64,6 +73,10 @@ pub enum GraphProcessor {
     Noise { seed: u32 },
     #[serde(rename = "synth.pluck/1")]
     Pluck { seed: u32 },
+    /// A bank of decaying resonators at stretched harmonics, excited by its
+    /// input.
+    #[serde(rename = "synth.modal/1")]
+    Modal { modes: u8, strings: u8 },
     #[serde(rename = "synth.wavetable/1")]
     Wavetable { table: String },
     /// Pitched playback of embedded samples chosen by key zone.
@@ -130,6 +143,8 @@ enum GraphProcessorWire {
     Noise { seed: u32 },
     #[serde(rename = "synth.pluck/1")]
     Pluck { seed: u32 },
+    #[serde(rename = "synth.modal/1")]
+    Modal { modes: u8, strings: u8 },
     #[serde(rename = "synth.wavetable/1")]
     Wavetable { table: String },
     #[serde(rename = "synth.sample/1")]
@@ -189,6 +204,7 @@ impl<'de> Deserialize<'de> for GraphProcessor {
                 return Err(serde::de::Error::custom("pluck seed must be nonzero"));
             }
             GraphProcessorWire::Pluck { seed } => Self::Pluck { seed },
+            GraphProcessorWire::Modal { modes, strings } => Self::Modal { modes, strings },
             GraphProcessorWire::Wavetable { table } => Self::Wavetable { table },
             GraphProcessorWire::Sample {
                 channels,
@@ -225,6 +241,7 @@ impl GraphProcessor {
             Self::Triangle => "synth.triangle/1",
             Self::Noise { .. } => "synth.noise/1",
             Self::Pluck { .. } => "synth.pluck/1",
+            Self::Modal { .. } => "synth.modal/1",
             Self::Wavetable { .. } => "synth.wavetable/1",
             Self::Sample { .. } => "synth.sample/1",
             Self::Adsr => "synth.adsr/1",
@@ -265,7 +282,7 @@ impl GraphProcessor {
             | Self::Svf { channels, .. }
             | Self::Drive { channels }
             | Self::Mix { channels } => Some(*channels),
-            Self::Pan => Some(1),
+            Self::Pan | Self::Modal { .. } => Some(1),
             _ => None,
         }
     }
@@ -283,6 +300,7 @@ impl GraphProcessor {
                 | Self::Triangle
                 | Self::Noise { .. }
                 | Self::Pluck { .. }
+                | Self::Modal { .. }
                 | Self::Wavetable { .. }
                 | Self::Sample { .. }
                 | Self::Adsr
@@ -641,6 +659,41 @@ pub fn parameter_descriptor(processor: &GraphProcessor, name: &str) -> Option<Pa
                 result.max = Rational::new(1.into(), 2.into());
                 Some(result)
             }
+            _ => None,
+        },
+        GraphProcessor::Modal { .. } => match name {
+            "ratio" => {
+                let mut result = dimensionless(ParameterRate::Sample, 1, 0, 8);
+                result.min = Rational::new(1.into(), 8.into());
+                Some(result)
+            }
+            "stretch" => {
+                let mut result = dimensionless(ParameterRate::Sample, 0, 0, 1);
+                result.max = Rational::new(1.into(), 16.into());
+                Some(result)
+            }
+            "decay" => {
+                let mut result = spec(
+                    GraphUnit::Seconds,
+                    ParameterRate::Sample,
+                    2,
+                    0,
+                    60,
+                    false,
+                    false,
+                );
+                result.min = Rational::new(1.into(), 100.into());
+                Some(result)
+            }
+            "damping" => Some(dimensionless(ParameterRate::Sample, 0, 0, 4)),
+            "position" => {
+                let mut result = dimensionless(ParameterRate::Sample, 0, 0, 1);
+                result.max = Rational::new(1.into(), 2.into());
+                Some(result)
+            }
+            // A number of cents: graph parameters have no cents unit.
+            "detune" => Some(dimensionless(ParameterRate::Sample, 0, 0, 50)),
+            "level" => Some(dimensionless(ParameterRate::Sample, 1, 0, 16)),
             _ => None,
         },
         GraphProcessor::Adsr => match name {
@@ -1220,6 +1273,22 @@ fn validate_processor(
                 format!("{path}.seed"),
                 "noise seed must be nonzero",
             ));
+        }
+        GraphProcessor::Modal { modes, strings } => {
+            if !(1..=crate::modal::MAX_MODES).contains(modes) {
+                return Err(error(
+                    "E_RANGE",
+                    format!("{path}.modes"),
+                    "modal bank needs 1 to 64 modes",
+                ));
+            }
+            if !(1..=crate::modal::MAX_STRINGS).contains(strings) {
+                return Err(error(
+                    "E_RANGE",
+                    format!("{path}.strings"),
+                    "modal bank needs 1 to 3 strings",
+                ));
+            }
         }
         GraphProcessor::Gain { channels }
         | GraphProcessor::OnePole { channels }

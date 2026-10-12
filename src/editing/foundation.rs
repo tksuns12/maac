@@ -1288,6 +1288,21 @@ fn normalize_node_fields(fields: &mut Map<String, Value>, project_seed: &Value) 
                     params.entry(name).or_insert(value);
                 }
             }
+            "synth.modal/1" => {
+                config.entry("strings").or_insert_with(|| number(1, 1));
+                config_defaults = true;
+                for (name, value) in [
+                    ("ratio", number(1, 1)),
+                    ("stretch", number(0, 1)),
+                    ("decay", quantity(2, 1, Unit::S)),
+                    ("damping", number(0, 1)),
+                    ("position", number(0, 1)),
+                    ("detune", number(0, 1)),
+                    ("level", number(1, 1)),
+                ] {
+                    params.entry(name).or_insert(value);
+                }
+            }
             "synth.adsr/1" => {
                 for (name, value) in [
                     ("attack", quantity(0, 1, Unit::S)),

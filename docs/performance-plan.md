@@ -451,6 +451,10 @@ processors to the same representation, again without a new plan version:
 node may carry a `curve` parameter. Older readers reject these as unknown
 processors or parameters rather than rendering them differently.
 
+The [electric guitar and piano proposal](electric-guitar-piano-proposal.md)
+adds `{"kind":"synth.modal/1","modes":48,"strings":2}` the same way, with
+both fields always present on the wire.
+
 ## Import boundary
 
 `Plan::from_json` enforces the input byte limit before deserializing and validates

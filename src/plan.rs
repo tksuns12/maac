@@ -6062,7 +6062,8 @@ fn validate_identifier_limit(
 }
 
 /// Per-sample work of one instrument graph: one unit per node (a pluck,
-/// resonant filter or drive costs more), connection, and modulation edge.
+/// resonant filter, drive or modal bank costs more), connection, and
+/// modulation edge.
 fn graph_sample_cost(graph: &crate::graph::GraphProgram) -> u64 {
     graph
         .nodes
@@ -6072,6 +6073,9 @@ fn graph_sample_cost(graph: &crate::graph::GraphProgram) -> u64 {
                 crate::graph::GraphProcessor::Pluck { .. } => crate::graph::PLUCK_SAMPLE_WORK,
                 crate::graph::GraphProcessor::Svf { .. } => crate::graph::SVF_SAMPLE_WORK,
                 crate::graph::GraphProcessor::Drive { .. } => crate::graph::DRIVE_SAMPLE_WORK,
+                crate::graph::GraphProcessor::Modal { modes, strings } => {
+                    crate::graph::modal_sample_work(modes, strings)
+                }
                 _ => 1,
             })
         })

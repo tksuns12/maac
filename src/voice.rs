@@ -93,6 +93,8 @@ enum ProcessorCode {
     Oscillator(Waveform),
     Noise(u32),
     Pluck(u32),
+    /// Modes and strings.
+    Modal(u8, u8),
     Wavetable(Arc<TableBank>),
     Sample(Arc<CompiledSampleNode>),
     Adsr,
@@ -207,6 +209,7 @@ enum ProcessorState {
     Oscillator(Oscillator),
     Noise(u32),
     Pluck(crate::pluck::Pluck),
+    Modal(crate::modal::Modal),
     Wavetable {
         phase: f64,
     },
@@ -911,6 +914,9 @@ impl GraphState {
                 ProcessorCode::Noise(seed) => ProcessorState::Noise(*seed),
                 ProcessorCode::Pluck(seed) => {
                     ProcessorState::Pluck(crate::pluck::Pluck::new(*seed)?)
+                }
+                ProcessorCode::Modal(modes, strings) => {
+                    ProcessorState::Modal(crate::modal::Modal::new(*modes, *strings)?)
                 }
                 ProcessorCode::Wavetable(_) => ProcessorState::Wavetable { phase: params[2] },
                 ProcessorCode::Sample(_) => ProcessorState::Sample {
@@ -1633,6 +1639,21 @@ fn process_graph_node(
                 )?
             };
         }
+        (ProcessorCode::Modal(..), ProcessorState::Modal(bank)) => {
+            let shape = crate::modal::ModalShape {
+                frequency_hz: pitch_hz * params[0],
+                stretch: params[1],
+                decay: params[2],
+                damping: params[3],
+                position: params[4],
+                detune_cents: params[5],
+            };
+            output[0] = if commit {
+                bank.sample(&shape, params[6], audio_input[0])?
+            } else {
+                bank.preview(&shape, params[6], audio_input[0])?
+            };
+        }
         (ProcessorCode::Oscillator(_), ProcessorState::Oscillator(oscillator)) => {
             let frequency = pitch_hz * params[0] + params[1];
             validate_frequency(frequency)?;
@@ -1975,6 +1996,12 @@ fn compile_processor(
             ],
             ProcessorCode::Pluck(*seed),
         ),
+        GraphProcessor::Modal { modes, strings } => (
+            &[
+                "ratio", "stretch", "decay", "damping", "position", "detune", "level",
+            ],
+            ProcessorCode::Modal(*modes, *strings),
+        ),
         GraphProcessor::Wavetable { table } => (
             &["ratio", "frequency", "phase", "level", "position"],
             ProcessorCode::Wavetable(tables.get(table).cloned().ok_or_else(|| {
@@ -2038,6 +2065,9 @@ fn parameter_slot(processor: &ProcessorCode, name: &str) -> Option<usize> {
         ProcessorCode::Oscillator(_) => &["ratio", "frequency", "phase", "level"],
         ProcessorCode::Pluck(_) => &[
             "ratio", "decay", "damping", "level", "hardness", "position", "pickup",
+        ],
+        ProcessorCode::Modal(..) => &[
+            "ratio", "stretch", "decay", "damping", "position", "detune", "level",
         ],
         ProcessorCode::Wavetable(_) => &["ratio", "frequency", "phase", "level", "position"],
         ProcessorCode::Sample(_) => &["ratio", "frequency", "level"],

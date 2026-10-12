@@ -7,6 +7,14 @@ promise of compatibility beyond the documented interfaces.
 
 ### Added
 
+- `synth.modal/1`, a voice-only bank of up to 64 decaying resonators at
+  stretched harmonics, `n f √(1 + B n²)`, with up to three detuned copies of
+  each. An input pulse strikes it; `decay`, `damping`, `position` and
+  `detune` shape the ring, and pitch expression bends the whole bank. Modes
+  at or above 20 kHz drop out. It is charged one work unit per sample for
+  every four resonators. It is the piano's engine, and suits bells, mallets
+  and struck drums. See [Modal bank](docs/instruments.md#modal-bank).
+
 - `synth.pluck/1` gains `hardness` (pick brightness, captured at note-on),
   `position` (pluck point, captured at note-on) and `pickup` (pickup point).
   A softer pick darkens the excitation without lowering its level; a pluck or
