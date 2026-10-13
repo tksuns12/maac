@@ -5,6 +5,15 @@ promise of compatibility beyond the documented interfaces.
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-10-14
+
+The third experimental release. It adds strummed chords and named voicings
+to the language; a lead part and gain reduction per section in
+`maac analyze`, whose sections now keep to their own frames and whose pitch
+check now covers legato notes; and the owner's verdict, by ear, on every
+built-in instrument. Analysis reports move from profile
+`maac.analyze.default/4` to `default/7`.
+
 ### Added
 
 - A chord leaf can be strummed (spec §8.2): `strum = down` or `up` strikes its
@@ -53,6 +62,10 @@ promise of compatibility beyond the documented interfaces.
   to `docs/reports/`.
 - `sha2` 0.11, with digests written by `maac::bundle::lower_hex`; every hash,
   manifest and file name is unchanged.
+- The repository has a code of conduct, issue forms for bugs, features and
+  instrument sounds, and a pull request template. Dependabot proposes Cargo,
+  GitHub Actions and Python checker updates weekly, and its alerts and
+  security updates are on; `clap` 4.6.7 and `libc` 0.2.190 came through it.
 - A duplicate top-level ID now names the earlier object and its line, such as
   "this node and the import on line 5 share it", and says that imports share
   the one ID namespace (F23).

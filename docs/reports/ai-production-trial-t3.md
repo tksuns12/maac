@@ -100,7 +100,10 @@ from T2.
    both trials. Candidates: an electric guitar with an amp stage, as a
    library instrument with a level-compensated drive (F22); an acoustic
    piano; and a review of the std/studio and std/acoustic timbres by ear.
-   See the [proposal](../design/electric-guitar-piano-proposal.md).
+   See the [proposal](../design/electric-guitar-piano-proposal.md). Done in
+   part: `std/studio/1.1.0` adds both instruments, approved in listening
+   rounds, and the owner has now heard every built-in instrument
+   ([record](showcase-listening.md)). F17 stays open in part.
 2. **A lead role in the analysis (F21, F20).** Let the score mark a part as
    the lead, so `analyze` can compare it with the accompaniment per section.
    Add gain reduction per section for the dynamics processors. F21 is done,
