@@ -1,7 +1,11 @@
 # Gain reduction per section: proposal
 
-**Status:** accepted 2026-10-13; the owner accepted every recommendation in
-[Decisions](#decisions). The listening round comes next. This is the second half of item 2 of
+**Status:** accepted and implemented 2026-10-13 as profile
+`maac.analyze.default/6`; the owner accepted every recommendation in
+[Decisions](#decisions). The [listening round](#results-listening-round) did
+not support `lift_lost`, so the owner chose to ship the measurements without
+it. The [implementation results](#results-implementation) record the other
+changes; the proposal text above them is kept as written. This is the second half of item 2 of
 [what to build next](../reports/ai-production-trial-t3.md#what-to-build-next-in-order)
 in the T3 trial: F20, gain reduction per section for the dynamics
 processors. The first half, a lead role (F21), landed as the
@@ -340,3 +344,75 @@ The owner accepted every recommendation on 2026-10-13:
 5. **Report:** profile `maac.analyze.default/6` and schema
    `maac.analysis-report/1`, with additions only. *Recommended*, as for
    `default/3` through `default/5`.
+
+## Results: listening round
+
+On 2026-10-13 the owner heard the four files on a phone. Each held 34.3 s of
+draft 4's first verse and chorus (bars 5–20), matched to −21.5 LUFS:
+
+| File | `glue` ratio | Lift at the output | SHA-256 of the file sent |
+| --- | --- | --- | --- |
+| `folk-lift-1.m4a` | 1 | 1.78 LU | `141b7fb8…` |
+| `folk-lift-2.m4a` | 1.5 | 1.11 LU | `75f2ee7d…` |
+| `folk-lift-3.m4a` | 3 | 0.41 LU | `ae42523b…` |
+| `folk-lift-4.m4a` | 10 | −0.08 LU | `c30bddea…` |
+
+The verdict: "They're all fine." No file lost its chorus, not even file 4,
+whose chorus is slightly quieter than its verse at the output. In this song
+the arrangement, not the level, carries the chorus.
+
+- **No limit fits.** At the 1 LU starting value, `lift_lost` would fire on
+  files 3 and 4, which the owner heard as fine.
+- **No harsher file can be made.** At ratio 10 the chain already takes the
+  whole lift.
+- **The trial's problem was the AI's, not the listener's.** T3's iterations
+  1–3 chased a lift the owner never asked for. The owner called draft 4,
+  which kept 0.48 LU, "fine".
+
+The owner chose from three options:
+
+1. **The measurements only** (recommended, chosen): the `dynamics` objects
+   and the master chain as proposed, with no `lift_lost`.
+2. `lift_lost` as `info`, with the same rules. It would still fire on files 3
+   and 4 and could send a producer after a lift the listener does not miss.
+3. `lift_lost` as a warning at 1 LU, as accepted, against the listening
+   round.
+
+This replaces decisions 2, 3 and 4. The acceptance items for `lift_lost` and
+the Ferry regression test at ratio 10 fall away with it.
+
+## Results: implementation
+
+Implemented as profile `maac.analyze.default/6`.
+[`src/analyze/dynamics.rs`](../../src/analyze/dynamics.rs) holds the
+reduction sums and the master-chain walk;
+[`src/dsp.rs`](../../src/dsp.rs) reads each processor's reduction after
+every frame for the analysis render. The implementation differs from the
+text above in these ways:
+
+1. **No `lift_lost`**, from the [listening round](#results-listening-round).
+2. **`reduction_db` is a power ratio**, as in the measurements above, and
+   not a mean of dB values. The K-weighted output power, scaled back up by
+   the reduction at each frame, is summed and divided by the output power.
+3. **Sections are summed by their exact frames**, not by the 100 ms blocks
+   that the other measures use. With blocks, a section's maximum took in the
+   start of the next: "Morning Ferry"'s glue read 2.61 dB in the intro, which
+   reaches only 0.64 dB.
+4. **The known-answer fixtures use a sine**, not a square wave. The
+   compressor holds its reduction with a 30 s release, so it follows the
+   sine's peak.
+
+On the six versions, against the measurements above:
+
+- the section maxima are the same;
+- the means agree within 0.08 dB;
+- `reduction_db` agrees within 0.15 dB with each processor's input loudness
+  plus makeup or drive, minus its output loudness, in all 70 readings
+  (median 0.01 dB);
+- each song's chain is `glue`, then `master`.
+
+The tap leaves the audio unchanged: a unit test compares tapped and plain
+renders bit for bit, and "Morning Ferry"'s report is the same as under
+`default/5` apart from the profile and the additions. Analysing "Morning
+Ferry" in a release build took 40.53 s against 40.72 s before (the median of
+three runs each), within the noise.

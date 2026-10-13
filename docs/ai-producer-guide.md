@@ -100,7 +100,9 @@ maac analyze main.maac --window region:b --preroll 4 --json   # quick, approxima
   2–3, attack about 20 ms), then `fx.limiter/1` as the project output. Its
   `gain` sets the loudness and its `ceiling` caps the true peak. Raising the
   gain by 1 dB raises the integrated loudness by just under 1 dB until the
-  limiter works hard, so measure, adjust and measure again.
+  limiter works hard, so measure, adjust and measure again. `maac analyze`
+  reports what each compressor and limiter takes per section in its
+  `dynamics` object.
 - **Ceiling margin.** Set the ceiling about 0.1 dB under the delivery's
   true-peak limit. Dither and integer encoding can lift peaks by a hair: on
   "Late Window" a −1 dB ceiling measured −0.99999 dBTP and failed a −1 dBTP
@@ -146,5 +148,5 @@ ask for a verdict.
 | "The instruments sound tacky" | std/basic synthesized timbres that ignore velocity | Not measurable; use std/studio and std/acoustic, and vary velocity |
 | Lead melody gets lost | Melody 6 dB under the comping | `lead_under` with `--lead`; `buried_note` does not catch it |
 | Lead drops in the quiet sections | Less amp `drive` also means less amp output | `lead_under` in those sections; give `synth.drive/1` a `reference`, or automate the level with the drive |
-| The chorus does not lift | Glue and limiter flatten the louder section | Compare the master's `max_short_term_lufs` per region; aim for 2 LU or more |
+| The chorus does not lift | Glue and limiter flatten the louder section | Compare the master's `max_short_term_lufs` per region. Each processor's `dynamics.reduction_db` in the chorus minus the verse is what it takes from the lift. A flattened level alone is not the fault: in a listening round, a chorus that kept none of its lift still sounded fine because its arrangement built |
 | True peak over the limit after a sound change | Plucked attacks through compressors standing in for a limiter | `true_peak_over`; master through `fx.limiter/1` with its ceiling under the limit |

@@ -6,11 +6,13 @@
 //! changes the source, and the language and plan formats are unchanged. See
 //! `docs/analyze.md`.
 
+mod dynamics;
 mod image;
 mod lead;
 mod meter;
 mod notes;
 
+pub use dynamics::Dynamics;
 pub use lead::{LeadNote, LeadSummary};
 pub use notes::{NoteReport, NoteSummary};
 
@@ -34,13 +36,13 @@ use meter::{
 };
 
 pub const SCHEMA: &str = "maac.analysis-report/1";
-pub const PROFILE: &str = "maac.analyze.default/5";
+pub const PROFILE: &str = "maac.analyze.default/6";
 pub const BANDS: &str = "maac.analyze.octave-bands/1";
 pub const BAND_CENTERS_HZ: [f64; 10] = [
     31.5, 63.0, 125.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 16000.0,
 ];
 
-// Findings profile `maac.analyze.default/5`: stated limits, not taste.
+// Findings profile `maac.analyze.default/6`: stated limits, not taste.
 const TRUE_PEAK_LIMIT_DBTP: f64 = -1.0;
 const LOUDNESS_JUMP_LU: f64 = 6.0;
 const BALANCE_LIMIT_DB: f64 = 3.0;
@@ -215,6 +217,10 @@ pub struct AnalysisReport {
     /// Every measured lead note, with `--notes`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub lead_notes: Vec<LeadNote>,
+    /// The compressors and limiters between the last mix point and the
+    /// project output, in signal order.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub master_chain: Vec<String>,
     /// The analysed window, when not the whole piece.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub window: Option<WindowReport>,
@@ -347,6 +353,9 @@ pub struct Measures {
     /// For a lead, its margin over the rest of its mix point.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lead: Option<LeadSummary>,
+    /// For a compressor or limiter, the gain it takes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dynamics: Option<Dynamics>,
     pub active_fraction: f64,
     pub leading_silence_s: f64,
     pub trailing_silence_s: f64,
@@ -484,11 +493,10 @@ pub fn analyze_artifact(
         meter,
         options,
         limits,
-        |ports, span, callback| match span {
-            Some(span) => crate::dsp::render_ports_artifact_span_with_limits(
-                plan, limits, ports, span, callback,
-            ),
-            None => crate::dsp::render_ports_artifact_with_limits(plan, limits, ports, callback),
+        |ports, taps, span, callback| {
+            crate::dsp::render_ports_artifact_tapped_with_limits(
+                plan, limits, ports, taps, span, callback,
+            )
         },
     )
 }
@@ -510,14 +518,11 @@ pub(crate) fn analyze_disk_media(
         meter,
         options,
         limits,
-        |ports, span, callback| match span {
-            Some(span) => plan.render_ports_span(ports, span, callback),
-            None => plan.render_ports(ports, callback),
-        },
+        |ports, taps, span, callback| plan.render_ports_tapped(ports, taps, span, callback),
     )
 }
 
-type RenderPorts<'c> = &'c mut dyn FnMut(&[Vec<f64>]) -> crate::dsp::Result<()>;
+type RenderPorts<'c> = &'c mut dyn FnMut(&[Vec<f64>], &[f64]) -> crate::dsp::Result<()>;
 
 fn analyze_view(
     view: PlanView<'_>,
@@ -527,6 +532,7 @@ fn analyze_view(
     limits: &PlanLimits,
     render: impl FnOnce(
         &[PortRef],
+        &[String],
         Option<crate::dsp::RenderSpan>,
         RenderPorts<'_>,
     ) -> crate::dsp::Result<()>,
@@ -588,7 +594,8 @@ fn analyze_view(
             lead_ports.push(port.clone());
         }
     }
-    let sources = sources(&view, &options.sources, &lead_ports)?;
+    let master_chain = dynamics::master_chain(&view);
+    let sources = sources(&view, &options.sources, &lead_ports, &master_chain)?;
     let leads = resolve_leads(&sources, &lead_ports)?;
     let analysed_frames = window_end - window_start;
 
@@ -610,12 +617,39 @@ fn analyze_view(
     let mut lead_windows = lead_windows(&view, &sources, &leads, rate, window_start, window_end);
     let mut next_lead = 0;
     let mut lead_active: Vec<usize> = Vec::new();
+    let mut taps: Vec<dynamics::Tap> = sources
+        .iter()
+        .enumerate()
+        .filter(|(_, source)| dynamics::is_dynamics(&view, &source.port.node))
+        .map(|(index, _)| dynamics::Tap::new(index, sections.len()))
+        .collect();
+    let tap_nodes: Vec<String> = taps
+        .iter()
+        .map(|tap| sources[tap.source].port.node.clone())
+        .collect();
+    // The sections each frame lies in, for the taps.
+    let mut section_order: Vec<usize> = (0..sections.len()).collect();
+    section_order.sort_by_key(|&index| sections[index].start_frame);
+    let mut next_section = 0;
+    let mut in_sections: Vec<usize> = Vec::new();
     let mut values = vec![notes::FrameValues::default(); meters.len()];
     let mut frame_index = render_start;
-    render(&ports, span, &mut |frame| {
+    render(&ports, &tap_nodes, span, &mut |frame, reductions| {
         if frame_index >= window_start {
             for ((meter, frame), value) in meters.iter_mut().zip(frame).zip(values.iter_mut()) {
                 *value = meter.push(frame);
+            }
+            if !taps.is_empty() {
+                while next_section < section_order.len()
+                    && sections[section_order[next_section]].start_frame <= frame_index
+                {
+                    in_sections.push(section_order[next_section]);
+                    next_section += 1;
+                }
+                in_sections.retain(|&index| frame_index < sections[index].end_frame);
+                for (tap, &reduction) in taps.iter_mut().zip(reductions) {
+                    tap.add(values[tap.source].k, reduction, &in_sections);
+                }
             }
             while next_window < windows.len() && windows[next_window].start <= frame_index {
                 active.push(next_window);
@@ -705,6 +739,13 @@ fn analyze_view(
     let lead_notes = lead_reports(&lead_windows, &leads, &sections);
     extra.extend(lead_findings(&lead_notes, &leads, &positions));
     attach_lead_summaries(&mut reports, &lead_notes, &leads);
+    for tap in &taps {
+        let report = &mut reports[tap.source];
+        report.whole.dynamics = Some(tap.whole.summary());
+        for (section, span) in report.sections.iter_mut().zip(&tap.sections) {
+            section.measures.dynamics = Some(span.summary());
+        }
+    }
     let noise = noise_findings(
         &sources, &blocks, &sections, &ranges, hop, available, &positions,
     );
@@ -757,6 +798,7 @@ fn analyze_view(
         } else {
             Vec::new()
         },
+        master_chain,
         window: window.map(|(start_q, end_q, start_frame, end_frame)| WindowReport {
             start_q: start_q.to_string(),
             end_q: end_q.to_string(),
@@ -977,11 +1019,13 @@ fn port_name(port: &PortRef) -> String {
 }
 
 /// The project output first, then every connected output port upstream of it
-/// (or the requested ports, the leads and their mix points), in name order.
+/// (or the requested ports, the leads and their mix points, and the master
+/// chain), in name order.
 fn sources(
     view: &PlanView<'_>,
     requested: &[PortRef],
     leads: &[PortRef],
+    chain: &[String],
 ) -> Result<Vec<Source>, AnalyzeError> {
     let output = &view.output.output;
     let mut upstream = BTreeSet::from([output.node.clone()]);
@@ -1091,6 +1135,12 @@ fn sources(
             .filter(|port| *port != output)
             .cloned()
             .chain(routes.values().filter_map(|route| mix_port(&route.mix)))
+            .chain(
+                chain
+                    .iter()
+                    .filter_map(|node| PortRef::new(node, "out").ok()),
+            )
+            .filter(|port| port != output)
             .collect()
     };
     let mut routes = routes;

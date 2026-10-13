@@ -293,25 +293,21 @@ impl DiskMediaPlan {
         &self.artifact
     }
 
-    /// Capture selected ports from one complete disk-backed execution.
-    pub(crate) fn render_ports<F>(&self, ports: &[PortRef], callback: F) -> dsp::Result<()>
-    where
-        F: FnMut(&[Vec<f64>]) -> dsp::Result<()>,
-    {
-        self.engine()?.render_ports(ports, callback)
-    }
-
-    /// Capture selected ports over a span of a disk-backed execution.
-    pub(crate) fn render_ports_span<F>(
+    /// Capture selected ports of a disk-backed execution, over `span` or the
+    /// whole plan, with the gain reduction of the dynamics processors in
+    /// `taps`; see [`DspEngine::render_ports_tapped`].
+    pub(crate) fn render_ports_tapped<F>(
         &self,
         ports: &[PortRef],
-        span: dsp::RenderSpan,
+        taps: &[String],
+        span: Option<dsp::RenderSpan>,
         callback: F,
     ) -> dsp::Result<()>
     where
-        F: FnMut(&[Vec<f64>]) -> dsp::Result<()>,
+        F: FnMut(&[Vec<f64>], &[f64]) -> dsp::Result<()>,
     {
-        self.engine()?.render_ports_span(ports, span, callback)
+        self.engine()?
+            .render_ports_tapped(ports, taps, span, callback)
     }
 
     pub(crate) fn render<F>(&self, callback: F) -> dsp::Result<()>

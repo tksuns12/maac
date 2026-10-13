@@ -1252,6 +1252,47 @@ fn format_analysis(input: &str, report: &crate::analyze::AnalysisReport) -> Stri
             }
         }
     }
+    // The master chain in signal order, then the other processors.
+    let in_chain = |port: &str| {
+        report
+            .master_chain
+            .iter()
+            .position(|node| port.strip_suffix(":out") == Some(node.as_str()))
+    };
+    let mut processors: Vec<_> = report
+        .sources
+        .iter()
+        .filter_map(|source| Some((source, source.whole.dynamics.as_ref()?)))
+        .collect();
+    processors.sort_by_key(|(source, _)| in_chain(&source.port).map_or((1, 0), |at| (0, at)));
+    for (source, whole) in processors {
+        text.push_str(&format!(
+            "\nreduction {}{}: {} dB, max {} dB",
+            source.port,
+            if in_chain(&source.port).is_some() {
+                " (master chain)"
+            } else {
+                ""
+            },
+            value(whole.reduction_db),
+            whole.max_reduction_db
+        ));
+        let sections: Vec<String> = source
+            .sections
+            .iter()
+            .filter_map(|section| {
+                let dynamics = section.measures.dynamics.as_ref()?;
+                Some(format!(
+                    "{} {}",
+                    section.section,
+                    value(dynamics.reduction_db)
+                ))
+            })
+            .collect();
+        if !sections.is_empty() {
+            text.push_str(&format!("; {}", sections.join(", ")));
+        }
+    }
     for image in &report.images {
         text.push_str(&format!(
             "\nimage {} ({}x{})",

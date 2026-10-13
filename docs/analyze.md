@@ -341,6 +341,56 @@ profile identifier.
   harmonies only.
 - A lead without notes, such as an audio clip, cannot be named.
 
+## Profile `maac.analyze.default/6` (2026-10-13)
+
+The [gain reduction proposal](design/gain-reduction-proposal.md) reports what
+each compressor and limiter takes, for F20 of the
+[T3 trial](reports/ai-production-trial-t3.md). In that trial the AI found that
+a glue compressor and a limiter flattened a chorus only by comparing region
+loudness by hand.
+
+Each analysed source that is the output of an `fx.compressor/1` or an
+`fx.limiter/1` gets a `dynamics` object, in `whole` and in each section:
+
+- `reduction_db`: the loudness the processor takes, in dB. At each frame the
+  processor's K-weighted output power is scaled back up by its gain
+  reduction; the sum over the span is divided by the output power. It is
+  absent when the output is silent.
+- `max_reduction_db`: the largest gain reduction at any frame.
+
+The renderer reads the gain reduction from the processor, without changing
+the audio:
+
+- for the compressor, the smoothed reduction it subtracts before its makeup;
+- for the limiter, −20·log10 of its gain, leaving out its `gain` drive.
+
+An automated makeup or limiter `gain` is therefore the author's level change,
+not a reduction. A sidechain compressor shows how far it ducks. The other
+measures add up 100 ms blocks, but `dynamics` sums each section's exact
+frames, so a section's maximum does not take in the start of the next.
+
+The **master chain** is the compressors and limiters between the last mix
+point and the project output. The analyzer walks upstream from the output
+through nodes with one main audio input, and stops at the first node with
+several inputs or none. A compressor's sidechain does not count as an input.
+The report lists the chain as `master_chain`, node IDs in signal order,
+omitted when empty. With `--source`, the chain's processors are analysed too.
+The human output adds a `reduction` line per processor, master chain first,
+with its reduction per section.
+
+A processor that takes more from the louder of two sections takes the
+difference out of the lift between them. On the proposal's six songs,
+`reduction_db` agrees with each processor's input and output loudness within
+0.15 dB.
+
+There is no finding. In the owner's
+[listening round](design/gain-reduction-proposal.md#results-listening-round),
+a chorus that kept none of its lift at the output still sounded fine, because
+the arrangement carried it.
+
+Without a compressor or limiter, a report is the same as under `default/5`
+apart from the profile identifier.
+
 ## Deferred to later versions
 
 - **Onset alignment:** whether written and sounding attacks line up.

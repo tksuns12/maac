@@ -7,6 +7,15 @@ promise of compatibility beyond the documented interfaces.
 
 ### Added
 
+- `maac analyze` reports what each `fx.compressor/1` and `fx.limiter/1` takes:
+  a `dynamics` object per section with `reduction_db`, the loudness it takes
+  leaving out makeup and drive, and `max_reduction_db`. A top-level
+  `master_chain` lists the processors between the last mix point and the
+  output. No finding comes with it: in a listening round, a chorus that kept
+  none of its lift still sounded fine. The profile is now
+  `maac.analyze.default/6`; without a compressor or limiter, reports are
+  unchanged. See the
+  [gain reduction proposal](docs/design/gain-reduction-proposal.md).
 - `maac analyze --lead NODE:PORT` names a part meant to lead. Each of its
   notes gets a margin: its level over the rest of its mix point, in the band
   where it is strongest. A new `lead_under` warning fires when a section's

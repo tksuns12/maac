@@ -635,17 +635,17 @@ impl<'a> DspEngine<'a> {
         F: FnMut(&[f64]) -> Result<()>,
     {
         let output = self.plan.output.output.clone();
-        self.render_ports_inner(&[output], false, None, None, |outputs| {
+        self.render_ports_inner(&[output], &[], false, None, None, |outputs, _| {
             callback(&outputs[0])
         })
     }
 
     /// Capture selected ports from one complete graph execution. Buffers are reused each frame.
-    pub fn render_ports<F>(&mut self, ports: &[PortRef], callback: F) -> Result<()>
+    pub fn render_ports<F>(&mut self, ports: &[PortRef], mut callback: F) -> Result<()>
     where
         F: FnMut(&[Vec<f64>]) -> Result<()>,
     {
-        self.render_ports_inner(ports, true, None, None, callback)
+        self.render_ports_inner(ports, &[], true, None, None, |outputs, _| callback(outputs))
     }
 
     /// Capture selected ports over `span` only; see [`RenderSpan`].
@@ -653,12 +653,48 @@ impl<'a> DspEngine<'a> {
         &mut self,
         ports: &[PortRef],
         span: RenderSpan,
-        callback: F,
+        mut callback: F,
     ) -> Result<()>
     where
         F: FnMut(&[Vec<f64>]) -> Result<()>,
     {
-        self.render_ports_inner(ports, true, None, Some(span), callback)
+        self.render_ports_inner(ports, &[], true, None, Some(span), |outputs, _| {
+            callback(outputs)
+        })
+    }
+
+    /// Capture selected ports, over `span` or the whole plan, and with each
+    /// frame the gain reduction in dB of each node in `taps`: a compressor's
+    /// before its makeup, or a limiter's leaving out its drive. Reading the
+    /// reduction does not change the audio.
+    pub(crate) fn render_ports_tapped<F>(
+        &mut self,
+        ports: &[PortRef],
+        taps: &[String],
+        span: Option<RenderSpan>,
+        callback: F,
+    ) -> Result<()>
+    where
+        F: FnMut(&[Vec<f64>], &[f64]) -> Result<()>,
+    {
+        let taps = taps
+            .iter()
+            .map(|id| {
+                self.node_indices
+                    .get(id)
+                    .copied()
+                    .filter(|&index| {
+                        let node = &self.nodes[index];
+                        node.compressor.is_some() || node.limiter.is_some()
+                    })
+                    .ok_or_else(|| {
+                        RenderError::RenderState(format!(
+                            "{id} is not a project compressor or limiter"
+                        ))
+                    })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        self.render_ports_inner(ports, &taps, true, None, span, callback)
     }
 
     /// Check that a boundary is one project-level native effect's audio output.
@@ -812,13 +848,14 @@ impl<'a> DspEngine<'a> {
             |_: usize, frame: u64, samples: &mut [f64]| replacement(frame, samples);
         self.render_ports_inner(
             &[output],
+            &[],
             false,
             Some(NodeReplacement {
                 indices: vec![index],
                 fill: &mut indexed_replacement,
             }),
             None,
-            |outputs| callback(&outputs[0]),
+            |outputs, _| callback(&outputs[0]),
         )
     }
 
@@ -857,26 +894,28 @@ impl<'a> DspEngine<'a> {
         let output = self.plan.output.output.clone();
         self.render_ports_inner(
             &[output],
+            &[],
             false,
             Some(NodeReplacement {
                 indices,
                 fill: &mut replacement,
             }),
             None,
-            |outputs| callback(&outputs[0]),
+            |outputs, _| callback(&outputs[0]),
         )
     }
 
     fn render_ports_inner<F>(
         &mut self,
         ports: &[PortRef],
+        taps: &[usize],
         charge_capture: bool,
         mut replacement: Option<NodeReplacement<'_>>,
         span: Option<RenderSpan>,
         mut callback: F,
     ) -> Result<()>
     where
-        F: FnMut(&[Vec<f64>]) -> Result<()>,
+        F: FnMut(&[Vec<f64>], &[f64]) -> Result<()>,
     {
         let resource_error = || {
             RenderError::Plan(PlanError {
@@ -958,6 +997,7 @@ impl<'a> DspEngine<'a> {
             samples.resize(usize::from(channels), 0.0);
             outputs.push(samples);
         }
+        let mut reductions = vec![0.0; taps.len()];
         self.reset();
         let output_node = *self
             .node_indices
@@ -1068,7 +1108,10 @@ impl<'a> DspEngine<'a> {
             for (output, index) in outputs.iter_mut().zip(&selections) {
                 output.copy_from_slice(&self.nodes[*index].output);
             }
-            callback(&outputs)?;
+            for (reduction, &index) in reductions.iter_mut().zip(taps) {
+                *reduction = self.nodes[index].gain_reduction();
+            }
+            callback(&outputs, &reductions)?;
         }
         Ok(())
     }
@@ -2604,6 +2647,16 @@ impl NodeState {
         self.current_params.get(name).copied().unwrap_or(0.0)
     }
 
+    /// A compressor's or limiter's gain reduction on its last frame, in dB;
+    /// 0 for any other node.
+    fn gain_reduction(&self) -> f64 {
+        match (&self.compressor, &self.limiter) {
+            (Some(compressor), _) => compressor.reduction(),
+            (None, Some(limiter)) => limiter.reduction(),
+            (None, None) => 0.0,
+        }
+    }
+
     fn validate_current_parameters(&self, rate: f64) -> Result<()> {
         for (name, value) in &self.current_params {
             if !value.is_finite() {
@@ -3628,6 +3681,24 @@ where
     DspEngine::new_artifact_with_limits(plan, limits)?.render_ports(ports, callback)
 }
 
+/// Capture selected artifact ports, over `span` or the whole plan, with the
+/// gain reduction of the dynamics processors in `taps`; see
+/// [`DspEngine::render_ports_tapped`].
+pub(crate) fn render_ports_artifact_tapped_with_limits<F>(
+    plan: &PlanArtifact,
+    limits: &PlanLimits,
+    ports: &[PortRef],
+    taps: &[String],
+    span: Option<RenderSpan>,
+    callback: F,
+) -> Result<()>
+where
+    F: FnMut(&[Vec<f64>], &[f64]) -> Result<()>,
+{
+    DspEngine::new_artifact_with_limits(plan, limits)?
+        .render_ports_tapped(ports, taps, span, callback)
+}
+
 /// Capture selected ports over a [`RenderSpan`] of a plan artifact.
 pub fn render_ports_artifact_span_with_limits<F>(
     plan: &PlanArtifact,
@@ -4246,5 +4317,44 @@ place play {{ pattern=&phrase;track=&notes;at=0q; }}
             .unwrap_err();
         assert_eq!(error.code(), "E_NONFINITE");
         assert_eq!(calls, 0);
+    }
+
+    #[test]
+    fn the_gain_reduction_tap_leaves_the_audio_unchanged() {
+        for (kind, params) in [
+            (
+                "fx.compressor/1",
+                "threshold=-30dB;ratio=4;knee=0dB;attack=0s;release=0s;makeup=6dB;",
+            ),
+            ("fx.limiter/1", "gain=12dB;ceiling=-6dB;release=100ms;"),
+        ] {
+            let plan = plan(kind, "channels=1;", params);
+            let ports = [plan.output.output.clone()];
+            let mut plain = Vec::new();
+            DspEngine::new(&plan)
+                .unwrap()
+                .render_ports(&ports, |frames| {
+                    plain.push(frames[0][0].to_bits());
+                    Ok(())
+                })
+                .unwrap();
+            let mut tapped = Vec::new();
+            let mut reductions = Vec::new();
+            let mut engine = DspEngine::new(&plan).unwrap();
+            engine
+                .render_ports_tapped(&ports, &["fx".into()], None, |frames, taps| {
+                    tapped.push(frames[0][0].to_bits());
+                    reductions.push(taps[0]);
+                    Ok(())
+                })
+                .unwrap();
+            assert_eq!(tapped, plain, "{kind}");
+            assert!(reductions.iter().all(|r| *r >= 0.0), "{kind}");
+            assert!(reductions.iter().any(|r| *r > 3.0), "{kind}");
+            let error = engine
+                .render_ports_tapped(&ports, &["gain".into()], None, |_, _| Ok(()))
+                .unwrap_err();
+            assert_eq!(error.code(), "E_RENDER_STATE");
+        }
     }
 }

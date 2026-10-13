@@ -477,6 +477,7 @@ pub(super) fn measures(
         stereo,
         notes: None,
         lead: None,
+        dynamics: None,
         active_fraction: if active.is_empty() {
             0.0
         } else {

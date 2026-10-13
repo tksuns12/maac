@@ -81,6 +81,16 @@ impl Limiter {
         }
     }
 
+    /// The gain reduction applied to the last output frame, in dB, leaving
+    /// out the drive.
+    pub(crate) fn reduction(&self) -> f64 {
+        if self.gain >= 1.0 {
+            0.0
+        } else {
+            -20.0 * self.gain.log10()
+        }
+    }
+
     /// Process one frame. The unused second output channel is zero for mono.
     pub(crate) fn process(&mut self, input: &[f64], params: LimiterParams) -> Result<[f64; 2]> {
         if input.len() != self.channels {

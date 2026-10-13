@@ -52,6 +52,12 @@ impl Compressor {
         self.reduction = 0.0;
     }
 
+    /// The smoothed gain reduction applied to the last frame, in dB, before
+    /// makeup.
+    pub(crate) fn reduction(&self) -> f64 {
+        self.reduction
+    }
+
     /// Process one frame, retaining reduction only after every result is finite.
     /// The unused second output channel is zero for mono nodes.
     pub(crate) fn process(
