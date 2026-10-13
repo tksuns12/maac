@@ -39,6 +39,13 @@ promise of compatibility beyond the documented interfaces.
 - `sha2` 0.11, with digests written by `maac::bundle::lower_hex`; every hash,
   manifest and file name is unchanged.
 
+### Fixed
+
+- Resetting a `DspEngine` now resets each `fx.limiter/1` as well. Before, a
+  second render on the same engine started with the end of the first one
+  still in the limiter's lookahead delay, along with its gain. The CLI builds
+  a new engine for each render, so its output was not affected.
+
 ## [0.2.0] — 2026-10-12
 
 The second experimental release. It adds an electric guitar and an acoustic

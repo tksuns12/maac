@@ -2634,6 +2634,9 @@ impl NodeState {
         if let Some(reverb) = &mut self.reverb {
             reverb.reset();
         }
+        if let Some(limiter) = &mut self.limiter {
+            limiter.reset();
+        }
         if let Some(delay) = &mut self.delay {
             delay.reset();
         }

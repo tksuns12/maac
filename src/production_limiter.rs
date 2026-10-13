@@ -81,6 +81,18 @@ impl Limiter {
         }
     }
 
+    /// Return to the state of a new limiter: silent history, no pending
+    /// detections and unit gain.
+    pub(crate) fn reset(&mut self) {
+        self.interpolator = Interpolator::default();
+        for line in &mut self.delay {
+            line.iter_mut().for_each(|sample| *sample = 0.0);
+        }
+        self.detections.clear();
+        self.gain = 1.0;
+        self.frame = 0;
+    }
+
     /// The gain reduction applied to the last output frame, in dB, leaving
     /// out the drive.
     pub(crate) fn reduction(&self) -> f64 {
@@ -224,6 +236,22 @@ mod tests {
         for n in 12..64 {
             assert_eq!(out[n], input[n - 12]);
         }
+    }
+
+    #[test]
+    fn reset_replays_from_silence() {
+        let input: Vec<f64> = (0..400).map(|n| 0.9 * (n as f64 * 0.05).sin()).collect();
+        let mut limiter = Limiter::new(1, 72).unwrap();
+        let run = |limiter: &mut Limiter| -> Vec<u64> {
+            input
+                .iter()
+                .map(|x| limiter.process(&[*x], params(6.0)).unwrap()[0].to_bits())
+                .collect()
+        };
+        let first = run(&mut limiter);
+        limiter.reset();
+        assert_eq!(limiter.reduction(), 0.0);
+        assert_eq!(run(&mut limiter), first);
     }
 
     #[test]

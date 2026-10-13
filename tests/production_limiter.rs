@@ -206,3 +206,28 @@ fn configuration_and_parameters_are_validated() {
         DiagnosticCode::Capability
     );
 }
+
+#[test]
+fn an_engine_renders_the_same_twice() {
+    // With no tail, the first render ends with the tone still in the
+    // lookahead delay; a reset must not carry it into the next render.
+    let text = source(
+        TONE,
+        &limiter("channels = 1;", "gain = 6dB; ceiling = -1dB;"),
+    )
+    .replace("tail = 50ms", "tail = 0s");
+    let plan = plan(&text);
+    let mut engine = maac::dsp::DspEngine::new_artifact(&plan).unwrap();
+    let mut render = || {
+        let mut frames = Vec::new();
+        engine
+            .render(|frame| {
+                frames.push(frame[0].to_bits());
+                Ok(())
+            })
+            .unwrap();
+        frames
+    };
+    let first = render();
+    assert_eq!(render(), first);
+}
