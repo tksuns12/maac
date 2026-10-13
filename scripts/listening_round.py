@@ -5,15 +5,17 @@ Each file plays a musical phrase from a MaaC song, a second and a half of
 silence, then a ladder of low, middle and high notes from soft to hard. The
 phrase is scaled to -20 LUFS integrated and the ladder by the same gain, so
 the ladder keeps its dynamics; a file that would peak above -1 dBFS comes
-down as a whole. The instruments are the std/studio/1.0.0
-exports and the std/acoustic/1.0.0 guitars, the ones no one has yet approved
-by ear. Standard library only; outputs go below target/listening-round.
+down as a whole. `--set studio` (the default) renders the std/studio/1.0.0
+exports and the std/acoustic/1.0.0 guitars; `--set basic` renders the
+std/basic/1.1.0 instruments, with its eight drums heard through its kit.
+Standard library only; outputs go below target/listening-round.
 """
 
 from __future__ import annotations
 
 import argparse
 import math
+import re
 import sys
 from pathlib import Path
 
@@ -40,6 +42,7 @@ meter metre {{ points = [(0q, 4, 4)]; }}
 groove lazy {{ grid = 1/2q; ratio = 2/3; }}
 import studio {{ builtin = "std/studio/1.0.0"; }}
 import acoustic {{ builtin = "std/acoustic/1.0.0"; }}
+import basic {{ builtin = "std/basic/1.1.0"; }}
 """
 
 
@@ -83,6 +86,44 @@ INSTRUMENTS = [
      None, ladder(["E2", "E3", "E4"], VELOCITIES)),
 ]
 
+def ferry_melody(length: int) -> str:
+    """The first `length` quarter notes of the "Morning Ferry" verse melody."""
+    kept = []
+    for line in ferry_patterns("melody_verse").splitlines():
+        at = re.search(r"at = (\d+)(?:/(\d+))?q;", line)
+        if at and int(at.group(1)) / int(at.group(2) or 1) < length:
+            kept.append(line.strip())
+    return "\n  ".join(kept)
+
+
+KEYS_LADDER = ladder(["C3", "C4", "C5"], VELOCITIES)
+BASS_LADDER = ladder(["E1", "A1", "E2", "A2"], VELOCITIES)
+GUITAR_LADDER = ladder(["E2", "E3", "E4"], VELOCITIES)
+LEAD_LADDER = ladder(["C4", "C5", "C6"], VELOCITIES)
+
+# The std/basic/1.1.0 instruments. Its eight drums (kick, snare, clap,
+# closed_hat, open_hat, low_tom, high_tom, crash) are the kit's pieces, so
+# the kit's file plays them all.
+BASIC = [
+    *[(f"basic-{name.replace('_', '-')}", f"basic.{name}", 90,
+       (single(comping(), 16), "part", 16, True), KEYS_LADDER)
+      for name in ("mellow_piano", "bright_piano", "electric_piano", "organ")],
+    *[(f"basic-{name.replace('_', '-')}", f"basic.{name}", 72, None, GUITAR_LADDER)
+      for name in ("nylon_guitar", "steel_guitar", "muted_guitar")],
+    *[(f"basic-{name.replace('_', '-')}", f"basic.{name}", 90,
+       (single(BASS_LINE, 16), "part", 16, True), BASS_LADDER)
+      for name in ("finger_bass", "pick_bass", "sub_bass", "synth_bass")],
+    *[(f"basic-{name.replace('_', '-')}", f"basic.{name}", 90,
+       (single(PAD_CHORDS, 16), "part", 16, True), KEYS_LADDER)
+      for name in ("strings", "warm_pad")],
+    *[(f"basic-{name.replace('_', '-')}", f"basic.{name}", 72,
+       (single(ferry_melody(16), 16), "part", 16, False), LEAD_LADDER)
+      for name in ("flute", "synth_lead", "bell")],
+    ("basic-drums", "basic.drums", 90,
+     (single(beat(True), 4), "part", 4, True),
+     (single(pieces_ladder(), 16), 16)),
+]
+
 # The guitars play the "Morning Ferry" verse picking and its closing strum.
 FERRY_PHRASE = ("arp_g", "arp_em", "arps_verse", "st_g_end")
 
@@ -122,11 +163,14 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--maac", type=Path, default=ROOT / "target" / "release" / "maac")
     parser.add_argument("--out", type=Path, default=ROOT / "target" / "listening-round")
+    parser.add_argument("--set", choices=["studio", "basic"], default="studio")
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
-    for name, instrument, bpm, phrase, (ladder_patterns, ladder_length) in INSTRUMENTS:
+    for name, instrument, bpm, phrase, (ladder_patterns, ladder_length) in (
+        BASIC if args.set == "basic" else INSTRUMENTS
+    ):
         patterns, play, length, groove = phrase if phrase else guitar_phrase()
-        count = 4 if name == "studio-drums" else 1
+        count = 4 if name.endswith("-drums") else 1
         channels, samples, whole = render(
             args.maac, args.out / f"{name}-phrase.maac",
             composition(instrument, bpm, patterns, play, length, groove, count),
