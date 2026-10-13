@@ -42,8 +42,11 @@ promise of compatibility beyond the documented interfaces.
   `std/acoustic/1.0.0` guitars by ear, in a
   [listening round](docs/reports/showcase-listening.md) of one file per
   instrument from [`scripts/listening_round.py`](scripts/listening_round.py).
-  Every std/studio and std/acoustic instrument is now approved; the std/basic
-  instruments are not.
+  Every std/studio and std/acoustic instrument is now approved. A second
+  round, with `--set basic`, approved 20 of the 24 `std/basic/1.1.0`
+  instruments. The nylon, steel and muted guitars sound like a bass, and
+  `finger_bass` has no pluck. std/basic is frozen and unchanged, so use the
+  std/acoustic guitars and the std/studio `bass` for those parts.
 - The documentation is split: guides and references stay in `docs/`, indexed
   by [`docs/README.md`](docs/README.md); proposals, decisions and the roadmap
   move to `docs/design/`, and reports, evidence and the AI production trials

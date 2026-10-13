@@ -69,7 +69,9 @@ or additional dependency set.
   is still pending; their documents say so. *Update, 2026-10-12:* the owner
   has since approved every `std/studio` and `std/acoustic` instrument by ear
   ([record](showcase-listening.md)); the std/basic instruments remain
-  unapproved.
+  unapproved. *Update, 2026-10-13:* a second round approved 20 of the 24
+  std/basic instruments; its three guitars and `finger_bass` are not
+  approved.
 - The evidence comes from macOS on Apple silicon, locally and in hosted CI.
   It does not establish bit-identical output on other platforms or
   toolchains.

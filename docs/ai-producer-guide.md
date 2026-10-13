@@ -20,8 +20,10 @@ listen before you call a track finished.
   `std/acoustic/1.0.0` guitars for acoustic guitar parts. For a guitar lead,
   set the electric guitar's `pickup = 0.3` and `tone = 3200Hz`, and automate
   its `drive` alone: the level holds.
-  std/basic covers other roles, such as organ, strings, flute and leads, with
-  older synthesized timbres that ignore velocity except for loudness.
+  std/basic covers other roles, such as organ, strings, flute, bell and
+  leads, with older synthesized timbres that ignore velocity except for
+  loudness. Its guitars sound like a bass and its `finger_bass` has no
+  pluck, so play those parts on std/acoustic and on std/studio's `bass`.
 - **Form.** Fix the tempo, the meter and the form in bars. Declare each
   section as a `region`, so the analysis reports per section by name.
 - **Groove grid.** Choose one grid, straight or swung, for every part. For

@@ -20,6 +20,8 @@ The installed executable includes [24 basic instruments](basic-instruments.md):
 keys, guitars, basses, drums, strings, flute, bell, pad and lead. Import
 `std/basic/1.0.0` without downloading sounds or supplying a library directory.
 These are synthesized interpretations, with stereo output and common controls.
+The owner approved all but four by ear: the guitars sound like a bass, and
+`finger_bass` has no pluck.
 
 The separate [acoustic guitar collection](acoustic-guitars.md) supplies
 three MaaC-native string instruments under `std/acoustic/1.0.0`, with bends

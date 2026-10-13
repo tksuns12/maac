@@ -201,4 +201,6 @@ On 2026-10-12 the owner approved all three guitars in a
 [listening round](reports/showcase-listening.md#2026-10-12-built-in-instrument-approval-round)
 that played each through the "Morning Ferry" verse picking and a soft-to-hard
 ladder of E2, E3 and E4. That round did not compare them with the std/basic
-guitars.
+guitars. In files made the same way the next day, the owner said the
+std/basic guitars
+[sound like a bass](reports/showcase-listening.md#2026-10-13-stdbasic-approval-round).

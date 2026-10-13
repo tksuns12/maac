@@ -116,4 +116,7 @@ The [author guide](../acoustic-guitars.md) describes supported controls and the
 level-matched user listening comparison with the std/basic guitars remains
 necessary before claiming improved acoustic realism; the owner's approval on
 2026-10-12 judged each guitar alone. Generated audio and numerical results are not a
-substitute for that assessment.
+substitute for that assessment. *Update, 2026-10-13:* in files made the same
+way, the owner said the std/basic guitars sound like a bass
+([record](showcase-listening.md#2026-10-13-stdbasic-approval-round)). The two
+rounds were a day apart, not a side-by-side comparison.

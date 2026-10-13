@@ -103,7 +103,11 @@ latest results (`target/basic-acceptance/results.json`) point to this run.
 
 ## Limits
 
-Listening review was **not performed**. Finite samples, peak measurements,
+Listening review was **not performed** for this delivery. *Update,
+2026-10-13:* the owner has since approved 20 of the 24 instruments by ear;
+the three guitars sound like a bass, and `finger_bass` has no pluck
+([record](showcase-listening.md#2026-10-13-stdbasic-approval-round)).
+Finite samples, peak measurements,
 deterministic bytes, and generated WAVs do not establish instrument-family
 recognizability, perceptual quality, or absence of audible clicks. Linux/Windows
 execution and cross-platform bit identity remain unverified. No hosted CI,

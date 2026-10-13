@@ -78,10 +78,10 @@ The catalog gives each instrument's exact current defaults.
 | `bright_piano` | C2–C7 (36–96) | 0.1–2.5 s | Brighter harmonic attack |
 | `electric_piano` | C2–C7 (36–96) | 0.15–3 s | Rounded body with an FM tine |
 | `organ` | C2–C6 (36–84) | 0.15–6 s | Sustained additive harmonics |
-| `nylon_guitar` | E2–E6 (40–88) | 0.08–1.5 s | Rounded, decaying pluck |
-| `steel_guitar` | E2–E6 (40–88) | 0.08–1.5 s | Brighter pluck with a longer decay |
-| `muted_guitar` | E2–E6 (40–88) | 0.08–1.5 s | Quickly damped pluck; most energy in 0.16 s |
-| `finger_bass` | E1–G4 (28–67) | 0.15–1.5 s | Rounded plucked low end |
+| `nylon_guitar` | E2–E6 (40–88) | 0.08–1.5 s | Rounded, decaying pluck; not approved by ear, as it sounds like a bass |
+| `steel_guitar` | E2–E6 (40–88) | 0.08–1.5 s | Brighter pluck with a longer decay; not approved by ear, as it sounds like a bass |
+| `muted_guitar` | E2–E6 (40–88) | 0.08–1.5 s | Quickly damped pluck; most energy in 0.16 s; not approved by ear, as it sounds like a bass |
+| `finger_bass` | E1–G4 (28–67) | 0.15–1.5 s | Rounded low end; not approved by ear, as it has no pluck |
 | `pick_bass` | E1–G4 (28–67) | 0.1–1.2 s | More pronounced pluck attack |
 | `sub_bass` | C1–C4 (24–60) | 0.25–3 s | Smooth sustained low end |
 | `synth_bass` | E1–G4 (28–67) | 0.15–2 s | Harmonic synthesized bass |
@@ -143,8 +143,14 @@ releases held notes, and the project `tail` sets the final render boundary.
 Start with the supplied conservative levels and moderate note velocities.
 Polyphony, panning, brighter cutoffs and increased gain can change peaks;
 PCM16 export rejects overload rather than limiting or normalizing the mix.
-Generated auditions and numerical checks are separate from human listening;
-no listening approval or cross-platform bitwise audio identity is claimed.
+Generated auditions and numerical checks are separate from human listening,
+and no cross-platform bitwise audio identity is claimed. The owner listened
+to every instrument in a
+[listening round](reports/showcase-listening.md#2026-10-13-stdbasic-approval-round)
+on 2026-10-13 and approved all but four. The three guitars sound like a bass,
+and `finger_bass` has no pluck. Play those parts on the
+[std/acoustic guitars](acoustic-guitars.md) and the
+[std/studio](studio-instruments.md) `bass`.
 
 ## Version and embedding contract
 
