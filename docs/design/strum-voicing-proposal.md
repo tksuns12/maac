@@ -320,6 +320,29 @@ commit, because all three change the same chord lowering.
   used three. Its four voicings and two stroke patterns take the 15 lines
   counted above.
 
+**Listening.** On 2026-10-13 the owner compared the two renders on a phone
+as 192 kbit/s AAC. A was draft 4 (`dfb131be27864925…`); B was the A, B and C
+rewrite (`6542e5e0715ab995…`). Only the strummed guitar differs, in three
+ways. B plays the D and C downstrokes 8 ms apart instead of 10 ms, and their
+upstrokes on four strings instead of three. It also replaces draft 4's
+hand-set velocity lists with an even `tilt`, which differs by at most 0.02.
+The masters measure −14.43 and −14.35 LUFS.
+
+- A against B, with file names that showed which was draft 4: "B도 괜찮은데 A가
+  확실히 풍부한 느낌이 있네" ("B is fine too, but A clearly feels richer").
+- To find the cause, X took A's strum timing and strings with B's
+  velocities (`eea4de04d1409a9b…`), and Y took B's with A's
+  (`77857368d80d71a5…`). Their compiled plans differ from A and from B only
+  there. They were sent as P and Q, with the order drawn at random and
+  revealed after the verdict: "거의 구별이 안 되네" ("I can barely tell them
+  apart").
+
+So no single difference accounts for A's richness. Either the timing and
+the dynamics each add a little, or the open A/B comparison made the
+difference sound larger than it is. The owner stopped there. No language
+change follows: a voicing carries no stagger and no upstroke string count.
+A shape that needs its own can still have its own stroke pattern.
+
 **Differences from the proposal.**
 
 - A chord with no pitches, no voicing and nothing supplying one is
