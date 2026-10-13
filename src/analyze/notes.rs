@@ -9,6 +9,8 @@
 //! judged in its strongest band. A note that no
 //! other note on its node overlaps while its pitch is measured, and that has
 //! no pitch expression, also keeps the target's samples for a pitch estimate.
+//! Earlier notes on the node may still ring in their release; the estimate
+//! cancels their pitches first.
 
 use serde::Serialize;
 
@@ -38,11 +40,61 @@ const NEAR_SEMITONES: f64 = 1.5;
 /// harmonic tones measure under about 0.03; bells, toms, electric-piano tines
 /// and driven resonances measure 0.03 to 0.2 and read off pitch by design.
 pub(super) const APERIODIC: f64 = 0.03;
+/// An earlier note on the node released up to this long before the pitch
+/// estimate ends may still ring under it.
+pub(super) const TAIL_S: f64 = 1.0;
+/// At most this many ringing pitches are cancelled, the most recently
+/// released first.
+pub(super) const MAX_TAILS: usize = 2;
+/// A note within this many cents of a whole multiple of a ringing pitch is
+/// that pitch or one of its harmonics, so cancelling the ringing pitch would
+/// cancel the note too.
+const HARMONIC_CENTS: f64 = 50.0;
 
 /// Samples a pitch estimate of `hz` needs at `rate`.
 pub(super) fn pitch_samples(hz: f64, rate: u32) -> u64 {
     let period = f64::from(rate) / hz;
     (PITCH_PERIODS * period * 2.0).ceil() as u64 + (period * 2.0).ceil() as u64 + 2
+}
+
+/// Whether a note at `hz` is the pitch `ringing_hz` or one of its harmonics.
+pub(super) fn is_harmonic_of(hz: f64, ringing_hz: f64) -> bool {
+    let ratio = hz / ringing_hz;
+    let multiple = ratio.round();
+    multiple >= 1.0 && (1200.0 * (ratio / multiple).log2()).abs() < HARMONIC_CENTS
+}
+
+/// The samples a comb that cancels `hz` takes before its first output.
+fn comb_delay(hz: f64, rate: u32) -> usize {
+    (f64::from(rate) / hz).ceil() as usize + 2
+}
+
+/// Cancel a ringing pitch: `x[n] - x[n - T]`, with `T` its period and a
+/// four-point Lagrange interpolation between samples. The comb removes every
+/// harmonic of `hz` and, being linear and time-invariant, leaves any other
+/// periodic sound periodic with the same period. A period under four samples
+/// is too short to interpolate, and only the delay is applied.
+fn cancel(samples: &[f64], rate: u32, hz: f64) -> Vec<f64> {
+    let period = f64::from(rate) / hz;
+    if period < 4.0 {
+        return samples
+            .get(comb_delay(hz, rate)..)
+            .unwrap_or_default()
+            .to_vec();
+    }
+    (comb_delay(hz, rate)..samples.len())
+        .map(|n| {
+            let at = n as f64 - period;
+            let i = at.floor() as usize;
+            let d = at - at.floor();
+            let [a, b, c, e] = [samples[i - 1], samples[i], samples[i + 1], samples[i + 2]];
+            let delayed = -d * (d - 1.0) * (d - 2.0) / 6.0 * a
+                + (d + 1.0) * (d - 1.0) * (d - 2.0) / 2.0 * b
+                - (d + 1.0) * d * (d - 2.0) / 2.0 * c
+                + (d + 1.0) * d * (d - 1.0) / 6.0 * e;
+            samples[n] - delayed
+        })
+        .collect()
 }
 
 /// Frames skipped before the pitch estimate.
@@ -60,6 +112,9 @@ pub(super) struct Window {
     pub end: u64,
     /// The written pitch, when this note's pitch is estimated.
     pub pitch_hz: Option<f64>,
+    /// Earlier pitches on the node that may still ring, cancelled before the
+    /// estimate.
+    pub ringing: Vec<f64>,
     pub pitch_from: u64,
     pub pitch_needed: usize,
     pub frames: u64,
@@ -80,9 +135,16 @@ impl Window {
         end: u64,
         pitch_hz: Option<f64>,
         lone: bool,
+        ringing: Vec<f64>,
         rate: u32,
     ) -> Self {
         let measured = pitch_hz.filter(|_| lone);
+        let ringing = if measured.is_some() {
+            ringing
+        } else {
+            Vec::new()
+        };
+        let combs: usize = ringing.iter().map(|&hz| comb_delay(hz, rate)).sum();
         Self {
             address,
             target,
@@ -91,7 +153,8 @@ impl Window {
             end,
             pitch_hz: measured,
             pitch_from: start + pitch_skip(rate),
-            pitch_needed: measured.map_or(0, |hz| pitch_samples(hz, rate) as usize),
+            pitch_needed: measured.map_or(0, |hz| pitch_samples(hz, rate) as usize + combs),
+            ringing,
             frames: 0,
             target_k: 0.0,
             mix_k: 0.0,
@@ -282,7 +345,15 @@ pub(super) fn outcome(window: &Window, channels: &[u8], rate: u32) -> Outcome {
     });
     let pitch = window
         .pitch_hz
-        .and_then(|hz| yin(&window.samples, rate, hz))
+        .and_then(|hz| {
+            let samples = window
+                .ringing
+                .iter()
+                .fold(window.samples.clone(), |samples, &ringing| {
+                    cancel(&samples, rate, ringing)
+                });
+            yin(&samples, rate, hz)
+        })
         .map(|pitch| Pitch {
             cents: round2(pitch.cents),
             aperiodicity: round3(pitch.aperiodicity),
@@ -342,6 +413,47 @@ mod tests {
         // The layer biases the dip by a few cents, far inside the limit.
         let pitch = yin(&layered, rate, written).unwrap();
         assert!(pitch.cents.abs() < 10.0, "{}", pitch.cents);
+    }
+
+    #[test]
+    fn a_ringing_pitch_is_cancelled_before_the_estimate() {
+        let rate = 48_000;
+        let ringing = 587.33;
+        let over = |hz: f64| -> Vec<f64> {
+            tone(hz, rate, 0.25)
+                .iter()
+                .zip(tone(ringing, rate, 0.25))
+                .map(|(note, tail)| note + 0.5 * tail)
+                .collect()
+        };
+        let mixed = yin(&over(440.0), rate, 440.0).unwrap();
+        assert!(mixed.aperiodicity > APERIODIC, "{}", mixed.aperiodicity);
+        let clean = yin(&cancel(&over(440.0), rate, ringing), rate, 440.0).unwrap();
+        assert!(clean.aperiodicity < 0.01, "{}", clean.aperiodicity);
+        assert!(clean.cents.abs() < 1.0, "{}", clean.cents);
+        // A note off its written pitch still reads off it.
+        let sharp = 440.0 * 2f64.powf(1.0 / 12.0);
+        let off = yin(&cancel(&over(sharp), rate, ringing), rate, 440.0).unwrap();
+        assert!(off.aperiodicity < 0.01, "{}", off.aperiodicity);
+        assert!((off.cents - 100.0).abs() < 1.0, "{}", off.cents);
+    }
+
+    #[test]
+    fn a_ringing_pitch_too_high_to_interpolate_is_left_in() {
+        let samples = tone(440.0, 48_000, 0.05);
+        let kept = cancel(&samples, 48_000, 15_000.0);
+        assert_eq!(kept, samples[comb_delay(15_000.0, 48_000)..]);
+        assert!(cancel(&samples[..3], 48_000, 15_000.0).is_empty());
+    }
+
+    #[test]
+    fn a_note_on_a_ringing_pitch_or_its_harmonics_is_not_cancelled() {
+        assert!(is_harmonic_of(440.0, 440.0));
+        assert!(is_harmonic_of(880.0, 440.0));
+        assert!(is_harmonic_of(1320.0 * 2f64.powf(0.4 / 12.0), 440.0));
+        assert!(!is_harmonic_of(660.0, 440.0));
+        assert!(!is_harmonic_of(220.0, 440.0));
+        assert!(!is_harmonic_of(440.0 * 2f64.powf(1.0 / 12.0), 440.0));
     }
 
     #[test]

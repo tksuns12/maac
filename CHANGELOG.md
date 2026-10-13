@@ -41,6 +41,15 @@ promise of compatibility beyond the documented interfaces.
 
 ### Fixed
 
+- `maac analyze` sections no longer take in the start of the next section
+  (F24). Values that add up frames, such as peaks, the spectrum and band
+  shares, use each section's exact frames; loudness uses the 100 ms blocks
+  wholly inside it. A part resting until the verse no longer reads as
+  sounding in the intro, or draws `band_dominance` there.
+- `maac analyze` checks the pitch of legato notes over the previous note's
+  release (F25). The estimate first cancels the pitches still ringing on the
+  node; T3's nylon melody went from 68 to all 132 notes checked. The profile
+  is now `maac.analyze.default/7`.
 - Resetting a `DspEngine` now resets each `fx.limiter/1` as well. Before, a
   second render on the same engine started with the end of the first one
   still in the limiter's lookahead delay, along with its gain. The CLI builds

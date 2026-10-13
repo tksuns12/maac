@@ -119,7 +119,7 @@ fn under(report: &AnalysisReport) -> Vec<(&str, Option<&str>, f64)> {
 #[test]
 fn a_lead_level_with_its_accompaniment_raises_nothing() {
     let report = analyze(&song("0.25", Some("0.25"), None, ""), &["lead:out"]);
-    assert_eq!(report.profile, "maac.analyze.default/6");
+    assert_eq!(report.profile, "maac.analyze.default/7");
     assert_eq!(report.leads, ["lead:out"]);
     let verse = summary(&report, "lead:out", Some("verse"));
     assert_eq!(

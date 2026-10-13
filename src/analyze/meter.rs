@@ -2,8 +2,11 @@
 //!
 //! Every source is measured on one block grid that starts at the first
 //! rendered frame, so block `i` of any source covers the same frames as block
-//! `i` of the project output. Sections aggregate the blocks whose first frame
-//! lies inside them.
+//! `i` of the project output. Each section also adds up its exact frames.
+//! Loudness, the floor and activity come from the blocks that lie wholly
+//! inside a section; everything that adds up frames, such as peaks, mean
+//! squares and band energy, comes from the exact frames. Neither takes in
+//! the start of the next section.
 
 use crate::production_analysis::{integrated, k_weighting, loudness, Biquad, Interpolator};
 
@@ -87,6 +90,8 @@ pub(super) struct SourceMeter {
     interpolator: Interpolator,
     current: Block,
     blocks: Vec<Block>,
+    /// Each section's exact frames.
+    sections: Vec<Block>,
     frame: u64,
     spectrogram: Option<Spectrogram>,
     error: Option<String>,
@@ -105,10 +110,18 @@ impl SourceMeter {
             interpolator: Interpolator::default(),
             current: Block::default(),
             blocks: Vec::new(),
+            sections: Vec::new(),
             frame: 0,
             spectrogram,
             error: None,
         }
+    }
+
+    /// Add up the exact frames of `count` sections, as [`push`](Self::push)
+    /// names them.
+    pub fn with_sections(mut self, count: usize) -> Self {
+        self.sections = vec![Block::default(); count];
+        self
     }
 
     /// Count frames from `frame` instead of 0, so block starts are positions
@@ -118,8 +131,9 @@ impl SourceMeter {
         self
     }
 
-    /// Measure one frame, and return what it adds to a note window.
-    pub fn push(&mut self, frame: &[f64]) -> FrameValues {
+    /// Measure one frame, which lies in `sections`, and return what it adds
+    /// to a note window.
+    pub fn push(&mut self, frame: &[f64], sections: &[usize]) -> FrameValues {
         let mut values = FrameValues::default();
         if frame.len() != self.channels {
             self.error
@@ -127,47 +141,42 @@ impl SourceMeter {
             return values;
         }
         let mut input = [0.0; 2];
-        let block = &mut self.current;
+        let mut this = Block {
+            start: self.frame,
+            frames: 1,
+            ..Block::default()
+        };
         for (c, &x) in frame.iter().enumerate() {
             input[c] = x;
             let magnitude = x.abs();
-            block.peak = block.peak.max(magnitude);
+            this.peak = this.peak.max(magnitude);
             if magnitude >= CLIP_LEVEL {
-                block.clipped += 1;
-                block.first_clip.get_or_insert(self.frame);
+                this.clipped += 1;
+                this.first_clip.get_or_insert(self.frame);
             }
-            block.sq[c] += x * x;
+            this.sq[c] += x * x;
             let [shelf, pass] = &mut self.k[c];
             match shelf.process(x).and_then(|y| pass.process(y)) {
-                Ok(y) => {
-                    block.k += y * y;
-                    values.k += y * y;
-                }
+                Ok(y) => this.k += y * y,
                 Err(failure) => {
                     self.error.get_or_insert(failure.message);
                 }
             }
-            for ((energy, value), band) in block
-                .bands
-                .iter_mut()
-                .zip(values.bands.iter_mut())
-                .zip(self.bands[c].iter_mut())
-            {
+            for (energy, band) in this.bands.iter_mut().zip(self.bands[c].iter_mut()) {
                 if let Some(band) = band {
                     let y = band.process(x);
                     *energy += y * y;
-                    *value += y * y;
                 }
             }
         }
         if self.channels == 2 {
-            block.lr += frame[0] * frame[1];
+            this.lr += frame[0] * frame[1];
         }
         match self.interpolator.push(input, self.channels) {
             Ok(outputs) => {
                 for output in outputs {
                     for value in output.iter().take(self.channels) {
-                        block.true_peak = block.true_peak.max(value.abs());
+                        this.true_peak = this.true_peak.max(value.abs());
                     }
                 }
             }
@@ -175,13 +184,18 @@ impl SourceMeter {
                 self.error.get_or_insert(failure.message);
             }
         }
+        values.k = this.k;
+        values.bands = this.bands;
         values.mono = frame.iter().sum::<f64>() / self.channels as f64;
         if let Some(spectrogram) = &mut self.spectrogram {
             spectrogram.push(values.mono);
         }
-        block.frames += 1;
+        self.current.add(&this);
+        for &section in sections {
+            self.sections[section].add(&this);
+        }
         self.frame += 1;
-        if block.frames == self.hop {
+        if self.current.frames == self.hop {
             let next = Block {
                 start: self.frame,
                 ..Block::default()
@@ -191,8 +205,14 @@ impl SourceMeter {
         values
     }
 
-    /// Flush the true-peak interpolator into the last block.
-    pub fn finish(mut self) -> Result<(Vec<Block>, Option<Spectrogram>), String> {
+    /// Flush the true-peak interpolator into the last block and into
+    /// `sections`, those of the last frame. Returns the blocks, each
+    /// section's exact frames, and the spectrogram.
+    #[allow(clippy::type_complexity)]
+    pub fn finish(
+        mut self,
+        sections: &[usize],
+    ) -> Result<(Vec<Block>, Vec<Block>, Option<Spectrogram>), String> {
         let mut flushed = 0.0_f64;
         for _ in 0..11 {
             match self.interpolator.push([0.0; 2], self.channels) {
@@ -217,12 +237,45 @@ impl SourceMeter {
         if let Some(last) = self.blocks.last_mut() {
             last.true_peak = last.true_peak.max(flushed);
         }
+        for &section in sections {
+            let section = &mut self.sections[section];
+            section.true_peak = section.true_peak.max(flushed);
+        }
         let spectrogram = self.spectrogram.map(Spectrogram::finish);
-        Ok((self.blocks, spectrogram))
+        Ok((self.blocks, self.sections, spectrogram))
     }
 }
 
 impl Block {
+    /// Add `other`, which comes after every frame already added.
+    pub(super) fn add(&mut self, other: &Block) {
+        if self.frames == 0 {
+            self.start = other.start;
+        }
+        self.frames += other.frames;
+        self.k += other.k;
+        for (total, value) in self.sq.iter_mut().zip(other.sq) {
+            *total += value;
+        }
+        self.lr += other.lr;
+        self.peak = self.peak.max(other.peak);
+        self.true_peak = self.true_peak.max(other.true_peak);
+        self.clipped += other.clipped;
+        self.first_clip = self.first_clip.or(other.first_clip);
+        for (total, value) in self.bands.iter_mut().zip(other.bands) {
+            *total += value;
+        }
+    }
+
+    /// `blocks` added up.
+    pub(super) fn total(blocks: &[Block]) -> Block {
+        let mut total = Block::default();
+        for block in blocks {
+            total.add(block);
+        }
+        total
+    }
+
     /// BS.1770 energy: K-weighted mean square summed over channels.
     fn energy(&self) -> f64 {
         if self.frames == 0 {
@@ -325,44 +378,35 @@ fn db_amplitude(amplitude: f64) -> Option<f64> {
     (amplitude > 0.0).then(|| 20.0 * amplitude.log10())
 }
 
-/// Measure `blocks`, all on one grid; `output` is the project output's blocks
-/// over the same range, for band shares.
+/// Measure a span: `blocks` on the common grid for loudness, the floor and
+/// activity, and `sums`, the span's exact frames, for the rest. `output` is
+/// the project output's exact frames over the same span, for band shares.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn measures(
     blocks: &[Block],
+    sums: &Block,
     channels: u8,
     rate: u32,
     hop: u64,
     available: [bool; 10],
-    output: Option<&[Block]>,
+    output: Option<&Block>,
     positions: &PositionMap<'_>,
 ) -> Measures {
     let channels_f = f64::from(channels);
-    let frames: u64 = blocks.iter().map(|block| block.frames).sum();
-    let mut sq = [0.0; 2];
-    let mut lr = 0.0;
-    let mut bands = [0.0; 10];
-    let mut peak = 0.0_f64;
-    let mut true_peak = 0.0_f64;
-    let mut clipped = 0;
-    let mut first_clip = None;
-    for block in blocks {
-        for (total, value) in sq.iter_mut().zip(block.sq) {
-            *total += value;
-        }
-        lr += block.lr;
-        for (total, value) in bands.iter_mut().zip(block.bands) {
-            *total += value;
-        }
-        peak = peak.max(block.peak);
-        true_peak = true_peak.max(block.true_peak);
-        clipped += block.clipped;
-        first_clip = first_clip.or(block.first_clip);
-    }
-    true_peak = true_peak.max(peak);
-    let mean_square = if frames == 0 {
+    let Block {
+        sq,
+        lr,
+        bands,
+        peak,
+        clipped,
+        first_clip,
+        ..
+    } = *sums;
+    let true_peak = sums.true_peak.max(peak);
+    let mean_square = if sums.frames == 0 {
         0.0
     } else {
-        (sq[0] + sq[1]) / (frames as f64 * channels_f)
+        (sq[0] + sq[1]) / (sums.frames as f64 * channels_f)
     };
     let rms_dbfs = (mean_square > 0.0).then(|| db_power(mean_square));
     let sample_peak_dbfs = db_amplitude(peak);
@@ -390,7 +434,7 @@ pub(super) fn measures(
     let max_momentary = max_loudness(&mut momentary.iter().copied());
     let max_short_term =
         max_loudness(&mut blocks.windows(30).filter(|window| full(window)).map(energy));
-    let integrated_lufs = integrated(&momentary, peak == 0.0)
+    let integrated_lufs = integrated(&momentary, blocks.iter().all(|block| block.peak == 0.0))
         .ok()
         .and_then(|measurement| measurement.value);
 
@@ -401,12 +445,7 @@ pub(super) fn measures(
         })
         .collect();
     let master_share = output.map(|output| {
-        let mut totals = [0.0; 10];
-        for block in output {
-            for (total, value) in totals.iter_mut().zip(block.bands) {
-                *total += value;
-            }
-        }
+        let totals = output.bands;
         (0..10)
             .map(|b| (available[b] && totals[b] > 0.0).then(|| round3(bands[b] / totals[b])))
             .collect()
@@ -445,7 +484,8 @@ pub(super) fn measures(
         })
         .collect();
     let block_seconds = hop as f64 / f64::from(rate);
-    let total_seconds = frames as f64 / f64::from(rate);
+    let total_seconds =
+        blocks.iter().map(|block| block.frames).sum::<u64>() as f64 / f64::from(rate);
     let (leading, trailing) = match (
         active.iter().position(|&a| a),
         active.iter().rposition(|&a| a),

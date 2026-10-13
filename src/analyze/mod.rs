@@ -36,13 +36,13 @@ use meter::{
 };
 
 pub const SCHEMA: &str = "maac.analysis-report/1";
-pub const PROFILE: &str = "maac.analyze.default/6";
+pub const PROFILE: &str = "maac.analyze.default/7";
 pub const BANDS: &str = "maac.analyze.octave-bands/1";
 pub const BAND_CENTERS_HZ: [f64; 10] = [
     31.5, 63.0, 125.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 16000.0,
 ];
 
-// Findings profile `maac.analyze.default/6`: stated limits, not taste.
+// Findings profile `maac.analyze.default/7`: stated limits, not taste.
 const TRUE_PEAK_LIMIT_DBTP: f64 = -1.0;
 const LOUDNESS_JUMP_LU: f64 = 6.0;
 const BALANCE_LIMIT_DB: f64 = 3.0;
@@ -608,7 +608,9 @@ fn analyze_view(
                 .images
                 .as_ref()
                 .map(|_| Spectrogram::new(rate, columns_hop));
-            SourceMeter::new(rate, source.channels, hop, spectrogram).starting_at(window_start)
+            SourceMeter::new(rate, source.channels, hop, spectrogram)
+                .starting_at(window_start)
+                .with_sections(sections.len())
         })
         .collect();
     let mut windows = note_windows(&view, &sources, rate, window_start, window_end);
@@ -627,7 +629,7 @@ fn analyze_view(
         .iter()
         .map(|tap| sources[tap.source].port.node.clone())
         .collect();
-    // The sections each frame lies in, for the taps.
+    // The sections each frame lies in.
     let mut section_order: Vec<usize> = (0..sections.len()).collect();
     section_order.sort_by_key(|&index| sections[index].start_frame);
     let mut next_section = 0;
@@ -636,20 +638,18 @@ fn analyze_view(
     let mut frame_index = render_start;
     render(&ports, &tap_nodes, span, &mut |frame, reductions| {
         if frame_index >= window_start {
-            for ((meter, frame), value) in meters.iter_mut().zip(frame).zip(values.iter_mut()) {
-                *value = meter.push(frame);
+            while next_section < section_order.len()
+                && sections[section_order[next_section]].start_frame <= frame_index
+            {
+                in_sections.push(section_order[next_section]);
+                next_section += 1;
             }
-            if !taps.is_empty() {
-                while next_section < section_order.len()
-                    && sections[section_order[next_section]].start_frame <= frame_index
-                {
-                    in_sections.push(section_order[next_section]);
-                    next_section += 1;
-                }
-                in_sections.retain(|&index| frame_index < sections[index].end_frame);
-                for (tap, &reduction) in taps.iter_mut().zip(reductions) {
-                    tap.add(values[tap.source].k, reduction, &in_sections);
-                }
+            in_sections.retain(|&index| frame_index < sections[index].end_frame);
+            for ((meter, frame), value) in meters.iter_mut().zip(frame).zip(values.iter_mut()) {
+                *value = meter.push(frame, &in_sections);
+            }
+            for (tap, &reduction) in taps.iter_mut().zip(reductions) {
+                tap.add(values[tap.source].k, reduction, &in_sections);
             }
             while next_window < windows.len() && windows[next_window].start <= frame_index {
                 active.push(next_window);
@@ -681,12 +681,14 @@ fn analyze_view(
     })
     .map_err(|failure| AnalyzeError::new("E_RENDER", failure.to_string()))?;
     let mut blocks = Vec::with_capacity(meters.len());
+    let mut section_sums = Vec::with_capacity(meters.len());
     let mut spectrograms = Vec::with_capacity(meters.len());
     for meter in meters {
-        let (source_blocks, spectrogram) = meter
-            .finish()
+        let (source_blocks, source_sections, spectrogram) = meter
+            .finish(&in_sections)
             .map_err(|message| AnalyzeError::new("E_NONFINITE", message))?;
         blocks.push(source_blocks);
+        section_sums.push(source_sections);
         spectrograms.push(spectrogram);
     }
 
@@ -695,37 +697,41 @@ fn analyze_view(
         .iter()
         .map(|section| block_range(&blocks[0], section.start_frame, section.end_frame))
         .collect();
+    let output_whole = Block::total(&blocks[0]);
     let mut reports: Vec<SourceReport> = sources
         .iter()
-        .zip(&blocks)
+        .zip(blocks.iter().zip(&section_sums))
         .enumerate()
-        .map(|(index, (source, source_blocks))| {
-            let output = (index != 0).then_some(blocks[0].as_slice());
+        .map(|(index, (source, (source_blocks, source_sections)))| {
+            let output = index != 0;
             SourceReport {
                 port: port_name(&source.port),
                 role: source.role,
                 channels: source.channels,
                 whole: measures(
                     source_blocks,
+                    &Block::total(source_blocks),
                     source.channels,
                     rate,
                     hop,
                     available,
-                    output,
+                    output.then_some(&output_whole),
                     &positions,
                 ),
                 sections: sections
                     .iter()
                     .zip(&ranges)
-                    .map(|(section, range)| SectionMeasures {
+                    .enumerate()
+                    .map(|(at, (section, range))| SectionMeasures {
                         section: section.id.clone(),
                         measures: measures(
                             &source_blocks[range.clone()],
+                            &source_sections[at],
                             source.channels,
                             rate,
                             hop,
                             available,
-                            output.map(|output| &output[range.clone()]),
+                            output.then(|| &section_sums[0][at]),
                             &positions,
                         ),
                     })
@@ -984,10 +990,10 @@ fn sections(
     }
 }
 
-/// The blocks whose first frame lies in `[start, end)`.
+/// The blocks that lie wholly in `[start, end)`.
 fn block_range(blocks: &[Block], start: u64, end: u64) -> std::ops::Range<usize> {
     let first = blocks.partition_point(|block| block.start < start);
-    let last = blocks.partition_point(|block| block.start < end);
+    let last = blocks.partition_point(|block| block.start + block.frames <= end);
     first..last.max(first)
 }
 
@@ -1408,6 +1414,7 @@ fn note_windows(
 ) -> Vec<notes::Window> {
     let seconds = |s: f64| (s * f64::from(rate)).round() as u64;
     let (note_max, hit_length) = (seconds(notes::NOTE_MAX_S), seconds(notes::HIT_S));
+    let tail = seconds(notes::TAIL_S);
     let events: Vec<_> = view
         .events()
         .filter(|event| !matches!(event.kind, EventKind::Message { .. }))
@@ -1466,6 +1473,33 @@ fn note_windows(
                 let (on, off) = sounding(other);
                 other == index || on >= pitch_end || off <= event.on_frame
             });
+        // Earlier notes on the node whose release may ring under the
+        // estimate, most recently released first.
+        let mut released: Vec<(u64, f64)> = by_node[event.target.node.as_str()]
+            .iter()
+            .filter_map(|&other| match events[other].kind {
+                EventKind::Note { pitch_hz, .. } => {
+                    let off = events[other].off_frame?;
+                    (other != index && off <= event.on_frame && off + tail >= pitch_end)
+                        .then_some((off, *pitch_hz))
+                }
+                _ => None,
+            })
+            .collect();
+        released.sort_by_key(|&(off, _)| std::cmp::Reverse(off));
+        let mut ringing: Vec<f64> = Vec::new();
+        if let Some(hz) = pitch_hz.filter(|_| lone) {
+            for (_, earlier) in released {
+                if ringing.len() < notes::MAX_TAILS
+                    && !notes::is_harmonic_of(hz, earlier)
+                    && !ringing
+                        .iter()
+                        .any(|&kept| notes::is_harmonic_of(earlier, kept))
+                {
+                    ringing.push(earlier);
+                }
+            }
+        }
         windows.push(notes::Window::new(
             event.address.clone(),
             target,
@@ -1474,6 +1508,7 @@ fn note_windows(
             window_end,
             pitch_hz,
             lone,
+            ringing,
             rate,
         ));
     }

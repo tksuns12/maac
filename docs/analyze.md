@@ -391,6 +391,43 @@ the arrangement carried it.
 Without a compressor or limiter, a report is the same as under `default/5`
 apart from the profile identifier.
 
+## Profile `maac.analyze.default/7` (2026-10-13)
+
+Two fixes from the [T3 trial](reports/ai-production-trial-t3.md). The report
+schema is unchanged.
+
+**Section edges (F24).** A section took the 100 ms blocks whose first frame
+lay inside it, so its last block reached up to 100 ms into the next section.
+A part that rests until the verse read as sounding in the intro, and
+`band_dominance` reported it there. Now neither kind of measure takes in
+another section's audio:
+
+- Values that add up frames use the section's exact frames: RMS, crest,
+  sample and true peak, clipped samples, the octave spectrum, the shares of
+  the output and the stereo measures.
+- Values that need whole blocks use the blocks that lie wholly inside the
+  section: integrated, momentary and short-term loudness, the floor, the
+  block range and activity. Up to 100 ms at each edge is left out of them.
+
+Whole-piece values are unchanged. On the six songs of the
+[gain reduction proposal](design/gain-reduction-proposal.md), integrated
+loudness per section at the output moves by at most 0.04 LU. Maximum
+short-term loudness moves by up to 0.3 LU, where a 3 s window used to reach
+into the next section.
+
+**Pitch over a ringing release (F25).** A note counts as lone when no other
+note on its node overlaps it in the score, but the last note's release can
+still ring under it. In T3's nylon melody the window then held two pitches,
+and 64 of 132 notes read `unpitched`. The pitch estimate now first cancels
+the pitches of earlier notes on the node released up to 1 s before the
+estimate ends, at most the two most recent. Each is cancelled by a comb at
+its period, which removes its harmonics and leaves the note's own period
+intact. A ringing pitch the note equals, or one whose harmonic the note is,
+cannot be cancelled without cancelling the note, so it is left in. On the
+nylon melody all 132 notes are now pitched, within 0.5 cents of their
+written pitch. On the same six songs, the count of unpitched notes fell or
+stayed the same in every part, and no `pitch_mismatch` appeared.
+
 ## Deferred to later versions
 
 - **Onset alignment:** whether written and sounding attacks line up.
@@ -445,7 +482,9 @@ proposal text as follows.
 
 - **Measurement grid:** measurements aggregate 100 ms blocks on one grid that
   starts at the first rendered frame. A section takes the blocks whose first
-  frame lies inside it, so its edges are exact to within one block.
+  frame lies inside it, so its edges are exact to within one block. Since
+  `default/7`, sections use their exact frames instead; see
+  [that profile](#profile-maacanalyzedefault7-2026-10-13).
 - **Positions:** a position gives the frame, the seconds and the bar, with `q`
   at or before it on a quarter-note grid.
 - **Source roles:** each source has a role, `output`, `bus` (it receives other
