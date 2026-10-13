@@ -90,7 +90,7 @@ from T2.
 | F20 | `analyze` cannot report gain reduction per section, so a glue or limiter flattening the chorus was found only by comparing region loudness | Fixed: `maac analyze` (profile `default/6`) gives each compressor and limiter a `dynamics` object per section and lists the master chain. No finding was added: in a listening round a chorus that kept none of its lift still sounded fine. See the [proposal](../design/gain-reduction-proposal.md) |
 | F21 | A lead 11 dB under its accompaniment raised no finding. `buried_note` judges each part in its own strongest band, and no part is marked as the lead | Fixed: `maac analyze --lead` names the lead, and `lead_under` (profile `default/5`) warns when its median note sits 8.5 dB or more under the rest of its mix point. See the [proposal](../design/lead-part-proposal.md) |
 | F22 | Raising the amp's `drive` also raises its output, so a drive automation needs a matching level automation | Fixed: `synth.drive/1` has a [`reference`](../instruments.md#saturation) that holds the level. The `std/studio/1.1.0` guitar uses it: its `drive` runs from 1 to 16 within 0.88 LU, and the song's lead dropped its level automation |
-| F23 | Imports and nodes share one ID namespace, so a node cannot be named after an import | Open; the diagnostic is clear |
+| F23 | Imports and nodes share one ID namespace, so a node cannot be named after an import | Eased: the error now names the earlier import and its line, and the [producer guide](../ai-producer-guide.md) says to name nodes by role. A separate import namespace is not proposed: `&acoustic.steel_guitar` could then name an import's export or a child of a node called `acoustic`, so imports would need a new reference form |
 | F24 | `band_dominance` reports spurious changes at section edges, where one 100 ms block holds both sections | Fixed: since profile `default/7` a section uses its exact frames, and loudness the blocks wholly inside it, so no section takes in the next one's start. See [analyze.md](../analyze.md#profile-maacanalyzedefault7-2026-10-13) |
 | F25 | Half of the draft-1 nylon melody's notes (64 of 132) read `unpitched` at the 0.03 aperiodicity limit, so `pitch_mismatch` did not check them | Fixed: the previous note's release still rang under each note's pitch window. Since profile `default/7` the estimate first cancels the pitches still ringing on the node, and all 132 notes are checked. See [analyze.md](../analyze.md#profile-maacanalyzedefault7-2026-10-13) |
 
@@ -112,4 +112,5 @@ from T2.
    proposal, like the [authoring density work](../design/authoring-density-proposal.md).
 4. **Small fixes (F23–F25).** Section-edge blocks in `band_dominance`, the
    pitch check's coverage of plucked notes, and possibly a separate import
-   namespace. F24 and F25 are fixed in profile `default/7`; F23 is open.
+   namespace. F24 and F25 are fixed in profile `default/7`; F23's error now
+   names the clash.

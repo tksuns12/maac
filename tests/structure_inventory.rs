@@ -331,3 +331,22 @@ fn extension_fields_and_children_follow_the_inventory() {
         );
     }
 }
+
+/// T3's F23: a node named after an import. The error names the import and its
+/// line, since the two share one ID namespace.
+#[test]
+fn a_duplicate_id_names_the_earlier_object() {
+    let source = "maac 1;\nimport acoustic { builtin = \"std/acoustic/1.0.0\"; }\nnode acoustic { instrument = &acoustic.steel_guitar; }\n";
+    let diagnostics = maac::parse(source).unwrap_err();
+    let duplicate = diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code == DiagnosticCode::DuplicateId)
+        .unwrap();
+    assert!(
+        duplicate
+            .message
+            .contains("this node and the import on line 2 share it"),
+        "{}",
+        duplicate.message
+    );
+}

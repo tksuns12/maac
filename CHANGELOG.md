@@ -38,6 +38,9 @@ promise of compatibility beyond the documented interfaces.
   to `docs/reports/`.
 - `sha2` 0.11, with digests written by `maac::bundle::lower_hex`; every hash,
   manifest and file name is unchanged.
+- A duplicate top-level ID now names the earlier object and its line, such as
+  "this node and the import on line 5 share it", and says that imports share
+  the one ID namespace (F23).
 
 ### Fixed
 

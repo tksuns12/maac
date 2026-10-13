@@ -918,7 +918,7 @@ impl<'a> Parser<'a> {
             );
         }
 
-        let mut objects = BTreeMap::new();
+        let mut objects: BTreeMap<String, Object> = BTreeMap::new();
         while !self.at(TokenKind::Eof) {
             let Some(object) = self.parse_object(1) else {
                 self.recover_member();
@@ -927,11 +927,20 @@ impl<'a> Parser<'a> {
                 }
                 continue;
             };
-            if objects.contains_key(&object.id) {
+            if let Some(earlier) = objects.get(&object.id) {
+                // Name the earlier object: a node named after an import is the
+                // usual case, and the import is easy to overlook.
+                let line = self.source[..earlier.id_span.start.min(self.source.len())]
+                    .matches('\n')
+                    .count()
+                    + 1;
                 self.diagnostics.push(
                     Diagnostic::error(
                         DiagnosticCode::DuplicateId,
-                        format!("duplicate top-level object ID `{}`", object.id),
+                        format!(
+                            "duplicate top-level object ID `{}`: this {} and the {} on line {line} share it; imports and all other top-level objects share one ID namespace, so rename one of them",
+                            object.id, object.kind, earlier.kind
+                        ),
                         Some(object.id_span),
                     )
                     .object_path([object.id.clone()]),

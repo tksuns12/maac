@@ -50,6 +50,10 @@ listen before you call a track finished.
   each drum with `kick_level`, `hat_pan` and so on. A kit has one output, so
   a drum that needs its own send or effect stays a separate instrument node.
 - Connect everything to an explicit stereo `core.sum/1` bus.
+- Name nodes by their role, such as `strum` or `picking`, not after an
+  instrument library. Imports, nodes and every other top-level object share
+  one ID namespace, so `node acoustic` next to `import acoustic` is
+  `E_DUPLICATE_ID`.
 - Vary velocity. On std/studio a harder note is brighter as well as louder,
   so accents and ghost notes change the sound; a part at one velocity sounds
   like a machine.
