@@ -42,7 +42,9 @@ listen before you call a track finished.
 - Reuse one shape at other pitches with `transpose` on `use`, in cents:
   `use d_bar { pattern = &g_bar; at = 4q; transpose = 700ct; }` plays a G
   pattern as D. A bass line or a guitar shape needs only one pattern per
-  chord quality.
+  chord quality. Mind the range: a transposed shape keeps its spread, so a G
+  shape from G2 moved down a fourth plays D2, below a guitar's low E (E2).
+  "Morning Ferry"'s picking does this in its D and C bars.
 - Play drums from one kit node: import `std/studio/1.1.0`, add
   `node drums { instrument = &studio.drums; }`, and write `hit` leaves such as
   `hit k1 { at = 0q; key = "kick"; velocity = 0.85; }`. Keys are `kick`,
