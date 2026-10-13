@@ -300,6 +300,10 @@ def main() -> None:
     exact("stretched_repetition_origin", 4 * Fraction(3, 2), 6)
     exact("fractional_event_ceil", math.ceil(Fraction(1, 3) * 100), 34)
     exact("subsample_gate_collapses", math.ceil(Fraction(2, 1000) * 100) - math.ceil(Fraction(1, 1000) * 100), 0)
+    # A four-pitch upstroke strikes member k at position n - 1 - k.
+    exact("strum_up_member0_offset", (4 - 1 - 0) * Fraction(30, 1000), Fraction(9, 100))
+    exact("strum_down_member2_velocity", Fraction(8, 10) + Fraction(-12, 100) * Fraction(2, 4 - 1),
+          Fraction(18, 25))
     near("linear_tempo_ramp_seconds", 60 / 15 * math.log(180 / 120), 1.6218604324326575)
     near("exponential_hz_midpoint", 500 * (2000 / 500)**0.5, 1000)
     near("linear_db_midpoint", -12 + 12 * 0.5, -6)
@@ -321,7 +325,7 @@ def main() -> None:
     (ROOT / "conformance.json").write_text(json.dumps(vectors, indent=2) + "\n")
     report = {
         "surface_parse": "pass", "syntax_tree_schema": "pass",
-        "example_expanded_note_count": len(events), "arithmetic_assertions": 22,
+        "example_expanded_note_count": len(events), "arithmetic_assertions": 24,
         "scope": "Syntax plus selected semantics only; no complete validator or renderer is included."
     }
     (ROOT / "check-results.json").write_text(json.dumps(report, indent=2) + "\n")

@@ -402,12 +402,24 @@ struct UseDef {
     stretch: Rational,
     transpose_cents: Rational,
     cut: bool,
+    /// The voicing this use supplies to chords without pitches (§8.2).
+    voicing: Option<String>,
 }
 
 #[derive(Clone, Debug)]
 enum PatternChild {
     Leaf(Box<LeafDef>),
     Use(Box<UseDef>),
+    /// A chord without pitches or a voicing of its own: it lowers at each
+    /// occurrence, with the voicing its nearest use or placement supplies.
+    Chord(Box<Object>),
+}
+
+/// A voicing supplied to chords without pitches, and what supplied it.
+#[derive(Clone, Debug)]
+struct SuppliedVoicing {
+    voicing: String,
+    by: String,
 }
 
 #[derive(Clone, Debug)]
@@ -434,6 +446,50 @@ struct InsertDef {
     leaf: LeafDef,
 }
 
+/// A chord's strum (§8.2). A downstroke strikes the members in list order and
+/// an upstroke in reverse; each string is `stagger` later than the last, and
+/// the velocity changes by `tilt` from the first string struck to the last.
+#[derive(Clone, Debug)]
+struct Strum {
+    up: bool,
+    stagger: Rational,
+    tilt: Rational,
+}
+
+impl Strum {
+    /// Move member `k` of `n` to its place `i` in the stroke: `i * stagger`
+    /// later and `tilt * i / (n - 1)` louder.
+    fn strike(&self, leaf: &mut LeafDef, k: usize, n: usize, chord: &Object) -> CResult<()> {
+        let i = if self.up { n - 1 - k } else { k };
+        let place = Rational::from_integer(i.into());
+        leaf.onset_offset = checked_add(
+            &leaf.onset_offset,
+            &checked_mul(&self.stagger, &place, Some(chord.span))?,
+            Some(chord.span),
+        )?;
+        if n > 1 && !self.tilt.is_zero() {
+            let share = place / Rational::from_integer((n - 1).into());
+            leaf.velocity = checked_add(
+                &leaf.velocity,
+                &checked_mul(&self.tilt, &share, Some(chord.span))?,
+                Some(chord.span),
+            )?;
+            if leaf.velocity.is_negative() || leaf.velocity > Rational::one() {
+                return Err(path_diagnostic(
+                    DiagnosticCode::Range,
+                    format!(
+                        "chord velocity with tilt is {} at member {k}, outside [0,1]",
+                        leaf.velocity
+                    ),
+                    chord,
+                    chord.field("tilt"),
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
 /// A named swing map (§9.2): within each pair of `grid` steps, counted from
 /// the bar line, the first step takes `ratio` of the pair.
 #[derive(Clone, Debug)]
@@ -454,6 +510,7 @@ struct PlaceDef {
     stretch: Rational,
     transpose_cents: Rational,
     cut: bool,
+    voicing: Option<String>,
     overrides: Vec<OverrideDef>,
     inserts: Vec<InsertDef>,
 }
@@ -516,6 +573,7 @@ struct ExpansionState<'a> {
     origin: Rational,
     scale: Rational,
     transpose: Rational,
+    voicing: Option<SuppliedVoicing>,
     address: &'a mut Vec<String>,
     inherited_cut_end: Option<Rational>,
     /// `None` for a track without an event target; only audio leaves may
@@ -888,8 +946,10 @@ impl<'a> Compiler<'a> {
                     "transpose",
                     "boundary",
                     "groove",
+                    "voicing",
                 ][..],
                 "groove" => &["grid", "ratio"][..],
+                "voicing" => &["pitches"][..],
                 "curve" => &["clock", "points"][..],
                 "automation" => &["target", "curve", "at"][..],
                 "node" if self.instrument_instances.contains_key(&object.id) => {
@@ -2048,48 +2108,180 @@ impl<'a> Compiler<'a> {
         })
     }
 
-    /// A chord leaf lowers to one note per pitch. Member `k` keeps the chord's
-    /// onset, gate, order and expressions, takes entry `k` of each list-valued
-    /// per-note field, and has the leaf ID `chord.k`.
-    fn parse_chord(&self, object: &Object) -> CResult<Vec<LeafDef>> {
-        const PER_NOTE: [&str; 4] = [
-            "velocity",
-            "release_velocity",
-            "onset_offset",
-            "release_offset",
-        ];
+    /// A chord leaf lowers to one note per pitch it plays: its own
+    /// `pitches`, or those of the voicing it names. A chord with neither
+    /// waits for a voicing from a use or placement, so it lowers later.
+    fn parse_chord(&self, object: &Object) -> CResult<Option<Vec<LeafDef>>> {
         self.check_fields(
             object,
             &[
                 "at",
                 "dur",
                 "pitches",
+                "voicing",
+                "top",
+                "bottom",
                 "velocity",
                 "release_velocity",
                 "onset_offset",
                 "release_offset",
                 "order",
+                "strum",
+                "stagger",
+                "tilt",
             ],
         )?;
-        let pitches_field = self.field(object, "pitches")?;
-        let pitches = match &pitches_field.value.kind {
-            ValueKind::List(items) if !items.is_empty() => items,
-            _ => {
+        let (pitches_field, pitches) = match (object.field("pitches"), object.field("voicing")) {
+            (Some(_), Some(field)) => {
                 return Err(path_diagnostic(
                     DiagnosticCode::Range,
-                    "chord.pitches must be a nonempty list of pitches",
+                    "a chord names its pitches with `pitches` or `voicing`, not both",
                     object,
-                    Some(pitches_field),
+                    Some(field),
                 ))
             }
+            (Some(field), None) => (field, self.pitch_list(object, field)?),
+            (None, Some(field)) => self.voicing_pitches(object, field)?,
+            (None, None) => return Ok(None),
         };
+        self.lower_chord(object, pitches_field, pitches).map(Some)
+    }
+
+    /// Lower a chord without pitches with the voicing `supplied` to it. Its
+    /// errors name what supplied the voicing.
+    fn lower_supplied_chord(
+        &self,
+        object: &Object,
+        supplied: Option<&SuppliedVoicing>,
+    ) -> CResult<Vec<LeafDef>> {
+        let Some(supplied) = supplied else {
+            return Err(path_diagnostic(
+                DiagnosticCode::Reference,
+                format!(
+                    "chord `{}` has no `pitches` or `voicing`, and no use or placement that reaches it names a voicing",
+                    object.id
+                ),
+                object,
+                None,
+            ));
+        };
+        let voicing = self.object(&supplied.voicing)?;
+        let pitches_field = self.field(voicing, "pitches")?;
+        let pitches = self.pitch_list(voicing, pitches_field)?;
+        self.lower_chord(object, pitches_field, pitches)
+            .map_err(|diagnostics| {
+                let mut named = Diagnostics::new();
+                for mut diagnostic in diagnostics.into_vec() {
+                    diagnostic.message = format!(
+                        "{} (voicing `{}` from {})",
+                        diagnostic.message, supplied.voicing, supplied.by
+                    );
+                    named.push(diagnostic);
+                }
+                named
+            })
+    }
+
+    /// `field`'s nonempty list of pitches.
+    fn pitch_list<'v>(&self, object: &Object, field: &'v Field) -> CResult<&'v [Value]> {
+        match &field.value.kind {
+            ValueKind::List(items) if !items.is_empty() => Ok(items),
+            _ => Err(path_diagnostic(
+                DiagnosticCode::Range,
+                format!("{}.pitches must be a nonempty list of pitches", object.kind),
+                object,
+                Some(field),
+            )),
+        }
+    }
+
+    /// The pitches of the voicing that `object`'s `field` names (§8.2).
+    fn voicing_pitches(&self, object: &Object, field: &Field) -> CResult<(&Field, &[Value])> {
+        let id = self.one_reference(&field.value, object, Some(field))?;
+        let voicing = self
+            .document
+            .object(&id)
+            .filter(|voicing| voicing.kind == "voicing")
+            .ok_or_else(|| {
+                path_diagnostic(
+                    DiagnosticCode::Reference,
+                    format!("{}.voicing must reference a voicing", object.kind),
+                    object,
+                    Some(field),
+                )
+            })?;
+        let pitches = self.field(voicing, "pitches")?;
+        Ok((pitches, self.pitch_list(voicing, pitches)?))
+    }
+
+    /// `top = n` keeps the last `n` pitches, and `bottom = n` the first `n`.
+    fn select_pitches<'v>(&self, object: &Object, pitches: &'v [Value]) -> CResult<&'v [Value]> {
+        let (field, top) = match (object.field("top"), object.field("bottom")) {
+            (Some(_), Some(field)) => {
+                return Err(path_diagnostic(
+                    DiagnosticCode::Range,
+                    "a chord takes `top` or `bottom`, not both",
+                    object,
+                    Some(field),
+                ))
+            }
+            (Some(field), None) => (field, true),
+            (None, Some(field)) => (field, false),
+            (None, None) => return Ok(pitches),
+        };
+        let n = self.rational_value(&field.value, object, Some(field))?;
+        let count = n
+            .is_integer()
+            .then(|| n.to_integer().to_usize())
+            .flatten()
+            .filter(|count| (1..=pitches.len()).contains(count))
+            .ok_or_else(|| {
+                path_diagnostic(
+                    DiagnosticCode::Range,
+                    format!(
+                        "chord.{} must be an integer from 1 through {}, the number of pitches",
+                        field.name,
+                        pitches.len()
+                    ),
+                    object,
+                    Some(field),
+                )
+            })?;
+        Ok(if top {
+            &pitches[pitches.len() - count..]
+        } else {
+            &pitches[..count]
+        })
+    }
+
+    /// Member `k` keeps the chord's onset, gate, order and expressions, takes
+    /// entry `k` of the selected pitches and of each list-valued per-note
+    /// field, and has the leaf ID `chord.k`. A strummed member is then struck
+    /// later and louder by its place in the stroke.
+    fn lower_chord(
+        &self,
+        object: &Object,
+        pitches_field: &Field,
+        pitches: &[Value],
+    ) -> CResult<Vec<LeafDef>> {
+        const PER_NOTE: [&str; 4] = [
+            "velocity",
+            "release_velocity",
+            "onset_offset",
+            "release_offset",
+        ];
+        let pitches = self.select_pitches(object, pitches)?;
+        let strum = self.parse_strum(object)?;
         for name in PER_NOTE {
             if let Some(field) = object.field(name) {
                 if matches!(&field.value.kind, ValueKind::List(items) if items.len() != pitches.len())
                 {
                     return Err(path_diagnostic(
                         DiagnosticCode::Range,
-                        format!("chord.{name} must have one entry per pitch"),
+                        format!(
+                            "chord.{name} must have one entry per pitch played ({})",
+                            pitches.len()
+                        ),
                         object,
                         Some(field),
                     ));
@@ -2102,7 +2294,11 @@ impl<'a> Compiler<'a> {
             .map(|(member, pitch)| {
                 let mut note = object.clone();
                 note.kind = "note".into();
-                note.fields.remove("pitches");
+                for name in [
+                    "pitches", "voicing", "top", "bottom", "strum", "stagger", "tilt",
+                ] {
+                    note.fields.remove(name);
+                }
                 note.fields.insert(
                     "pitch".into(),
                     Field {
@@ -2121,9 +2317,82 @@ impl<'a> Compiler<'a> {
                 }
                 let mut leaf = self.parse_note(&note)?;
                 leaf.id = format!("{}.{member}", object.id);
+                if let Some(strum) = &strum {
+                    strum.strike(&mut leaf, member, pitches.len(), object)?;
+                }
                 Ok(leaf)
             })
             .collect()
+    }
+
+    /// A chord's `strum`, `stagger` and `tilt` (§8.2). `stagger` and `tilt`
+    /// belong to a strum, and `tilt` to a single velocity.
+    fn parse_strum(&self, object: &Object) -> CResult<Option<Strum>> {
+        let Some(strum_field) = object.field("strum") else {
+            if let Some(field) = object.field("stagger").or_else(|| object.field("tilt")) {
+                return Err(path_diagnostic(
+                    DiagnosticCode::Range,
+                    format!(
+                        "chord.{} requires `strum = down` or `strum = up`",
+                        field.name
+                    ),
+                    object,
+                    Some(field),
+                ));
+            }
+            return Ok(None);
+        };
+        let up = match self
+            .symbol_value(&strum_field.value, object, Some(strum_field))?
+            .as_str()
+        {
+            "down" => false,
+            "up" => true,
+            _ => {
+                return Err(path_diagnostic(
+                    DiagnosticCode::Range,
+                    "chord.strum must be `down` or `up`",
+                    object,
+                    Some(strum_field),
+                ))
+            }
+        };
+        let stagger = match object.field("stagger") {
+            Some(field) => {
+                let stagger = self.seconds_value(&field.value, object, Some(field))?;
+                if stagger.is_negative() {
+                    return Err(path_diagnostic(
+                        DiagnosticCode::Range,
+                        "chord.stagger must be nonnegative",
+                        object,
+                        Some(field),
+                    ));
+                }
+                stagger
+            }
+            // 8 ms per string.
+            None => Rational::new(1.into(), 125.into()),
+        };
+        let tilt = match object.field("tilt") {
+            Some(field) => {
+                if matches!(
+                    object
+                        .field("velocity")
+                        .map(|velocity| &velocity.value.kind),
+                    Some(ValueKind::List(_))
+                ) {
+                    return Err(path_diagnostic(
+                        DiagnosticCode::Range,
+                        "chord.tilt requires a single velocity, not a list",
+                        object,
+                        Some(field),
+                    ));
+                }
+                self.rational_value(&field.value, object, Some(field))?
+            }
+            None => Rational::zero(),
+        };
+        Ok(Some(Strum { up, stagger, tilt }))
     }
 
     fn parse_hit(&self, object: &Object) -> CResult<LeafDef> {
@@ -2442,7 +2711,15 @@ impl<'a> Compiler<'a> {
     fn parse_use(&self, object: &Object) -> CResult<UseDef> {
         self.check_fields(
             object,
-            &["pattern", "at", "count", "stretch", "transpose", "boundary"],
+            &[
+                "pattern",
+                "at",
+                "count",
+                "stretch",
+                "transpose",
+                "boundary",
+                "voicing",
+            ],
         )?;
         let pattern = self.one_reference(
             &self.field(object, "pattern")?.value,
@@ -2509,7 +2786,18 @@ impl<'a> Compiler<'a> {
             stretch,
             transpose_cents: transpose,
             cut: boundary == "cut",
+            voicing: self.supplied_voicing(object)?,
         })
+    }
+
+    /// The voicing a use or placement supplies to chords without pitches.
+    fn supplied_voicing(&self, object: &Object) -> CResult<Option<String>> {
+        let Some(field) = object.field("voicing") else {
+            return Ok(None);
+        };
+        self.voicing_pitches(object, field)?;
+        self.one_reference(&field.value, object, Some(field))
+            .map(Some)
     }
 
     fn read_patterns(&mut self) -> CResult<()> {
@@ -2532,7 +2820,20 @@ impl<'a> Compiler<'a> {
             let mut children = Vec::new();
             for child in object.children.values() {
                 if child.kind == "chord" {
-                    for member in self.parse_chord(child)? {
+                    let Some(members) = self.parse_chord(child)? else {
+                        let at_field = self.field(child, "at")?;
+                        if self.q_value(&at_field.value, child, Some(at_field), false)? >= length {
+                            return Err(path_diagnostic(
+                                DiagnosticCode::Interval,
+                                "pattern child onset must be before pattern length",
+                                child,
+                                None,
+                            ));
+                        }
+                        children.push(PatternChild::Chord(Box::new(child.clone())));
+                        continue;
+                    };
+                    for member in members {
                         if member.at >= length {
                             return Err(path_diagnostic(
                                 DiagnosticCode::Interval,
@@ -2903,6 +3204,7 @@ impl<'a> Compiler<'a> {
                 stretch,
                 transpose_cents: transpose,
                 cut: boundary == "cut",
+                voicing: self.supplied_voicing(object)?,
                 overrides,
                 inserts,
             });
@@ -3315,6 +3617,10 @@ impl<'a> Compiler<'a> {
                     origin,
                     scale: place.stretch.clone(),
                     transpose: place.transpose_cents.clone(),
+                    voicing: place.voicing.clone().map(|voicing| SuppliedVoicing {
+                        voicing,
+                        by: format!("placement `{}`", place.id),
+                    }),
                     address: &mut address,
                     inherited_cut_end: cut_end,
                     target: target.as_ref(),
@@ -3494,6 +3800,20 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
+    /// The number of pitches in the largest voicing.
+    fn max_voicing_pitches(&self) -> u64 {
+        self.document
+            .objects
+            .values()
+            .filter(|object| object.kind == "voicing")
+            .filter_map(|voicing| match &voicing.field("pitches")?.value.kind {
+                ValueKind::List(items) => Some(items.len() as u64),
+                _ => None,
+            })
+            .max()
+            .unwrap_or(0)
+    }
+
     /// Compute bounded expansion work and emitted-note count without walking
     /// every repetition.  This is a preflight guard for empty patterns and
     /// nested repetitions whose emitted count alone may be zero or small.
@@ -3522,11 +3842,16 @@ impl<'a> Compiler<'a> {
                 )
             })?;
             let mut work = pattern.children.len() as u64;
+            // A chord without pitches plays at most the largest voicing.
             let mut events = pattern
                 .children
                 .iter()
-                .filter(|child| matches!(child, PatternChild::Leaf(_)))
-                .count() as u64;
+                .map(|child| match child {
+                    PatternChild::Leaf(_) => 1,
+                    PatternChild::Chord(_) => compiler.max_voicing_pitches(),
+                    PatternChild::Use(_) => 0,
+                })
+                .sum::<u64>();
             for child in &pattern.children {
                 if let PatternChild::Use(use_def) = child {
                     let (child_work, child_events) =
@@ -3644,6 +3969,28 @@ impl<'a> Compiler<'a> {
         })
     }
 
+    fn expand_pattern_leaf(
+        &mut self,
+        leaf: &LeafDef,
+        pattern_path: &[String],
+        state: &mut ExpansionState<'_>,
+    ) -> CResult<()> {
+        state.address.push(leaf.id.clone());
+        let mut source_path = pattern_path.to_vec();
+        source_path.push(leaf.source_id().to_owned());
+        let event = Self::expand_leaf(leaf, state, source_path)?;
+        if self.events.len() >= MAX_EXPANDED_NOTES {
+            return Err(diagnostics(
+                DiagnosticCode::ResourceLimit,
+                "expanded note count exceeds 100000",
+                Some(leaf.span),
+            ));
+        }
+        self.events.push(event);
+        state.address.pop();
+        Ok(())
+    }
+
     fn expand_pattern(&mut self, pattern_id: &str, state: &mut ExpansionState<'_>) -> CResult<()> {
         if state.depth >= MAX_PATTERN_DEPTH {
             return Err(diagnostics(
@@ -3670,19 +4017,12 @@ impl<'a> Compiler<'a> {
             }
             match child {
                 PatternChild::Leaf(leaf) => {
-                    state.address.push(leaf.id.clone());
-                    let mut source_path = pattern.source_path.clone();
-                    source_path.push(leaf.source_id().to_owned());
-                    let event = Self::expand_leaf(&leaf, state, source_path)?;
-                    if self.events.len() >= MAX_EXPANDED_NOTES {
-                        return Err(diagnostics(
-                            DiagnosticCode::ResourceLimit,
-                            "expanded note count exceeds 100000",
-                            Some(leaf.span),
-                        ));
+                    self.expand_pattern_leaf(&leaf, &pattern.source_path, state)?
+                }
+                PatternChild::Chord(chord) => {
+                    for member in self.lower_supplied_chord(&chord, state.voicing.as_ref())? {
+                        self.expand_pattern_leaf(&member, &pattern.source_path, state)?;
                     }
-                    self.events.push(event);
-                    state.address.pop();
                 }
                 PatternChild::Use(use_def) => {
                     let source = self
@@ -3709,6 +4049,14 @@ impl<'a> Compiler<'a> {
                         Some(use_def.span),
                     )?;
                     let child_span = checked_mul(&child_scale, &source.length, Some(use_def.span))?;
+                    // The nearest use or placement naming a voicing supplies it.
+                    let child_voicing = match &use_def.voicing {
+                        Some(voicing) => Some(SuppliedVoicing {
+                            voicing: voicing.clone(),
+                            by: format!("use `{}`", use_def.id),
+                        }),
+                        None => state.voicing.clone(),
+                    };
                     for repetition in 0..use_def.count {
                         self.expansion_work = self.expansion_work.saturating_add(1);
                         if self.expansion_work > MAX_EXPANSION_WORK {
@@ -3738,6 +4086,7 @@ impl<'a> Compiler<'a> {
                             origin: child_origin,
                             scale: child_scale.clone(),
                             transpose: child_transpose.clone(),
+                            voicing: child_voicing.clone(),
                             address: &mut *state.address,
                             inherited_cut_end: cut_end,
                             target: state.target,
@@ -3810,6 +4159,7 @@ impl<'a> Compiler<'a> {
                 origin: place.at.clone(),
                 scale: Rational::one(),
                 transpose: Rational::zero(),
+                voicing: None,
                 address: &mut address,
                 inherited_cut_end: None,
                 target,

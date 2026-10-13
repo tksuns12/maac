@@ -7,6 +7,18 @@ promise of compatibility beyond the documented interfaces.
 
 ### Added
 
+- A chord leaf can be strummed (spec §8.2): `strum = down` or `up` strikes its
+  members in list order or in reverse, `stagger` (default 8 ms) apart, and
+  `tilt` changes the velocity linearly from the first string struck to the
+  last. A top-level `voicing` names a pitch list, such as a chord shape, that
+  chords play with `voicing = &g` instead of `pitches`; `top = n` or
+  `bottom = n` keeps the upper or lower `n` strings. A `use` or `place` can
+  supply a voicing with `voicing = &d`; a chord with neither `pitches` nor
+  `voicing` plays the nearest one, so one strum rhythm serves every chord.
+  All of these lower to the notes a written-out chord would list, so the plan
+  format is unchanged. T3's draft-4 strums shrink from 35 lines and 388 values
+  to 15 lines and 79. See the
+  [strum and voicing proposal](docs/design/strum-voicing-proposal.md).
 - `maac analyze` reports what each `fx.compressor/1` and `fx.limiter/1` takes:
   a `dynamics` object per section with `reduction_db`, the loudness it takes
   leaving out makeup and drive, and `max_reduction_db`. A top-level

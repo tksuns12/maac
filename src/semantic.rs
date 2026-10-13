@@ -843,6 +843,7 @@ impl<'a> Validator<'a> {
             "connect" => self.validate_connect(object, &path),
             "region" => self.validate_region(object, &path),
             "groove" => self.validate_groove(object, &path),
+            "voicing" => self.validate_voicing(object, &path),
             "modulate" | "asset" | "audio" | "extension" | "hit" | "message" | "expression" => {
                 self.validate_deferred_object(object, &path)
             }
@@ -1677,41 +1678,54 @@ impl<'a> Validator<'a> {
         self.check_schema(
             object,
             path,
-            &["at", "dur", "pitches"],
+            &["at", "dur"],
             &[
                 "at",
                 "dur",
                 "pitches",
+                "voicing",
+                "top",
+                "bottom",
                 "velocity",
                 "release_velocity",
                 "onset_offset",
                 "release_offset",
                 "order",
+                "strum",
+                "stagger",
+                "tilt",
                 "label",
             ],
             &[],
         );
         self.validate_note_gate(object, path);
-        let members = object
-            .field("pitches")
-            .and_then(|field| match &field.value.kind {
-                ValueKind::List(items) if !items.is_empty() => {
-                    for item in items {
-                        self.validate_pitch_value_at(item, path, "pitches");
-                    }
-                    Some(items.len())
-                }
-                _ => {
+        self.validate_strum(object, path);
+        let pitches = match (object.field("pitches"), object.field("voicing")) {
+            (Some(field), voicing) => {
+                if let Some(voicing) = voicing {
                     self.push(
                         DiagnosticCode::Range,
-                        "chord.pitches must be a nonempty list of pitches",
-                        Some(field.value.span),
+                        "a chord names its pitches with `pitches` or `voicing`, not both",
+                        Some(voicing.value.span),
                         path.to_vec(),
-                        vec!["pitches".into()],
+                        vec!["voicing".into()],
                     );
-                    None
                 }
-            });
+                self.validate_pitch_list(field, path)
+            }
+            (None, Some(field)) => self
+                .expect_object_ref(field, "voicing", &["voicing"], path)
+                .and_then(|_| {
+                    let id = &field.value.reference()?.path[0];
+                    match &self.document.object(id)?.field("pitches")?.value.kind {
+                        ValueKind::List(items) if !items.is_empty() => Some(items.len()),
+                        _ => None,
+                    }
+                }),
+            // The nearest use or placement supplies a voicing.
+            (None, None) => None,
+        };
+        let members = self.validate_pitch_selection(object, path, pitches);
         for name in [
             "velocity",
             "release_velocity",
@@ -1751,6 +1765,146 @@ impl<'a> Validator<'a> {
             }
         }
         self.validate_note_rest(object, path);
+    }
+
+    /// A nonempty list of pitches, as a chord or voicing `pitches`; returns
+    /// its length.
+    fn validate_pitch_list(&mut self, field: &Field, path: &[String]) -> Option<usize> {
+        match &field.value.kind {
+            ValueKind::List(items) if !items.is_empty() => {
+                for item in items {
+                    self.validate_pitch_value_at(item, path, "pitches");
+                }
+                Some(items.len())
+            }
+            _ => {
+                self.push(
+                    DiagnosticCode::Range,
+                    "pitches must be a nonempty list of pitches",
+                    Some(field.value.span),
+                    path.to_vec(),
+                    vec!["pitches".into()],
+                );
+                None
+            }
+        }
+    }
+
+    /// A chord's `top` or `bottom`, from 1 through the `pitches` it selects
+    /// from when they are known; returns the number of members.
+    fn validate_pitch_selection(
+        &mut self,
+        object: &Object,
+        path: &[String],
+        pitches: Option<usize>,
+    ) -> Option<usize> {
+        let (top, bottom) = (object.field("top"), object.field("bottom"));
+        if let (Some(_), Some(field)) = (top, bottom) {
+            self.push(
+                DiagnosticCode::Range,
+                "a chord takes `top` or `bottom`, not both",
+                Some(field.value.span),
+                path.to_vec(),
+                vec!["bottom".into()],
+            );
+            return None;
+        }
+        let Some(field) = top.or(bottom) else {
+            return pitches;
+        };
+        let name = field.name.clone();
+        let count = self.integer(field, path, &name)?;
+        let selected = count.to_integer().to_usize().filter(|count| *count >= 1);
+        match (selected, pitches) {
+            (Some(selected), Some(pitches)) if selected <= pitches => Some(selected),
+            (Some(_), None) => None,
+            _ => {
+                self.push(
+                    DiagnosticCode::Range,
+                    match pitches {
+                        Some(pitches) => format!(
+                            "chord.{name} must be from 1 through {pitches}, the number of pitches"
+                        ),
+                        None => format!("chord.{name} must be positive"),
+                    },
+                    Some(field.value.span),
+                    path.to_vec(),
+                    vec![name],
+                );
+                None
+            }
+        }
+    }
+
+    /// A named, reusable list of pitches that chords play (§8.2).
+    fn validate_voicing(&mut self, object: &Object, path: &[String]) {
+        self.check_schema(object, path, &["pitches"], &["pitches", "label"], &[]);
+        if let Some(field) = object.field("pitches") {
+            self.validate_pitch_list(field, path);
+        }
+        self.reject_children(object, path);
+    }
+
+    /// A chord's `strum`, with the `stagger` and `tilt` that only a strum
+    /// may set; `tilt` needs a single velocity.
+    fn validate_strum(&mut self, object: &Object, path: &[String]) {
+        let strum = object.field("strum");
+        if let Some(field) = strum {
+            if !matches!(field.value.as_symbol(), Some("down" | "up")) {
+                self.push(
+                    DiagnosticCode::Range,
+                    "chord.strum must be `down` or `up`",
+                    Some(field.value.span),
+                    path.to_vec(),
+                    vec!["strum".into()],
+                );
+            }
+        }
+        for name in ["stagger", "tilt"] {
+            let Some(field) = object.field(name) else {
+                continue;
+            };
+            if strum.is_none() {
+                self.push(
+                    DiagnosticCode::Range,
+                    format!("chord.{name} requires `strum = down` or `strum = up`"),
+                    Some(field.value.span),
+                    path.to_vec(),
+                    vec![name.into()],
+                );
+            }
+            if name == "stagger" {
+                if let Some(stagger) =
+                    self.quantity_value(&field.value, &[Unit::S, Unit::Ms], path, name)
+                {
+                    if stagger < BigRational::zero() {
+                        self.push(
+                            DiagnosticCode::Range,
+                            "chord.stagger must be nonnegative",
+                            Some(field.value.span),
+                            path.to_vec(),
+                            vec![name.into()],
+                        );
+                    }
+                }
+            } else {
+                self.number_value(&field.value, path, name);
+                if matches!(
+                    object
+                        .field("velocity")
+                        .map(|velocity| &velocity.value.kind),
+                    Some(ValueKind::List(_))
+                ) {
+                    self.push(
+                        DiagnosticCode::Range,
+                        "chord.tilt requires a single velocity, not a list",
+                        Some(field.value.span),
+                        path.to_vec(),
+                        vec![name.into()],
+                    );
+                }
+            }
+        }
     }
 
     /// The nonnegative onset and positive gate shared by notes and chords.
@@ -1838,12 +1992,16 @@ impl<'a> Validator<'a> {
                 "stretch",
                 "transpose",
                 "boundary",
+                "voicing",
                 "label",
             ],
             &[],
         );
         if let Some(field) = object.field("pattern") {
             self.expect_object_ref(field, "pattern", &["pattern"], path);
+        }
+        if let Some(field) = object.field("voicing") {
+            self.expect_object_ref(field, "voicing", &["voicing"], path);
         }
         if let Some(field) = object.field("at") {
             if let Some(value) = self.quantity(field, &[Unit::Q], path, "at") {
@@ -1924,6 +2082,7 @@ impl<'a> Validator<'a> {
                 "transpose",
                 "boundary",
                 "groove",
+                "voicing",
                 "label",
             ],
             &[],
@@ -1936,6 +2095,9 @@ impl<'a> Validator<'a> {
         }
         if let Some(field) = object.field("groove") {
             self.expect_object_ref(field, "groove", &["groove"], path);
+        }
+        if let Some(field) = object.field("voicing") {
+            self.expect_object_ref(field, "voicing", &["voicing"], path);
         }
         if let Some(field) = object.field("at") {
             if let Some(value) = self.position_q_value(&field.value, path, "at") {
@@ -5838,6 +6000,7 @@ fn is_known_kind(kind: &str) -> bool {
             | "track"
             | "place"
             | "groove"
+            | "voicing"
             | "curve"
             | "automation"
             | "modulate"

@@ -1,7 +1,9 @@
 # Strums and voicings: proposal
 
-**Status:** proposed 2026-10-13; awaiting the owner's [decisions](#decisions).
-This is item 3 of
+**Status:** accepted 2026-10-13, when the owner took every recommended
+[decision](#decisions), and implemented the same day. The normative contract
+is [§8.2](../../MaaC-1-Specification.md#82-chords); [Results](#results)
+compares it with this proposal. This is item 3 of
 [what to build next](../reports/ai-production-trial-t3.md#what-to-build-next-in-order)
 in the T3 trial: F18, a strum and voicing shorthand. It is a language
 change. It follows the
@@ -298,3 +300,41 @@ Recommendations first:
 5. **Versioning:** additive `maac 1` core, with no plan change.
    *Recommended*, as for the chord leaf.
 6. **Order:** A, then B, then C, each landing with its fixtures.
+
+The owner accepted all six recommendations on 2026-10-13.
+
+## Results
+
+A, B and C were built and tested in that order: A with
+[`tests/chord_strum.rs`](../../tests/chord_strum.rs), B and C with
+[`tests/chord_voicing.rs`](../../tests/chord_voicing.rs). They landed in one
+commit, because all three change the same chord lowering.
+
+**T3 draft 4.**
+
+- The A-and-B rewrite that keeps draft 4's velocity lists and its 10 ms D
+  and C staggers gives the same `maac query-events` output, 2,025 events, and
+  a byte-identical render (SHA-256 `dfb131be27864925…`).
+- The A, B and C rewrite compiles. It has 2,091 events: 66 more, because its
+  single rhythm plays the D and C upstrokes on four strings where draft 4
+  used three. Its four voicings and two stroke patterns take the 15 lines
+  counted above.
+
+**Differences from the proposal.**
+
+- A chord with no pitches, no voicing and nothing supplying one is
+  `E_REFERENCE` where it is expanded, so a pattern that no placement reaches
+  is not checked for it. A `top` or `bottom` too large for a supplied voicing,
+  and a per-member list of the wrong length, are checked at each occurrence;
+  the diagnostic ends with the voicing and what supplied it, such as
+  "(voicing `d` from use `b2`)".
+- Editing: an edit that changes the number of pitches a chord plays, through
+  its `pitches`, its voicing, its `top` or `bottom`, or the voicing a use or
+  placement supplies, is refused with `E_INSTANCE_TARGET` when an existing
+  override would move to another member. A voicing edit reports only the
+  occurrences that play it. Materializing a placement copies a voicing that a
+  chord names, as it copies curves; a supplied voicing stays on its use or
+  placement.
+- The [reference](../reference.md) covers the CLI and the Rust library, not
+  the language, so the example is in the [tutorial](../tutorial.md) and the
+  [producer guide](../ai-producer-guide.md) only.

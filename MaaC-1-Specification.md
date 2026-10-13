@@ -218,6 +218,7 @@ by that extension. Other top-level kinds in a core composition are:
 |---|---|
 | `tempo`, `meter`, `tuning` | Musical coordinate systems |
 | `groove` | Named swing map that placements reference (§9.2) |
+| `voicing` | Named pitch list that chords play (§8.2) |
 | `pattern` | Finite reusable event content |
 | `track`, `place` | Event destinations and arrangement instances |
 | `curve`, `automation`, `modulate` | Expression and parameter functions |
@@ -405,24 +406,87 @@ and one gate.
 pattern comp {
   length = 4q;
   chord down { at = 0q; dur = 7/5q; pitches = [A3, C4, E4, G4]; velocity = [0.5, 0.45, 0.45, 0.42]; }
-  chord strum { at = 2q; dur = 2q; pitches = [G3, B3, D4]; onset_offset = [0ms, 12ms, 24ms]; }
+  chord rake { at = 2q; dur = 2q; pitches = [G3, B3, D4]; onset_offset = [0ms, 12ms, 24ms]; }
+  chord up { at = 3q; dur = 1q; pitches = [G3, B3, D4]; strum = up; velocity = 0.5; tilt = -0.06; }
 }
 ```
 
-A chord requires `at`, `dur`, and `pitches`, a nonempty list of values in any
-form a note's `pitch` accepts. `velocity`, `release_velocity`, `onset_offset`,
-and `release_offset` are each either one value for every member or a list with
-exactly one entry per pitch, with the note defaults and ranges; a list of
-another length is `E_RANGE`. `order` and `label` are single values. A chord may
-contain `expression` children, each of which applies to every member.
+A chord requires `at` and `dur`, and names its pitches with at most one of
+`pitches`, a nonempty list of values in any form a note's `pitch` accepts, and
+`voicing`, a reference to a `voicing` object. Both is `E_RANGE`; a `voicing`
+that does not reference a voicing is `E_REFERENCE`. A chord with neither plays
+a voicing supplied by a `use` or `place`, as below. A `voicing` is a
+top-level object with a required `pitches` list of the same form and an
+optional `label`:
+
+```maac
+voicing g_open { pitches = [G2, B2, D3, G3, B3, G4]; }
+pattern strum { length = 4q;
+  chord d1 { at = 0q; dur = 1q; voicing = &g_open; strum = down; velocity = 0.78; tilt = -0.12; }
+  chord u1 { at = 3/2q; dur = 1q; voicing = &g_open; top = 4; strum = up; velocity = 0.46; }
+}
+```
+
+`top = n` keeps the last `n` of those pitches and `bottom = n` the first `n`,
+where `n` is an integer from 1 through their number; otherwise, or with both
+fields, it is `E_RANGE`. The result, in list order, is the chord's *played
+pitches*. `velocity`, `release_velocity`, `onset_offset`, and
+`release_offset` are each either one value for every member or a list with
+exactly one entry per played pitch, with the note defaults and ranges; a list
+of another length is `E_RANGE`. `order` and `label` are single values. A chord
+may contain `expression` children, each of which applies to every member.
 
 Member `k`, counted from zero, is exactly a note with the chord's `at`, `dur`,
-and `order`, pitch `pitches[k]`, entry `k` of each list-valued field (or the
-single value), and the chord's expressions. Expansion, stretch,
-transposition, `cut`, overrides, queries, and receivers treat members as
-notes. Lists make a strum explicit; no strum or voicing rule is inferred.
-Members may share a pitch. A chord is a pattern leaf only: an `insert` still
-contains exactly one note, hit, message, or audio leaf.
+and `order`, entry `k` of the played pitches, entry `k` of each list-valued
+field (or the single value), and the chord's expressions. In the example,
+`u1.0` is D3. Expansion, stretch, transposition, `cut`, overrides, queries,
+and receivers treat members as notes. Members may share a pitch. Editing a
+voicing changes every chord that plays it. A chord is a pattern leaf only: an
+`insert` still contains exactly one note, hit, message, or audio leaf.
+
+A chord may be strummed. `strum` is `down` or `up`. `stagger` is a
+nonnegative physical duration, the time from one string to the next, default
+8ms. `tilt` is a dimensionless velocity change from the first string struck to
+the last, default 0. `stagger` or `tilt` without `strum`, and `tilt` with a
+list-valued `velocity`, are `E_RANGE`; without `strum` the chord has neither
+default. A downstroke strikes the members in list order and an upstroke in
+reverse, so member `k` of `n` is struck at position `i = k` (down) or
+`i = n - 1 - k` (up). Its onset offset is its own `onset_offset` plus
+`i * stagger`, and its velocity is `velocity + tilt * i / (n - 1)`, or
+`velocity` when `n` is 1. Both are exact rationals, and a velocity outside
+`[0,1]` is `E_RANGE`. The stagger is physical like `onset_offset`: stretch
+does not scale it, and it applies after the groove (§9.2). In `comp` above,
+`up` strikes D4 at velocity 1/2, then B3 8ms later at 47/100, then G3 at 16ms
+and 11/25.
+
+A `use` (§9) or `place` (§10) may name a voicing with `voicing = &id`. A chord
+with neither `pitches` nor `voicing` plays the voicing named by its nearest
+enclosing use or placement in the expansion path that names one; an inner
+use's voicing replaces an outer one for the chords below it. A chord's own
+`pitches` or `voicing` ignores any supplied voicing. One rhythm pattern then
+serves every chord:
+
+```maac
+voicing d_four { pitches = [D3, A3, D4, F#4]; }
+pattern strum_bar { length = 4q;
+  chord d1 { at = 0q; dur = 1q; strum = down; velocity = 0.78; tilt = -0.12; }
+  chord u1 { at = 3/2q; dur = 1q; top = 4; strum = up; velocity = 0.46; }
+}
+pattern verse { length = 8q;
+  use b1 { pattern = &strum_bar; at = 0q; voicing = &g_open; }
+  use b2 { pattern = &strum_bar; at = 4q; voicing = &d_four; }
+}
+```
+
+The played pitches, the per-member lists, `top` and `bottom` are then checked
+at each occurrence. A chord occurrence with no voicing in scope is
+`E_REFERENCE`, and a `top` or `bottom` larger than the supplied voicing is
+`E_RANGE`; both diagnostics name the chord, and the second names the use or
+placement that supplied the voicing. Transposition applies to supplied
+pitches like any other. Member addresses keep their form, but one rhythm can
+have a different number of members under each voicing: an override that
+addresses `d1.5` where a four-pitch voicing is supplied is `E_INSTANCE_TARGET`,
+as for any missing occurrence.
 
 A member's leaf component in the §10 event address is `chord_id.k`, for
 example `comp_main/3/down.2`; identifiers cannot contain `.`. Its source
@@ -446,7 +510,7 @@ pattern eight_quarters {
 }
 ```
 
-A `use` requires `pattern` and nonnegative musical `at`. `count` is a positive integer, default 1; `stretch` is positive dimensionless rational, default 1; `transpose` is cents, default 0ct; `boundary` is `spill` or `cut`, default `spill`.
+A `use` requires `pattern` and nonnegative musical `at`. `count` is a positive integer, default 1; `stretch` is positive dimensionless rational, default 1; `transpose` is cents, default 0ct; `boundary` is `spill` or `cut`, default `spill`. An optional `voicing` reference supplies a voicing to chords without pitches below it (§8.2).
 
 The occupied repetition span is `count * stretch * source.length`; it must fit in the parent pattern's length. For repetition `i`, a child at `a` with gate `d` maps to:
 
@@ -546,7 +610,7 @@ place bass_main {
 }
 ```
 
-A `place` has the same repetition and transformation fields as `use`, plus required `track` and an optional `groove` reference (§9.2). Its `at` is a global score position. Its occupied repetition span must fit within the project score. Each expanded leaf carries a structured event address:
+A `place` has the same repetition, transformation and `voicing` fields as `use`, plus required `track` and an optional `groove` reference (§9.2). Its `at` is a global score position. Its occupied repetition span must fit within the project score. Each expanded leaf carries a structured event address:
 
 `(placement_id, repetition_index, [use_id, repetition_index ...], leaf_id)`.
 
@@ -1083,7 +1147,7 @@ Core operations are:
   payloads (`expect`, `expect_object`, `value`, or `object_value`). Changes to
   randomness/hash identity must be reported.
 
-Ordered lists are replaced as fields in core patches. Chord members are identified by index (§8.2). A replacement of a chord's `pitches` that changes its length shifts every member after the first changed position. If an override present in **A0** addresses such a shifted member, the transaction fails with `E_INSTANCE_TARGET` rather than silently retargeting it; appending members or changing pitches in place shifts nothing. A UI may implement fine-grained breakpoint edits internally, but it must check the expected old list or revision rather than blindly rely on a stale list index. Core has no query-text execution, wildcard mutation, or implicit last-writer-wins merge.
+Ordered lists are replaced as fields in core patches. Chord members are identified by index (§8.2). An edit that changes the number of a chord's played pitches, through its `pitches`, its voicing's `pitches`, or its `top` or `bottom`, shifts every member after the first played pitch that changed. If an override present in **A0** addresses such a shifted member, the transaction fails with `E_INSTANCE_TARGET` rather than silently retargeting it; appending members or changing pitches in place shifts nothing. A UI may implement fine-grained breakpoint edits internally, but it must check the expected old list or revision rather than blindly rely on a stale list index. Core has no query-text execution, wildcard mutation, or implicit last-writer-wins merge.
 
 Before operation evaluation, the supplied `base_revision` must equal
 `SHA-256(canonical A0)` for the immutable original authored graph **A0**;
@@ -1375,6 +1439,7 @@ Required cases for a full implementation include:
 18. A byte-identical source with an altered processor binary fails lock verification.
 19. Noise samples are invariant to adding an unrelated node because random addressing is node-local.
 20. A sub-sample positive gate that maps both endpoints to one frame fails rather than being arbitrarily lengthened.
+21. A four-pitch upstroke with `stagger = 30ms` strikes members 3, 2, 1 and 0 with onset offsets 0, 3/100, 3/50 and 9/100 s. A downstroke with `velocity = 0.8` and `tilt = -0.12` gives members 0 to 3 velocities 4/5, 19/25, 18/25 and 17/25.
 
 ### 28.1 Auxiliary `reference-f64` suite
 

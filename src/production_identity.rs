@@ -409,6 +409,7 @@ impl Normalizer<'_> {
                 | "track"
                 | "place"
                 | "groove"
+                | "voicing"
                 | "curve"
                 | "automation"
                 | "node"
@@ -451,14 +452,18 @@ impl Normalizer<'_> {
             let pitch = (matches!(object.kind.as_str(), "note" | "piece") && name == "pitch")
                 || (object.kind == "override" && name == "set");
             let value = match &field.value.kind {
-                // Each spelled chord pitch lowers like a note's `pitch`.
-                ValueKind::List(items) if object.kind == "chord" && name == "pitches" => json!({
+                // Each spelled chord or voicing pitch lowers like a note's `pitch`.
+                ValueKind::List(items)
+                    if matches!(object.kind.as_str(), "chord" | "voicing") && name == "pitches" =>
+                {
+                    json!({
                     "t": "list",
                     "items": items
                         .iter()
                         .map(|item| self.value(item, true, constructors))
                         .collect::<Result<Vec<_>, _>>()?,
-                }),
+                    })
+                }
                 _ => self.value(&field.value, pitch, constructors)?,
             };
             fields.insert(name.clone(), value);
@@ -486,6 +491,13 @@ impl Normalizer<'_> {
                     ("order", number(0)),
                 ] {
                     fields.entry(name).or_insert(value);
+                }
+                // A strum strikes one string every 8 ms with no tilt.
+                if fields.contains_key("strum") {
+                    fields
+                        .entry("stagger")
+                        .or_insert_with(|| quantity(1, 125, Unit::S));
+                    fields.entry("tilt").or_insert_with(|| number(0));
                 }
             }
             "audio" => {

@@ -98,6 +98,18 @@
       "pass": true
     },
     {
+      "id": "strum_up_member0_offset",
+      "actual": "9/100",
+      "expected": "9/100",
+      "pass": true
+    },
+    {
+      "id": "strum_down_member2_velocity",
+      "actual": "18/25",
+      "expected": "18/25",
+      "pass": true
+    },
+    {
       "id": "linear_tempo_ramp_seconds",
       "actual": 1.6218604324326575,
       "expected": 1.6218604324326575,

@@ -36,15 +36,25 @@ listen before you call a track finished.
 
 - Write each chord as one `chord` leaf:
   `chord down { at = 0q; dur = 7/5q; pitches = [A3, C4, E4, G4]; velocity = [0.5, 0.45, 0.45, 0.42]; }`.
-  Give `velocity` or `onset_offset` a list to voice or strum it.
+  Give `velocity` a list to voice it.
+- Strum with `strum = down` or `strum = up`, not with offset lists. The
+  strings are 8 ms apart unless `stagger` says otherwise, and `tilt` is the
+  velocity change from the first string struck to the last:
+  `strum = down; velocity = 0.78; tilt = -0.12;`.
+- Name each guitar shape once as a `voicing`, such as
+  `voicing d { pitches = [D3, A3, D4, F#4]; }`, and write the strum rhythm
+  once. Chords without `pitches` play the voicing their `use` or `place`
+  names: `use b2 { pattern = &strum_bar; at = 4q; voicing = &d; }`. `top = 4`
+  keeps the upper four strings, as an upstroke catches them.
 - Write one-bar chord patterns and assemble progressions with `use`. Place
   progressions with `count` for repeats.
-- Reuse one shape at other pitches with `transpose` on `use`, in cents:
+- Reuse a line at other pitches with `transpose` on `use`, in cents:
   `use d_bar { pattern = &g_bar; at = 4q; transpose = 700ct; }` plays a G
-  pattern as D. A bass line or a guitar shape needs only one pattern per
-  chord quality. Mind the range: a transposed shape keeps its spread, so a G
-  shape from G2 moved down a fourth plays D2, below a guitar's low E (E2).
-  "Morning Ferry"'s picking does this in its D and C bars.
+  pattern as D. A bass line needs only one pattern per chord quality. Mind
+  the range: a transposed shape keeps its spread, so a G shape from G2 moved
+  down a fourth plays D2, below a guitar's low E (E2). "Morning Ferry"'s
+  picking does this in its D and C bars; give a picked guitar a pattern per
+  shape instead.
 - Play drums from one kit node: import `std/studio/1.1.0`, add
   `node drums { instrument = &studio.drums; }`, and write `hit` leaves such as
   `hit k1 { at = 0q; key = "kick"; velocity = 0.85; }`. Keys are `kick`,

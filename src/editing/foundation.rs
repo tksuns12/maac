@@ -618,7 +618,7 @@ impl EditContext for BundleEditContext {
         let object = object_at(base, base_path)?;
         let (meter, _) = bundle_normalization_context(base)?;
         let kind = object["kind"].as_str().unwrap_or_default();
-        if kind == "chord" && field.len() == 1 && field[0] == "pitches" {
+        if matches!(kind, "chord" | "voicing") && field.len() == 1 && field[0] == "pitches" {
             return normalize_field_value(kind, "pitches", value, true, &meter);
         }
         let pitch = (matches!(kind, "note" | "piece") && field.len() == 1 && field[0] == "pitch")
@@ -710,7 +710,7 @@ impl EditContext for FoundationEditContext {
         let meter = meter_map(base)?;
         let object = object_at(base, base_path)?;
         let kind = object["kind"].as_str().unwrap_or_default();
-        if kind == "chord" && field.len() == 1 && field[0] == "pitches" {
+        if matches!(kind, "chord" | "voicing") && field.len() == 1 && field[0] == "pitches" {
             return normalize_field_value(kind, "pitches", value, true, &meter);
         }
         let pitch = (matches!(kind, "note" | "piece") && field.len() == 1 && field[0] == "pitch")
@@ -945,7 +945,7 @@ fn boolean(value: bool) -> Value {
 }
 
 /// Spelled pitches lower to `key(k)` in a note's `pitch`, each item of a
-/// chord's `pitches`, and an override's `set.pitch`.
+/// chord's or voicing's `pitches`, and an override's `set.pitch`.
 fn normalize_field_value(
     kind: &str,
     name: &str,
@@ -953,7 +953,7 @@ fn normalize_field_value(
     constructors: bool,
     meter: &MeterMap,
 ) -> EditResult<Value> {
-    if kind == "chord" && name == "pitches" && value["t"] == "list" {
+    if matches!(kind, "chord" | "voicing") && name == "pitches" && value["t"] == "list" {
         let items = value["items"]
             .as_array()
             .ok_or_else(|| EditError::new("E_SYNTAX", "items must be an array"))?
@@ -1142,6 +1142,13 @@ fn normalize_object_inner(
                 ("order", number(0, 1)),
             ] {
                 fields.entry(name).or_insert(value);
+            }
+            // A strum strikes one string every 8 ms with no tilt.
+            if fields.contains_key("strum") {
+                fields
+                    .entry("stagger")
+                    .or_insert_with(|| quantity(1, 125, Unit::S));
+                fields.entry("tilt").or_insert_with(|| number(0, 1));
             }
         }
         "hit" => {
@@ -1514,7 +1521,21 @@ fn positive_count(object: &Value) -> Option<u64> {
     }
 }
 
-fn resolve_occurrence(root: &Value, place: &Value, address: &str) -> Option<Vec<(Path, usize)>> {
+/// Each source object an occurrence passes through, with the address segment
+/// that names it.
+type SourceMappings = Vec<(Path, usize)>;
+
+fn resolve_occurrence(root: &Value, place: &Value, address: &str) -> Option<SourceMappings> {
+    resolve_occurrence_pitches(root, place, address).map(|(mappings, _)| mappings)
+}
+
+/// The source mappings of the occurrence at `address` and, for a chord
+/// member, the pitches its chord plays there.
+fn resolve_occurrence_pitches<'a>(
+    root: &'a Value,
+    place: &Value,
+    address: &str,
+) -> Option<(SourceMappings, Option<&'a [Value]>)> {
     let segments: Vec<_> = address.split('/').collect();
     if segments.len() < 2 || segments.iter().any(|segment| segment.is_empty()) {
         return None;
@@ -1525,6 +1546,7 @@ fn resolve_occurrence(root: &Value, place: &Value, address: &str) -> Option<Vec<
     }
     let objects = root["objects"].as_object()?;
     let mut pattern_id = source_object_id(place["fields"].get("pattern")?)?.to_owned();
+    let mut supplied = supplied_voicing(place, None)?;
     let mut position = 1usize;
     let mut mappings = Vec::new();
 
@@ -1539,11 +1561,12 @@ fn resolve_occurrence(root: &Value, place: &Value, address: &str) -> Option<Vec<
         mappings.push((source_path, position));
         match (child["kind"].as_str()?, member) {
             ("note" | "hit" | "message" | "audio", None) => {
-                return (position + 1 == segments.len()).then_some(mappings);
+                return (position + 1 == segments.len()).then_some((mappings, None));
             }
             ("chord", Some(member)) => {
-                return (position + 1 == segments.len() && member < chord_members(child)?)
-                    .then_some(mappings);
+                let pitches = chord_pitches(objects, child, supplied.as_deref())?;
+                return (position + 1 == segments.len() && member < pitches.len())
+                    .then_some((mappings, Some(pitches)));
             }
             ("use", None) => {
                 let repeat_position = position + 1;
@@ -1552,6 +1575,7 @@ fn resolve_occurrence(root: &Value, place: &Value, address: &str) -> Option<Vec<
                     return None;
                 }
                 pattern_id = source_object_id(child["fields"].get("pattern")?)?.to_owned();
+                supplied = supplied_voicing(child, supplied)?;
                 position += 2;
             }
             _ => return None,
@@ -1571,14 +1595,57 @@ fn split_chord_member(segment: &str) -> Option<(&str, Option<usize>)> {
     }
 }
 
-fn chord_members(chord: &Value) -> Option<usize> {
-    Some(chord["fields"]["pitches"]["items"].as_array()?.len())
+/// The voicing a use or placement supplies to the chords below it: its own,
+/// or else the one `inherited` from further out. `None` is a malformed field.
+pub(super) fn supplied_voicing(
+    object: &Value,
+    inherited: Option<String>,
+) -> Option<Option<String>> {
+    match object["fields"].get("voicing") {
+        Some(voicing) => Some(Some(source_object_id(voicing)?.to_owned())),
+        None => Some(inherited),
+    }
+}
+
+/// The pitches a chord plays (§8.2): its own `pitches`, those of the voicing
+/// it names, or else those of the voicing `supplied` by its nearest use or
+/// placement, narrowed by `top` or `bottom`.
+pub(super) fn chord_pitches<'a>(
+    objects: &'a Map<String, Value>,
+    chord: &'a Value,
+    supplied: Option<&str>,
+) -> Option<&'a [Value]> {
+    let fields = &chord["fields"];
+    let pitches = match (fields.get("pitches"), fields.get("voicing")) {
+        (Some(pitches), _) => pitches,
+        (None, Some(voicing)) => &objects.get(source_object_id(voicing)?)?["fields"]["pitches"],
+        (None, None) => &objects.get(supplied?)?["fields"]["pitches"],
+    };
+    let pitches = pitches["items"].as_array()?.as_slice();
+    let selected = |name: &str| -> Option<Option<usize>> {
+        let Some(value) = fields.get(name) else {
+            return Some(None);
+        };
+        let count = typed_rational(value).ok()?;
+        if !count.is_integer() {
+            return None;
+        }
+        let count = count.to_integer().to_usize()?;
+        (1..=pitches.len()).contains(&count).then_some(Some(count))
+    };
+    match (selected("top")?, selected("bottom")?) {
+        (None, None) => Some(pitches),
+        (Some(top), None) => Some(&pitches[pitches.len() - top..]),
+        (None, Some(bottom)) => Some(&pitches[..bottom]),
+        (Some(_), Some(_)) => None,
+    }
 }
 
 /// A chord member is identified by its index. When an edit changes the
-/// length of a chord's `pitches`, members after the first changed position
-/// shift, so an existing override addressing one of them is rejected rather
-/// than silently retargeted. Appending keeps every existing index.
+/// length of the pitches a chord plays, through its `pitches`, its voicing,
+/// or its `top` or `bottom`, members after the first changed position shift.
+/// An existing override addressing one of them is rejected rather than
+/// silently retargeted. Appending keeps every existing index.
 fn reject_shifted_chord_members(base: &Value, candidate: &Value) -> EditResult<()> {
     let (Some(base_objects), Some(candidate_objects)) = (
         base["objects"].as_object(),
@@ -1586,36 +1653,6 @@ fn reject_shifted_chord_members(base: &Value, candidate: &Value) -> EditResult<(
     ) else {
         return Ok(());
     };
-    let mut shifted = BTreeMap::new();
-    for (pattern_id, pattern) in candidate_objects {
-        if pattern["kind"] != "pattern" {
-            continue;
-        }
-        let Some(children) = pattern["children"].as_object() else {
-            continue;
-        };
-        for (chord_id, chord) in children {
-            let before = &base_objects
-                .get(pattern_id)
-                .map_or(&Value::Null, |pattern| &pattern["children"])[chord_id];
-            if chord["kind"] != "chord" || before["kind"] != "chord" {
-                continue;
-            }
-            let (Some(old), Some(new)) = (
-                before["fields"]["pitches"]["items"].as_array(),
-                chord["fields"]["pitches"]["items"].as_array(),
-            ) else {
-                continue;
-            };
-            if old.len() != new.len() {
-                let first = old.iter().zip(new).take_while(|(a, b)| a == b).count();
-                shifted.insert(vec![pattern_id.clone(), chord_id.clone()], first);
-            }
-        }
-    }
-    if shifted.is_empty() {
-        return Ok(());
-    }
     for (place_id, place) in candidate_objects {
         if place["kind"] != "place" {
             continue;
@@ -1630,34 +1667,40 @@ fn reject_shifted_chord_members(base: &Value, candidate: &Value) -> EditResult<(
             let Some(event) = override_object["fields"]["event"]["v"].as_str() else {
                 continue;
             };
-            let existed = base_objects
-                .get(place_id)
-                .map(|place| &place["children"][override_id.as_str()])
+            let Some(base_place) = base_objects.get(place_id) else {
+                continue;
+            };
+            let existed = base_place["children"]
+                .get(override_id.as_str())
                 .is_some_and(|before| {
                     before["kind"] == "override" && before["fields"]["event"]["v"] == event
                 });
             if !existed {
                 continue;
             }
-            let Some(mappings) = resolve_occurrence(base, &base_objects[place_id], event) else {
+            // A target that no longer exists is reported as dangling.
+            let (Some((mappings, Some(old))), Some((_, Some(new)))) = (
+                resolve_occurrence_pitches(base, base_place, event),
+                resolve_occurrence_pitches(candidate, place, event),
+            ) else {
                 continue;
             };
-            let segments: Vec<_> = event.split('/').collect();
-            for (source_path, position) in mappings {
-                let Some(first) = shifted.get(&source_path) else {
-                    continue;
-                };
-                let member = split_chord_member(segments[position]).and_then(|(_, member)| member);
-                if member.is_some_and(|member| member >= *first) {
-                    return Err(EditError::new(
-                        "E_INSTANCE_TARGET",
-                        format!(
-                            "chord `{}` changed length, so override target `{event}` would address a different member",
-                            source_path.join(".")
-                        ),
-                    )
-                    .at(&[place_id.clone(), override_id.clone()], &["event".into()]));
-                }
+            if old.len() == new.len() {
+                continue;
+            }
+            let first = old.iter().zip(new).take_while(|(a, b)| a == b).count();
+            let (source_path, position) = mappings.last().expect("an occurrence has a leaf");
+            let segment = event.split('/').nth(*position).unwrap_or_default();
+            let member = split_chord_member(segment).and_then(|(_, member)| member);
+            if member.is_some_and(|member| member >= first) {
+                return Err(EditError::new(
+                    "E_INSTANCE_TARGET",
+                    format!(
+                        "chord `{}` changed length, so override target `{event}` would address a different member",
+                        source_path.join(".")
+                    ),
+                )
+                .at(&[place_id.clone(), override_id.clone()], &["event".into()]));
             }
         }
     }
@@ -1877,7 +1920,7 @@ fn bounded_event_impact(
     }
     for path in changed {
         let kind = top_level_kind(base, path).or_else(|| top_level_kind(candidate, path))?;
-        if !matches!(kind, "pattern" | "place") {
+        if !matches!(kind, "pattern" | "place" | "voicing") {
             return None;
         }
     }
@@ -1924,12 +1967,14 @@ fn enumerate_event_occurrences(tree: &Value) -> Option<Vec<EventOccurrence>> {
         }
         let pattern = source_object_id(place["fields"].get("pattern")?)?;
         let count = positive_count(place)?;
+        let supplied = supplied_voicing(place, None)?;
         for repetition in 0..count {
             let mut address = vec![place_id.clone(), repetition.to_string()];
             let dependencies = vec![vec![place_id.clone()]];
             enumerate_pattern_occurrences(
                 objects,
                 pattern,
+                supplied.as_deref(),
                 &mut address,
                 &dependencies,
                 &mut out,
@@ -1944,6 +1989,7 @@ fn enumerate_event_occurrences(tree: &Value) -> Option<Vec<EventOccurrence>> {
 fn enumerate_pattern_occurrences(
     objects: &Map<String, Value>,
     pattern_id: &str,
+    supplied: Option<&str>,
     address: &mut Vec<String>,
     inherited_dependencies: &[Path],
     out: &mut Vec<EventOccurrence>,
@@ -1971,7 +2017,13 @@ fn enumerate_pattern_occurrences(
                 address.pop();
             }
             "chord" => {
-                for member in 0..chord_members(child)? {
+                let fields = &child["fields"];
+                if let Some(voicing) = fields.get("voicing") {
+                    dependencies.push(vec![source_object_id(voicing)?.to_owned()]);
+                } else if fields.get("pitches").is_none() {
+                    dependencies.push(vec![supplied?.to_owned()]);
+                }
+                for member in 0..chord_pitches(objects, child, supplied)?.len() {
                     address.push(format!("{child_id}.{member}"));
                     out.push(EventOccurrence {
                         address: address.join("/"),
@@ -1983,12 +2035,14 @@ fn enumerate_pattern_occurrences(
             "use" => {
                 let nested = source_object_id(child["fields"].get("pattern")?)?;
                 let count = positive_count(child)?;
+                let nested_supplied = supplied_voicing(child, supplied.map(str::to_owned))?;
                 for repetition in 0..count {
                     address.push(child_id.clone());
                     address.push(repetition.to_string());
                     enumerate_pattern_occurrences(
                         objects,
                         nested,
+                        nested_supplied.as_deref(),
                         address,
                         &dependencies,
                         out,

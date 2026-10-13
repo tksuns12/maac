@@ -76,6 +76,36 @@ boundary. The default `spill` allows its gate to extend beyond that boundary.
 Neither boundary removes the instrument's release envelope. Project score end
 always truncates held gates; the tail permits their envelopes to finish.
 
+A `chord` leaf writes notes that share an onset and a gate. For a strummed
+guitar, name each chord shape once as a `voicing` and write the strum rhythm
+once:
+
+```maac
+voicing g { pitches = [G2, B2, D3, G3, B3, G4]; }
+voicing d { pitches = [D3, A3, D4, F#4]; }
+pattern strum_bar {
+  length = 4q;
+  chord down { at = 0q; dur = 1q; strum = down; velocity = 0.78; tilt = -0.12; }
+  chord up { at = 3/2q; dur = 1q; top = 4; strum = up; velocity = 0.46; }
+  chord ring { at = 2q; dur = 2q; strum = down; stagger = 30ms; velocity = 0.7; }
+}
+pattern progression {
+  length = 8q;
+  use first { pattern = &strum_bar; at = 0q; voicing = &g; }
+  use second { pattern = &strum_bar; at = 4q; voicing = &d; }
+}
+```
+
+The chords in `strum_bar` have no pitches of their own, so each plays the
+voicing its `use` names. `strum = down` strikes the strings from the first
+pitch to the last, 8 ms apart unless `stagger` says otherwise, and
+`strum = up` strikes them in reverse. `tilt` changes the velocity from the
+first string struck to the last: `down` strikes G2 at 0.78 and G4 at 0.66.
+`top = 4` keeps the upper four strings, the ones an upstroke catches. A chord
+can also name its shape itself, with `voicing = &g` or
+`pitches = [C4, E4, G4]`. Each string is a member with its own address:
+`down.0` to `down.5` under `g`, and `down.0` to `down.3` under `d`.
+
 The graph is explicit. The sine produces mono audio, and `core.pan/1` converts it
 to stereo using equal-power panning. For several instruments, connect their
 stereo pan outputs to a `core.sum/1` node configured with `channels = 2`, then

@@ -284,10 +284,13 @@ impl Builder<'_> {
                     format!("materialized dependency `{old}` is missing"),
                 )
             })?;
-            if !matches!(dependency["kind"].as_str(), Some("curve" | "tuning")) {
+            if !matches!(
+                dependency["kind"].as_str(),
+                Some("curve" | "tuning" | "voicing")
+            ) {
                 return Err(EditError::new(
                     "E_CAPABILITY",
-                    "event dependency is not a curve or tuning",
+                    "event dependency is not a curve, tuning or voicing",
                 ));
             }
             let new = if let Some(new) = memo.get(&old) {
@@ -322,9 +325,12 @@ impl Builder<'_> {
         Ok(())
     }
 
+    /// `supplied` is the voicing the nearest use or placement names, which
+    /// chords without pitches play; each copied use keeps its own.
     fn copy_pattern(
         &mut self,
         source_id: &str,
+        supplied: Option<&str>,
         old_prefix: &str,
         new_prefix: &str,
     ) -> EditResult<String> {
@@ -367,9 +373,11 @@ impl Builder<'_> {
                     old_path.push(child_id.clone());
                     // Each chord member is its own occurrence, `chord.k`.
                     let leaves = if kind == "chord" {
-                        let members = child["fields"]["pitches"]["items"]
-                            .as_array()
-                            .map_or(0, Vec::len);
+                        let objects = self.catalog["objects"].as_object().ok_or_else(|| {
+                            EditError::new("E_SYNTAX", "objects must be a dictionary")
+                        })?;
+                        let members = super::foundation::chord_pitches(objects, child, supplied)
+                            .map_or(0, <[Value]>::len);
                         (0..members).map(|k| format!("{child_id}.{k}")).collect()
                     } else {
                         vec![child_id.clone()]
@@ -389,6 +397,14 @@ impl Builder<'_> {
                     let length = rational(&pattern(self.catalog, &target)?["fields"]["length"])?;
                     let step = checked(scalar(child, "stretch", 1)? * length)?;
                     let at = scalar(child, "at", 0)?;
+                    let nested_supplied =
+                        super::foundation::supplied_voicing(child, supplied.map(str::to_owned))
+                            .ok_or_else(|| {
+                                EditError::new(
+                                    "E_REFERENCE",
+                                    "use.voicing must reference a voicing",
+                                )
+                            })?;
                     for repetition in 0..count(child)? {
                         let use_id = loop {
                             let candidate = format!("_use{local_serial}");
@@ -399,6 +415,7 @@ impl Builder<'_> {
                         };
                         let nested_id = self.copy_pattern(
                             &target,
+                            nested_supplied.as_deref(),
                             &format!("{old_prefix}/{child_id}/{repetition}"),
                             &format!("{new_prefix}/{use_id}/0"),
                         )?;
@@ -496,6 +513,9 @@ pub(super) fn prepare(
         )
     })?;
     let source_id = reference_id(&place["fields"]["pattern"])?;
+    // The placement keeps its `voicing`, so the copies play what it supplied.
+    let supplied = super::foundation::supplied_voicing(place, None)
+        .ok_or_else(|| EditError::new("E_REFERENCE", "place.voicing must reference a voicing"))?;
     let repetitions = count(place)?;
     let invocations = invocation_bound(catalog, &source_id, 1, &mut BTreeSet::new())?;
     if repetitions.saturating_mul(invocations).saturating_add(6) > MAX_OPERATIONS {
@@ -529,6 +549,7 @@ pub(super) fn prepare(
         let use_id = format!("_repeat{repetition}");
         let copied_id = builder.copy_pattern(
             &source_id,
+            supplied.as_deref(),
             &format!("{placement_id}/{repetition}"),
             &format!("{placement_id}/0/{use_id}/0"),
         )?;
