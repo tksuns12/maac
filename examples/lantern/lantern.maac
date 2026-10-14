@@ -32,6 +32,14 @@ region bridge { span = [bar(37, 1), bar(41, 1)]; }
 region chorus3 { span = [bar(41, 1), bar(49, 1)]; }
 region outro { span = [bar(49, 1), bar(53, 1)]; }
 
+// ---------------------------------------------------------------- harmony
+// Each section's chords, once for every part. The intro plays the first four
+// bars of the verse; the last chorus and the outro are placed a whole step up.
+harmony verse_chords { length = 32q; chords = [(0q, "D"), (4q, "A"), (8q, "Bm"), (12q, "G"), (16q, "D"), (20q, "A"), (24q, "G"), (28q, "A")]; }
+harmony chorus_chords { length = 32q; chords = [(0q, "G"), (4q, "D"), (8q, "A"), (12q, "Bm"), (16q, "G"), (20q, "D"), (24q, "A")]; }
+harmony bridge_chords { length = 16q; chords = [(0q, "Em"), (4q, "G"), (8q, "Bm"), (12q, "A")]; }
+harmony outro_chords { length = 16q; chords = [(0q, "G"), (4q, "D"), (8q, "A"), (12q, "D")]; }
+
 // ---------------------------------------------------------------- piano
 // Each piano voicing is a left-hand root under a close right-hand triad;
 // `bottom = 1` plays the root and `top = 3` the triad.
@@ -40,6 +48,7 @@ voicing pno_a { pitches = [A2, A3, C#4, E4]; }
 voicing pno_bm { pitches = [B2, B3, D4, F#4]; }
 voicing pno_g { pitches = [G2, B3, D4, G4]; }
 voicing pno_em { pitches = [E3, B3, E4, G4]; }
+voicings piano_voicings { chords = [("D", &pno_d), ("A", &pno_a), ("Bm", &pno_bm), ("G", &pno_g), ("Em", &pno_em)]; }
 node piano {
   instrument = &studio.piano; config = { voices = 24; };
   params = { release = 150ms; };
@@ -69,54 +78,24 @@ pattern pno_drive { length = 4q;
 pattern pno_held { length = 4q;
   chord all { at = 0q; dur = 4q; velocity = 0.5; }
 }
-pattern pno_intro { length = 16q;
-  use b1 { pattern = &pno_pulse; at = 0q; voicing = &pno_d; }
-  use b2 { pattern = &pno_pulse; at = 4q; voicing = &pno_a; }
-  use b3 { pattern = &pno_pulse; at = 8q; voicing = &pno_bm; }
-  use b4 { pattern = &pno_pulse; at = 12q; voicing = &pno_g; }
-}
-pattern pno_verse { length = 32q;
-  use b1 { pattern = &pno_pulse; at = 0q; voicing = &pno_d; }
-  use b2 { pattern = &pno_pulse; at = 4q; voicing = &pno_a; }
-  use b3 { pattern = &pno_pulse; at = 8q; voicing = &pno_bm; }
-  use b4 { pattern = &pno_pulse; at = 12q; voicing = &pno_g; }
-  use b5 { pattern = &pno_pulse; at = 16q; voicing = &pno_d; }
-  use b6 { pattern = &pno_pulse; at = 20q; voicing = &pno_a; }
-  use b7 { pattern = &pno_pulse; at = 24q; voicing = &pno_g; }
-  use b8 { pattern = &pno_pulse; at = 28q; voicing = &pno_a; }
-}
-pattern pno_chorus { length = 32q;
-  use b1 { pattern = &pno_drive; at = 0q; voicing = &pno_g; }
-  use b2 { pattern = &pno_drive; at = 4q; voicing = &pno_d; }
-  use b3 { pattern = &pno_drive; at = 8q; voicing = &pno_a; }
-  use b4 { pattern = &pno_drive; at = 12q; voicing = &pno_bm; }
-  use b5 { pattern = &pno_drive; at = 16q; voicing = &pno_g; }
-  use b6 { pattern = &pno_drive; at = 20q; voicing = &pno_d; }
-  use b7 { pattern = &pno_drive; at = 24q; voicing = &pno_a; }
-  use b8 { pattern = &pno_drive; at = 28q; voicing = &pno_a; }
-}
 pattern pno_bridge { length = 16q;
-  use b1 { pattern = &pno_held; at = 0q; voicing = &pno_em; }
-  use b2 { pattern = &pno_held; at = 4q; voicing = &pno_g; }
-  use b3 { pattern = &pno_held; at = 8q; voicing = &pno_bm; }
-  use b4 { pattern = &pno_pulse; at = 12q; voicing = &pno_a; }
+  use held { pattern = &pno_held; at = 0q; count = 3; }
+  use pulse { pattern = &pno_pulse; at = 12q; }
 }
-// Written in D; the outro is placed a whole step up, so it plays A E B E.
 pattern pno_outro { length = 16q;
-  use b1 { pattern = &pno_pulse; at = 0q; voicing = &pno_g; }
-  use b2 { pattern = &pno_pulse; at = 4q; voicing = &pno_d; }
-  use b3 { pattern = &pno_held; at = 8q; voicing = &pno_a; }
-  chord last { at = 12q; dur = 4q; voicing = &pno_d; velocity = 0.46; }
+  use pulse { pattern = &pno_pulse; at = 0q; count = 2; }
+  use held { pattern = &pno_held; at = 8q; }
+  chord last { at = 12q; dur = 4q; velocity = 0.46; }
 }
 track piano_notes { target = &piano:events; }
-place piano_intro { pattern = &pno_intro; track = &piano_notes; at = 0q; }
-place piano_verse1 { pattern = &pno_verse; track = &piano_notes; at = 16q; }
-place piano_chorus1 { pattern = &pno_chorus; track = &piano_notes; at = 48q; }
-place piano_verse2 { pattern = &pno_verse; track = &piano_notes; at = 80q; }
-place piano_chorus2 { pattern = &pno_chorus; track = &piano_notes; at = 112q; }
-place piano_bridge { pattern = &pno_bridge; track = &piano_notes; at = 144q; }
-place piano_chorus3 { pattern = &pno_chorus; track = &piano_notes; at = 160q; transpose = 200ct; }
-place piano_outro { pattern = &pno_outro; track = &piano_notes; at = 192q; transpose = 200ct; }
+place piano_intro { pattern = &pno_pulse; track = &piano_notes; at = 0q; count = 4; harmony = &verse_chords; voicings = &piano_voicings; }
+place piano_verse1 { pattern = &pno_pulse; track = &piano_notes; at = 16q; count = 8; harmony = &verse_chords; voicings = &piano_voicings; }
+place piano_chorus1 { pattern = &pno_drive; track = &piano_notes; at = 48q; count = 8; harmony = &chorus_chords; voicings = &piano_voicings; }
+place piano_verse2 { pattern = &pno_pulse; track = &piano_notes; at = 80q; count = 8; harmony = &verse_chords; voicings = &piano_voicings; }
+place piano_chorus2 { pattern = &pno_drive; track = &piano_notes; at = 112q; count = 8; harmony = &chorus_chords; voicings = &piano_voicings; }
+place piano_bridge { pattern = &pno_bridge; track = &piano_notes; at = 144q; harmony = &bridge_chords; voicings = &piano_voicings; }
+place piano_chorus3 { pattern = &pno_drive; track = &piano_notes; at = 160q; count = 8; transpose = 200ct; harmony = &chorus_chords; voicings = &piano_voicings; }
+place piano_outro { pattern = &pno_outro; track = &piano_notes; at = 192q; transpose = 200ct; harmony = &outro_chords; voicings = &piano_voicings; }
 
 // ---------------------------------------------------------------- strummed steel guitar
 voicing gtr_d { pitches = [D3, A3, D4, F#4]; }
@@ -124,6 +103,7 @@ voicing gtr_a { pitches = [A2, E3, A3, C#4, E4]; }
 voicing gtr_bm { pitches = [B2, F#3, B3, D4, F#4]; }
 voicing gtr_g { pitches = [G2, B2, D3, G3, B3, G4]; }
 voicing gtr_em { pitches = [E2, B2, E3, G3, B3, E4]; }
+voicings guitar_voicings { chords = [("D", &gtr_d), ("A", &gtr_a), ("Bm", &gtr_bm), ("G", &gtr_g), ("Em", &gtr_em)]; }
 // The library steel guitar plucks every string with the same full-band noise
 // burst at any velocity. This one picks harder strums brighter, picks a fifth
 // of the way along the string, and adds the body's air and top resonances.
@@ -196,105 +176,61 @@ pattern strum_light { length = 4q;
 pattern strum_ring { length = 4q;
   chord d1 { at = 0q; dur = 4q; strum = down; stagger = 25ms; velocity = 0.62; tilt = -0.1; }
 }
-pattern strum_verse { length = 32q;
-  use b1 { pattern = &strum_light; at = 0q; voicing = &gtr_d; }
-  use b2 { pattern = &strum_light; at = 4q; voicing = &gtr_a; }
-  use b3 { pattern = &strum_light; at = 8q; voicing = &gtr_bm; }
-  use b4 { pattern = &strum_light; at = 12q; voicing = &gtr_g; }
-  use b5 { pattern = &strum_light; at = 16q; voicing = &gtr_d; }
-  use b6 { pattern = &strum_light; at = 20q; voicing = &gtr_a; }
-  use b7 { pattern = &strum_light; at = 24q; voicing = &gtr_g; }
-  use b8 { pattern = &strum_light; at = 28q; voicing = &gtr_a; }
-}
-pattern strum_chorus { length = 32q;
-  use b1 { pattern = &strum_drive; at = 0q; voicing = &gtr_g; }
-  use b2 { pattern = &strum_drive; at = 4q; voicing = &gtr_d; }
-  use b3 { pattern = &strum_drive; at = 8q; voicing = &gtr_a; }
-  use b4 { pattern = &strum_drive; at = 12q; voicing = &gtr_bm; }
-  use b5 { pattern = &strum_drive; at = 16q; voicing = &gtr_g; }
-  use b6 { pattern = &strum_drive; at = 20q; voicing = &gtr_d; }
-  use b7 { pattern = &strum_drive; at = 24q; voicing = &gtr_a; }
-  use b8 { pattern = &strum_drive; at = 28q; voicing = &gtr_a; }
-}
 pattern strum_bridge { length = 16q;
-  use b1 { pattern = &strum_ring; at = 0q; voicing = &gtr_em; }
-  use b2 { pattern = &strum_ring; at = 4q; voicing = &gtr_g; }
-  use b3 { pattern = &strum_ring; at = 8q; voicing = &gtr_bm; }
-  use b4 { pattern = &strum_drive; at = 12q; voicing = &gtr_a; }
+  use ring { pattern = &strum_ring; at = 0q; count = 3; }
+  use drive { pattern = &strum_drive; at = 12q; }
 }
 track strums { target = &strum:events; }
-place strum_chorus1 { pattern = &strum_chorus; track = &strums; at = 48q; }
-place strum_verse2 { pattern = &strum_verse; track = &strums; at = 80q; }
-place strum_chorus2 { pattern = &strum_chorus; track = &strums; at = 112q; }
-place strum_bridge1 { pattern = &strum_bridge; track = &strums; at = 144q; }
-place strum_chorus3 { pattern = &strum_chorus; track = &strums; at = 160q; transpose = 200ct; }
+place strum_chorus1 { pattern = &strum_drive; track = &strums; at = 48q; count = 8; harmony = &chorus_chords; voicings = &guitar_voicings; }
+place strum_verse2 { pattern = &strum_light; track = &strums; at = 80q; count = 8; harmony = &verse_chords; voicings = &guitar_voicings; }
+place strum_chorus2 { pattern = &strum_drive; track = &strums; at = 112q; count = 8; harmony = &chorus_chords; voicings = &guitar_voicings; }
+place strum_bridge1 { pattern = &strum_bridge; track = &strums; at = 144q; harmony = &bridge_chords; voicings = &guitar_voicings; }
+place strum_chorus3 { pattern = &strum_drive; track = &strums; at = 160q; count = 8; transpose = 200ct; harmony = &chorus_chords; voicings = &guitar_voicings; }
 
 // ---------------------------------------------------------------- bass
 node bass {
   instrument = &studio.bass; config = { voices = 6; };
   params = { release = 150ms; };
 }
-// Every bar is written on D and transposed to its chord: A -500ct,
-// B -300ct, G -700ct, E +200ct.
+// Each bass voicing is the root and its octave: `bottom = 1` plays the
+// root and `top = 1` the octave.
+voicing bs_d { pitches = [D2, D3]; }
+voicing bs_a { pitches = [A1, A2]; }
+voicing bs_bm { pitches = [B1, B2]; }
+voicing bs_g { pitches = [G1, G2]; }
+voicing bs_em { pitches = [E2, E3]; }
+voicings bass_voicings { chords = [("D", &bs_d), ("A", &bs_a), ("Bm", &bs_bm), ("G", &bs_g), ("Em", &bs_em)]; }
 pattern bs_verse { length = 4q;
-  note r1 { at = 0q; dur = 3/2q; pitch = D2; velocity = 0.72; }
-  note r2 { at = 3/2q; dur = 1/2q; pitch = D2; velocity = 0.5; }
-  note r3 { at = 2q; dur = 3/2q; pitch = D2; velocity = 0.66; }
-  note o1 { at = 7/2q; dur = 1/2q; pitch = D3; velocity = 0.48; }
+  chord r1 { at = 0q; dur = 3/2q; bottom = 1; velocity = 0.72; }
+  chord r2 { at = 3/2q; dur = 1/2q; bottom = 1; velocity = 0.5; }
+  chord r3 { at = 2q; dur = 3/2q; bottom = 1; velocity = 0.66; }
+  chord o1 { at = 7/2q; dur = 1/2q; top = 1; velocity = 0.48; }
 }
 pattern bs_drive { length = 4q;
-  note e1 { at = 0q; dur = 1/2q; pitch = D2; velocity = 0.76; }
-  note e2 { at = 1/2q; dur = 1/2q; pitch = D2; velocity = 0.54; }
-  note e3 { at = 1q; dur = 1/2q; pitch = D2; velocity = 0.66; }
-  note e4 { at = 3/2q; dur = 1/2q; pitch = D2; velocity = 0.54; }
-  note e5 { at = 2q; dur = 1/2q; pitch = D2; velocity = 0.72; }
-  note e6 { at = 5/2q; dur = 1/2q; pitch = D2; velocity = 0.54; }
-  note e7 { at = 3q; dur = 1/2q; pitch = D2; velocity = 0.66; }
-  note e8 { at = 7/2q; dur = 1/2q; pitch = D2; velocity = 0.56; }
+  chord e1 { at = 0q; dur = 1/2q; bottom = 1; velocity = 0.76; }
+  chord e2 { at = 1/2q; dur = 1/2q; bottom = 1; velocity = 0.54; }
+  chord e3 { at = 1q; dur = 1/2q; bottom = 1; velocity = 0.66; }
+  chord e4 { at = 3/2q; dur = 1/2q; bottom = 1; velocity = 0.54; }
+  chord e5 { at = 2q; dur = 1/2q; bottom = 1; velocity = 0.72; }
+  chord e6 { at = 5/2q; dur = 1/2q; bottom = 1; velocity = 0.54; }
+  chord e7 { at = 3q; dur = 1/2q; bottom = 1; velocity = 0.66; }
+  chord e8 { at = 7/2q; dur = 1/2q; bottom = 1; velocity = 0.56; }
 }
 pattern bs_held { length = 4q;
-  note r1 { at = 0q; dur = 4q; pitch = D2; velocity = 0.66; }
-}
-pattern bass_verse { length = 32q;
-  use b1 { pattern = &bs_verse; at = 0q; }
-  use b2 { pattern = &bs_verse; at = 4q; transpose = -500ct; }
-  use b3 { pattern = &bs_verse; at = 8q; transpose = -300ct; }
-  use b4 { pattern = &bs_verse; at = 12q; transpose = -700ct; }
-  use b5 { pattern = &bs_verse; at = 16q; }
-  use b6 { pattern = &bs_verse; at = 20q; transpose = -500ct; }
-  use b7 { pattern = &bs_verse; at = 24q; transpose = -700ct; }
-  use b8 { pattern = &bs_verse; at = 28q; transpose = -500ct; }
-}
-pattern bass_chorus { length = 32q;
-  use b1 { pattern = &bs_drive; at = 0q; transpose = -700ct; }
-  use b2 { pattern = &bs_drive; at = 4q; }
-  use b3 { pattern = &bs_drive; at = 8q; transpose = -500ct; }
-  use b4 { pattern = &bs_drive; at = 12q; transpose = -300ct; }
-  use b5 { pattern = &bs_drive; at = 16q; transpose = -700ct; }
-  use b6 { pattern = &bs_drive; at = 20q; }
-  use b7 { pattern = &bs_drive; at = 24q; transpose = -500ct; }
-  use b8 { pattern = &bs_drive; at = 28q; transpose = -500ct; }
+  chord r1 { at = 0q; dur = 4q; bottom = 1; velocity = 0.66; }
 }
 pattern bass_bridge { length = 16q;
-  use b1 { pattern = &bs_held; at = 0q; transpose = 200ct; }
-  use b2 { pattern = &bs_held; at = 4q; transpose = -700ct; }
-  use b3 { pattern = &bs_held; at = 8q; transpose = -300ct; }
-  use b4 { pattern = &bs_drive; at = 12q; transpose = -500ct; }
-}
-pattern bass_outro { length = 16q;
-  use b1 { pattern = &bs_held; at = 0q; transpose = -700ct; }
-  use b2 { pattern = &bs_held; at = 4q; }
-  use b3 { pattern = &bs_held; at = 8q; transpose = -500ct; }
-  use b4 { pattern = &bs_held; at = 12q; }
+  use held { pattern = &bs_held; at = 0q; count = 3; }
+  use drive { pattern = &bs_drive; at = 12q; }
 }
 track bass_notes { target = &bass:events; }
-place bass_verse1 { pattern = &bass_verse; track = &bass_notes; at = 16q; }
-place bass_chorus1 { pattern = &bass_chorus; track = &bass_notes; at = 48q; }
-place bass_verse2 { pattern = &bass_verse; track = &bass_notes; at = 80q; }
-place bass_chorus2 { pattern = &bass_chorus; track = &bass_notes; at = 112q; }
-place bass_bridge1 { pattern = &bass_bridge; track = &bass_notes; at = 144q; }
-place bass_chorus3 { pattern = &bass_chorus; track = &bass_notes; at = 160q; transpose = 200ct; }
-place bass_outro1 { pattern = &bass_outro; track = &bass_notes; at = 192q; transpose = 200ct; }
+place bass_verse1 { pattern = &bs_verse; track = &bass_notes; at = 16q; count = 8; harmony = &verse_chords; voicings = &bass_voicings; }
+place bass_chorus1 { pattern = &bs_drive; track = &bass_notes; at = 48q; count = 8; harmony = &chorus_chords; voicings = &bass_voicings; }
+place bass_verse2 { pattern = &bs_verse; track = &bass_notes; at = 80q; count = 8; harmony = &verse_chords; voicings = &bass_voicings; }
+place bass_chorus2 { pattern = &bs_drive; track = &bass_notes; at = 112q; count = 8; harmony = &chorus_chords; voicings = &bass_voicings; }
+place bass_bridge1 { pattern = &bass_bridge; track = &bass_notes; at = 144q; harmony = &bridge_chords; voicings = &bass_voicings; }
+place bass_chorus3 { pattern = &bs_drive; track = &bass_notes; at = 160q; count = 8; transpose = 200ct; harmony = &chorus_chords; voicings = &bass_voicings; }
+place bass_outro1 { pattern = &bs_held; track = &bass_notes; at = 192q; count = 4; transpose = 200ct; harmony = &outro_chords; voicings = &bass_voicings; }
 
 // ---------------------------------------------------------------- drums
 node drums {
@@ -503,6 +439,7 @@ voicing pad_a { pitches = [C#3, E3, A3]; }
 voicing pad_bm { pitches = [D3, F#3, B3]; }
 voicing pad_g { pitches = [D3, G3, B3]; }
 voicing pad_em { pitches = [E3, G3, B3]; }
+voicings pad_voicings { chords = [("D", &pad_d), ("A", &pad_a), ("Bm", &pad_bm), ("G", &pad_g), ("Em", &pad_em)]; }
 node pad {
   instrument = &studio.pad; config = { voices = 12; };
   params = { attack = 1s; release = 2s; };
@@ -510,41 +447,13 @@ node pad {
 pattern pad_bar { length = 4q;
   chord all { at = 0q; dur = 4q; velocity = 0.36; }
 }
-pattern pad_intro { length = 16q;
-  use b1 { pattern = &pad_bar; at = 0q; voicing = &pad_d; }
-  use b2 { pattern = &pad_bar; at = 4q; voicing = &pad_a; }
-  use b3 { pattern = &pad_bar; at = 8q; voicing = &pad_bm; }
-  use b4 { pattern = &pad_bar; at = 12q; voicing = &pad_g; }
-}
-pattern pad_chorus { length = 32q;
-  use b1 { pattern = &pad_bar; at = 0q; voicing = &pad_g; }
-  use b2 { pattern = &pad_bar; at = 4q; voicing = &pad_d; }
-  use b3 { pattern = &pad_bar; at = 8q; voicing = &pad_a; }
-  use b4 { pattern = &pad_bar; at = 12q; voicing = &pad_bm; }
-  use b5 { pattern = &pad_bar; at = 16q; voicing = &pad_g; }
-  use b6 { pattern = &pad_bar; at = 20q; voicing = &pad_d; }
-  use b7 { pattern = &pad_bar; at = 24q; voicing = &pad_a; }
-  use b8 { pattern = &pad_bar; at = 28q; voicing = &pad_a; }
-}
-pattern pad_bridge { length = 16q;
-  use b1 { pattern = &pad_bar; at = 0q; voicing = &pad_em; }
-  use b2 { pattern = &pad_bar; at = 4q; voicing = &pad_g; }
-  use b3 { pattern = &pad_bar; at = 8q; voicing = &pad_bm; }
-  use b4 { pattern = &pad_bar; at = 12q; voicing = &pad_a; }
-}
-pattern pad_outro { length = 16q;
-  use b1 { pattern = &pad_bar; at = 0q; voicing = &pad_g; }
-  use b2 { pattern = &pad_bar; at = 4q; voicing = &pad_d; }
-  use b3 { pattern = &pad_bar; at = 8q; voicing = &pad_a; }
-  use b4 { pattern = &pad_bar; at = 12q; voicing = &pad_d; }
-}
 track pad_notes { target = &pad:events; }
-place pad_intro1 { pattern = &pad_intro; track = &pad_notes; at = 0q; }
-place pad_chorus1 { pattern = &pad_chorus; track = &pad_notes; at = 48q; }
-place pad_chorus2 { pattern = &pad_chorus; track = &pad_notes; at = 112q; }
-place pad_bridge1 { pattern = &pad_bridge; track = &pad_notes; at = 144q; }
-place pad_chorus3 { pattern = &pad_chorus; track = &pad_notes; at = 160q; transpose = 200ct; }
-place pad_outro1 { pattern = &pad_outro; track = &pad_notes; at = 192q; transpose = 200ct; }
+place pad_intro1 { pattern = &pad_bar; track = &pad_notes; at = 0q; count = 4; harmony = &verse_chords; voicings = &pad_voicings; }
+place pad_chorus1 { pattern = &pad_bar; track = &pad_notes; at = 48q; count = 8; harmony = &chorus_chords; voicings = &pad_voicings; }
+place pad_chorus2 { pattern = &pad_bar; track = &pad_notes; at = 112q; count = 8; harmony = &chorus_chords; voicings = &pad_voicings; }
+place pad_bridge1 { pattern = &pad_bar; track = &pad_notes; at = 144q; count = 4; harmony = &bridge_chords; voicings = &pad_voicings; }
+place pad_chorus3 { pattern = &pad_bar; track = &pad_notes; at = 160q; count = 8; transpose = 200ct; harmony = &chorus_chords; voicings = &pad_voicings; }
+place pad_outro1 { pattern = &pad_bar; track = &pad_notes; at = 192q; count = 4; transpose = 200ct; harmony = &outro_chords; voicings = &pad_voicings; }
 
 // ---------------------------------------------------------------- mix
 node bus { type = "core.sum/1"; config = { channels = 2; }; }

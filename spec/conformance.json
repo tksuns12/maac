@@ -116,6 +116,12 @@
       "pass": true
     },
     {
+      "id": "harmony_wrapped_position",
+      "actual": "6",
+      "expected": "6",
+      "pass": true
+    },
+    {
       "id": "vibrato_rising_knot_cents",
       "actual": "38/5",
       "expected": "38/5",

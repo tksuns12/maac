@@ -403,8 +403,8 @@ struct UseDef {
     stretch: Rational,
     transpose_cents: Rational,
     cut: bool,
-    /// The voicing this use supplies to chords without pitches (§8.2).
-    voicing: Option<String>,
+    /// What this use supplies to chords without pitches (§8.2).
+    supply: Option<Supply>,
 }
 
 #[derive(Clone, Debug)]
@@ -416,11 +416,31 @@ enum PatternChild {
     Chord(Box<Object>),
 }
 
-/// A voicing supplied to chords without pitches, and what supplied it.
+/// What a use or placement supplies to chords without pitches (§8.2): one
+/// voicing, or a harmony that the part's voicings voice.
+#[derive(Clone, Debug)]
+enum Supply {
+    Voicing(String),
+    Harmony { harmony: String, voicings: String },
+}
+
+/// What a chord without pitches plays, and what supplied it. A harmony's
+/// chord is the one at the chord's position in the supplier's pattern: its
+/// score position less `origin`, over `scale`.
 #[derive(Clone, Debug)]
 struct SuppliedVoicing {
-    voicing: String,
+    supply: Supply,
     by: String,
+    origin: Rational,
+    scale: Rational,
+}
+
+/// A harmony (§8.2): a chord name from each position, repeating every
+/// `length`.
+#[derive(Clone, Debug)]
+struct HarmonyDef {
+    length: Rational,
+    chords: Vec<(Rational, String)>,
 }
 
 #[derive(Clone, Debug)]
@@ -511,7 +531,7 @@ struct PlaceDef {
     stretch: Rational,
     transpose_cents: Rational,
     cut: bool,
-    voicing: Option<String>,
+    supply: Option<Supply>,
     overrides: Vec<OverrideDef>,
     inserts: Vec<InsertDef>,
 }
@@ -724,6 +744,9 @@ struct Compiler<'a> {
     connections: Vec<Connection>,
     curves: BTreeMap<String, CurveDef>,
     vibratos: BTreeMap<String, VibratoDef>,
+    harmonies: BTreeMap<String, HarmonyDef>,
+    /// Each part's voicings: chord name to voicing ID.
+    voicing_sets: BTreeMap<String, BTreeMap<String, String>>,
     automations: Vec<AutomationV3>,
     allow_ramps: bool,
     allow_hits: bool,
@@ -783,6 +806,8 @@ impl<'a> Compiler<'a> {
             connections: Vec::new(),
             curves: BTreeMap::new(),
             vibratos: BTreeMap::new(),
+            harmonies: BTreeMap::new(),
+            voicing_sets: BTreeMap::new(),
             automations: Vec::new(),
             allow_ramps: false,
             allow_hits: false,
@@ -1059,9 +1084,13 @@ impl<'a> Compiler<'a> {
                     "boundary",
                     "groove",
                     "voicing",
+                    "harmony",
+                    "voicings",
                 ][..],
                 "groove" => &["grid", "ratio"][..],
                 "voicing" => &["pitches"][..],
+                "harmony" => &["length", "chords"][..],
+                "voicings" => &["chords"][..],
                 "vibrato" => &["rate", "depth", "delay", "rise", "shape"][..],
                 "curve" => &["clock", "points"][..],
                 "automation" => &["target", "curve", "at"][..],
@@ -2279,12 +2308,15 @@ impl<'a> Compiler<'a> {
         self.lower_chord(object, pitches_field, pitches).map(Some)
     }
 
-    /// Lower a chord without pitches with the voicing `supplied` to it. Its
-    /// errors name what supplied the voicing.
+    /// Lower a chord without pitches with the voicing `supplied` to it, in a
+    /// pattern that starts at score position `origin` and is stretched by
+    /// `scale`. Its errors name what supplied the voicing.
     fn lower_supplied_chord(
         &self,
         object: &Object,
         supplied: Option<&SuppliedVoicing>,
+        origin: &Rational,
+        scale: &Rational,
     ) -> CResult<Vec<LeafDef>> {
         let Some(supplied) = supplied else {
             return Err(path_diagnostic(
@@ -2297,21 +2329,79 @@ impl<'a> Compiler<'a> {
                 None,
             ));
         };
-        let voicing = self.object(&supplied.voicing)?;
+        let (voicing_id, origin_note) = match &supplied.supply {
+            Supply::Voicing(id) => (id.clone(), format!("voicing `{id}` from {}", supplied.by)),
+            Supply::Harmony { harmony, voicings } => {
+                let name = self.harmony_chord_at(object, harmony, supplied, origin, scale)?;
+                let set = &self.voicing_sets[voicings];
+                let Some(id) = set.get(&name) else {
+                    let mapped: Vec<String> =
+                        set.keys().map(|name| format!("\"{name}\"")).collect();
+                    return Err(path_diagnostic(
+                        DiagnosticCode::Reference,
+                        format!(
+                            "chord `{}` plays \"{name}\" from harmony `{harmony}`, which voicings `{voicings}` does not map; it maps {} (from {})",
+                            object.id,
+                            mapped.join(", "),
+                            supplied.by
+                        ),
+                        object,
+                        None,
+                    ));
+                };
+                (
+                    id.clone(),
+                    format!(
+                        "voicing `{id}` for \"{name}\" in harmony `{harmony}` from {}",
+                        supplied.by
+                    ),
+                )
+            }
+        };
+        let voicing = self.object(&voicing_id)?;
         let pitches_field = self.field(voicing, "pitches")?;
         let pitches = self.pitch_list(voicing, pitches_field)?;
         self.lower_chord(object, pitches_field, pitches)
             .map_err(|diagnostics| {
                 let mut named = Diagnostics::new();
                 for mut diagnostic in diagnostics.into_vec() {
-                    diagnostic.message = format!(
-                        "{} (voicing `{}` from {})",
-                        diagnostic.message, supplied.voicing, supplied.by
-                    );
+                    diagnostic.message = format!("{} ({origin_note})", diagnostic.message);
                     named.push(diagnostic);
                 }
                 named
             })
+    }
+
+    /// The name of the chord sounding at `object`'s onset in `harmony`: its
+    /// position in the supplier's pattern, before stretch and groove, with
+    /// the harmony repeating every length.
+    fn harmony_chord_at(
+        &self,
+        object: &Object,
+        harmony: &str,
+        supplied: &SuppliedVoicing,
+        origin: &Rational,
+        scale: &Rational,
+    ) -> CResult<String> {
+        let span = Some(object.span);
+        let at_field = self.field(object, "at")?;
+        let at = self.q_value(&at_field.value, object, Some(at_field), false)?;
+        let onset = checked_add(origin, &checked_mul(scale, &at, span)?, span)?;
+        let position = checked_div(
+            &checked_sub(&onset, &supplied.origin, span)?,
+            &supplied.scale,
+            span,
+        )?;
+        let def = &self.harmonies[harmony];
+        let cycles = checked_div(&position, &def.length, span)?.floor();
+        let position = checked_sub(&position, &checked_mul(&cycles, &def.length, span)?, span)?;
+        Ok(def
+            .chords
+            .iter()
+            .rev()
+            .find(|(start, _)| start <= &position)
+            .map(|(_, name)| name.clone())
+            .expect("a harmony starts at 0q"))
     }
 
     /// `field`'s nonempty list of pitches.
@@ -2851,6 +2941,8 @@ impl<'a> Compiler<'a> {
                 "transpose",
                 "boundary",
                 "voicing",
+                "harmony",
+                "voicings",
             ],
         )?;
         let pattern = self.one_reference(
@@ -2918,21 +3010,146 @@ impl<'a> Compiler<'a> {
             stretch,
             transpose_cents: transpose,
             cut: boundary == "cut",
-            voicing: self.supplied_voicing(object)?,
+            supply: self.supplied_voicing(object)?,
         })
     }
 
-    /// The voicing a use or placement supplies to chords without pitches.
-    fn supplied_voicing(&self, object: &Object) -> CResult<Option<String>> {
-        let Some(field) = object.field("voicing") else {
-            return Ok(None);
+    /// What a use or placement supplies to chords without pitches: a
+    /// `voicing`, or a `harmony` with the part's `voicings`.
+    fn supplied_voicing(&self, object: &Object) -> CResult<Option<Supply>> {
+        let reference = |name: &str, kind: &str, known: &dyn Fn(&str) -> bool| -> CResult<String> {
+            let field = self.field(object, name)?;
+            let id = self.one_reference(&field.value, object, Some(field))?;
+            if !known(&id) {
+                return Err(path_diagnostic(
+                    DiagnosticCode::Reference,
+                    format!("{}.{name} must reference a {kind}", object.kind),
+                    object,
+                    Some(field),
+                ));
+            }
+            Ok(id)
         };
-        self.voicing_pitches(object, field)?;
-        self.one_reference(&field.value, object, Some(field))
-            .map(Some)
+        match (
+            object.field("voicing"),
+            object.field("harmony"),
+            object.field("voicings"),
+        ) {
+            (None, None, None) => Ok(None),
+            (Some(field), None, None) => {
+                self.voicing_pitches(object, field)?;
+                Ok(Some(Supply::Voicing(self.one_reference(
+                    &field.value,
+                    object,
+                    Some(field),
+                )?)))
+            }
+            (None, Some(_), Some(_)) => Ok(Some(Supply::Harmony {
+                harmony: reference("harmony", "harmony", &|id| self.harmonies.contains_key(id))?,
+                voicings: reference("voicings", "voicings", &|id| {
+                    self.voicing_sets.contains_key(id)
+                })?,
+            })),
+            _ => Err(path_diagnostic(
+                DiagnosticCode::Range,
+                format!(
+                    "{} supplies a `voicing`, or a `harmony` with `voicings`",
+                    object.kind
+                ),
+                object,
+                None,
+            )),
+        }
+    }
+
+    /// Read every `harmony` and every part's `voicings` (§8.2).
+    fn read_harmonies(&mut self) -> CResult<()> {
+        for object in self.document.objects.values() {
+            match object.kind.as_str() {
+                "harmony" => {
+                    let field = self.field(object, "length")?;
+                    let length = self.q_value(&field.value, object, Some(field), false)?;
+                    if !length.is_positive() {
+                        return Err(path_diagnostic(
+                            DiagnosticCode::Range,
+                            "harmony.length must be positive",
+                            object,
+                            Some(field),
+                        ));
+                    }
+                    let field = self.field(object, "chords")?;
+                    let mut chords: Vec<(Rational, String)> = Vec::new();
+                    for item in self.list(&field.value, object, Some(field))? {
+                        let pair = self.tuple(item, object, Some(field), 2)?;
+                        let position = self.q_value(&pair[0], object, Some(field), false)?;
+                        let name = self.string_value(&pair[1], object, Some(field), "string")?;
+                        let in_order = match chords.last() {
+                            None => position.is_zero(),
+                            Some((previous, _)) => &position > previous,
+                        };
+                        if !in_order || position >= length || name.is_empty() {
+                            return Err(path_diagnostic(
+                                DiagnosticCode::Range,
+                                "harmony chords start at 0q, increase strictly, stay under the length and have names",
+                                object,
+                                Some(field),
+                            ));
+                        }
+                        chords.push((position, name));
+                    }
+                    if chords.is_empty() {
+                        return Err(path_diagnostic(
+                            DiagnosticCode::Range,
+                            "harmony.chords must be nonempty",
+                            object,
+                            Some(field),
+                        ));
+                    }
+                    self.harmonies
+                        .insert(object.id.clone(), HarmonyDef { length, chords });
+                }
+                "voicings" => {
+                    let field = self.field(object, "chords")?;
+                    let mut set = BTreeMap::new();
+                    for item in self.list(&field.value, object, Some(field))? {
+                        let pair = self.tuple(item, object, Some(field), 2)?;
+                        let name = self.string_value(&pair[0], object, Some(field), "string")?;
+                        let id = self.one_reference(&pair[1], object, Some(field))?;
+                        if self.document.object(&id).map(|o| o.kind.as_str()) != Some("voicing") {
+                            return Err(path_diagnostic(
+                                DiagnosticCode::Reference,
+                                "each voicings entry must reference a voicing",
+                                object,
+                                Some(field),
+                            ));
+                        }
+                        if name.is_empty() || set.insert(name, id).is_some() {
+                            return Err(path_diagnostic(
+                                DiagnosticCode::Range,
+                                "voicings names must be nonempty and distinct",
+                                object,
+                                Some(field),
+                            ));
+                        }
+                    }
+                    if set.is_empty() {
+                        return Err(path_diagnostic(
+                            DiagnosticCode::Range,
+                            "voicings.chords must be nonempty",
+                            object,
+                            Some(field),
+                        ));
+                    }
+                    self.voicing_sets.insert(object.id.clone(), set);
+                }
+                _ => {}
+            }
+        }
+        Ok(())
     }
 
     fn read_patterns(&mut self) -> CResult<()> {
+        self.read_harmonies()?;
         for object in self
             .document
             .objects
@@ -3336,7 +3553,7 @@ impl<'a> Compiler<'a> {
                 stretch,
                 transpose_cents: transpose,
                 cut: boundary == "cut",
-                voicing: self.supplied_voicing(object)?,
+                supply: self.supplied_voicing(object)?,
                 overrides,
                 inserts,
             });
@@ -3832,9 +4049,11 @@ impl<'a> Compiler<'a> {
                     origin,
                     scale: place.stretch.clone(),
                     transpose: place.transpose_cents.clone(),
-                    voicing: place.voicing.clone().map(|voicing| SuppliedVoicing {
-                        voicing,
+                    voicing: place.supply.clone().map(|supply| SuppliedVoicing {
+                        supply,
                         by: format!("placement `{}`", place.id),
+                        origin: place.at.clone(),
+                        scale: place.stretch.clone(),
                     }),
                     address: &mut address,
                     inherited_cut_end: cut_end,
@@ -4236,7 +4455,12 @@ impl<'a> Compiler<'a> {
                     self.expand_pattern_leaf(&leaf, &pattern.source_path, state)?
                 }
                 PatternChild::Chord(chord) => {
-                    for member in self.lower_supplied_chord(&chord, state.voicing.as_ref())? {
+                    for member in self.lower_supplied_chord(
+                        &chord,
+                        state.voicing.as_ref(),
+                        &state.origin,
+                        &state.scale,
+                    )? {
                         self.expand_pattern_leaf(&member, &pattern.source_path, state)?;
                     }
                 }
@@ -4265,11 +4489,14 @@ impl<'a> Compiler<'a> {
                         Some(use_def.span),
                     )?;
                     let child_span = checked_mul(&child_scale, &source.length, Some(use_def.span))?;
-                    // The nearest use or placement naming a voicing supplies it.
-                    let child_voicing = match &use_def.voicing {
-                        Some(voicing) => Some(SuppliedVoicing {
-                            voicing: voicing.clone(),
+                    // The nearest use or placement naming a voicing or a
+                    // harmony supplies it.
+                    let child_voicing = match &use_def.supply {
+                        Some(supply) => Some(SuppliedVoicing {
+                            supply: supply.clone(),
                             by: format!("use `{}`", use_def.id),
+                            origin: use_origin.clone(),
+                            scale: child_scale.clone(),
                         }),
                         None => state.voicing.clone(),
                     };

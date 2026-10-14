@@ -219,6 +219,7 @@ by that extension. Other top-level kinds in a core composition are:
 | `tempo`, `meter`, `tuning` | Musical coordinate systems |
 | `groove` | Named swing map that placements reference (§9.2) |
 | `voicing` | Named pitch list that chords play (§8.2) |
+| `harmony`, `voicings` | Named timeline of chord names, and a part's voicing for each name (§8.2) |
 | `vibrato` | Named periodic pitch shape that a pitch expression adds (§8.1) |
 | `pattern` | Finite reusable event content |
 | `track`, `place` | Event destinations and arrangement instances |
@@ -501,6 +502,32 @@ have a different number of members under each voicing: an override that
 addresses `d1.5` where a four-pitch voicing is supplied is `E_INSTANCE_TARGET`,
 as for any missing occurrence.
 
+A use or placement may instead supply a harmony: `harmony = &h` with
+`voicings = &v`, which come together and not beside `voicing` (`E_RANGE`). A
+`harmony` requires a positive musical `length` and `chords`, a nonempty list
+of `(position, name)` pairs: positions start at 0q, strictly increase and
+stay under `length`, and names are nonempty strings. A `voicings` requires
+`chords`, a nonempty list of `(name, &voicing)` pairs with distinct names.
+Names are compared exactly and never parsed as chord symbols.
+
+```maac
+harmony verse_chords { length = 8q; chords = [(0q, "G"), (4q, "D")]; }
+voicings guitar_voicings { chords = [("G", &g_open), ("D", &d_four)]; }
+place strums { pattern = &strum_bar; track = &guitar; at = 0q; count = 4; harmony = &verse_chords; voicings = &guitar_voicings; }
+```
+
+A chord without `pitches` or `voicing` whose nearest supplier names a
+harmony plays the voicing that `voicings` maps to the harmony's chord at the
+chord's position: its onset in the supplier's pattern, counting the
+supplier's repetitions (repetition `i` of a pattern of length `L` adds
+`i*L`), placed by nested uses as §9 says, before the supplier's own
+`stretch` and before the groove. The chord at position `p` is the last entry
+at or before `p mod length`, so a harmony repeats every `length`. Above,
+`strums` plays G, D, G, D. A name that `voicings` does not map is
+`E_REFERENCE` at the chord occurrence, naming the chord, the name, the
+harmony, the voicings and the supplier. All other rules for supplied
+voicings apply to the voicing found.
+
 A member's leaf component in the §10 event address is `chord_id.k`, for
 example `comp_main/3/down.2`; identifiers cannot contain `.`. Its source
 object is the chord. Changing a member's pitch keeps its identity.
@@ -523,7 +550,7 @@ pattern eight_quarters {
 }
 ```
 
-A `use` requires `pattern` and nonnegative musical `at`. `count` is a positive integer, default 1; `stretch` is positive dimensionless rational, default 1; `transpose` is cents, default 0ct; `boundary` is `spill` or `cut`, default `spill`. An optional `voicing` reference supplies a voicing to chords without pitches below it (§8.2).
+A `use` requires `pattern` and nonnegative musical `at`. `count` is a positive integer, default 1; `stretch` is positive dimensionless rational, default 1; `transpose` is cents, default 0ct; `boundary` is `spill` or `cut`, default `spill`. An optional `voicing` reference, or a `harmony` with a `voicings` reference, supplies chords without pitches below it (§8.2).
 
 The occupied repetition span is `count * stretch * source.length`; it must fit in the parent pattern's length. For repetition `i`, a child at `a` with gate `d` maps to:
 
@@ -623,7 +650,7 @@ place bass_main {
 }
 ```
 
-A `place` has the same repetition, transformation and `voicing` fields as `use`, plus required `track` and an optional `groove` reference (§9.2). Its `at` is a global score position. Its occupied repetition span must fit within the project score. Each expanded leaf carries a structured event address:
+A `place` has the same repetition, transformation, `voicing`, `harmony` and `voicings` fields as `use`, plus required `track` and an optional `groove` reference (§9.2). Its `at` is a global score position. Its occupied repetition span must fit within the project score. Each expanded leaf carries a structured event address:
 
 `(placement_id, repetition_index, [use_id, repetition_index ...], leaf_id)`.
 

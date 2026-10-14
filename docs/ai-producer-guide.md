@@ -50,8 +50,19 @@ listen before you call a track finished.
   once. Chords without `pitches` play the voicing their `use` or `place`
   names: `use b2 { pattern = &strum_bar; at = 4q; voicing = &d; }`. `top = 4`
   keeps the upper four strings, as an upstroke catches them.
-- Write one-bar chord patterns and assemble progressions with `use`. Place
-  progressions with `count` for repeats.
+- Write each section's chords once, as a `harmony`, and each part's voicing
+  for every chord once, as its `voicings`:
+  `harmony verse_chords { length = 32q; chords = [(0q, "D"), (4q, "A"), (8q, "Bm"), (12q, "G")]; }`
+  and `voicings piano_voicings { chords = [("D", &pno_d), ("A", &pno_a), ("Bm", &pno_bm), ("G", &pno_g)]; }`.
+  Then place a one-bar rhythm of chords without pitches with `count`, the
+  harmony and the part's voicings:
+  `place piano_verse { pattern = &pno_pulse; track = &piano_notes; at = 16q; count = 8; harmony = &verse_chords; voicings = &piano_voicings; }`.
+  Each chord plays the voicing for the chord sounding at its own position,
+  and every part reads the same harmony. A rhythm that changes within a
+  section is a short pattern of `use` lines. Name these objects by role,
+  such as `verse_chords` and `piano_voicings`: a harmony called `bridge`
+  clashes with a region of that name, and voicings called `piano` with the
+  node.
 - Give a melody vibrato and bends per note. Declare the vibrato once and
   name it from each held note's pitch expression, after a bend if the note
   has one:
@@ -62,13 +73,17 @@ listen before you call a track finished.
   vibrato's delay: `points = [(0ms, -200ct, step), (40ms, -200ct, linear), (170ms, 0ct, step)]`
   picks a whole step low and pushes up. See
   [vibrato](pitch-expression.md#vibrato).
+- Let the bass follow the harmony too. Give it a voicing per chord of the
+  root and its octave, such as `voicing bs_a { pitches = [A1, A2]; }`, and
+  write its rhythm as chords with `bottom = 1` for the root and `top = 1`
+  for the octave. The register stays yours, and no transposition needs
+  working out.
 - Reuse a line at other pitches with `transpose` on `use`, in cents:
   `use d_bar { pattern = &g_bar; at = 4q; transpose = 700ct; }` plays a G
-  pattern as D. A bass line needs only one pattern per chord quality. Mind
-  the range: a transposed shape keeps its spread, so a G shape from G2 moved
-  down a fourth plays D2, below a guitar's low E (E2). "Morning Ferry"'s
-  picking does this in its D and C bars; give a picked guitar a pattern per
-  shape instead.
+  pattern as D. Mind the range: a transposed shape keeps its spread, so a G
+  shape from G2 moved down a fourth plays D2, below a guitar's low E (E2).
+  "Morning Ferry"'s picking does this in its D and C bars; give a picked
+  guitar a pattern per shape instead.
 - Play drums from one kit node: import `std/studio/1.1.0`, add
   `node drums { instrument = &studio.drums; }`, and write `hit` leaves such as
   `hit k1 { at = 0q; key = "kick"; velocity = 0.85; }`. Keys are `kick`,

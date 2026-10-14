@@ -1556,7 +1556,8 @@ fn resolve_occurrence_pitches<'a>(
     }
     let objects = root["objects"].as_object()?;
     let mut pattern_id = source_object_id(place["fields"].get("pattern")?)?.to_owned();
-    let mut supplied = supplied_voicing(place, None)?;
+    let length = typed_rational(&objects.get(&pattern_id)?["fields"]["length"]).ok()?;
+    let mut supplied = supplied_into(place, None, place_index, &length)?;
     let mut position = 1usize;
     let mut mappings = Vec::new();
 
@@ -1574,7 +1575,7 @@ fn resolve_occurrence_pitches<'a>(
                 return (position + 1 == segments.len()).then_some((mappings, None));
             }
             ("chord", Some(member)) => {
-                let pitches = chord_pitches(objects, child, supplied.as_deref())?;
+                let pitches = chord_pitches(objects, child, supplied.as_ref())?;
                 return (position + 1 == segments.len() && member < pitches.len())
                     .then_some((mappings, Some(pitches)));
             }
@@ -1585,7 +1586,8 @@ fn resolve_occurrence_pitches<'a>(
                     return None;
                 }
                 pattern_id = source_object_id(child["fields"].get("pattern")?)?.to_owned();
-                supplied = supplied_voicing(child, supplied)?;
+                let length = typed_rational(&objects.get(&pattern_id)?["fields"]["length"]).ok()?;
+                supplied = supplied_into(child, supplied.as_ref(), repeat, &length)?;
                 position += 2;
             }
             _ => return None,
@@ -1605,31 +1607,139 @@ fn split_chord_member(segment: &str) -> Option<(&str, Option<usize>)> {
     }
 }
 
-/// The voicing a use or placement supplies to the chords below it: its own,
-/// or else the one `inherited` from further out. `None` is a malformed field.
-pub(super) fn supplied_voicing(
-    object: &Value,
-    inherited: Option<String>,
-) -> Option<Option<String>> {
-    match object["fields"].get("voicing") {
-        Some(voicing) => Some(Some(source_object_id(voicing)?.to_owned())),
-        None => Some(inherited),
+/// What a use or placement supplies to the chords below it (§8.2): one
+/// voicing, or a harmony that a part's voicings voice. A harmony's `offset`
+/// and `scale` map the current pattern's positions to the supplier's, where
+/// its chords are looked up.
+#[derive(Clone, Debug)]
+pub(super) enum Supplied {
+    Voicing(String),
+    Harmony {
+        harmony: String,
+        voicings: String,
+        offset: BigRational,
+        scale: BigRational,
+    },
+}
+
+impl Supplied {
+    /// The objects a chord playing this supply depends on.
+    fn dependencies(&self) -> Vec<String> {
+        match self {
+            Supplied::Voicing(id) => vec![id.clone()],
+            Supplied::Harmony {
+                harmony, voicings, ..
+            } => vec![harmony.clone(), voicings.clone()],
+        }
     }
 }
 
+/// What reaches repetition `repetition` of the pattern under `object`, a
+/// use or placement whose pattern is `length` long: its own voicing or
+/// harmony, or else the one `inherited` from further out, moved into its
+/// pattern. `None` is a malformed field.
+pub(super) fn supplied_into(
+    object: &Value,
+    inherited: Option<&Supplied>,
+    repetition: u64,
+    length: &BigRational,
+) -> Option<Option<Supplied>> {
+    let fields = &object["fields"];
+    let repeated = length * BigRational::from_integer(repetition.into());
+    if let Some(voicing) = fields.get("voicing") {
+        return Some(Some(Supplied::Voicing(
+            source_object_id(voicing)?.to_owned(),
+        )));
+    }
+    if let Some(harmony) = fields.get("harmony") {
+        return Some(Some(Supplied::Harmony {
+            harmony: source_object_id(harmony)?.to_owned(),
+            voicings: source_object_id(fields.get("voicings")?)?.to_owned(),
+            offset: repeated,
+            scale: BigRational::from_integer(1.into()),
+        }));
+    }
+    Some(match inherited {
+        None => None,
+        Some(Supplied::Voicing(id)) => Some(Supplied::Voicing(id.clone())),
+        Some(Supplied::Harmony {
+            harmony,
+            voicings,
+            offset,
+            scale,
+        }) => {
+            // A use moves its pattern by `at` and its repetitions, and
+            // stretches it.
+            let field = |name: &str, default: i64| match fields.get(name) {
+                None => Some(BigRational::from_integer(default.into())),
+                Some(value) => typed_rational(value).ok(),
+            };
+            let (at, stretch) = (field("at", 0)?, field("stretch", 1)?);
+            Some(Supplied::Harmony {
+                harmony: harmony.clone(),
+                voicings: voicings.clone(),
+                offset: offset + scale * (at + &stretch * repeated),
+                scale: scale * stretch,
+            })
+        }
+    })
+}
+
+/// The voicing a chord at position `at` of its pattern plays under
+/// `supplied`: the voicing, or the part's voicing for the harmony's chord
+/// sounding there.
+fn supplied_voicing_id(
+    objects: &Map<String, Value>,
+    supplied: &Supplied,
+    at: &Value,
+) -> Option<String> {
+    let (harmony, voicings, offset, scale) = match supplied {
+        Supplied::Voicing(id) => return Some(id.clone()),
+        Supplied::Harmony {
+            harmony,
+            voicings,
+            offset,
+            scale,
+        } => (harmony, voicings, offset, scale),
+    };
+    let position = offset + scale * typed_rational(at).ok()?;
+    let fields = &objects.get(harmony)?["fields"];
+    let length = typed_rational(&fields["length"]).ok()?;
+    let position = &position - (&position / &length).floor() * &length;
+    let mut name = None;
+    for chord in fields["chords"]["items"].as_array()? {
+        let pair = chord["items"].as_array()?;
+        if typed_rational(pair.first()?).ok()? <= position {
+            name = pair.get(1)?["v"].as_str();
+        }
+    }
+    let name = name?;
+    objects.get(voicings)?["fields"]["chords"]["items"]
+        .as_array()?
+        .iter()
+        .find_map(|entry| {
+            let pair = entry["items"].as_array()?;
+            (pair.first()?["v"].as_str()? == name).then(|| source_object_id(pair.get(1)?))?
+        })
+        .map(str::to_owned)
+}
+
 /// The pitches a chord plays (§8.2): its own `pitches`, those of the voicing
-/// it names, or else those of the voicing `supplied` by its nearest use or
-/// placement, narrowed by `top` or `bottom`.
+/// it names, or else those `supplied` by its nearest use or placement,
+/// narrowed by `top` or `bottom`.
 pub(super) fn chord_pitches<'a>(
     objects: &'a Map<String, Value>,
     chord: &'a Value,
-    supplied: Option<&str>,
+    supplied: Option<&Supplied>,
 ) -> Option<&'a [Value]> {
     let fields = &chord["fields"];
     let pitches = match (fields.get("pitches"), fields.get("voicing")) {
         (Some(pitches), _) => pitches,
         (None, Some(voicing)) => &objects.get(source_object_id(voicing)?)?["fields"]["pitches"],
-        (None, None) => &objects.get(supplied?)?["fields"]["pitches"],
+        (None, None) => {
+            let id = supplied_voicing_id(objects, supplied?, fields.get("at")?)?;
+            &objects.get(&id)?["fields"]["pitches"]
+        }
     };
     let pitches = pitches["items"].as_array()?.as_slice();
     let selected = |name: &str| -> Option<Option<usize>> {
@@ -1930,7 +2040,10 @@ fn bounded_event_impact(
     }
     for path in changed {
         let kind = top_level_kind(base, path).or_else(|| top_level_kind(candidate, path))?;
-        if !matches!(kind, "pattern" | "place" | "voicing") {
+        if !matches!(
+            kind,
+            "pattern" | "place" | "voicing" | "harmony" | "voicings"
+        ) {
             return None;
         }
     }
@@ -1977,14 +2090,15 @@ fn enumerate_event_occurrences(tree: &Value) -> Option<Vec<EventOccurrence>> {
         }
         let pattern = source_object_id(place["fields"].get("pattern")?)?;
         let count = positive_count(place)?;
-        let supplied = supplied_voicing(place, None)?;
+        let length = typed_rational(&objects.get(pattern)?["fields"]["length"]).ok()?;
         for repetition in 0..count {
             let mut address = vec![place_id.clone(), repetition.to_string()];
             let dependencies = vec![vec![place_id.clone()]];
+            let supplied = supplied_into(place, None, repetition, &length)?;
             enumerate_pattern_occurrences(
                 objects,
                 pattern,
-                supplied.as_deref(),
+                supplied.as_ref(),
                 &mut address,
                 &dependencies,
                 &mut out,
@@ -1999,7 +2113,7 @@ fn enumerate_event_occurrences(tree: &Value) -> Option<Vec<EventOccurrence>> {
 fn enumerate_pattern_occurrences(
     objects: &Map<String, Value>,
     pattern_id: &str,
-    supplied: Option<&str>,
+    supplied: Option<&Supplied>,
     address: &mut Vec<String>,
     inherited_dependencies: &[Path],
     out: &mut Vec<EventOccurrence>,
@@ -2031,7 +2145,11 @@ fn enumerate_pattern_occurrences(
                 if let Some(voicing) = fields.get("voicing") {
                     dependencies.push(vec![source_object_id(voicing)?.to_owned()]);
                 } else if fields.get("pitches").is_none() {
-                    dependencies.push(vec![supplied?.to_owned()]);
+                    let supplied = supplied?;
+                    dependencies.extend(supplied.dependencies().into_iter().map(|id| vec![id]));
+                    if let Some(id) = supplied_voicing_id(objects, supplied, fields.get("at")?) {
+                        dependencies.push(vec![id]);
+                    }
                 }
                 for member in 0..chord_pitches(objects, child, supplied)?.len() {
                     address.push(format!("{child_id}.{member}"));
@@ -2045,14 +2163,15 @@ fn enumerate_pattern_occurrences(
             "use" => {
                 let nested = source_object_id(child["fields"].get("pattern")?)?;
                 let count = positive_count(child)?;
-                let nested_supplied = supplied_voicing(child, supplied.map(str::to_owned))?;
+                let length = typed_rational(&objects.get(nested)?["fields"]["length"]).ok()?;
                 for repetition in 0..count {
+                    let nested_supplied = supplied_into(child, supplied, repetition, &length)?;
                     address.push(child_id.clone());
                     address.push(repetition.to_string());
                     enumerate_pattern_occurrences(
                         objects,
                         nested,
-                        nested_supplied.as_deref(),
+                        nested_supplied.as_ref(),
                         address,
                         &dependencies,
                         out,

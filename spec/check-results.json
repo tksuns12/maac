@@ -2,6 +2,6 @@
   "surface_parse": "pass",
   "syntax_tree_schema": "pass",
   "example_expanded_note_count": 48,
-  "arithmetic_assertions": 26,
+  "arithmetic_assertions": 27,
   "scope": "Syntax plus selected semantics only; no complete validator or renderer is included."
 }

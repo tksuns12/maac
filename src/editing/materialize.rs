@@ -330,7 +330,7 @@ impl Builder<'_> {
     fn copy_pattern(
         &mut self,
         source_id: &str,
-        supplied: Option<&str>,
+        supplied: Option<&super::foundation::Supplied>,
         old_prefix: &str,
         new_prefix: &str,
     ) -> EditResult<String> {
@@ -395,17 +395,29 @@ impl Builder<'_> {
                 Some("use") => {
                     let target = reference_id(&child["fields"]["pattern"])?;
                     let length = rational(&pattern(self.catalog, &target)?["fields"]["length"])?;
-                    let step = checked(scalar(child, "stretch", 1)? * length)?;
+                    let step = checked(scalar(child, "stretch", 1)? * length.clone())?;
                     let at = scalar(child, "at", 0)?;
-                    let nested_supplied =
-                        super::foundation::supplied_voicing(child, supplied.map(str::to_owned))
-                            .ok_or_else(|| {
-                                EditError::new(
-                                    "E_REFERENCE",
-                                    "use.voicing must reference a voicing",
-                                )
-                            })?;
-                    for repetition in 0..count(child)? {
+                    let repetitions = count(child)?;
+                    // Each copy would start the harmony again at 0q.
+                    if child["fields"].get("harmony").is_some() && repetitions > 1 {
+                        return Err(EditError::new(
+                            "E_CAPABILITY",
+                            "materializing a use that repeats a harmony is not supported",
+                        ));
+                    }
+                    for repetition in 0..repetitions {
+                        let nested_supplied = super::foundation::supplied_into(
+                            child,
+                            supplied,
+                            repetition as u64,
+                            &length,
+                        )
+                        .ok_or_else(|| {
+                            EditError::new(
+                                "E_REFERENCE",
+                                "use.voicing, use.harmony or use.voicings is malformed",
+                            )
+                        })?;
                         let use_id = loop {
                             let candidate = format!("_use{local_serial}");
                             local_serial += 1;
@@ -415,7 +427,7 @@ impl Builder<'_> {
                         };
                         let nested_id = self.copy_pattern(
                             &target,
-                            nested_supplied.as_deref(),
+                            nested_supplied.as_ref(),
                             &format!("{old_prefix}/{child_id}/{repetition}"),
                             &format!("{new_prefix}/{use_id}/0"),
                         )?;
@@ -513,9 +525,6 @@ pub(super) fn prepare(
         )
     })?;
     let source_id = reference_id(&place["fields"]["pattern"])?;
-    // The placement keeps its `voicing`, so the copies play what it supplied.
-    let supplied = super::foundation::supplied_voicing(place, None)
-        .ok_or_else(|| EditError::new("E_REFERENCE", "place.voicing must reference a voicing"))?;
     let repetitions = count(place)?;
     let invocations = invocation_bound(catalog, &source_id, 1, &mut BTreeSet::new())?;
     if repetitions.saturating_mul(invocations).saturating_add(6) > MAX_OPERATIONS {
@@ -525,7 +534,16 @@ pub(super) fn prepare(
     }
     let length = rational(&pattern(catalog, &source_id)?["fields"]["length"])?;
     let stretch = scalar(place, "stretch", 1)?;
-    let step = checked(stretch.clone() * length)?;
+    // The placement keeps its `voicing` or `harmony`, so the copies play
+    // what it supplied. A harmony is looked up before the placement's
+    // stretch, which the copies take over.
+    if place["fields"].get("harmony").is_some() && stretch != BigRational::one() {
+        return Err(EditError::new(
+            "E_CAPABILITY",
+            "materializing a stretched placement that supplies a harmony is not supported",
+        ));
+    }
+    let step = checked(stretch.clone() * length.clone())?;
     let wrapper_length = checked(step.clone() * BigRational::from_integer(repetitions.into()))?;
     let mut reserved: BTreeSet<String> = document.tree()["objects"]
         .as_object()
@@ -547,9 +565,16 @@ pub(super) fn prepare(
     let mut wrapper_children = Map::new();
     for repetition in 0..repetitions {
         let use_id = format!("_repeat{repetition}");
+        let supplied = super::foundation::supplied_into(place, None, repetition as u64, &length)
+            .ok_or_else(|| {
+                EditError::new(
+                    "E_REFERENCE",
+                    "place.voicing, place.harmony or place.voicings is malformed",
+                )
+            })?;
         let copied_id = builder.copy_pattern(
             &source_id,
-            supplied.as_deref(),
+            supplied.as_ref(),
             &format!("{placement_id}/{repetition}"),
             &format!("{placement_id}/0/{use_id}/0"),
         )?;

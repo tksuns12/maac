@@ -411,6 +411,8 @@ impl Normalizer<'_> {
                 | "groove"
                 | "voicing"
                 | "vibrato"
+                | "harmony"
+                | "voicings"
                 | "curve"
                 | "automation"
                 | "node"

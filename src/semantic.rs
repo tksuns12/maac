@@ -845,6 +845,8 @@ impl<'a> Validator<'a> {
             "groove" => self.validate_groove(object, &path),
             "voicing" => self.validate_voicing(object, &path),
             "vibrato" => self.validate_vibrato(object, &path),
+            "harmony" => self.validate_harmony(object, &path),
+            "voicings" => self.validate_voicings(object, &path),
             "modulate" | "asset" | "audio" | "extension" | "hit" | "message" | "expression" => {
                 self.validate_deferred_object(object, &path)
             }
@@ -1846,6 +1848,213 @@ impl<'a> Validator<'a> {
         self.reject_children(object, path);
     }
 
+    /// What a use or placement supplies to chords without pitches (§8.2): a
+    /// `voicing`, or a `harmony` with the part's `voicings`.
+    fn validate_supply(&mut self, object: &Object, path: &[String]) {
+        if let Some(field) = object.field("voicing") {
+            self.expect_object_ref(field, "voicing", &["voicing"], path);
+        }
+        if let Some(field) = object.field("harmony") {
+            self.expect_object_ref(field, "harmony", &["harmony"], path);
+        }
+        if let Some(field) = object.field("voicings") {
+            self.expect_object_ref(field, "voicings", &["voicings"], path);
+        }
+        let kind = object.kind.clone();
+        let (voicing, harmony, voicings) = (
+            object.field("voicing"),
+            object.field("harmony"),
+            object.field("voicings"),
+        );
+        let problem = match (voicing, harmony, voicings) {
+            (Some(_), Some(field), _) => {
+                Some((field, format!("{kind}.harmony cannot sit beside `voicing`")))
+            }
+            (_, Some(field), None) => Some((
+                field,
+                format!("{kind}.harmony needs `voicings`, the part's voicing for each chord"),
+            )),
+            (_, None, Some(field)) => Some((field, format!("{kind}.voicings needs a `harmony`"))),
+            _ => None,
+        };
+        if let Some((field, message)) = problem {
+            self.push(
+                DiagnosticCode::Range,
+                message,
+                Some(field.value.span),
+                path.to_vec(),
+                vec![field.name.clone()],
+            );
+        }
+    }
+
+    /// A `harmony` (§8.2): a positive length and a timeline of chord names
+    /// from 0q, strictly increasing and inside the length.
+    fn validate_harmony(&mut self, object: &Object, path: &[String]) {
+        self.check_schema(
+            object,
+            path,
+            &["length", "chords"],
+            &["length", "chords", "label"],
+            &[],
+        );
+        let length = object.field("length").and_then(|field| {
+            let length = self.quantity(field, &[Unit::Q], path, "length")?;
+            if length <= BigRational::zero() {
+                self.push(
+                    DiagnosticCode::Range,
+                    "harmony.length must be positive",
+                    Some(field.value.span),
+                    path.to_vec(),
+                    vec!["length".into()],
+                );
+                return None;
+            }
+            Some(length)
+        });
+        let Some(field) = object.field("chords") else {
+            return;
+        };
+        let items = match &field.value.kind {
+            ValueKind::List(items) if !items.is_empty() => items.clone(),
+            _ => {
+                self.push_type(
+                    field,
+                    path,
+                    "chords",
+                    "a nonempty list of (position, \"name\") pairs",
+                );
+                return;
+            }
+        };
+        let mut previous: Option<BigRational> = None;
+        for (index, item) in items.iter().enumerate() {
+            let at = ["chords".to_owned(), index.to_string()];
+            let ValueKind::Tuple(pair) = &item.kind else {
+                self.push_type_value(item, path, "(position, \"name\") pair");
+                continue;
+            };
+            if pair.len() != 2 {
+                self.push(
+                    DiagnosticCode::Range,
+                    "harmony chords are (position, \"name\") pairs",
+                    Some(item.span),
+                    path.to_vec(),
+                    at.to_vec(),
+                );
+                continue;
+            }
+            if !pair[1].as_string().is_some_and(|name| !name.is_empty()) {
+                self.push(
+                    DiagnosticCode::Range,
+                    "a harmony chord name must be a nonempty string",
+                    Some(pair[1].span),
+                    path.to_vec(),
+                    at.to_vec(),
+                );
+            }
+            let Some(position) =
+                self.quantity_at(&pair[0], &[Unit::Q], path, &at, "harmony position")
+            else {
+                continue;
+            };
+            let problem = if index == 0 && !position.is_zero() {
+                Some("the first harmony position must be 0q")
+            } else if previous
+                .as_ref()
+                .is_some_and(|previous| &position <= previous)
+            {
+                Some("harmony positions must strictly increase")
+            } else if length.as_ref().is_some_and(|length| &position >= length) {
+                Some("harmony positions must be under its length")
+            } else {
+                None
+            };
+            if let Some(message) = problem {
+                self.push(
+                    DiagnosticCode::Range,
+                    message,
+                    Some(pair[0].span),
+                    path.to_vec(),
+                    at.to_vec(),
+                );
+            }
+            previous = Some(position);
+        }
+    }
+
+    /// A part's `voicings` (§8.2): distinct chord names, each mapped to a
+    /// voicing.
+    fn validate_voicings(&mut self, object: &Object, path: &[String]) {
+        self.check_schema(object, path, &["chords"], &["chords", "label"], &[]);
+        let Some(field) = object.field("chords") else {
+            return;
+        };
+        let items = match &field.value.kind {
+            ValueKind::List(items) if !items.is_empty() => items.clone(),
+            _ => {
+                self.push_type(
+                    field,
+                    path,
+                    "chords",
+                    "a nonempty list of (\"name\", &voicing) pairs",
+                );
+                return;
+            }
+        };
+        let mut names = std::collections::BTreeSet::new();
+        for (index, item) in items.iter().enumerate() {
+            let at = ["chords".to_owned(), index.to_string()];
+            let ValueKind::Tuple(pair) = &item.kind else {
+                self.push_type_value(item, path, "(\"name\", &voicing) pair");
+                continue;
+            };
+            if pair.len() != 2 {
+                self.push(
+                    DiagnosticCode::Range,
+                    "voicings chords are (\"name\", &voicing) pairs",
+                    Some(item.span),
+                    path.to_vec(),
+                    at.to_vec(),
+                );
+                continue;
+            }
+            match pair[0].as_string() {
+                Some(name) if !name.is_empty() => {
+                    if !names.insert(name.to_owned()) {
+                        self.push(
+                            DiagnosticCode::Range,
+                            format!("voicings name \"{name}\" twice"),
+                            Some(pair[0].span),
+                            path.to_vec(),
+                            at.to_vec(),
+                        );
+                    }
+                }
+                _ => self.push(
+                    DiagnosticCode::Range,
+                    "a voicings chord name must be a nonempty string",
+                    Some(pair[0].span),
+                    path.to_vec(),
+                    at.to_vec(),
+                ),
+            }
+            let target = pair[1]
+                .reference()
+                .filter(|reference| reference.port.is_none() && reference.path.len() == 1)
+                .and_then(|reference| self.document.object(&reference.path[0]));
+            if !target.is_some_and(|object| object.kind == "voicing") {
+                self.push(
+                    DiagnosticCode::Reference,
+                    "each voicings entry must reference a voicing",
+                    Some(pair[1].span),
+                    path.to_vec(),
+                    at.to_vec(),
+                );
+            }
+        }
+    }
+
     /// A `vibrato` (§8.1): a positive rate and depth, a nonnegative delay and
     /// rise, and the waveform of one cycle.
     fn validate_vibrato(&mut self, object: &Object, path: &[String]) {
@@ -2121,6 +2330,8 @@ impl<'a> Validator<'a> {
                 "transpose",
                 "boundary",
                 "voicing",
+                "harmony",
+                "voicings",
                 "label",
             ],
             &[],
@@ -2128,9 +2339,7 @@ impl<'a> Validator<'a> {
         if let Some(field) = object.field("pattern") {
             self.expect_object_ref(field, "pattern", &["pattern"], path);
         }
-        if let Some(field) = object.field("voicing") {
-            self.expect_object_ref(field, "voicing", &["voicing"], path);
-        }
+        self.validate_supply(object, path);
         if let Some(field) = object.field("at") {
             if let Some(value) = self.quantity(field, &[Unit::Q], path, "at") {
                 if value < BigRational::zero() {
@@ -2211,6 +2420,8 @@ impl<'a> Validator<'a> {
                 "boundary",
                 "groove",
                 "voicing",
+                "harmony",
+                "voicings",
                 "label",
             ],
             &[],
@@ -2224,9 +2435,7 @@ impl<'a> Validator<'a> {
         if let Some(field) = object.field("groove") {
             self.expect_object_ref(field, "groove", &["groove"], path);
         }
-        if let Some(field) = object.field("voicing") {
-            self.expect_object_ref(field, "voicing", &["voicing"], path);
-        }
+        self.validate_supply(object, path);
         if let Some(field) = object.field("at") {
             if let Some(value) = self.position_q_value(&field.value, path, "at") {
                 let outside = self
@@ -6214,6 +6423,8 @@ fn is_known_kind(kind: &str) -> bool {
             | "groove"
             | "voicing"
             | "vibrato"
+            | "harmony"
+            | "voicings"
             | "curve"
             | "automation"
             | "modulate"

@@ -106,6 +106,23 @@ can also name its shape itself, with `voicing = &g` or
 `pitches = [C4, E4, G4]`. Each string is a member with its own address:
 `down.0` to `down.5` under `g`, and `down.0` to `down.3` under `d`.
 
+Several parts can play one progression. Write the chords once as a
+`harmony`, give each part its voicing for every chord as a `voicings`, and
+let a placement supply both to a rhythm of chords without pitches:
+
+```maac
+harmony verse_chords { length = 8q; chords = [(0q, "G"), (4q, "D")]; }
+voicings guitar_voicings { chords = [("G", &g), ("D", &d)]; }
+place strums { pattern = &strum_bar; track = &guitar_notes; at = 0q; count = 4; harmony = &verse_chords; voicings = &guitar_voicings; }
+```
+
+Each chord in `strum_bar` plays the guitar's voicing for the chord sounding
+at its position: the bars play G, D, G, D, because a harmony repeats every
+`length`. Chord names are labels, compared exactly. Another part, such as a
+piano, places its own rhythm with the same `harmony` and its own
+`voicings`, so a chord change is one edit. A bass can follow with voicings
+of each root and its octave, played with `bottom = 1` and `top = 1`.
+
 A note can bend and add vibrato through a pitch expression. Name the vibrato
 once and give each held note the expression:
 

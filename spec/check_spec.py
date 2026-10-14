@@ -307,6 +307,8 @@ def main() -> None:
     # A vibrato knot sits at delay + (j + u_i) / rate; the rise scales its value.
     exact("vibrato_centered_knot_position", Fraction(3, 10) + (1 + Fraction(3, 4)) / Fraction(11, 2),
           Fraction(34, 55))
+    # A harmony chord is found at i*L + a, wrapped by the harmony's length.
+    exact("harmony_wrapped_position", (3 * Fraction(4) + Fraction(2)) % Fraction(8), Fraction(6))
     exact("vibrato_rising_knot_cents", 38 * min(1, (Fraction(39, 100) - Fraction(3, 10)) / Fraction(45, 100)),
           Fraction(38, 5))
     near("linear_tempo_ramp_seconds", 60 / 15 * math.log(180 / 120), 1.6218604324326575)
@@ -330,7 +332,7 @@ def main() -> None:
     (ROOT / "conformance.json").write_text(json.dumps(vectors, indent=2) + "\n")
     report = {
         "surface_parse": "pass", "syntax_tree_schema": "pass",
-        "example_expanded_note_count": len(events), "arithmetic_assertions": 26,
+        "example_expanded_note_count": len(events), "arithmetic_assertions": 27,
         "scope": "Syntax plus selected semantics only; no complete validator or renderer is included."
     }
     (ROOT / "check-results.json").write_text(json.dumps(report, indent=2) + "\n")

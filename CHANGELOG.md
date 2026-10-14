@@ -22,6 +22,18 @@ promise of compatibility beyond the documented interfaces.
   master, and the README's audio is the new master. See the
   [vibrato proposal](docs/design/vibrato-proposal.md).
 
+- A use or placement can supply a `harmony`, a timeline of chord names such
+  as `harmony verse_chords { length = 32q; chords = [(0q, "D"), (4q, "A")]; }`,
+  with a part's `voicings`, its voicing for each name
+  ([§8.2](MaaC-1-Specification.md#82-chords)). A chord without pitches below
+  it plays the part's voicing for the chord sounding at its position, so
+  every part reads one progression, and a bass follows with root-and-octave
+  voicings. Names are labels, never parsed. It lowers to the same chord
+  members, so the plan format is unchanged. "Lantern Street" now writes its
+  progression once: its chord parts shrink from 226 to 132 lines, and its
+  18 hand-worked bass transpositions go. See the
+  [harmony proposal](docs/design/harmony-proposal.md).
+
 ### Changed
 
 - `maac analyze` checks the pitch of notes with a pitch expression (F29).
