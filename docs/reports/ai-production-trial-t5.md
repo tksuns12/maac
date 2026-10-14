@@ -110,7 +110,7 @@ Friction numbers continue from T4.
 | F31 | An arpeggio cannot follow the harmony. A chord leaf plays all its members or the outer ones (`bottom`, `top`); it cannot pick the second or third. The arpeggio is four patterns, one per chord, so the progression is written out again in 32 notes, and a new harmony would not move it | Open. The [harmony proposal](../design/harmony-proposal.md#not-proposed) deferred picking a middle member for a walking bass's fifth; a second genre now needs it |
 | F32 | A tempo-synced delay is a frame count worked out by hand: a dotted eighth at 126 bpm is 17,142.857 frames, written as 17,143. It would not follow a tempo change | Open; a convenience |
 | F33 | `maac analyze` cannot tell whether a pump is heard. The keyed compressor took 4.3 dB on average in the drops, up to 13.9, yet the owner heard no pumping. Measured outside the analyzer, the mix swung only 6.1 dB per beat, and deeper settings barely changed that: the parts that carried the drop were not pumped | Open: a measurement of how much the mix's level swings on the beat, per section |
-| F34 | The track uses 8.66 billion of the song profile's 10 billion execution-work units (87 %), mostly in the seven-saw voices. At this density the limit is reached at about 3:10, so a five-minute extended mix, common in dance music, cannot be built. The earlier trial songs are as close: "Lantern Street" uses 8.88 billion in 2:09 (89 %), "Morning Ferry" 5.99 billion in 2:17 (60 %) and "Late Window" 3.25 billion in 1:18 (33 %). At "Lantern Street"'s density the limit is about 2:25, shorter than most pop songs. The default profile refuses even `maac compile` without `--profile song` | Open. A resource policy, not a language rule: the delivery took 83 s of CPU |
+| F34 | The track uses 8.66 billion of the song profile's 10 billion execution-work units (87 %), mostly in the seven-saw voices. At this density the limit is reached at about 3:10, so a five-minute extended mix, common in dance music, cannot be built. The earlier trial songs are as close: "Lantern Street" uses 8.88 billion in 2:09 (89 %), "Morning Ferry" 5.99 billion in 2:17 (60 %) and "Late Window" 3.25 billion in 1:18 (33 %). At "Lantern Street"'s density the limit is about 2:25, shorter than most pop songs. The default profile refuses even `maac compile` without `--profile song` | Fixed: the `song` profile allows 100 billion units, and a default-profile refusal names it. A five-minute version of the track builds in 134 s of CPU. See the [song budget proposal](../design/song-budget-proposal.md#results) |
 
 ## What to build next, in order
 
@@ -123,7 +123,8 @@ blocked or slowed this track.
    stops this dance track at about three minutes, and T4's pop song at
    about two and a half. Raise the limit, or base it on measured render
    time, so that a normal-length track fits. A resource policy, not a
-   language change.
+   language change. Done: see the
+   [song budget proposal](../design/song-budget-proposal.md#results).
 2. **Picking chord members (F31).** Let a chord leaf play one member of the
    supplied voicing by its position, so an arpeggio or a walking bass
    follows the harmony. A language change, deferred twice and now needed by

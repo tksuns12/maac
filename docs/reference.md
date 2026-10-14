@@ -71,7 +71,10 @@ existing behavior; `render`/`hash` do not discover `main.maac`.
 
 `--profile` is per-command on check/compile/build/render/deliver/play/record/query-events, not a language
 conformance declaration. Default work remains 500,000,000; explicit `song`
-permits at most 10,000,000,000 work units with every other bound unchanged.
+permits at most 100,000,000,000 work units with every other bound unchanged.
+Under the default profile, a refusal for execution work that `song` would allow
+adds `hint: --profile song allows up to 100000000000 units`, and `--json` errors
+carry it as `hint`.
 Composition `check` includes this budget validation. Large retained plans need
 explicit song selection on render or query-events; source/plan data cannot select an allowance.
 

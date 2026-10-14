@@ -134,8 +134,8 @@ control.
 These graphs do more per voice than std/basic. Every new filter and drive
 node costs 2 work units per sample, a `synth.modal/1` bank one unit for every
 four resonators, and every other node 1. A piano voice is the most expensive:
-a three-minute ballad part costs about 2.7 billion of the song profile's
-10 billion units. Most of the time
+a three-minute ballad part costs about 2.7 billion work units, where the
+default profile allows 500 million and `song` 100 billion. Most of the time
 goes to the engine's per-node overhead, not the DSP. Long arrangements may
 need `--profile song`. The [delivery report](reports/studio-delivery.md) gives
 measured render times.

@@ -64,7 +64,7 @@ maac compile . --profile song -o song.performance.json
 maac render song.performance.json --profile song -o retained.wav --format pcm16
 ```
 
-`song` raises only execution work from the default 500 million to 10 billion
+`song` raises only execution work from the default 500 million to 100 billion
 units. All other bounds stay unchanged. `check` includes the chosen budget;
 a retained large plan needs the explicit profile again when rendered. The
 source or plan cannot grant itself a higher allowance. `render` and `hash`

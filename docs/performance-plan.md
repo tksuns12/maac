@@ -468,7 +468,7 @@ The approved [entrypoint and execution-profile extension](project-entrypoint.md)
 adds explicit-limit loading, validation, serialization, DSP preparation and
 export APIs without changing this wire format or plan version. Default wrappers,
 including generic Serde `Plan` decoding, retain the 500-million work budget.
-Caller-selected `song` allows up to 10 billion execution-work units while all
+Caller-selected `song` allows up to 100 billion execution-work units while all
 other ceilings remain unchanged. A large retained plan needs that explicit
 allowance on load and render; it carries no profile or authority to elevate
 limits. Implementations must propagate selected limits through every nested

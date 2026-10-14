@@ -62,16 +62,16 @@ fn caller_can_explicitly_authorize_song_sized_work() {
 fn song_changes_only_execution_work_and_keeps_a_finite_hard_ceiling() {
     assert_eq!(PlanLimits::MAX_EXECUTION_WORK, 500_000_000);
     assert_eq!(maac::graph::MAX_EXECUTION_WORK, 500_000_000);
-    assert_eq!(PlanLimits::MAX_SONG_EXECUTION_WORK, 10_000_000_000);
+    assert_eq!(PlanLimits::MAX_SONG_EXECUTION_WORK, 100_000_000_000);
     let mut song = PlanLimits::song();
-    assert_eq!(song.max_execution_work, 10_000_000_000);
+    assert_eq!(song.max_execution_work, 100_000_000_000);
     song.max_execution_work = PlanLimits::MAX_EXECUTION_WORK;
     assert_eq!(song, PlanLimits::default());
 
-    // Five instances each charge 25 shared visits per frame. Across 80 million
-    // frames this lands exactly on 10 billion, within each graph's node cap.
+    // Fifty instances each charge 25 shared visits per frame. Across 80 million
+    // frames this lands exactly on 100 billion, within each graph's node cap.
     let mut at_limit = large_plan(80_000_000, 24);
-    for index in 1..5 {
+    for index in 1..50 {
         let mut node = at_limit.nodes[0].clone();
         node.id = format!("sound{index}");
         at_limit.nodes.push(node);

@@ -332,7 +332,7 @@ span clipped to the render endpoint, without discounting cached coefficients.
 Reject excess initialization/sample work and overflow before rendering.
 
 The [explicit song execution profile](project-entrypoint.md#explicit-finite-song-profile)
-permits up to 10,000,000,000 work units by caller selection. It changes neither
+permits up to 100,000,000,000 work units by caller selection. It changes neither
 these weights nor pluck memory and other resource limits; source/plan data
 cannot select the larger allowance. Its integrated and native-song validation
 is recorded in the [entrypoint delivery report](reports/project-entrypoint-delivery.md),

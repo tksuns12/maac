@@ -50,6 +50,16 @@ promise of compatibility beyond the documented interfaces.
 
 ### Changed
 
+- The `song` execution profile allows 100 billion work units, up from 10
+  billion (F34). Every production-trial song needed a third to nine tenths
+  of the old ceiling, so a three-minute pop song or a five-minute dance mix
+  could not be built; a five-minute version of "Afterlight" now builds in
+  about two minutes of CPU. The default profile stays at 500 million, and
+  when it refuses a plan that `song` would allow, the CLI adds
+  `hint: --profile song allows up to 100000000000 units` (in `--json`, a
+  `hint` field). See the
+  [song budget proposal](docs/design/song-budget-proposal.md).
+
 - `maac analyze` checks the pitch of notes with a pitch expression (F29).
   It compares each with its expressed pitch, the written pitch moved by the
   expression's mean over the estimate, and skips one whose expression moves

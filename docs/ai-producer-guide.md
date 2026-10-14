@@ -157,8 +157,9 @@ maac analyze main.maac --window region:b --preroll 4 --json   # quick, approxima
   spectrogram shows density, low-end build-up and sections.
 - **Duration.** Rendering runs at roughly real time, so batch several edits
   into one measurement pass. Dense synthesis costs execution work: T5's
-  seven-saw supersaws used 87 % of the `song` profile's budget in 2:40, and
-  the default profile refuses such a track outright.
+  seven-saw supersaws used 8.7 billion units in 2:40. The default profile
+  allows 500 million, so pass `--profile song`, which allows 100 billion, to
+  every command on a whole song.
 - **Excerpts for the listener.** To compare one change, compile each variant
   with `maac compile --profile song` and render the same section of each with
   `maac render --start-frame N --end-frame M`; a short clip per variant is

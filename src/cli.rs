@@ -945,6 +945,49 @@ impl fmt::Display for CliError {
 
 impl std::error::Error for CliError {}
 
+/// The execution profile a command selected, for the commands that take one.
+fn selected_profile(command: &Command) -> Option<ProfileArg> {
+    match command {
+        Command::Check { profile, .. }
+        | Command::Compile { profile, .. }
+        | Command::Render { profile, .. }
+        | Command::Build { profile, .. }
+        | Command::Analyze { profile, .. }
+        | Command::Deliver { profile, .. }
+        | Command::QueryEvents { profile, .. }
+        | Command::Archive {
+            command: ArchiveCommand::Create { profile, .. },
+        } => Some(*profile),
+        _ => None,
+    }
+}
+
+/// Under the default profile, a plan refused for its execution work that the
+/// `song` profile would allow gets a hint naming the option.
+fn profile_hint(error: &CliError, profile: Option<ProfileArg>) -> Option<String> {
+    if profile != Some(ProfileArg::Default) || error.code != "E_RESOURCE_LIMIT" {
+        return None;
+    }
+    let (_, rest) = error.message.split_once("execution work ")?;
+    let (work, _) = rest.split_once(" exceeds the selected limit ")?;
+    let work = work.parse::<u64>().ok()?;
+    (work <= PlanLimits::MAX_SONG_EXECUTION_WORK).then(|| {
+        format!(
+            "--profile song allows up to {} units",
+            PlanLimits::MAX_SONG_EXECUTION_WORK
+        )
+    })
+}
+
+/// A refused command's JSON error, with the hint the CLI adds.
+#[derive(Serialize)]
+struct HintedError<'a> {
+    #[serde(flatten)]
+    error: &'a CliError,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hint: Option<String>,
+}
+
 /// Execute one parsed CLI request without printing. This is convenient for
 /// embedding and gives the binary a single output policy for human/JSON modes.
 pub fn execute(command: &Command) -> Result<CommandResult, CliError> {
@@ -3899,13 +3942,21 @@ where
             }
         }
         Err(error) => {
+            let hint = profile_hint(&error, selected_profile(&cli.command));
             if json {
+                let error = HintedError {
+                    error: &error,
+                    hint,
+                };
                 println!(
                     "{}",
                     serde_json::to_string(&error).expect("CLI error is serializable")
                 );
             } else {
                 eprintln!("{error}");
+                if let Some(hint) = hint {
+                    eprintln!("hint: {hint}");
+                }
             }
             1
         }

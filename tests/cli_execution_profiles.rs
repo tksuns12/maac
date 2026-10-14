@@ -243,3 +243,46 @@ fn song_does_not_relax_graph_or_source_limits_and_budget_failure_preserves_desti
     fs::write(root.join("main.maac"), vec![b' '; 4 * 1024 * 1024 + 1]).unwrap();
     failure(root, &["check", "--profile", "song"], "E_RESOURCE_LIMIT");
 }
+
+#[test]
+fn a_default_refusal_names_the_song_profile_when_song_would_allow_it() {
+    let temp = tempdir().unwrap();
+    let root = temp.path();
+    fs::write(root.join("main.maac"), high_work_source()).unwrap();
+    let hint = "--profile song allows up to 100000000000 units";
+    let output = invoke(root, &["check"]);
+    assert!(!output.status.success());
+    let error = value(&output);
+    assert_eq!(error["code"], "E_RESOURCE_LIMIT");
+    assert_eq!(error["hint"], hint);
+    let human = Command::new(env!("CARGO_BIN_EXE_maac"))
+        .current_dir(root)
+        .arg("check")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8(human.stderr).unwrap();
+    assert!(stderr.starts_with("E_RESOURCE_LIMIT: "), "{stderr}");
+    assert!(stderr.ends_with(&format!("\nhint: {hint}\n")), "{stderr}");
+
+    // No hint where `song` would not help: work beyond its ceiling, under
+    // either profile, and a graph limit that `song` leaves unchanged.
+    let beyond = high_work_source()
+        .replace("score = [0q, 1/2q]", "score = [0q, 160q]")
+        .replace("(1/10s, 20s, step)", "(1/10s, 60s, step)");
+    let too_many = high_work_source().replace(
+        "node amp {",
+        "node excess { type = \"synth.sine/1\"; } node amp {",
+    );
+    for (source, refusal) in [(beyond, "execution work"), (too_many, "graph")] {
+        fs::write(root.join("main.maac"), source).unwrap();
+        for args in [vec!["check"], vec!["check", "--profile", "song"]] {
+            let output = invoke(root, &args);
+            assert!(!output.status.success(), "{args:?}");
+            let error = value(&output);
+            assert_eq!(error["code"], "E_RESOURCE_LIMIT", "{args:?}");
+            let message = error["message"].as_str().unwrap();
+            assert!(message.contains(refusal), "{args:?}: {message}");
+            assert!(error.get("hint").is_none(), "{args:?}: {error}");
+        }
+    }
+}

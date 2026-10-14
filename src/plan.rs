@@ -137,7 +137,7 @@ impl PlanLimits {
     pub const MAX_VOICE_GRAPH_STATES: usize = crate::graph::MAX_ALLOCATED_VOICE_GRAPH_STATES;
     pub const MAX_EXECUTION_WORK: u64 = crate::graph::MAX_EXECUTION_WORK;
     /// Hard execution ceiling available through an explicit caller profile.
-    pub const MAX_SONG_EXECUTION_WORK: u64 = 10_000_000_000;
+    pub const MAX_SONG_EXECUTION_WORK: u64 = 100_000_000_000;
     pub const MAX_PRODUCTION_DELAY_CELLS: usize = 4_194_304;
     pub const MAX_PLUCK_DELAY_CELLS: usize = crate::graph::MAX_PLUCK_DELAY_CELLS;
 

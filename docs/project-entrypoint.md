@@ -141,7 +141,14 @@ commands do not gain a profile option through this contract.
 | Profile | Maximum conservative execution work |
 | --- | --- |
 | `default` | 500,000,000 normalized work units |
-| `song` | 10,000,000,000 normalized work units |
+| `song` | 100,000,000,000 normalized work units |
+
+The `song` ceiling was 10 billion until 2026-10-14, when the
+[song budget proposal](design/song-budget-proposal.md) raised it: every
+production-trial song needed a third to nine tenths of it. Under the default
+profile, a refusal for execution work that `song` would allow carries the hint
+`--profile song allows up to 100000000000 units`, printed on its own line and
+in a `--json` error's `hint` field.
 
 The song profile changes **only** the execution-work allowance. Every other
 source, syntax, plan-byte, event, duration, channel, voice, graph, asset,
@@ -176,7 +183,7 @@ origin under a song-profile compile confers no authority on a default renderer.
 Work at the selected bound is permitted if all other checks pass; work above
 it fails `E_RESOURCE_LIMIT`. Checked arithmetic rejects overflow. The caller
 may choose stricter limits through the Rust APIs, but cannot exceed the
-10-billion hard execution ceiling or any unchanged hard ceiling. A failed
+100-billion hard execution ceiling or any unchanged hard ceiling. A failed
 budget check must occur before DSP allocation/rendering or output publication.
 Larger allowances are not assurances about wall-clock speed or audio quality.
 
@@ -184,9 +191,9 @@ Larger allowances are not assurances about wall-clock speed or audio quality.
 
 `PlanLimits::default()` retains its existing values. Add `PlanLimits::song()`
 returning the same structure with only `max_execution_work` set to
-10,000,000,000. No new struct field or plan-wire field is necessary. Preserve
+100,000,000,000. No new struct field or plan-wire field is necessary. Preserve
 the existing public 500-million default constant; publish the separate
-10-billion maximum as `PlanLimits::MAX_SONG_EXECUTION_WORK`. The internal
+100-billion maximum as `PlanLimits::MAX_SONG_EXECUTION_WORK`. The internal
 ceiling for an explicitly supplied execution-work limit becomes that maximum;
 other fields retain their previous ceilings. Caller-supplied values above the
 hard ceilings are bounded to those ceilings as existing limits handling does.
@@ -262,7 +269,7 @@ These are targeted requirements, not a claim of completed execution:
 | Unchanged commands | Missing `-o` still fails where required; render/hash keep required file input and reject directory/default discovery |
 | Source authority | One project, forward-referenced patterns/automation, explicit imports and visible master gain compile; imported composition, manifest/include syntax, and source profile escalation fail |
 | Default budget | Composition check, compile, load, encode, DSP and export reject work above 500 million through existing wrappers; default CLI behavior stays unchanged |
-| Song budget | Every explicit-limit boundary accepts an otherwise valid plan between 500 million and 10 billion; at-limit acceptance and over-limit/overflow rejection are tested without requiring a full long render |
+| Song budget | Every explicit-limit boundary accepts an otherwise valid plan between 500 million and 100 billion; at-limit acceptance and over-limit/overflow rejection are tested without requiring a full long render |
 | Other bounds | Song mode still rejects oversized plan/source, duration, event/graph/voice/state/pluck-memory/channel/rate violations; tighter caller budgets still apply |
 | Retained plan | A large plan compiled under song renders after source removal only when the render caller selects song; no embedded profile/self-elevation, no default Serde bypass |
 | Master gain | Mono/stereo unity and zero, a finite gain above 1, sample-accurate automation, exact multiplication, source/plan strict fields, invalid ranges and finite-output enforcement |

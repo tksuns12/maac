@@ -250,7 +250,7 @@ creator, and license metadata each have the same byte limit.
 | Cycle length / frames per table | Power of two, 8–2,048 / 1–32 |
 | Voice capacity per instrument instance | 4,096 (default 64) |
 | Aggregate declared voice graph node states | 262,144 |
-| Conservative execution work | Default 500,000,000 normalized units; explicit song profile maximum 10,000,000,000 |
+| Conservative execution work | Default 500,000,000 normalized units; explicit song profile maximum 100,000,000,000 |
 | Pluck delay cells | 8,388,608 f64 cells / 64 MiB payload; 2402 cells per pluck voice-node |
 | Instrument expression execution charge | `17 + ceil(log2(point_count))` units per active voice frame for each attached pitch, gain, timbre, or pressure curve, additive when combined, including conservative release |
 | Pluck execution charge | 16 units per sample visit plus 2402 initialization units per note per pluck node |
