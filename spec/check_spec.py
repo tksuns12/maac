@@ -304,6 +304,11 @@ def main() -> None:
     exact("strum_up_member0_offset", (4 - 1 - 0) * Fraction(30, 1000), Fraction(9, 100))
     exact("strum_down_member2_velocity", Fraction(8, 10) + Fraction(-12, 100) * Fraction(2, 4 - 1),
           Fraction(18, 25))
+    # A vibrato knot sits at delay + (j + u_i) / rate; the rise scales its value.
+    exact("vibrato_centered_knot_position", Fraction(3, 10) + (1 + Fraction(3, 4)) / Fraction(11, 2),
+          Fraction(34, 55))
+    exact("vibrato_rising_knot_cents", 38 * min(1, (Fraction(39, 100) - Fraction(3, 10)) / Fraction(45, 100)),
+          Fraction(38, 5))
     near("linear_tempo_ramp_seconds", 60 / 15 * math.log(180 / 120), 1.6218604324326575)
     near("exponential_hz_midpoint", 500 * (2000 / 500)**0.5, 1000)
     near("linear_db_midpoint", -12 + 12 * 0.5, -6)
@@ -325,7 +330,7 @@ def main() -> None:
     (ROOT / "conformance.json").write_text(json.dumps(vectors, indent=2) + "\n")
     report = {
         "surface_parse": "pass", "syntax_tree_schema": "pass",
-        "example_expanded_note_count": len(events), "arithmetic_assertions": 24,
+        "example_expanded_note_count": len(events), "arithmetic_assertions": 26,
         "scope": "Syntax plus selected semantics only; no complete validator or renderer is included."
     }
     (ROOT / "check-results.json").write_text(json.dumps(report, indent=2) + "\n")

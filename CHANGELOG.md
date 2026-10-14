@@ -7,6 +7,29 @@ promise of compatibility beyond the documented interfaces.
 
 ### Added
 
+- A pitch expression can name a `vibrato`
+  ([§8.1](MaaC-1-Specification.md#81-per-note-expression)), such as
+  `vibrato guitar { rate = 11/2Hz; depth = 38ct; delay = 300ms; rise = 450ms; shape = up; }`.
+  `rate` and `depth` set its speed and swing, `delay` when it starts, and
+  `rise` how long it takes to reach full depth. `shape` is `up`, `down`,
+  `centered` (the default), or a `normalized` curve that draws one cycle:
+  a square cycle with `depth = 200ct` is a whole-step trill. A vibrato can
+  follow a seconds-clock bend in the same expression, once the bend has
+  ended. It compiles to the note's pitch curve, up to the end of its gate,
+  so the plan format is unchanged. T4's guitar vibrato and bends shrink from
+  12 lines and 180 values to 5 lines and 15. See the
+  [vibrato proposal](docs/design/vibrato-proposal.md).
+
+### Changed
+
+- `maac analyze` checks the pitch of notes with a pitch expression (F29).
+  It compares each with its expressed pitch, the written pitch moved by the
+  expression's mean over the estimate, and skips one whose expression moves
+  more than 50 cents there. On "Lantern Street" the melody's bent and held
+  notes are now checked: 149 of 178 notes are pitched, against 115. The
+  profile is now `maac.analyze.default/8`; see
+  [analyze.md](docs/analyze.md#profile-maacanalyzedefault8-2026-10-14).
+
 - "Lantern Street" ([`examples/lantern/lantern.maac`](examples/lantern/lantern.maac)),
   a 100 bpm pop song with piano, strummed acoustic guitar and an
   electric-guitar melody, from the

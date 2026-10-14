@@ -844,6 +844,7 @@ impl<'a> Validator<'a> {
             "region" => self.validate_region(object, &path),
             "groove" => self.validate_groove(object, &path),
             "voicing" => self.validate_voicing(object, &path),
+            "vibrato" => self.validate_vibrato(object, &path),
             "modulate" | "asset" | "audio" | "extension" | "hit" | "message" | "expression" => {
                 self.validate_deferred_object(object, &path)
             }
@@ -1011,7 +1012,7 @@ impl<'a> Validator<'a> {
                 &["at", "protocol", "bytes"],
                 &["at", "protocol", "bytes", "onset_offset", "order", "label"],
             ),
-            "expression" => (&["kind", "curve"], &["kind", "curve", "label"]),
+            "expression" => (&["kind"], &["kind", "curve", "vibrato", "label"]),
             _ => (&[], &["label"]),
         };
         self.check_schema(object, path, required, allowed, &[]);
@@ -1845,6 +1846,133 @@ impl<'a> Validator<'a> {
         self.reject_children(object, path);
     }
 
+    /// A `vibrato` (§8.1): a positive rate and depth, a nonnegative delay and
+    /// rise, and the waveform of one cycle.
+    fn validate_vibrato(&mut self, object: &Object, path: &[String]) {
+        self.check_schema(
+            object,
+            path,
+            &["rate", "depth"],
+            &["rate", "depth", "delay", "rise", "shape", "label"],
+            &[],
+        );
+        for (name, units) in [
+            ("rate", &[Unit::Hz, Unit::KHz][..]),
+            ("depth", &[Unit::Ct][..]),
+        ] {
+            let Some(field) = object.field(name) else {
+                continue;
+            };
+            if self
+                .quantity(field, units, path, name)
+                .is_some_and(|value| value <= BigRational::zero())
+            {
+                self.push(
+                    DiagnosticCode::Range,
+                    format!("vibrato.{name} must be positive"),
+                    Some(field.value.span),
+                    path.to_vec(),
+                    vec![name.into()],
+                );
+            }
+        }
+        for name in ["delay", "rise"] {
+            let Some(field) = object.field(name) else {
+                continue;
+            };
+            if self
+                .quantity(field, &[Unit::S, Unit::Ms], path, name)
+                .is_some_and(|value| value < BigRational::zero())
+            {
+                self.push(
+                    DiagnosticCode::Range,
+                    format!("vibrato.{name} must be nonnegative"),
+                    Some(field.value.span),
+                    path.to_vec(),
+                    vec![name.into()],
+                );
+            }
+        }
+        if let Some(field) = object.field("shape") {
+            match field.value.as_symbol() {
+                Some("up" | "down" | "centered") => {}
+                Some(_) => self.push(
+                    DiagnosticCode::Range,
+                    "vibrato.shape must be up, down, centered or a cycle curve",
+                    Some(field.value.span),
+                    path.to_vec(),
+                    vec!["shape".into()],
+                ),
+                None => {
+                    if let Some(ReferenceTarget::Object { id, .. }) =
+                        self.expect_object_ref(field, "shape", &["curve"], path)
+                    {
+                        self.validate_cycle(&id, field, path);
+                    }
+                }
+            }
+        }
+    }
+
+    /// A vibrato's cycle curve: normalized, dimensionless, `step` or `linear`,
+    /// and ending on the value it starts with so that cycles join.
+    fn validate_cycle(&mut self, id: &str, field: &Field, path: &[String]) {
+        let Some(curve) = self.document.object(id) else {
+            return;
+        };
+        let clock = curve.field("clock").and_then(|f| f.value.as_symbol());
+        let points: Vec<Value> = match curve.field("points").map(|f| &f.value.kind) {
+            Some(ValueKind::List(points)) => points.clone(),
+            _ => Vec::new(),
+        };
+        let mut problems: Vec<(DiagnosticCode, String)> = Vec::new();
+        if clock.is_some_and(|clock| clock != "normalized") {
+            problems.push((
+                DiagnosticCode::Unit,
+                format!("cycle curve `{id}` must use the normalized clock"),
+            ));
+        }
+        let mut values = Vec::new();
+        for point in &points {
+            let ValueKind::Tuple(items) = &point.kind else {
+                continue;
+            };
+            match items.get(1).map(|value| &value.kind) {
+                Some(ValueKind::Number(value)) => values.push(value.clone()),
+                Some(_) => {
+                    problems.push((
+                        DiagnosticCode::Unit,
+                        format!("cycle curve `{id}` values must be dimensionless numbers"),
+                    ));
+                    values.clear();
+                    break;
+                }
+                None => {}
+            }
+            if items.get(2).and_then(Value::as_symbol) == Some("exponential") {
+                problems.push((
+                    DiagnosticCode::Range,
+                    format!("cycle curve `{id}` must use step or linear segments"),
+                ));
+            }
+        }
+        if values.len() == points.len() && values.first() != values.last() {
+            problems.push((
+                DiagnosticCode::Range,
+                format!("cycle curve `{id}` must end on the value it starts with"),
+            ));
+        }
+        for (code, message) in problems {
+            self.push(
+                code,
+                message,
+                Some(field.value.span),
+                path.to_vec(),
+                vec!["shape".into()],
+            );
+        }
+    }
+
     /// A chord's `strum`, with the `stagger` and `tilt` that only a strum
     /// may set; `tilt` needs a single velocity.
     fn validate_strum(&mut self, object: &Object, path: &[String]) {
@@ -1965,8 +2093,8 @@ impl<'a> Validator<'a> {
                     self.check_schema(
                         child,
                         &child_path,
-                        &["kind", "curve"],
-                        &["kind", "curve", "label"],
+                        &["kind"],
+                        &["kind", "curve", "vibrato", "label"],
                         &[],
                     );
                     self.validate_expression_shape(child, &child_path);
@@ -3649,6 +3777,89 @@ impl<'a> Validator<'a> {
         }
     }
 
+    /// A pitch expression may name a `vibrato`, alone or after a
+    /// seconds-clock curve that ends by the vibrato's delay; every
+    /// expression names a curve, a vibrato or both.
+    fn validate_expression_vibrato(&mut self, object: &Object, path: &[String]) {
+        let curve = object.field("curve");
+        let Some(field) = object.field("vibrato") else {
+            if curve.is_none() {
+                self.push(
+                    DiagnosticCode::Range,
+                    "expression requires field `curve` or `vibrato`",
+                    Some(object.span),
+                    path.to_vec(),
+                    vec!["curve".into()],
+                );
+            }
+            return;
+        };
+        if object.field("kind").and_then(|f| f.value.as_symbol()) != Some("pitch") {
+            self.push(
+                DiagnosticCode::Range,
+                "only a pitch expression may name a vibrato",
+                Some(field.value.span),
+                path.to_vec(),
+                vec!["vibrato".into()],
+            );
+            return;
+        }
+        let Some(ReferenceTarget::Object { id, .. }) =
+            self.expect_object_ref(field, "vibrato", &["vibrato"], path)
+        else {
+            return;
+        };
+        let Some(curve) = curve else {
+            return;
+        };
+        let Some(curve_object) = curve
+            .value
+            .reference()
+            .and_then(|reference| reference.path.first())
+            .and_then(|curve_id| self.document.object(curve_id))
+            .filter(|object| object.kind == "curve")
+        else {
+            return;
+        };
+        if curve_object
+            .field("clock")
+            .and_then(|f| f.value.as_symbol())
+            .is_some_and(|clock| clock != "seconds")
+        {
+            self.push(
+                DiagnosticCode::Unit,
+                "a pitch expression with a vibrato requires a seconds-clock curve",
+                Some(curve.value.span),
+                path.to_vec(),
+                vec!["curve".into()],
+            );
+            return;
+        }
+        let last = match curve_object.field("points").map(|f| &f.value.kind) {
+            Some(ValueKind::List(points)) => points.last().and_then(|point| match &point.kind {
+                ValueKind::Tuple(items) => items.first().and_then(seconds_of),
+                _ => None,
+            }),
+            _ => None,
+        };
+        let delay = self
+            .document
+            .object(&id)
+            .and_then(|vibrato| vibrato.field("delay"))
+            .map_or(Some(BigRational::zero()), |delay| seconds_of(&delay.value));
+        if let (Some(last), Some(delay)) = (last, delay) {
+            if last > delay {
+                self.push(
+                    DiagnosticCode::Range,
+                    format!("vibrato `{id}` must start at or after the curve's last point"),
+                    Some(field.value.span),
+                    path.to_vec(),
+                    vec!["vibrato".into()],
+                );
+            }
+        }
+    }
+
     fn validate_expression_shape(&mut self, object: &Object, path: &[String]) {
         if object.field("kind").is_some() {
             self.validate_enum_field(
@@ -3658,6 +3869,7 @@ impl<'a> Validator<'a> {
                 &["pitch", "gain", "pressure", "timbre"],
             );
         }
+        self.validate_expression_vibrato(object, path);
         if let Some(field) = object.field("curve") {
             self.expect_object_ref(field, "curve", &["curve"], path);
             let kind = object.field("kind").and_then(|f| f.value.as_symbol());
@@ -6001,6 +6213,7 @@ fn is_known_kind(kind: &str) -> bool {
             | "place"
             | "groove"
             | "voicing"
+            | "vibrato"
             | "curve"
             | "automation"
             | "modulate"
@@ -6076,6 +6289,21 @@ fn value_dimension_of(value: &Value) -> Option<CurveDimension> {
             Unit::Ct => CurveDimension::Cents,
             Unit::Db => CurveDimension::Decibels,
         }),
+        _ => None,
+    }
+}
+
+/// A seconds or milliseconds quantity in seconds.
+fn seconds_of(value: &Value) -> Option<BigRational> {
+    match &value.kind {
+        ValueKind::Quantity {
+            value,
+            unit: Unit::S,
+        } => Some(value.clone()),
+        ValueKind::Quantity {
+            value,
+            unit: Unit::Ms,
+        } => Some(value / BigRational::from_integer(BigInt::from(1000))),
         _ => None,
     }
 }

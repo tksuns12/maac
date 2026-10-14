@@ -25,7 +25,9 @@ use serde::Serialize;
 
 use crate::exact::Rational;
 use crate::music::MeterMap;
-use crate::plan::{EventKind, PlanError, PlanLimits, PlanView, PortRef};
+use crate::plan::{
+    EventKind, EventView, PitchExpression, PlanError, PlanLimits, PlanView, PortRef,
+};
 use crate::plan_artifact::PlanArtifact;
 use crate::plan_v3::TimingContext;
 
@@ -36,13 +38,13 @@ use meter::{
 };
 
 pub const SCHEMA: &str = "maac.analysis-report/1";
-pub const PROFILE: &str = "maac.analyze.default/7";
+pub const PROFILE: &str = "maac.analyze.default/8";
 pub const BANDS: &str = "maac.analyze.octave-bands/1";
 pub const BAND_CENTERS_HZ: [f64; 10] = [
     31.5, 63.0, 125.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 16000.0,
 ];
 
-// Findings profile `maac.analyze.default/7`: stated limits, not taste.
+// Findings profile `maac.analyze.default/8`: stated limits, not taste.
 const TRUE_PEAK_LIMIT_DBTP: f64 = -1.0;
 const LOUDNESS_JUMP_LU: f64 = 6.0;
 const BALANCE_LIMIT_DB: f64 = 3.0;
@@ -1403,6 +1405,41 @@ fn groove_findings(
     found
 }
 
+/// The most a note's pitch expression may move across its pitch estimate,
+/// in cents, for the note to be checked.
+const EXPRESSED_SPREAD_CENTS: f64 = 50.0;
+
+/// A pitch expression's value in cents at `frame` of `event`'s gate.
+fn expressed_cents(
+    event: &EventView<'_>,
+    expression: &PitchExpression,
+    frame: u64,
+    rate: u32,
+) -> f64 {
+    let coordinate = expression.clock.coordinate_for_view(event, frame, rate);
+    expression.cents_at(&coordinate).to_f64().unwrap_or(0.0)
+}
+
+/// The mean of a pitch expression over frames `[from, to)`, and how far it
+/// moves there, from 32 evenly spaced frames.
+fn expression_span(
+    event: &EventView<'_>,
+    expression: &PitchExpression,
+    from: u64,
+    to: u64,
+    rate: u32,
+) -> (f64, f64) {
+    const SAMPLES: u64 = 32;
+    let last = to.saturating_sub(from).saturating_sub(1);
+    let values: Vec<f64> = (0..SAMPLES)
+        .map(|k| expressed_cents(event, expression, from + last * k / (SAMPLES - 1), rate))
+        .collect();
+    let mean = values.iter().sum::<f64>() / values.len() as f64;
+    let low = values.iter().copied().fold(f64::INFINITY, f64::min);
+    let high = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    (mean, high - low)
+}
+
 /// A window for every note and hit whose onset lies in `[start, end)` and
 /// whose target is an analysed source, in onset order.
 fn note_windows(
@@ -1455,20 +1492,35 @@ fn note_windows(
         if window_end <= event.on_frame {
             continue;
         }
-        let (pitch_hz, expressed) = match event.kind {
+        let (written_hz, expression) = match event.kind {
             EventKind::Note {
                 pitch_hz,
                 pitch_expression,
                 ..
-            } => (Some(*pitch_hz), pitch_expression.is_some()),
-            _ => (None, false),
+            } => (Some(*pitch_hz), pitch_expression.as_ref()),
+            _ => (None, None),
         };
+        // A note with a pitch expression is checked against its expressed
+        // pitch: the written pitch moved by the expression's mean over the
+        // estimate. One whose expression moves too far there is not checked.
+        let mut checkable = true;
+        let pitch_hz = written_hz.map(|hz| {
+            let Some(expression) = expression else {
+                return hz;
+            };
+            let from = event.on_frame + notes::pitch_skip(rate);
+            let first = hz * 2f64.powf(expressed_cents(event, expression, from, rate) / 1200.0);
+            let to = from + notes::pitch_samples(first, rate);
+            let (mean, spread) = expression_span(event, expression, from, to, rate);
+            checkable = spread <= EXPRESSED_SPREAD_CENTS;
+            hz * 2f64.powf(mean / 1200.0)
+        });
         // Lone while the pitch is measured: from the onset to the end of the
         // samples the estimate needs.
         let pitch_end = pitch_hz.map_or(event.on_frame, |hz| {
             event.on_frame + notes::pitch_skip(rate) + notes::pitch_samples(hz, rate)
         });
-        let lone = !expressed
+        let lone = checkable
             && by_node[event.target.node.as_str()].iter().all(|&other| {
                 let (on, off) = sounding(other);
                 other == index || on >= pitch_end || off <= event.on_frame
@@ -1478,10 +1530,21 @@ fn note_windows(
         let mut released: Vec<(u64, f64)> = by_node[event.target.node.as_str()]
             .iter()
             .filter_map(|&other| match events[other].kind {
-                EventKind::Note { pitch_hz, .. } => {
+                EventKind::Note {
+                    pitch_hz,
+                    pitch_expression,
+                    ..
+                } => {
                     let off = events[other].off_frame?;
-                    (other != index && off <= event.on_frame && off + tail >= pitch_end)
-                        .then_some((off, *pitch_hz))
+                    // A release holds the expression's value at the gate's end.
+                    (other != index && off <= event.on_frame && off + tail >= pitch_end).then(
+                        || {
+                            let cents = pitch_expression.as_ref().map_or(0.0, |expression| {
+                                expressed_cents(&events[other], expression, off, rate)
+                            });
+                            (off, pitch_hz * 2f64.powf(cents / 1200.0))
+                        },
+                    )
                 }
                 _ => None,
             })

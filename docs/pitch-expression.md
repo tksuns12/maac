@@ -64,6 +64,50 @@ occurrence override changes the gate without additionally scaling points.
 Inserted notes already use placement-local final coordinates, so their
 expression point scale is 1.
 
+## Vibrato
+
+A `vibrato` names a periodic pitch shape once, and a pitch expression adds it
+to a note, alone or after a bend. The
+[vibrato proposal](design/vibrato-proposal.md) gives the reasons and
+[§8.1](../MaaC-1-Specification.md#81-per-note-expression) the contract.
+
+```maac
+vibrato guitar { rate = 11/2Hz; depth = 38ct; delay = 300ms; rise = 450ms; shape = up; }
+// Inside a note:
+expression vib { kind = pitch; vibrato = &guitar; }
+// After a seconds-clock bend that ends by the delay:
+expression bend { kind = pitch; curve = &bend_up; vibrato = &guitar; }
+```
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `rate` | Required | Cycles per second, positive |
+| `depth` | Required | Positive cents that scale the cycle; the full swing for the built-in shapes |
+| `delay` | 0 s | From the note's onset to the first cycle |
+| `rise` | 0 s | The swing grows linearly from nothing to `depth` over this time |
+| `shape` | `centered` | `up`, `down`, `centered`, or a cycle curve |
+
+- **Shapes.** `up` rises from the pitch and back, as a guitarist's vibrato
+  does; `down` falls from it; `centered` swings half the depth either side.
+  All three are triangles.
+- **Cycle curves.** Any other waveform is a `normalized` curve that draws one
+  cycle, with dimensionless values and `step` or `linear` segments, ending on
+  the value it starts with. A square cycle, `[(0, 0, step), (1/2, 1, step),
+  (1, 0, step)]`, with `depth = 200ct` is a whole-step trill.
+- **Lowering.** The compiler writes the vibrato out as the note's
+  seconds-clock pitch curve: the curve's points, then a knot for each point
+  of each cycle, up to the first knot at or past the end of the note's gate.
+  Knots centre on the curve's final value. The plan holds only points, so
+  every receiver of pitch expression plays a vibrato.
+- **With a curve.** The curve must use the seconds clock and end by `delay`,
+  so a bend has settled before the vibrato starts.
+- **Release.** As for any pitch expression, the value at the gate's end
+  holds through the release, so an `up` vibrato can leave the tail up to
+  `depth` sharp.
+- **Cost.** A held note carries the cycle's knots `rate` times a second:
+  about 11 points a second for a 5.5 Hz `up` vibrato. They count towards the
+  65,536-point limit.
+
 ## Acceptance contract and limits
 
 - `core.sine/1` supports pitch and [gain expression](gain-expression.md),

@@ -768,3 +768,87 @@ fn every_note_is_listed_on_request() {
         ]
     );
 }
+
+/// `tuned` with each lead note's pitch expression set to `expression`, and
+/// `decls` declared before the melody.
+fn expressed(ratio: &str, decls: &str, expression: &str) -> String {
+    let mut source =
+        tuned(ratio, "0.3", "1").replace("pattern melody", &format!("{decls}\npattern melody"));
+    for (id, at, pitch) in [("n0", "0q", "A3"), ("n1", "1q", "C4"), ("n2", "2q", "E4")] {
+        let plain = format!("note {id} {{ at = {at}; dur = 3/4q; pitch = {pitch};");
+        let found = source
+            .find(&plain)
+            .unwrap_or_else(|| panic!("{plain} in fixture"));
+        let close = found + source[found..].find('}').unwrap();
+        source.replace_range(
+            close..close + 1,
+            &format!("expression e {{ kind = pitch; {expression} }} }}"),
+        );
+    }
+    source
+}
+
+const BEND: &str = "curve bend { clock = seconds; points = [(0ms, -200ct, step), (60ms, -200ct, linear), (170ms, 0ct, step)]; }";
+
+#[test]
+fn a_bent_note_is_checked_against_its_expressed_pitch() {
+    // The estimate falls before the bend moves, a whole step under the note.
+    let report = analyze(
+        &expressed("1", BEND, "curve = &bend;"),
+        &AnalyzeOptions::default(),
+    );
+    assert!(note_kinds(&report).is_empty(), "{:?}", note_kinds(&report));
+    let notes = lead_notes(&report);
+    assert_eq!(notes.pitched, 3, "{notes:?}");
+    assert!(notes.max_abs_cents.unwrap() < 5.0, "{notes:?}");
+    // A vibrato that starts later leaves the estimate on the written pitch.
+    let vibrato = analyze(
+        &expressed(
+            "1",
+            "vibrato v { rate = 5Hz; depth = 40ct; delay = 200ms; shape = up; }",
+            "vibrato = &v;",
+        ),
+        &AnalyzeOptions::default(),
+    );
+    assert!(
+        note_kinds(&vibrato).is_empty(),
+        "{:?}",
+        note_kinds(&vibrato)
+    );
+    assert_eq!(lead_notes(&vibrato).pitched, 3);
+}
+
+#[test]
+fn a_detuned_part_is_reported_through_its_bends() {
+    let report = analyze(
+        &expressed("1.0594630943592953", BEND, "curve = &bend;"),
+        &AnalyzeOptions::default(),
+    );
+    let found = note_kinds(&report);
+    assert_eq!(found.len(), 1, "{found:?}");
+    let (kind, _, _, cents) = found[0];
+    assert_eq!(kind, "pitch_mismatch");
+    assert!((cents - 100.0).abs() < 5.0, "{cents}");
+    assert_eq!(lead_notes(&report).pitch_mismatches, 3);
+}
+
+#[test]
+fn a_slide_too_fast_to_estimate_is_not_checked() {
+    // Six semitones in 60 ms: the expression moves far more than 50 cents
+    // across the estimate, so even a detuned part is not judged.
+    let report = analyze(
+        &expressed(
+            "1.0594630943592953",
+            "curve slide { clock = seconds; points = [(0ms, -600ct, linear), (60ms, 0ct, step)]; }",
+            "curve = &slide;",
+        ),
+        &AnalyzeOptions::default(),
+    );
+    assert!(note_kinds(&report).is_empty(), "{:?}", note_kinds(&report));
+    let notes = lead_notes(&report);
+    assert_eq!(
+        (notes.measured, notes.pitched, notes.unpitched),
+        (3, 0, 0),
+        "{notes:?}"
+    );
+}

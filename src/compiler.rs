@@ -383,6 +383,7 @@ struct PatternClip {
 #[derive(Clone, Debug)]
 struct NoteDef {
     pitch_expression: Option<String>,
+    vibrato: Option<String>,
     gain_expression: Option<String>,
     timbre_expression: Option<String>,
     pressure_expression: Option<String>,
@@ -537,6 +538,7 @@ enum ExpandedKind {
 #[derive(Clone, Debug)]
 struct ExpandedNote {
     pitch_expression: Option<String>,
+    vibrato: Option<String>,
     gain_expression: Option<String>,
     timbre_expression: Option<String>,
     pressure_expression: Option<String>,
@@ -567,6 +569,114 @@ impl ExpandedEvent {
 struct CurveDef {
     clock: String,
     points: Vec<(Rational, Rational, Interpolation)>,
+}
+
+/// A vibrato (§8.1): one cycle of `(position, value, shape)` points,
+/// repeated `rate` times a second from `delay`, scaled by `depth` and grown
+/// over `rise`.
+#[derive(Clone, Debug)]
+struct VibratoDef {
+    rate: Rational,
+    depth: Rational,
+    delay: Rational,
+    rise: Rational,
+    cycle: Vec<(Rational, Rational, Interpolation)>,
+}
+
+impl VibratoDef {
+    /// The built-in cycles: triangles that rise from the pitch, fall from
+    /// it, or swing half the depth either side.
+    fn builtin_cycle(shape: &str) -> Option<Vec<(Rational, Rational, Interpolation)>> {
+        let r = |n: i64, d: i64| Rational::new(n.into(), d.into());
+        let (linear, step) = (Interpolation::Linear, Interpolation::Step);
+        Some(match shape {
+            "up" => vec![
+                (r(0, 1), r(0, 1), linear),
+                (r(1, 2), r(1, 1), linear),
+                (r(1, 1), r(0, 1), step),
+            ],
+            "down" => vec![
+                (r(0, 1), r(0, 1), linear),
+                (r(1, 2), r(-1, 1), linear),
+                (r(1, 1), r(0, 1), step),
+            ],
+            "centered" => vec![
+                (r(0, 1), r(0, 1), linear),
+                (r(1, 4), r(1, 2), linear),
+                (r(1, 2), r(0, 1), linear),
+                (r(3, 4), r(-1, 2), linear),
+                (r(1, 1), r(0, 1), step),
+            ],
+            _ => return None,
+        })
+    }
+
+    /// Append this vibrato to `base`, a seconds-clock pitch expression that
+    /// ends by `delay`, for a gate of `gate` seconds. Knots continue up to and
+    /// including the first at or past the gate's end, which becomes `step`;
+    /// each takes one unit of `budget`.
+    fn extend(
+        &self,
+        base: &mut Vec<PitchExpressionPoint>,
+        gate: &Rational,
+        budget: &mut usize,
+        span: Option<Span>,
+    ) -> CResult<()> {
+        if &self.delay >= gate {
+            return Ok(());
+        }
+        let centre = base
+            .last()
+            .map_or_else(Rational::zero, |point| point.cents.clone());
+        if base
+            .last()
+            .is_some_and(|point| point.position == self.delay)
+        {
+            // The first knot replaces a point at the same position.
+            base.pop();
+        }
+        let period = checked_div(&Rational::one(), &self.rate, span)?;
+        let knots = &self.cycle[..self.cycle.len() - 1];
+        let mut cycle = 0u64;
+        loop {
+            let start = checked_add(
+                &self.delay,
+                &checked_mul(&Rational::from_integer(cycle.into()), &period, span)?,
+                span,
+            )?;
+            for (offset, value, shape) in knots {
+                let position = checked_add(&start, &checked_mul(offset, &period, span)?, span)?;
+                let swing = if self.rise.is_zero() {
+                    self.depth.clone()
+                } else {
+                    let grown = checked_div(
+                        &checked_sub(&position, &self.delay, span)?,
+                        &self.rise,
+                        span,
+                    )?;
+                    checked_mul(&self.depth, &grown.min(Rational::one()), span)?
+                };
+                let cents = checked_add(&centre, &checked_mul(&swing, value, span)?, span)?;
+                *budget = budget.checked_sub(1).ok_or_else(|| {
+                    diagnostics(
+                        DiagnosticCode::ResourceLimit,
+                        "aggregate automation and expression point budget exceeded",
+                        span,
+                    )
+                })?;
+                let last = &position >= gate;
+                base.push(PitchExpressionPoint {
+                    position,
+                    cents,
+                    shape: if last { Interpolation::Step } else { *shape },
+                });
+                if last {
+                    return Ok(());
+                }
+            }
+            cycle += 1;
+        }
+    }
 }
 
 struct ExpansionState<'a> {
@@ -613,6 +723,7 @@ struct Compiler<'a> {
     allow_audio_leaves: bool,
     connections: Vec<Connection>,
     curves: BTreeMap<String, CurveDef>,
+    vibratos: BTreeMap<String, VibratoDef>,
     automations: Vec<AutomationV3>,
     allow_ramps: bool,
     allow_hits: bool,
@@ -671,6 +782,7 @@ impl<'a> Compiler<'a> {
             allow_audio_leaves: false,
             connections: Vec::new(),
             curves: BTreeMap::new(),
+            vibratos: BTreeMap::new(),
             automations: Vec::new(),
             allow_ramps: false,
             allow_hits: false,
@@ -950,6 +1062,7 @@ impl<'a> Compiler<'a> {
                 ][..],
                 "groove" => &["grid", "ratio"][..],
                 "voicing" => &["pitches"][..],
+                "vibrato" => &["rate", "depth", "delay", "rise", "shape"][..],
                 "curve" => &["clock", "points"][..],
                 "automation" => &["target", "curve", "at"][..],
                 "node" if self.instrument_instances.contains_key(&object.id) => {
@@ -2067,14 +2180,14 @@ impl<'a> Compiler<'a> {
                 Some(object.span),
             )
         })?;
+        let expression = |kind: &str| {
+            object.children.values().find(|child| {
+                child.kind == "expression"
+                    && child.field("kind").and_then(|f| f.value.as_symbol()) == Some(kind)
+            })
+        };
         let expression_curve = |kind: &str| {
-            object
-                .children
-                .values()
-                .find(|child| {
-                    child.kind == "expression"
-                        && child.field("kind").and_then(|f| f.value.as_symbol()) == Some(kind)
-                })
+            expression(kind)
                 .map(|child| {
                     self.one_reference(
                         &self.field(child, "curve")?.value,
@@ -2084,7 +2197,25 @@ impl<'a> Compiler<'a> {
                 })
                 .transpose()
         };
-        let pitch_expression = expression_curve("pitch")?;
+        // A pitch expression names a curve, a vibrato or both (§8.1).
+        let pitch_reference = |name: &str| {
+            expression("pitch")
+                .and_then(|child| child.field(name).map(|field| (child, field)))
+                .map(|(child, field)| self.one_reference(&field.value, child, Some(field)))
+                .transpose()
+        };
+        let pitch_expression = pitch_reference("curve")?;
+        let vibrato = pitch_reference("vibrato")?;
+        if let Some(child) =
+            expression("pitch").filter(|_| pitch_expression.is_none() && vibrato.is_none())
+        {
+            return Err(path_diagnostic(
+                DiagnosticCode::Range,
+                "expression requires field `curve` or `vibrato`",
+                child,
+                None,
+            ));
+        }
         let gain_expression = expression_curve("gain")?;
         let timbre_expression = expression_curve("timbre")?;
         let pressure_expression = expression_curve("pressure")?;
@@ -2097,6 +2228,7 @@ impl<'a> Compiler<'a> {
             order,
             kind: LeafKind::Note(Box::new(NoteDef {
                 pitch_expression,
+                vibrato,
                 gain_expression,
                 timbre_expression,
                 pressure_expression,
@@ -3293,6 +3425,7 @@ impl<'a> Compiler<'a> {
 
     fn read_curves_and_automation(&mut self, limits: &PlanLimits) -> CResult<()> {
         self.read_curves()?;
+        self.read_vibratos()?;
         let mut automation_points = 0usize;
         for object in self
             .document
@@ -3456,6 +3589,88 @@ impl<'a> Compiler<'a> {
             }
             self.curves
                 .insert(object.id.clone(), CurveDef { clock, points });
+        }
+        Ok(())
+    }
+
+    fn read_vibratos(&mut self) -> CResult<()> {
+        for object in self
+            .document
+            .objects
+            .values()
+            .filter(|object| object.kind == "vibrato")
+        {
+            let positive = |name: &str, unit: Unit| -> CResult<Rational> {
+                let field = self.field(object, name)?;
+                let value = self.quantity(&field.value, unit, object, Some(field))?;
+                if !value.is_positive() {
+                    return Err(path_diagnostic(
+                        DiagnosticCode::Range,
+                        format!("vibrato.{name} must be positive"),
+                        object,
+                        Some(field),
+                    ));
+                }
+                Ok(value)
+            };
+            let rate = positive("rate", Unit::Hz)?;
+            let depth = positive("depth", Unit::Ct)?;
+            let nonnegative = |name: &str| -> CResult<Rational> {
+                let Some(field) = object.field(name) else {
+                    return Ok(Rational::zero());
+                };
+                let value = self.seconds_value(&field.value, object, Some(field))?;
+                if value.is_negative() {
+                    return Err(path_diagnostic(
+                        DiagnosticCode::Range,
+                        format!("vibrato.{name} must be nonnegative"),
+                        object,
+                        Some(field),
+                    ));
+                }
+                Ok(value)
+            };
+            let delay = nonnegative("delay")?;
+            let rise = nonnegative("rise")?;
+            let cycle = match object.field("shape") {
+                None => VibratoDef::builtin_cycle("centered"),
+                Some(field) => match field.value.as_symbol() {
+                    Some(shape) => VibratoDef::builtin_cycle(shape),
+                    None => {
+                        let id = self.one_reference(&field.value, object, Some(field))?;
+                        self.curves
+                            .get(&id)
+                            .filter(|curve| {
+                                curve.clock == "normalized"
+                                    && curve.points.first().map(|p| &p.1)
+                                        == curve.points.last().map(|p| &p.1)
+                                    && curve
+                                        .points
+                                        .iter()
+                                        .all(|p| p.2 != Interpolation::Exponential)
+                            })
+                            .map(|curve| curve.points.clone())
+                    }
+                },
+            }
+            .ok_or_else(|| {
+                path_diagnostic(
+                    DiagnosticCode::Range,
+                    "vibrato.shape must be up, down, centered or a cycle curve",
+                    object,
+                    object.field("shape"),
+                )
+            })?;
+            self.vibratos.insert(
+                object.id.clone(),
+                VibratoDef {
+                    rate,
+                    depth,
+                    delay,
+                    rise,
+                    cycle,
+                },
+            );
         }
         Ok(())
     }
@@ -3937,6 +4152,7 @@ impl<'a> Compiler<'a> {
                 }
                 ExpandedKind::Note(Box::new(ExpandedNote {
                     pitch_expression: note.pitch_expression.clone(),
+                    vibrato: note.vibrato.clone(),
                     gain_expression: note.gain_expression.clone(),
                     timbre_expression: note.timbre_expression.clone(),
                     pressure_expression: note.pressure_expression.clone(),
@@ -4563,44 +4779,57 @@ impl<'a> Compiler<'a> {
                     Ok(GainExpression { clock, points })
                 })
                 .transpose()?,
-            pitch_expression: note
-                .pitch_expression
-                .as_ref()
-                .map(|id| {
-                    let curve = &self.curves[id];
-                    let clock = match curve.clock.as_str() {
-                        "score" => ExpressionClock::Score,
-                        "seconds" => ExpressionClock::Seconds,
-                        _ => ExpressionClock::Normalized,
-                    };
-                    let points = curve
-                        .points
-                        .iter()
-                        .map(|(position, cents, shape)| {
-                            Ok(PitchExpressionPoint {
-                                position: if clock == ExpressionClock::Score {
-                                    checked_mul(
-                                        position,
-                                        &note.expression_scale,
-                                        Some(expanded.source_span),
-                                    )?
-                                } else {
-                                    position.clone()
-                                },
-                                cents: cents.clone(),
-                                shape: *shape,
-                            })
-                        })
-                        .collect::<CResult<Vec<_>>>()?;
-                    Ok(PitchExpression { clock, points })
+            pitch_expression: if note.pitch_expression.is_none() && note.vibrato.is_some() {
+                // A vibrato alone starts from the written pitch.
+                Some(PitchExpression {
+                    clock: ExpressionClock::Seconds,
+                    points: vec![PitchExpressionPoint {
+                        position: Rational::zero(),
+                        cents: Rational::zero(),
+                        shape: Interpolation::Step,
+                    }],
                 })
-                .transpose()?,
+            } else {
+                note.pitch_expression
+                    .as_ref()
+                    .map(|id| {
+                        let curve = &self.curves[id];
+                        let clock = match curve.clock.as_str() {
+                            "score" => ExpressionClock::Score,
+                            "seconds" => ExpressionClock::Seconds,
+                            _ => ExpressionClock::Normalized,
+                        };
+                        let points = curve
+                            .points
+                            .iter()
+                            .map(|(position, cents, shape)| {
+                                Ok(PitchExpressionPoint {
+                                    position: if clock == ExpressionClock::Score {
+                                        checked_mul(
+                                            position,
+                                            &note.expression_scale,
+                                            Some(expanded.source_span),
+                                        )?
+                                    } else {
+                                        position.clone()
+                                    },
+                                    cents: cents.clone(),
+                                    shape: *shape,
+                                })
+                            })
+                            .collect::<CResult<Vec<_>>>()?;
+                        Ok(PitchExpression { clock, points })
+                    })
+                    .transpose()?
+            },
             pitch_hz: frequency,
             velocity: expanded.velocity.clone(),
         })
     }
 
-    fn check_point_budget(&self, limits: &PlanLimits) -> CResult<()> {
+    /// Check the points the source writes against the budget and return
+    /// their count; vibratos add theirs once the gates are known.
+    fn check_point_budget(&self, limits: &PlanLimits) -> CResult<usize> {
         // Expansion keeps only curve identities; bound the aggregate before cloning points.
         let mut point_count = 0usize;
         let warp_counts = self.audio_clips.values().filter_map(|source| {
@@ -4673,46 +4902,140 @@ impl<'a> Compiler<'a> {
             }
         }
 
-        Ok(())
+        Ok(point_count)
     }
 
-    fn lower_score_events(&self) -> CResult<Vec<ResolvedEventV3>> {
-        self.events
-            .iter()
-            .map(|expanded| {
-                if !self.allow_hits && !self.allow_messages {
-                    expanded.note()?;
-                }
-                let (score_off_q, release_offset_seconds, release_velocity) = match &expanded.kind {
-                    ExpandedKind::Note(note) => (
-                        Some(checked_add(
-                            &expanded.score_on_q,
-                            &note.dur_q,
-                            Some(expanded.source_span),
-                        )?),
-                        note.release_offset_seconds.clone(),
-                        note.release_velocity,
-                    ),
-                    ExpandedKind::Hit { .. }
-                    | ExpandedKind::Message { .. }
-                    | ExpandedKind::Audio(_) => (None, Rational::zero(), 0.0),
+    /// Add a note's vibrato to its lowered pitch expression for a gate of
+    /// `gate_frames`, spending one unit of `budget` per point.
+    fn add_vibrato(
+        &self,
+        kind: &mut EventKind,
+        expanded: &ExpandedEvent,
+        gate_frames: u64,
+        budget: &mut usize,
+    ) -> CResult<()> {
+        let ExpandedKind::Note(note) = &expanded.kind else {
+            return Ok(());
+        };
+        let Some(id) = &note.vibrato else {
+            return Ok(());
+        };
+        let EventKind::Note {
+            pitch_expression: Some(expression),
+            ..
+        } = kind
+        else {
+            return Ok(());
+        };
+        let vibrato = &self.vibratos[id];
+        if expression.clock != ExpressionClock::Seconds {
+            return Err(event_diagnostic(
+                DiagnosticCode::Unit,
+                "a pitch expression with a vibrato requires a seconds-clock curve",
+                expanded,
+                &[],
+            ));
+        }
+        if expression
+            .points
+            .last()
+            .is_some_and(|point| point.position > vibrato.delay)
+        {
+            return Err(event_diagnostic(
+                DiagnosticCode::Range,
+                format!("vibrato `{id}` must start at or after the curve's last point"),
+                expanded,
+                &[],
+            ));
+        }
+        let gate = Rational::new(gate_frames.into(), self.sample_rate.into());
+        vibrato.extend(
+            &mut expression.points,
+            &gate,
+            budget,
+            Some(expanded.source_span),
+        )
+    }
+
+    /// Lower the expanded events. A vibrato needs its note's gate, so notes
+    /// with one are scheduled here as they will be in the plan; `used` is the
+    /// point count the source already spends.
+    fn lower_score_events(
+        &self,
+        limits: &PlanLimits,
+        used: usize,
+    ) -> CResult<Vec<ResolvedEventV3>> {
+        let mut budget = limits.max_automation_points.saturating_sub(used);
+        let timing =
+            if self.events.iter().any(
+                |event| matches!(&event.kind, ExpandedKind::Note(note) if note.vibrato.is_some()),
+            ) {
+                let output = OutputSettings {
+                    score_start_q: self.score_start.clone(),
+                    score_end_q: self.score_end.clone(),
+                    tail_seconds: self.tail_seconds.clone(),
+                    sample_rate_hz: self.sample_rate,
+                    channels: self.output_channels()?,
+                    total_frames: 0,
+                    output: self.output.clone(),
                 };
-                Ok(ResolvedEventV3 {
-                    address: expanded.address.clone(),
-                    source: expanded.source.clone(),
-                    target: expanded.target.clone(),
-                    kind: self.lower_event_kind(expanded)?,
-                    score_on_q: expanded.score_on_q.clone(),
-                    score_off_q,
-                    onset_offset_seconds: expanded.onset_offset_seconds.clone(),
-                    release_offset_seconds,
-                    release_velocity,
-                    on_frame: 0,
-                    off_frame: None,
-                    order: expanded.order,
-                })
-            })
-            .collect::<CResult<Vec<_>>>()
+                Some(
+                    TimingContext::new_with_limits(&self.plan_tempo, &output, &limits.bounded())
+                        .map_err(plan_error)?,
+                )
+            } else {
+                None
+            };
+        let mut events = Vec::with_capacity(self.events.len());
+        for expanded in &self.events {
+            let mut event = self.lower_score_event(expanded)?;
+            if let (Some(timing), ExpandedKind::Note(note)) = (&timing, &expanded.kind) {
+                if note.vibrato.is_some() {
+                    let (on, off) = timing
+                        .schedule(&event, u64::from(self.sample_rate))
+                        .map_err(plan_error)?;
+                    if let Some(off) = off {
+                        self.add_vibrato(&mut event.kind, expanded, off - on, &mut budget)?;
+                    }
+                }
+            }
+            events.push(event);
+        }
+        Ok(events)
+    }
+
+    fn lower_score_event(&self, expanded: &ExpandedEvent) -> CResult<ResolvedEventV3> {
+        if !self.allow_hits && !self.allow_messages {
+            expanded.note()?;
+        }
+        let (score_off_q, release_offset_seconds, release_velocity) = match &expanded.kind {
+            ExpandedKind::Note(note) => (
+                Some(checked_add(
+                    &expanded.score_on_q,
+                    &note.dur_q,
+                    Some(expanded.source_span),
+                )?),
+                note.release_offset_seconds.clone(),
+                note.release_velocity,
+            ),
+            ExpandedKind::Hit { .. } | ExpandedKind::Message { .. } | ExpandedKind::Audio(_) => {
+                (None, Rational::zero(), 0.0)
+            }
+        };
+        Ok(ResolvedEventV3 {
+            address: expanded.address.clone(),
+            source: expanded.source.clone(),
+            target: expanded.target.clone(),
+            kind: self.lower_event_kind(expanded)?,
+            score_on_q: expanded.score_on_q.clone(),
+            score_off_q,
+            onset_offset_seconds: expanded.onset_offset_seconds.clone(),
+            release_offset_seconds,
+            release_velocity,
+            on_frame: 0,
+            off_frame: None,
+            order: expanded.order,
+        })
     }
 
     fn schedule_score_events(
@@ -4744,8 +5067,8 @@ impl<'a> Compiler<'a> {
         mut production: Option<crate::production_data::ProductionSettings>,
         original: &Document,
     ) -> CResult<PlanV3> {
-        self.check_point_budget(limits)?;
-        let events = self.lower_score_events()?;
+        let used = self.check_point_budget(limits)?;
+        let events = self.lower_score_events(limits, used)?;
         let mut plan = PlanV3 {
             version: 3,
             output: OutputSettings {
@@ -5071,7 +5394,7 @@ impl<'a> Compiler<'a> {
         mut production: Option<crate::production_data::ProductionSettings>,
         original: &Document,
     ) -> CResult<PlanV7> {
-        self.check_point_budget(limits)?;
+        let used = self.check_point_budget(limits)?;
         let mut nodes: Vec<NodeV6> = self
             .nodes
             .iter()
@@ -5109,7 +5432,7 @@ impl<'a> Compiler<'a> {
                 output: self.output.clone(),
             },
             tempo: self.plan_tempo.clone(),
-            events: self.lower_score_events()?,
+            events: self.lower_score_events(limits, used)?,
             nodes,
             audio_assets: self.audio_assets.clone(),
             connections: self.connections.clone(),
@@ -5221,7 +5544,7 @@ impl<'a> Compiler<'a> {
         mut production: Option<crate::production_data::ProductionSettings>,
         original: &Document,
     ) -> CResult<PlanV6> {
-        self.check_point_budget(limits)?;
+        let used = self.check_point_budget(limits)?;
         let mut nodes: Vec<NodeV6> = self
             .nodes
             .iter()
@@ -5256,7 +5579,7 @@ impl<'a> Compiler<'a> {
                 output: self.output.clone(),
             },
             tempo: self.plan_tempo.clone(),
-            events: self.lower_score_events()?,
+            events: self.lower_score_events(limits, used)?,
             nodes,
             audio_assets: self.audio_assets.clone(),
             connections: self.connections.clone(),
@@ -5354,7 +5677,7 @@ impl<'a> Compiler<'a> {
         mut production: Option<crate::production_data::ProductionSettings>,
         original: &Document,
     ) -> CResult<PlanV5> {
-        self.check_point_budget(limits)?;
+        let used = self.check_point_budget(limits)?;
         let mut nodes: Vec<NodeV5> = self
             .nodes
             .iter()
@@ -5391,7 +5714,7 @@ impl<'a> Compiler<'a> {
                 output: self.output.clone(),
             },
             tempo: self.plan_tempo.clone(),
-            events: self.lower_score_events()?,
+            events: self.lower_score_events(limits, used)?,
             nodes,
             audio_assets: self.audio_assets.clone(),
             connections: self.connections.clone(),
@@ -5475,7 +5798,7 @@ impl<'a> Compiler<'a> {
         mut production: Option<crate::production_data::ProductionSettings>,
         original: &Document,
     ) -> CResult<PlanV4> {
-        self.check_point_budget(limits)?;
+        let used = self.check_point_budget(limits)?;
         let mut nodes: Vec<NodeV4> = self
             .nodes
             .iter()
@@ -5501,7 +5824,7 @@ impl<'a> Compiler<'a> {
                 output: self.output.clone(),
             },
             tempo: self.plan_tempo.clone(),
-            events: self.lower_score_events()?,
+            events: self.lower_score_events(limits, used)?,
             nodes,
             audio_assets: self.audio_assets.clone(),
             connections: self.connections.clone(),
@@ -5557,7 +5880,7 @@ impl<'a> Compiler<'a> {
     }
 
     fn finish_plan(&self, limits: &PlanLimits) -> CResult<Plan> {
-        self.check_point_budget(limits)?;
+        let used = self.check_point_budget(limits)?;
         let score_start_seconds = self
             .exact_tempo
             .seconds_at(&self.score_start)
@@ -5587,6 +5910,7 @@ impl<'a> Compiler<'a> {
             )?,
             None,
         )?;
+        let mut budget = limits.max_automation_points.saturating_sub(used);
         let mut events = Vec::new();
         for expanded in &self.events {
             let note = expanded.note()?;
@@ -5670,7 +5994,8 @@ impl<'a> Compiler<'a> {
                     &["dur"],
                 ));
             }
-            let kind = self.lower_event_kind(expanded)?;
+            let mut kind = self.lower_event_kind(expanded)?;
+            self.add_vibrato(&mut kind, expanded, off_frame - on_frame, &mut budget)?;
             events.push(ResolvedEvent {
                 address: expanded.address.clone(),
                 source: expanded.source.clone(),

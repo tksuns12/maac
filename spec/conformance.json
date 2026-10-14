@@ -110,6 +110,18 @@
       "pass": true
     },
     {
+      "id": "vibrato_centered_knot_position",
+      "actual": "34/55",
+      "expected": "34/55",
+      "pass": true
+    },
+    {
+      "id": "vibrato_rising_knot_cents",
+      "actual": "38/5",
+      "expected": "38/5",
+      "pass": true
+    },
+    {
       "id": "linear_tempo_ramp_seconds",
       "actual": 1.6218604324326575,
       "expected": 1.6218604324326575,

@@ -20,8 +20,8 @@ listen before you call a track finished.
   `std/acoustic/1.0.0` guitars for picked acoustic parts; for strums, see
   the pitfalls below. For a guitar lead, set the electric guitar's
   `pickup = 0.3` and `tone = 3200Hz`, and automate its `drive` alone: the
-  level holds. Leave its `vibrato` at 0 and write the vibrato and bends per
-  note (see the pitfalls).
+  level holds. Leave its `vibrato` control at 0 and give held notes a
+  `vibrato` of their own (see section 2).
   std/basic covers other roles, such as organ, strings, flute, bell and
   leads, with older synthesized timbres that ignore velocity except for
   loudness. Its guitars sound like a bass and its `finger_bass` has no
@@ -52,6 +52,16 @@ listen before you call a track finished.
   keeps the upper four strings, as an upstroke catches them.
 - Write one-bar chord patterns and assemble progressions with `use`. Place
   progressions with `count` for repeats.
+- Give a melody vibrato and bends per note. Declare the vibrato once and
+  name it from each held note's pitch expression, after a bend if the note
+  has one:
+  `vibrato guitar { rate = 11/2Hz; depth = 38ct; delay = 300ms; rise = 450ms; shape = up; }`,
+  then `expression vib { kind = pitch; vibrato = &guitar; }`. `shape = up`
+  only rises from the pitch, as a guitarist's does; voices and strings use
+  the default `centered`. A bend is a seconds-clock curve that ends by the
+  vibrato's delay: `points = [(0ms, -200ct, step), (40ms, -200ct, linear), (170ms, 0ct, step)]`
+  picks a whole step low and pushes up. See
+  [vibrato](pitch-expression.md#vibrato).
 - Reuse a line at other pitches with `transpose` on `use`, in cents:
   `use d_bar { pattern = &g_bar; at = 4q; transpose = 700ct; }` plays a G
   pattern as D. A bass line needs only one pattern per chord quality. Mind
@@ -170,5 +180,5 @@ ask for a verdict.
 | Lead drops in the quiet sections | Less amp `drive` also means less amp output | `lead_under` in those sections; give `synth.drive/1` a `reference`, or automate the level with the drive |
 | The chorus does not lift | Glue and limiter flatten the louder section | Compare the master's `max_short_term_lufs` per region. Each processor's `dynamics.reduction_db` in the chorus minus the verse is what it takes from the lift. A flattened level alone is not the fault: in a listening round, a chorus that kept none of its lift still sounded fine because its arrangement built |
 | "The acoustic guitar sounds cheap" | The std/acoustic/1.0.0 guitars start every string from the same full-band noise burst, at any velocity. Strummed in a full mix, they sound like a cheap synthesizer | Not measured. Define the guitar in the song, with velocity on the pluck's `hardness`, a pick `position` and body resonances, as [`examples/lantern/lantern.maac`](../examples/lantern/lantern.maac) does |
-| "The guitar melody sounds like a synthesizer" | The electric guitar's `vibrato` is one LFO on every note from note-on | Not measured. Set `vibrato = 0`; give held notes a vibrato that starts after the pick and only rises from the pitch, and bend some notes up from a whole step below, as per-note pitch curves ([example](../examples/lantern/lantern.maac)). `pitch_mismatch` skips notes with a pitch curve |
+| "The guitar melody sounds like a synthesizer" | The electric guitar's `vibrato` control is one LFO on every note from note-on | Not measured. Set the control to 0; give held notes a `vibrato` with `delay` and `shape = up`, and bend some notes up from a whole step below (section 2). `pitch_mismatch` checks these notes against their expressed pitch at the pick |
 | True peak over the limit after a sound change | Plucked attacks through compressors standing in for a limiter | `true_peak_over`; master through `fx.limiter/1` with its ceiling under the limit |

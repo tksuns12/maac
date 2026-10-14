@@ -106,6 +106,32 @@ can also name its shape itself, with `voicing = &g` or
 `pitches = [C4, E4, G4]`. Each string is a member with its own address:
 `down.0` to `down.5` under `g`, and `down.0` to `down.3` under `d`.
 
+A note can bend and add vibrato through a pitch expression. Name the vibrato
+once and give each held note the expression:
+
+```maac
+vibrato guitar { rate = 11/2Hz; depth = 38ct; delay = 300ms; rise = 450ms; shape = up; }
+curve bend_up {
+  clock = seconds;
+  points = [(0ms, -200ct, step), (40ms, -200ct, linear), (170ms, 0ct, step)];
+}
+pattern lead {
+  length = 4q;
+  note held { at = 0q; dur = 2q; pitch = A4; expression vib { kind = pitch; vibrato = &guitar; } }
+  note peak { at = 2q; dur = 2q; pitch = E5; expression bend { kind = pitch; curve = &bend_up; vibrato = &guitar; } }
+}
+```
+
+`held` sounds A4 for 300 ms, then swings up to 38 cents above it and back,
+5.5 times a second, the swing growing over 450 ms. `shape = up` rises from
+the pitch, as a guitarist's vibrato does; `down` falls from it, and the
+default `centered` swings half the depth either side. `peak` is picked a
+whole step low and bent up to E5 within 170 ms, then takes the same vibrato.
+A vibrato starts once its curve has ended. The compiler writes both out as
+the note's pitch curve, up to the end of its gate. For another waveform,
+draw one cycle as a `normalized` curve and name it as the `shape`: a square
+cycle with `depth = 200ct` is a whole-step trill.
+
 The graph is explicit. The sine produces mono audio, and `core.pan/1` converts it
 to stereo using equal-power panning. For several instruments, connect their
 stereo pan outputs to a `core.sum/1` node configured with `channels = 2`, then

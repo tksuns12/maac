@@ -428,6 +428,36 @@ nylon melody all 132 notes are now pitched, within 0.5 cents of their
 written pitch. On the same six songs, the count of unpitched notes fell or
 stayed the same in every part, and no `pitch_mismatch` appeared.
 
+## Profile `maac.analyze.default/8` (2026-10-14)
+
+Part B of the [vibrato proposal](design/vibrato-proposal.md), for F29 of the
+[T4 trial](reports/ai-production-trial-t4.md). The report schema is
+unchanged.
+
+**Notes with a pitch expression.** `pitch_mismatch` skipped every note with
+a pitch expression, which in T4 left 41 of the melody's 178 notes, the bent
+and held ones, unchecked. Such a note is now checked like any other, under
+the same lone-note rule, against its expressed pitch: the written pitch
+moved by the mean of the expression over the estimate window, from 30 ms
+after the onset over four periods. Its `cents` is its distance from that
+pitch, and the 50-cent limit is unchanged.
+
+- **Too fast to check.** If the expression moves more than 50 cents within
+  the window, as a fast slide does, the note is not checked.
+- **What it confirms.** At 30 ms a bend usually still sits at its starting
+  pitch, so the check confirms the note's pitch and the start of its curve,
+  not the top of the bend. The curve is exact data the instrument follows,
+  so a wrong root or a detuned oscillator shows at the start as anywhere
+  else.
+- **Ringing releases.** An earlier note's release is cancelled at the pitch
+  it rings at: its written pitch moved by its expression's value at the end
+  of its gate, which the release holds.
+
+On "Lantern Street", all 178 melody notes now get a pitch estimate: 149 are
+pitched, against 115, and 29 unpitched. The largest deviation is 1.0 cent,
+and no `pitch_mismatch` appears. Notes without a pitch expression are
+measured exactly as before.
+
 ## Deferred to later versions
 
 - **Onset alignment:** whether written and sounding attacks line up.

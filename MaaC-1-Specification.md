@@ -219,6 +219,7 @@ by that extension. Other top-level kinds in a core composition are:
 | `tempo`, `meter`, `tuning` | Musical coordinate systems |
 | `groove` | Named swing map that placements reference (§9.2) |
 | `voicing` | Named pitch list that chords play (§8.2) |
+| `vibrato` | Named periodic pitch shape that a pitch expression adds (§8.1) |
 | `pattern` | Finite reusable event content |
 | `track`, `place` | Event destinations and arrangement instances |
 | `curve`, `automation`, `modulate` | Expression and parameter functions |
@@ -394,6 +395,18 @@ expression bend {
 ```
 
 Kinds are `pitch` (cents offset, default 0ct), `gain` (nonnegative amplitude multiplier, default 1), `pressure` and `timbre` (dimensionless `[0,1]`, default 0). At most one expression of each kind exists per note. The receiver must advertise support; unsupported expression is an error in faithful render mode.
+
+A pitch expression may also name a `vibrato`, and then needs no curve; every other expression requires `curve`, and a `vibrato` on another kind is `E_RANGE`.
+
+```maac
+vibrato guitar { rate = 11/2Hz; depth = 38ct; delay = 300ms; rise = 450ms; shape = up; }
+curve square { clock = normalized; points = [(0, 0, step), (1/2, 1, step), (1, 0, step)]; }
+vibrato trill { rate = 4Hz; depth = 200ct; shape = &square; }
+```
+
+A `vibrato` requires `rate`, a positive frequency, and `depth`, positive cents. `delay` and `rise` are nonnegative seconds, default 0s. `shape` is `up`, `down`, `centered` (default), or a reference to a cycle curve: a normalized curve with dimensionless values and `step` or `linear` segments whose last value equals its first. The built-in shapes are the cycles `[(0,0), (1/2,1), (1,0)]`, `[(0,0), (1/2,-1), (1,0)]` and `[(0,0), (1/4,1/2), (1/2,0), (3/4,-1/2), (1,0)]`, linear except the final step. A curve beside a vibrato must use the seconds clock (`E_UNIT`), and its last position must not exceed `delay` (`E_RANGE`).
+
+A vibrato lowers at compile time to points of the note's seconds-clock pitch expression; it adds no plan field. Let `P = 1/rate`, let the cycle's points be `(u_i, w_i, s_i)` for `i = 0..m`, and let `c` be the curve's final value, or 0ct without a curve. For each cycle `j >= 0` and each `i < m`, a knot at `t = delay + (j + u_i)*P` has value `c + g*w_i` and shape `s_i`, where `g = depth*min(1, (t - delay)/rise)`, or `depth` when `rise` is zero. Knots follow the curve's points, replacing a curve point at `delay`, and continue through the first knot with `t` at or past the scheduled gate, `(off_frame - on_frame)/rate_hz` seconds; that knot's shape is `step`. A gate no longer than `delay` keeps the curve alone, or a single 0ct point. Knots count towards the host's published expansion limits (§23), and exceeding them is `E_RESOURCE_LIMIT`. Rate, delay and rise are physical, so tempo and `stretch` change only the gate.
 
 The referenced curve is evaluated on the note's effective gate. A normalized clock maps 0 to actual scheduled note-on and 1 to actual scheduled note-off. A seconds clock measures physical time from scheduled onset. A score clock maps the effective gate affinely onto `[0, final_note_duration_q]`; this explicitly distributes onset/release offsets across the expression timeline rather than introducing an undeclared extra clock. A note's attached score-clock curve coordinates are multiplied by the product of its inherited musical stretch factors; normalized and seconds coordinates are not. This produces an instance-specific curve view without modifying a shared curve definition. A duration-only occurrence override changes the gate but does not additionally rescale those score-clock curve coordinates. Outside the curve's points, endpoint values hold. During release tails, expression holds its gate-end value.
 

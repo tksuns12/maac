@@ -286,11 +286,11 @@ impl Builder<'_> {
             })?;
             if !matches!(
                 dependency["kind"].as_str(),
-                Some("curve" | "tuning" | "voicing")
+                Some("curve" | "tuning" | "voicing" | "vibrato")
             ) {
                 return Err(EditError::new(
                     "E_CAPABILITY",
-                    "event dependency is not a curve, tuning or voicing",
+                    "event dependency is not a curve, tuning, voicing or vibrato",
                 ));
             }
             let new = if let Some(new) = memo.get(&old) {

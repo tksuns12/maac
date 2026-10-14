@@ -1151,6 +1151,16 @@ fn normalize_object_inner(
                 fields.entry("tilt").or_insert_with(|| number(0, 1));
             }
         }
+        // A vibrato starts at once, at full depth, centered.
+        "vibrato" => {
+            fields
+                .entry("delay")
+                .or_insert_with(|| quantity(0, 1, Unit::S));
+            fields
+                .entry("rise")
+                .or_insert_with(|| quantity(0, 1, Unit::S));
+            fields.entry("shape").or_insert_with(|| symbol("centered"));
+        }
         "hit" => {
             for (name, value) in [
                 ("velocity", number(1, 1)),

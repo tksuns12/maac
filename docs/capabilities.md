@@ -34,7 +34,7 @@ it. See the [unknown-extension decision](design/unknown-extensions-proposal.md).
 | Feature | Foundation scope |
 | --- | --- |
 | Source | UTF-8, span-aware parsing, exact rational quantities, comments and source text retained in the parsed document |
-| Patterns | Finite notes, [chords](../MaaC-1-Specification.md#82-chords), hits, messages and [audio leaves](pattern-audio.md), nested uses, repetition, stretching, cents transposition for notes, cut and spill. A chord member is addressed and overridden individually as `chord.k`. A chord can be strummed down or up, and can play a named `voicing`, its own or one that a use or placement supplies |
+| Patterns | Finite notes, [chords](../MaaC-1-Specification.md#82-chords), hits, messages and [audio leaves](pattern-audio.md), nested uses, repetition, stretching, cents transposition for notes, cut and spill. A chord member is addressed and overridden individually as `chord.k`. A chord can be strummed down or up, and can play a named `voicing`, its own or one that a use or placement supplies. A pitch expression can add a named `vibrato`, a cycle repeated at a rate and depth after a delay, which compiles to the note's pitch curve |
 | Arrangement | Explicit tracks and placements, stable occurrence addresses, final-state overrides, deletion and inserts. A placement may reference a named [groove](../MaaC-1-Specification.md#92-grooves), an exact bar-aligned swing map |
 | Event query | [Exact score-window selection](windowed-event-query.md) on validated resolved artifacts, returning complete note gates or point events with source addresses, payloads, physical offsets and scheduled frames; source queries use full bounded compilation |
 | Instance materialization | Explicit [private copies of a whole placement](materialize-instance.md), including repeated/nested occurrences and curve/tuning dependencies; complete event/source correspondence, atomic edits and inverses; structural identity changes are reported |
@@ -140,7 +140,8 @@ The [gain guide](gain-expression.md) adds independent swells and fades while
 preserving voice state at zero gain. The [instrument gain guide](instrument-gain.md)
 covers reusable graphs and the additional execution-work charge. The
 [instrument pitch guide](instrument-pitch.md) explains bends, vibrato, and
-base versus live node frequency validation. The [timbre guide](timbre-expression.md)
+base versus live node frequency validation; a [`vibrato`](pitch-expression.md#vibrato)
+writes a periodic pitch shape in a few values. The [timbre guide](timbre-expression.md)
 defines explicit graph opt-in and authored mappings; `core.sine/1`, graphs without
 a source, and the frozen basic/acoustic libraries reject timbre with `E_CAPABILITY`.
 The [pressure guide](pressure-expression.md) adds independent authored pressure

@@ -2,7 +2,10 @@
 
 **Status:** accepted 2026-10-14, when the owner took every recommended
 [decision](#decisions) and asked for a choice of waveforms: `shape` may
-also name a curve that draws one cycle. This is item 1 of
+also name a curve that draws one cycle. Both parts are implemented: the
+normative contract is [§8.1](../../MaaC-1-Specification.md#81-per-note-expression)
+and profile [`default/8`](../analyze.md#profile-maacanalyzedefault8-2026-10-14),
+and [Results](#results) compares them with this proposal. This is item 1 of
 [what to build next](../reports/ai-production-trial-t4.md#what-to-build-next-in-order)
 in the T4 trial: F28, guitar vibrato and bends written in a few values, and
 F29, the pitch check for notes with a pitch expression. Part A is a language
@@ -349,3 +352,57 @@ Decisions 2 and 3 are as accepted, with that change.
 6. **Versioning:** additive `maac 1`, with no plan change. *Recommended*, as
    for strums.
 7. **Order:** A, then B, each landing with its fixtures.
+
+## Results
+
+### Part A
+
+Part A was built and tested with
+[`tests/vibrato.rs`](../../tests/vibrato.rs). The compiler writes each
+vibrato into its note's pitch curve after scheduling the note, so the
+knots follow the scheduled gate, and the production identity and the point
+limit both see them.
+
+**T4.** The rewrite above compiles through the std/studio electric guitar.
+
+- **Size.** Its curve block is 5 lines and 15 values, against 12 lines and
+  180 values.
+- **Events.** It gives the same 2,363 notes and 552 hits. Every event is
+  identical except the 41 melody notes' pitch curves.
+- **Points.** Those notes carry 458 points, against 948 in T4. T4's curves
+  ran past the end of most notes; the vibrato stops at the first knot past
+  each gate.
+
+**Exactness.** A vibrato with `rate = 50/9Hz`, `depth = 38ct`,
+`delay = 300ms`, `shape = up` and no `rise` gives the same plan events as the
+hand-written curve with the same points.
+
+**Differences from the proposal.**
+
+- An expression with neither `curve` nor `vibrato` is `E_RANGE` with the
+  message "expression requires field `curve` or `vibrato`". The other kinds
+  still require `curve`.
+- A cycle curve's errors are reported at the vibrato's `shape`, naming the
+  curve: a clock other than `normalized` or values with a unit are
+  `E_UNIT`, and an `exponential` segment or an open cycle `E_RANGE`.
+- The song keeps its curves until the owner compares the two in a listening
+  round.
+
+### Part B
+
+Part B was built and tested in [`tests/analyze.rs`](../../tests/analyze.rs):
+a bent part in tune passes, the same part a semitone sharp is a
+`pitch_mismatch` on all three notes, and a six-semitone slide over 60 ms is
+not checked.
+
+- **"Lantern Street".** All 178 melody notes now get a pitch estimate. 149
+  are pitched, against 115 under `default/7`, and 29 unpitched, against 22.
+  The largest deviation is 1.0 cent, and no `pitch_mismatch` appears. The
+  rewrite with part A measures the same.
+- **Other songs.** A note without a pitch expression is estimated exactly as
+  before, so songs without one report the same notes.
+
+**Differences from the proposal.** An earlier note's release is now
+cancelled at the pitch it rings at, its expression's value at the end of its
+gate, instead of its written pitch.
+

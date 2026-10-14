@@ -410,6 +410,7 @@ impl Normalizer<'_> {
                 | "place"
                 | "groove"
                 | "voicing"
+                | "vibrato"
                 | "curve"
                 | "automation"
                 | "node"
@@ -499,6 +500,16 @@ impl Normalizer<'_> {
                         .or_insert_with(|| quantity(1, 125, Unit::S));
                     fields.entry("tilt").or_insert_with(|| number(0));
                 }
+            }
+            // A vibrato starts at once, at full depth, centered.
+            "vibrato" => {
+                fields
+                    .entry("delay")
+                    .or_insert_with(|| quantity(0, 1, Unit::S));
+                fields
+                    .entry("rise")
+                    .or_insert_with(|| quantity(0, 1, Unit::S));
+                fields.entry("shape").or_insert_with(|| symbol("centered"));
             }
             "audio" => {
                 if object

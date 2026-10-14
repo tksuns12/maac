@@ -17,8 +17,9 @@ expression slide { kind = pitch; curve = &bend; }
 The [pitch guide](pitch-expression.md) defines the unchanged normalized, seconds,
 and score clocks, pattern transformations, and step/linear interpolation in
 cents. Exponential pitch interpolation is invalid. Initial pitch applies at
-note-on; the value evaluated at the gate end holds throughout release. Vibrato
-can be approximated by alternating cents points with linear segments.
+note-on; the value evaluated at the gate end holds throughout release. A
+[`vibrato`](pitch-expression.md#vibrato) writes the alternating points of a
+vibrato for each note from a rate, a depth and a delay.
 
 ## Frequency and state
 
