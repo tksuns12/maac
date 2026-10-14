@@ -375,7 +375,15 @@ limit both see them.
 
 **Exactness.** A vibrato with `rate = 50/9Hz`, `depth = 38ct`,
 `delay = 300ms`, `shape = up` and no `rise` gives the same plan events as the
-hand-written curve with the same points.
+hand-written curve with the same points. The unchanged song still renders
+byte-identically to its approved master (SHA-256 `fae5aacccc86f693…`).
+
+**Listening.** On 2026-10-14 the owner compared the two masters on a phone,
+as 192 kbit/s AAC at −14.16 LUFS each. P was the approved master and Q the
+rewrite (`6eb754d3ba8359a6…`); the order was drawn at random and revealed
+after the verdict: "거의 구별이 안 되네" ("I can barely tell them apart").
+As the acceptance allows, "Lantern Street" now uses the rewrite, and the
+README's audio is its master.
 
 **Differences from the proposal.**
 
@@ -385,8 +393,6 @@ hand-written curve with the same points.
 - A cycle curve's errors are reported at the vibrato's `shape`, naming the
   curve: a clock other than `normalized` or values with a unit are
   `E_UNIT`, and an `exponential` segment or an open cycle `E_RANGE`.
-- The song keeps its curves until the owner compares the two in a listening
-  round.
 
 ### Part B
 

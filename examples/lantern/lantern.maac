@@ -399,17 +399,10 @@ automation lead_balance { target = &lead.params.level; curve = &lead_level; at =
 // A guitarist bends only upwards: the vibrato rises from the fretted pitch
 // and back, starts after the pick, and deepens. Bends pick a whole step
 // below and push up to the note.
-curve vibrato {
-  clock = seconds;
-  points = [(0ms, 0ct, linear), (300ms, 0ct, linear), (390ms, 18ct, linear), (480ms, 0ct, linear), (570ms, 28ct, linear), (660ms, 0ct, linear), (750ms, 34ct, linear), (840ms, 0ct, linear), (930ms, 38ct, linear), (1020ms, 0ct, linear), (1110ms, 38ct, linear), (1200ms, 0ct, linear), (1290ms, 38ct, linear), (1380ms, 0ct, linear), (1470ms, 38ct, linear), (1560ms, 0ct, linear), (1650ms, 38ct, linear), (1740ms, 0ct, linear), (1830ms, 38ct, linear), (1920ms, 0ct, linear), (2010ms, 38ct, linear), (2100ms, 0ct, linear), (2190ms, 38ct, linear), (2280ms, 0ct, linear), (2370ms, 38ct, linear), (2460ms, 0ct, linear), (2550ms, 38ct, linear), (2640ms, 0ct, step)];
-}
+vibrato guitar { rate = 11/2Hz; depth = 38ct; delay = 300ms; rise = 450ms; shape = up; }
 curve bend_up {
   clock = seconds;
   points = [(0ms, -200ct, step), (40ms, -200ct, linear), (170ms, 0ct, step)];
-}
-curve bend_vibrato {
-  clock = seconds;
-  points = [(0ms, -200ct, step), (40ms, -200ct, linear), (170ms, 0ct, linear), (420ms, 0ct, linear), (510ms, 18ct, linear), (600ms, 0ct, linear), (690ms, 28ct, linear), (780ms, 0ct, linear), (870ms, 34ct, linear), (960ms, 0ct, linear), (1050ms, 38ct, linear), (1140ms, 0ct, linear), (1230ms, 38ct, linear), (1320ms, 0ct, linear), (1410ms, 38ct, linear), (1500ms, 0ct, linear), (1590ms, 38ct, linear), (1680ms, 0ct, linear), (1770ms, 38ct, linear), (1860ms, 0ct, linear), (1950ms, 38ct, linear), (2040ms, 0ct, linear), (2130ms, 38ct, linear), (2220ms, 0ct, linear), (2310ms, 38ct, linear), (2400ms, 0ct, linear), (2490ms, 38ct, linear), (2580ms, 0ct, step)];
 }
 pattern melody_verse { length = 32q;
   note a1 { at = 1/2q; dur = 1/2q; pitch = F#4; velocity = 0.55; }
@@ -420,14 +413,14 @@ pattern melody_verse { length = 32q;
   note a6 { at = 7/2q; dur = 1/2q; pitch = F#4; velocity = 0.5; }
   note b1 { at = 4q; dur = 3/2q; pitch = E4; velocity = 0.58; }
   note b2 { at = 11/2q; dur = 1/2q; pitch = D4; velocity = 0.5; }
-  note b3 { at = 6q; dur = 2q; pitch = E4; velocity = 0.56; expression vib { kind = pitch; curve = &vibrato; } }
+  note b3 { at = 6q; dur = 2q; pitch = E4; velocity = 0.56; expression vib { kind = pitch; vibrato = &guitar; } }
   note c1 { at = 17/2q; dur = 1/2q; pitch = F#4; velocity = 0.55; }
   note c2 { at = 9q; dur = 1/2q; pitch = A4; velocity = 0.58; }
   note c3 { at = 19/2q; dur = 1/2q; pitch = B4; velocity = 0.56; }
   note c4 { at = 10q; dur = 1q; pitch = D5; velocity = 0.64; expression bend { kind = pitch; curve = &bend_up; } }
   note c5 { at = 11q; dur = 1/2q; pitch = B4; velocity = 0.54; }
   note c6 { at = 23/2q; dur = 1/2q; pitch = A4; velocity = 0.5; }
-  note d1 { at = 12q; dur = 3/2q; pitch = B4; velocity = 0.6; expression vib { kind = pitch; curve = &vibrato; } }
+  note d1 { at = 12q; dur = 3/2q; pitch = B4; velocity = 0.6; expression vib { kind = pitch; vibrato = &guitar; } }
   note d2 { at = 27/2q; dur = 1/2q; pitch = A4; velocity = 0.5; }
   note d3 { at = 14q; dur = 1q; pitch = G4; velocity = 0.54; }
   note d4 { at = 15q; dur = 1q; pitch = F#4; velocity = 0.52; }
@@ -439,14 +432,14 @@ pattern melody_verse { length = 32q;
   note e6 { at = 39/2q; dur = 1/2q; pitch = C#5; velocity = 0.56; }
   note f1 { at = 20q; dur = 1q; pitch = C#5; velocity = 0.6; }
   note f2 { at = 21q; dur = 1/2q; pitch = B4; velocity = 0.52; }
-  note f3 { at = 43/2q; dur = 5/2q; pitch = A4; velocity = 0.56; expression vib { kind = pitch; curve = &vibrato; } }
+  note f3 { at = 43/2q; dur = 5/2q; pitch = A4; velocity = 0.56; expression vib { kind = pitch; vibrato = &guitar; } }
   note g1 { at = 49/2q; dur = 1/2q; pitch = B4; velocity = 0.55; }
   note g2 { at = 25q; dur = 1/2q; pitch = B4; velocity = 0.56; }
   note g3 { at = 51/2q; dur = 1/2q; pitch = A4; velocity = 0.52; }
   note g4 { at = 26q; dur = 1/2q; pitch = G4; velocity = 0.54; }
   note g5 { at = 53/2q; dur = 1/2q; pitch = F#4; velocity = 0.5; }
   note g6 { at = 27q; dur = 1q; pitch = G4; velocity = 0.56; }
-  note h1 { at = 28q; dur = 2q; pitch = A4; velocity = 0.6; expression vib { kind = pitch; curve = &vibrato; } }
+  note h1 { at = 28q; dur = 2q; pitch = A4; velocity = 0.6; expression vib { kind = pitch; vibrato = &guitar; } }
   note h2 { at = 30q; dur = 1/2q; pitch = E4; velocity = 0.5; }
   note h3 { at = 61/2q; dur = 1/2q; pitch = F#4; velocity = 0.54; }
   note h4 { at = 31q; dur = 1/2q; pitch = G4; velocity = 0.58; }
@@ -458,9 +451,9 @@ pattern melody_chorus { length = 32q;
   note a3 { at = 2q; dur = 1/2q; pitch = D5; velocity = 0.6; }
   note a4 { at = 5/2q; dur = 1/2q; pitch = E5; velocity = 0.64; }
   note a5 { at = 3q; dur = 1q; pitch = D5; velocity = 0.62; }
-  note b1 { at = 4q; dur = 3/2q; pitch = D5; velocity = 0.66; expression vib { kind = pitch; curve = &vibrato; } }
+  note b1 { at = 4q; dur = 3/2q; pitch = D5; velocity = 0.66; expression vib { kind = pitch; vibrato = &guitar; } }
   note b2 { at = 11/2q; dur = 1/2q; pitch = A4; velocity = 0.56; }
-  note b3 { at = 6q; dur = 2q; pitch = A4; velocity = 0.6; expression vib { kind = pitch; curve = &vibrato; } }
+  note b3 { at = 6q; dur = 2q; pitch = A4; velocity = 0.6; expression vib { kind = pitch; vibrato = &guitar; } }
   note c1 { at = 8q; dur = 1q; pitch = C#5; velocity = 0.66; }
   note c2 { at = 9q; dur = 1q; pitch = E5; velocity = 0.7; expression bend { kind = pitch; curve = &bend_up; } }
   note c3 { at = 10q; dur = 1/2q; pitch = E5; velocity = 0.6; }
@@ -468,33 +461,33 @@ pattern melody_chorus { length = 32q;
   note c5 { at = 11q; dur = 1q; pitch = E5; velocity = 0.62; }
   note d1 { at = 12q; dur = 3/2q; pitch = D5; velocity = 0.66; }
   note d2 { at = 27/2q; dur = 1/2q; pitch = C#5; velocity = 0.56; }
-  note d3 { at = 14q; dur = 2q; pitch = B4; velocity = 0.6; expression vib { kind = pitch; curve = &vibrato; } }
+  note d3 { at = 14q; dur = 2q; pitch = B4; velocity = 0.6; expression vib { kind = pitch; vibrato = &guitar; } }
   note e1 { at = 16q; dur = 1q; pitch = B4; velocity = 0.66; }
   note e2 { at = 17q; dur = 1q; pitch = D5; velocity = 0.7; }
   note e3 { at = 18q; dur = 1/2q; pitch = D5; velocity = 0.6; }
   note e4 { at = 37/2q; dur = 1/2q; pitch = E5; velocity = 0.64; }
   note e5 { at = 19q; dur = 1q; pitch = F#5; velocity = 0.7; }
-  note f1 { at = 20q; dur = 3/2q; pitch = F#5; velocity = 0.7; expression bend { kind = pitch; curve = &bend_vibrato; } }
+  note f1 { at = 20q; dur = 3/2q; pitch = F#5; velocity = 0.7; expression bend { kind = pitch; curve = &bend_up; vibrato = &guitar; } }
   note f2 { at = 43/2q; dur = 1/2q; pitch = E5; velocity = 0.58; }
-  note f3 { at = 22q; dur = 2q; pitch = D5; velocity = 0.62; expression vib { kind = pitch; curve = &vibrato; } }
+  note f3 { at = 22q; dur = 2q; pitch = D5; velocity = 0.62; expression vib { kind = pitch; vibrato = &guitar; } }
   note g1 { at = 24q; dur = 1q; pitch = E5; velocity = 0.66; }
   note g2 { at = 25q; dur = 1/2q; pitch = D5; velocity = 0.58; }
   note g3 { at = 51/2q; dur = 1/2q; pitch = C#5; velocity = 0.56; }
-  note g4 { at = 26q; dur = 2q; pitch = A4; velocity = 0.6; expression vib { kind = pitch; curve = &vibrato; } }
+  note g4 { at = 26q; dur = 2q; pitch = A4; velocity = 0.6; expression vib { kind = pitch; vibrato = &guitar; } }
   note h1 { at = 28q; dur = 1/2q; pitch = B4; velocity = 0.56; }
-  note h2 { at = 57/2q; dur = 7/2q; pitch = A4; velocity = 0.6; expression vib { kind = pitch; curve = &vibrato; } }
+  note h2 { at = 57/2q; dur = 7/2q; pitch = A4; velocity = 0.6; expression vib { kind = pitch; vibrato = &guitar; } }
 }
 pattern melody_bridge { length = 16q;
   note a1 { at = 0q; dur = 1q; pitch = G4; velocity = 0.58; }
   note a2 { at = 1q; dur = 1q; pitch = B4; velocity = 0.6; }
-  note a3 { at = 2q; dur = 2q; pitch = E5; velocity = 0.64; expression bend { kind = pitch; curve = &bend_vibrato; } }
+  note a3 { at = 2q; dur = 2q; pitch = E5; velocity = 0.64; expression bend { kind = pitch; curve = &bend_up; vibrato = &guitar; } }
   note b1 { at = 4q; dur = 3/2q; pitch = D5; velocity = 0.62; }
   note b2 { at = 11/2q; dur = 1/2q; pitch = B4; velocity = 0.54; }
-  note b3 { at = 6q; dur = 2q; pitch = D5; velocity = 0.62; expression vib { kind = pitch; curve = &vibrato; } }
-  note c1 { at = 8q; dur = 2q; pitch = F#5; velocity = 0.66; expression bend { kind = pitch; curve = &bend_vibrato; } }
+  note b3 { at = 6q; dur = 2q; pitch = D5; velocity = 0.62; expression vib { kind = pitch; vibrato = &guitar; } }
+  note c1 { at = 8q; dur = 2q; pitch = F#5; velocity = 0.66; expression bend { kind = pitch; curve = &bend_up; vibrato = &guitar; } }
   note c2 { at = 10q; dur = 1q; pitch = E5; velocity = 0.6; }
   note c3 { at = 11q; dur = 1q; pitch = D5; velocity = 0.6; }
-  note d1 { at = 12q; dur = 4q; pitch = E5; velocity = 0.7; expression vib { kind = pitch; curve = &vibrato; } }
+  note d1 { at = 12q; dur = 4q; pitch = E5; velocity = 0.7; expression vib { kind = pitch; vibrato = &guitar; } }
 }
 track melody { target = &lead:events; }
 place melody_verse1 { pattern = &melody_verse; track = &melody; at = 16q; }

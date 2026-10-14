@@ -17,7 +17,9 @@ promise of compatibility beyond the documented interfaces.
   follow a seconds-clock bend in the same expression, once the bend has
   ended. It compiles to the note's pitch curve, up to the end of its gate,
   so the plan format is unchanged. T4's guitar vibrato and bends shrink from
-  12 lines and 180 values to 5 lines and 15. See the
+  12 lines and 180 values to 5 lines and 15. "Lantern Street" now uses it:
+  in a blind comparison the owner could barely tell it from the approved
+  master, and the README's audio is the new master. See the
   [vibrato proposal](docs/design/vibrato-proposal.md).
 
 ### Changed
