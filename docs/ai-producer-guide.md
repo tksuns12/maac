@@ -2,9 +2,9 @@
 
 How an AI can produce a finished track with MaaC: write source, render it,
 perceive it through measurements and images, revise, master and deliver.
-Every step below was used in the [T2](reports/ai-production-trial.md) or
-[T3](reports/ai-production-trial-t3.md) production trial, and the pitfalls are ones
-those trials hit.
+Every step below was used in the [T2](reports/ai-production-trial.md),
+[T3](reports/ai-production-trial-t3.md) or [T4](reports/ai-production-trial-t4.md)
+production trial, and the pitfalls are ones those trials hit.
 
 You cannot hear your own render. `maac analyze` is your measurement of what
 you would otherwise hear, and the person you work for is the final judge of
@@ -17,9 +17,11 @@ listen before you call a track finished.
   (`maac instruments --library std/studio/1.1.0`): its electric piano,
   acoustic piano, electric guitar, bass, pad and `drums` kit change timbre
   with velocity, and their levels share one calibrated scale. Use the
-  `std/acoustic/1.0.0` guitars for acoustic guitar parts. For a guitar lead,
-  set the electric guitar's `pickup = 0.3` and `tone = 3200Hz`, and automate
-  its `drive` alone: the level holds.
+  `std/acoustic/1.0.0` guitars for picked acoustic parts; for strums, see
+  the pitfalls below. For a guitar lead, set the electric guitar's
+  `pickup = 0.3` and `tone = 3200Hz`, and automate its `drive` alone: the
+  level holds. Leave its `vibrato` at 0 and write the vibrato and bends per
+  note (see the pitfalls).
   std/basic covers other roles, such as organ, strings, flute, bell and
   leads, with older synthesized timbres that ignore velocity except for
   loudness. Its guitars sound like a bass and its `finger_bass` has no
@@ -167,4 +169,6 @@ ask for a verdict.
 | Lead melody gets lost | Melody 6 dB under the comping | `lead_under` with `--lead`; `buried_note` does not catch it |
 | Lead drops in the quiet sections | Less amp `drive` also means less amp output | `lead_under` in those sections; give `synth.drive/1` a `reference`, or automate the level with the drive |
 | The chorus does not lift | Glue and limiter flatten the louder section | Compare the master's `max_short_term_lufs` per region. Each processor's `dynamics.reduction_db` in the chorus minus the verse is what it takes from the lift. A flattened level alone is not the fault: in a listening round, a chorus that kept none of its lift still sounded fine because its arrangement built |
+| "The acoustic guitar sounds cheap" | The std/acoustic/1.0.0 guitars start every string from the same full-band noise burst, at any velocity. Strummed in a full mix, they sound like a cheap synthesizer | Not measured. Define the guitar in the song, with velocity on the pluck's `hardness`, a pick `position` and body resonances, as [`examples/lantern/lantern.maac`](../examples/lantern/lantern.maac) does |
+| "The guitar melody sounds like a synthesizer" | The electric guitar's `vibrato` is one LFO on every note from note-on | Not measured. Set `vibrato = 0`; give held notes a vibrato that starts after the pick and only rises from the pitch, and bend some notes up from a whole step below, as per-note pitch curves ([example](../examples/lantern/lantern.maac)). `pitch_mismatch` skips notes with a pitch curve |
 | True peak over the limit after a sound change | Plucked attacks through compressors standing in for a limiter | `true_peak_over`; master through `fx.limiter/1` with its ceiling under the limit |

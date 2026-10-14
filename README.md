@@ -24,9 +24,15 @@ changed.
 
 ## Listen
 
-Two songs written entirely in MaaC source by an AI producer, rendered and
-mastered by `maac` with only the built-in instruments:
+Three songs written entirely in MaaC source by an AI producer, rendered and
+mastered by `maac`, with no samples or recordings. Every instrument is built
+in, except "Lantern Street"'s acoustic guitar, which the song builds from
+MaaC's synthesis nodes:
 
+- **"Lantern Street"**, a 100 bpm pop song with piano, strummed acoustic
+  guitar, an electric-guitar melody, bass, drums and pad (2:09):
+  [listen](docs/assets/audio/lantern-street.m4a) ·
+  [source](examples/lantern/lantern.maac)
 - **"Morning Ferry"**, a 72 bpm rock ballad with electric guitars, picked
   acoustic guitar, bass, drums and pad (2:17):
   [listen](docs/assets/audio/morning-ferry.m4a) ·
