@@ -13,9 +13,10 @@ promise of compatibility beyond the documented interfaces.
   [T4 production trial](docs/reports/ai-production-trial-t4.md). Its acoustic
   guitar is defined in the song, with a pick that brightens with velocity, a
   pick position and body resonances. Its melody bends and adds vibrato note by
-  note through pitch curves. The trial ranks what to build next: a new
-  acoustic guitar library, a simpler way to write guitar vibrato and bends,
-  and chord progressions written once for every part. The
+  note through pitch curves. The trial ranks what to build next: a simpler
+  way to write guitar vibrato and bends, then chord progressions written once
+  for every part. Better built-in instruments are out of scope: the libraries
+  are a baseline, like a language's standard library. The
   [AI producer guide](docs/ai-producer-guide.md) adds two pitfalls, and the
   [README](README.md) links the approved master.
 

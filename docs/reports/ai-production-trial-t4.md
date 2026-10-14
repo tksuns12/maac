@@ -96,22 +96,24 @@ those additions and find the next limits. Friction numbers continue from T3.
 | ID | Problem | Status |
 | --- | --- | --- |
 | F26 | The chord progression is restated in every part. A voicing belongs to one instrument's range, so each part names its own voicing bar by bar: 91 of the 595 lines are the `use` lines that do so (piano 27, strums 20, bass 24, pad 20). The bass follows the chords through `transpose` values in cents worked out by hand (A −500, B −300, G −700, E +200) | Open |
-| F27 | The std/acoustic/1.0.0 guitars start every string from the same full-band noise burst, at any velocity, through one 450 Hz low-pass for a body. Strummed in a full mix, the owner heard them as "a bit cheap". The pick hardness and pick position that `synth.pluck/1` gained on 2026-10-11 came after that library was frozen. The AI defined an acoustic guitar in the song, in 47 lines: velocity on pick hardness, the pick a fifth of the way along the string, and body resonances at 105 and 215 Hz. The owner: "much better" | Open. The song's `steel` instrument is a starting point |
+| F27 | The std/acoustic/1.0.0 guitars start every string from the same full-band noise burst, at any velocity, through one 450 Hz low-pass for a body. Strummed in a full mix, the owner heard them as "a bit cheap". The pick hardness and pick position that `synth.pluck/1` gained on 2026-10-11 came after that library was frozen. The AI defined an acoustic guitar in the song, in 47 lines: velocity on pick hardness, the pick a fifth of the way along the string, and body resonances at 105 and 215 Hz. The owner: "much better" | Out of scope. The owner sees the built-in libraries as a language's standard library: a baseline, not the best sound available. The language handled this case: a song, or a [library](../instruments.md) imported by `path` and `hash`, can define a better instrument from MaaC's nodes, as this song did |
 | F28 | The electric guitar's `vibrato` is one LFO at a fixed depth on every note from note-on, rising and falling about the pitch, like a synthesizer's; the owner heard the lead as one. Per-note pitch curves fixed it: a vibrato that starts 300 ms after the pick and only rises from the pitch, as a bent string does, and bends from a whole step below. But a vibrato curve is 28 points, which the AI computed by script; a new rate or depth means recomputing them | Open |
 | F29 | `pitch_mismatch` skips every note with a pitch expression. The 41 lead notes left unchecked are the bent and held ones, the most exposed in the song | Open |
 
 ## What to build next, in order
 
-1. **Acoustic guitar timbre (F27, F17).** A new std/acoustic version, with
-   1.0.0 kept frozen: velocity on the pick hardness, a pick position and body
-   resonances, approved in a listening round against 1.0.0. The song's
-   `steel` instrument is a starting point. F17 stays open in part.
-2. **Guitar vibrato and bends (F28, F29).** Let a vibrato be written in a few
+The owner set the scope after the trial: the built-in instrument libraries
+are like a programming language's standard library. They should be usable,
+not the best sound available, and improving them is not this project's main
+work. F27 is therefore out of scope, and the list keeps to the language and
+its tools.
+
+1. **Guitar vibrato and bends (F28, F29).** Let a vibrato be written in a few
    values: a delay and a one-sided shape on the instrument's vibrato, a
    repeating segment in a curve, or a vibrato expression with a rate, depth
-   and delay. Check an expressed note's pitch against its curve. Needs a
-   proposal.
-3. **Progressions written once (F26).** A chord progression declared once,
+   and delay. Check an expressed note's pitch against its curve. See the
+   [vibrato proposal](../design/vibrato-proposal.md).
+2. **Progressions written once (F26).** A chord progression declared once,
    which each part plays through its own voicings, with a bass that follows
    the chord roots. A language change; it needs its own proposal, like the
    [strum and voicing proposal](../design/strum-voicing-proposal.md).
