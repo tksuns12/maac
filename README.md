@@ -24,11 +24,16 @@ changed.
 
 ## Listen
 
-Three songs written entirely in MaaC source by an AI producer, rendered and
+Four songs written entirely in MaaC source by an AI producer, rendered and
 mastered by `maac`, with no samples or recordings. Every instrument is built
-in, except "Lantern Street"'s acoustic guitar, which the song builds from
-MaaC's synthesis nodes:
+in, except "Afterlight"'s kick and synthesizers and "Lantern Street"'s
+acoustic guitar, which the songs build from MaaC's synthesis nodes:
 
+- **"Afterlight"**, a 126 bpm progressive-house track with a supersaw lead
+  and chords, a plucked arpeggio, a saw bass, piano, drums and a riser,
+  pumping to the kick (2:44):
+  [listen](docs/assets/audio/afterlight.m4a) ·
+  [source](examples/afterlight/afterlight.maac)
 - **"Lantern Street"**, a 100 bpm pop song with piano, strummed acoustic
   guitar, an electric-guitar melody, bass, drums and pad (2:09):
   [listen](docs/assets/audio/lantern-street.m4a) ·

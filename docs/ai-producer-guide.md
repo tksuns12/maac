@@ -3,8 +3,9 @@
 How an AI can produce a finished track with MaaC: write source, render it,
 perceive it through measurements and images, revise, master and deliver.
 Every step below was used in the [T2](reports/ai-production-trial.md),
-[T3](reports/ai-production-trial-t3.md) or [T4](reports/ai-production-trial-t4.md)
-production trial, and the pitfalls are ones those trials hit.
+[T3](reports/ai-production-trial-t3.md), [T4](reports/ai-production-trial-t4.md)
+or [T5](reports/ai-production-trial-t5.md) production trial, and the pitfalls
+are ones those trials hit.
 
 You cannot hear your own render. `maac analyze` is your measurement of what
 you would otherwise hear, and the person you work for is the final judge of
@@ -26,6 +27,12 @@ listen before you call a track finished.
   leads, with older synthesized timbres that ignore velocity except for
   loudness. Its guitars sound like a bass and its `finger_bass` has no
   pluck, so play those parts on std/acoustic and on std/studio's `bass`.
+  For electronic music, build the sounds in the song from synthesis nodes,
+  as [`examples/afterlight/afterlight.maac`](../examples/afterlight/afterlight.maac)
+  does in 30 to 55 lines each: a kick from a sine with a fast pitch drop, a
+  click and a drive; a supersaw from seven saws detuned by up to 30 cents
+  and spread across the stereo field; a saw bass over a sub; a pluck whose
+  low-pass snaps shut; and a noise riser.
 - **Form.** Fix the tempo, the meter and the form in bars. Declare each
   section as a `region`, so the analysis reports per section by name.
 - **Groove grid.** Choose one grid, straight or swung, for every part. For
@@ -73,6 +80,20 @@ listen before you call a track finished.
   vibrato's delay: `points = [(0ms, -200ct, step), (40ms, -200ct, linear), (170ms, 0ct, step)]`
   picks a whole step low and pushes up. See
   [vibrato](pitch-expression.md#vibrato).
+- Glide a synthesizer from note to note the same way: a seconds-clock curve
+  that starts at the previous note's pitch, such as
+  `curve glide_up_third { clock = seconds; points = [(0ms, -300ct, linear), (5/42s, 0ct, step)]; }`
+  on a note a minor third above the one before. Give it about a sixteenth,
+  here 5/42 s at 126 bpm: at 80 ms the listener heard no slide. Each note
+  still starts its own voice. In a listening round that glided better than
+  one long note bending through both pitches, so there is no need to merge
+  notes for legato.
+- Write rolls and risers with `count` and `stretch`.
+  `use sixteenths { pattern = &snare_once; at = 16q; count = 32; stretch = 1/4; }`
+  plays a one-beat snare pattern 32 times, a sixteenth apart. Ramp the
+  snare's level with an automation: thirty-second notes pile up, and T5's
+  first build was 5.6 LU louder than its drop. One riser note under a
+  `normalized` gain curve can be stretched to every build.
 - Let the bass follow the harmony too. Give it a voicing per chord of the
   root and its octave, such as `voicing bs_a { pitches = [A1, A2]; }`, and
   write its rhythm as chords with `bottom = 1` for the root and `top = 1`
@@ -135,12 +156,29 @@ maac analyze main.maac --window region:b --preroll 4 --json   # quick, approxima
 - **Images.** Look at the PNGs. The piano roll shows form and register; the
   spectrogram shows density, low-end build-up and sections.
 - **Duration.** Rendering runs at roughly real time, so batch several edits
-  into one measurement pass.
+  into one measurement pass. Dense synthesis costs execution work: T5's
+  seven-saw supersaws used 87 % of the `song` profile's budget in 2:40, and
+  the default profile refuses such a track outright.
+- **Excerpts for the listener.** To compare one change, compile each variant
+  with `maac compile --profile song` and render the same section of each with
+  `maac render --start-frame N --end-frame M`; a short clip per variant is
+  quicker to judge than a whole track.
 
 ## 4. Mix and master
 
 - **Routing.** Use `send` buses into `fx.reverb/1` with `mix = 1`, plus a
   return gain.
+- **Pumping.** Key an `fx.compressor/1` from the kick:
+  `config = { channels = 2; detector = external; sidechain_channels = 2; }`
+  and `connect kick_key { from = &kick:out; to = &pump:sidechain; }`. Run
+  everything that should breathe through it, the lead included: in T5 a
+  pump taking 4.3 dB on average went unheard under an unpumped lead and
+  drums. A threshold of −32 dB, ratio 8, 1 ms attack and 220 ms release
+  pleased the listener. A pump lowers a drop's average level, so lower the
+  breakdowns under it rather than push the limiter.
+- **Tempo-synced delay.** `core.delay/1` takes frames: beats × 60 / bpm ×
+  48000, rounded. A dotted eighth at 126 bpm is 17,143 frames. Feed it back
+  through a `core.onepole/1` and a `core.gain/1` for darkening repeats.
 - **Master.** End the chain with an optional glue `fx.compressor/1` (ratio
   2–3, attack about 20 ms), then `fx.limiter/1` as the project output. Its
   `gain` sets the loudness and its `ceiling` caps the true peak. Raising the
@@ -162,7 +200,7 @@ maac analyze main.maac --window region:b --preroll 4 --json   # quick, approxima
   `exposed_noise` reports a steady stem that no note plays when it fills a
   band in the quietest passages.
 - **Target.** About -16 to -14 LUFS integrated at no more than -1 dBTP suits
-  streaming; calm genres can sit lower.
+  streaming; calm genres can sit lower and dance music higher, about -11.
 
 ## 5. Deliver
 
@@ -196,4 +234,6 @@ ask for a verdict.
 | The chorus does not lift | Glue and limiter flatten the louder section | Compare the master's `max_short_term_lufs` per region. Each processor's `dynamics.reduction_db` in the chorus minus the verse is what it takes from the lift. A flattened level alone is not the fault: in a listening round, a chorus that kept none of its lift still sounded fine because its arrangement built |
 | "The acoustic guitar sounds cheap" | The std/acoustic/1.0.0 guitars start every string from the same full-band noise burst, at any velocity. Strummed in a full mix, they sound like a cheap synthesizer | Not measured. Define the guitar in the song, with velocity on the pluck's `hardness`, a pick `position` and body resonances, as [`examples/lantern/lantern.maac`](../examples/lantern/lantern.maac) does |
 | "The guitar melody sounds like a synthesizer" | The electric guitar's `vibrato` control is one LFO on every note from note-on | Not measured. Set the control to 0; give held notes a `vibrato` with `delay` and `shape = up`, and bend some notes up from a whole step below (section 2). `pitch_mismatch` checks these notes against their expressed pitch at the pick |
+| "It doesn't feel pumped" | The keyed compressor works, but the parts that carry the drop, such as the lead and drums, bypass it | Not reported by `maac analyze`: its `dynamics` gives what the compressor takes, not what the mix does. Route the lead through the pump; in T5 the mix's level swing per beat went from 6 to 15 dB |
+| "The glide doesn't slide" | The glide is too short: 80 ms at 126 bpm | Not measured. Give it about a sixteenth |
 | True peak over the limit after a sound change | Plucked attacks through compressors standing in for a limiter | `true_peak_over`; master through `fx.limiter/1` with its ceiling under the limit |

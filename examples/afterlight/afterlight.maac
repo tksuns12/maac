@@ -1,0 +1,718 @@
+maac 1;
+
+// "Afterlight": progressive house, 126 bpm, F minor, 84 bars (160 s).
+// Written directly in MaaC by an AI producer as the T5 production trial.
+//
+//  1-8   intro: kick and a plucked arpeggio, the music opening from a low-pass
+//  9-16  groove: offbeat bass, claps and open hats; the sidechain pumps
+// 17-24  breakdown: no drums; piano, pad and filtered supersaw chords
+// 25-32  build: supersaw stabs opening, a snare roll, a noise riser and a
+//        high-pass sweep, then two beats of silence
+// 33-48  drop 1: the supersaw lead over held chords, rolling bass, full kit
+// 49-56  interlude: pad, piano, the arpeggio and the lead, softly
+// 57-60  build 2
+// 61-76  drop 2: the lead doubled an octave up
+// 77-84  outro: kick, bass and arpeggio, closing into the low-pass
+
+project afterlight {
+  score = [0q, 336q]; rate = 48000Hz; tail = 4s;
+  tempo = &clock; meter = &metre; output = &master:out;
+  requires = ["maac.production/1"];
+}
+tempo clock { points = [(0q, 126bpm, step)]; }
+meter metre { points = [(0q, 4, 4)]; }
+import studio { builtin = "std/studio/1.1.0"; }
+
+region intro { span = [bar(1, 1), bar(9, 1)]; }
+region groove { span = [bar(9, 1), bar(17, 1)]; }
+region breakdown { span = [bar(17, 1), bar(25, 1)]; }
+region build { span = [bar(25, 1), bar(33, 1)]; }
+region drop1 { span = [bar(33, 1), bar(49, 1)]; }
+region interlude { span = [bar(49, 1), bar(57, 1)]; }
+region build2 { span = [bar(57, 1), bar(61, 1)]; }
+region drop2 { span = [bar(61, 1), bar(77, 1)]; }
+region outro { span = [bar(77, 1), bar(85, 1)]; }
+
+// One four-bar loop runs under the whole track.
+harmony loop_chords { length = 16q; chords = [(0q, "Fm"), (4q, "Db"), (8q, "Ab"), (12q, "Eb")]; }
+
+// ---------------------------------------------------------------- kick
+// A sine dropping from about 220 Hz to the note, a short click, and a drive
+// for weight. Tuned by its note: F1.
+instrument kick_drum {
+  channels = 2;
+  voice voice {
+    channels = 1;
+    amplitude = &amp;
+    output = &punch:out;
+    node amp { type = "synth.adsr/1"; params = { attack = 0.5ms; decay = 420ms; sustain = 0; release = 120ms; curve = 4; }; }
+    node vel { type = "synth.velocity/1"; }
+    node body { type = "synth.sine/1"; }
+    node drop_env { type = "synth.adsr/1"; params = { decay = 55ms; sustain = 0; curve = 5; }; }
+    modulate pitch_drop { from = &drop_env:out; to = &body.params.frequency; depth = 180Hz; }
+    node noise { type = "synth.noise/1"; params = { level = 0; }; }
+    node click_env { type = "synth.adsr/1"; params = { decay = 6ms; sustain = 0; curve = 4; }; }
+    modulate click_shape { from = &click_env:out; to = &noise.params.level; depth = 1; }
+    node click_band { type = "synth.svf/1"; config = { channels = 1; mode = bandpass; }; params = { cutoff = 4000Hz; q = 0.8; }; }
+    node click_gain { type = "synth.gain/1"; config = { channels = 1; }; params = { level = 0.1; }; }
+    modulate click_velocity { from = &vel:out; to = &click_gain.params.level; depth = 0.15; }
+    connect noise_band { from = &noise:out; to = &click_band:in; }
+    connect band_gain { from = &click_band:out; to = &click_gain:in; }
+    node mix { type = "synth.mix/1"; config = { channels = 1; }; }
+    connect body_mix { from = &body:out; to = &mix:in; }
+    connect click_mix { from = &click_gain:out; to = &mix:in; }
+    node punch { type = "synth.drive/1"; config = { channels = 1; }; params = { drive = 2; level = 0.8; }; }
+    connect mix_punch { from = &mix:out; to = &punch:in; }
+  }
+  shared stage {
+    channels = 2;
+    output = &stereo:out;
+    node dc { type = "synth.highpass/1"; config = { channels = 1; }; params = { cutoff = 25Hz; }; }
+    node gain { type = "synth.gain/1"; config = { channels = 1; }; params = { level = 0.6; }; }
+    node stereo { type = "synth.pan/1"; params = { pan = 0; }; }
+    connect input_dc { from = &input:out; to = &dc:in; }
+    connect dc_gain { from = &dc:out; to = &gain:in; }
+    connect gain_stereo { from = &gain:out; to = &stereo:in; }
+  }
+  control level { target = &stage.gain.params.level; default = 0.6; }
+}
+node kick { instrument = &kick_drum; config = { voices = 4; }; params = { level = 0.8; }; }
+pattern kick4 { length = 4q;
+  note k1 { at = 0q; dur = 1/2q; pitch = F1; velocity = 0.9; }
+  note k2 { at = 1q; dur = 1/2q; pitch = F1; velocity = 0.86; }
+  note k3 { at = 2q; dur = 1/2q; pitch = F1; velocity = 0.9; }
+  note k4 { at = 3q; dur = 1/2q; pitch = F1; velocity = 0.86; }
+}
+track kicks { target = &kick:events; }
+place kick_intro { pattern = &kick4; track = &kicks; at = 0q; count = 8; }
+place kick_groove { pattern = &kick4; track = &kicks; at = 32q; count = 8; }
+place kick_drop1 { pattern = &kick4; track = &kicks; at = 128q; count = 16; }
+place kick_drop2 { pattern = &kick4; track = &kicks; at = 240q; count = 16; }
+place kick_outro { pattern = &kick4; track = &kicks; at = 304q; count = 8; }
+
+// ---------------------------------------------------------------- kit
+node drums { instrument = &studio.drums; params = { open_hat_pan = 0.2; hat_pan = -0.15; }; }
+pattern hats_off { length = 4q;
+  hit o1 { at = 1/2q; key = "open_hat"; velocity = 0.5; }
+  hit o2 { at = 3/2q; key = "open_hat"; velocity = 0.46; }
+  hit o3 { at = 5/2q; key = "open_hat"; velocity = 0.5; }
+  hit o4 { at = 7/2q; key = "open_hat"; velocity = 0.46; }
+}
+pattern kit_groove { length = 4q;
+  hit c1 { at = 1q; key = "clap"; velocity = 0.75; }
+  hit c2 { at = 3q; key = "clap"; velocity = 0.78; }
+  use hats { pattern = &hats_off; at = 0q; }
+}
+pattern kit_drop { length = 4q;
+  hit c1 { at = 1q; key = "clap"; velocity = 0.85; }
+  hit c2 { at = 3q; key = "clap"; velocity = 0.88; }
+  hit h1 { at = 0q; key = "hat"; velocity = 0.45; }
+  hit h2 { at = 1/4q; key = "hat"; velocity = 0.3; }
+  hit h3 { at = 1q; key = "hat"; velocity = 0.42; }
+  hit h4 { at = 5/4q; key = "hat"; velocity = 0.3; }
+  hit h5 { at = 2q; key = "hat"; velocity = 0.45; }
+  hit h6 { at = 9/4q; key = "hat"; velocity = 0.3; }
+  hit h7 { at = 3q; key = "hat"; velocity = 0.42; }
+  hit h8 { at = 13/4q; key = "hat"; velocity = 0.3; }
+  use hats { pattern = &hats_off; at = 0q; }
+}
+// Snare rolls: quarters, eighths, sixteenths and thirty-seconds, then two
+// beats of silence before the drop. The snare's level rises under them.
+pattern snare_once { length = 1q;
+  hit s { at = 0q; key = "snare"; velocity = 0.7; }
+}
+pattern roll_build { length = 32q;
+  use quarters { pattern = &snare_once; at = 0q; count = 8; }
+  use eighths { pattern = &snare_once; at = 8q; count = 16; stretch = 1/2; }
+  use sixteenths { pattern = &snare_once; at = 16q; count = 32; stretch = 1/4; }
+  use thirty_seconds { pattern = &snare_once; at = 24q; count = 48; stretch = 1/8; }
+}
+pattern roll_build2 { length = 16q;
+  use eighths { pattern = &snare_once; at = 0q; count = 8; stretch = 1/2; }
+  use sixteenths { pattern = &snare_once; at = 4q; count = 24; stretch = 1/4; }
+  use thirty_seconds { pattern = &snare_once; at = 10q; count = 32; stretch = 1/8; }
+}
+pattern crash_hit { length = 4q;
+  hit c1 { at = 0q; key = "crash"; velocity = 0.8; }
+}
+curve roll_level {
+  clock = score;
+  points = [(0q, 1.63, step), (96q, 0.15, linear), (126q, 0.5, step), (224q, 0.25, linear), (238q, 0.5, step)];
+}
+automation roll_rise { target = &drums.params.snare_level; curve = &roll_level; at = 0q; }
+track kit_hits { target = &drums:events; }
+place hats_intro { pattern = &hats_off; track = &kit_hits; at = 16q; count = 4; }
+place kit_groove1 { pattern = &kit_groove; track = &kit_hits; at = 32q; count = 8; }
+place roll1 { pattern = &roll_build; track = &kit_hits; at = 96q; }
+place kit_drop1 { pattern = &kit_drop; track = &kit_hits; at = 128q; count = 16; }
+place roll2 { pattern = &roll_build2; track = &kit_hits; at = 224q; }
+place kit_drop2 { pattern = &kit_drop; track = &kit_hits; at = 240q; count = 16; }
+place kit_outro { pattern = &kit_groove; track = &kit_hits; at = 304q; count = 8; }
+place crash_groove { pattern = &crash_hit; track = &kit_hits; at = 32q; }
+place crash_drop1 { pattern = &crash_hit; track = &kit_hits; at = 128q; }
+place crash_interlude { pattern = &crash_hit; track = &kit_hits; at = 192q; }
+place crash_drop2 { pattern = &crash_hit; track = &kit_hits; at = 240q; }
+place crash_outro { pattern = &crash_hit; track = &kit_hits; at = 304q; }
+
+// ---------------------------------------------------------------- bass
+// A sub sine under two slightly detuned saws, through a key-tracked low-pass
+// that opens at each note.
+instrument saw_bass {
+  channels = 2;
+  voice voice {
+    channels = 1;
+    amplitude = &amp;
+    output = &grit:out;
+    node amp { type = "synth.adsr/1"; params = { attack = 3ms; sustain = 1; release = 60ms; }; }
+    node vel { type = "synth.velocity/1"; }
+    node sub { type = "synth.sine/1"; params = { level = 0.8; }; }
+    node saw_a { type = "synth.saw/1"; params = { level = 0.35; }; }
+    node saw_b { type = "synth.saw/1"; params = { ratio = 1.004; level = 0.35; phase = 1/2; }; }
+    node mix { type = "synth.mix/1"; config = { channels = 1; }; }
+    connect sub_mix { from = &sub:out; to = &mix:in; }
+    connect a_mix { from = &saw_a:out; to = &mix:in; }
+    connect b_mix { from = &saw_b:out; to = &mix:in; }
+    node env { type = "synth.adsr/1"; params = { decay = 160ms; sustain = 0; curve = 4; }; }
+    node tone { type = "synth.svf/1"; config = { channels = 1; mode = lowpass; }; params = { cutoff = 180Hz; ratio = 3; q = 1.2; }; }
+    modulate opening { from = &env:out; to = &tone.params.cutoff; depth = 1400Hz; }
+    modulate harder_brighter { from = &vel:out; to = &tone.params.cutoff; depth = 600Hz; }
+    connect mix_tone { from = &mix:out; to = &tone:in; }
+    node grit { type = "synth.drive/1"; config = { channels = 1; }; params = { drive = 1.5; level = 0.7; }; }
+    connect tone_grit { from = &tone:out; to = &grit:in; }
+  }
+  shared stage {
+    channels = 2;
+    output = &stereo:out;
+    node dc { type = "synth.highpass/1"; config = { channels = 1; }; params = { cutoff = 28Hz; }; }
+    node gain { type = "synth.gain/1"; config = { channels = 1; }; params = { level = 0.5; }; }
+    node stereo { type = "synth.pan/1"; params = { pan = 0; }; }
+    connect input_dc { from = &input:out; to = &dc:in; }
+    connect dc_gain { from = &dc:out; to = &gain:in; }
+    connect gain_stereo { from = &gain:out; to = &stereo:in; }
+  }
+  control level { target = &stage.gain.params.level; default = 0.5; }
+  control cutoff { target = &voice.tone.params.cutoff; default = 180Hz; }
+}
+node bass { instrument = &saw_bass; config = { voices = 6; }; params = { level = 0.45; }; }
+// Each bass voicing is a root and its octave.
+voicing bs_fm { pitches = [F1, F2]; }
+voicing bs_db { pitches = [Db2, Db3]; }
+voicing bs_ab { pitches = [Ab1, Ab2]; }
+voicing bs_eb { pitches = [Eb2, Eb3]; }
+voicings bass_voicings { chords = [("Fm", &bs_fm), ("Db", &bs_db), ("Ab", &bs_ab), ("Eb", &bs_eb)]; }
+// Groove and outro: the offbeat eighths of house.
+pattern bs_off { length = 4q;
+  chord o1 { at = 1/2q; dur = 3/8q; bottom = 1; velocity = 0.8; }
+  chord o2 { at = 3/2q; dur = 3/8q; bottom = 1; velocity = 0.72; }
+  chord o3 { at = 5/2q; dur = 3/8q; bottom = 1; velocity = 0.8; }
+  chord o4 { at = 7/2q; dur = 3/8q; bottom = 1; velocity = 0.72; }
+}
+// Drops: rolling sixteenths around the kick, the octave on each last one.
+pattern bs_roll { length = 4q;
+  chord a1 { at = 1/4q; dur = 3/16q; bottom = 1; velocity = 0.6; }
+  chord a2 { at = 1/2q; dur = 3/16q; bottom = 1; velocity = 0.85; }
+  chord a3 { at = 3/4q; dur = 3/16q; top = 1; velocity = 0.65; }
+  chord b1 { at = 5/4q; dur = 3/16q; bottom = 1; velocity = 0.6; }
+  chord b2 { at = 3/2q; dur = 3/16q; bottom = 1; velocity = 0.82; }
+  chord b3 { at = 7/4q; dur = 3/16q; top = 1; velocity = 0.62; }
+  chord c1 { at = 9/4q; dur = 3/16q; bottom = 1; velocity = 0.6; }
+  chord c2 { at = 5/2q; dur = 3/16q; bottom = 1; velocity = 0.85; }
+  chord c3 { at = 11/4q; dur = 3/16q; top = 1; velocity = 0.65; }
+  chord d1 { at = 13/4q; dur = 3/16q; bottom = 1; velocity = 0.6; }
+  chord d2 { at = 7/2q; dur = 3/16q; bottom = 1; velocity = 0.82; }
+  chord d3 { at = 15/4q; dur = 3/16q; top = 1; velocity = 0.66; }
+}
+pattern bs_held { length = 4q;
+  chord r1 { at = 0q; dur = 4q; bottom = 1; velocity = 0.4; }
+}
+track bass_notes { target = &bass:events; }
+place bass_groove { pattern = &bs_off; track = &bass_notes; at = 32q; count = 8; harmony = &loop_chords; voicings = &bass_voicings; }
+place bass_build { pattern = &bs_off; track = &bass_notes; at = 96q; count = 6; harmony = &loop_chords; voicings = &bass_voicings; }
+place bass_drop1 { pattern = &bs_roll; track = &bass_notes; at = 128q; count = 16; harmony = &loop_chords; voicings = &bass_voicings; }
+place bass_interlude { pattern = &bs_held; track = &bass_notes; at = 208q; count = 4; harmony = &loop_chords; voicings = &bass_voicings; }
+place bass_drop2 { pattern = &bs_roll; track = &bass_notes; at = 240q; count = 16; harmony = &loop_chords; voicings = &bass_voicings; }
+place bass_outro { pattern = &bs_off; track = &bass_notes; at = 304q; count = 8; harmony = &loop_chords; voicings = &bass_voicings; }
+
+// ---------------------------------------------------------------- supersaw
+// Seven saws detuned by up to 30 cents and spread across the stereo field,
+// through a low-pass that opens at each note and with velocity.
+instrument supersaw {
+  channels = 2;
+  voice voice {
+    channels = 2;
+    amplitude = &amp;
+    output = &tone:out;
+    node amp { type = "synth.adsr/1"; params = { attack = 4ms; decay = 600ms; sustain = 4/5; release = 300ms; curve = 3; }; }
+    node vel { type = "synth.velocity/1"; }
+    node centre { type = "synth.saw/1"; params = { level = 1/5; }; }
+    node l1 { type = "synth.saw/1"; params = { ratio = 0.9942; level = 1/5; phase = 0.13; }; }
+    node r1 { type = "synth.saw/1"; params = { ratio = 1.0058; level = 1/5; phase = 0.71; }; }
+    node l2 { type = "synth.saw/1"; params = { ratio = 0.9885; level = 1/6; phase = 0.37; }; }
+    node r2 { type = "synth.saw/1"; params = { ratio = 1.0116; level = 1/6; phase = 0.53; }; }
+    node l3 { type = "synth.saw/1"; params = { ratio = 0.9828; level = 1/7; phase = 0.89; }; }
+    node r3 { type = "synth.saw/1"; params = { ratio = 1.0173; level = 1/7; phase = 0.29; }; }
+    node left { type = "synth.mix/1"; config = { channels = 1; }; }
+    node right { type = "synth.mix/1"; config = { channels = 1; }; }
+    connect l1_left { from = &l1:out; to = &left:in; }
+    connect l2_left { from = &l2:out; to = &left:in; }
+    connect l3_left { from = &l3:out; to = &left:in; }
+    connect r1_right { from = &r1:out; to = &right:in; }
+    connect r2_right { from = &r2:out; to = &right:in; }
+    connect r3_right { from = &r3:out; to = &right:in; }
+    node pan_left { type = "synth.pan/1"; params = { pan = -0.7; }; }
+    node pan_right { type = "synth.pan/1"; params = { pan = 0.7; }; }
+    node pan_centre { type = "synth.pan/1"; params = { pan = 0; }; }
+    connect left_pan { from = &left:out; to = &pan_left:in; }
+    connect right_pan { from = &right:out; to = &pan_right:in; }
+    connect centre_pan { from = &centre:out; to = &pan_centre:in; }
+    node spread { type = "synth.mix/1"; config = { channels = 2; }; }
+    connect spread_left { from = &pan_left:out; to = &spread:in; }
+    connect spread_right { from = &pan_right:out; to = &spread:in; }
+    connect spread_centre { from = &pan_centre:out; to = &spread:in; }
+    node env { type = "synth.adsr/1"; params = { decay = 250ms; sustain = 0; curve = 4; }; }
+    node tone { type = "synth.svf/1"; config = { channels = 2; mode = lowpass; }; params = { cutoff = 5000Hz; q = 0.9; }; }
+    modulate stab_open { from = &env:out; to = &tone.params.cutoff; depth = 2500Hz; }
+    modulate harder_brighter { from = &vel:out; to = &tone.params.cutoff; depth = 2000Hz; }
+    connect spread_tone { from = &spread:out; to = &tone:in; }
+  }
+  shared stage {
+    channels = 2;
+    output = &gain:out;
+    node low_cut { type = "synth.highpass/1"; config = { channels = 2; }; params = { cutoff = 150Hz; }; }
+    node gain { type = "synth.gain/1"; config = { channels = 2; }; params = { level = 0.1; }; }
+    connect input_cut { from = &input:out; to = &low_cut:in; }
+    connect cut_gain { from = &low_cut:out; to = &gain:in; }
+  }
+  control level { target = &stage.gain.params.level; default = 0.1; }
+  control brightness { target = &voice.tone.params.cutoff; default = 5000Hz; }
+  control low_cut { target = &stage.low_cut.params.cutoff; default = 150Hz; }
+  control attack { target = &voice.amp.params.attack; default = 4ms; }
+  control release { target = &voice.amp.params.release; default = 300ms; }
+}
+
+// ---------------------------------------------------------------- chords
+voicing ch_fm { pitches = [F3, Ab3, C4, F4]; }
+voicing ch_db { pitches = [F3, Ab3, Db4, F4]; }
+voicing ch_ab { pitches = [Eb3, Ab3, C4, Eb4]; }
+voicing ch_eb { pitches = [Eb3, G3, Bb3, Eb4]; }
+voicings chord_voicings { chords = [("Fm", &ch_fm), ("Db", &ch_db), ("Ab", &ch_ab), ("Eb", &ch_eb)]; }
+node chords { instrument = &supersaw; config = { voices = 24; }; params = { level = 0.25; }; }
+pattern ch_held { length = 4q;
+  chord all { at = 0q; dur = 4q; velocity = 0.6; }
+}
+pattern ch_stabs { length = 4q;
+  chord s1 { at = 0q; dur = 3/8q; velocity = 0.66; }
+  chord s2 { at = 1/2q; dur = 3/8q; velocity = 0.5; }
+  chord s3 { at = 1q; dur = 3/8q; velocity = 0.6; }
+  chord s4 { at = 3/2q; dur = 3/8q; velocity = 0.5; }
+  chord s5 { at = 2q; dur = 3/8q; velocity = 0.64; }
+  chord s6 { at = 5/2q; dur = 3/8q; velocity = 0.5; }
+  chord s7 { at = 3q; dur = 3/8q; velocity = 0.6; }
+  chord s8 { at = 7/2q; dur = 3/8q; velocity = 0.54; }
+}
+// The last bar of a build stops after two beats.
+pattern ch_stabs_half { length = 4q;
+  chord s1 { at = 0q; dur = 3/8q; velocity = 0.7; }
+  chord s2 { at = 1/2q; dur = 3/8q; velocity = 0.56; }
+  chord s3 { at = 1q; dur = 3/8q; velocity = 0.66; }
+  chord s4 { at = 3/2q; dur = 3/8q; velocity = 0.6; }
+}
+pattern ch_build { length = 32q;
+  use stabs { pattern = &ch_stabs; at = 0q; count = 7; }
+  use last { pattern = &ch_stabs_half; at = 28q; }
+}
+pattern ch_build2 { length = 16q;
+  use stabs { pattern = &ch_stabs; at = 0q; count = 3; }
+  use last { pattern = &ch_stabs_half; at = 12q; }
+}
+// Filtered low in the breakdown and interlude, opening through each build.
+curve chord_brightness {
+  clock = score;
+  points = [(0q, 5000Hz, step), (64q, 700Hz, step), (96q, 700Hz, exponential), (126q, 6000Hz, step), (128q, 5000Hz, step), (192q, 1200Hz, step), (224q, 1200Hz, exponential), (238q, 6000Hz, step), (240q, 5000Hz, step)];
+}
+automation chord_sweep { target = &chords.params.brightness; curve = &chord_brightness; at = 0q; }
+// The chords sit back in the breakdown and interlude and lead the drops.
+curve chord_level {
+  clock = score;
+  points = [(0q, 0.25, step), (64q, 0.09, step), (96q, 0.18, step), (128q, 0.25, step), (192q, 0.07, step), (224q, 0.18, step), (240q, 0.25, step)];
+}
+automation chord_balance { target = &chords.params.level; curve = &chord_level; at = 0q; }
+track chord_notes { target = &chords:events; }
+place chords_breakdown { pattern = &ch_held; track = &chord_notes; at = 64q; count = 8; harmony = &loop_chords; voicings = &chord_voicings; }
+place chords_build { pattern = &ch_build; track = &chord_notes; at = 96q; harmony = &loop_chords; voicings = &chord_voicings; }
+place chords_drop1 { pattern = &ch_held; track = &chord_notes; at = 128q; count = 16; harmony = &loop_chords; voicings = &chord_voicings; }
+place chords_interlude { pattern = &ch_held; track = &chord_notes; at = 192q; count = 8; harmony = &loop_chords; voicings = &chord_voicings; }
+place chords_build2 { pattern = &ch_build2; track = &chord_notes; at = 224q; harmony = &loop_chords; voicings = &chord_voicings; }
+place chords_drop2 { pattern = &ch_held; track = &chord_notes; at = 240q; count = 16; harmony = &loop_chords; voicings = &chord_voicings; }
+
+// ---------------------------------------------------------------- arpeggio
+// A saw and an octave square through a low-pass that snaps shut.
+instrument pluck_synth {
+  channels = 2;
+  voice voice {
+    channels = 1;
+    amplitude = &amp;
+    output = &tone:out;
+    node amp { type = "synth.adsr/1"; params = { attack = 1ms; decay = 300ms; sustain = 0; release = 150ms; curve = 4; }; }
+    node vel { type = "synth.velocity/1"; }
+    node saw { type = "synth.saw/1"; params = { level = 1/2; }; }
+    node octave { type = "synth.square/1"; params = { ratio = 2; level = 1/5; phase = 1/4; }; }
+    node mix { type = "synth.mix/1"; config = { channels = 1; }; }
+    connect saw_mix { from = &saw:out; to = &mix:in; }
+    connect octave_mix { from = &octave:out; to = &mix:in; }
+    node env { type = "synth.adsr/1"; params = { decay = 150ms; sustain = 0; curve = 4; }; }
+    node tone { type = "synth.svf/1"; config = { channels = 1; mode = lowpass; }; params = { cutoff = 400Hz; ratio = 1; q = 1.4; }; }
+    modulate pluck_open { from = &env:out; to = &tone.params.cutoff; depth = 3000Hz; }
+    modulate harder_brighter { from = &vel:out; to = &tone.params.cutoff; depth = 1500Hz; }
+    connect mix_tone { from = &mix:out; to = &tone:in; }
+  }
+  shared stage {
+    channels = 2;
+    output = &gain:out;
+    node low_cut { type = "synth.highpass/1"; config = { channels = 1; }; params = { cutoff = 200Hz; }; }
+    node stereo { type = "synth.pan/1"; params = { pan = 0; }; }
+    node gain { type = "synth.gain/1"; config = { channels = 2; }; params = { level = 0.2; }; }
+    connect input_cut { from = &input:out; to = &low_cut:in; }
+    connect cut_stereo { from = &low_cut:out; to = &stereo:in; }
+    connect stereo_gain { from = &stereo:out; to = &gain:in; }
+  }
+  control level { target = &stage.gain.params.level; default = 0.2; }
+  control brightness { target = &voice.tone.params.cutoff; default = 400Hz; }
+  control pan { target = &stage.stereo.params.pan; default = 0; }
+}
+node arp { instrument = &pluck_synth; config = { voices = 8; }; params = { pan = 0.2; }; }
+// Two beats of sixteenths per chord shape: root, third, fifth, third,
+// octave, fifth, third, fifth.
+pattern arp_fm { length = 2q;
+  note n1 { at = 0q; dur = 1/4q; pitch = F4; velocity = 0.7; }
+  note n2 { at = 1/4q; dur = 1/4q; pitch = Ab4; velocity = 0.5; }
+  note n3 { at = 1/2q; dur = 1/4q; pitch = C5; velocity = 0.58; }
+  note n4 { at = 3/4q; dur = 1/4q; pitch = Ab4; velocity = 0.5; }
+  note n5 { at = 1q; dur = 1/4q; pitch = F5; velocity = 0.66; }
+  note n6 { at = 5/4q; dur = 1/4q; pitch = C5; velocity = 0.5; }
+  note n7 { at = 3/2q; dur = 1/4q; pitch = Ab4; velocity = 0.56; }
+  note n8 { at = 7/4q; dur = 1/4q; pitch = C5; velocity = 0.5; }
+}
+pattern arp_db { length = 2q;
+  note n1 { at = 0q; dur = 1/4q; pitch = F4; velocity = 0.7; }
+  note n2 { at = 1/4q; dur = 1/4q; pitch = Ab4; velocity = 0.5; }
+  note n3 { at = 1/2q; dur = 1/4q; pitch = Db5; velocity = 0.58; }
+  note n4 { at = 3/4q; dur = 1/4q; pitch = Ab4; velocity = 0.5; }
+  note n5 { at = 1q; dur = 1/4q; pitch = F5; velocity = 0.66; }
+  note n6 { at = 5/4q; dur = 1/4q; pitch = Db5; velocity = 0.5; }
+  note n7 { at = 3/2q; dur = 1/4q; pitch = Ab4; velocity = 0.56; }
+  note n8 { at = 7/4q; dur = 1/4q; pitch = Db5; velocity = 0.5; }
+}
+pattern arp_ab { length = 2q;
+  note n1 { at = 0q; dur = 1/4q; pitch = Eb4; velocity = 0.7; }
+  note n2 { at = 1/4q; dur = 1/4q; pitch = Ab4; velocity = 0.5; }
+  note n3 { at = 1/2q; dur = 1/4q; pitch = C5; velocity = 0.58; }
+  note n4 { at = 3/4q; dur = 1/4q; pitch = Ab4; velocity = 0.5; }
+  note n5 { at = 1q; dur = 1/4q; pitch = Eb5; velocity = 0.66; }
+  note n6 { at = 5/4q; dur = 1/4q; pitch = C5; velocity = 0.5; }
+  note n7 { at = 3/2q; dur = 1/4q; pitch = Ab4; velocity = 0.56; }
+  note n8 { at = 7/4q; dur = 1/4q; pitch = C5; velocity = 0.5; }
+}
+pattern arp_eb { length = 2q;
+  note n1 { at = 0q; dur = 1/4q; pitch = Eb4; velocity = 0.7; }
+  note n2 { at = 1/4q; dur = 1/4q; pitch = G4; velocity = 0.5; }
+  note n3 { at = 1/2q; dur = 1/4q; pitch = Bb4; velocity = 0.58; }
+  note n4 { at = 3/4q; dur = 1/4q; pitch = G4; velocity = 0.5; }
+  note n5 { at = 1q; dur = 1/4q; pitch = Eb5; velocity = 0.66; }
+  note n6 { at = 5/4q; dur = 1/4q; pitch = Bb4; velocity = 0.5; }
+  note n7 { at = 3/2q; dur = 1/4q; pitch = G4; velocity = 0.56; }
+  note n8 { at = 7/4q; dur = 1/4q; pitch = Bb4; velocity = 0.5; }
+}
+pattern arp_loop { length = 16q;
+  use fm { pattern = &arp_fm; at = 0q; count = 2; }
+  use db { pattern = &arp_db; at = 4q; count = 2; }
+  use ab { pattern = &arp_ab; at = 8q; count = 2; }
+  use eb { pattern = &arp_eb; at = 12q; count = 2; }
+}
+curve arp_level {
+  clock = score;
+  points = [(0q, 0.2, step), (128q, 0.12, step), (192q, 0.2, step), (240q, 0.12, step), (304q, 0.2, step)];
+}
+automation arp_balance { target = &arp.params.level; curve = &arp_level; at = 0q; }
+track arps { target = &arp:events; }
+place arp_intro { pattern = &arp_loop; track = &arps; at = 0q; count = 2; }
+place arp_groove { pattern = &arp_loop; track = &arps; at = 32q; count = 2; }
+place arp_build { pattern = &arp_loop; track = &arps; at = 96q; count = 2; }
+place arp_drop1 { pattern = &arp_loop; track = &arps; at = 128q; count = 4; }
+place arp_interlude { pattern = &arp_loop; track = &arps; at = 192q; count = 2; }
+place arp_drop2 { pattern = &arp_loop; track = &arps; at = 240q; count = 4; }
+place arp_outro { pattern = &arp_loop; track = &arps; at = 304q; count = 2; }
+
+// ---------------------------------------------------------------- lead
+node lead {
+  instrument = &supersaw; config = { voices = 8; };
+  params = { level = 0.4; brightness = 7000Hz; low_cut = 200Hz; release = 120ms; };
+}
+node lead_high {
+  instrument = &supersaw; config = { voices = 8; };
+  params = { level = 0.14; brightness = 6000Hz; low_cut = 400Hz; release = 120ms; };
+}
+curve lead_brightness {
+  clock = score;
+  points = [(0q, 7000Hz, step), (192q, 3000Hz, step), (224q, 7000Hz, step)];
+}
+automation lead_tone { target = &lead.params.brightness; curve = &lead_brightness; at = 0q; }
+curve lead_level {
+  clock = score;
+  points = [(0q, 0.4, step), (192q, 0.18, step), (224q, 0.4, step)];
+}
+automation lead_balance { target = &lead.params.level; curve = &lead_level; at = 0q; }
+vibrato synth_vib { rate = 5Hz; depth = 30ct; delay = 250ms; rise = 300ms; }
+// Glides into a note from the previous note's pitch over a sixteenth
+// (1/4q = 5/42 s at 126 bpm). Each interval needs its own curve.
+curve glide_up_fourth { clock = seconds; points = [(0ms, -500ct, linear), (5/42s, 0ct, step)]; }
+curve glide_up_third { clock = seconds; points = [(0ms, -300ct, linear), (5/42s, 0ct, step)]; }
+curve glide_up_step { clock = seconds; points = [(0ms, -200ct, linear), (5/42s, 0ct, step)]; }
+curve glide_down_step { clock = seconds; points = [(0ms, 200ct, linear), (5/42s, 0ct, step)]; }
+pattern melody { length = 32q;
+  note a1 { at = 0q; dur = 3/4q; pitch = C5; velocity = 0.75; }
+  note a2 { at = 3/4q; dur = 3/4q; pitch = C5; velocity = 0.66; }
+  note a3 { at = 3/2q; dur = 1/2q; pitch = Ab4; velocity = 0.62; }
+  note a4 { at = 2q; dur = 1/2q; pitch = C5; velocity = 0.7; }
+  note a5 { at = 5/2q; dur = 3/4q; pitch = Db5; velocity = 0.72; }
+  note a6 { at = 13/4q; dur = 3/4q; pitch = C5; velocity = 0.64; }
+  note b1 { at = 4q; dur = 3/4q; pitch = Ab4; velocity = 0.72; }
+  note b2 { at = 19/4q; dur = 3/4q; pitch = F4; velocity = 0.62; }
+  note b3 { at = 11/2q; dur = 1/2q; pitch = Ab4; velocity = 0.64; }
+  note b4 { at = 6q; dur = 1q; pitch = Db5; velocity = 0.76; expression glide { kind = pitch; curve = &glide_up_fourth; } }
+  note b5 { at = 7q; dur = 1/2q; pitch = C5; velocity = 0.62; }
+  note b6 { at = 15/2q; dur = 1/2q; pitch = Bb4; velocity = 0.6; }
+  note c1 { at = 8q; dur = 3/4q; pitch = C5; velocity = 0.74; }
+  note c2 { at = 35/4q; dur = 3/4q; pitch = Eb5; velocity = 0.7; }
+  note c3 { at = 19/2q; dur = 1/2q; pitch = C5; velocity = 0.62; }
+  note c4 { at = 10q; dur = 1/2q; pitch = Ab4; velocity = 0.64; }
+  note c5 { at = 21/2q; dur = 3/4q; pitch = Bb4; velocity = 0.66; }
+  note c6 { at = 45/4q; dur = 3/4q; pitch = C5; velocity = 0.66; }
+  note d1 { at = 12q; dur = 3/2q; pitch = Bb4; velocity = 0.72; expression glide { kind = pitch; curve = &glide_down_step; } }
+  note d2 { at = 27/2q; dur = 1/2q; pitch = G4; velocity = 0.6; }
+  note d3 { at = 14q; dur = 2q; pitch = Bb4; velocity = 0.7; expression glide { kind = pitch; curve = &glide_up_third; vibrato = &synth_vib; } }
+  note e1 { at = 16q; dur = 3/4q; pitch = C5; velocity = 0.75; }
+  note e2 { at = 67/4q; dur = 3/4q; pitch = C5; velocity = 0.66; }
+  note e3 { at = 35/2q; dur = 1/2q; pitch = Ab4; velocity = 0.62; }
+  note e4 { at = 18q; dur = 1/2q; pitch = C5; velocity = 0.7; }
+  note e5 { at = 37/2q; dur = 3/4q; pitch = Db5; velocity = 0.72; }
+  note e6 { at = 77/4q; dur = 3/4q; pitch = C5; velocity = 0.64; }
+  note f1 { at = 20q; dur = 3/4q; pitch = Ab4; velocity = 0.72; }
+  note f2 { at = 83/4q; dur = 3/4q; pitch = F4; velocity = 0.62; }
+  note f3 { at = 43/2q; dur = 1/2q; pitch = Ab4; velocity = 0.64; }
+  note f4 { at = 22q; dur = 2q; pitch = Db5; velocity = 0.76; expression glide { kind = pitch; curve = &glide_up_fourth; vibrato = &synth_vib; } }
+  note g1 { at = 24q; dur = 3/4q; pitch = Eb5; velocity = 0.76; }
+  note g2 { at = 99/4q; dur = 3/4q; pitch = F5; velocity = 0.72; }
+  note g3 { at = 51/2q; dur = 1/2q; pitch = Eb5; velocity = 0.64; }
+  note g4 { at = 26q; dur = 1/2q; pitch = C5; velocity = 0.66; }
+  note g5 { at = 53/2q; dur = 3/4q; pitch = Eb5; velocity = 0.7; }
+  note g6 { at = 109/4q; dur = 3/4q; pitch = F5; velocity = 0.72; }
+  note h1 { at = 28q; dur = 2q; pitch = G5; velocity = 0.8; expression glide { kind = pitch; curve = &glide_up_step; vibrato = &synth_vib; } }
+  note h2 { at = 30q; dur = 1/2q; pitch = F5; velocity = 0.66; }
+  note h3 { at = 61/2q; dur = 1/2q; pitch = Eb5; velocity = 0.64; }
+  note h4 { at = 31q; dur = 1q; pitch = Bb4; velocity = 0.62; }
+}
+track lead_line { target = &lead:events; }
+track lead_octave { target = &lead_high:events; }
+place lead_drop1 { pattern = &melody; track = &lead_line; at = 128q; count = 2; }
+place lead_interlude { pattern = &melody; track = &lead_line; at = 192q; }
+place lead_drop2 { pattern = &melody; track = &lead_line; at = 240q; count = 2; }
+place lead_drop2_high { pattern = &melody; track = &lead_octave; at = 240q; count = 2; transpose = 1200ct; }
+
+// ---------------------------------------------------------------- piano
+// The breakdown's piano: a left hand on the harmony and the melody, simply.
+voicing pno_fm { pitches = [F2, C3, Ab3]; }
+voicing pno_db { pitches = [Db2, Ab2, F3]; }
+voicing pno_ab { pitches = [Ab2, Eb3, C4]; }
+voicing pno_eb { pitches = [Eb2, Bb2, G3]; }
+voicings piano_voicings { chords = [("Fm", &pno_fm), ("Db", &pno_db), ("Ab", &pno_ab), ("Eb", &pno_eb)]; }
+node piano { instrument = &studio.piano; config = { voices = 24; }; params = { level = 1.8; release = 300ms; }; }
+pattern pno_bar { length = 4q;
+  chord all { at = 0q; dur = 4q; velocity = 0.42; }
+}
+pattern pno_melody { length = 32q;
+  note a1 { at = 0q; dur = 3/2q; pitch = C5; velocity = 0.56; }
+  note a2 { at = 3/2q; dur = 1/2q; pitch = Ab4; velocity = 0.48; }
+  note a3 { at = 2q; dur = 1/2q; pitch = C5; velocity = 0.52; }
+  note a4 { at = 5/2q; dur = 3/4q; pitch = Db5; velocity = 0.54; }
+  note a5 { at = 13/4q; dur = 3/4q; pitch = C5; velocity = 0.5; }
+  note b1 { at = 4q; dur = 3/2q; pitch = Ab4; velocity = 0.54; }
+  note b2 { at = 11/2q; dur = 1/2q; pitch = F4; velocity = 0.46; }
+  note b3 { at = 6q; dur = 2q; pitch = Db5; velocity = 0.56; }
+  note c1 { at = 8q; dur = 3/2q; pitch = C5; velocity = 0.56; }
+  note c2 { at = 19/2q; dur = 1/2q; pitch = Eb5; velocity = 0.5; }
+  note c3 { at = 10q; dur = 1q; pitch = C5; velocity = 0.52; }
+  note c4 { at = 11q; dur = 1q; pitch = Bb4; velocity = 0.5; }
+  note d1 { at = 12q; dur = 4q; pitch = Bb4; velocity = 0.54; }
+  note e1 { at = 16q; dur = 3/2q; pitch = C5; velocity = 0.56; }
+  note e2 { at = 35/2q; dur = 1/2q; pitch = Ab4; velocity = 0.48; }
+  note e3 { at = 18q; dur = 1/2q; pitch = C5; velocity = 0.52; }
+  note e4 { at = 37/2q; dur = 3/4q; pitch = Db5; velocity = 0.54; }
+  note e5 { at = 77/4q; dur = 3/4q; pitch = C5; velocity = 0.5; }
+  note f1 { at = 20q; dur = 3/2q; pitch = Ab4; velocity = 0.54; }
+  note f2 { at = 43/2q; dur = 1/2q; pitch = F4; velocity = 0.46; }
+  note f3 { at = 22q; dur = 2q; pitch = Db5; velocity = 0.56; }
+  note g1 { at = 24q; dur = 3/2q; pitch = Eb5; velocity = 0.58; }
+  note g2 { at = 51/2q; dur = 1/2q; pitch = F5; velocity = 0.52; }
+  note g3 { at = 26q; dur = 1q; pitch = Eb5; velocity = 0.54; }
+  note g4 { at = 27q; dur = 1q; pitch = C5; velocity = 0.5; }
+  note h1 { at = 28q; dur = 2q; pitch = Bb4; velocity = 0.54; }
+  note h2 { at = 30q; dur = 2q; pitch = G4; velocity = 0.5; }
+}
+track piano_notes { target = &piano:events; }
+place piano_chords { pattern = &pno_bar; track = &piano_notes; at = 64q; count = 8; harmony = &loop_chords; voicings = &piano_voicings; }
+place piano_melody { pattern = &pno_melody; track = &piano_notes; at = 64q; }
+place piano_interlude { pattern = &pno_bar; track = &piano_notes; at = 192q; count = 8; harmony = &loop_chords; voicings = &piano_voicings; }
+
+// ---------------------------------------------------------------- pad
+voicing pad_fm { pitches = [F3, Ab3, C4]; }
+voicing pad_db { pitches = [F3, Ab3, Db4]; }
+voicing pad_ab { pitches = [Eb3, Ab3, C4]; }
+voicing pad_eb { pitches = [Eb3, G3, Bb3]; }
+voicings pad_voicings { chords = [("Fm", &pad_fm), ("Db", &pad_db), ("Ab", &pad_ab), ("Eb", &pad_eb)]; }
+node pad { instrument = &studio.pad; config = { voices = 12; }; params = { level = 0.2; attack = 800ms; release = 2s; }; }
+pattern pad_bar { length = 4q;
+  chord all { at = 0q; dur = 4q; velocity = 0.4; }
+}
+track pad_notes { target = &pad:events; }
+place pad_intro { pattern = &pad_bar; track = &pad_notes; at = 0q; count = 8; harmony = &loop_chords; voicings = &pad_voicings; }
+place pad_breakdown { pattern = &pad_bar; track = &pad_notes; at = 64q; count = 8; harmony = &loop_chords; voicings = &pad_voicings; }
+place pad_interlude { pattern = &pad_bar; track = &pad_notes; at = 192q; count = 8; harmony = &loop_chords; voicings = &pad_voicings; }
+place pad_outro { pattern = &pad_bar; track = &pad_notes; at = 304q; count = 8; harmony = &loop_chords; voicings = &pad_voicings; }
+
+// ---------------------------------------------------------------- riser
+// Two noises, one per side, through a band-pass that the builds sweep up.
+instrument noise_riser {
+  channels = 2;
+  voice voice {
+    channels = 2;
+    amplitude = &amp;
+    output = &band:out;
+    node amp { type = "synth.adsr/1"; params = { attack = 0s; sustain = 1; release = 300ms; }; }
+    node noise_l { type = "synth.noise/1"; config = { seed = 2463534242; }; params = { level = 1/2; }; }
+    node noise_r { type = "synth.noise/1"; config = { seed = 88675123; }; params = { level = 1/2; }; }
+    node pan_l { type = "synth.pan/1"; params = { pan = -0.8; }; }
+    node pan_r { type = "synth.pan/1"; params = { pan = 0.8; }; }
+    connect l_pan { from = &noise_l:out; to = &pan_l:in; }
+    connect r_pan { from = &noise_r:out; to = &pan_r:in; }
+    node spread { type = "synth.mix/1"; config = { channels = 2; }; }
+    connect spread_l { from = &pan_l:out; to = &spread:in; }
+    connect spread_r { from = &pan_r:out; to = &spread:in; }
+    node band { type = "synth.svf/1"; config = { channels = 2; mode = bandpass; }; params = { cutoff = 500Hz; q = 1.2; }; }
+    connect spread_band { from = &spread:out; to = &band:in; }
+  }
+  shared stage {
+    channels = 2;
+    output = &gain:out;
+    node gain { type = "synth.gain/1"; config = { channels = 2; }; params = { level = 0.3; }; }
+    connect input_gain { from = &input:out; to = &gain:in; }
+  }
+  control level { target = &stage.gain.params.level; default = 0.3; }
+  control cutoff { target = &voice.band.params.cutoff; default = 500Hz; }
+}
+node riser { instrument = &noise_riser; config = { voices = 2; }; params = { level = 0.22; }; }
+curve swell { clock = normalized; points = [(0, 0.05, exponential), (1, 1, step)]; }
+// A two-beat swell, stretched to each build's length.
+pattern riser_note { length = 2q;
+  note r { at = 0q; dur = 2q; pitch = F4; velocity = 0.8; expression rise { kind = gain; curve = &swell; } }
+}
+curve riser_sweep {
+  clock = score;
+  points = [(0q, 400Hz, step), (96q, 400Hz, exponential), (126q, 10000Hz, step), (224q, 400Hz, exponential), (238q, 10000Hz, step)];
+}
+automation riser_open { target = &riser.params.cutoff; curve = &riser_sweep; at = 0q; }
+track risers { target = &riser:events; }
+place riser_build { pattern = &riser_note; track = &risers; at = 96q; stretch = 15; }
+place riser_build2 { pattern = &riser_note; track = &risers; at = 224q; stretch = 7; }
+
+// ---------------------------------------------------------------- mix
+// Everything but the kick, drums and riser runs through the music bus: a
+// high-pass for the builds, a low-pass for the intro and outro, and a
+// compressor keyed by the kick, which pumps it. The lead pumps too: under
+// an unpumped lead and drums, the pumping could not be heard.
+node music { type = "core.sum/1"; config = { channels = 2; }; }
+node sweep_hp { type = "fx.eq/1"; config = { channels = 2; mode = high_pass; }; params = { frequency = 20Hz; q = 0.707; }; }
+node sweep_lp { type = "fx.eq/1"; config = { channels = 2; mode = low_pass; }; params = { frequency = 22000Hz; q = 1; }; }
+node pump {
+  type = "fx.compressor/1";
+  config = { channels = 2; detector = external; sidechain_channels = 2; };
+  params = { threshold = -32dB; ratio = 8; knee = 6dB; attack = 1ms; release = 220ms; makeup = 0dB; };
+}
+curve hp_sweep {
+  clock = score;
+  points = [(0q, 20Hz, step), (96q, 20Hz, exponential), (126q, 500Hz, step), (128q, 20Hz, step), (224q, 20Hz, exponential), (238q, 500Hz, step), (240q, 20Hz, step)];
+}
+curve lp_sweep {
+  clock = score;
+  points = [(0q, 300Hz, exponential), (32q, 22000Hz, step), (304q, 22000Hz, exponential), (336q, 400Hz, step)];
+}
+automation build_sweep { target = &sweep_hp.params.frequency; curve = &hp_sweep; at = 0q; }
+automation intro_outro_sweep { target = &sweep_lp.params.frequency; curve = &lp_sweep; at = 0q; }
+
+node bus { type = "core.sum/1"; config = { channels = 2; }; }
+node verb_send { type = "core.sum/1"; config = { channels = 2; }; }
+node hall { type = "fx.reverb/1"; config = { channels = 2; predelay = 30ms; damping = 0.4; }; params = { mix = 1; decay = 3s; }; }
+node verb_return { type = "core.gain/1"; config = { channels = 2; }; params = { gain = 0.3; }; }
+// A dotted-eighth echo: 3/4 of a beat at 126 bpm is 17142.857 frames.
+node echo_send { type = "core.sum/1"; config = { channels = 2; }; }
+node echo { type = "core.delay/1"; config = { channels = 2; frames = 17143; }; }
+node echo_tone { type = "core.onepole/1"; config = { channels = 2; }; params = { cutoff = 4000Hz; }; }
+node echo_feedback { type = "core.gain/1"; config = { channels = 2; }; params = { gain = 0.35; }; }
+node echo_return { type = "core.gain/1"; config = { channels = 2; }; params = { gain = 0.25; }; }
+node glue { type = "fx.compressor/1"; config = { channels = 2; }; params = { threshold = -14dB; ratio = 2; knee = 6dB; attack = 20ms; release = 150ms; makeup = 0dB; }; }
+node master { type = "fx.limiter/1"; config = { channels = 2; }; params = { gain = 12.5dB; ceiling = -1.1dB; release = 150ms; }; }
+
+connect bass_music { from = &bass:out; to = &music:in; }
+connect chords_music { from = &chords:out; to = &music:in; }
+connect arp_music { from = &arp:out; to = &music:in; }
+connect piano_music { from = &piano:out; to = &music:in; }
+connect pad_music { from = &pad:out; to = &music:in; }
+connect verb_music { from = &verb_return:out; to = &music:in; }
+connect echo_music { from = &echo_return:out; to = &music:in; }
+connect music_hp { from = &music:out; to = &sweep_hp:in; }
+connect hp_lp { from = &sweep_hp:out; to = &sweep_lp:in; }
+connect lp_pump { from = &sweep_lp:out; to = &pump:in; }
+connect kick_key { from = &kick:out; to = &pump:sidechain; }
+connect pump_bus { from = &pump:out; to = &bus:in; }
+connect kick_bus { from = &kick:out; to = &bus:in; }
+connect drums_bus { from = &drums:out; to = &bus:in; }
+connect lead_bus { from = &lead:out; to = &music:in; }
+connect lead_high_bus { from = &lead_high:out; to = &music:in; }
+connect riser_bus { from = &riser:out; to = &bus:in; }
+
+connect chords_verb { from = &chords:out; to = &verb_send:in; }
+connect lead_verb { from = &lead:out; to = &verb_send:in; }
+connect lead_high_verb { from = &lead_high:out; to = &verb_send:in; }
+connect arp_verb { from = &arp:out; to = &verb_send:in; }
+connect piano_verb { from = &piano:out; to = &verb_send:in; }
+connect send_hall { from = &verb_send:out; to = &hall:in; }
+connect hall_return { from = &hall:out; to = &verb_return:in; }
+
+connect arp_echo { from = &arp:out; to = &echo_send:in; }
+connect lead_echo { from = &lead:out; to = &echo_send:in; }
+connect send_echo { from = &echo_send:out; to = &echo:in; }
+connect echo_darken { from = &echo:out; to = &echo_tone:in; }
+connect darken_feedback { from = &echo_tone:out; to = &echo_feedback:in; }
+connect feedback_send { from = &echo_feedback:out; to = &echo_send:in; }
+connect darken_return { from = &echo_tone:out; to = &echo_return:in; }
+
+connect bus_glue { from = &bus:out; to = &glue:in; }
+connect glue_master { from = &glue:out; to = &master:in; }
+
+// ---------------------------------------------------------------- delivery
+// `maac deliver examples/afterlight/afterlight.maac --delivery release --output-dir out --profile song`
+asset schema { kind = descriptor; builtin = "maac.production/1"; }
+extension deliveries {
+  namespace = "maac.production/1"; schema = &schema; render_affecting = true;
+  data = { deliveries = { release = {
+    rate = 48000Hz; resampler = "maac.src.kaiser/1";
+    targets = { master = {
+      role = master; output = &master:out; encoding = wav_pcm24le;
+      dither = { type = tpdf; seed = 2026; };
+      limits = {
+        integrated_loudness = { unit = LUFS; min = -12; max = -10; };
+        true_peak = { unit = dBTP; max = -1; };
+      };
+    }; };
+  }; }; };
+}

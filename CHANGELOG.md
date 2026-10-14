@@ -34,6 +34,20 @@ promise of compatibility beyond the documented interfaces.
   18 hand-worked bass transpositions go. See the
   [harmony proposal](docs/design/harmony-proposal.md).
 
+- "Afterlight" ([`examples/afterlight/afterlight.maac`](examples/afterlight/afterlight.maac)),
+  a 126 bpm progressive-house track from the
+  [T5 production trial](docs/reports/ai-production-trial-t5.md). Its kick,
+  supersaw, bass, pluck and riser are defined in the song from MaaC's
+  synthesis nodes, and the kick pumps the rest of the mix through a keyed
+  compressor. The trial asked whether gliding lines need legato: in a
+  listening round, a glide that retriggers each note was preferred to a
+  legato one, so they do not. It ranks what to build next: room for
+  full-length tracks under the song profile, picking chord members so an
+  arpeggio follows the harmony, and measuring whether a pump is heard. The
+  [AI producer guide](docs/ai-producer-guide.md) adds electronic sound
+  design, glides, rolls, pumping and tempo-synced delay, and the
+  [README](README.md) links the approved master.
+
 ### Changed
 
 - `maac analyze` checks the pitch of notes with a pitch expression (F29).

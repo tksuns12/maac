@@ -89,4 +89,5 @@ first example.
   [verification report](reports/verification.md), and the AI production
   trials ([T2](reports/ai-production-trial.md),
   [T3](reports/ai-production-trial-t3.md),
-  [T4](reports/ai-production-trial-t4.md)).
+  [T4](reports/ai-production-trial-t4.md),
+  [T5](reports/ai-production-trial-t5.md)).
