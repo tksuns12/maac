@@ -1689,6 +1689,7 @@ impl<'a> Validator<'a> {
                 "voicing",
                 "top",
                 "bottom",
+                "pick",
                 "velocity",
                 "release_velocity",
                 "onset_offset",
@@ -1793,28 +1794,34 @@ impl<'a> Validator<'a> {
         }
     }
 
-    /// A chord's `top` or `bottom`, from 1 through the `pitches` it selects
-    /// from when they are known; returns the number of members.
+    /// A chord's `top`, `bottom` or `pick`, from 1 through the `pitches` it
+    /// selects from when they are known; returns the number of members.
     fn validate_pitch_selection(
         &mut self,
         object: &Object,
         path: &[String],
         pitches: Option<usize>,
     ) -> Option<usize> {
-        let (top, bottom) = (object.field("top"), object.field("bottom"));
-        if let (Some(_), Some(field)) = (top, bottom) {
+        let selections: Vec<&Field> = ["top", "bottom", "pick"]
+            .into_iter()
+            .filter_map(|name| object.field(name))
+            .collect();
+        if let [_, field, ..] = selections.as_slice() {
             self.push(
                 DiagnosticCode::Range,
-                "a chord takes `top` or `bottom`, not both",
+                "a chord takes at most one of `top`, `bottom` and `pick`",
                 Some(field.value.span),
                 path.to_vec(),
-                vec!["bottom".into()],
+                vec![field.name.clone()],
             );
             return None;
         }
-        let Some(field) = top.or(bottom) else {
+        let Some(field) = selections.first().copied() else {
             return pitches;
         };
+        if field.name == "pick" {
+            return self.validate_pick(field, path, pitches);
+        }
         let name = field.name.clone();
         let count = self.integer(field, path, &name)?;
         let selected = count.to_integer().to_usize().filter(|count| *count >= 1);
@@ -1837,6 +1844,67 @@ impl<'a> Validator<'a> {
                 None
             }
         }
+    }
+
+    /// A chord's `pick`: one position or a strictly increasing list, each
+    /// from 1 through the `pitches` when they are known. Returns the number
+    /// of positions, which is the number of members under any voicing.
+    fn validate_pick(
+        &mut self,
+        field: &Field,
+        path: &[String],
+        pitches: Option<usize>,
+    ) -> Option<usize> {
+        let values: Vec<&Value> = match &field.value.kind {
+            ValueKind::List(items) => items.iter().collect(),
+            _ => vec![&field.value],
+        };
+        let mut problem = values.is_empty().then(|| {
+            (
+                "chord.pick must name at least one position".to_owned(),
+                field.value.span,
+            )
+        });
+        let mut previous = 0;
+        for value in &values {
+            let position = self
+                .integer_at(value, path, &["pick".into()], "chord.pick")?
+                .to_integer()
+                .to_usize()
+                .filter(|position| *position >= 1 && pitches.is_none_or(|n| *position <= n));
+            let Some(position) = position else {
+                problem.get_or_insert_with(|| {
+                    let message = match pitches {
+                        Some(n) => format!(
+                            "chord.pick positions must be from 1 through {n}, the number of pitches"
+                        ),
+                        None => "chord.pick positions must be positive".to_owned(),
+                    };
+                    (message, value.span)
+                });
+                continue;
+            };
+            if position <= previous {
+                problem.get_or_insert_with(|| {
+                    (
+                        "chord.pick positions must strictly increase".to_owned(),
+                        value.span,
+                    )
+                });
+            }
+            previous = position;
+        }
+        if let Some((message, span)) = problem {
+            self.push(
+                DiagnosticCode::Range,
+                message,
+                Some(span),
+                path.to_vec(),
+                vec!["pick".into()],
+            );
+            return None;
+        }
+        Some(values.len())
     }
 
     /// A named, reusable list of pitches that chords play (§8.2).

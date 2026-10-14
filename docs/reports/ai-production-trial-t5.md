@@ -107,7 +107,7 @@ Friction numbers continue from T4.
 | ID | Problem | Status |
 | --- | --- | --- |
 | F30 | A glide starts at the previous note's pitch, so its curve depends on the interval: the melody's five glides need four curves (from a fourth below, a third below, a step below and a step above). A changed note means re-checking which curve its glide uses | Open; a convenience. The trial's question is answered: a glide does not need legato. In a blind round the owner preferred a retriggered glide to a legato one, and the legato version took merged notes, positions worked out in seconds and a vibrato per position |
-| F31 | An arpeggio cannot follow the harmony. A chord leaf plays all its members or the outer ones (`bottom`, `top`); it cannot pick the second or third. The arpeggio is four patterns, one per chord, so the progression is written out again in 32 notes, and a new harmony would not move it | Open. The [harmony proposal](../design/harmony-proposal.md#not-proposed) deferred picking a middle member for a walking bass's fifth; a second genre now needs it |
+| F31 | An arpeggio cannot follow the harmony. A chord leaf plays all its members or the outer ones (`bottom`, `top`); it cannot pick the second or third. The arpeggio is four patterns, one per chord, so the progression is written out again in 32 notes, and a new harmony would not move it | Fixed: a chord's `pick` plays members by position, so the arpeggio is one cell of eight picked chords placed with the harmony, with the same notes. The [harmony proposal](../design/harmony-proposal.md#not-proposed) had deferred this for a walking bass's fifth. See the [chord pick proposal](../design/chord-pick-proposal.md#results) |
 | F32 | A tempo-synced delay is a frame count worked out by hand: a dotted eighth at 126 bpm is 17,142.857 frames, written as 17,143. It would not follow a tempo change | Open; a convenience |
 | F33 | `maac analyze` cannot tell whether a pump is heard. The keyed compressor took 4.3 dB on average in the drops, up to 13.9, yet the owner heard no pumping. Measured outside the analyzer, the mix swung only 6.1 dB per beat, and deeper settings barely changed that: the parts that carried the drop were not pumped | Open: a measurement of how much the mix's level swings on the beat, per section |
 | F34 | The track uses 8.66 billion of the song profile's 10 billion execution-work units (87 %), mostly in the seven-saw voices. At this density the limit is reached at about 3:10, so a five-minute extended mix, common in dance music, cannot be built. The earlier trial songs are as close: "Lantern Street" uses 8.88 billion in 2:09 (89 %), "Morning Ferry" 5.99 billion in 2:17 (60 %) and "Late Window" 3.25 billion in 1:18 (33 %). At "Lantern Street"'s density the limit is about 2:25, shorter than most pop songs. The default profile refuses even `maac compile` without `--profile song` | Fixed: the `song` profile allows 100 billion units, and a default-profile refusal names it. A five-minute version of the track builds in 134 s of CPU. See the [song budget proposal](../design/song-budget-proposal.md#results) |
@@ -128,7 +128,8 @@ blocked or slowed this track.
 2. **Picking chord members (F31).** Let a chord leaf play one member of the
    supplied voicing by its position, so an arpeggio or a walking bass
    follows the harmony. A language change, deferred twice and now needed by
-   two genres.
+   two genres. Done: see the
+   [chord pick proposal](../design/chord-pick-proposal.md#results).
 3. **Measuring the pump (F33).** Report how far the mix's level swings on
    the beat, per section, so a pump that nobody can hear is found before the
    listener finds it. A tool change.

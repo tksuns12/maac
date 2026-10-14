@@ -123,6 +123,24 @@ piano, places its own rhythm with the same `harmony` and its own
 `voicings`, so a chord change is one edit. A bass can follow with voicings
 of each root and its octave, played with `bottom = 1` and `top = 1`.
 
+`pick` plays chosen members by their position in the voicing, counted from
+1, so an arpeggio can follow the harmony too:
+
+```maac
+pattern arp {
+  length = 2q;
+  chord a1 { at = 0q; dur = 1/2q; pick = 1; }
+  chord a2 { at = 1/2q; dur = 1/2q; pick = 2; }
+  chord a3 { at = 1q; dur = 1/2q; pick = 3; }
+  chord a4 { at = 3/2q; dur = 1/2q; pick = [2, 4]; }
+}
+```
+
+Under G, `a3` plays D3 and `a4` plays B2 and G3; under D, they play D4, then
+A3 and F#4. Positions in a list strictly increase. A position beyond the
+voicing is an error that names the chord and the voicing, so every voicing
+the arpeggio plays needs as many members as its highest pick.
+
 A note can bend and add vibrato through a pitch expression. Name the vibrato
 once and give each held note the expression:
 

@@ -81,6 +81,7 @@ pattern motif {{
   length = 4q;
   note a {{ at = 0q; dur = 1q; pitch = A4; }}
   note b {{ at = 1q; dur = 1q; pitch = C#5; }}
+  chord c {{ at = 2q; dur = 1q; pitches = [A4, C#5, E5]; pick = 2; }}
 }}
 pattern outer {{
   length = 8q;
@@ -128,6 +129,7 @@ pattern motif {{
   length = 4q;
   note a {{ at = 0q; dur = 1q; pitch = key(69); velocity = 1; release_velocity = 1/2; onset_offset = 0s; release_offset = 0ms; order = 0; }}
   note b {{ at = 1q; dur = 1q; pitch = Db5; velocity = 1; release_velocity = 1/2; onset_offset = 0s; release_offset = 0s; order = 0; }}
+  chord c {{ at = 2q; dur = 1q; pitches = [key(69), Db5, E5]; pick = [2]; velocity = 1; release_velocity = 1/2; onset_offset = 0s; release_offset = 0s; order = 0; }}
 }}
 pattern outer {{
   length = 8q;
@@ -188,6 +190,11 @@ fn defaults_are_expanded_into_the_normalized_view() {
         assert!(note.get(field).is_some(), "note default {field} expanded");
     }
     assert_eq!(note["pitch"]["fn"], "key");
+    // One picked position is a list of one.
+    assert_eq!(
+        objects["motif"]["children"]["c"]["fields"]["pick"]["items"][0]["n"],
+        "2"
+    );
     for (object, children) in [(&objects["first"], false), (&objects["outer"], true)] {
         let fields = if children {
             &object["children"]["inner"]["fields"]
@@ -223,6 +230,7 @@ fn non_default_values_are_not_collapsed_into_defaults() {
         ("level = 0dB", "level = -1dB"),
         ("boundary = spill; }\n", "boundary = cut; }\n"),
         ("span = [0q, 3q]", "span = [0q, 4q]"),
+        ("pick = [2]", "pick = [3]"),
     ] {
         assert!(base.contains(from), "vector anchor {from:?}");
         let changed = base.replacen(from, to, 1);

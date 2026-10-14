@@ -34,6 +34,18 @@ promise of compatibility beyond the documented interfaces.
   18 hand-worked bass transpositions go. See the
   [harmony proposal](docs/design/harmony-proposal.md).
 
+- A chord can play chosen members of its pitches by position with `pick`
+  ([§8.2](MaaC-1-Specification.md#82-chords)): `pick = 3` plays the third
+  pitch, and `pick = [1, 3]` the first and third. Positions count from 1 and
+  strictly increase; one beyond the voicing is `E_RANGE`, naming the chord
+  and the use or placement that supplied the voicing. Picking from a
+  supplied voicing or a harmony lets one arpeggio pattern follow every
+  chord. Picked chords lower to ordinary members, so the plan format is
+  unchanged. "Afterlight"'s arpeggio, four patterns that restated the
+  progression, is now one cell of eight picked chords placed with the
+  harmony (46 lines to 15), with the same notes. See the
+  [chord pick proposal](docs/design/chord-pick-proposal.md).
+
 - "Afterlight" ([`examples/afterlight/afterlight.maac`](examples/afterlight/afterlight.maac)),
   a 126 bpm progressive-house track from the
   [T5 production trial](docs/reports/ai-production-trial-t5.md). Its kick,

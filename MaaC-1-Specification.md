@@ -442,9 +442,12 @@ pattern strum { length = 4q;
 ```
 
 `top = n` keeps the last `n` of those pitches and `bottom = n` the first `n`,
-where `n` is an integer from 1 through their number; otherwise, or with both
-fields, it is `E_RANGE`. The result, in list order, is the chord's *played
-pitches*. `velocity`, `release_velocity`, `onset_offset`, and
+where `n` is an integer from 1 through their number. `pick` keeps the pitches
+at the positions it gives, counted from 1 for the first pitch: one position,
+or a nonempty list of strictly increasing positions, each an integer from 1
+through their number; `pick = 2` means `pick = [2]`. Any other value, or more
+than one of `top`, `bottom`, and `pick`, is `E_RANGE`. The result, in list
+order, is the chord's *played pitches*. `velocity`, `release_velocity`, `onset_offset`, and
 `release_offset` are each either one value for every member or a list with
 exactly one entry per played pitch, with the note defaults and ranges; a list
 of another length is `E_RANGE`. `order` and `label` are single values. A chord
@@ -492,11 +495,11 @@ pattern verse { length = 8q;
 }
 ```
 
-The played pitches, the per-member lists, `top` and `bottom` are then checked
-at each occurrence. A chord occurrence with no voicing in scope is
-`E_REFERENCE`, and a `top` or `bottom` larger than the supplied voicing is
-`E_RANGE`; both diagnostics name the chord, and the second names the use or
-placement that supplied the voicing. Transposition applies to supplied
+The played pitches, the per-member lists, `top`, `bottom`, and `pick` are
+then checked at each occurrence. A chord occurrence with no voicing in scope
+is `E_REFERENCE`, and a `top`, `bottom`, or `pick` position beyond the
+supplied voicing is `E_RANGE`; both diagnostics name the chord, and the second
+names the use or placement that supplied the voicing. Transposition applies to supplied
 pitches like any other. Member addresses keep their form, but one rhythm can
 have a different number of members under each voicing: an override that
 addresses `d1.5` where a four-pitch voicing is supplied is `E_INSTANCE_TARGET`,
@@ -527,6 +530,20 @@ at or before `p mod length`, so a harmony repeats every `length`. Above,
 `E_REFERENCE` at the chord occurrence, naming the chord, the name, the
 harmony, the voicings and the supplier. All other rules for supplied
 voicings apply to the voicing found.
+
+Because `pick` counts positions rather than naming pitches, one pattern can
+arpeggiate every chord of a harmony. Placed with `count = 4`, `harmony =
+&verse_chords` and `voicings = &guitar_voicings`, this plays G2, B2, D3, B2
+twice, then D3, A3, D4, A3 twice:
+
+```maac
+pattern arp { length = 2q;
+  chord a1 { at = 0q; dur = 1/2q; pick = 1; }
+  chord a2 { at = 1/2q; dur = 1/2q; pick = 2; }
+  chord a3 { at = 1q; dur = 1/2q; pick = 3; }
+  chord a4 { at = 3/2q; dur = 1/2q; pick = 2; }
+}
+```
 
 A member's leaf component in the §10 event address is `chord_id.k`, for
 example `comp_main/3/down.2`; identifiers cannot contain `.`. Its source
@@ -1187,7 +1204,7 @@ Core operations are:
   payloads (`expect`, `expect_object`, `value`, or `object_value`). Changes to
   randomness/hash identity must be reported.
 
-Ordered lists are replaced as fields in core patches. Chord members are identified by index (§8.2). An edit that changes the number of a chord's played pitches, through its `pitches`, its voicing's `pitches`, or its `top` or `bottom`, shifts every member after the first played pitch that changed. If an override present in **A0** addresses such a shifted member, the transaction fails with `E_INSTANCE_TARGET` rather than silently retargeting it; appending members or changing pitches in place shifts nothing. A UI may implement fine-grained breakpoint edits internally, but it must check the expected old list or revision rather than blindly rely on a stale list index. Core has no query-text execution, wildcard mutation, or implicit last-writer-wins merge.
+Ordered lists are replaced as fields in core patches. Chord members are identified by index (§8.2). An edit that changes the number of a chord's played pitches, through its `pitches`, its voicing's `pitches`, or its `top`, `bottom`, or `pick`, shifts every member after the first played pitch that changed. If an override present in **A0** addresses such a shifted member, the transaction fails with `E_INSTANCE_TARGET` rather than silently retargeting it; appending members or changing pitches in place shifts nothing. A UI may implement fine-grained breakpoint edits internally, but it must check the expected old list or revision rather than blindly rely on a stale list index. Core has no query-text execution, wildcard mutation, or implicit last-writer-wins merge.
 
 Before operation evaluation, the supplied `base_revision` must equal
 `SHA-256(canonical A0)` for the immutable original authored graph **A0**;

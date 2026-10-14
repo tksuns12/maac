@@ -502,6 +502,10 @@ impl Normalizer<'_> {
                         .or_insert_with(|| quantity(1, 125, Unit::S));
                     fields.entry("tilt").or_insert_with(|| number(0));
                 }
+                // One picked position is a list of one.
+                if let Some(pick) = fields.get_mut("pick").filter(|pick| pick["t"] != "list") {
+                    *pick = json!({"t": "list", "items": [pick.take()]});
+                }
             }
             // A vibrato starts at once, at full depth, centered.
             "vibrato" => {

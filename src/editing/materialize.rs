@@ -377,7 +377,7 @@ impl Builder<'_> {
                             EditError::new("E_SYNTAX", "objects must be a dictionary")
                         })?;
                         let members = super::foundation::chord_pitches(objects, child, supplied)
-                            .map_or(0, <[Value]>::len);
+                            .map_or(0, |pitches| pitches.len());
                         (0..members).map(|k| format!("{child_id}.{k}")).collect()
                     } else {
                         vec![child_id.clone()]

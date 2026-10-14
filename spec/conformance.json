@@ -122,6 +122,12 @@
       "pass": true
     },
     {
+      "id": "pick_strum_up_member0_velocity",
+      "actual": "2/5",
+      "expected": "2/5",
+      "pass": true
+    },
+    {
       "id": "vibrato_rising_knot_cents",
       "actual": "38/5",
       "expected": "38/5",

@@ -618,8 +618,13 @@ impl EditContext for BundleEditContext {
         let object = object_at(base, base_path)?;
         let (meter, _) = bundle_normalization_context(base)?;
         let kind = object["kind"].as_str().unwrap_or_default();
-        if matches!(kind, "chord" | "voicing") && field.len() == 1 && field[0] == "pitches" {
-            return normalize_field_value(kind, "pitches", value, true, &meter);
+        if let [name] = field {
+            if matches!(
+                (kind, name.as_str()),
+                ("chord" | "voicing", "pitches") | ("chord", "pick")
+            ) {
+                return normalize_field_value(kind, name, value, true, &meter);
+            }
         }
         let pitch = (matches!(kind, "note" | "piece") && field.len() == 1 && field[0] == "pitch")
             || (kind == "override" && field.len() == 2 && field[0] == "set" && field[1] == "pitch");
@@ -710,8 +715,13 @@ impl EditContext for FoundationEditContext {
         let meter = meter_map(base)?;
         let object = object_at(base, base_path)?;
         let kind = object["kind"].as_str().unwrap_or_default();
-        if matches!(kind, "chord" | "voicing") && field.len() == 1 && field[0] == "pitches" {
-            return normalize_field_value(kind, "pitches", value, true, &meter);
+        if let [name] = field {
+            if matches!(
+                (kind, name.as_str()),
+                ("chord" | "voicing", "pitches") | ("chord", "pick")
+            ) {
+                return normalize_field_value(kind, name, value, true, &meter);
+            }
         }
         let pitch = (matches!(kind, "note" | "piece") && field.len() == 1 && field[0] == "pitch")
             || (kind == "override" && field.len() == 2 && field[0] == "set" && field[1] == "pitch");
@@ -945,7 +955,8 @@ fn boolean(value: bool) -> Value {
 }
 
 /// Spelled pitches lower to `key(k)` in a note's `pitch`, each item of a
-/// chord's or voicing's `pitches`, and an override's `set.pitch`.
+/// chord's or voicing's `pitches`, and an override's `set.pitch`. One
+/// position in a chord's `pick` is a list of one.
 fn normalize_field_value(
     kind: &str,
     name: &str,
@@ -953,6 +964,10 @@ fn normalize_field_value(
     constructors: bool,
     meter: &MeterMap,
 ) -> EditResult<Value> {
+    if kind == "chord" && name == "pick" && value["t"] != "list" {
+        let position = normalize_value_inner(value, false, constructors, meter)?;
+        return Ok(json!({"t":"list","items":[position]}));
+    }
     if matches!(kind, "chord" | "voicing") && name == "pitches" && value["t"] == "list" {
         let items = value["items"]
             .as_array()
@@ -1545,7 +1560,7 @@ fn resolve_occurrence_pitches<'a>(
     root: &'a Value,
     place: &Value,
     address: &str,
-) -> Option<(SourceMappings, Option<&'a [Value]>)> {
+) -> Option<(SourceMappings, Option<Vec<&'a Value>>)> {
     let segments: Vec<_> = address.split('/').collect();
     if segments.len() < 2 || segments.iter().any(|segment| segment.is_empty()) {
         return None;
@@ -1726,12 +1741,12 @@ fn supplied_voicing_id(
 
 /// The pitches a chord plays (§8.2): its own `pitches`, those of the voicing
 /// it names, or else those `supplied` by its nearest use or placement,
-/// narrowed by `top` or `bottom`.
+/// narrowed by `top`, `bottom` or `pick`.
 pub(super) fn chord_pitches<'a>(
     objects: &'a Map<String, Value>,
     chord: &'a Value,
     supplied: Option<&Supplied>,
-) -> Option<&'a [Value]> {
+) -> Option<Vec<&'a Value>> {
     let fields = &chord["fields"];
     let pitches = match (fields.get("pitches"), fields.get("voicing")) {
         (Some(pitches), _) => pitches,
@@ -1742,30 +1757,41 @@ pub(super) fn chord_pitches<'a>(
         }
     };
     let pitches = pitches["items"].as_array()?.as_slice();
-    let selected = |name: &str| -> Option<Option<usize>> {
-        let Some(value) = fields.get(name) else {
-            return Some(None);
-        };
-        let count = typed_rational(value).ok()?;
-        if !count.is_integer() {
+    let position = |value: &Value| -> Option<usize> {
+        let position = typed_rational(value).ok()?;
+        if !position.is_integer() {
             return None;
         }
-        let count = count.to_integer().to_usize()?;
-        (1..=pitches.len()).contains(&count).then_some(Some(count))
+        let position = position.to_integer().to_usize()?;
+        (1..=pitches.len()).contains(&position).then_some(position)
     };
-    match (selected("top")?, selected("bottom")?) {
-        (None, None) => Some(pitches),
-        (Some(top), None) => Some(&pitches[pitches.len() - top..]),
-        (None, Some(bottom)) => Some(&pitches[..bottom]),
-        (Some(_), Some(_)) => None,
+    match (fields.get("top"), fields.get("bottom"), fields.get("pick")) {
+        (None, None, None) => Some(pitches.iter().collect()),
+        (Some(top), None, None) => Some(pitches[pitches.len() - position(top)?..].iter().collect()),
+        (None, Some(bottom), None) => Some(pitches[..position(bottom)?].iter().collect()),
+        (None, None, Some(pick)) => {
+            let positions = match pick["items"].as_array() {
+                Some(items) => items.iter().map(position).collect::<Option<Vec<_>>>()?,
+                None => vec![position(pick)?],
+            };
+            (!positions.is_empty() && positions.windows(2).all(|pair| pair[0] < pair[1])).then(
+                || {
+                    positions
+                        .iter()
+                        .map(|position| &pitches[position - 1])
+                        .collect()
+                },
+            )
+        }
+        _ => None,
     }
 }
 
 /// A chord member is identified by its index. When an edit changes the
 /// length of the pitches a chord plays, through its `pitches`, its voicing,
-/// or its `top` or `bottom`, members after the first changed position shift.
-/// An existing override addressing one of them is rejected rather than
-/// silently retargeted. Appending keeps every existing index.
+/// or its `top`, `bottom` or `pick`, members after the first changed
+/// position shift. An existing override addressing one of them is rejected
+/// rather than silently retargeted. Appending keeps every existing index.
 fn reject_shifted_chord_members(base: &Value, candidate: &Value) -> EditResult<()> {
     let (Some(base_objects), Some(candidate_objects)) = (
         base["objects"].as_object(),
@@ -1808,7 +1834,7 @@ fn reject_shifted_chord_members(base: &Value, candidate: &Value) -> EditResult<(
             if old.len() == new.len() {
                 continue;
             }
-            let first = old.iter().zip(new).take_while(|(a, b)| a == b).count();
+            let first = old.iter().zip(&new).take_while(|(a, b)| a == b).count();
             let (source_path, position) = mappings.last().expect("an occurrence has a leaf");
             let segment = event.split('/').nth(*position).unwrap_or_default();
             let member = split_chord_member(segment).and_then(|(_, member)| member);

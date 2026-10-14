@@ -381,53 +381,23 @@ instrument pluck_synth {
   control pan { target = &stage.stereo.params.pan; default = 0; }
 }
 node arp { instrument = &pluck_synth; config = { voices = 8; }; params = { pan = 0.2; }; }
-// Two beats of sixteenths per chord shape: root, third, fifth, third,
-// octave, fifth, third, fifth.
-pattern arp_fm { length = 2q;
-  note n1 { at = 0q; dur = 1/4q; pitch = F4; velocity = 0.7; }
-  note n2 { at = 1/4q; dur = 1/4q; pitch = Ab4; velocity = 0.5; }
-  note n3 { at = 1/2q; dur = 1/4q; pitch = C5; velocity = 0.58; }
-  note n4 { at = 3/4q; dur = 1/4q; pitch = Ab4; velocity = 0.5; }
-  note n5 { at = 1q; dur = 1/4q; pitch = F5; velocity = 0.66; }
-  note n6 { at = 5/4q; dur = 1/4q; pitch = C5; velocity = 0.5; }
-  note n7 { at = 3/2q; dur = 1/4q; pitch = Ab4; velocity = 0.56; }
-  note n8 { at = 7/4q; dur = 1/4q; pitch = C5; velocity = 0.5; }
-}
-pattern arp_db { length = 2q;
-  note n1 { at = 0q; dur = 1/4q; pitch = F4; velocity = 0.7; }
-  note n2 { at = 1/4q; dur = 1/4q; pitch = Ab4; velocity = 0.5; }
-  note n3 { at = 1/2q; dur = 1/4q; pitch = Db5; velocity = 0.58; }
-  note n4 { at = 3/4q; dur = 1/4q; pitch = Ab4; velocity = 0.5; }
-  note n5 { at = 1q; dur = 1/4q; pitch = F5; velocity = 0.66; }
-  note n6 { at = 5/4q; dur = 1/4q; pitch = Db5; velocity = 0.5; }
-  note n7 { at = 3/2q; dur = 1/4q; pitch = Ab4; velocity = 0.56; }
-  note n8 { at = 7/4q; dur = 1/4q; pitch = Db5; velocity = 0.5; }
-}
-pattern arp_ab { length = 2q;
-  note n1 { at = 0q; dur = 1/4q; pitch = Eb4; velocity = 0.7; }
-  note n2 { at = 1/4q; dur = 1/4q; pitch = Ab4; velocity = 0.5; }
-  note n3 { at = 1/2q; dur = 1/4q; pitch = C5; velocity = 0.58; }
-  note n4 { at = 3/4q; dur = 1/4q; pitch = Ab4; velocity = 0.5; }
-  note n5 { at = 1q; dur = 1/4q; pitch = Eb5; velocity = 0.66; }
-  note n6 { at = 5/4q; dur = 1/4q; pitch = C5; velocity = 0.5; }
-  note n7 { at = 3/2q; dur = 1/4q; pitch = Ab4; velocity = 0.56; }
-  note n8 { at = 7/4q; dur = 1/4q; pitch = C5; velocity = 0.5; }
-}
-pattern arp_eb { length = 2q;
-  note n1 { at = 0q; dur = 1/4q; pitch = Eb4; velocity = 0.7; }
-  note n2 { at = 1/4q; dur = 1/4q; pitch = G4; velocity = 0.5; }
-  note n3 { at = 1/2q; dur = 1/4q; pitch = Bb4; velocity = 0.58; }
-  note n4 { at = 3/4q; dur = 1/4q; pitch = G4; velocity = 0.5; }
-  note n5 { at = 1q; dur = 1/4q; pitch = Eb5; velocity = 0.66; }
-  note n6 { at = 5/4q; dur = 1/4q; pitch = Bb4; velocity = 0.5; }
-  note n7 { at = 3/2q; dur = 1/4q; pitch = G4; velocity = 0.56; }
-  note n8 { at = 7/4q; dur = 1/4q; pitch = Bb4; velocity = 0.5; }
-}
-pattern arp_loop { length = 16q;
-  use fm { pattern = &arp_fm; at = 0q; count = 2; }
-  use db { pattern = &arp_db; at = 4q; count = 2; }
-  use ab { pattern = &arp_ab; at = 8q; count = 2; }
-  use eb { pattern = &arp_eb; at = 12q; count = 2; }
+// One voicing per chord, from the root up to its octave.
+voicing arp_fm { pitches = [F4, Ab4, C5, F5]; }
+voicing arp_db { pitches = [F4, Ab4, Db5, F5]; }
+voicing arp_ab { pitches = [Eb4, Ab4, C5, Eb5]; }
+voicing arp_eb { pitches = [Eb4, G4, Bb4, Eb5]; }
+voicings arp_voicings { chords = [("Fm", &arp_fm), ("Db", &arp_db), ("Ab", &arp_ab), ("Eb", &arp_eb)]; }
+// Two beats of sixteenths, picked from the chord sounding: root, third,
+// fifth, third, octave, fifth, third, fifth.
+pattern arp_cell { length = 2q;
+  chord n1 { at = 0q; dur = 1/4q; pick = 1; velocity = 0.7; }
+  chord n2 { at = 1/4q; dur = 1/4q; pick = 2; velocity = 0.5; }
+  chord n3 { at = 1/2q; dur = 1/4q; pick = 3; velocity = 0.58; }
+  chord n4 { at = 3/4q; dur = 1/4q; pick = 2; velocity = 0.5; }
+  chord n5 { at = 1q; dur = 1/4q; pick = 4; velocity = 0.66; }
+  chord n6 { at = 5/4q; dur = 1/4q; pick = 3; velocity = 0.5; }
+  chord n7 { at = 3/2q; dur = 1/4q; pick = 2; velocity = 0.56; }
+  chord n8 { at = 7/4q; dur = 1/4q; pick = 3; velocity = 0.5; }
 }
 curve arp_level {
   clock = score;
@@ -435,13 +405,13 @@ curve arp_level {
 }
 automation arp_balance { target = &arp.params.level; curve = &arp_level; at = 0q; }
 track arps { target = &arp:events; }
-place arp_intro { pattern = &arp_loop; track = &arps; at = 0q; count = 2; }
-place arp_groove { pattern = &arp_loop; track = &arps; at = 32q; count = 2; }
-place arp_build { pattern = &arp_loop; track = &arps; at = 96q; count = 2; }
-place arp_drop1 { pattern = &arp_loop; track = &arps; at = 128q; count = 4; }
-place arp_interlude { pattern = &arp_loop; track = &arps; at = 192q; count = 2; }
-place arp_drop2 { pattern = &arp_loop; track = &arps; at = 240q; count = 4; }
-place arp_outro { pattern = &arp_loop; track = &arps; at = 304q; count = 2; }
+place arp_intro { pattern = &arp_cell; track = &arps; at = 0q; count = 16; harmony = &loop_chords; voicings = &arp_voicings; }
+place arp_groove { pattern = &arp_cell; track = &arps; at = 32q; count = 16; harmony = &loop_chords; voicings = &arp_voicings; }
+place arp_build { pattern = &arp_cell; track = &arps; at = 96q; count = 16; harmony = &loop_chords; voicings = &arp_voicings; }
+place arp_drop1 { pattern = &arp_cell; track = &arps; at = 128q; count = 32; harmony = &loop_chords; voicings = &arp_voicings; }
+place arp_interlude { pattern = &arp_cell; track = &arps; at = 192q; count = 16; harmony = &loop_chords; voicings = &arp_voicings; }
+place arp_drop2 { pattern = &arp_cell; track = &arps; at = 240q; count = 32; harmony = &loop_chords; voicings = &arp_voicings; }
+place arp_outro { pattern = &arp_cell; track = &arps; at = 304q; count = 16; harmony = &loop_chords; voicings = &arp_voicings; }
 
 // ---------------------------------------------------------------- lead
 node lead {

@@ -209,7 +209,8 @@ instrument definitions:
   that chord.
 - **Picking a middle member**, such as a walking bass's fifth. `top` and
   `bottom` pick only the outer strings. This is the picking-by-string
-  proposal that the strum proposal deferred.
+  proposal that the strum proposal deferred. Added later as `pick` by the
+  [chord pick proposal](chord-pick-proposal.md) (F31).
 - **Melody notes relative to the chord**, such as scale degrees.
 - **Harmonies and voicings in libraries.** These wait until songs use them.
 

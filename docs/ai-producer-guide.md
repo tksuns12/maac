@@ -99,12 +99,22 @@ listen before you call a track finished.
   write its rhythm as chords with `bottom = 1` for the root and `top = 1`
   for the octave. The register stays yours, and no transposition needs
   working out.
+- Arpeggiate with `pick`, which plays members by their position in the
+  voicing, counted from 1. Give the arpeggio a voicing per chord, such as
+  `voicing arp_fm { pitches = [F4, Ab4, C5, F5]; }`, write one cell of
+  chords that pick, such as
+  `chord n3 { at = 1/2q; dur = 1/4q; pick = 3; velocity = 0.58; }`, and
+  place it with the harmony and the arpeggio's `voicings`. Each chord change
+  then reaches the arpeggio too. `pick = [1, 3]` plays two members together.
+  Give every voicing as many pitches as the highest pick; `maac check`
+  names the chord and the voicing that falls short. A picked guitar part
+  can follow the harmony the same way.
 - Reuse a line at other pitches with `transpose` on `use`, in cents:
   `use d_bar { pattern = &g_bar; at = 4q; transpose = 700ct; }` plays a G
   pattern as D. Mind the range: a transposed shape keeps its spread, so a G
   shape from G2 moved down a fourth plays D2, below a guitar's low E (E2).
-  "Morning Ferry"'s picking does this in its D and C bars; give a picked
-  guitar a pattern per shape instead.
+  "Morning Ferry"'s picking does this in its D and C bars; pick from a
+  voicing per shape instead.
 - Play drums from one kit node: import `std/studio/1.1.0`, add
   `node drums { instrument = &studio.drums; }`, and write `hit` leaves such as
   `hit k1 { at = 0q; key = "kick"; velocity = 0.85; }`. Keys are `kick`,

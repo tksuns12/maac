@@ -222,7 +222,9 @@ field; the table counts those 16 values.
   chord on four strings and a G on six, so this needs a string model with
   muted strings. That is its own proposal. Until then a picking pattern per
   shape is the safe form; the [producer guide](../ai-producer-guide.md) now
-  warns that a transposed shape can leave the instrument's range.
+  warns that a transposed shape can leave the instrument's range. Positions
+  in a voicing, without a string model, were added later as `pick` by the
+  [chord pick proposal](chord-pick-proposal.md) (F31).
 - **Voicings in libraries.** A library could export common shapes. This
   waits until compositions use voicings.
 - **Humanizing.** Random variation in stagger or velocity stays a tool

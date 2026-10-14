@@ -309,6 +309,10 @@ def main() -> None:
           Fraction(34, 55))
     # A harmony chord is found at i*L + a, wrapped by the harmony's length.
     exact("harmony_wrapped_position", (3 * Fraction(4) + Fraction(2)) % Fraction(8), Fraction(6))
+    # A strum counts the picked members: an upstroke over pick = [2, 4] strikes
+    # member 0 last, at position 1 of 2.
+    exact("pick_strum_up_member0_velocity", Fraction(1, 2) + Fraction(-1, 10) * Fraction(2 - 1 - 0, 2 - 1),
+          Fraction(2, 5))
     exact("vibrato_rising_knot_cents", 38 * min(1, (Fraction(39, 100) - Fraction(3, 10)) / Fraction(45, 100)),
           Fraction(38, 5))
     near("linear_tempo_ramp_seconds", 60 / 15 * math.log(180 / 120), 1.6218604324326575)
@@ -332,7 +336,7 @@ def main() -> None:
     (ROOT / "conformance.json").write_text(json.dumps(vectors, indent=2) + "\n")
     report = {
         "surface_parse": "pass", "syntax_tree_schema": "pass",
-        "example_expanded_note_count": len(events), "arithmetic_assertions": 27,
+        "example_expanded_note_count": len(events), "arithmetic_assertions": 28,
         "scope": "Syntax plus selected semantics only; no complete validator or renderer is included."
     }
     (ROOT / "check-results.json").write_text(json.dumps(report, indent=2) + "\n")

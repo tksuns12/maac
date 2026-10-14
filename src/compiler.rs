@@ -2282,6 +2282,7 @@ impl<'a> Compiler<'a> {
                 "voicing",
                 "top",
                 "bottom",
+                "pick",
                 "velocity",
                 "release_velocity",
                 "onset_offset",
@@ -2436,44 +2437,70 @@ impl<'a> Compiler<'a> {
         Ok((pitches, self.pitch_list(voicing, pitches)?))
     }
 
-    /// `top = n` keeps the last `n` pitches, and `bottom = n` the first `n`.
-    fn select_pitches<'v>(&self, object: &Object, pitches: &'v [Value]) -> CResult<&'v [Value]> {
-        let (field, top) = match (object.field("top"), object.field("bottom")) {
-            (Some(_), Some(field)) => {
+    /// `top = n` keeps the last `n` pitches, `bottom = n` the first `n`, and
+    /// `pick` the pitches at its positions, counted from 1.
+    fn select_pitches<'v>(&self, object: &Object, pitches: &'v [Value]) -> CResult<Vec<&'v Value>> {
+        let selections: Vec<&Field> = ["top", "bottom", "pick"]
+            .into_iter()
+            .filter_map(|name| object.field(name))
+            .collect();
+        let field = match selections.as_slice() {
+            [] => return Ok(pitches.iter().collect()),
+            [field] => *field,
+            [_, field, ..] => {
                 return Err(path_diagnostic(
                     DiagnosticCode::Range,
-                    "a chord takes `top` or `bottom`, not both",
+                    "a chord takes at most one of `top`, `bottom` and `pick`",
                     object,
                     Some(field),
                 ))
             }
-            (Some(field), None) => (field, true),
-            (None, Some(field)) => (field, false),
-            (None, None) => return Ok(pitches),
         };
-        let n = self.rational_value(&field.value, object, Some(field))?;
-        let count = n
-            .is_integer()
-            .then(|| n.to_integer().to_usize())
-            .flatten()
-            .filter(|count| (1..=pitches.len()).contains(count))
-            .ok_or_else(|| {
-                path_diagnostic(
-                    DiagnosticCode::Range,
-                    format!(
-                        "chord.{} must be an integer from 1 through {}, the number of pitches",
-                        field.name,
+        let range =
+            |message: String| path_diagnostic(DiagnosticCode::Range, message, object, Some(field));
+        let position = |value: &Value, rule: &str| -> CResult<usize> {
+            let n = self.rational_value(value, object, Some(field))?;
+            n.is_integer()
+                .then(|| n.to_integer().to_usize())
+                .flatten()
+                .filter(|position| (1..=pitches.len()).contains(position))
+                .ok_or_else(|| {
+                    range(format!(
+                        "chord.{rule} from 1 through {}, the number of pitches",
                         pitches.len()
-                    ),
-                    object,
-                    Some(field),
-                )
-            })?;
-        Ok(if top {
-            &pitches[pitches.len() - count..]
-        } else {
-            &pitches[..count]
-        })
+                    ))
+                })
+        };
+        match field.name.as_str() {
+            "top" => {
+                let count = position(&field.value, "top must be an integer")?;
+                Ok(pitches[pitches.len() - count..].iter().collect())
+            }
+            "bottom" => {
+                let count = position(&field.value, "bottom must be an integer")?;
+                Ok(pitches[..count].iter().collect())
+            }
+            _ => {
+                let values: Vec<&Value> = match &field.value.kind {
+                    ValueKind::List(items) => items.iter().collect(),
+                    _ => vec![&field.value],
+                };
+                if values.is_empty() {
+                    return Err(range("chord.pick must name at least one position".into()));
+                }
+                let mut picked = Vec::with_capacity(values.len());
+                let mut previous = 0;
+                for value in values {
+                    let position = position(value, "pick positions must be integers")?;
+                    if position <= previous {
+                        return Err(range("chord.pick positions must strictly increase".into()));
+                    }
+                    previous = position;
+                    picked.push(&pitches[position - 1]);
+                }
+                Ok(picked)
+            }
+        }
     }
 
     /// Member `k` keeps the chord's onset, gate, order and expressions, takes
@@ -2517,7 +2544,7 @@ impl<'a> Compiler<'a> {
                 let mut note = object.clone();
                 note.kind = "note".into();
                 for name in [
-                    "pitches", "voicing", "top", "bottom", "strum", "stagger", "tilt",
+                    "pitches", "voicing", "top", "bottom", "pick", "strum", "stagger", "tilt",
                 ] {
                     note.fields.remove(name);
                 }
@@ -2527,7 +2554,7 @@ impl<'a> Compiler<'a> {
                         name: "pitch".into(),
                         span: pitches_field.span,
                         name_span: pitches_field.name_span,
-                        value: pitch.clone(),
+                        value: (*pitch).clone(),
                     },
                 );
                 for name in PER_NOTE {
