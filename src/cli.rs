@@ -1260,11 +1260,12 @@ fn format_analysis(input: &str, report: &crate::analyze::AnalysisReport) -> Stri
         ));
         for section in &output.sections {
             text.push_str(&format!(
-                "\n  {}: short-term {} LUFS, peak {} dBFS, balance {} dB",
+                "\n  {}: short-term {} LUFS, peak {} dBFS, balance {} dB, beat dip {} dB",
                 section.section,
                 value(section.measures.max_short_term_lufs),
                 value(section.measures.sample_peak_dbfs),
-                value(section.measures.stereo.as_ref().and_then(|s| s.balance_db))
+                value(section.measures.stereo.as_ref().and_then(|s| s.balance_db)),
+                value(section.measures.beat_dip_db)
             ));
         }
     }

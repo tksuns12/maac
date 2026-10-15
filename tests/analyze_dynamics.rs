@@ -136,7 +136,7 @@ fn steps(makeup: &str) -> String {
 #[test]
 fn a_compressor_reports_what_it_takes_per_section() {
     let report = analyze(&steps("0dB"), &options());
-    assert_eq!(report.profile, "maac.analyze.default/8");
+    assert_eq!(report.profile, "maac.analyze.default/9");
     // Under the threshold, nothing; 10 dB over it at ratio 2, 5 dB.
     let first = dynamics(&report, "comp:out", Some("first"));
     assert_eq!(first.reduction_db, Some(0.0));

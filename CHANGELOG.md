@@ -81,6 +81,18 @@ promise of compatibility beyond the documented interfaces.
   `hint` field). See the
   [song budget proposal](docs/design/song-budget-proposal.md).
 
+- `maac analyze` reports how far each source's level dips over the beat
+  (F33). `beat_dip_db` folds the level above 300 Hz onto the quarter note,
+  per section, and measures its quietest part under its upper quartile, so
+  drum hits do not count as a dip. A new `pump_unheard` warning names a
+  compressor keyed through its `sidechain` that takes 3 dB or more from a
+  section whose output dips under 8 dB. In the T5 trial the owner heard no
+  pump in drops that dip about 5 dB and liked one at 12; the trials' songs
+  without a pump dip at most 5.6 dB. On "Afterlight" with the lead after
+  the pump, as in its first version, both drops are reported. The profile is now
+  `maac.analyze.default/9`; see the
+  [beat dip proposal](docs/design/beat-dip-proposal.md).
+
 - `maac analyze` checks the pitch of notes with a pitch expression (F29).
   It compares each with its expressed pitch, the written pitch moved by the
   expression's mean over the estimate, and skips one whose expression moves

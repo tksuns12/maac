@@ -6,6 +6,7 @@
 //! changes the source, and the language and plan formats are unchanged. See
 //! `docs/analyze.md`.
 
+mod beat;
 mod dynamics;
 mod image;
 mod lead;
@@ -26,7 +27,8 @@ use serde::Serialize;
 use crate::exact::Rational;
 use crate::music::MeterMap;
 use crate::plan::{
-    EventKind, EventView, PitchExpression, PlanError, PlanLimits, PlanView, PortRef,
+    EventKind, EventView, PitchExpression, PlanError, PlanLimits, PlanView, PortRef, Processor,
+    ProcessorView,
 };
 use crate::plan_artifact::PlanArtifact;
 use crate::plan_v3::TimingContext;
@@ -38,13 +40,13 @@ use meter::{
 };
 
 pub const SCHEMA: &str = "maac.analysis-report/1";
-pub const PROFILE: &str = "maac.analyze.default/8";
+pub const PROFILE: &str = "maac.analyze.default/9";
 pub const BANDS: &str = "maac.analyze.octave-bands/1";
 pub const BAND_CENTERS_HZ: [f64; 10] = [
     31.5, 63.0, 125.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 16000.0,
 ];
 
-// Findings profile `maac.analyze.default/8`: stated limits, not taste.
+// Findings profile `maac.analyze.default/9`: stated limits, not taste.
 const TRUE_PEAK_LIMIT_DBTP: f64 = -1.0;
 const LOUDNESS_JUMP_LU: f64 = 6.0;
 const BALANCE_LIMIT_DB: f64 = 3.0;
@@ -89,6 +91,14 @@ const PITCH_LIMIT_CENTS: f64 = 50.0;
 const LEAD_UNDER_DB: f64 = -8.5;
 /// ...over at least this many of the lead's notes in the section.
 const LEAD_MIN_NOTES: usize = 4;
+/// A keyed compressor pumps a section when it takes at least this many dB.
+/// "Afterlight"'s pump takes 4 to 15 dB from its drops; the bass ducking in
+/// `examples/production.maac` takes under 1 dB.
+const PUMP_MIN_REDUCTION_DB: f64 = 3.0;
+/// A pump is heard when the output's beat dip reaches this many dB. In T5
+/// the owner heard no pump in drops that dip 4.7 to 5.8 dB and liked pumps
+/// at 12.1 to 13.0 dB; the trials' songs without a pump dip at most 5.6 dB.
+const PUMP_HEARD_DB: f64 = 8.0;
 
 /// How the piece is divided into sections.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -347,6 +357,11 @@ pub struct Measures {
     /// Octave-band energy of the floor blocks, relative to their total.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub floor_bands_db: Option<Vec<Option<f64>>>,
+    /// How far the level above 300 Hz dips over the beat, in dB: the quietest
+    /// 24th of a quarter note under the upper quartile of the 24ths, folded
+    /// over the span's whole quarter notes. `None` under four of them, or at
+    /// or under -60 dBFS above 300 Hz.
+    pub beat_dip_db: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stereo: Option<Stereo>,
     /// Score–audio agreement for the notes and hits this source receives.
@@ -637,6 +652,11 @@ fn analyze_view(
     let mut next_section = 0;
     let mut in_sections: Vec<usize> = Vec::new();
     let mut values = vec![notes::FrameValues::default(); meters.len()];
+    let mut fold = beat::BeatFold::new(
+        rate,
+        quarter_notes(&view, &frame_at, window_start, window_end)?,
+        meters.len(),
+    );
     let mut frame_index = render_start;
     render(&ports, &tap_nodes, span, &mut |frame, reductions| {
         if frame_index >= window_start {
@@ -653,6 +673,7 @@ fn analyze_view(
             for (tap, &reduction) in taps.iter_mut().zip(reductions) {
                 tap.add(values[tap.source].k, reduction, &in_sections);
             }
+            fold.push(frame_index, values.iter().map(|value| value.mono));
             while next_window < windows.len() && windows[next_window].start <= frame_index {
                 active.push(next_window);
                 next_window += 1;
@@ -754,6 +775,13 @@ fn analyze_view(
             section.measures.dynamics = Some(span.summary());
         }
     }
+    for (index, report) in reports.iter_mut().enumerate() {
+        report.whole.beat_dip_db = fold.dip(index, window_start, window_end);
+        for (measures, section) in report.sections.iter_mut().zip(&sections) {
+            measures.measures.beat_dip_db = fold.dip(index, section.start_frame, section.end_frame);
+        }
+    }
+    extra.extend(pump_findings(&view, &reports, &sections, &positions));
     let noise = noise_findings(
         &sources, &blocks, &sections, &ranges, hop, available, &positions,
     );
@@ -816,6 +844,28 @@ fn analyze_view(
             approximate: render_start > 0,
         }),
     })
+}
+
+/// The score's whole quarter notes that lie in `[start, end)`, as their first
+/// frame and the frame after them.
+fn quarter_notes(
+    view: &PlanView<'_>,
+    frame_at: &dyn Fn(&Rational) -> Result<u64, AnalyzeError>,
+    start: u64,
+    end: u64,
+) -> Result<Vec<(u64, u64)>, AnalyzeError> {
+    let one = Rational::from_integer(1.into());
+    let mut beats = Vec::new();
+    let mut q = view.output.score_start_q.ceil();
+    while &q + &one <= view.output.score_end_q {
+        let next = &q + &one;
+        let (from, to) = (frame_at(&q)?, frame_at(&next)?);
+        if start <= from && from < to && to <= end {
+            beats.push((from, to));
+        }
+        q = next;
+    }
+    Ok(beats)
 }
 
 /// The window's score bounds and frames, within the score.
@@ -1313,6 +1363,79 @@ fn lead_routes(
         routes.insert(lead.clone(), LeadRoute { mix, nodes });
     }
     Ok(routes)
+}
+
+/// A compressor keyed through its `sidechain` input that takes from a section
+/// whose output barely dips over the beat: the parts it ducks are covered by
+/// parts it does not, or it ducks too little to be heard.
+fn pump_findings(
+    view: &PlanView<'_>,
+    reports: &[SourceReport],
+    sections: &[Section],
+    positions: &PositionMap<'_>,
+) -> Vec<Finding> {
+    let keyed = |node: &str| {
+        view.nodes.iter().any(|candidate| {
+            *candidate.id == node
+                && matches!(
+                    candidate.processor,
+                    ProcessorView::Core(Processor::Compressor { .. })
+                )
+        }) && view
+            .connections
+            .iter()
+            .any(|connection| connection.to.node == node && connection.to.port == "sidechain")
+    };
+    let output = &reports[0];
+    let mut found = Vec::new();
+    for report in reports.iter().filter(|report| {
+        report
+            .port
+            .split_once(':')
+            .is_some_and(|(node, _)| keyed(node))
+    }) {
+        let spans: Vec<(Option<&Section>, &Measures, &Measures)> = if sections.is_empty() {
+            vec![(None, &report.whole, &output.whole)]
+        } else {
+            sections
+                .iter()
+                .zip(&report.sections)
+                .zip(&output.sections)
+                .map(|((section, own), out)| (Some(section), &own.measures, &out.measures))
+                .collect()
+        };
+        for (section, own, out) in spans {
+            let Some(reduction) = own
+                .dynamics
+                .as_ref()
+                .and_then(|dynamics| dynamics.reduction_db)
+                .filter(|reduction| *reduction >= PUMP_MIN_REDUCTION_DB)
+            else {
+                continue;
+            };
+            let Some(dip) = out.beat_dip_db.filter(|dip| *dip < PUMP_HEARD_DB) else {
+                continue;
+            };
+            let own_dip = own.beat_dip_db.map_or(String::new(), |own| {
+                format!("; `{}` alone dips {own} dB", report.port)
+            });
+            found.push(Finding {
+                kind: "pump_unheard",
+                event: None,
+                severity: "warning",
+                source: report.port.clone(),
+                section: section.map(|section| section.id.clone()),
+                at: section.map(|section| positions.at(section.start_frame)),
+                value: dip,
+                threshold: PUMP_HEARD_DB,
+                message: format!(
+                    "the keyed compressor takes {reduction} dB, but the output's level above \
+                     300 Hz dips only {dip} dB over the beat{own_dip}"
+                ),
+            });
+        }
+    }
+    found
 }
 
 /// Parts that disagree about swing in one section: some play off-beat eighths

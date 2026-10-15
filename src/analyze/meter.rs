@@ -514,6 +514,7 @@ pub(super) fn measures(
         floor_lufs: floor_lufs.map(round2),
         block_range_lu: block_range_lu(blocks, hop).map(round2),
         floor_bands_db,
+        beat_dip_db: None,
         stereo,
         notes: None,
         lead: None,

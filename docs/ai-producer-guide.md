@@ -185,7 +185,11 @@ maac analyze main.maac --window region:b --preroll 4 --json   # quick, approxima
   everything that should breathe through it, the lead included: in T5 a
   pump taking 4.3 dB on average went unheard under an unpumped lead and
   drums. A threshold of −32 dB, ratio 8, 1 ms attack and 220 ms release
-  pleased the listener. A pump lowers a drop's average level, so lower the
+  pleased the listener. Check the output's `beat_dip_db` in each section
+  the pump should drive: the listener heard no pump at a dip of 5 dB and
+  liked one at 12. A `pump_unheard` warning names a section under 8 dB; if
+  the compressor's own output dips deep there, route more of the mix
+  through it, and if not, deepen it. A pump lowers a drop's average level, so lower the
   breakdowns under it rather than push the limiter.
 - **Tempo-synced delay.** `core.delay/1` takes frames: beats × 60 / bpm ×
   48000, rounded. A dotted eighth at 126 bpm is 17,143 frames. Feed it back
@@ -245,6 +249,6 @@ ask for a verdict.
 | The chorus does not lift | Glue and limiter flatten the louder section | Compare the master's `max_short_term_lufs` per region. Each processor's `dynamics.reduction_db` in the chorus minus the verse is what it takes from the lift. A flattened level alone is not the fault: in a listening round, a chorus that kept none of its lift still sounded fine because its arrangement built |
 | "The acoustic guitar sounds cheap" | The std/acoustic/1.0.0 guitars start every string from the same full-band noise burst, at any velocity. Strummed in a full mix, they sound like a cheap synthesizer | Not measured. Define the guitar in the song, with velocity on the pluck's `hardness`, a pick `position` and body resonances, as [`examples/lantern/lantern.maac`](../examples/lantern/lantern.maac) does |
 | "The guitar melody sounds like a synthesizer" | The electric guitar's `vibrato` control is one LFO on every note from note-on | Not measured. Set the control to 0; give held notes a `vibrato` with `delay` and `shape = up`, and bend some notes up from a whole step below (section 2). `pitch_mismatch` checks these notes against their expressed pitch at the pick |
-| "It doesn't feel pumped" | The keyed compressor works, but the parts that carry the drop, such as the lead and drums, bypass it | Not reported by `maac analyze`: its `dynamics` gives what the compressor takes, not what the mix does. Route the lead through the pump; in T5 the mix's level swing per beat went from 6 to 15 dB |
+| "It doesn't feel pumped" | The keyed compressor works, but the parts that carry the drop, such as the lead and drums, bypass it | `pump_unheard`; the output's `beat_dip_db` per section. `dynamics` gives what the compressor takes, not what the mix does. Route the lead through the pump; in T5 the output's dip went from 5 to 12 dB |
 | "The glide doesn't slide" | The glide is too short: 80 ms at 126 bpm | Not measured. Give it about a sixteenth |
 | True peak over the limit after a sound change | Plucked attacks through compressors standing in for a limiter | `true_peak_over`; master through `fx.limiter/1` with its ceiling under the limit |

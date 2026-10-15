@@ -458,6 +458,53 @@ pitched, against 115, and 29 unpitched. The largest deviation is 1.0 cent,
 and no `pitch_mismatch` appears. Notes without a pitch expression are
 measured exactly as before.
 
+## Profile `maac.analyze.default/9` (2026-10-15)
+
+The [beat dip proposal](design/beat-dip-proposal.md) measures whether a
+pump is heard, for F33 of the [T5 trial](reports/ai-production-trial-t5.md).
+There a compressor keyed by the kick took 4.3 dB on average from the drops,
+and the owner heard no pumping: the lead and drums, which bypassed it,
+covered the parts it ducked.
+
+**Beat dip.** Every source's measures, whole and per section, gain
+`beat_dip_db`: how far its level above 300 Hz dips over the beat.
+
+- The source is summed to mono and high-passed at 300 Hz by two one-pole
+  stages, which leaves out the kick and sub that key a pump and fill its
+  dip.
+- Every whole quarter note of the score in the analysed window is cut into
+  24 equal parts by frame, so the parts follow the tempo map. A span takes
+  the mean power of each part across its whole quarter notes.
+- The dip is the quietest part under the parts' upper quartile (the
+  nearest-rank 75th percentile), in dB. A drum hit fills only a few parts,
+  so it does not raise the quartile; a pump's dip lasts long enough to reach
+  the quietest part.
+- It is absent under four whole quarter notes, or when the mean square above
+  300 Hz is at or under −60 dBFS. A silent part counts as 60 dB under the
+  quartile.
+
+A section of short notes and rests, or one that drums carry alone, dips
+deep without a pump. The human output adds `beat dip` to each section of the
+project output.
+
+**`pump_unheard`.** A warning for each `fx.compressor/1` with a connection
+into its `sidechain` input, in each section where its `reduction_db` is at
+least 3 dB and the output's `beat_dip_db` is under 8 dB. Its value is the
+output's dip; the message adds the dip of the compressor's own output,
+which tells a covered pump from a shallow one. In T5 the owner heard no
+pump in drops that dip 4.7 to 5.8 dB, and liked pumps at 12.1 to 13.0 dB;
+no section of the trials' songs without a pump dips more than 5.6 dB. The 3 dB floor leaves out ducking that
+only makes room, such as the bass in
+[`examples/production.maac`](../examples/production.maac), at 0.95 dB.
+
+On "Afterlight" as approved, both drops dip 12.2 dB, with no finding. With
+the lead after the pump, as in version 1, they dip 5.3 and 4.7 dB, and
+`pump_unheard` names `pump:out` in both.
+
+Apart from the profile identifier, the new field and the human output's
+`beat dip`, a report without a keyed compressor is the same as under
+`default/8`.
+
 ## Deferred to later versions
 
 - **Onset alignment:** whether written and sounding attacks line up.
