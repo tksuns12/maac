@@ -48,9 +48,9 @@ fn exact_library_selection_and_listing_work_outside_the_repository() {
     assert_eq!(libraries["command"], "instruments");
     assert_eq!(libraries["input"], "@builtin");
     let entries = libraries["libraries"].as_array().unwrap();
-    assert_eq!(entries.len(), 5);
+    assert_eq!(entries.len(), 6);
     assert!(entries.iter().any(|entry| entry["library"] == ACOUSTIC));
-    for studio in ["std/studio/1.0.0", "std/studio/1.1.0"] {
+    for studio in ["std/studio/1.0.0", "std/studio/1.1.0", "std/studio/1.2.0"] {
         assert!(entries.iter().any(|entry| entry["library"] == studio));
     }
     for basic in ["std/basic/1.0.0", "std/basic/1.1.0"] {

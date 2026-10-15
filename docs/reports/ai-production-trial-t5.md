@@ -78,6 +78,7 @@ Friction numbers continue from T4.
 | Version 2 | The lead through the pump at the first strength. The pump lowers the drops' average level, so the breakdown and interlude were lowered under them (pad, piano, chords, lead and a sustained bass), and the limiter's gain went to 12.5 dB | No warnings. The drops measure −11.0 LUFS against −12.7 for the breakdown |
 | Delivery 2 | `maac deliver`, with the loudness range widened from −11…−9 to −12…−10 rather than limit the kick harder | 164 s, −11.36 LUFS, −1.09 dBTP, checks passed |
 | Verdict 2 | Owner: "much better"; the drops burst out; "fine as it is" | — |
+| Hat round, after the trial | The owner on the intro's open hat: "Is that a cymbal? It doesn't sound like one; it sounds like a triangle, and it's annoying." The std/studio hats were six square waves and nothing else (F35). Three versions of the intro, the open hat at one loudness: as before, with noise added, and bent through a drive with noise added | Owner: the third. It became `std/studio/1.2.0`, with the closed hat changed the same way; on the first drop before and after, the owner: "new one is better". Delivered at −11.33 LUFS and −1.09 dBTP, checks passed |
 
 ## Friction
 
@@ -111,6 +112,7 @@ Friction numbers continue from T4.
 | F32 | A tempo-synced delay is a frame count worked out by hand: a dotted eighth at 126 bpm is 17,142.857 frames, written as 17,143. It would not follow a tempo change | Open; a convenience |
 | F33 | `maac analyze` cannot tell whether a pump is heard. The keyed compressor took 4.3 dB on average in the drops, up to 13.9, yet the owner heard no pumping. Measured outside the analyzer, the mix swung only 6.1 dB per beat, and deeper settings barely changed that: the parts that carried the drop were not pumped | Open: a measurement of how much the mix's level swings on the beat, per section |
 | F34 | The track uses 8.66 billion of the song profile's 10 billion execution-work units (87 %), mostly in the seven-saw voices. At this density the limit is reached at about 3:10, so a five-minute extended mix, common in dance music, cannot be built. The earlier trial songs are as close: "Lantern Street" uses 8.88 billion in 2:09 (89 %), "Morning Ferry" 5.99 billion in 2:17 (60 %) and "Late Window" 3.25 billion in 1:18 (33 %). At "Lantern Street"'s density the limit is about 2:25, shorter than most pop songs. The default profile refuses even `maac compile` without `--profile song` | Fixed: the `song` profile allows 100 billion units, and a default-profile refusal names it. A five-minute version of the track builds in 134 s of CPU. See the [song budget proposal](../design/song-budget-proposal.md#results) |
+| F35 | The std/studio hats ring at a pitch. They are six square waves and nothing else, and near 9 kHz the 800 Hz square's harmonics stand above the rest, so the owner heard the open hat as "a triangle, not cymbals". Heard after the trial, in the approved master | Fixed: `std/studio/1.2.0` bends the squares through a drive and adds noise, at the same loudness, and "Afterlight" imports it. See the [studio delivery report](studio-delivery.md#stdstudio120) |
 
 ## What to build next, in order
 

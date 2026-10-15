@@ -30,6 +30,11 @@ pub const STUDIO_SOURCE: &str = include_str!("../stdlib/studio/1.0.0.maac");
 pub const STUDIO_1_1_ID: &str = "std/studio/1.1.0";
 pub const STUDIO_1_1_SOURCE_PATH: &str = "@builtin/std/studio/1.1.0.maac";
 pub const STUDIO_1_1_SOURCE: &str = include_str!("../stdlib/studio/1.1.0.maac");
+/// Gives the hats a drive and noise so they hiss instead of ringing at a
+/// pitch; every other 1.1.0 export is unchanged.
+pub const STUDIO_1_2_ID: &str = "std/studio/1.2.0";
+pub const STUDIO_1_2_SOURCE_PATH: &str = "@builtin/std/studio/1.2.0.maac";
+pub const STUDIO_1_2_SOURCE: &str = include_str!("../stdlib/studio/1.2.0.maac");
 
 #[derive(Clone, Copy, Debug)]
 pub struct BuiltinSource {
@@ -88,6 +93,15 @@ const DEFINITIONS: &[LibraryDefinition] = &[
             source: STUDIO_1_1_SOURCE,
         },
         editorial: include_str!("../stdlib/studio/1.1.0.json"),
+        alias: "studio",
+    },
+    LibraryDefinition {
+        id: STUDIO_1_2_ID,
+        source: BuiltinSource {
+            path: STUDIO_1_2_SOURCE_PATH,
+            source: STUDIO_1_2_SOURCE,
+        },
+        editorial: include_str!("../stdlib/studio/1.2.0.json"),
         alias: "studio",
     },
 ];

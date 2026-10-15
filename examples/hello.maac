@@ -6,7 +6,7 @@ project hello {
 }
 tempo clock { points = [(0q, 84bpm, step)]; }
 meter metre { points = [(0q, 4, 4)]; }
-import studio { builtin = "std/studio/1.1.0"; }
+import studio { builtin = "std/studio/1.2.0"; }
 
 node piano { instrument = &studio.piano; config = { voices = 16; }; }
 node drums { instrument = &studio.drums; }

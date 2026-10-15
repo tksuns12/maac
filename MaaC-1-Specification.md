@@ -76,7 +76,8 @@ and drum kit from the instrument contract's velocity and key sources, curved
 envelopes, resonant filter and drive. `std/studio/1.1.0` adds an electric
 guitar and an acoustic piano built on the plucked string's excitation and
 pickup, the drive's level compensation and the `synth.modal/1` resonator
-bank. It is reusable library content under
+bank. `std/studio/1.2.0` gives the two hats a drive and noise so that they
+hiss instead of ringing at a pitch. It is reusable library content under
 the same extension and changes no core semantics.
 
 ### 1.4 Native production extension

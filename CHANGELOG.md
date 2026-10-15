@@ -60,6 +60,15 @@ promise of compatibility beyond the documented interfaces.
   design, glides, rolls, pumping and tempo-synced delay, and the
   [README](README.md) links the approved master.
 
+- `std/studio/1.2.0`, whose hats hiss as cymbals do (F35). The 1.1.0 hats
+  are six square waves and nothing else, and the 800 Hz square's harmonics
+  ring at a pitch: the owner heard "Afterlight"'s open hat as "a triangle,
+  not cymbals". 1.2.0 bends the squares through a drive and adds noise, at
+  the same loudness; every other export renders bit-identically to 1.1.0.
+  "Afterlight" and the README's hello example import it. "Lantern Street"
+  and "Morning Ferry" keep 1.1.0 and their approved masters. See the
+  [studio delivery report](docs/reports/studio-delivery.md#stdstudio120).
+
 ### Changed
 
 - The `song` execution profile allows 100 billion work units, up from 10

@@ -329,7 +329,10 @@ def main() -> int:
         action="store_true",
         help="measure each std/studio reference phrase at velocity 0.7 instead of rendering A/B files",
     )
+    parser.add_argument("--studio", default="std/studio/1.0.0", help="the std/studio version to audition")
     args = parser.parse_args()
+    global HEADER
+    HEADER = HEADER.replace("std/studio/1.0.0", args.studio)
 
     args.out.mkdir(parents=True, exist_ok=True)
     if args.calibrate:

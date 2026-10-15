@@ -29,7 +29,7 @@ and vibrato. The [delivery report](reports/acoustic-delivery.md) records numeric
 and installed-example checks, and the owner approved all three by ear. Basic
 sounds and default discovery remain unchanged.
 
-The [studio instruments](studio-instruments.md) under `std/studio/1.1.0`
+The [studio instruments](studio-instruments.md) under `std/studio/1.2.0`
 are an electric piano, an acoustic piano, an electric guitar, a bass, a pad
 and a drum kit whose sound changes with velocity: harder notes bark, pluck,
 strike or hit brighter. Their defaults share one loudness scale (−20 LUFS at

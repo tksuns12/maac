@@ -14,8 +14,8 @@ listen before you call a track finished.
 
 ## 1. Plan before writing
 
-- **Instruments.** Start from `std/studio/1.1.0`
-  (`maac instruments --library std/studio/1.1.0`): its electric piano,
+- **Instruments.** Start from `std/studio/1.2.0`
+  (`maac instruments --library std/studio/1.2.0`): its electric piano,
   acoustic piano, electric guitar, bass, pad and `drums` kit change timbre
   with velocity, and their levels share one calibrated scale. Use the
   `std/acoustic/1.0.0` guitars for picked acoustic parts; for strums, see
@@ -115,7 +115,7 @@ listen before you call a track finished.
   shape from G2 moved down a fourth plays D2, below a guitar's low E (E2).
   "Morning Ferry"'s picking does this in its D and C bars; pick from a
   voicing per shape instead.
-- Play drums from one kit node: import `std/studio/1.1.0`, add
+- Play drums from one kit node: import `std/studio/1.2.0`, add
   `node drums { instrument = &studio.drums; }`, and write `hit` leaves such as
   `hit k1 { at = 0q; key = "kick"; velocity = 0.85; }`. Keys are `kick`,
   `snare`, `clap`, `hat`, `open_hat`, `low_tom`, `high_tom` and `crash`; set

@@ -11,6 +11,10 @@ of one file per instrument.
 their acceptance and passed listening rounds with the owner. It is frozen; see
 [std/studio/1.1.0](#stdstudio110) below.
 
+**1.2.0:** `std/studio/1.2.0` gives the two hats a drive and noise, so that
+they hiss instead of ringing at a pitch; the owner chose it by ear. It is
+frozen; see [std/studio/1.2.0](#stdstudio120) below.
+
 The [guide](../studio-instruments.md) explains how to use the library. This
 report records how it was tuned and what was measured. All renders are
 48 kHz from the release build on an Apple M1, 2026-10-06.
@@ -140,7 +144,8 @@ cycle counts partly taken on efficiency cores; both have been replaced.
 - **The clap's second burst swells.** An envelope cannot start late, so the
   second burst rises over 10 ms instead of starting sharply.
 - **The hats are drum-machine metal.** Six square waves through filters, as
-  analog machines made them, not a recorded cymbal.
+  analog machines made them, not a recorded cymbal. They ring at a pitch;
+  [1.2.0](#stdstudio120) adds a drive and noise.
 - **The drive still aliases at the top.** Hard-driven high electric-piano
   notes keep some aliasing near 24 kHz ([saturation](../instruments.md#saturation)).
 - **The electric piano's filter range.** Notes from A7 up at full velocity
@@ -237,4 +242,66 @@ python3 scripts/guitar_auditions.py --measure  # reference loudness and drive sw
 python3 scripts/piano_auditions.py             # A/B files against the electric piano
 python3 scripts/piano_auditions.py --measure   # reference loudness and a register ladder
 cargo test --release --test studio_1_1 --test studio_electric_guitar --test studio_piano
+```
+
+## std/studio/1.2.0
+
+Frozen 2026-10-15, after the owner heard the open hat in the intro of
+"Afterlight" as "a triangle, not cymbals" ([T5 F35](ai-production-trial-t5.md#friction)).
+The source is 1.1.0's with the version changed and the two hats' graphs and
+levels changed, SHA-256
+`65d7e95113277eefabcd3b3b16e35bea710875769e0f22814c7b74284b38a2a0`.
+
+### What rang
+
+Both hats sum six square waves, from 205.3 Hz to 800 Hz, and keep what passes
+a band near 9 kHz and a high-pass at 6.5 to 7 kHz. Up there a square's
+harmonics fall off as 1/n, so the 800 Hz square's, the 7th to the 15th at
+5.6, 7.2, 8.8, 10.4 and 12 kHz, stand above the rest: the odd harmonics of
+one note, heard as a pitch. Nothing else in the hats sounded.
+
+### The change
+
+The squares' sum goes through `synth.drive/1` at `drive` 4 and `level` 1/2.
+The curve mixes the squares into sum and difference tones that fill the gaps
+between the harmonics. Noise at `level` 1/5 is added before the band. The
+envelopes, filters, velocity response, gates and choke are unchanged. The
+level defaults go from 7.32 to 4.59 (closed hat) and from 2.78 to 1.73 (open
+hat), which keeps the kit's balance.
+
+The owner compared three versions of the "Afterlight" intro, with the open
+hat at one loudness: the 1.1.0 hat, the squares with noise added, and the
+squares through the drive with noise added. The owner chose the third, then
+heard the first drop's closed hats before and after the same change and
+preferred the new ones.
+
+### Acceptance
+
+| Criterion | Evidence | Result |
+| --- | --- | --- |
+| The rest of 1.1.0 is unchanged | Every other instrument's source and catalog entry, the rendered audio of its usage example, and a hit of every other kit key, in both versions | Identical |
+| The hats no longer ring | The share of a velocity-0.5 hit's 2–16 kHz energy within two bins of its ten strongest spectral peaks: the closed hat's first 2,048 frames, the open hat's first 8,192. Noise through the same filters measures about 0.10 | Closed hat 0.56 before, 0.26 after; open hat 0.43 before, 0.11 after |
+| Levels hold | Each hat alone, one hit per beat at velocity 0.7 | Closed hat −30.64 LUFS before, −30.66 after; open hat −28.63 both: still −10 and −8 LU from the kick |
+| Harder is brighter | Band-weighted mean octave at velocity 0.3 and 1 | Higher at velocity 1 for both hats |
+| Listening | Three versions of the "Afterlight" intro, then its first drop before and after, as above | The owner chose the drive and noise for both hats |
+| The bytes are frozen | Source SHA-256 against `stdlib/studio/1.2.0.sha256` | Matches |
+
+[`tests/studio_1_2.rs`](../../tests/studio_1_2.rs) checks every row but
+listening.
+
+### Limits
+
+- **One song, one listener.** The owner judged both hats in one song on a
+  phone.
+- **Every hit is the same.** Each voice starts its noise from the same seed,
+  so repeated hits at one velocity are identical, as a sample's are.
+- **The crash keeps its 1.1.0 graph.** Its noise already covers its metal:
+  0.18 to 0.19 on the measure above.
+
+### Reproducing
+
+```sh
+cargo build --release
+python3 scripts/studio_auditions.py --calibrate --studio std/studio/1.2.0
+cargo test --release --test studio_1_2
 ```

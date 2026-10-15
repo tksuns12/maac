@@ -21,7 +21,7 @@ project afterlight {
 }
 tempo clock { points = [(0q, 126bpm, step)]; }
 meter metre { points = [(0q, 4, 4)]; }
-import studio { builtin = "std/studio/1.1.0"; }
+import studio { builtin = "std/studio/1.2.0"; }
 
 region intro { span = [bar(1, 1), bar(9, 1)]; }
 region groove { span = [bar(9, 1), bar(17, 1)]; }

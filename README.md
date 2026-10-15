@@ -69,7 +69,7 @@ project hello {
 }
 tempo clock { points = [(0q, 84bpm, step)]; }
 meter metre { points = [(0q, 4, 4)]; }
-import studio { builtin = "std/studio/1.1.0"; }
+import studio { builtin = "std/studio/1.2.0"; }
 
 node piano { instrument = &studio.piano; config = { voices = 16; }; }
 node drums { instrument = &studio.drums; }
@@ -153,8 +153,8 @@ maac analyze examples/ferry/ferry.maac --profile song --section regions
 Browse the instruments and their controls:
 
 ```sh
-maac instruments --library std/studio/1.1.0
-maac instruments piano --library std/studio/1.1.0 --json
+maac instruments --library std/studio/1.2.0
+maac instruments piano --library std/studio/1.2.0 --json
 ```
 
 The steps behind `build` are also separate commands:

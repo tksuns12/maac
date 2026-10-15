@@ -3,14 +3,16 @@
 **Validation status:** the library meets its numerical acceptance:
 full-range renders, brighter sound at higher velocity, and calibrated levels.
 Every export has also been approved by ear by the owner: the
-`electric_guitar` and `piano` in their own listening rounds, and the 1.0.0
-exports in a [round on 2026-10-12](reports/showcase-listening.md). The
+`electric_guitar` and `piano` in their own listening rounds, the 1.0.0
+exports in a [round on 2026-10-12](reports/showcase-listening.md), and the
+1.2.0 hats in "Afterlight" on 2026-10-15. The
 [delivery report](reports/studio-delivery.md) records the measurements and their
 limits.
 
-`std/studio/1.1.0` is a built-in collection of an electric piano, an
+`std/studio/1.2.0` is a built-in collection of an electric piano, an
 acoustic piano, an electric guitar, a bass, a pad and a drum kit.
-`std/studio/1.0.0` has the same exports without the guitar and the piano.
+`std/studio/1.1.0` has the same exports with hats that ring at a pitch, and
+`std/studio/1.0.0` lacks the guitar and the piano as well.
 The library answers the T2 trial's finding that the std/basic
 keys, bass, drums and pad sound dated ([F14](reports/ai-production-trial.md)). Like
 the other built-in libraries, it needs no recordings, downloads, library
@@ -40,9 +42,14 @@ processors:
 | `drums` | A kit of the eight drums below, with the std/basic/1.1.0 kit's keys, gates and hat choke | Every drum gets brighter; kick and toms drop further |
 | `kick`, `snare`, `clap`, `closed_hat`, `open_hat`, `low_tom`, `high_tom`, `crash` | The kit's pieces, also usable alone | As above |
 
+The hats are six square waves at the pitches analog drum machines used. In
+1.0.0 and 1.1.0 nothing else sounds, and the 800 Hz square's harmonics ring
+at a pitch, like a triangle. 1.2.0 bends the squares through a drive and
+mixes in noise, so the hats hiss as cymbals do, at the same loudness.
+
 ```sh
-maac instruments --library std/studio/1.1.0
-maac instruments electric_piano --library std/studio/1.1.0 --json
+maac instruments --library std/studio/1.2.0
+maac instruments electric_piano --library std/studio/1.2.0 --json
 ```
 
 Discovery gives each export's exact controls, ranges, pitch and duration
@@ -54,7 +61,7 @@ Import the library and point a node at the new export. The drum keys are the
 std/basic/1.1.0 kit's keys, so drum patterns need no change:
 
 ```maac
-import studio { builtin = "std/studio/1.1.0"; }
+import studio { builtin = "std/studio/1.2.0"; }
 node keys { instrument = &studio.electric_piano; config = { voices = 24; }; }
 node bass { instrument = &studio.bass; config = { voices = 6; }; }
 node pad { instrument = &studio.pad; config = { voices = 8; }; }
@@ -142,8 +149,10 @@ measured render times.
 
 ## Versioning
 
-The exact import identities are `std/studio/1.0.0` and `std/studio/1.1.0`,
-recorded as `@builtin/std/studio/<version>.maac` with their source hashes.
-`1.1.0` is `1.0.0` with the guitar and piano appended; every 1.0.0 export
-renders bit-identically in both. The released bytes and sound are frozen; any
+The exact import identities are `std/studio/1.0.0`, `std/studio/1.1.0` and
+`std/studio/1.2.0`, recorded as `@builtin/std/studio/<version>.maac` with
+their source hashes. `1.1.0` is `1.0.0` with the guitar and piano appended;
+every 1.0.0 export renders bit-identically in both. `1.2.0` is `1.1.0` with
+the two hats' graphs and levels changed; every other export renders
+bit-identically in both. The released bytes and sound are frozen; any
 change to a timbre, default or level needs a new version.
