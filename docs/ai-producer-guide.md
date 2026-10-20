@@ -3,9 +3,9 @@
 How an AI can produce a finished track with MaaC: write source, render it,
 perceive it through measurements and images, revise, master and deliver.
 Every step below was used in the [T2](reports/ai-production-trial.md),
-[T3](reports/ai-production-trial-t3.md), [T4](reports/ai-production-trial-t4.md)
-or [T5](reports/ai-production-trial-t5.md) production trial, and the pitfalls
-are ones those trials hit.
+[T3](reports/ai-production-trial-t3.md), [T4](reports/ai-production-trial-t4.md),
+[T5](reports/ai-production-trial-t5.md) or [T6](reports/ai-production-trial-t6.md)
+production trial, and the pitfalls are ones those trials hit.
 
 You cannot hear your own render. `maac analyze` is your measurement of what
 you would otherwise hear, and the person you work for is the final judge of
