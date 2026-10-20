@@ -29,10 +29,10 @@ use crate::music::{
 };
 use crate::plan::{
     Automation, AutomationClock, AutomationPoint, Connection, EventKind, EventTarget,
-    ExpressionClock, GainExpression, GainExpressionPoint, Interpolation, Node, OutputSettings,
-    PitchExpression, PitchExpressionPoint, Plan, PlanLimits, PortRef, PressureExpression,
-    PressureExpressionPoint, Processor, Region, ResolvedEvent, SourceMapping, SourceSpan, TempoMap,
-    TempoPoint, TimbreExpression, TimbreExpressionPoint,
+    ExpressionClock, GainExpression, GainExpressionPoint, Interpolation, Node, NoteJoin,
+    OutputSettings, PitchExpression, PitchExpressionPoint, Plan, PlanLimits, PortRef,
+    PressureExpression, PressureExpressionPoint, Processor, Region, ResolvedEvent, SourceMapping,
+    SourceSpan, TempoMap, TempoPoint, TimbreExpression, TimbreExpressionPoint,
 };
 use crate::plan_artifact::PlanArtifact;
 use crate::plan_v4::{NodeV4, PlanV4, ProcessorV4};
@@ -391,6 +391,9 @@ struct NoteDef {
     pitch: Pitch,
     release_velocity: f64,
     release_offset: Rational,
+    /// How a connected note continues the note before it (§8.3).
+    slur: bool,
+    slide: Rational,
 }
 
 #[derive(Clone, Debug)]
@@ -568,6 +571,8 @@ struct ExpandedNote {
     dur_q: Rational,
     release_velocity: f64,
     release_offset_seconds: Rational,
+    slur: bool,
+    slide_seconds: Rational,
 }
 impl ExpandedEvent {
     fn note(&self) -> CResult<&ExpandedNote> {
@@ -710,6 +715,37 @@ struct ExpansionState<'a> {
     /// expand through such a placement.
     target: Option<&'a EventTarget>,
     depth: usize,
+}
+
+/// A plan event that may join the note before it: both event shapes.
+trait JoinableEvent {
+    /// Address, target node, onset frame and, for a note, its off frame.
+    fn join_key(&self) -> (&str, &str, u64, Option<u64>);
+    fn set_join(&mut self, join: Option<NoteJoin>);
+}
+
+impl JoinableEvent for ResolvedEvent {
+    fn join_key(&self) -> (&str, &str, u64, Option<u64>) {
+        let off = matches!(self.kind, EventKind::Note { .. })
+            .then_some(self.off_frame)
+            .flatten();
+        (&self.address, &self.target.node, self.on_frame, off)
+    }
+    fn set_join(&mut self, join: Option<NoteJoin>) {
+        self.join = join;
+    }
+}
+
+impl JoinableEvent for ResolvedEventV3 {
+    fn join_key(&self) -> (&str, &str, u64, Option<u64>) {
+        let off = matches!(self.kind, EventKind::Note { .. })
+            .then_some(self.off_frame)
+            .flatten();
+        (&self.address, &self.target.node, self.on_frame, off)
+    }
+    fn set_join(&mut self, join: Option<NoteJoin>) {
+        self.join = join;
+    }
 }
 
 struct Compiler<'a> {
@@ -2137,6 +2173,8 @@ impl<'a> Compiler<'a> {
                 "onset_offset",
                 "release_offset",
                 "order",
+                "slur",
+                "slide",
             ],
         )?;
         let at_field = self.field(object, "at")?;
@@ -2192,6 +2230,31 @@ impl<'a> Compiler<'a> {
             .map(|value| self.seconds_value(value, object, object.field("release_offset")))
             .transpose()?
             .unwrap_or_else(Rational::zero);
+        let slur = match object.field("slur").map(|field| &field.value.kind) {
+            None => false,
+            Some(ValueKind::Boolean(value)) => *value,
+            Some(_) => {
+                return Err(path_diagnostic(
+                    DiagnosticCode::Unit,
+                    "slur must be a boolean",
+                    object,
+                    object.field("slur"),
+                ))
+            }
+        };
+        let slide = self
+            .optional(object, "slide")
+            .map(|value| self.seconds_value(value, object, object.field("slide")))
+            .transpose()?
+            .unwrap_or_else(Rational::zero);
+        if slide.is_negative() || slide > Rational::new(1.into(), 4.into()) {
+            return Err(path_diagnostic(
+                DiagnosticCode::Range,
+                "slide must be from 0s to 250ms",
+                object,
+                object.field("slide"),
+            ));
+        }
         let order = self
             .optional(object, "order")
             .map(|value| {
@@ -2265,6 +2328,8 @@ impl<'a> Compiler<'a> {
                 pitch,
                 release_velocity,
                 release_offset,
+                slur,
+                slide,
             })),
         })
     }
@@ -2291,6 +2356,8 @@ impl<'a> Compiler<'a> {
                 "strum",
                 "stagger",
                 "tilt",
+                "slur",
+                "slide",
             ],
         )?;
         let (pitches_field, pitches) = match (object.field("pitches"), object.field("voicing")) {
@@ -4408,6 +4475,8 @@ impl<'a> Compiler<'a> {
                     dur_q,
                     release_velocity: note.release_velocity,
                     release_offset_seconds: note.release_offset.clone(),
+                    slur: note.slur,
+                    slide_seconds: note.slide.clone(),
                 }))
             }
         };
@@ -5289,7 +5358,154 @@ impl<'a> Compiler<'a> {
             on_frame: 0,
             off_frame: None,
             order: expanded.order,
+            join: None,
         })
+    }
+
+    /// Join each note to the note before it where the destination plays
+    /// connected notes (§8.3): on the same track, with the same chord member
+    /// index, starting on the frame where that note ends, one to one. A
+    /// `slur` or `slide` on a note that joins nothing is `E_INTERVAL`, and on
+    /// a destination that does not play connected notes `E_CAPABILITY`.
+    fn assign_joins<E: JoinableEvent>(&self, events: &mut [E]) -> CResult<()> {
+        let expanded: HashMap<&str, &ExpandedEvent> = self
+            .events
+            .iter()
+            .map(|event| (event.address.as_str(), event))
+            .collect();
+        let tracks: HashMap<&str, &str> = self
+            .places
+            .iter()
+            .map(|place| (place.id.as_str(), place.track.as_str()))
+            .collect();
+        let mut plays: HashMap<String, bool> = HashMap::new();
+        // (track, member, frame) of each note on a destination that plays lines.
+        struct Line<'a> {
+            note: &'a ExpandedEvent,
+            track: &'a str,
+            member: u64,
+            on: u64,
+            off: u64,
+            plays: bool,
+        }
+        let mut notes: Vec<Option<Line<'_>>> = Vec::with_capacity(events.len());
+        for event in events.iter() {
+            let (address, node, on, off) = event.join_key();
+            let Some(off) = off else {
+                notes.push(None);
+                continue;
+            };
+            let Some(&note) = expanded.get(address) else {
+                notes.push(None);
+                continue;
+            };
+            let track = tracks
+                .get(address.split('/').next().unwrap_or_default())
+                .copied()
+                .unwrap_or_default();
+            let leaf = address.rsplit('/').next().unwrap_or_default();
+            let member = leaf
+                .split_once('.')
+                .and_then(|(_, member)| member.parse().ok())
+                .unwrap_or(0);
+            let plays = *plays
+                .entry(node.to_owned())
+                .or_insert_with(|| self.plays_lines(node));
+            notes.push(Some(Line {
+                note,
+                track,
+                member,
+                on,
+                off,
+                plays,
+            }));
+        }
+        let mut ends: HashMap<(&str, u64, u64), Vec<usize>> = HashMap::new();
+        let mut starts: HashMap<(&str, u64, u64), Vec<usize>> = HashMap::new();
+        for (index, line) in notes.iter().enumerate() {
+            if let Some(line) = line.as_ref().filter(|line| line.plays) {
+                ends.entry((line.track, line.member, line.off))
+                    .or_default()
+                    .push(index);
+                starts
+                    .entry((line.track, line.member, line.on))
+                    .or_default()
+                    .push(index);
+            }
+        }
+        let mut joins = Vec::with_capacity(notes.len());
+        for line in &notes {
+            let Some(line) = line else {
+                joins.push(None);
+                continue;
+            };
+            let ExpandedKind::Note(note) = &line.note.kind else {
+                joins.push(None);
+                continue;
+            };
+            let marked = note.slur || note.slide_seconds > Rational::zero();
+            if marked && !line.plays {
+                return Err(event_diagnostic(
+                    DiagnosticCode::Capability,
+                    "`slur` and `slide` need a destination that plays connected notes",
+                    line.note,
+                    &[if note.slur { "slur" } else { "slide" }],
+                ));
+            }
+            let key = (line.track, line.member, line.on);
+            let from = match (ends.get(&key), starts.get(&key)) {
+                (Some(ending), Some(starting))
+                    if line.plays && ending.len() == 1 && starting.len() == 1 =>
+                {
+                    notes[ending[0]]
+                        .as_ref()
+                        .map(|from| from.note.address.clone())
+                }
+                _ => None,
+            };
+            if marked && from.is_none() {
+                return Err(event_diagnostic(
+                    DiagnosticCode::Interval,
+                    format!(
+                        "`slur` and `slide` need one note on track `{}` with member index {} that ends where this one starts",
+                        line.track, line.member
+                    ),
+                    line.note,
+                    &[if note.slur { "slur" } else { "slide" }],
+                ));
+            }
+            joins.push(from.map(|from| NoteJoin {
+                from,
+                slur: note.slur,
+                slide_seconds:
+                    (note.slide_seconds > Rational::zero()).then(|| note.slide_seconds.clone()),
+            }));
+        }
+        for (event, join) in events.iter_mut().zip(joins) {
+            event.set_join(join);
+        }
+        Ok(())
+    }
+
+    /// Whether an event target's instrument has a bowed section, which plays
+    /// connected notes.
+    fn plays_lines(&self, node: &str) -> bool {
+        let Some(Node {
+            processor: Processor::Instrument { program, .. },
+            ..
+        }) = self.nodes.iter().find(|candidate| candidate.id == node)
+        else {
+            return false;
+        };
+        self.instrument_resources
+            .as_ref()
+            .and_then(|resources| {
+                resources
+                    .programs
+                    .iter()
+                    .find(|candidate| &candidate.id == program)
+            })
+            .is_some_and(|program| program.bow_player_count() > 0)
     }
 
     fn schedule_score_events(
@@ -5365,6 +5581,7 @@ impl<'a> Compiler<'a> {
         let timing = TimingContext::new_with_limits(&plan.tempo, &plan.output, limits)
             .map_err(plan_error)?;
         Self::schedule_score_events(&mut plan.output, &mut plan.events, &timing, limits)?;
+        self.assign_joins(&mut plan.events)?;
         plan.view()
             .validate_with_timing(limits, &timing)
             .map_err(plan_error_in!(plan.events))?;
@@ -5733,6 +5950,7 @@ impl<'a> Compiler<'a> {
         let timing = TimingContext::new_with_limits(&plan.tempo, &plan.output, &limits)
             .map_err(plan_error)?;
         Self::schedule_score_events(&mut plan.output, &mut plan.events, &timing, &limits)?;
+        self.assign_joins(&mut plan.events)?;
         for node in &mut plan.nodes {
             if let ProcessorV7::Audio { clip } = &mut node.processor {
                 let asset = plan
@@ -5866,6 +6084,7 @@ impl<'a> Compiler<'a> {
         let timing = TimingContext::new_with_limits(&plan.tempo, &plan.output, &limits)
             .map_err(plan_error)?;
         Self::schedule_score_events(&mut plan.output, &mut plan.events, &timing, &limits)?;
+        self.assign_joins(&mut plan.events)?;
         for node in &mut plan.nodes {
             if let ProcessorV6::Audio { clip } = &mut node.processor {
                 let asset = plan
@@ -6001,6 +6220,7 @@ impl<'a> Compiler<'a> {
         let timing = TimingContext::new_with_limits(&plan.tempo, &plan.output, &limits)
             .map_err(plan_error)?;
         Self::schedule_score_events(&mut plan.output, &mut plan.events, &timing, &limits)?;
+        self.assign_joins(&mut plan.events)?;
         for node in &mut plan.nodes {
             if let ProcessorV5::Clips { clips, .. } = &mut node.processor {
                 Self::schedule_clip_entries(clips, &plan.audio_assets, &timing, &plan.output)?;
@@ -6111,6 +6331,7 @@ impl<'a> Compiler<'a> {
         let timing = TimingContext::new_with_limits(&plan.tempo, &plan.output, &limits)
             .map_err(plan_error)?;
         Self::schedule_score_events(&mut plan.output, &mut plan.events, &timing, &limits)?;
+        self.assign_joins(&mut plan.events)?;
         plan.view()
             .validate_performance_with_timing(&limits, &timing)
             .map_err(plan_error_in!(plan.events))?;
@@ -6265,6 +6486,7 @@ impl<'a> Compiler<'a> {
                 on_frame,
                 off_frame: Some(off_frame),
                 order: expanded.order,
+                join: None,
             });
         }
         events.sort_by(|a, b| {
@@ -6273,6 +6495,7 @@ impl<'a> Compiler<'a> {
                 .then(a.order.cmp(&b.order))
                 .then(a.address.cmp(&b.address))
         });
+        self.assign_joins(&mut events)?;
         let plan = Plan {
             version: if self.instrument_resources.is_some() {
                 2

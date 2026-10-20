@@ -1649,10 +1649,13 @@ impl<'a> Validator<'a> {
                 "release_offset",
                 "order",
                 "label",
+                "slur",
+                "slide",
             ],
             &[],
         );
         self.validate_note_gate(object, path);
+        self.validate_join_fields(object, path);
         if let Some(field) = object.field("pitch") {
             self.validate_pitch(field, path);
         }
@@ -1699,10 +1702,13 @@ impl<'a> Validator<'a> {
                 "stagger",
                 "tilt",
                 "label",
+                "slur",
+                "slide",
             ],
             &[],
         );
         self.validate_note_gate(object, path);
+        self.validate_join_fields(object, path);
         self.validate_strum(object, path);
         let pitches = match (object.field("pitches"), object.field("voicing")) {
             (Some(field), voicing) => {
@@ -6267,6 +6273,29 @@ impl<'a> Validator<'a> {
     fn validate_seconds(&mut self, object: &Object, path: &[String], name: &str) {
         if let Some(field) = object.field(name) {
             self.validate_seconds_value(&field.value, path, name);
+        }
+    }
+
+    /// `slur`, a boolean, and `slide`, a duration from 0 s to 250 ms: how a
+    /// connected note continues the note before it (§8.3).
+    fn validate_join_fields(&mut self, object: &Object, path: &[String]) {
+        if let Some(field) = object.field("slur") {
+            self.expect_boolean(field, path, "slur");
+        }
+        if let Some(field) = object.field("slide") {
+            if let Some(seconds) =
+                self.quantity_value(&field.value, &[Unit::S, Unit::Ms], path, "slide")
+            {
+                if seconds < BigRational::zero() || seconds > BigRational::new(1.into(), 4.into()) {
+                    self.push(
+                        DiagnosticCode::Range,
+                        "slide must be from 0s to 250ms",
+                        Some(field.value.span),
+                        path.to_vec(),
+                        vec!["slide".into()],
+                    );
+                }
+            }
         }
     }
 

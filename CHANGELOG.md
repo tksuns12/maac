@@ -12,10 +12,22 @@ promise of compatibility beyond the documented interfaces.
   violin, viola, cello or bass body of about 50 resonances
   ([Bowed strings](docs/instruments.md#bowed-strings)). `dynamics` sets how
   fast and how hard the bow moves, so a louder note is also brighter and
-  rougher. It plays in tune from A0 to B6. Each note is still a stroke of
-  its own; connected notes follow. Each player costs 33 units of work per
-  sample with its body. See the
+  rougher. It plays in tune from A0 to B6. Each player costs 33 units of
+  work per sample with its body. See the
   [bowed strings proposal](docs/design/bowed-strings-proposal.md).
+
+- Connected notes ([§8.3](MaaC-1-Specification.md#83-connected-notes)). On
+  an instrument with a `synth.bow/1` section, a note that starts where the
+  note before it on the track ends, with the same chord member index,
+  continues that note's voice instead of starting one, so a line is played
+  on one string with one bow. A rest lifts the bow. `slur = true` keeps a
+  note in the same bow, and `slide = 120ms` slides into it; on a note that
+  joins nothing they are `E_INTERVAL`, and on any other instrument
+  `E_CAPABILITY`. A bow change starts 65 ms before the beat and a slide
+  into one finishes on the old bow, so the section reads its line half a
+  second ahead. The plan records each join, and MIDI export reports it as
+  `midi.connected_note`. The round 7 excerpt of T6 renders from MaaC with
+  the prototype's timing: every bow change speaks 5 ms before the beat.
 
 - A pitch expression can name a `vibrato`
   ([§8.1](MaaC-1-Specification.md#81-per-note-expression)), such as

@@ -345,6 +345,7 @@ fn note(address: &str, target: &str, on: u64, off: u64) -> ResolvedEvent {
         on_frame: on,
         off_frame: Some(off),
         order: 0,
+        join: None,
     }
 }
 

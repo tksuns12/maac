@@ -656,11 +656,13 @@ players spread evenly across `pan ± width/2`, equal-power and clamped to
 the field. The [bowed strings proposal](design/bowed-strings-proposal.md)
 records how each part was chosen by ear.
 
-Each note is played as a stroke. The bow starts from rest at the note's
-onset and reaches full speed through a quarter sine over `attack`. At the
+A stroke starts with a voice: the bow starts from rest at the note's onset
+and reaches full speed through a quarter sine over `attack`. At the voice's
 note-off it lifts, its speed falling linearly to zero over 250 ms, and the
 string rings on through its loss and the body. The amplitude envelope should
-release slowly enough to let it.
+release slowly enough to let it. Notes that touch are
+[connected](#connected-notes-on-a-bowed-string): the bow changes or carries
+on instead of lifting.
 
 **The string.** Each player's string is a loop of two delay lines of 4,096
 cells, split at the bow. With `f` the player's frequency, the loop is
@@ -694,8 +696,9 @@ times the player's factor, which grows from 30 % to full over the stroke's
 first 250 ms and is smoothed over 30 ms; on a note held 1.2 s or longer it
 widens by up to 25 % towards the note's end. Its rate is `rate` plus the
 player's offset. Two slow drifts add 3 cents at 0.08–0.2 Hz and 2 cents at
-0.2–0.5 Hz. Each player's onset is late by the absolute value of a normal
-draw with standard deviation `timing`, cut off at three times that.
+0.2–0.5 Hz. A stroke's first onset is late for each player by the absolute
+value of a normal draw with standard deviation `timing`, cut off at three
+times that.
 
 **The players' differences.** Each player is off in tune by a normal draw
 with a standard deviation of 4 cents, and each note by another 3. Their
@@ -725,6 +728,37 @@ response has unit energy. Random bodies pass some notes far louder than
 others, so each family has a fixed table of 16 bodies, the most even of 120
 draws across its range, and player `k` plays body `(seed + k) mod 16`.
 `body = none` leaves the string bare.
+
+#### Connected notes on a bowed string
+
+A bowed section plays [connected notes](../MaaC-1-Specification.md#83-connected-notes):
+a joined note continues the string and the bow. A stroke starts at the
+line's first note and lifts at its last note's note-off; in between the
+string never stops.
+
+- **A bow change.** A joined note without `slur` changes the bow's
+  direction around a centre 25 ms before the player's onset. Over 25 ms the
+  speed falls to zero through a quarter cosine, the bow rests for 30 ms,
+  and over 25 ms it rises the other way through a quarter sine; the force
+  gains `0.25 exp(−((t − c) / 40 ms)²)` around the centre `c`, the press
+  that makes the string catch again. The change runs from 65 ms before the
+  onset to 15 ms after it, so the new bow speaks about 5 ms before the beat.
+- **A finger change.** Without `slide`, the pitch moves linearly over 4 ms
+  centred on the player's onset, and the vibrato drops to 60 % and returns
+  over 180 ms.
+- **A slide.** Each player's slide lasts `slide`, varied by up to
+  `20 % × spread`. The pitch moves in cents as `u²` over it: slow to leave,
+  quick to land. A slurred slide runs from 65 % of its length before the
+  onset to 35 % after; a slide into a bow change ends where the change
+  begins, 65 ms before the onset, so it finishes on the old bow. The vibrato
+  is at most 20 % during the slide and returns over 300 ms, and the bow
+  lightens by up to 15 % in the middle of it.
+- **Timing.** Each player's onset at a bow change differs by a normal draw
+  with standard deviation `timing`, cut off at three times that, and on a
+  slur by 5/9 of it; only the line's first stroke is always late.
+
+The section reads the line half a second ahead, as the specification
+allows: a slide and a bow change start before the note does.
 
 **Range and stability.** Once settled, a held note plays within 3 cents of
 its pitch from A0 to B6, the violins' top in this model; a soft bow below G3

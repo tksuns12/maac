@@ -220,6 +220,13 @@ Each event contains:
   project-end truncation.
 - `on_frame`, `off_frame`: exact ceiling schedules relative to reset origin.
 - `release_velocity` and integer `order`.
+- `join`, only on a [connected note](../MaaC-1-Specification.md#83-connected-notes):
+  `from`, the address of the note it continues, with `slur: true` and
+  `slide_seconds` when they are set. The note it continues is on the same
+  target, ends on the joined note's `on_frame` and is joined only once, and
+  the target's instrument has a `synth.bow/1` section; otherwise validation
+  fails. That note receives no note-off. The field is optional in every plan
+  version, and absent fields keep earlier JSON.
 
 Validation recomputes the physical times from score coordinates and offsets,
 checks effective score bounds, and recomputes the frame ceilings. A positive gate

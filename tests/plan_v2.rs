@@ -141,6 +141,7 @@ fn base_plan(version: u32) -> Plan {
             on_frame: 0,
             off_frame: Some(12_000),
             order: 0,
+            join: None,
         }],
         nodes: vec![Node {
             id: "bell".into(),

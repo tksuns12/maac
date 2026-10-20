@@ -34,6 +34,7 @@ The adapter reports, when relevant:
 - `midi.zero_velocity_note` when a silent MaaC note would otherwise become a MIDI note-off;
 - `midi.overlapping_same_key_identity` for ambiguous same-channel/key overlap;
 - `midi.per_note_expression` for omitted MaaC per-note expression;
+- `midi.connected_note` for a [connected note](../MaaC-1-Specification.md#83-connected-notes), exported as a new note without its slur or slide;
 - `midi.tempo_ramp_discretization` when continuous tempo metadata is omitted;
 - `midi.timing_resolution` for frame boundaries rounded to the 1 ms timeline;
 - `midi.audio_omission` for recorded/audio graph content;

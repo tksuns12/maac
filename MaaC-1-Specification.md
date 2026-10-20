@@ -377,7 +377,7 @@ pattern bass_riff {
 }
 ```
 
-A `note` requires `at`, `dur`, and `pitch`. `at` is nonnegative pattern-local q; `dur` is positive q. `velocity` is dimensionless `[0,1]`, default 1. `release_velocity` is `[0,1]`, default 0.5. `onset_offset` and `release_offset` are seconds, default zero. `order` is an integer, default zero. Notes are not shortened merely because another note of the same pitch starts.
+A `note` requires `at`, `dur`, and `pitch`. `at` is nonnegative pattern-local q; `dur` is positive q. `velocity` is dimensionless `[0,1]`, default 1. `release_velocity` is `[0,1]`, default 0.5. `onset_offset` and `release_offset` are seconds, default zero. `order` is an integer, default zero. `slur` and `slide` say how a connected note continues the note before it (§8.3). Notes are not shortened merely because another note of the same pitch starts.
 
 A `hit` requires `at` and a string `key`, identifying a declared unpitched trigger on its destination, such as a sample-kit key or the piece key of a [kit instrument](docs/instruments.md#kits). It has `velocity`, `onset_offset`, and `order` with the same defaults. It has no gate duration or implicit note-off; the receiver's declared trigger behavior determines its tail.
 
@@ -549,6 +549,23 @@ pattern arp { length = 2q;
 A member's leaf component in the §10 event address is `chord_id.k`, for
 example `comp_main/3/down.2`; identifiers cannot contain `.`. Its source
 object is the chord. Changing a member's pitch keeps its identity.
+
+### 8.3 Connected notes
+
+```maac
+note b { at = 2q; dur = 2q; pitch = A5; velocity = 0.7; slide = 120ms; }
+note c { at = 4q; dur = 3/2q; pitch = Bb5; velocity = 0.68; slur = true; }
+```
+
+A receiver may play connected notes; an instrument whose voice graph holds a `synth.bow/1` section does ([bowed strings](docs/instruments.md#bowed-strings)). On such a destination a note **joins** the note before it when both are on the same track, it starts on the frame where that note's gate ends, and both have the same chord member index (§8.2), where a note that is not a chord member, or a chord that plays one pitch, has index 0. Joining is one to one: when two notes end there, or two start there, with the same index on the track, none of them joins. A note that starts after the earlier one ends, even by one frame, or that overlaps it, starts its own voice as before; so a rest lifts a bow, and notes that touch are played connected.
+
+A joined note continues the earlier note's voice instead of starting one. The earlier note receives no note-off. The voice keeps every node's state, takes the joined note's address, base pitch and expressions, which are evaluated on the joined note's own gate, and moves the velocity that scales its output, and that `synth.velocity/1` emits, linearly to the joined note's over 100 ms. Envelopes do not restart.
+
+`slur` is a boolean, default false, and `slide` a duration from 0s to 250ms, default 0s. A slurred note is played in the same stroke as the note it joins; otherwise the receiver re-articulates it without stopping, as a bow change. `slide` moves the pitch from the earlier note over about that time instead of at once. The receiver defines both; [bowed strings](docs/instruments.md#connected-notes-on-a-bowed-string) gives `synth.bow/1`'s. On a note that joins nothing, either field is `E_INTERVAL`; on a destination that does not play connected notes, `E_CAPABILITY`. A chord's `slur` and `slide` apply to every member.
+
+A receiver that plays connected notes may read each note of a voice's line, its onset, gate, pitch, `slur` and `slide`, up to 500 ms before the note starts, so that a bow can change before the beat and a slide finish on the old bow. Its output at a frame depends on no note that starts more than 500 ms later. Offline rendering is unaffected; a live adapter for such a receiver needs that much latency.
+
+A plan records each join on the joined note as `join`, with `from`, the address of the note it continues, and `slur` and `slide_seconds` when they are set ([performance plan](docs/performance-plan.md#events)). A render range that starts inside a connected line starts the note sounding there on its own voice, for the rest of the line.
 
 ## 9. Finite patterns and composition
 

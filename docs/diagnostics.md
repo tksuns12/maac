@@ -51,6 +51,11 @@ dependencies through the bounded local bundle loader. Compilation uses that
 bundle; retained-plan rendering uses embedded assets. Neither executes plug-ins,
 hardware adapters, or network requests, and no command opens an audio device.
 
+A `slur` or `slide` on a note that joins nothing is `E_INTERVAL`: the note
+must start on the frame where a note with the same chord member index on the
+same track ends ([connected notes](../MaaC-1-Specification.md#83-connected-notes)).
+On a destination without a bowed section, either field is `E_CAPABILITY`.
+
 A hit onset must schedule before the score-end frame. If a physically pre-end
 onset rounds to that frame, compilation returns `E_INTERVAL`; move the onset
 earlier or extend the score. The declared tail allows samples that already

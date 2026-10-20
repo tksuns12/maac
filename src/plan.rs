@@ -1484,6 +1484,23 @@ pub enum EventKind {
     },
 }
 
+/// How a note continues the note before it on a receiver that plays
+/// connected notes (§8.3): the event it joins, whether it stays in the same
+/// stroke, and how long its pitch slides.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NoteJoin {
+    pub from: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub slur: bool,
+    #[serde(
+        default,
+        with = "optional_rational_serde",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub slide_seconds: Option<Rational>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResolvedEvent {
@@ -1509,6 +1526,9 @@ pub struct ResolvedEvent {
     pub off_frame: Option<u64>,
     #[serde(default)]
     pub order: i32,
+    /// Absent unless the note continues another one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub join: Option<NoteJoin>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -2113,6 +2133,7 @@ pub(crate) struct EventView<'a> {
     pub(crate) off_frame: Option<u64>,
     #[allow(dead_code)] // Retained for versioned scheduling consumers of the view.
     pub(crate) order: i32,
+    pub(crate) join: Option<&'a NoteJoin>,
 }
 impl<'a> From<&'a ResolvedEvent> for EventView<'a> {
     fn from(event: &'a ResolvedEvent) -> Self {
@@ -2133,6 +2154,7 @@ impl<'a> From<&'a ResolvedEvent> for EventView<'a> {
             on_frame: event.on_frame,
             off_frame: event.off_frame,
             order: event.order,
+            join: event.join.as_ref(),
         }
     }
 }
@@ -2179,6 +2201,7 @@ impl<'a> From<&'a crate::plan_v3::ResolvedEventV3> for EventView<'a> {
             on_frame: event.on_frame,
             off_frame: event.off_frame,
             order: event.order,
+            join: event.join.as_ref(),
         }
     }
 }
@@ -4878,6 +4901,82 @@ impl<'a> PlanView<'a> {
                 "bounded voice work exceeds the plan limit",
             ));
         }
+        self.validate_joins(&node_by_id)
+    }
+
+    /// A joined note continues one earlier note on the same target, which
+    /// ends on its onset frame; a note is joined at most once, and only a
+    /// target that plays connected notes receives joins (§8.3).
+    fn validate_joins(&self, node_by_id: &HashMap<&str, NodeView<'_>>) -> Result<(), PlanError> {
+        let events: Vec<EventView<'_>> = self.events().collect();
+        let by_address: HashMap<&str, usize> = events
+            .iter()
+            .enumerate()
+            .map(|(index, event)| (event.address.as_str(), index))
+            .collect();
+        let mut joined = BTreeSet::new();
+        for (index, event) in events.iter().enumerate() {
+            let Some(join) = event.join else {
+                continue;
+            };
+            let path = format!("events[{index}].join");
+            let from = by_address
+                .get(join.from.as_str())
+                .map(|&from| &events[from])
+                .ok_or_else(|| {
+                    err(
+                        "E_REFERENCE",
+                        &path,
+                        "a joined note's `from` names no event",
+                    )
+                })?;
+            if !matches!(event.kind, EventKind::Note { .. })
+                || !matches!(from.kind, EventKind::Note { .. })
+                || from.target != event.target
+                || from.on_frame >= event.on_frame
+                || from.off_frame != Some(event.on_frame)
+            {
+                return Err(err(
+                    "E_INTERVAL",
+                    &path,
+                    "a joined note starts on the target where the note it joins ends",
+                ));
+            }
+            if !joined.insert(join.from.as_str()) {
+                return Err(err("E_INTERVAL", &path, "a note is joined at most once"));
+            }
+            if join.slide_seconds.as_ref().is_some_and(|slide| {
+                slide.is_negative() || *slide > Rational::new(1.into(), 4.into())
+            }) {
+                return Err(err(
+                    "E_RANGE",
+                    format!("{path}.slide_seconds"),
+                    "slide must be from 0 to 1/4 second",
+                ));
+            }
+            let plays_lines = match node_by_id.get(event.target.node.as_str()) {
+                Some(NodeView {
+                    processor: ProcessorView::Core(Processor::Instrument { program, .. }),
+                    ..
+                }) => self
+                    .instruments
+                    .and_then(|resources| {
+                        resources
+                            .programs
+                            .iter()
+                            .find(|candidate| &candidate.id == program)
+                    })
+                    .is_some_and(|program| program.bow_player_count() > 0),
+                _ => false,
+            };
+            if !plays_lines {
+                return Err(err(
+                    "E_CAPABILITY",
+                    &path,
+                    "the target does not play connected notes",
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -6685,6 +6784,7 @@ mod gain_expression_tests {
             on_frame: 48_000,
             off_frame: Some(72_000),
             order: 0,
+            join: None,
         };
         for (clock, midpoint, end) in [
             (ExpressionClock::Seconds, r(1, 4), r(1, 2)),

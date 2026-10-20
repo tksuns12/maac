@@ -769,6 +769,7 @@ mod tests {
                 on_frame: 0,
                 off_frame: Some(12_000),
                 order: 0,
+                join: None,
             }],
             nodes: vec![Node::new("sine", Processor::sine(4)).unwrap()],
             connections: Vec::new(),

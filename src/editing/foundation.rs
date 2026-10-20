@@ -1158,6 +1158,18 @@ fn normalize_object_inner(
             ] {
                 fields.entry(name).or_insert(value);
             }
+            // A note that joins nothing has neither field, so a default
+            // `slur` or `slide` is dropped rather than added: earlier
+            // documents keep their identity (§8.3).
+            if fields.get("slur") == Some(&boolean(false)) {
+                fields.remove("slur");
+            }
+            if fields
+                .get("slide")
+                .is_some_and(|slide| slide["t"] == "quantity" && slide["n"] == "0")
+            {
+                fields.remove("slide");
+            }
             // A strum strikes one string every 8 ms with no tilt.
             if fields.contains_key("strum") {
                 fields

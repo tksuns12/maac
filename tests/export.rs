@@ -66,6 +66,7 @@ fn one_note_plan_with_pitch(level: Rational, pitch_hz: f64) -> Plan {
             on_frame: 0,
             off_frame: Some(12_000),
             order: 0,
+            join: None,
         }],
         nodes: vec![Node {
             id: "sine".into(),

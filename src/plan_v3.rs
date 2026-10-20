@@ -39,6 +39,9 @@ pub struct ResolvedEventV3 {
     pub off_frame: Option<u64>,
     #[serde(default)]
     pub order: i32,
+    /// Absent unless the note continues another one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub join: Option<crate::plan::NoteJoin>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

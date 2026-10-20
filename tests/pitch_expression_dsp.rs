@@ -54,6 +54,7 @@ fn event(
         on_frame,
         off_frame: Some(off_frame),
         order: 0,
+        join: None,
     }
 }
 

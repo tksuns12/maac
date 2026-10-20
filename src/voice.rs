@@ -186,6 +186,9 @@ struct VoiceState {
     address: String,
     pitch_hz: f64,
     velocity: f64,
+    /// A joined note's velocity moves from this one over 100 ms from the
+    /// frame it joined.
+    velocity_glide: Option<(f64, u64)>,
     pitch_expression: Option<ExpressionRuntime<PitchExpression>>,
     gain_expression: Option<ExpressionRuntime<GainExpression>>,
     timbre_expression: Option<ExpressionRuntime<TimbreExpression>>,
@@ -232,8 +235,9 @@ enum ProcessorState {
     Svf([[f64; 2]; 2]),
     /// Each channel's drive state.
     Drive([DriveState; 2]),
-    /// The note-on velocity a `synth.velocity/1` node emits.
-    Velocity(f64),
+    /// The velocity a `synth.velocity/1` node emits: the note-on velocity,
+    /// or after a join the glide to the joined note's.
+    Velocity(f64, Option<(f64, u64)>),
     Stateless,
 }
 
@@ -530,6 +534,7 @@ impl InstrumentRuntime {
             address,
             pitch_hz,
             velocity,
+            velocity_glide: None,
             pitch_expression,
             gain_expression,
             timbre_expression,
@@ -559,6 +564,68 @@ impl InstrumentRuntime {
                 .graph
                 .excite_unmodulated(&self.program.voice, &self.controls, pitch_hz)?;
         }
+        let insertion = match self
+            .voices
+            .binary_search_by(|existing| existing.address.as_bytes().cmp(voice.address.as_bytes()))
+        {
+            Ok(_) => {
+                return Err(RenderError::RenderState(format!(
+                    "instrument voice address {} is already active",
+                    voice.address
+                )))
+            }
+            Err(position) => position,
+        };
+        self.voices.insert(insertion, voice);
+        Ok(())
+    }
+
+    /// Continue the voice of the note at `from` with a joined note (§8.3).
+    /// The voice keeps every node's state and takes the joined note's
+    /// address, pitch and expressions; its velocity glides to the joined
+    /// note's over 100 ms.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn note_join(
+        &mut self,
+        from: &str,
+        address: String,
+        pitch_hz: f64,
+        velocity: f64,
+        frame: u64,
+        pitch_expression: Option<ExpressionRuntime<PitchExpression>>,
+        gain_expression: Option<ExpressionRuntime<GainExpression>>,
+        timbre_expression: Option<ExpressionRuntime<TimbreExpression>>,
+        pressure_expression: Option<ExpressionRuntime<PressureExpression>>,
+    ) -> Result<()> {
+        if !pitch_hz.is_finite() || !velocity.is_finite() || !(0.0..=1.0).contains(&velocity) {
+            return Err(RenderError::Nonfinite(
+                "joined note pitch must be finite and velocity must be within 0..=1".into(),
+            ));
+        }
+        self.check_nothing_ahead(frame)?;
+        let position = self
+            .voices
+            .binary_search_by(|voice| voice.address.as_bytes().cmp(from.as_bytes()))
+            .map_err(|_| {
+                RenderError::RenderState(format!("joined note {address} has no voice for {from}"))
+            })?;
+        if self.voices[position].released {
+            return Err(RenderError::RenderState(format!(
+                "joined note {address} continues a released voice"
+            )));
+        }
+        let mut voice = self.voices.remove(position);
+        let previous = voice.velocity_at(frame);
+        voice.velocity_glide = Some((previous, frame));
+        voice.velocity = velocity;
+        voice.graph.glide_velocity(previous, velocity, frame);
+        voice.address = address;
+        voice.pitch_hz = pitch_hz;
+        voice.on_frame = frame;
+        voice.pitch_expression = pitch_expression;
+        voice.gain_expression = gain_expression;
+        voice.timbre_expression = timbre_expression;
+        voice.pressure_expression = pressure_expression;
         let insertion = match self
             .voices
             .binary_search_by(|existing| existing.address.as_bytes().cmp(voice.address.as_bytes()))
@@ -798,7 +865,7 @@ impl InstrumentRuntime {
                     break 'frames;
                 }
                 for channel in 0..voice_channels {
-                    let contribution = sample[channel] * amplitude * voice.velocity;
+                    let contribution = sample[channel] * amplitude * voice.velocity_at(frame);
                     voice_sum[channel] += match gain {
                         Some(gain) => contribution * gain,
                         None => contribution,
@@ -888,7 +955,25 @@ impl InstrumentRuntime {
     }
 }
 
+/// The frames over which a joined note's velocity moves to its own.
+const VELOCITY_GLIDE_FRAMES: u64 = 4_800;
+
+/// `velocity`, or on its way there from a joined note's earlier one.
+fn glided_velocity(velocity: f64, glide: Option<(f64, u64)>, frame: u64) -> f64 {
+    match glide {
+        Some((from, start)) if frame < start + VELOCITY_GLIDE_FRAMES => {
+            let progress = frame.saturating_sub(start) as f64 / VELOCITY_GLIDE_FRAMES as f64;
+            from + (velocity - from) * progress
+        }
+        _ => velocity,
+    }
+}
+
 impl VoiceState {
+    fn velocity_at(&self, frame: u64) -> f64 {
+        glided_velocity(self.velocity, self.velocity_glide, frame)
+    }
+
     fn expression_inputs(&self, frame: u64, rate: f64) -> Result<(f64, f64, f64)> {
         let pitch_hz = if let Some(expression) = &self.pitch_expression {
             let cents = expression
@@ -999,7 +1084,7 @@ impl GraphState {
                 }
                 ProcessorCode::Svf(..) => ProcessorState::Svf([[0.0; 2]; 2]),
                 ProcessorCode::Drive(_) => ProcessorState::Drive([DriveState::default(); 2]),
-                ProcessorCode::Velocity => ProcessorState::Velocity(velocity),
+                ProcessorCode::Velocity => ProcessorState::Velocity(velocity, None),
                 ProcessorCode::Gain(_)
                 | ProcessorCode::Key
                 | ProcessorCode::Mix(_)
@@ -1023,6 +1108,16 @@ impl GraphState {
             }
         }
         Ok(())
+    }
+
+    /// A joined note: velocity sources glide to its velocity from `from`.
+    fn glide_velocity(&mut self, from: f64, velocity: f64, frame: u64) {
+        for runtime in &mut self.nodes {
+            if let ProcessorState::Velocity(target, glide) = &mut runtime.state {
+                *target = velocity;
+                *glide = Some((from, frame));
+            }
+        }
     }
 
     /// The voice's note-off: every bowed section lifts its bow.
@@ -1852,7 +1947,9 @@ fn process_graph_node(
         }
         (ProcessorCode::Timbre, ProcessorState::Stateless) => output[0] = timbre,
         (ProcessorCode::Pressure, ProcessorState::Stateless) => output[0] = pressure,
-        (ProcessorCode::Velocity, ProcessorState::Velocity(velocity)) => output[0] = *velocity,
+        (ProcessorCode::Velocity, ProcessorState::Velocity(velocity, glide)) => {
+            output[0] = glided_velocity(*velocity, *glide, frame)
+        }
         // Octaves from C4 = 440 Hz * 2^(-9/12).
         (ProcessorCode::Key, ProcessorState::Stateless) => {
             output[0] = (pitch_hz / 440.0).log2() + 0.75;

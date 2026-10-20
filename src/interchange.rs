@@ -580,6 +580,16 @@ pub fn export_midi1_smf(
                         "per-note pitch/gain/timbre/pressure expression is omitted",
                     ));
                 }
+                if event.join.is_some() {
+                    losses.push(loss(
+                        "midi.connected_note",
+                        vec![path.clone()],
+                        "join",
+                        "MIDI 1.0 notes do not say that one continues another, slurred or sliding",
+                        LossDecisionKind::Omission,
+                        "the joined note is exported as a new note; its slur and slide are omitted",
+                    ));
+                }
                 let off_frame = event.off_frame.ok_or_else(|| AdapterError {
                     code: "E_INTERVAL".into(),
                     message: format!("note {} lacks a certified off frame", event.address),

@@ -175,6 +175,8 @@ pub struct DspEngine<'a> {
     incoming: Vec<Vec<usize>>,
     connections: Vec<ConnectionRuntime>,
     events: Vec<EventRuntime>,
+    /// For each note of a connected line, the line and its place in it.
+    lines: Vec<Option<LinePlace>>,
     on_events: BTreeMap<u64, Vec<usize>>,
     off_events: BTreeMap<u64, Vec<usize>>,
     tempo: TempoRuntime,
@@ -567,13 +569,23 @@ impl<'a> DspEngine<'a> {
             let node = *node_indices.get(&event.target.node).ok_or_else(|| {
                 RenderError::RenderState(format!("event {} has no target node", event.address))
             })?;
-            let runtime = EventRuntime::from_event(&event, node, plan.output.sample_rate_hz)?;
-            let index = events.len();
+            events.push(EventRuntime::from_event(
+                &event,
+                node,
+                plan.output.sample_rate_hz,
+            )?);
+        }
+        let lines = connected_lines(&events)?;
+        for (index, runtime) in events.iter().enumerate() {
             on_events.entry(runtime.on_frame).or_default().push(index);
-            if let Some(frame) = runtime.off_frame {
+            // A note that another continues hands its voice over instead of
+            // releasing it.
+            let continued = lines[index]
+                .as_ref()
+                .is_some_and(|(line, place)| place + 1 < line.notes.len());
+            if let Some(frame) = runtime.off_frame.filter(|_| !continued) {
                 off_events.entry(frame).or_default().push(index);
             }
-            events.push(runtime);
         }
         sort_event_indices(&mut on_events, &events);
         sort_event_indices(&mut off_events, &events);
@@ -619,6 +631,7 @@ impl<'a> DspEngine<'a> {
             incoming,
             connections,
             events,
+            lines,
             on_events,
             off_events,
             tempo,
@@ -1066,12 +1079,12 @@ impl<'a> DspEngine<'a> {
             }
             if frame_index == span.start {
                 for event_index in std::mem::take(&mut carried) {
-                    self.start_event(event_index, frame_index)?;
+                    self.start_event(event_index, frame_index, true)?;
                 }
             }
             if let Some(events) = self.on_events.get(&frame_index).cloned() {
                 for event_index in events {
-                    self.start_event(event_index, frame_index)?;
+                    self.start_event(event_index, frame_index, false)?;
                 }
             }
 
@@ -1276,7 +1289,10 @@ impl<'a> DspEngine<'a> {
         Ok(())
     }
 
-    fn start_event(&mut self, event_index: usize, frame: u64) -> Result<()> {
+    /// Start an event at `frame`. A joined note continues its voice, unless
+    /// it is `carried` into a render range, where the note it joins never
+    /// started: then it starts its own voice for the rest of the line.
+    fn start_event(&mut self, event_index: usize, frame: u64, carried: bool) -> Result<()> {
         let event = self
             .events
             .get(event_index)
@@ -1323,19 +1339,40 @@ impl<'a> DspEngine<'a> {
             ),
         };
         if let Some(instrument) = &mut node.instrument {
-            // A bowed section reads the line its voice plays: here, the note.
-            let line = instrument.plays_lines().then(|| {
-                Arc::new(crate::bow::Line {
-                    notes: vec![crate::bow::LineNote {
-                        on_frame: event.on_frame,
-                        off_frame: event.off_frame.unwrap_or(u64::MAX),
-                        pitch_hz,
-                        slur: false,
-                        slide_seconds: 0.0,
-                    }],
-                    address: event.address.clone(),
-                })
-            });
+            if let Some(join) = event.join.as_ref().filter(|_| !carried) {
+                return instrument.note_join(
+                    &join.from,
+                    event.address.clone(),
+                    pitch_hz,
+                    velocity,
+                    frame,
+                    pitch_expression,
+                    gain_expression,
+                    timbre_expression,
+                    pressure_expression,
+                );
+            }
+            // A bowed section reads the line its voice plays: the notes from
+            // this one to the end of its connected line, or the note alone.
+            let line = instrument
+                .plays_lines()
+                .then(|| match &self.lines[event_index] {
+                    Some((line, 0)) => Arc::clone(line),
+                    Some((line, place)) => Arc::new(crate::bow::Line {
+                        notes: line.notes[*place..].to_vec(),
+                        address: event.address.clone(),
+                    }),
+                    None => Arc::new(crate::bow::Line {
+                        notes: vec![crate::bow::LineNote {
+                            on_frame: event.on_frame,
+                            off_frame: event.off_frame.unwrap_or(u64::MAX),
+                            pitch_hz,
+                            slur: false,
+                            slide_seconds: 0.0,
+                        }],
+                        address: event.address.clone(),
+                    }),
+                });
             return instrument
                 .note_on_with_expressions(
                     event.address.clone(),
@@ -2877,6 +2914,16 @@ struct EventRuntime {
     on_frame: u64,
     off_frame: Option<u64>,
     order: i32,
+    /// The note this one continues, if it is joined (§8.3).
+    join: Option<JoinRuntime>,
+}
+
+/// A joined note: the address of the note it continues, and how.
+#[derive(Clone, Debug)]
+struct JoinRuntime {
+    from: String,
+    slur: bool,
+    slide_seconds: f64,
 }
 
 #[derive(Clone, Debug)]
@@ -2898,6 +2945,69 @@ enum EventData {
     },
 }
 
+/// A note's connected line, from the note that starts it, and its place in
+/// the line.
+type LinePlace = (Arc<crate::bow::Line>, usize);
+
+/// Each joined note's connected line and place in it. Notes outside a line
+/// have none.
+fn connected_lines(events: &[EventRuntime]) -> Result<Vec<Option<LinePlace>>> {
+    let by_address: HashMap<&str, usize> = events
+        .iter()
+        .enumerate()
+        .map(|(index, event)| (event.address.as_str(), index))
+        .collect();
+    let mut next = vec![None; events.len()];
+    for (index, event) in events.iter().enumerate() {
+        if let Some(join) = &event.join {
+            let from = *by_address.get(join.from.as_str()).ok_or_else(|| {
+                RenderError::RenderState(format!(
+                    "joined note {} has no note before it",
+                    event.address
+                ))
+            })?;
+            next[from] = Some(index);
+        }
+    }
+    let mut lines = vec![None; events.len()];
+    for (head, event) in events.iter().enumerate() {
+        if event.join.is_some() || next[head].is_none() {
+            continue;
+        }
+        let mut members = vec![head];
+        while let Some(following) = next[*members.last().expect("a line has a head")] {
+            members.push(following);
+        }
+        let notes = members
+            .iter()
+            .map(|&index| {
+                let event = &events[index];
+                let EventData::Note { pitch_hz, .. } = event.data else {
+                    return Err(RenderError::RenderState(format!(
+                        "connected line member {} is not a note",
+                        event.address
+                    )));
+                };
+                Ok(crate::bow::LineNote {
+                    on_frame: event.on_frame,
+                    off_frame: event.off_frame.unwrap_or(u64::MAX),
+                    pitch_hz,
+                    slur: event.join.as_ref().is_some_and(|join| join.slur),
+                    slide_seconds: event.join.as_ref().map_or(0.0, |join| join.slide_seconds),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let line = Arc::new(crate::bow::Line {
+            notes,
+            address: event.address.clone(),
+        });
+        for (place, &index) in members.iter().enumerate() {
+            lines[index] = Some((Arc::clone(&line), place));
+        }
+    }
+    Ok(lines)
+}
+
 impl EventRuntime {
     fn from_event(event: &EventView<'_>, node: usize, rate: u32) -> Result<Self> {
         if let EventKind::Hit { key, velocity } = event.kind {
@@ -2911,6 +3021,7 @@ impl EventRuntime {
                 on_frame: event.on_frame,
                 off_frame: None,
                 order: event.order,
+                join: None,
             });
         }
         let EventKind::Note {
@@ -2985,6 +3096,19 @@ impl EventRuntime {
             on_frame: event.on_frame,
             off_frame: event.off_frame,
             order: event.order,
+            join: event
+                .join
+                .map(|join| {
+                    Ok::<_, RenderError>(JoinRuntime {
+                        from: join.from.clone(),
+                        slur: join.slur,
+                        slide_seconds: join
+                            .slide_seconds
+                            .as_ref()
+                            .map_or(Ok(0.0), |slide| rational_f64(slide, "join slide"))?,
+                    })
+                })
+                .transpose()?,
         })
     }
 }

@@ -64,6 +64,7 @@ fn note() -> ResolvedEventV3 {
         on_frame: 0,
         off_frame: Some(66543),
         order: 0,
+        join: None,
     }
 }
 #[test]
