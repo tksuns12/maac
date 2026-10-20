@@ -102,6 +102,13 @@ pub(super) fn pitch_skip(rate: u32) -> u64 {
     (PITCH_SKIP_S * f64::from(rate)).round() as u64
 }
 
+/// Frames from a sliding connected note's onset to its estimate: 42 % of
+/// the slide, the latest a slurred slide lands, and 60 ms for the players'
+/// timing.
+pub(super) fn slide_skip(slide_seconds: f64, rate: u32) -> u64 {
+    ((0.42 * slide_seconds + 0.06) * f64::from(rate)).round() as u64
+}
+
 /// One measured note.
 pub(super) struct Window {
     pub address: String,
@@ -136,6 +143,7 @@ impl Window {
         pitch_hz: Option<f64>,
         lone: bool,
         ringing: Vec<f64>,
+        skip: u64,
         rate: u32,
     ) -> Self {
         let measured = pitch_hz.filter(|_| lone);
@@ -152,7 +160,7 @@ impl Window {
             start,
             end,
             pitch_hz: measured,
-            pitch_from: start + pitch_skip(rate),
+            pitch_from: start + skip,
             pitch_needed: measured.map_or(0, |hz| pitch_samples(hz, rate) as usize + combs),
             ringing,
             frames: 0,

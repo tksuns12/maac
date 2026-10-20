@@ -133,7 +133,7 @@ fn gated_tone(tempo: &str) -> String {
 #[test]
 fn a_level_that_drops_for_half_of_each_beat_dips_by_the_drop() {
     let report = analyze(&gated_tone(STEADY));
-    assert_eq!(report.profile, "maac.analyze.default/9");
+    assert_eq!(report.profile, "maac.analyze.default/10");
     for section in [None, Some("first"), Some("second")] {
         close(dip(&report, "out:out", section).unwrap(), 10.0, 0.1);
         close(dip(&report, "tone:out", section).unwrap(), 0.0, 0.05);

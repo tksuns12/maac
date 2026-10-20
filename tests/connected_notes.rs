@@ -283,3 +283,67 @@ pattern riff {{ length=1q; {note} }}
         plain
     );
 }
+
+#[test]
+fn a_sliding_connected_note_is_measured_after_its_slide() {
+    use maac::analyze::{analyze_artifact, AnalyzeOptions, SectionMode};
+    // Eight players slide into 23 slurred notes over 180 ms each. Under
+    // profile `default/9`, which estimated every pitch from 30 ms after the
+    // onset, five of them read 90 to 110 cents sharp while the late players
+    // were still sliding.
+    let pitches = [
+        "E5", "C5", "A5", "F5", "D5", "Bb4", "G5", "E5", "C5", "A4", "F5", "D5", "B4", "G4", "E5",
+        "C5", "A5", "F5", "D5", "B4", "G5", "E5", "C6", "A5",
+    ];
+    let notes: Vec<String> = pitches
+        .iter()
+        .enumerate()
+        .map(|(index, pitch)| {
+            let extra = if index == 0 { "" } else { " slur = true; slide = 180ms;" };
+            format!("  note n{index} {{ at = {index}q; dur = 1q; pitch = {pitch}; velocity = 0.8;{extra} }}")
+        })
+        .collect();
+    let source = format!(
+        r#"maac 1;
+project p {{ score = [0q, 24q]; rate = 48000Hz; tail = 1s; tempo = &clock; meter = &metre; output = &solo:out; }}
+tempo clock {{ points = [(0q, 76bpm, step)]; }}
+meter metre {{ points = [(0q, 4, 4)]; }}
+instrument bowed {{
+ channels = 2;
+ voice v {{
+  channels = 2; amplitude = &amp; output = &section:out;
+  node amp {{ type = "synth.adsr/1"; params = {{ sustain = 1; release = 400ms; }}; }}
+  node section {{ type = "synth.bow/1"; config = {{ players = 8; channels = 2; }}; params = {{ level = 1/20; }}; }}
+ }}
+}}
+node solo {{ instrument = &bowed; config = {{ voices = 2; }}; }}
+track line {{ target = &solo:events; }}
+pattern falls {{ length = 24q;
+{}
+}}
+place first {{ pattern = &falls; track = &line; at = 0q; }}
+"#,
+        notes.join("\n")
+    );
+    let plan = compile_bundle_artifact_with_limits(
+        &SourceBundle::new("main.maac", source),
+        &PlanLimits::song(),
+    )
+    .unwrap();
+    let report = analyze_artifact(
+        &plan,
+        None,
+        &AnalyzeOptions {
+            sections: SectionMode::Whole,
+            ..AnalyzeOptions::default()
+        },
+        &PlanLimits::song(),
+    )
+    .unwrap();
+    let mismatches: Vec<_> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.kind == "pitch_mismatch")
+        .collect();
+    assert!(mismatches.is_empty(), "{mismatches:?}");
+}

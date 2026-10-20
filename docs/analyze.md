@@ -505,6 +505,28 @@ Apart from the profile identifier, the new field and the human output's
 `beat dip`, a report without a keyed compressor is the same as under
 `default/8`.
 
+## Profile `maac.analyze.default/10` (2026-10-21)
+
+Part of the [bowed strings proposal](design/bowed-strings-proposal.md), for
+[connected notes](../MaaC-1-Specification.md#83-connected-notes). The
+report schema is unchanged.
+
+**A sliding connected note is measured after its slide.** A note's pitch
+is estimated from 30 ms after its onset. A slurred slide on a bowed section
+lands up to 42 % of its length after the onset, and each player's timing
+spreads that further, so at 30 ms an ensemble can still sound between the
+two pitches. A joined note with a `slide` is now estimated from
+`0.42 × slide + 60 ms` after its onset, or 30 ms if that is later. Every
+other note is measured as before.
+
+On "Homeward" version 2 under `default/9`, the violins' C5 after a slurred
+180 ms slide from E5 read +130 cents and raised `pitch_mismatch`; a pitch
+track of the same note lands on C5 at its onset. Under `default/10` the
+warning is gone. Eight players sliding into 23 slurred notes over 180 ms
+each read five of them 90 to 110 cents sharp under `default/9`, and none
+under `default/10`. Apart from the profile identifier, a report on a song
+without sliding connected notes is the same as under `default/9`.
+
 ## Deferred to later versions
 
 - **Onset alignment:** whether written and sounding attacks line up.

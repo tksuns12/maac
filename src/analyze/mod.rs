@@ -40,13 +40,13 @@ use meter::{
 };
 
 pub const SCHEMA: &str = "maac.analysis-report/1";
-pub const PROFILE: &str = "maac.analyze.default/9";
+pub const PROFILE: &str = "maac.analyze.default/10";
 pub const BANDS: &str = "maac.analyze.octave-bands/1";
 pub const BAND_CENTERS_HZ: [f64; 10] = [
     31.5, 63.0, 125.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 16000.0,
 ];
 
-// Findings profile `maac.analyze.default/9`: stated limits, not taste.
+// Findings profile `maac.analyze.default/10`: stated limits, not taste.
 const TRUE_PEAK_LIMIT_DBTP: f64 = -1.0;
 const LOUDNESS_JUMP_LU: f64 = 6.0;
 const BALANCE_LIMIT_DB: f64 = 3.0;
@@ -1623,6 +1623,16 @@ fn note_windows(
             } => (Some(*pitch_hz), pitch_expression.as_ref()),
             _ => (None, None),
         };
+        // A connected note that slides into its pitch is estimated once the
+        // slide has landed (§8.3): a slurred slide ends at most 42 % of its
+        // length after the onset, and the players' timing spreads it further.
+        let skip = notes::pitch_skip(rate).max(
+            event
+                .join
+                .and_then(|join| join.slide_seconds.as_ref())
+                .and_then(|slide| slide.to_f64())
+                .map_or(0, |slide| notes::slide_skip(slide, rate)),
+        );
         // A note with a pitch expression is checked against its expressed
         // pitch: the written pitch moved by the expression's mean over the
         // estimate. One whose expression moves too far there is not checked.
@@ -1631,7 +1641,7 @@ fn note_windows(
             let Some(expression) = expression else {
                 return hz;
             };
-            let from = event.on_frame + notes::pitch_skip(rate);
+            let from = event.on_frame + skip;
             let first = hz * 2f64.powf(expressed_cents(event, expression, from, rate) / 1200.0);
             let to = from + notes::pitch_samples(first, rate);
             let (mean, spread) = expression_span(event, expression, from, to, rate);
@@ -1641,7 +1651,7 @@ fn note_windows(
         // Lone while the pitch is measured: from the onset to the end of the
         // samples the estimate needs.
         let pitch_end = pitch_hz.map_or(event.on_frame, |hz| {
-            event.on_frame + notes::pitch_skip(rate) + notes::pitch_samples(hz, rate)
+            event.on_frame + skip + notes::pitch_samples(hz, rate)
         });
         let lone = checkable
             && by_node[event.target.node.as_str()].iter().all(|&other| {
@@ -1695,6 +1705,7 @@ fn note_windows(
             pitch_hz,
             lone,
             ringing,
+            skip,
             rate,
         ));
     }

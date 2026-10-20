@@ -11,10 +11,16 @@ promise of compatibility beyond the documented interfaces.
   bowed waveguide string with its own vibrato, tuning and timing, and a
   violin, viola, cello or bass body of about 50 resonances
   ([Bowed strings](docs/instruments.md#bowed-strings)). `dynamics` sets how
-  fast and how hard the bow moves, so a louder note is also brighter and
-  rougher. It plays in tune from A0 to B6. Each player costs 33 units of
+  fast and how hard the bow moves together, so a louder note changes its
+  bow rather than a gain. It plays in tune from A0 to B6. Each player costs 33 units of
   work per sample with its body. See the
   [bowed strings proposal](docs/design/bowed-strings-proposal.md).
+
+- `maac analyze` profile `maac.analyze.default/10`: a connected note with a
+  `slide` has its pitch estimated after the slide, from `0.42 × slide +
+  60 ms` after its onset, so a section still landing on a slurred note is
+  not read as off pitch. In "Homeward" version 2 a violin note read +130
+  cents under `default/9`. See [the profile](docs/analyze.md#profile-maacanalyzedefault10-2026-10-21).
 
 - Connected notes ([§8.3](MaaC-1-Specification.md#83-connected-notes)). On
   an instrument with a `synth.bow/1` section, a note that starts where the
