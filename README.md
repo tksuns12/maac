@@ -177,11 +177,13 @@ Existing files are kept unless you pass `--force`. Long songs need
 - **Built-in instruments,** all synthesized and needing no downloads:
   - [studio](docs/studio-instruments.md): electric and acoustic piano,
     electric guitar, bass, pad and drum kit, whose sound follows velocity;
+  - [orchestra](docs/orchestra-instruments.md): violin, viola, cello and
+    bass sections that bow connected lines, and a concert harp;
   - [acoustic](docs/acoustic-guitars.md): steel, nylon and muted acoustic
     guitars;
   - [basic](docs/basic-instruments.md): 24 general-purpose sounds.
-- **Your own instruments:** oscillators, wavetables, FM, plucked strings,
-  resonator banks, filters and saturation, wired as voice graphs with
+- **Your own instruments:** oscillators, wavetables, FM, plucked and bowed
+  strings, resonator banks, filters and saturation, wired as voice graphs with
   controls and presets ([instruments](docs/instruments.md)).
 - **Recorded audio:** sample kits, arranged clips with fades, and
   tempo-following warps ([core kit](docs/core-kit.md),

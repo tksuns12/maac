@@ -1,0 +1,218 @@
+maac 1;
+
+library orchestra {
+  version = "1.0.0";
+  creator = "MaaC project";
+  license = "Apache-2.0";
+}
+
+// Violins: a section of eight players, each a bowed string with a body of
+// its own, its own tuning, vibrato and timing. Notes that touch on a track
+// are played connected: `slur` keeps the bow, `slide` slides into a note.
+// Velocity and pressure set how fast and hard the bow moves together.
+instrument violins {
+  channels = 2;
+  voice voice {
+    channels = 2;
+    amplitude = &amp;
+    output = &section:out;
+    node amp { type = "synth.adsr/1"; params = { sustain = 1; release = 1500ms; }; }
+    node vel { type = "synth.velocity/1"; }
+    node touch { type = "synth.pressure/1"; }
+    node section {
+      type = "synth.bow/1";
+      config = { players = 8; body = violin; channels = 2; };
+      params = { dynamics = 0; position = 1/8; vibrato = 25/2; rate = 28/5Hz; timing = 18ms; pan = -2/5; width = 7/10; };
+    }
+    // Velocity sets how fast and hard the bow moves; pressure swells it.
+    modulate harder { from = &vel:out; to = &section.params.dynamics; depth = 3/5; }
+    modulate pressed { from = &touch:out; to = &section.params.dynamics; depth = 2/5; }
+  }
+  shared stage {
+    channels = 2;
+    output = &gain:out;
+    node low_cut { type = "synth.highpass/1"; config = { channels = 2; }; params = { cutoff = 60Hz; }; }
+    node gain { type = "synth.gain/1"; config = { channels = 2; }; params = { level = 9/50; }; }
+    connect input_cut { from = &input:out; to = &low_cut:in; }
+    connect cut_gain { from = &low_cut:out; to = &gain:in; }
+  }
+  control level { target = &stage.gain.params.level; default = 9/50; }
+  control attack { target = &voice.section.params.attack; default = 80ms; }
+  control release { target = &voice.amp.params.release; default = 1500ms; }
+  control vibrato { target = &voice.section.params.vibrato; default = 25/2; }
+  control rate { target = &voice.section.params.rate; default = 28/5Hz; }
+  control position { target = &voice.section.params.position; default = 1/8; }
+  control timing { target = &voice.section.params.timing; default = 18ms; }
+  control pan { target = &voice.section.params.pan; default = -2/5; }
+  control width { target = &voice.section.params.width; default = 7/10; }
+  control low_cut { target = &stage.low_cut.params.cutoff; default = 60Hz; }
+}
+
+// Violas: three players to a line, so a chord of three is a divided section
+// of nine. Lower bodies and a slower, narrower vibrato than the violins.
+instrument violas {
+  channels = 2;
+  voice voice {
+    channels = 2;
+    amplitude = &amp;
+    output = &section:out;
+    node amp { type = "synth.adsr/1"; params = { sustain = 1; release = 1500ms; }; }
+    node vel { type = "synth.velocity/1"; }
+    node touch { type = "synth.pressure/1"; }
+    node section {
+      type = "synth.bow/1";
+      config = { players = 3; body = viola; channels = 2; };
+      params = { dynamics = 0; position = 1/8; vibrato = 11; rate = 109/20Hz; timing = 30ms; pan = 1/5; width = 7/20; };
+    }
+    // Velocity sets how fast and hard the bow moves; pressure swells it.
+    modulate harder { from = &vel:out; to = &section.params.dynamics; depth = 3/5; }
+    modulate pressed { from = &touch:out; to = &section.params.dynamics; depth = 2/5; }
+  }
+  shared stage {
+    channels = 2;
+    output = &gain:out;
+    node low_cut { type = "synth.highpass/1"; config = { channels = 2; }; params = { cutoff = 60Hz; }; }
+    node gain { type = "synth.gain/1"; config = { channels = 2; }; params = { level = 9/50; }; }
+    connect input_cut { from = &input:out; to = &low_cut:in; }
+    connect cut_gain { from = &low_cut:out; to = &gain:in; }
+  }
+  control level { target = &stage.gain.params.level; default = 9/50; }
+  control attack { target = &voice.section.params.attack; default = 80ms; }
+  control release { target = &voice.amp.params.release; default = 1500ms; }
+  control vibrato { target = &voice.section.params.vibrato; default = 11; }
+  control rate { target = &voice.section.params.rate; default = 109/20Hz; }
+  control position { target = &voice.section.params.position; default = 1/8; }
+  control timing { target = &voice.section.params.timing; default = 30ms; }
+  control pan { target = &voice.section.params.pan; default = 1/5; }
+  control width { target = &voice.section.params.width; default = 7/20; }
+  control low_cut { target = &stage.low_cut.params.cutoff; default = 60Hz; }
+}
+
+// Cellos: five players on a cello body, bowed a little nearer the bridge,
+// where a low string speaks steadily.
+instrument cellos {
+  channels = 2;
+  voice voice {
+    channels = 2;
+    amplitude = &amp;
+    output = &section:out;
+    node amp { type = "synth.adsr/1"; params = { sustain = 1; release = 1800ms; }; }
+    node vel { type = "synth.velocity/1"; }
+    node touch { type = "synth.pressure/1"; }
+    node section {
+      type = "synth.bow/1";
+      config = { players = 5; body = cello; channels = 2; };
+      params = { dynamics = 0; position = 1/10; vibrato = 10; rate = 26/5Hz; timing = 30ms; pan = 1/2; width = 2/5; };
+    }
+    // Velocity sets how fast and hard the bow moves; pressure swells it.
+    modulate harder { from = &vel:out; to = &section.params.dynamics; depth = 3/5; }
+    modulate pressed { from = &touch:out; to = &section.params.dynamics; depth = 2/5; }
+  }
+  shared stage {
+    channels = 2;
+    output = &gain:out;
+    node low_cut { type = "synth.highpass/1"; config = { channels = 2; }; params = { cutoff = 30Hz; }; }
+    node gain { type = "synth.gain/1"; config = { channels = 2; }; params = { level = 7/50; }; }
+    connect input_cut { from = &input:out; to = &low_cut:in; }
+    connect cut_gain { from = &low_cut:out; to = &gain:in; }
+  }
+  control level { target = &stage.gain.params.level; default = 7/50; }
+  control attack { target = &voice.section.params.attack; default = 80ms; }
+  control release { target = &voice.amp.params.release; default = 1800ms; }
+  control vibrato { target = &voice.section.params.vibrato; default = 10; }
+  control rate { target = &voice.section.params.rate; default = 26/5Hz; }
+  control position { target = &voice.section.params.position; default = 1/10; }
+  control timing { target = &voice.section.params.timing; default = 30ms; }
+  control pan { target = &voice.section.params.pan; default = 1/2; }
+  control width { target = &voice.section.params.width; default = 2/5; }
+  control low_cut { target = &stage.low_cut.params.cutoff; default = 30Hz; }
+}
+
+// Basses: three players on a bass body, with a slow, narrow vibrato.
+instrument basses {
+  channels = 2;
+  voice voice {
+    channels = 2;
+    amplitude = &amp;
+    output = &section:out;
+    node amp { type = "synth.adsr/1"; params = { sustain = 1; release = 2s; }; }
+    node vel { type = "synth.velocity/1"; }
+    node touch { type = "synth.pressure/1"; }
+    node section {
+      type = "synth.bow/1";
+      config = { players = 3; body = bass; channels = 2; };
+      params = { dynamics = 0; position = 1/10; vibrato = 13/2; rate = 5Hz; timing = 30ms; pan = 3/5; width = 2/5; };
+    }
+    // Velocity sets how fast and hard the bow moves; pressure swells it.
+    modulate harder { from = &vel:out; to = &section.params.dynamics; depth = 3/5; }
+    modulate pressed { from = &touch:out; to = &section.params.dynamics; depth = 2/5; }
+  }
+  shared stage {
+    channels = 2;
+    output = &gain:out;
+    node low_cut { type = "synth.highpass/1"; config = { channels = 2; }; params = { cutoff = 30Hz; }; }
+    node gain { type = "synth.gain/1"; config = { channels = 2; }; params = { level = 4/25; }; }
+    connect input_cut { from = &input:out; to = &low_cut:in; }
+    connect cut_gain { from = &low_cut:out; to = &gain:in; }
+  }
+  control level { target = &stage.gain.params.level; default = 4/25; }
+  control attack { target = &voice.section.params.attack; default = 80ms; }
+  control release { target = &voice.amp.params.release; default = 2s; }
+  control vibrato { target = &voice.section.params.vibrato; default = 13/2; }
+  control rate { target = &voice.section.params.rate; default = 5Hz; }
+  control position { target = &voice.section.params.position; default = 1/10; }
+  control timing { target = &voice.section.params.timing; default = 30ms; }
+  control pan { target = &voice.section.params.pan; default = 3/5; }
+  control width { target = &voice.section.params.width; default = 2/5; }
+  control low_cut { target = &stage.low_cut.params.cutoff; default = 30Hz; }
+}
+
+// Concert harp: a fingertip pushes the string near its middle and lets go.
+// The push is a soft pulse into a bank of string modes; plucked near the
+// middle, the even modes are faint, and the upper modes die soon, so each
+// note settles into a round, nearly pure tone that rings for seconds. A
+// faint snap marks the string leaving the finger. The modes are not
+// stretched: a stretched bank rings like a bell.
+instrument concert_harp {
+  channels = 2;
+  voice voice {
+    channels = 1;
+    amplitude = &amp;
+    output = &blend:out;
+    node amp { type = "synth.adsr/1"; params = { sustain = 1; release = 8s; curve = 2; }; }
+    node vel { type = "synth.velocity/1"; }
+    node key { type = "synth.key/1"; }
+    node finger { type = "synth.adsr/1"; params = { attack = 0ms; decay = 0.7ms; sustain = 0; curve = 2; }; }
+    node pad { type = "synth.onepole/1"; config = { channels = 1; }; params = { cutoff = 2000Hz; }; }
+    modulate harder_brighter { from = &vel:out; to = &pad.params.cutoff; depth = 3000Hz; }
+    connect finger_pad { from = &finger:out; to = &pad:in; }
+    node string {
+      type = "synth.modal/1";
+      config = { modes = 24; };
+      params = { decay = 8s; damping = 1.2; position = 0.42; stretch = 0; level = 1/30; };
+    }
+    modulate higher_shorter { from = &key:out; to = &string.params.decay; depth = -1500ms; }
+    modulate higher_louder { from = &key:out; to = &string.params.level; depth = 1/80; }
+    connect pad_string { from = &pad:out; to = &string:in; }
+    node snap { type = "synth.noise/1"; config = { seed = 3449720151; }; params = { level = 0; }; }
+    node snap_env { type = "synth.adsr/1"; params = { decay = 12ms; sustain = 0; curve = 4; }; }
+    modulate snap_shape { from = &snap_env:out; to = &snap.params.level; depth = 0.02; }
+    node snap_band { type = "synth.svf/1"; config = { channels = 1; mode = bandpass; }; params = { cutoff = 0Hz; ratio = 4; q = 1; }; }
+    connect snap_in { from = &snap:out; to = &snap_band:in; }
+    node blend { type = "synth.mix/1"; config = { channels = 1; }; }
+    connect string_blend { from = &string:out; to = &blend:in; }
+    connect snap_blend { from = &snap_band:out; to = &blend:in; }
+  }
+  shared stage {
+    channels = 2;
+    output = &place:out;
+    node low_cut { type = "synth.highpass/1"; config = { channels = 1; }; params = { cutoff = 60Hz; }; }
+    node gain { type = "synth.gain/1"; config = { channels = 1; }; params = { level = 47/100; }; }
+    node place { type = "synth.pan/1"; params = { pan = -9/20; }; }
+    connect input_cut { from = &input:out; to = &low_cut:in; }
+    connect cut_gain { from = &low_cut:out; to = &gain:in; }
+    connect gain_place { from = &gain:out; to = &place:in; }
+  }
+  control level { target = &stage.gain.params.level; default = 47/100; }
+  control pan { target = &stage.place.params.pan; default = -9/20; }
+}

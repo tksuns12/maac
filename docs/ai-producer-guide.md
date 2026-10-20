@@ -88,6 +88,17 @@ listen before you call a track finished.
   still starts its own voice. In a listening round that glided better than
   one long note bending through both pitches, so there is no need to merge
   notes for legato.
+- Write orchestral strings for [std/orchestra](orchestra-instruments.md),
+  whose sections play notes that touch as one line. Let the notes of a
+  phrase touch, and a rest lifts the bow. Slur a short note into the bow of
+  the long one before it with `slur = true`, and slide on the leaps and the
+  falls with `slide = 80ms` to `200ms`:
+  `note m4 { at = 11/2q; dur = 1/2q; pitch = A4; velocity = 0.7; slur = true; slide = 100ms; }`.
+  The T6 violins had slides into ten of a phrase's eleven changes. Bow a
+  pad two bars to a stroke, with the second chord slurred; chords join
+  member by member. Velocity and pressure set the bow's dynamics, so swell
+  a held note with a pressure curve. A pattern with `slur` or `slide` only
+  plays on a bowed section: give the strings their own patterns.
 - Write rolls and risers with `count` and `stretch`.
   `use sixteenths { pattern = &snare_once; at = 16q; count = 32; stretch = 1/4; }`
   plays a one-beat snare pattern 32 times, a sixteenth apart. Ramp the
@@ -250,5 +261,9 @@ ask for a verdict.
 | "The acoustic guitar sounds cheap" | The std/acoustic/1.0.0 guitars start every string from the same full-band noise burst, at any velocity. Strummed in a full mix, they sound like a cheap synthesizer | Not measured. Define the guitar in the song, with velocity on the pluck's `hardness`, a pick `position` and body resonances, as [`examples/lantern/lantern.maac`](../examples/lantern/lantern.maac) does |
 | "The guitar melody sounds like a synthesizer" | The electric guitar's `vibrato` control is one LFO on every note from note-on | Not measured. Set the control to 0; give held notes a `vibrato` with `delay` and `shape = up`, and bend some notes up from a whole step below (section 2). `pitch_mismatch` checks these notes against their expressed pitch at the pick |
 | "It doesn't feel pumped" | The keyed compressor works, but the parts that carry the drop, such as the lead and drums, bypass it | `pump_unheard`; the output's `beat_dip_db` per section. `dynamics` gives what the compressor takes, not what the mix does. Route the lead through the pump; in T5 the output's dip went from 5 to 12 dB |
+| "The violins sound like a keyboard" | Detuned saws through a filter, with each note its own voice | Not measured. Use the std/orchestra sections and write the lines connected (section 2). In T6 the connection between notes, a bow change and a slide, decided whether a line sounded played or electronic |
+| "The harp sounds like a guitar", "metallic" | A harp built on `synth.pluck/1`, the guitar string; a `synth.modal/1` harp with `stretch` above 0, which rings like a bell | Not measured. Use `concert_harp` from std/orchestra, or a modal bank with `stretch = 0` |
+| The balance changed after swapping instruments | A new instrument's calibrated level differs from the old one's in the song | Analyze both versions with `--section regions` and a `--source` for each part, and set each part's level so its sections read as before; in T6 the violins came out 7.5 dB louder |
+| `E_DUPLICATE_ID` on a node | Imports, instruments, nodes and the project share one namespace | Name nodes by role (`violins`) and import aliases apart (`orch`); T6 hit this with `flute`, `orchestra` and the project |
 | "The glide doesn't slide" | The glide is too short: 80 ms at 126 bpm | Not measured. Give it about a sixteenth |
 | True peak over the limit after a sound change | Plucked attacks through compressors standing in for a limiter | `true_peak_over`; master through `fx.limiter/1` with its ceiling under the limit |

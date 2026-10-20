@@ -1,7 +1,8 @@
 # Bowed strings: proposal
 
 **Status:** accepted 2026-10-20, when the owner took every recommended
-[decision](#decisions). This is item 1 of
+[decision](#decisions). Parts 1 to 4 have landed; [Results](#results)
+records them against this proposal. This is item 1 of
 [what to build next](../reports/ai-production-trial-t6.md#what-to-build-next-in-order)
 in the T6 trial. It covers F46, F48 and F49: a violin body cannot be built
 from MaaC's nodes, neither can a bowed string, and a line of notes cannot be
@@ -415,6 +416,87 @@ proposal.
   starting by `t` + 500 ms. Repeated renders are bit-identical.
 - **Cost.** "Homeward" version 2 builds within the `song` profile, and the
   report records its work units and render time.
+
+## Results
+
+Parts 1 to 4 have landed. The listening round of step 5 is under way.
+
+**Part 1, `synth.bow/1`.** The string, bow, players and bodies follow the
+contract above, with these changes, each found by measurement:
+
+- **Range.** A held note plays within 3 cents of its pitch from A0 to B6
+  once settled, after half a second, or a second below G3, where a soft
+  bow wavers by 2–4 cents at first. From C7 up the string can leave its
+  normal motion, so the violins' range is G3–B6, not G3–A7.
+  "Homeward"'s highest violin note is D6.
+- **Tuning.** A fixed 1.6-frame correction, the prototype's, left some
+  notes up to 9 cents out. The correction is now a table by key and
+  dynamics, measured on the bare string.
+- **Bow position.** On G6 to Bb6 the prototype's string jumped an octave
+  at 0.11–0.125 from the bridge, and held its normal motion at 0.16 and
+  beyond. The bow therefore sits at least `0.16 × min(1, f / 1.5 kHz)` from
+  the bridge, which leaves the accepted range, C5–Bb5, untouched. A sweep of
+  every family's range found that with an 80 ms attack, 1/16 and 0.16–0.2
+  lose normal motion on low and middle notes. The range is therefore 1/10 to
+  1/7, the player's variation is a factor of up to 12 % rather than
+  ±0.015, and cellos and basses bow at 1/10. At 1/8 their lowest notes take
+  0.3–0.4 s to settle; at 1/10 only a few bass notes at the loudest dynamics
+  leave normal motion for part of a stroke.
+- **Latched values.** `attack`, `timing` and `spread` are taken at a
+  stroke's first frame, not at each onset.
+- **Seeds.** A player's own traits come from `config.seed` and its index,
+  so the same player plays every line alike; what varies from line to line
+  comes from the line's first event address.
+- **Cost.** A release benchmark measured a player at 22.8 one-unit
+  oscillator nodes and its body at 9.8. The charge is 23 and 10 units per
+  sample, and an instance may declare at most 16,777,216 string cells.
+
+**Part 2, connected notes.** Joining, `slur`, `slide` and the 500 ms
+reading follow the contract. A `slur` or `slide` on a note that joins
+nothing is `E_INTERVAL`, an existing code for an onset that does not fit,
+rather than a new `E_JOIN`. A render range that starts inside a line plays
+the rest of it on a new voice, and MIDI export reports a joined note as
+`midi.connected_note`. Analysis profile
+[`default/10`](../analyze.md#profile-maacanalyzedefault10-2026-10-21)
+measures a sliding connected note after its slide: under `default/9`,
+eight players sliding into 23 slurred notes read five of them 90 to 110
+cents sharp.
+
+**Part 3, matching the prototype.** The round 7 excerpt, written in MaaC
+with the same slurs and slides and rendered through the prototype's hall:
+
+| Measure | Prototype | MaaC |
+| --- | --- | --- |
+| When each bow change speaks | −5 ms on all seven | −5 ms on all seven |
+| 10 ms frames out of normal motion, one bare player | 32 | 29 |
+| Clicks above 6 kHz | 0 | 0 |
+| Bands from 63 Hz to 4 kHz | | within 1.2 dB |
+| 4–8 kHz band | −22.0 dB | −24.5 dB |
+
+One bare player matches the prototype band for band. The 4–8 kHz
+difference comes from the choice of bodies: with only its bodies changed,
+the prototype's own section ranges from −21.6 to −25.8 dB there. The
+2 dB bound in the acceptance was tighter than that spread.
+
+Two findings change what this proposal said:
+
+- **Louder is not brighter.** Speed and force rise together with
+  `dynamics`, and their effects cancel: across velocities 0.3 to 1 the
+  violins' spectral centre moves by under a sixth of an octave. A louder
+  note is louder, not brighter or rougher. The prototype behaved the same
+  way, and the owner accepted it. A steeper force mapping is left for a
+  later version.
+- **The prototype's low strings were partly broken.** In its strings-g, the
+  cellos and basses bowed at 0.11–0.14, where some players were in the
+  octave regime and their fundamentals were weak. MaaC's speak normally, so
+  the same arrangement has 4–7 dB more energy at 125–500 Hz. The listening
+  round compares the two.
+
+**Part 4, `std/orchestra/1.0.0`.** `violins`, `violas`, `cellos`,
+`basses` and `concert_harp`, each calibrated so that four bars of its
+reference phrase at velocity 0.7 measure −20 LUFS, within 0.13 dB. The
+harp's level rises with pitch and runs out below C2, so its range is C2–G7,
+not C1–G7. See [orchestra instruments](../orchestra-instruments.md).
 
 ## Cost and risk
 

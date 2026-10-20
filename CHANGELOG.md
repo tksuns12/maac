@@ -16,6 +16,14 @@ promise of compatibility beyond the documented interfaces.
   work per sample with its body. See the
   [bowed strings proposal](docs/design/bowed-strings-proposal.md).
 
+- `std/orchestra/1.0.0`, a built-in library of `violins` (eight players),
+  `violas` (three to a line), `cellos` (five), `basses` (three) and a
+  `concert_harp` ([orchestra instruments](docs/orchestra-instruments.md)).
+  The strings are `synth.bow/1` sections that play connected lines;
+  velocity sets 3/5 of the bow's `dynamics` and pressure 2/5. The harp is
+  the T6 trial's accepted modal harp. Each export's reference phrase at
+  velocity 0.7 measures −20 LUFS.
+
 - `maac analyze` profile `maac.analyze.default/10`: a connected note with a
   `slide` has its pitch estimated after the slide, from `0.42 × slide +
   60 ms` after its onset, so a section still landing on a slurred note is

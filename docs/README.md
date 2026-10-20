@@ -31,6 +31,8 @@ first example.
 
 - [Studio instruments](studio-instruments.md): electric and acoustic piano,
   electric guitar, bass, pad and drum kit.
+- [Orchestra instruments](orchestra-instruments.md): violins, violas, cellos
+  and basses, bowed connected, and a concert harp.
 - [Acoustic guitars](acoustic-guitars.md): steel, nylon and muted guitars.
 - [Basic instruments](basic-instruments.md): 24 general-purpose sounds.
 - [Reusable instruments and sound libraries](instruments.md): writing your

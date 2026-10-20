@@ -35,6 +35,10 @@ pub const STUDIO_1_1_SOURCE: &str = include_str!("../stdlib/studio/1.1.0.maac");
 pub const STUDIO_1_2_ID: &str = "std/studio/1.2.0";
 pub const STUDIO_1_2_SOURCE_PATH: &str = "@builtin/std/studio/1.2.0.maac";
 pub const STUDIO_1_2_SOURCE: &str = include_str!("../stdlib/studio/1.2.0.maac");
+/// Bowed string sections and a concert harp.
+pub const ORCHESTRA_ID: &str = "std/orchestra/1.0.0";
+pub const ORCHESTRA_SOURCE_PATH: &str = "@builtin/std/orchestra/1.0.0.maac";
+pub const ORCHESTRA_SOURCE: &str = include_str!("../stdlib/orchestra/1.0.0.maac");
 
 #[derive(Clone, Copy, Debug)]
 pub struct BuiltinSource {
@@ -103,6 +107,15 @@ const DEFINITIONS: &[LibraryDefinition] = &[
         },
         editorial: include_str!("../stdlib/studio/1.2.0.json"),
         alias: "studio",
+    },
+    LibraryDefinition {
+        id: ORCHESTRA_ID,
+        source: BuiltinSource {
+            path: ORCHESTRA_SOURCE_PATH,
+            source: ORCHESTRA_SOURCE,
+        },
+        editorial: include_str!("../stdlib/orchestra/1.0.0.json"),
+        alias: "orchestra",
     },
 ];
 
