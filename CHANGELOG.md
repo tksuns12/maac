@@ -7,6 +7,16 @@ promise of compatibility beyond the documented interfaces.
 
 ### Added
 
+- `synth.bow/1`, a section of bowed strings: up to 16 players, each a
+  bowed waveguide string with its own vibrato, tuning and timing, and a
+  violin, viola, cello or bass body of about 50 resonances
+  ([Bowed strings](docs/instruments.md#bowed-strings)). `dynamics` sets how
+  fast and how hard the bow moves, so a louder note is also brighter and
+  rougher. It plays in tune from A0 to B6. Each note is still a stroke of
+  its own; connected notes follow. Each player costs 33 units of work per
+  sample with its body. See the
+  [bowed strings proposal](docs/design/bowed-strings-proposal.md).
+
 - A pitch expression can name a `vibrato`
   ([§8.1](MaaC-1-Specification.md#81-per-note-expression)), such as
   `vibrato guitar { rate = 11/2Hz; depth = 38ct; delay = 300ms; rise = 450ms; shape = up; }`.

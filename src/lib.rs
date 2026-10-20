@@ -45,6 +45,7 @@ pub use plan_artifact::{
     MessageAdapterCapability, PerformanceDispatch, PerformanceDispatchKind, PlanArtifact,
     WindowedEvent,
 };
+pub mod bow;
 mod core_control;
 mod modal;
 pub mod plan_v3;

@@ -2110,6 +2110,49 @@ fn lower_graph_node(
         "synth.drive/1" => GraphProcessor::Drive {
             channels: config_channels(config, file, object, &identity)?,
         },
+        "synth.bow/1" => {
+            // Every field is optional: one mono violin player by default.
+            let empty = BTreeMap::new();
+            let config = config.unwrap_or(&empty);
+            if let Some(name) = config
+                .keys()
+                .find(|name| !["players", "body", "channels", "seed"].contains(&name.as_str()))
+            {
+                return Err(field_error(
+                    DiagnosticCode::UnknownField,
+                    file,
+                    object,
+                    &config[name],
+                    "processor `synth.bow/1` config fields are players, body, channels and seed",
+                ));
+            }
+            let integer = |name: &str, max: u32, default: u32| match config.get(name) {
+                Some(field) => integer_value(&field.value, file, object, field, 1, max),
+                None => Ok(default),
+            };
+            let body = match config.get("body") {
+                Some(field) => field
+                    .value
+                    .as_symbol()
+                    .and_then(crate::bow::BowBody::parse)
+                    .ok_or_else(|| {
+                        field_error(
+                            DiagnosticCode::Range,
+                            file,
+                            object,
+                            field,
+                            "body must be violin, viola, cello, bass or none",
+                        )
+                    })?,
+                None => crate::bow::BowBody::Violin,
+            };
+            GraphProcessor::Bow {
+                players: integer("players", u32::from(crate::bow::MAX_PLAYERS), 1)? as u8,
+                body,
+                channels: integer("channels", 2, 1)? as u8,
+                seed: integer("seed", u32::MAX, 1)?,
+            }
+        }
         "synth.mix/1" => GraphProcessor::Mix {
             channels: config_channels(config, file, object, &identity)?,
         },

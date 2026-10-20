@@ -1335,6 +1335,28 @@ fn normalize_node_fields(fields: &mut Map<String, Value>, project_seed: &Value) 
                     params.entry(name).or_insert(value);
                 }
             }
+            "synth.bow/1" => {
+                config.entry("players").or_insert_with(|| number(1, 1));
+                config.entry("body").or_insert_with(|| symbol("violin"));
+                config.entry("channels").or_insert_with(|| number(1, 1));
+                config.entry("seed").or_insert_with(|| number(1, 1));
+                config_defaults = true;
+                for (name, value) in [
+                    ("ratio", number(1, 1)),
+                    ("dynamics", number(1, 2)),
+                    ("position", number(1, 8)),
+                    ("vibrato", number(25, 2)),
+                    ("rate", quantity(28, 5, Unit::Hz)),
+                    ("attack", quantity(2, 25, Unit::S)),
+                    ("timing", quantity(9, 500, Unit::S)),
+                    ("spread", number(1, 1)),
+                    ("width", number(7, 10)),
+                    ("pan", number(0, 1)),
+                    ("level", number(1, 1)),
+                ] {
+                    params.entry(name).or_insert(value);
+                }
+            }
             "synth.adsr/1" => {
                 for (name, value) in [
                     ("attack", quantity(0, 1, Unit::S)),

@@ -455,6 +455,11 @@ The [electric guitar and piano proposal](design/electric-guitar-piano-proposal.m
 adds `{"kind":"synth.modal/1","modes":48,"strings":2}` the same way, with
 both fields always present on the wire.
 
+The [bowed strings proposal](design/bowed-strings-proposal.md) adds
+`{"kind":"synth.bow/1","players":8,"body":"violin","channels":2,"seed":1}`
+the same way, with every field present on the wire; `body` is `violin`,
+`viola`, `cello`, `bass` or `none`.
+
 ## Import boundary
 
 `Plan::from_json` enforces the input byte limit before deserializing and validates

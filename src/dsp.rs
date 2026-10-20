@@ -1323,6 +1323,19 @@ impl<'a> DspEngine<'a> {
             ),
         };
         if let Some(instrument) = &mut node.instrument {
+            // A bowed section reads the line its voice plays: here, the note.
+            let line = instrument.plays_lines().then(|| {
+                Arc::new(crate::bow::Line {
+                    notes: vec![crate::bow::LineNote {
+                        on_frame: event.on_frame,
+                        off_frame: event.off_frame.unwrap_or(u64::MAX),
+                        pitch_hz,
+                        slur: false,
+                        slide_seconds: 0.0,
+                    }],
+                    address: event.address.clone(),
+                })
+            });
             return instrument
                 .note_on_with_expressions(
                     event.address.clone(),
@@ -1333,6 +1346,7 @@ impl<'a> DspEngine<'a> {
                     gain_expression,
                     timbre_expression,
                     pressure_expression,
+                    line,
                 )
                 .map_err(|error| match error {
                     RenderError::VoiceLimit { address, .. } => RenderError::VoiceLimit {

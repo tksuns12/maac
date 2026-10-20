@@ -41,6 +41,33 @@ pub const fn modal_sample_work(modes: u8, strings: u8) -> u64 {
     (modes as u64 * strings as u64).div_ceil(MODAL_RESONATORS_PER_WORK)
 }
 
+/// Per-sample work of one player of a `synth.bow/1` node: a string with its
+/// bowing, vibrato and tuning, and a body of about 50 resonators. In a
+/// release benchmark they measured 22.8 and 9.8 times a one-unit oscillator
+/// node.
+pub const BOW_PLAYER_WORK: u64 = 23;
+pub const BOW_BODY_WORK: u64 = 10;
+/// Delay cells per bowed string: two lines of 4,096.
+pub const BOW_STRING_CELLS: usize = 8_192;
+/// The most bowed-string delay cells one instrument instance may declare,
+/// across its voices.
+pub const MAX_BOW_STRING_CELLS: usize = 16_777_216;
+
+/// Per-sample work of a `synth.bow/1` node.
+pub const fn bow_sample_work(players: u8, body: crate::bow::BowBody) -> u64 {
+    let body = match body {
+        crate::bow::BowBody::None => 0,
+        _ => BOW_BODY_WORK,
+    };
+    players as u64 * (BOW_PLAYER_WORK + body)
+}
+
+/// Delay cells for `capacity` voices of a graph whose bowed sections hold
+/// `players` players in all.
+pub(crate) fn bow_string_cells(capacity: usize, players: usize) -> Option<usize> {
+    capacity.checked_mul(players)?.checked_mul(BOW_STRING_CELLS)
+}
+
 pub(crate) fn pluck_delay_cells(capacity: usize, nodes: usize) -> Option<usize> {
     capacity.checked_mul(nodes)?.checked_mul(PLUCK_DELAY_CELLS)
 }
@@ -77,6 +104,15 @@ pub enum GraphProcessor {
     /// input.
     #[serde(rename = "synth.modal/1")]
     Modal { modes: u8, strings: u8 },
+    /// A section of bowed strings playing the voice's line, each player with
+    /// a body.
+    #[serde(rename = "synth.bow/1")]
+    Bow {
+        players: u8,
+        body: crate::bow::BowBody,
+        channels: u8,
+        seed: u32,
+    },
     #[serde(rename = "synth.wavetable/1")]
     Wavetable { table: String },
     /// Pitched playback of embedded samples chosen by key zone.
@@ -145,6 +181,13 @@ enum GraphProcessorWire {
     Pluck { seed: u32 },
     #[serde(rename = "synth.modal/1")]
     Modal { modes: u8, strings: u8 },
+    #[serde(rename = "synth.bow/1")]
+    Bow {
+        players: u8,
+        body: crate::bow::BowBody,
+        channels: u8,
+        seed: u32,
+    },
     #[serde(rename = "synth.wavetable/1")]
     Wavetable { table: String },
     #[serde(rename = "synth.sample/1")]
@@ -205,6 +248,20 @@ impl<'de> Deserialize<'de> for GraphProcessor {
             }
             GraphProcessorWire::Pluck { seed } => Self::Pluck { seed },
             GraphProcessorWire::Modal { modes, strings } => Self::Modal { modes, strings },
+            GraphProcessorWire::Bow { seed: 0, .. } => {
+                return Err(serde::de::Error::custom("bow seed must be nonzero"));
+            }
+            GraphProcessorWire::Bow {
+                players,
+                body,
+                channels,
+                seed,
+            } => Self::Bow {
+                players,
+                body,
+                channels,
+                seed,
+            },
             GraphProcessorWire::Wavetable { table } => Self::Wavetable { table },
             GraphProcessorWire::Sample {
                 channels,
@@ -242,6 +299,7 @@ impl GraphProcessor {
             Self::Noise { .. } => "synth.noise/1",
             Self::Pluck { .. } => "synth.pluck/1",
             Self::Modal { .. } => "synth.modal/1",
+            Self::Bow { .. } => "synth.bow/1",
             Self::Wavetable { .. } => "synth.wavetable/1",
             Self::Sample { .. } => "synth.sample/1",
             Self::Adsr => "synth.adsr/1",
@@ -268,7 +326,8 @@ impl GraphProcessor {
             | Self::Svf { channels, .. }
             | Self::Drive { channels }
             | Self::Mix { channels }
-            | Self::Sample { channels, .. } => *channels,
+            | Self::Sample { channels, .. }
+            | Self::Bow { channels, .. } => *channels,
             Self::Pan => 2,
             _ => 1,
         }
@@ -301,6 +360,7 @@ impl GraphProcessor {
                 | Self::Noise { .. }
                 | Self::Pluck { .. }
                 | Self::Modal { .. }
+                | Self::Bow { .. }
                 | Self::Wavetable { .. }
                 | Self::Sample { .. }
                 | Self::Adsr
@@ -419,6 +479,18 @@ impl InstrumentProgram {
             .iter()
             .filter(|node| matches!(node.processor, GraphProcessor::Pluck { .. }))
             .count()
+    }
+
+    /// The players of every bowed section in the voice graph.
+    pub(crate) fn bow_player_count(&self) -> usize {
+        self.voice
+            .nodes
+            .iter()
+            .map(|node| match node.processor {
+                GraphProcessor::Bow { players, .. } => usize::from(players),
+                _ => 0,
+            })
+            .sum()
     }
 
     pub fn channels(&self) -> u8 {
@@ -661,6 +733,69 @@ pub fn parameter_descriptor(processor: &GraphProcessor, name: &str) -> Option<Pa
             }
             _ => None,
         },
+        GraphProcessor::Bow { .. } => {
+            let fraction = |rate, default: (i64, i64), min: (i64, i64), max: (i64, i64)| {
+                let mut result = dimensionless(rate, 0, 0, 1);
+                result.default = Rational::new(default.0.into(), default.1.into());
+                result.min = Rational::new(min.0.into(), min.1.into());
+                result.max = Rational::new(max.0.into(), max.1.into());
+                result
+            };
+            match name {
+                "ratio" => Some(fraction(ParameterRate::Sample, (1, 1), (1, 8), (8, 1))),
+                "dynamics" => Some(fraction(ParameterRate::Sample, (1, 2), (0, 1), (1, 1))),
+                "position" => Some(fraction(ParameterRate::Sample, (1, 8), (1, 10), (1, 7))),
+                // Numbers of cents: graph parameters have no cents unit.
+                "vibrato" => Some(fraction(ParameterRate::Sample, (25, 2), (0, 1), (50, 1))),
+                "rate" => {
+                    let mut result = spec(
+                        GraphUnit::Hertz,
+                        ParameterRate::Sample,
+                        0,
+                        3,
+                        8,
+                        false,
+                        false,
+                    );
+                    result.default = Rational::new(28.into(), 5.into());
+                    Some(result)
+                }
+                "attack" => {
+                    let mut result = spec(
+                        GraphUnit::Seconds,
+                        ParameterRate::Sample,
+                        0,
+                        0,
+                        1,
+                        false,
+                        false,
+                    );
+                    result.default = Rational::new(2.into(), 25.into());
+                    result.min = Rational::new(1.into(), 200.into());
+                    result.max = Rational::new(1.into(), 2.into());
+                    Some(result)
+                }
+                "timing" => {
+                    let mut result = spec(
+                        GraphUnit::Seconds,
+                        ParameterRate::Sample,
+                        0,
+                        0,
+                        1,
+                        false,
+                        false,
+                    );
+                    result.default = Rational::new(9.into(), 500.into());
+                    result.max = Rational::new(1.into(), 25.into());
+                    Some(result)
+                }
+                "spread" => Some(fraction(ParameterRate::Sample, (1, 1), (0, 1), (1, 1))),
+                "width" => Some(fraction(ParameterRate::Sample, (7, 10), (0, 1), (2, 1))),
+                "pan" => Some(fraction(ParameterRate::Sample, (0, 1), (-1, 1), (1, 1))),
+                "level" => Some(dimensionless(ParameterRate::Sample, 1, 0, 16)),
+                _ => None,
+            }
+        }
         GraphProcessor::Modal { .. } => match name {
             "ratio" => {
                 let mut result = dimensionless(ParameterRate::Sample, 1, 0, 8);
@@ -1273,6 +1408,34 @@ fn validate_processor(
                 format!("{path}.seed"),
                 "noise seed must be nonzero",
             ));
+        }
+        GraphProcessor::Bow {
+            players,
+            channels,
+            seed,
+            ..
+        } => {
+            if !(1..=crate::bow::MAX_PLAYERS).contains(players) {
+                return Err(error(
+                    "E_RANGE",
+                    format!("{path}.players"),
+                    "bowed section needs 1 to 16 players",
+                ));
+            }
+            if !(1..=2).contains(channels) {
+                return Err(error(
+                    "E_RANGE",
+                    format!("{path}.channels"),
+                    "bowed section needs 1 or 2 channels",
+                ));
+            }
+            if *seed == 0 {
+                return Err(error(
+                    "E_RANGE",
+                    format!("{path}.seed"),
+                    "bowed section seed must be nonzero",
+                ));
+            }
         }
         GraphProcessor::Modal { modes, strings } => {
             if !(1..=crate::modal::MAX_MODES).contains(modes) {

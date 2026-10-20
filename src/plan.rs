@@ -2957,6 +2957,33 @@ impl<'a> PlanView<'a> {
                 }
             }
 
+            for node in self.nodes {
+                let mut cells = 0usize;
+                for (program, voices) in instance_programs(&node.processor, resources) {
+                    let players = resources
+                        .programs
+                        .iter()
+                        .find(|candidate| candidate.id == program)
+                        .map_or(0, |program| program.bow_player_count());
+                    cells = crate::graph::bow_string_cells(voices as usize, players)
+                        .and_then(|more| cells.checked_add(more))
+                        .ok_or_else(|| {
+                            err(
+                                "E_RESOURCE_LIMIT",
+                                "instruments",
+                                "bowed string storage arithmetic overflow",
+                            )
+                        })?;
+                }
+                if cells > crate::graph::MAX_BOW_STRING_CELLS {
+                    return Err(err(
+                        "E_RESOURCE_LIMIT",
+                        "instruments",
+                        "declared bowed string storage exceeds the instance limit",
+                    ));
+                }
+            }
+
             let voice_graph_states = self.nodes.iter().fold(0usize, |total, node| {
                 instance_programs(&node.processor, resources)
                     .into_iter()
@@ -6062,8 +6089,8 @@ fn validate_identifier_limit(
 }
 
 /// Per-sample work of one instrument graph: one unit per node (a pluck,
-/// resonant filter, drive or modal bank costs more), connection, and
-/// modulation edge.
+/// resonant filter, drive, modal bank or bowed section costs more),
+/// connection, and modulation edge.
 fn graph_sample_cost(graph: &crate::graph::GraphProgram) -> u64 {
     graph
         .nodes
@@ -6075,6 +6102,9 @@ fn graph_sample_cost(graph: &crate::graph::GraphProgram) -> u64 {
                 crate::graph::GraphProcessor::Drive { .. } => crate::graph::DRIVE_SAMPLE_WORK,
                 crate::graph::GraphProcessor::Modal { modes, strings } => {
                     crate::graph::modal_sample_work(modes, strings)
+                }
+                crate::graph::GraphProcessor::Bow { players, body, .. } => {
+                    crate::graph::bow_sample_work(players, body)
                 }
                 _ => 1,
             })

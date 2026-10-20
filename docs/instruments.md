@@ -330,13 +330,14 @@ is rejected, including mixed audio/modulation cycles.
 | `synth.svf/1` | `cutoff` (1000 Hz; 0 up to but not including 24000 Hz), `ratio` (0; 0…64, and 0 in a shared graph), `q` (707/1000; 1/10…40); required `config.channels` and `config.mode` (`lowpass`, `bandpass` or `highpass`) | Same channels as input |
 | `synth.drive/1` | `drive` (1; 0…64), `bias` (0; −4…4), `level` (1; 0…16), `reference` (0; 0…1); required `config.channels` | Same channels as input |
 | `synth.modal/1` | `ratio` (1; 1/8…8), `stretch` (0; 0…1/16), `decay` (2 s; 1/100…60 s), `damping` (0; 0…4), `position` (0; 0…1/2), `detune` (0; 0…50, a number of cents), `level` (1; 0…16); required `config.modes` (1…64) and optional `config.strings` (1; 1…3); voice-only (see [Modal bank](#modal-bank)) | Mono |
+| `synth.bow/1` | `ratio` (1; 1/8…8), `dynamics` (1/2; 0…1), `position` (1/8; 1/10…1/7), `vibrato` (25/2; 0…50, a number of cents), `rate` (28/5 Hz; 3…8 Hz), `attack` (80 ms; 5…500 ms), `timing` (18 ms; 0…40 ms), `spread` (1; 0…1), `width` (7/10; 0…2), `pan` (0; −1…1), `level` (1; 0…16); optional `config.players` (1; 1…16), `config.body` (`violin`, `viola`, `cello`, `bass` or `none`; `violin`), `config.channels` (1; 1…2) and `config.seed` (1); voice-only, no inputs (see [Bowed strings](#bowed-strings)) | Mono, or stereo with `channels = 2` |
 | `synth.mix/1` | Required `config.channels`; no parameters | Mono/stereo sum |
 | `synth.pan/1` | `pan` (0; −1…1) | Equal-power stereo from mono |
 
 Numbers are dimensionless; seconds accept `s` and `ms`, hertz accept `Hz` and
 `kHz`. Parameters and controls use exact rationals until the DSP boundary.
 Unknown fields, wrong units, invalid ranges, and nonfinite values fail.
-Oscillators, noise and the modal bank are voice-only; high-pass, the resonant filter and the
+Oscillators, noise, the modal bank and bowed strings are voice-only; high-pass, the resonant filter and the
 drive are allowed in both voice and shared graphs. ADSR attack/decay/sustain/curve and oscillator/LFO phase
 are captured at note-on (shared LFO phase at render reset). Release is captured
 at note-off. Other parameters are sampled each frame. Shared LFO phase controls
@@ -645,6 +646,99 @@ The work charge is one unit per sample for every four resonators,
 `ceil(N × S / 4)`, plus the usual unit per edge. In a release benchmark one
 resonator cost about a sixth of a one-unit oscillator node; the charge keeps
 a margin. A 48-mode, two-string bank costs 24 units per sample.
+
+### Bowed strings
+
+`synth.bow/1` is a section of bowed strings: up to 16 players, each with a
+string, a bow and a wooden body. It is voice-only and has no inputs. Its
+output is mono, the players summed, or with `config.channels = 2` the
+players spread evenly across `pan ± width/2`, equal-power and clamped to
+the field. The [bowed strings proposal](design/bowed-strings-proposal.md)
+records how each part was chosen by ear.
+
+Each note is played as a stroke. The bow starts from rest at the note's
+onset and reaches full speed through a quarter sine over `attack`. At the
+note-off it lifts, its speed falling linearly to zero over 250 ms, and the
+string rings on through its loss and the body. The amplitude envelope should
+release slowly enough to let it.
+
+**The string.** Each player's string is a loop of two delay lines of 4,096
+cells, split at the bow. With `f` the player's frequency, the loop is
+`48000 / f − c(f, d)` frames long, where `c` is a correction measured for
+each key from A0 to F#7 at `dynamics` 0.2, 0.5 and 0.9 and interpolated
+linearly in key and in `dynamics`, so that the string plays in tune. The bow
+sits `β` of the loop from the bridge: `position`, times the player's own
+factor, but never less than `0.16 × min(1, f / 1.5 kHz)`. A high note's
+stopped string is short, and nearer the bridge it would leave its normal
+motion. Delays are read with linear interpolation, and the bridge side is
+at least one frame. Each frame, with `F` the bow force from 0 to 1:
+
+```text
+v_s = r_bridge + r_nut                    string velocity under the bow
+Δ   = v_bow (1 + 0.4 n) − v_s             n: uniform noise, one-pole, pole 0.995
+k   = min(1, (|Δ (5 − 4F)| + 3/4)^−4)     friction: stick when Δ is small
+injected = Δ k                            added to both outgoing waves
+r_nut    = − (wave arriving at the nut)
+r_bridge = − lp(wave arriving at the bridge),  lp: y ← 0.95 (1 − 0.658) x + 0.658 y
+```
+
+The output is the wave arriving at the bridge, which drives the body.
+
+**The bow.** `dynamics`, smoothed over 100 ms, sets the bow's speed to
+`0.03 + 0.085 d` and its force to `0.5 + 0.35 d`. The first stroke presses
+harder as it starts: the force gains `0.25 exp(−((t − t₀ − 20 ms) / 40 ms)²)`
+at a player's onset `t₀`, capped at 0.95.
+
+**The player.** The vibrato is continuous. Its depth is `vibrato` cents
+times the player's factor, which grows from 30 % to full over the stroke's
+first 250 ms and is smoothed over 30 ms; on a note held 1.2 s or longer it
+widens by up to 25 % towards the note's end. Its rate is `rate` plus the
+player's offset. Two slow drifts add 3 cents at 0.08–0.2 Hz and 2 cents at
+0.2–0.5 Hz. Each player's onset is late by the absolute value of a normal
+draw with standard deviation `timing`, cut off at three times that.
+
+**The players' differences.** Each player is off in tune by a normal draw
+with a standard deviation of 4 cents, and each note by another 3. Their
+vibrato depth differs by up to 20 %, their rate by up to 0.5 Hz, their bow
+position by up to 12 % and their level by a normal draw of 1.5 dB. All of
+these, and the drifts, are scaled by `spread`; with `spread = 0` and
+`timing = 0` the players differ only in their bodies and bow noise. A
+player's own traits come from `config.seed` and its index, so the same
+player plays every note alike. What varies from note to note comes from the
+seed, the note's event address and the player, through a SplitMix64
+generator; the bow noise has a stream of its own. `attack`, `timing` and
+`spread` are taken at the stroke's first frame; the other parameters are
+sampled every frame. The same source renders bit-identically.
+
+**The body.** Each player has a body: a bank of resonators, each a decaying
+sinusoid like a `synth.modal/1` mode but at a fixed frequency. A violin body
+has five signature modes, at 275 Hz (Q 22, 0 dB), 405 (Q 30, −4 dB), 470
+(Q 40, +2 dB), 540 (Q 40, +1 dB) and 590 Hz (Q 35, −3 dB), and dense modes
+from 620 Hz to 10 kHz, each a random 3–9 % above the last, with a random Q
+of 15–35 and a level that follows the bridge hill: 0 dB from 250 to 650 Hz
+(12 dB per octave less below), −6 dB to 1.6 kHz, rising by up to 9 dB
+towards 4 kHz and falling 12 dB per octave above, each varied by −4 to
++1 dB. A viola scales every frequency by 0.8, a cello by 0.42 and a bass by
+0.3, and each mode varies by a normal 3 %. A mode's amplitude is its level
+times `f / Q` with a random sign, and the bank is normalized so its impulse
+response has unit energy. Random bodies pass some notes far louder than
+others, so each family has a fixed table of 16 bodies, the most even of 120
+draws across its range, and player `k` plays body `(seed + k) mod 16`.
+`body = none` leaves the string bare.
+
+**Range and stability.** Once settled, a held note plays within 3 cents of
+its pitch from A0 to B6, the violins' top in this model; a soft bow below G3
+wavers by a few cents in its first second. From C7 up the string can lose
+its normal motion. A stroke at `position` 1/8 holds its normal motion
+200 ms after it starts on every semitone from G3 to B6, at every dynamics;
+cellos and basses are steadier at 1/10, where only a few bass notes at the
+loudest dynamics leave it for part of the stroke.
+
+Each player costs 23 units of work per sample for its string and bowing,
+and 10 for its body: a violin section of eight costs 264. A release
+benchmark measured 22.8 and 9.8 times a one-unit oscillator node. An
+instance may declare at most 16,777,216 string cells across its voices, two
+lines of 4,096 for each player, so 128 voices of 16 players at most.
 
 ## Wavetables
 

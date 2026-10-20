@@ -26,6 +26,9 @@ pub struct CompiledInstrument {
     control_indices: BTreeMap<String, usize>,
     channels: usize,
     pluck_nodes: usize,
+    /// Whether the voice graph holds a `synth.bow/1` section, which plays
+    /// lines.
+    plays_lines: bool,
 }
 
 /// Mutable polyphonic state for one instrument node.
@@ -95,6 +98,8 @@ enum ProcessorCode {
     Pluck(u32),
     /// Modes and strings.
     Modal(u8, u8),
+    /// Players, body, channels and seed.
+    Bow(u8, crate::bow::BowBody, u8, u32),
     Wavetable(Arc<TableBank>),
     Sample(Arc<CompiledSampleNode>),
     Adsr,
@@ -210,6 +215,7 @@ enum ProcessorState {
     Noise(u32),
     Pluck(crate::pluck::Pluck),
     Modal(crate::modal::Modal),
+    Bow(Box<crate::bow::Bow>),
     Wavetable {
         phase: f64,
     },
@@ -325,6 +331,10 @@ impl CompiledInstrument {
             id: program.id.clone(),
             channels: program.channels() as usize,
             pluck_nodes: program.pluck_node_count(),
+            plays_lines: voice
+                .nodes
+                .iter()
+                .any(|node| matches!(node.processor, ProcessorCode::Bow(..))),
             voice,
             shared,
             controls,
@@ -375,6 +385,25 @@ impl InstrumentRuntime {
             voices
                 .try_reserve_exact(capacity as usize)
                 .map_err(|_| pluck_resource_error("cannot reserve pluck voice capacity"))?;
+        }
+        let players = program
+            .voice
+            .nodes
+            .iter()
+            .map(|node| match node.processor {
+                ProcessorCode::Bow(players, ..) => usize::from(players),
+                _ => 0,
+            })
+            .sum();
+        if crate::graph::bow_string_cells(capacity as usize, players)
+            .is_none_or(|cells| cells > crate::graph::MAX_BOW_STRING_CELLS)
+        {
+            return Err(RenderError::Plan(crate::plan::PlanError {
+                code: "E_RESOURCE_LIMIT".into(),
+                path: "instrument.voices".into(),
+                message: "declared bowed string storage exceeds the instance limit".into(),
+                span: None,
+            }));
         }
         let resolved = resolve_controls(&program, controls)?;
         let shared = program
@@ -444,7 +473,15 @@ impl InstrumentRuntime {
         velocity: f64,
         frame: u64,
     ) -> Result<()> {
-        self.note_on_with_expressions(address, pitch_hz, velocity, frame, None, None, None, None)
+        self.note_on_with_expressions(
+            address, pitch_hz, velocity, frame, None, None, None, None, None,
+        )
+    }
+
+    /// Whether this instrument plays lines: a voice graph with a bowed
+    /// section, which reads the notes its voice will play.
+    pub(crate) fn plays_lines(&self) -> bool {
+        self.program.plays_lines
     }
 
     // Keep the public note-on contract unchanged while carrying the optional curves.
@@ -459,6 +496,7 @@ impl InstrumentRuntime {
         gain_expression: Option<ExpressionRuntime<GainExpression>>,
         timbre_expression: Option<ExpressionRuntime<TimbreExpression>>,
         pressure_expression: Option<ExpressionRuntime<PressureExpression>>,
+        line: Option<Arc<crate::bow::Line>>,
     ) -> Result<()> {
         if !pitch_hz.is_finite() || !velocity.is_finite() || !(0.0..=1.0).contains(&velocity) {
             return Err(RenderError::Nonfinite(
@@ -472,8 +510,24 @@ impl InstrumentRuntime {
                 address: address.into(),
             });
         }
+        let address = address.into();
+        let line = self.program.plays_lines.then(|| {
+            line.unwrap_or_else(|| {
+                // A voice without a plan plays one note of unknown length.
+                Arc::new(crate::bow::Line {
+                    notes: vec![crate::bow::LineNote {
+                        on_frame: frame,
+                        off_frame: u64::MAX,
+                        pitch_hz,
+                        slur: false,
+                        slide_seconds: 0.0,
+                    }],
+                    address: address.clone(),
+                })
+            })
+        });
         let mut voice = VoiceState {
-            address: address.into(),
+            address,
             pitch_hz,
             velocity,
             pitch_expression,
@@ -484,6 +538,9 @@ impl InstrumentRuntime {
             released: false,
             graph: GraphState::new_voice(&self.program.voice, &self.controls, frame, velocity)?,
         };
+        if let Some(line) = &line {
+            voice.graph.play_line(line)?;
+        }
         if self.program.voice.has_note_on_modulations {
             let (pitch_hz, timbre, pressure) = voice.expression_inputs(frame, self.rate)?;
             voice.graph.capture_note_on(
@@ -550,6 +607,7 @@ impl InstrumentRuntime {
                 .graph
                 .release(&self.program.voice, &self.controls, frame, self.rate)?;
         }
+        voice.graph.lift_bows(frame);
         voice.released = true;
         Ok(())
     }
@@ -918,6 +976,9 @@ impl GraphState {
                 ProcessorCode::Modal(modes, strings) => {
                     ProcessorState::Modal(crate::modal::Modal::new(*modes, *strings)?)
                 }
+                ProcessorCode::Bow(players, body, channels, seed) => ProcessorState::Bow(Box::new(
+                    crate::bow::Bow::new(*players, *body, *channels, *seed)?,
+                )),
                 ProcessorCode::Wavetable(_) => ProcessorState::Wavetable { phase: params[2] },
                 ProcessorCode::Sample(_) => ProcessorState::Sample {
                     velocity,
@@ -952,6 +1013,25 @@ impl GraphState {
             nodes,
             settled_controls: None,
         })
+    }
+
+    /// Give every bowed section of the voice the line it plays.
+    fn play_line(&mut self, line: &Arc<crate::bow::Line>) -> Result<()> {
+        for runtime in &mut self.nodes {
+            if let ProcessorState::Bow(bow) = &mut runtime.state {
+                bow.play(line.clone())?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The voice's note-off: every bowed section lifts its bow.
+    fn lift_bows(&mut self, frame: u64) {
+        for runtime in &mut self.nodes {
+            if let ProcessorState::Bow(bow) = &mut runtime.state {
+                bow.lift(frame);
+            }
+        }
     }
 
     /// Whether a plucked string without note-on modulation shapes its fill;
@@ -1639,6 +1719,26 @@ fn process_graph_node(
                 )?
             };
         }
+        (ProcessorCode::Bow(..), ProcessorState::Bow(bow)) => {
+            let params = crate::bow::BowParams {
+                ratio: params[0],
+                dynamics: params[1],
+                position: params[2],
+                vibrato: params[3],
+                rate: params[4],
+                attack: params[5],
+                timing: params[6],
+                spread: params[7],
+                width: params[8],
+                pan: params[9],
+                level: params[10],
+            };
+            output = if commit {
+                bow.sample(frame, &params, pitch_hz)?
+            } else {
+                bow.preview(frame, &params, pitch_hz)?
+            };
+        }
         (ProcessorCode::Modal(..), ProcessorState::Modal(bank)) => {
             let shape = crate::modal::ModalShape {
                 frequency_hz: pitch_hz * params[0],
@@ -1978,6 +2078,12 @@ fn compile_graph(
     })
 }
 
+/// A `synth.bow/1` node's parameter slots, in order.
+const BOW_PARAMETERS: &[&str] = &[
+    "ratio", "dynamics", "position", "vibrato", "rate", "attack", "timing", "spread", "width",
+    "pan", "level",
+];
+
 fn compile_processor(
     processor: &GraphProcessor,
     tables: &BTreeMap<String, Arc<TableBank>>,
@@ -2001,6 +2107,15 @@ fn compile_processor(
                 "ratio", "stretch", "decay", "damping", "position", "detune", "level",
             ],
             ProcessorCode::Modal(*modes, *strings),
+        ),
+        GraphProcessor::Bow {
+            players,
+            body,
+            channels,
+            seed,
+        } => (
+            BOW_PARAMETERS,
+            ProcessorCode::Bow(*players, *body, *channels, *seed),
         ),
         GraphProcessor::Wavetable { table } => (
             &["ratio", "frequency", "phase", "level", "position"],
@@ -2069,6 +2184,7 @@ fn parameter_slot(processor: &ProcessorCode, name: &str) -> Option<usize> {
         ProcessorCode::Modal(..) => &[
             "ratio", "stretch", "decay", "damping", "position", "detune", "level",
         ],
+        ProcessorCode::Bow(..) => BOW_PARAMETERS,
         ProcessorCode::Wavetable(_) => &["ratio", "frequency", "phase", "level", "position"],
         ProcessorCode::Sample(_) => &["ratio", "frequency", "level"],
         ProcessorCode::Adsr => &["attack", "decay", "sustain", "release", "curve"],
