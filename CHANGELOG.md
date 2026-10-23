@@ -24,6 +24,15 @@ promise of compatibility beyond the documented interfaces.
   the T6 trial's accepted modal harp. Each export's reference phrase at
   velocity 0.7 measures −20 LUFS.
 
+- "Homeward" ([`examples/homeward/homeward.maac`](examples/homeward/homeward.maac)),
+  an orchestral film cue from the
+  [T6 production trial](docs/reports/ai-production-trial-t6.md). Its strings
+  and harp are `std/orchestra/1.0.0`'s, with the violins' theme bowed in
+  connected lines; its brass, flute and percussion are built in the song.
+  In listening rounds the owner heard the prototype's bow change as the
+  sound being muted at every separate bow, and the bowed violins, at the
+  loudness of the saws they replaced, as background; both were fixed.
+
 - `maac analyze` profile `maac.analyze.default/10`: a connected note with a
   `slide` has its pitch estimated after the slide, from `0.42 × slide +
   60 ms` after its onset, so a section still landing on a slurred note is

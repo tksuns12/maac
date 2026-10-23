@@ -1,10 +1,11 @@
 # T6: a fifth AI production, an orchestral film cue
 
-**Date:** 2026-10-15 to 2026-10-20. **Producer:** Claude, an AI model,
+**Date:** 2026-10-15 to 2026-10-23. **Producer:** Claude, an AI model,
 working in this repository. **Listener:** the project owner.
-**Result:** "Homeward", version 1. Version 2 waits on the
-[bowed strings](../design/bowed-strings-proposal.md), and its source will
-join the examples with it.
+**Result:** "Homeward", version 2
+([`examples/homeward/homeward.maac`](../../examples/homeward/homeward.maac)),
+on the [bowed strings](../design/bowed-strings-proposal.md) that version 1
+showed MaaC lacked.
 
 T2 to T5 produced lo-fi hip-hop, folk-pop, pop and dance music, all on band
 or electronic instruments. T6 tested an orchestra, the owner's choice: a
@@ -66,6 +67,22 @@ Friction numbers continue from T5.
     at all. Why can't synthesis make this? Every sound is a sound wave" to
     "not bad". The [proposal](../design/bowed-strings-proposal.md#why)
     gives each round.
+- **Version 2:** the strings and the harp come from `std/orchestra/1.0.0`.
+  Five instruments stay in the song, in 203 lines: the brass, the flute, the
+  timpani, the cymbal and the bass drum, played by 22 nodes. The violins'
+  theme is written as a player would bow it, with slurs and slides, and the
+  pads are bowed two bars to a stroke: 262 notes connect. Each part keeps
+  version 1's loudness, region by region, except the violins' melody, 6 dB
+  louder after round 10. The plan charges 16.5 billion units of work, within
+  the `song` profile, and `maac deliver` took about five minutes on an
+  Apple laptop. It passed at −14.95 LUFS and −1.10 dBTP.
+- **Owner's verdicts on version 2** (translated): at 0:13, "closer to a
+  wind instrument", which it is, the horn's theme; from 0:38, "somewhat like
+  a violin"; "the violins carry the melody, but they have no brilliance and
+  sound too much like background"; "the dragging feels a bit delayed"; "the
+  harp seems fine". With the violins 6 dB louder, "c is the best". The
+  dragging was set aside as subjective. On the full cue with the louder
+  violins: "Yeah, it's fine."
 
 ## What happened
 
@@ -83,6 +100,9 @@ Friction numbers continue from T5.
 | Proposal | The [bowed strings proposal](../design/bowed-strings-proposal.md): connected notes in the language, a bowed-string node and an orchestral library | The owner accepted every recommendation |
 | Round 8 | The round 7 excerpt from the prototype and from MaaC's new strings, blind | Owner: no preference; at the separate bows "the sound does not part, it is as if it were muted" (F50) |
 | Round 9 | MaaC's bow change without the 30 ms stop on the string | Owner: "Ah, much better" |
+| Version 2 | The cue on `std/orchestra`, with connected violin lines and bowed pads, each part at version 1's loudness by region | Delivered at −15.31 LUFS, −1.10 dBTP |
+| Verdict 2 | The AI's listening guide named the violins at 0:13, where the horn plays the theme; the owner heard a wind instrument there and violins from 0:38, but too much in the background | The violins' median lead margin was −6.35 dB in the theme's return and −8.99 dB in the climax (F51) |
+| Round 10 | Three clips of the theme's return, blind: as delivered, the violins 6 dB louder, and slides only on leaps of a fourth or more | Owner: the louder violins are best; the slides set aside. Margins −0.33 and −2.80 dB; delivered at −14.95 LUFS |
 
 ## Friction
 
@@ -118,18 +138,20 @@ Friction numbers continue from T5.
 | F43 | `maac analyze` took 200 s for 128 s of music with 17 sources, and `maac deliver` 189 s. Every mix iteration waits for both | Open |
 | F44 | `synth.pluck/1` is a guitar string. A harp from it reads as a guitar | Fixed in the song with `synth.modal/1`. The harp joins a library in the [bowed strings proposal](../design/bowed-strings-proposal.md#4-the-instruments-stdorchestra100) |
 | F45 | `synth.modal/1`'s `stretch` turns a harp into a bell. At 1/5000, a D3's 24th mode sat 94 cents sharp, which the owner heard as "metallic" | Open; the guide should say that a harp needs `stretch = 0` |
-| F46 | A violin body cannot be built. An instrument cannot hold `fx.eq/1`, and a shared-stage `synth.svf/1` has no peak gain, so the body had to be a cascade of `fx.eq` peaks in the score after each section. Seven peaks were far too coarse; the accepted body has about 50 resonances | Accepted: the [bowed strings proposal](../design/bowed-strings-proposal.md#3-the-body) |
+| F46 | A violin body cannot be built. An instrument cannot hold `fx.eq/1`, and a shared-stage `synth.svf/1` has no peak gain, so the body had to be a cascade of `fx.eq` peaks in the score after each section. Seven peaks were far too coarse; the accepted body has about 50 resonances | Fixed: each `synth.bow/1` player has a body of about 50 resonances ([proposal](../design/bowed-strings-proposal.md#3-the-body)) |
 | F47 | Six detuned saws per voice, with their vibratos and drifts, cost 1.49 billion work units for a 16-beat clip, three times the default profile's limit | Open; the `song` profile covers it |
-| F48 | No bowed string can be built from nodes. A bowed string is a loop with a friction law at the bow, and graphs reject feedback | Accepted: the [bowed strings proposal](../design/bowed-strings-proposal.md#2-the-bowed-string-synthbow1) |
-| F49 | Every note has its own voice, so a line cannot be played with one bow. The owner heard the connection between notes: a glide between pitches, a bow change during a slide, and a bow change 20 ms late each sounded electronic or unskilled | Accepted: the [bowed strings proposal](../design/bowed-strings-proposal.md#1-connected-notes) |
+| F48 | No bowed string can be built from nodes. A bowed string is a loop with a friction law at the bow, and graphs reject feedback | Fixed: [`synth.bow/1`](../instruments.md#bowed-strings) ([proposal](../design/bowed-strings-proposal.md#2-the-bowed-string-synthbow1)) |
+| F49 | Every note has its own voice, so a line cannot be played with one bow. The owner heard the connection between notes: a glide between pitches, a bow change during a slide, and a bow change 20 ms late each sounded electronic or unskilled | Fixed: [connected notes](../../MaaC-1-Specification.md#83-connected-notes) ([proposal](../design/bowed-strings-proposal.md#1-connected-notes)) |
 | F50 | The accepted prototype's bow change held the bow still on the string for 30 ms. Each player fell 20 dB for about 80 ms at every separate bow, and the owner heard the section as muted there. Round 6 had drawn the opposite lesson from a round that changed two things | Fixed in `synth.bow/1`: the bow reverses in 20 ms without stopping ([results](../design/bowed-strings-proposal.md#results), part 5) |
+| F51 | Matching a new instrument to the old one's loudness buried the melody. Region by region, the bowed violins read as loud as version 1's saws, but the saws had cut through by their brightness: the bowed violins sat 6.35 dB under the accompaniment in their strongest band, and the owner heard them as background. `lead_under` fired only in the climax, at −8.99 dB | Fixed in the song: the violins 6 dB louder. The [producer guide](../ai-producer-guide.md) now says to check a melody's lead margin after swapping its instrument |
 
 ## What to build next, in order
 
 1. **Bowed strings (F46, F48, F49).** A bowed-string node with its players
    and bodies, connected notes in the language, and a library of orchestral
    strings with the T6 harp. The [proposal](../design/bowed-strings-proposal.md)
-   was accepted on 2026-10-20. "Homeward" version 2 is its listening test.
+   was accepted on 2026-10-20 and has landed; "Homeward" version 2 plays on
+   it.
 
 F36–F43, F45 and F47 are conveniences or small fixes. They wait until
 another track needs them.

@@ -1,5 +1,6 @@
 //! `std/orchestra/1.0.0`: frozen bytes, catalog, full-range rendering,
-//! velocity response, calibrated levels and connected lines.
+//! velocity response, calibrated levels and connected lines, and the
+//! "Homeward" example that plays on it.
 
 use std::collections::BTreeSet;
 
@@ -298,4 +299,34 @@ fn every_string_section_plays_connected_lines() {
             serde_json::from_slice(&plan(&source).to_json().unwrap()).unwrap();
         assert_eq!(wire["events"][1]["join"]["from"], "once/0/a", "{export}");
     }
+}
+
+#[test]
+fn homeward_bows_its_lines_connected() {
+    let source = include_str!("../examples/homeward/homeward.maac");
+    let bytes = plan(source)
+        .to_json_with_limits(&PlanLimits::song())
+        .unwrap();
+    let wire: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let joins: Vec<_> = wire["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|event| event.get("join"))
+        .collect();
+    assert_eq!(joins.len(), 262);
+    assert_eq!(
+        joins
+            .iter()
+            .filter(|join| join.get("slur").is_some())
+            .count(),
+        96
+    );
+    assert_eq!(
+        joins
+            .iter()
+            .filter(|join| join.get("slide_seconds").is_some())
+            .count(),
+        38
+    );
 }

@@ -444,6 +444,34 @@ The release delivery measured -14.84 LUFS and -1.10 dBTP and passed its
 limits. The owner's informal verdict on this version: "Good. It's good." They
 also said the library instruments still sound a bit like old game music.
 
+# Homeward: an orchestral cue
+
+[`homeward/homeward.maac`](homeward/homeward.maac) is a 128-second film cue
+that moves from D minor to D major. An AI wrote, mixed and mastered it
+during the [T6 production trial](../docs/reports/ai-production-trial-t6.md):
+
+- a horn sings the theme over strings and harp, the violins take it up an
+  octave, and a build quickens from 76 to 84 bpm into a climax with brass,
+  timpani and cymbals; a flute closes it alone as the tempo slows to 54;
+- the strings and the harp are [std/orchestra](../docs/orchestra-instruments.md)'s.
+  The violins' theme is written as a player would bow it: notes that touch
+  are [connected](../MaaC-1-Specification.md#83-connected-notes), with
+  `slur` on short notes after long ones and `slide` on leaps and falls,
+  and the pads are bowed two bars to a stroke with the chord change slurred;
+- the brass, the flute, the timpani, the cymbal and the bass drum are built
+  in the song from synthesis nodes, and everything goes into one hall.
+
+```sh
+maac build examples/homeward/homeward.maac --profile song -o homeward.wav --format pcm16
+maac analyze examples/homeward/homeward.maac --profile song --section regions --lead violins:out
+maac deliver examples/homeward/homeward.maac --delivery release --output-dir out --profile song
+```
+
+The release delivery measured −14.95 LUFS and −1.10 dBTP and passed its
+limits; it takes about five minutes. The owner's verdicts: the harp "seems
+fine", and the violins "somewhat like a violin". At version 1's level the
+violins sounded like background; 6 dB louder, "it's fine".
+
 # Audio inside patterns
 
 [`pattern-audio.maac`](pattern-audio.maac) builds a one-bar drum loop from

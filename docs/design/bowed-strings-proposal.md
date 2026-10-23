@@ -420,8 +420,8 @@ proposal.
 
 ## Results
 
-Parts 1 to 4 have landed. The listening round of step 5 is under way:
-the excerpt has been heard (part 5); the full cue has not.
+Parts 1 to 4 have landed. Step 5's listening is in part 5: the excerpt
+in rounds 8 and 9, the full cue in version 2's verdict and round 10.
 
 **Part 1, `synth.bow/1`.** The string, bow, players and bodies follow the
 contract above, with these changes, each found by measurement:
@@ -525,6 +525,19 @@ not C1–G7. See [orchestra instruments](../orchestra-instruments.md).
 - **Levels.** Without the holes the string sections read 0.2–0.7 dB
   louder, so their default levels were set again: violins 87/500, violas
   22/125, cellos 33/250 and basses 37/250.
+- **Version 2.** The full cue, each part at version 1's loudness by region.
+  The owner heard the violins "somewhat like a violin", but "with no
+  brilliance, too much like background", and the harp as fine. The
+  violins' median lead margin was −6.35 dB in the theme's return: as loud
+  as version 1's saws, they lacked the saws' edge. In round 10, blind, the
+  owner preferred the violins 6 dB louder (margin −0.33 dB) to the
+  delivered mix and to a version with fewer slides. "The dragging feels a
+  bit delayed" was set aside as subjective, so the slides stay. On the
+  full cue with the louder violins, asked whether they now carry the
+  melody: "Yeah, it's fine."
+- **Cost.** Version 2 charges 16.5 billion units of work, within the
+  `song` profile's 100 billion, and `maac deliver` takes about five minutes
+  on an Apple laptop.
 
 ## Cost and risk
 

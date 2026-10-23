@@ -24,11 +24,17 @@ changed.
 
 ## Listen
 
-Four songs written entirely in MaaC source by an AI producer, rendered and
+Five songs written entirely in MaaC source by an AI producer, rendered and
 mastered by `maac`, with no samples or recordings. Every instrument is built
-in, except "Afterlight"'s kick and synthesizers and "Lantern Street"'s
-acoustic guitar, which the songs build from MaaC's synthesis nodes:
+in, except "Homeward"'s brass, flute and percussion, "Afterlight"'s kick and
+synthesizers and "Lantern Street"'s acoustic guitar, which the songs build
+from MaaC's synthesis nodes:
 
+- **"Homeward"**, an orchestral film cue that turns from D minor to D
+  major, with bowed strings, harp, horns, trumpets, flute and timpani
+  (2:08):
+  [listen](docs/assets/audio/homeward.m4a) ·
+  [source](examples/homeward/homeward.maac)
 - **"Afterlight"**, a 126 bpm progressive-house track with a supersaw lead
   and chords, a plucked arpeggio, a saw bass, piano, drums and a riser,
   pumping to the kick (2:44):

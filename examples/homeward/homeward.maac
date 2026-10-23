@@ -1,0 +1,716 @@
+maac 1;
+
+// "Homeward": an orchestral film cue, D minor to D major, 38 bars (about
+// two minutes). Written directly in MaaC by an AI producer as the T6
+// production trial. The strings and the harp are std/orchestra's; the
+// brass, flute and percussion are built here from synthesis nodes.
+//
+//  1-4   intro: a low D, high strings breathing, the harp, a flute's hint
+//  5-12  theme: the horn sings it over strings and harp
+// 13-20  theme again: violins an octave up, horns beneath, the flute along
+// 21-24  build: string ostinato, brass stabs, a timpani roll, quickening
+// 25-32  climax in D major: brass and violins, timpani, cymbals, bass drum
+// 33-38  coda: the flute alone over soft strings, slowing to the last chord
+
+project homeward {
+  score = [0q, 152q]; rate = 48000Hz; tail = 6s;
+  tempo = &clock; meter = &metre; output = &master:out;
+  requires = ["maac.production/1"];
+}
+import orch { builtin = "std/orchestra/1.0.0"; }
+// 76 bpm; the build quickens to 84, the coda drops to 72 and slows to 54.
+tempo clock { points = [(0q, 76bpm, step), (80q, 76bpm, linear), (96q, 84bpm, step), (128q, 72bpm, linear), (148q, 54bpm, step)]; }
+meter metre { points = [(0q, 4, 4)]; }
+
+region intro { span = [bar(1, 1), bar(5, 1)]; }
+region theme { span = [bar(5, 1), bar(13, 1)]; }
+region theme2 { span = [bar(13, 1), bar(21, 1)]; }
+region build { span = [bar(21, 1), bar(25, 1)]; }
+region climax { span = [bar(25, 1), bar(33, 1)]; }
+region coda { span = [bar(33, 1), bar(39, 1)]; }
+// ------------------------------------------------------------ instruments
+
+// Brass: two saws and a square, a lip scoop of 17 cents into each note, and
+// a low-pass that a filter envelope, velocity and pressure open. A hard
+// note is brassy, a soft one round.
+instrument brass_section {
+  channels = 2;
+  voice voice {
+    channels = 1;
+    amplitude = &amp;
+    output = &dynamics:out;
+    node amp { type = "synth.adsr/1"; params = { attack = 45ms; decay = 300ms; sustain = 0.85; release = 250ms; curve = 2; }; }
+    node vel { type = "synth.velocity/1"; }
+    node touch { type = "synth.pressure/1"; }
+    node scoop { type = "synth.adsr/1"; params = { decay = 50ms; sustain = 0; curve = 3; }; }
+    node a { type = "synth.saw/1"; params = { ratio = 0.9988; level = 0.3; }; }
+    node b { type = "synth.saw/1"; params = { ratio = 1.0012; level = 0.3; phase = 0.5; }; }
+    node c { type = "synth.square/1"; params = { level = 0.15; phase = 0.25; }; }
+    modulate scoop_a { from = &scoop:out; to = &a.params.ratio; depth = -0.01; }
+    modulate scoop_b { from = &scoop:out; to = &b.params.ratio; depth = -0.01; }
+    modulate scoop_c { from = &scoop:out; to = &c.params.ratio; depth = -0.01; }
+    node blend { type = "synth.mix/1"; config = { channels = 1; }; }
+    connect a_blend { from = &a:out; to = &blend:in; }
+    connect b_blend { from = &b:out; to = &blend:in; }
+    connect c_blend { from = &c:out; to = &blend:in; }
+    node fenv { type = "synth.adsr/1"; params = { attack = 60ms; decay = 500ms; sustain = 0.55; release = 200ms; curve = 3; }; }
+    node tone { type = "synth.svf/1"; config = { channels = 1; mode = lowpass; }; params = { cutoff = 250Hz; ratio = 1.5; q = 1.1; }; }
+    modulate bloom { from = &fenv:out; to = &tone.params.cutoff; depth = 900Hz; }
+    modulate harder_brassier { from = &vel:out; to = &tone.params.cutoff; depth = 2200Hz; }
+    modulate pressed_brassier { from = &touch:out; to = &tone.params.cutoff; depth = 2500Hz; }
+    connect blend_tone { from = &blend:out; to = &tone:in; }
+    node edge { type = "synth.drive/1"; config = { channels = 1; }; params = { drive = 1.5; level = 0.8; }; }
+    connect tone_edge { from = &tone:out; to = &edge:in; }
+    node dynamics { type = "synth.gain/1"; config = { channels = 1; }; params = { level = 0.5; }; }
+    modulate pressed_louder { from = &touch:out; to = &dynamics.params.level; depth = 0.5; }
+    connect edge_dynamics { from = &edge:out; to = &dynamics:in; }
+  }
+  shared stage {
+    channels = 2;
+    output = &place:out;
+    node low_cut { type = "synth.highpass/1"; config = { channels = 1; }; params = { cutoff = 50Hz; }; }
+    node gain { type = "synth.gain/1"; config = { channels = 1; }; params = { level = 1; }; }
+    node place { type = "synth.pan/1"; params = { pan = 0; }; }
+    connect input_cut { from = &input:out; to = &low_cut:in; }
+    connect cut_gain { from = &low_cut:out; to = &gain:in; }
+    connect gain_place { from = &gain:out; to = &place:in; }
+  }
+  control level { target = &stage.gain.params.level; default = 1; }
+  control brightness { target = &voice.tone.params.cutoff; default = 250Hz; }
+  control attack { target = &voice.amp.params.attack; default = 45ms; }
+  control release { target = &voice.amp.params.release; default = 250ms; }
+  control pan { target = &stage.place.params.pan; default = 0; }
+}
+
+// A flute: a sine with a little octave and triangle, breath noise at the
+// pitch, a chiff at the start of each note, and a vibrato that fades in.
+// Pressure blows harder: louder and brighter.
+instrument transverse_flute {
+  channels = 2;
+  voice voice {
+    channels = 1;
+    amplitude = &amp;
+    output = &dynamics:out;
+    node amp { type = "synth.adsr/1"; params = { attack = 70ms; sustain = 1; release = 160ms; curve = 2; }; }
+    node vel { type = "synth.velocity/1"; }
+    node touch { type = "synth.pressure/1"; }
+    node vib_env { type = "synth.adsr/1"; params = { attack = 500ms; sustain = 1; }; }
+    node vib { type = "synth.lfo/1"; params = { frequency = 4.8Hz; level = 0; }; }
+    modulate vib_fade { from = &vib_env:out; to = &vib.params.level; depth = 1; }
+    node pipe { type = "synth.sine/1"; params = { level = 0.8; }; }
+    node octave { type = "synth.sine/1"; params = { ratio = 2; level = 0.12; }; }
+    node edge { type = "synth.triangle/1"; params = { level = 0.2; }; }
+    modulate vib_pipe { from = &vib:out; to = &pipe.params.ratio; depth = 0.003; }
+    modulate vib_octave { from = &vib:out; to = &octave.params.ratio; depth = 0.006; }
+    modulate vib_edge { from = &vib:out; to = &edge.params.ratio; depth = 0.003; }
+    node breath { type = "synth.noise/1"; config = { seed = 2246822519; }; params = { level = 0.3; }; }
+    node breath_band { type = "synth.svf/1"; config = { channels = 1; mode = bandpass; }; params = { cutoff = 0Hz; ratio = 1; q = 3; }; }
+    connect breath_in { from = &breath:out; to = &breath_band:in; }
+    node chiff { type = "synth.noise/1"; config = { seed = 3266489917; }; params = { level = 0; }; }
+    node chiff_env { type = "synth.adsr/1"; params = { decay = 50ms; sustain = 0; curve = 4; }; }
+    modulate chiff_shape { from = &chiff_env:out; to = &chiff.params.level; depth = 0.15; }
+    node chiff_band { type = "synth.svf/1"; config = { channels = 1; mode = bandpass; }; params = { cutoff = 0Hz; ratio = 3; q = 1; }; }
+    connect chiff_in { from = &chiff:out; to = &chiff_band:in; }
+    node blend { type = "synth.mix/1"; config = { channels = 1; }; }
+    connect pipe_blend { from = &pipe:out; to = &blend:in; }
+    connect octave_blend { from = &octave:out; to = &blend:in; }
+    connect edge_blend { from = &edge:out; to = &blend:in; }
+    connect breath_blend { from = &breath_band:out; to = &blend:in; }
+    connect chiff_blend { from = &chiff_band:out; to = &blend:in; }
+    node soft { type = "synth.onepole/1"; config = { channels = 1; }; params = { cutoff = 6000Hz; }; }
+    connect blend_soft { from = &blend:out; to = &soft:in; }
+    modulate pressed_brighter { from = &touch:out; to = &soft.params.cutoff; depth = 4000Hz; }
+    node dynamics { type = "synth.gain/1"; config = { channels = 1; }; params = { level = 0.75; }; }
+    modulate pressed_louder { from = &touch:out; to = &dynamics.params.level; depth = 0.4; }
+    connect soft_dynamics { from = &soft:out; to = &dynamics:in; }
+  }
+  shared stage {
+    channels = 2;
+    output = &place:out;
+    node gain { type = "synth.gain/1"; config = { channels = 1; }; params = { level = 0.22; }; }
+    node place { type = "synth.pan/1"; params = { pan = 0; }; }
+    connect input_gain { from = &input:out; to = &gain:in; }
+    connect gain_place { from = &gain:out; to = &place:in; }
+  }
+  control level { target = &stage.gain.params.level; default = 0.22; }
+  control pan { target = &stage.place.params.pan; default = 0; }
+}
+
+// Timpani: a felt mallet's thud of filtered noise rings a drumhead, its
+// principal tone with a fifth and an octave above, over a short boom at
+// the pitch.
+instrument kettle_drum {
+  channels = 2;
+  voice voice {
+    channels = 1;
+    amplitude = &amp;
+    output = &mix:out;
+    node amp { type = "synth.adsr/1"; params = { sustain = 1; release = 2s; curve = 4; }; }
+    node vel { type = "synth.velocity/1"; }
+    node mallet { type = "synth.noise/1"; config = { seed = 1597334677; }; params = { level = 0; }; }
+    node strike { type = "synth.adsr/1"; params = { decay = 12ms; sustain = 0; curve = 3; }; }
+    modulate strike_shape { from = &strike:out; to = &mallet.params.level; depth = 1; }
+    node felt { type = "synth.onepole/1"; config = { channels = 1; }; params = { cutoff = 600Hz; }; }
+    modulate harder_brighter { from = &vel:out; to = &felt.params.cutoff; depth = 1800Hz; }
+    connect mallet_felt { from = &mallet:out; to = &felt:in; }
+    node head { type = "synth.modal/1"; config = { modes = 3; }; params = { decay = 2.5s; damping = 1.2; level = 0.5; }; }
+    node fifth { type = "synth.modal/1"; config = { modes = 2; }; params = { ratio = 1.505; decay = 1.6s; damping = 1; level = 0.25; }; }
+    connect felt_head { from = &felt:out; to = &head:in; }
+    connect felt_fifth { from = &felt:out; to = &fifth:in; }
+    node boom { type = "synth.sine/1"; params = { level = 0; }; }
+    node boom_env { type = "synth.adsr/1"; params = { decay = 900ms; sustain = 0; curve = 5; }; }
+    modulate boom_shape { from = &boom_env:out; to = &boom.params.level; depth = 0.5; }
+    node mix { type = "synth.mix/1"; config = { channels = 1; }; }
+    connect head_mix { from = &head:out; to = &mix:in; }
+    connect fifth_mix { from = &fifth:out; to = &mix:in; }
+    connect boom_mix { from = &boom:out; to = &mix:in; }
+    connect felt_mix { from = &felt:out; to = &mix:in; }
+  }
+  shared stage {
+    channels = 2;
+    output = &place:out;
+    node low_cut { type = "synth.highpass/1"; config = { channels = 1; }; params = { cutoff = 30Hz; }; }
+    node gain { type = "synth.gain/1"; config = { channels = 1; }; params = { level = 0.15; }; }
+    node place { type = "synth.pan/1"; params = { pan = 0; }; }
+    connect input_cut { from = &input:out; to = &low_cut:in; }
+    connect cut_gain { from = &low_cut:out; to = &gain:in; }
+    connect gain_place { from = &gain:out; to = &place:in; }
+  }
+  control level { target = &stage.gain.params.level; default = 0.15; }
+  control pan { target = &stage.place.params.pan; default = 0; }
+}
+
+// A suspended cymbal and a bass drum, from noise and a falling sine. The
+// cymbal is noise only, so it hisses rather than rings; its attack sets a
+// crash or a swell.
+instrument suspended_cymbal {
+  channels = 2;
+  voice voice {
+    channels = 2;
+    amplitude = &amp;
+    output = &air:out;
+    node amp { type = "synth.adsr/1"; params = { attack = 2ms; decay = 2500ms; sustain = 0; release = 1500ms; curve = 4; }; }
+    node vel { type = "synth.velocity/1"; }
+    node left { type = "synth.noise/1"; config = { seed = 668265263; }; }
+    node right { type = "synth.noise/1"; config = { seed = 374761393; }; }
+    node pan_left { type = "synth.pan/1"; params = { pan = -0.6; }; }
+    node pan_right { type = "synth.pan/1"; params = { pan = 0.6; }; }
+    connect left_pan { from = &left:out; to = &pan_left:in; }
+    connect right_pan { from = &right:out; to = &pan_right:in; }
+    node wash { type = "synth.mix/1"; config = { channels = 2; }; }
+    connect left_wash { from = &pan_left:out; to = &wash:in; }
+    connect right_wash { from = &pan_right:out; to = &wash:in; }
+    node shimmer { type = "synth.highpass/1"; config = { channels = 2; }; params = { cutoff = 3000Hz; }; }
+    connect wash_shimmer { from = &wash:out; to = &shimmer:in; }
+    node air { type = "synth.svf/1"; config = { channels = 2; mode = lowpass; }; params = { cutoff = 7000Hz; q = 0.6; }; }
+    modulate harder_brighter { from = &vel:out; to = &air.params.cutoff; depth = 6000Hz; }
+    connect shimmer_air { from = &shimmer:out; to = &air:in; }
+  }
+  shared stage {
+    channels = 2;
+    output = &gain:out;
+    node gain { type = "synth.gain/1"; config = { channels = 2; }; params = { level = 0.4; }; }
+    connect input_gain { from = &input:out; to = &gain:in; }
+  }
+  control level { target = &stage.gain.params.level; default = 0.4; }
+  control attack { target = &voice.amp.params.attack; default = 2ms; }
+  control decay { target = &voice.amp.params.decay; default = 2500ms; }
+}
+
+instrument gran_cassa {
+  channels = 2;
+  voice voice {
+    channels = 1;
+    amplitude = &amp;
+    output = &mix:out;
+    node amp { type = "synth.adsr/1"; params = { decay = 1500ms; sustain = 0; release = 500ms; curve = 4; }; }
+    node vel { type = "synth.velocity/1"; }
+    node body { type = "synth.sine/1"; params = { frequency = 0Hz; }; }
+    node drop { type = "synth.adsr/1"; params = { decay = 120ms; sustain = 0; curve = 4; }; }
+    modulate falling { from = &drop:out; to = &body.params.frequency; depth = 30Hz; }
+    node skin { type = "synth.noise/1"; config = { seed = 2166136261; }; params = { level = 0; }; }
+    node skin_env { type = "synth.adsr/1"; params = { decay = 60ms; sustain = 0; curve = 4; }; }
+    modulate skin_shape { from = &skin_env:out; to = &skin.params.level; depth = 0.4; }
+    node skin_tone { type = "synth.onepole/1"; config = { channels = 1; }; params = { cutoff = 300Hz; }; }
+    connect skin_in { from = &skin:out; to = &skin_tone:in; }
+    node mix { type = "synth.mix/1"; config = { channels = 1; }; }
+    connect body_mix { from = &body:out; to = &mix:in; }
+    connect skin_mix { from = &skin_tone:out; to = &mix:in; }
+  }
+  shared stage {
+    channels = 2;
+    output = &place:out;
+    node low_cut { type = "synth.highpass/1"; config = { channels = 1; }; params = { cutoff = 25Hz; }; }
+    node gain { type = "synth.gain/1"; config = { channels = 1; }; params = { level = 0.55; }; }
+    node place { type = "synth.pan/1"; params = { pan = 0; }; }
+    connect input_cut { from = &input:out; to = &low_cut:in; }
+    connect cut_gain { from = &low_cut:out; to = &gain:in; }
+    connect gain_place { from = &gain:out; to = &place:in; }
+  }
+  control level { target = &stage.gain.params.level; default = 0.55; }
+}
+
+// ---------------------------------------------------------------- harmony
+harmony intro_chords { length = 16q; chords = [(0q, "Dm"), (4q, "Bb"), (8q, "Gm"), (12q, "A")]; }
+harmony theme_chords { length = 32q; chords = [(0q, "Dm"), (4q, "Bb"), (8q, "F"), (12q, "C"), (16q, "Dm"), (20q, "Gm"), (24q, "Bb"), (28q, "A")]; }
+harmony theme2_chords { length = 32q; chords = [(0q, "Dm"), (4q, "Bb"), (8q, "F"), (12q, "C"), (16q, "Dm"), (20q, "Gm"), (24q, "Bb"), (26q, "C"), (28q, "A")]; }
+harmony build_chords { length = 16q; chords = [(0q, "Bb"), (4q, "C"), (8q, "Dm"), (12q, "A")]; }
+harmony climax_chords { length = 32q; chords = [(0q, "D"), (4q, "Bb"), (8q, "G"), (12q, "A"), (16q, "D"), (20q, "Bb"), (24q, "C"), (28q, "D")]; }
+harmony coda_chords { length = 24q; chords = [(0q, "D"), (4q, "G"), (8q, "D"), (12q, "Gm"), (16q, "D")]; }
+
+// Violas: close chords around middle C.
+voicing hi_dm { pitches = [D4, F4, A4]; }
+voicing hi_bb { pitches = [D4, F4, Bb4]; }
+voicing hi_f { pitches = [C4, F4, A4]; }
+voicing hi_c { pitches = [C4, E4, G4]; }
+voicing hi_gm { pitches = [D4, G4, Bb4]; }
+voicing hi_a { pitches = [C#4, E4, A4]; }
+voicing hi_d { pitches = [D4, F#4, A4]; }
+voicing hi_g { pitches = [D4, G4, B4]; }
+voicings hi_voicings { chords = [("Dm", &hi_dm), ("Bb", &hi_bb), ("F", &hi_f), ("C", &hi_c), ("Gm", &hi_gm), ("A", &hi_a), ("D", &hi_d), ("G", &hi_g)]; }
+
+// Cellos and basses: the root in two octaves.
+voicing lo_d { pitches = [D2, D3]; }
+voicing lo_bb { pitches = [Bb1, Bb2]; }
+voicing lo_f { pitches = [F2, F3]; }
+voicing lo_c { pitches = [C2, C3]; }
+voicing lo_g { pitches = [G1, G2]; }
+voicing lo_a { pitches = [A1, A2]; }
+voicings lo_voicings { chords = [("Dm", &lo_d), ("D", &lo_d), ("Bb", &lo_bb), ("F", &lo_f), ("C", &lo_c), ("Gm", &lo_g), ("G", &lo_g), ("A", &lo_a)]; }
+
+// Harp: root, fifth, octave and tenth, for arpeggios.
+voicing hp_dm { pitches = [D3, A3, D4, F4]; }
+voicing hp_bb { pitches = [Bb2, F3, Bb3, D4]; }
+voicing hp_f { pitches = [F2, C3, F3, A3]; }
+voicing hp_c { pitches = [C3, G3, C4, E4]; }
+voicing hp_gm { pitches = [G2, D3, G3, Bb3]; }
+voicing hp_a { pitches = [A2, E3, A3, C#4]; }
+voicing hp_d { pitches = [D3, A3, D4, F#4]; }
+voicing hp_g { pitches = [G2, D3, G3, B3]; }
+voicings harp_voicings { chords = [("Dm", &hp_dm), ("Bb", &hp_bb), ("F", &hp_f), ("C", &hp_c), ("Gm", &hp_gm), ("A", &hp_a), ("D", &hp_d), ("G", &hp_g)]; }
+
+// Horns: a third or a sixth below the violas.
+voicing hn_fa { pitches = [F3, A3]; }
+voicing hn_fbb { pitches = [F3, Bb3]; }
+voicing hn_eg { pitches = [E3, G3]; }
+voicing hn_gbb { pitches = [G3, Bb3]; }
+voicing hn_ea { pitches = [E3, A3]; }
+voicing hn_fsa { pitches = [F#3, A3]; }
+voicing hn_gb { pitches = [G3, B3]; }
+voicings horn_voicings { chords = [("Dm", &hn_fa), ("Bb", &hn_fbb), ("F", &hn_fa), ("C", &hn_eg), ("Gm", &hn_gbb), ("A", &hn_ea), ("D", &hn_fsa), ("G", &hn_gb)]; }
+
+// Trombones: close triads under the horns.
+voicing tb_dm { pitches = [D3, F3, A3]; }
+voicing tb_d { pitches = [D3, F#3, A3]; }
+voicing tb_bb { pitches = [D3, F3, Bb3]; }
+voicing tb_gm { pitches = [D3, G3, Bb3]; }
+voicing tb_g { pitches = [D3, G3, B3]; }
+voicing tb_a { pitches = [C#3, E3, A3]; }
+voicing tb_c { pitches = [C3, E3, G3]; }
+voicings trombone_voicings { chords = [("Dm", &tb_dm), ("D", &tb_d), ("Bb", &tb_bb), ("Gm", &tb_gm), ("G", &tb_g), ("A", &tb_a), ("C", &tb_c)]; }
+
+// ---------------------------------------------------------------- dynamics
+// Pressure is the strings' and brass's bow and breath: a curve over a note
+// swells it, brighter and louder.
+curve breath { clock = normalized; points = [(0, 0.05, linear), (1/2, 0.35, linear), (1, 0.1, step)]; }
+curve long_swell { clock = normalized; points = [(0, 0.1, linear), (3/5, 0.6, linear), (1, 0.3, step)]; }
+curve cresc { clock = normalized; points = [(0, 0.05, linear), (1, 0.9, step)]; }
+curve forte { clock = normalized; points = [(0, 0.7, linear), (1, 0.7, step)]; }
+curve fade { clock = normalized; points = [(0, 0.3, linear), (1, 0, step)]; }
+
+// A rise and fall on a held violin note, and the climax's harder bow.
+curve lean { clock = normalized; points = [(0, 0, linear), (1/4, 0.21, linear), (1/2, 0.3, linear), (3/4, 0.21, linear), (1, 0, step)]; }
+curve push { clock = normalized; points = [(0, 0.5, linear), (1, 0.5, step)]; }
+
+// ---------------------------------------------------------------- rhythms
+pattern pad_pp { length = 4q; chord c { at = 0q; dur = 4q; velocity = 0.32; expression swell { kind = pressure; curve = &breath; } } }
+pattern pad_p { length = 4q; chord c { at = 0q; dur = 4q; velocity = 0.42; expression swell { kind = pressure; curve = &breath; } } }
+pattern pad_mf { length = 4q; chord c { at = 0q; dur = 4q; velocity = 0.55; expression swell { kind = pressure; curve = &long_swell; } } }
+pattern pad_f { length = 4q; chord c { at = 0q; dur = 4q; velocity = 0.8; expression loud { kind = pressure; curve = &forte; } } }
+pattern halves_mf { length = 4q;
+  chord a { at = 0q; dur = 2q; velocity = 0.5; expression swell { kind = pressure; curve = &breath; } }
+  chord b { at = 2q; dur = 2q; velocity = 0.46; expression swell { kind = pressure; curve = &breath; } }
+}
+// The strings' pads: two bars to a stroke, with the chord change slurred.
+pattern bowed_pp { length = 8q;
+  chord a { at = 0q; dur = 4q; velocity = 0.32; expression swell { kind = pressure; curve = &breath; } }
+  chord b { at = 4q; dur = 4q; velocity = 0.32; slur = true; expression swell { kind = pressure; curve = &breath; } }
+}
+pattern bowed_p { length = 8q;
+  chord a { at = 0q; dur = 4q; velocity = 0.42; expression swell { kind = pressure; curve = &breath; } }
+  chord b { at = 4q; dur = 4q; velocity = 0.42; slur = true; expression swell { kind = pressure; curve = &breath; } }
+}
+pattern bowed_mf { length = 8q;
+  chord a { at = 0q; dur = 4q; velocity = 0.55; expression swell { kind = pressure; curve = &long_swell; } }
+  chord b { at = 4q; dur = 4q; velocity = 0.55; slur = true; expression swell { kind = pressure; curve = &long_swell; } }
+}
+pattern bowed_f { length = 8q;
+  chord a { at = 0q; dur = 4q; velocity = 0.8; expression loud { kind = pressure; curve = &forte; } }
+  chord b { at = 4q; dur = 4q; velocity = 0.8; slur = true; expression loud { kind = pressure; curve = &forte; } }
+}
+pattern bowed_coda { length = 24q;
+  use soft { pattern = &bowed_pp; at = 0q; count = 2; }
+  chord last { at = 16q; dur = 8q; velocity = 0.36; expression away { kind = pressure; curve = &fade; } }
+}
+// Harp: a rising and turning arpeggio in eighths.
+pattern harp_flow { length = 4q;
+  chord a1 { at = 0q; dur = 1/2q; pick = 1; velocity = 0.55; }
+  chord a2 { at = 1/2q; dur = 1/2q; pick = 2; velocity = 0.45; }
+  chord a3 { at = 1q; dur = 1/2q; pick = 3; velocity = 0.5; }
+  chord a4 { at = 3/2q; dur = 1/2q; pick = 4; velocity = 0.48; }
+  chord a5 { at = 2q; dur = 1/2q; pick = 2; velocity = 0.5; }
+  chord a6 { at = 5/2q; dur = 1/2q; pick = 3; velocity = 0.45; }
+  chord a7 { at = 3q; dur = 1/2q; pick = 4; velocity = 0.5; }
+  chord a8 { at = 7/2q; dur = 1/2q; pick = 3; velocity = 0.44; }
+}
+// Basses and cellos, short and driving, in eighths.
+pattern low_pulse { length = 4q;
+  chord p1 { at = 0q; dur = 3/8q; velocity = 0.78; }
+  chord p2 { at = 1/2q; dur = 3/8q; velocity = 0.55; }
+  chord p3 { at = 1q; dur = 3/8q; velocity = 0.62; }
+  chord p4 { at = 3/2q; dur = 3/8q; velocity = 0.55; }
+  chord p5 { at = 2q; dur = 3/8q; velocity = 0.72; }
+  chord p6 { at = 5/2q; dur = 3/8q; velocity = 0.55; }
+  chord p7 { at = 3q; dur = 3/8q; velocity = 0.62; }
+  chord p8 { at = 7/2q; dur = 3/8q; velocity = 0.55; }
+}
+// Violins, sixteenths over the harp's arpeggio two octaves up.
+pattern fast_arp { length = 4q;
+  chord s1 { at = 0q; dur = 1/4q; pick = 1; velocity = 0.6; }
+  chord s2 { at = 1/4q; dur = 1/4q; pick = 2; velocity = 0.45; }
+  chord s3 { at = 1/2q; dur = 1/4q; pick = 3; velocity = 0.5; }
+  chord s4 { at = 3/4q; dur = 1/4q; pick = 4; velocity = 0.45; }
+  chord s5 { at = 1q; dur = 1/4q; pick = 3; velocity = 0.55; }
+  chord s6 { at = 5/4q; dur = 1/4q; pick = 2; velocity = 0.45; }
+  chord s7 { at = 3/2q; dur = 1/4q; pick = 3; velocity = 0.5; }
+  chord s8 { at = 7/4q; dur = 1/4q; pick = 4; velocity = 0.45; }
+  chord s9 { at = 2q; dur = 1/4q; pick = 1; velocity = 0.6; }
+  chord s10 { at = 9/4q; dur = 1/4q; pick = 2; velocity = 0.45; }
+  chord s11 { at = 5/2q; dur = 1/4q; pick = 3; velocity = 0.5; }
+  chord s12 { at = 11/4q; dur = 1/4q; pick = 4; velocity = 0.45; }
+  chord s13 { at = 3q; dur = 1/4q; pick = 3; velocity = 0.55; }
+  chord s14 { at = 13/4q; dur = 1/4q; pick = 4; velocity = 0.45; }
+  chord s15 { at = 7/2q; dur = 1/4q; pick = 3; velocity = 0.5; }
+  chord s16 { at = 15/4q; dur = 1/4q; pick = 2; velocity = 0.45; }
+}
+// Brass in the build: three bars of stabs, then a swell into the climax.
+pattern stabs { length = 4q;
+  chord a { at = 0q; dur = 1q; velocity = 0.78; }
+  chord b { at = 2q; dur = 1/2q; velocity = 0.7; }
+  chord c { at = 5/2q; dur = 1/2q; velocity = 0.66; }
+  chord d { at = 3q; dur = 1q; velocity = 0.74; }
+}
+pattern swell_bar { length = 4q; chord c { at = 0q; dur = 4q; velocity = 0.6; expression rise { kind = pressure; curve = &cresc; } } }
+pattern build_brass { length = 16q;
+  use pulse { pattern = &stabs; at = 0q; count = 3; }
+  use rise { pattern = &swell_bar; at = 12q; }
+}
+// Trombones join halfway through the theme's second statement. A harmony
+// counts from its placement, so they rest through the first half.
+pattern late_pad { length = 32q; use enter { pattern = &pad_p; at = 16q; count = 4; } }
+// The coda's pad: four soft bars, then the last chord held and fading.
+pattern coda_pad { length = 24q;
+  use soft { pattern = &pad_pp; at = 0q; count = 4; }
+  chord last { at = 16q; dur = 8q; velocity = 0.36; expression away { kind = pressure; curve = &fade; } }
+}
+
+// ---------------------------------------------------------------- melodies
+// The theme, eight bars in D minor: a rising fifth, a fall, and an answer
+// that climbs to D and sinks to the dominant.
+pattern theme_line { length = 32q;
+  note m1 { at = 0q; dur = 2q; pitch = D4; velocity = 0.62; }
+  note m2 { at = 2q; dur = 2q; pitch = A4; velocity = 0.7; }
+  note m3 { at = 4q; dur = 3/2q; pitch = Bb4; velocity = 0.68; }
+  note m4 { at = 11/2q; dur = 1/2q; pitch = A4; velocity = 0.6; }
+  note m5 { at = 6q; dur = 1q; pitch = G4; velocity = 0.6; }
+  note m6 { at = 7q; dur = 1q; pitch = F4; velocity = 0.58; }
+  note m7 { at = 8q; dur = 3q; pitch = A4; velocity = 0.66; expression swell { kind = pressure; curve = &long_swell; } }
+  note m8 { at = 11q; dur = 1/2q; pitch = F4; velocity = 0.55; }
+  note m9 { at = 23/2q; dur = 1/2q; pitch = G4; velocity = 0.58; }
+  note m10 { at = 12q; dur = 2q; pitch = G4; velocity = 0.64; }
+  note m11 { at = 14q; dur = 1q; pitch = E4; velocity = 0.58; }
+  note m12 { at = 15q; dur = 1q; pitch = C4; velocity = 0.55; }
+  note m13 { at = 16q; dur = 2q; pitch = D4; velocity = 0.64; }
+  note m14 { at = 18q; dur = 3/2q; pitch = A4; velocity = 0.7; }
+  note m15 { at = 39/2q; dur = 1/2q; pitch = D5; velocity = 0.72; }
+  note m16 { at = 20q; dur = 2q; pitch = D5; velocity = 0.75; }
+  note m17 { at = 22q; dur = 1q; pitch = C5; velocity = 0.66; }
+  note m18 { at = 23q; dur = 1q; pitch = Bb4; velocity = 0.62; }
+  note m19 { at = 24q; dur = 1q; pitch = F4; velocity = 0.58; }
+  note m20 { at = 25q; dur = 1q; pitch = G4; velocity = 0.62; }
+  note m21 { at = 26q; dur = 1q; pitch = A4; velocity = 0.66; }
+  note m22 { at = 27q; dur = 1q; pitch = Bb4; velocity = 0.7; }
+  note m23 { at = 28q; dur = 4q; pitch = A4; velocity = 0.68; expression swell { kind = pressure; curve = &long_swell; } }
+}
+// The theme in D major for the climax, its third bar over G and its
+// fourth over A.
+pattern climax_line { length = 32q;
+  note c1 { at = 0q; dur = 2q; pitch = D4; velocity = 0.85; }
+  note c2 { at = 2q; dur = 2q; pitch = A4; velocity = 0.9; }
+  note c3 { at = 4q; dur = 3/2q; pitch = Bb4; velocity = 0.88; }
+  note c4 { at = 11/2q; dur = 1/2q; pitch = A4; velocity = 0.8; }
+  note c5 { at = 6q; dur = 1q; pitch = G4; velocity = 0.82; }
+  note c6 { at = 7q; dur = 1q; pitch = F4; velocity = 0.8; }
+  note c7 { at = 8q; dur = 3q; pitch = G4; velocity = 0.86; }
+  note c8 { at = 11q; dur = 1/2q; pitch = D4; velocity = 0.76; }
+  note c9 { at = 23/2q; dur = 1/2q; pitch = E4; velocity = 0.8; }
+  note c10 { at = 12q; dur = 2q; pitch = E4; velocity = 0.86; }
+  note c11 { at = 14q; dur = 1q; pitch = C#4; velocity = 0.8; }
+  note c12 { at = 15q; dur = 1q; pitch = A3; velocity = 0.78; }
+  note c13 { at = 16q; dur = 2q; pitch = D4; velocity = 0.88; }
+  note c14 { at = 18q; dur = 3/2q; pitch = A4; velocity = 0.92; }
+  note c15 { at = 39/2q; dur = 1/2q; pitch = D5; velocity = 0.95; }
+  note c16 { at = 20q; dur = 2q; pitch = D5; velocity = 0.95; }
+  note c17 { at = 22q; dur = 1q; pitch = C5; velocity = 0.88; }
+  note c18 { at = 23q; dur = 1q; pitch = Bb4; velocity = 0.86; }
+  note c19 { at = 24q; dur = 1q; pitch = G4; velocity = 0.86; }
+  note c20 { at = 25q; dur = 1q; pitch = A4; velocity = 0.88; }
+  note c21 { at = 26q; dur = 1q; pitch = Bb4; velocity = 0.9; }
+  note c22 { at = 27q; dur = 1q; pitch = C5; velocity = 0.93; }
+  note c23 { at = 28q; dur = 4q; pitch = D5; velocity = 1; expression held { kind = pressure; curve = &forte; } }
+}
+// The theme as the violins bow it: slurs keep a short note in the bow of
+// the long one before it, and slides carry the leaps and the falls.
+pattern violin_theme { length = 32q;
+  note m1 { at = 0q; dur = 2q; pitch = D4; velocity = 0.76; expression lean { kind = pressure; curve = &lean; } }
+  note m2 { at = 2q; dur = 2q; pitch = A4; velocity = 0.95; slide = 200ms; expression lean { kind = pressure; curve = &lean; } }
+  note m3 { at = 4q; dur = 3/2q; pitch = Bb4; velocity = 0.9; slide = 80ms; expression lean { kind = pressure; curve = &lean; } }
+  note m4 { at = 11/2q; dur = 1/2q; pitch = A4; velocity = 0.71; slur = true; slide = 100ms; }
+  note m5 { at = 6q; dur = 1q; pitch = G4; velocity = 0.71; slide = 120ms; expression lean { kind = pressure; curve = &lean; } }
+  note m6 { at = 7q; dur = 1q; pitch = F4; velocity = 0.67; slur = true; slide = 120ms; expression lean { kind = pressure; curve = &lean; } }
+  note m7 { at = 8q; dur = 3q; pitch = A4; velocity = 0.86; slide = 180ms; expression swell { kind = pressure; curve = &long_swell; } }
+  note m8 { at = 11q; dur = 1/2q; pitch = F4; velocity = 0.6; slide = 160ms; }
+  note m9 { at = 23/2q; dur = 1/2q; pitch = G4; velocity = 0.67; slur = true; slide = 120ms; }
+  note m10 { at = 12q; dur = 2q; pitch = G4; velocity = 0.81; expression lean { kind = pressure; curve = &lean; } }
+  note m11 { at = 14q; dur = 1q; pitch = E4; velocity = 0.67; slide = 160ms; expression lean { kind = pressure; curve = &lean; } }
+  note m12 { at = 15q; dur = 1q; pitch = C4; velocity = 0.6; slur = true; slide = 180ms; expression lean { kind = pressure; curve = &lean; } }
+  note m13 { at = 16q; dur = 2q; pitch = D4; velocity = 0.81; slide = 120ms; expression lean { kind = pressure; curve = &lean; } }
+  note m14 { at = 18q; dur = 3/2q; pitch = A4; velocity = 0.95; slide = 200ms; expression lean { kind = pressure; curve = &lean; } }
+  note m15 { at = 39/2q; dur = 1/2q; pitch = D5; velocity = 1.0; slur = true; slide = 140ms; }
+  note m16 { at = 20q; dur = 2q; pitch = D5; velocity = 1.0; expression lean { kind = pressure; curve = &lean; } }
+  note m17 { at = 22q; dur = 1q; pitch = C5; velocity = 0.86; slide = 100ms; expression lean { kind = pressure; curve = &lean; } }
+  note m18 { at = 23q; dur = 1q; pitch = Bb4; velocity = 0.76; slur = true; slide = 100ms; expression lean { kind = pressure; curve = &lean; } }
+  note m19 { at = 24q; dur = 1q; pitch = F4; velocity = 0.67; slide = 160ms; expression lean { kind = pressure; curve = &lean; } }
+  note m20 { at = 25q; dur = 1q; pitch = G4; velocity = 0.76; slur = true; expression lean { kind = pressure; curve = &lean; } }
+  note m21 { at = 26q; dur = 1q; pitch = A4; velocity = 0.86; slide = 80ms; expression lean { kind = pressure; curve = &lean; } }
+  note m22 { at = 27q; dur = 1q; pitch = Bb4; velocity = 0.95; slur = true; slide = 80ms; expression lean { kind = pressure; curve = &lean; } }
+  note m23 { at = 28q; dur = 4q; pitch = A4; velocity = 0.9; slide = 180ms; expression swell { kind = pressure; curve = &long_swell; } }
+}
+// The climax line, bowed the same way and pressed harder throughout.
+pattern violin_climax { length = 32q;
+  note c1 { at = 0q; dur = 2q; pitch = D4; velocity = 1.0; expression lift { kind = pressure; curve = &push; } }
+  note c2 { at = 2q; dur = 2q; pitch = A4; velocity = 1.0; slide = 200ms; expression lift { kind = pressure; curve = &push; } }
+  note c3 { at = 4q; dur = 3/2q; pitch = Bb4; velocity = 1.0; slide = 80ms; expression lift { kind = pressure; curve = &push; } }
+  note c4 { at = 11/2q; dur = 1/2q; pitch = A4; velocity = 1.0; slur = true; slide = 100ms; expression lift { kind = pressure; curve = &push; } }
+  note c5 { at = 6q; dur = 1q; pitch = G4; velocity = 1.0; slide = 120ms; expression lift { kind = pressure; curve = &push; } }
+  note c6 { at = 7q; dur = 1q; pitch = F4; velocity = 1.0; slur = true; slide = 120ms; expression lift { kind = pressure; curve = &push; } }
+  note c7 { at = 8q; dur = 3q; pitch = G4; velocity = 1.0; slide = 180ms; expression lift { kind = pressure; curve = &push; } }
+  note c8 { at = 11q; dur = 1/2q; pitch = D4; velocity = 1.0; slide = 160ms; expression lift { kind = pressure; curve = &push; } }
+  note c9 { at = 23/2q; dur = 1/2q; pitch = E4; velocity = 1.0; slur = true; slide = 120ms; expression lift { kind = pressure; curve = &push; } }
+  note c10 { at = 12q; dur = 2q; pitch = E4; velocity = 1.0; expression lift { kind = pressure; curve = &push; } }
+  note c11 { at = 14q; dur = 1q; pitch = C#4; velocity = 1.0; slide = 160ms; expression lift { kind = pressure; curve = &push; } }
+  note c12 { at = 15q; dur = 1q; pitch = A3; velocity = 1.0; slur = true; slide = 180ms; expression lift { kind = pressure; curve = &push; } }
+  note c13 { at = 16q; dur = 2q; pitch = D4; velocity = 1.0; slide = 120ms; expression lift { kind = pressure; curve = &push; } }
+  note c14 { at = 18q; dur = 3/2q; pitch = A4; velocity = 1.0; slide = 200ms; expression lift { kind = pressure; curve = &push; } }
+  note c15 { at = 39/2q; dur = 1/2q; pitch = D5; velocity = 1.0; slur = true; slide = 140ms; expression lift { kind = pressure; curve = &push; } }
+  note c16 { at = 20q; dur = 2q; pitch = D5; velocity = 1.0; expression lift { kind = pressure; curve = &push; } }
+  note c17 { at = 22q; dur = 1q; pitch = C5; velocity = 1.0; slide = 100ms; expression lift { kind = pressure; curve = &push; } }
+  note c18 { at = 23q; dur = 1q; pitch = Bb4; velocity = 1.0; slur = true; slide = 100ms; expression lift { kind = pressure; curve = &push; } }
+  note c19 { at = 24q; dur = 1q; pitch = G4; velocity = 1.0; slide = 160ms; expression lift { kind = pressure; curve = &push; } }
+  note c20 { at = 25q; dur = 1q; pitch = A4; velocity = 1.0; slur = true; expression lift { kind = pressure; curve = &push; } }
+  note c21 { at = 26q; dur = 1q; pitch = Bb4; velocity = 1.0; slide = 80ms; expression lift { kind = pressure; curve = &push; } }
+  note c22 { at = 27q; dur = 1q; pitch = C5; velocity = 1.0; slur = true; slide = 80ms; expression lift { kind = pressure; curve = &push; } }
+  note c23 { at = 28q; dur = 4q; pitch = D5; velocity = 1.0; slide = 180ms; expression held { kind = pressure; curve = &forte; } }
+}
+// The flute's hint in the intro, and its farewell in the coda.
+pattern intro_hint { length = 8q;
+  note h1 { at = 0q; dur = 2q; pitch = G5; velocity = 0.45; }
+  note h2 { at = 2q; dur = 1q; pitch = Bb5; velocity = 0.5; }
+  note h3 { at = 3q; dur = 1q; pitch = A5; velocity = 0.45; }
+  note h4 { at = 4q; dur = 3q; pitch = A5; velocity = 0.42; }
+}
+pattern coda_line { length = 24q;
+  note f1 { at = 0q; dur = 2q; pitch = D5; velocity = 0.5; }
+  note f2 { at = 2q; dur = 2q; pitch = A5; velocity = 0.55; }
+  note f3 { at = 4q; dur = 3/2q; pitch = B5; velocity = 0.55; }
+  note f4 { at = 11/2q; dur = 1/2q; pitch = A5; velocity = 0.5; }
+  note f5 { at = 6q; dur = 1q; pitch = G5; velocity = 0.5; }
+  note f6 { at = 7q; dur = 1q; pitch = F#5; velocity = 0.48; }
+  note f7 { at = 8q; dur = 2q; pitch = F#5; velocity = 0.5; }
+  note f8 { at = 10q; dur = 1q; pitch = E5; velocity = 0.46; }
+  note f9 { at = 11q; dur = 1q; pitch = D5; velocity = 0.45; }
+  note f10 { at = 12q; dur = 2q; pitch = D5; velocity = 0.45; }
+  note f11 { at = 14q; dur = 2q; pitch = Bb4; velocity = 0.42; }
+  note f12 { at = 16q; dur = 8q; pitch = A4; velocity = 0.4; }
+}
+
+// ---------------------------------------------------------------- percussion
+// A roll: alternating strokes a 32nd apart, on a timpani node of its own
+// whose level automation shapes each roll.
+pattern roll { length = 1/4q;
+  note r { at = 0q; dur = 1/8q; pitch = A1; velocity = 0.6; }
+  note l { at = 1/8q; dur = 1/8q; pitch = A1; velocity = 0.52; }
+}
+pattern timp_beats { length = 4q;
+  note d { at = 0q; dur = 1q; pitch = D2; velocity = 0.85; }
+  note a { at = 2q; dur = 1q; pitch = A1; velocity = 0.7; }
+}
+pattern one_hit { length = 4q; note h { at = 0q; dur = 1q; pitch = D2; velocity = 0.5; } }
+pattern crash_hit { length = 4q; note h { at = 0q; dur = 1q; pitch = C4; velocity = 0.85; } }
+pattern swell_hit { length = 4q; note h { at = 0q; dur = 4q; pitch = C4; velocity = 0.6; } }
+pattern drum_hit { length = 4q; note h { at = 0q; dur = 1q; pitch = G1; velocity = 0.9; } }
+
+curve roll_level {
+  clock = score;
+  points = [(0q, 0.005, step), (12q, 0.005, linear), (16q, 0.03, step), (44q, 0.008, linear), (48q, 0.045, step),
+            (76q, 0.01, linear), (80q, 0.05, step), (88q, 0.005, linear), (96q, 0.07, step),
+            (144q, 0.03, linear), (152q, 0.001, step)];
+}
+automation roll_dynamics { target = &timpani_roll.params.level; curve = &roll_level; at = 0q; }
+
+// ---------------------------------------------------------------- orchestra
+// The strings and the harp keep version 1's balance, part by part, except
+// the violins' melody, 6 dB louder: at version 1's loudness the bowed
+// violins sat 6 dB under the accompaniment and sounded like background.
+node violins { instrument = &orch.violins; config = { voices = 4; }; params = { level = 0.14; }; }
+node violins_short { instrument = &orch.violins; config = { voices = 4; }; params = { attack = 30ms; level = 0.081; }; }
+node violas { instrument = &orch.violas; config = { voices = 8; }; params = { level = 0.174; }; }
+node celli { instrument = &orch.cellos; config = { voices = 6; }; params = { level = 0.094; }; }
+node basses_short { instrument = &orch.basses; config = { voices = 24; }; params = { attack = 15ms; release = 300ms; level = 0.087; }; }
+node horns { instrument = &brass_section; config = { voices = 12; }; params = { brightness = 200Hz; attack = 60ms; pan = -0.3; level = 0.9; }; }
+node trumpets { instrument = &brass_section; config = { voices = 8; }; params = { brightness = 400Hz; attack = 35ms; pan = 0.2; level = 0.8; }; }
+node trombones { instrument = &brass_section; config = { voices = 12; }; params = { brightness = 220Hz; attack = 55ms; pan = 0.35; level = 0.7; }; }
+node flute { instrument = &transverse_flute; config = { voices = 4; }; params = { pan = -0.15; }; }
+node harp { instrument = &orch.concert_harp; config = { voices = 48; }; params = { level = 0.437; }; }
+node timpani { instrument = &kettle_drum; config = { voices = 8; }; params = { pan = 0.1; }; }
+node timpani_roll { instrument = &kettle_drum; config = { voices = 48; }; params = { pan = 0.1; }; }
+node crash { instrument = &suspended_cymbal; config = { voices = 4; }; }
+node swell { instrument = &suspended_cymbal; config = { voices = 2; }; params = { attack = 2800ms; decay = 3s; level = 0.3; }; }
+node bass_drum { instrument = &gran_cassa; config = { voices = 4; }; }
+
+track violins_notes { target = &violins:events; }
+track violins_short_notes { target = &violins_short:events; }
+track violas_notes { target = &violas:events; }
+track celli_notes { target = &celli:events; }
+track basses_short_notes { target = &basses_short:events; }
+track horns_notes { target = &horns:events; }
+track trumpets_notes { target = &trumpets:events; }
+track trombones_notes { target = &trombones:events; }
+track flute_notes { target = &flute:events; }
+track harp_notes { target = &harp:events; }
+track timpani_notes { target = &timpani:events; }
+track timpani_roll_notes { target = &timpani_roll:events; }
+track crash_notes { target = &crash:events; }
+track swell_notes { target = &swell:events; }
+track bass_drum_notes { target = &bass_drum:events; }
+
+// ---------------------------------------------------------------- intro, bars 1-4
+place intro_violas { pattern = &bowed_pp; track = &violas_notes; at = 0q; count = 2; harmony = &intro_chords; voicings = &hi_voicings; }
+place intro_celli { pattern = &bowed_p; track = &celli_notes; at = 0q; count = 2; harmony = &intro_chords; voicings = &lo_voicings; }
+place intro_harp { pattern = &harp_flow; track = &harp_notes; at = 0q; count = 4; harmony = &intro_chords; voicings = &harp_voicings; }
+place intro_flute { pattern = &intro_hint; track = &flute_notes; at = 8q; }
+place intro_roll { pattern = &roll; track = &timpani_roll_notes; at = 12q; count = 16; }
+
+// ---------------------------------------------------------------- theme, bars 5-12
+place theme_horn { pattern = &theme_line; track = &horns_notes; at = 16q; }
+place theme_violas { pattern = &bowed_p; track = &violas_notes; at = 16q; count = 4; harmony = &theme_chords; voicings = &hi_voicings; }
+place theme_celli { pattern = &bowed_p; track = &celli_notes; at = 16q; count = 4; harmony = &theme_chords; voicings = &lo_voicings; }
+place theme_harp { pattern = &harp_flow; track = &harp_notes; at = 16q; count = 8; harmony = &theme_chords; voicings = &harp_voicings; }
+place theme_timpani { pattern = &one_hit; track = &timpani_notes; at = 32q; }
+place theme_roll { pattern = &roll; track = &timpani_roll_notes; at = 44q; count = 16; }
+
+// ---------------------------------------------------------------- theme again, bars 13-20
+place theme2_violins { pattern = &violin_theme; track = &violins_notes; at = 48q; transpose = 1200ct; }
+place theme2_flute { pattern = &theme_line; track = &flute_notes; at = 64q; transpose = 1200ct; }
+place theme2_horns { pattern = &halves_mf; track = &horns_notes; at = 48q; count = 8; harmony = &theme2_chords; voicings = &horn_voicings; }
+place theme2_violas { pattern = &bowed_mf; track = &violas_notes; at = 48q; count = 4; harmony = &theme2_chords; voicings = &hi_voicings; }
+place theme2_celli { pattern = &bowed_mf; track = &celli_notes; at = 48q; count = 4; harmony = &theme2_chords; voicings = &lo_voicings; }
+place theme2_trombones { pattern = &late_pad; track = &trombones_notes; at = 48q; harmony = &theme2_chords; voicings = &trombone_voicings; }
+place theme2_harp { pattern = &harp_flow; track = &harp_notes; at = 48q; count = 8; harmony = &theme2_chords; voicings = &harp_voicings; }
+place theme2_timpani { pattern = &one_hit; track = &timpani_notes; at = 48q; }
+place theme2_timpani2 { pattern = &one_hit; track = &timpani_notes; at = 64q; }
+place theme2_roll { pattern = &roll; track = &timpani_roll_notes; at = 76q; count = 16; }
+
+// ---------------------------------------------------------------- build, bars 21-24
+place build_basses { pattern = &low_pulse; track = &basses_short_notes; at = 80q; count = 4; harmony = &build_chords; voicings = &lo_voicings; }
+place build_violins { pattern = &fast_arp; track = &violins_short_notes; at = 80q; count = 4; harmony = &build_chords; voicings = &harp_voicings; transpose = 2400ct; }
+place build_horns { pattern = &build_brass; track = &horns_notes; at = 80q; harmony = &build_chords; voicings = &horn_voicings; }
+place build_trombones { pattern = &build_brass; track = &trombones_notes; at = 80q; harmony = &build_chords; voicings = &trombone_voicings; }
+place build_roll_d { pattern = &roll; track = &timpani_roll_notes; at = 88q; count = 16; transpose = 500ct; }
+place build_roll_a { pattern = &roll; track = &timpani_roll_notes; at = 92q; count = 16; }
+place build_swell { pattern = &swell_hit; track = &swell_notes; at = 92q; }
+
+// ---------------------------------------------------------------- climax, bars 25-32
+place climax_trumpets { pattern = &climax_line; track = &trumpets_notes; at = 96q; }
+place climax_horns { pattern = &climax_line; track = &horns_notes; at = 96q; }
+place climax_violins { pattern = &violin_climax; track = &violins_notes; at = 96q; transpose = 1200ct; }
+place climax_violas { pattern = &bowed_f; track = &violas_notes; at = 96q; count = 4; harmony = &climax_chords; voicings = &hi_voicings; }
+place climax_celli { pattern = &bowed_f; track = &celli_notes; at = 96q; count = 4; harmony = &climax_chords; voicings = &lo_voicings; }
+place climax_basses { pattern = &low_pulse; track = &basses_short_notes; at = 96q; count = 8; harmony = &climax_chords; voicings = &lo_voicings; }
+place climax_trombones { pattern = &pad_f; track = &trombones_notes; at = 96q; count = 8; harmony = &climax_chords; voicings = &trombone_voicings; }
+place climax_harp { pattern = &harp_flow; track = &harp_notes; at = 96q; count = 8; harmony = &climax_chords; voicings = &harp_voicings; }
+place climax_timpani { pattern = &timp_beats; track = &timpani_notes; at = 96q; count = 8; }
+place climax_crash1 { pattern = &crash_hit; track = &crash_notes; at = 96q; }
+place climax_crash2 { pattern = &crash_hit; track = &crash_notes; at = 112q; }
+place climax_crash3 { pattern = &crash_hit; track = &crash_notes; at = 124q; }
+place climax_drum1 { pattern = &drum_hit; track = &bass_drum_notes; at = 96q; }
+place climax_drum2 { pattern = &drum_hit; track = &bass_drum_notes; at = 112q; }
+place climax_drum3 { pattern = &drum_hit; track = &bass_drum_notes; at = 124q; }
+
+// ---------------------------------------------------------------- coda, bars 33-38
+place coda_flute { pattern = &coda_line; track = &flute_notes; at = 128q; }
+place coda_violas { pattern = &bowed_coda; track = &violas_notes; at = 128q; harmony = &coda_chords; voicings = &hi_voicings; }
+place coda_celli { pattern = &bowed_coda; track = &celli_notes; at = 128q; harmony = &coda_chords; voicings = &lo_voicings; }
+place coda_horns { pattern = &coda_pad; track = &horns_notes; at = 128q; harmony = &coda_chords; voicings = &horn_voicings; }
+place coda_harp { pattern = &harp_flow; track = &harp_notes; at = 144q; count = 2; harmony = &coda_chords; voicings = &harp_voicings; }
+place coda_roll { pattern = &roll; track = &timpani_roll_notes; at = 144q; count = 32; transpose = 500ct; }
+
+// ---------------------------------------------------------------- hall and master
+node orchestra { type = "core.sum/1"; config = { channels = 2; }; }
+connect violins_out { from = &violins:out; to = &orchestra:in; }
+connect violins_short_out { from = &violins_short:out; to = &orchestra:in; }
+connect violas_out { from = &violas:out; to = &orchestra:in; }
+connect celli_out { from = &celli:out; to = &orchestra:in; }
+connect basses_short_out { from = &basses_short:out; to = &orchestra:in; }
+connect horns_out { from = &horns:out; to = &orchestra:in; }
+connect trumpets_out { from = &trumpets:out; to = &orchestra:in; }
+connect trombones_out { from = &trombones:out; to = &orchestra:in; }
+connect flute_out { from = &flute:out; to = &orchestra:in; }
+connect harp_out { from = &harp:out; to = &orchestra:in; }
+connect timpani_out { from = &timpani:out; to = &orchestra:in; }
+connect timpani_roll_out { from = &timpani_roll:out; to = &orchestra:in; }
+connect crash_out { from = &crash:out; to = &orchestra:in; }
+connect swell_out { from = &swell:out; to = &orchestra:in; }
+connect bass_drum_out { from = &bass_drum:out; to = &orchestra:in; }
+
+node hall { type = "fx.reverb/1"; config = { channels = 2; predelay = 25ms; damping = 0.45; }; params = { mix = 1; decay = 2.8s; }; }
+node hall_return { type = "core.gain/1"; config = { channels = 2; }; params = { gain = 0.35; }; }
+node mix { type = "core.sum/1"; config = { channels = 2; }; }
+connect orchestra_dry { from = &orchestra:out; to = &mix:in; }
+connect orchestra_hall { from = &orchestra:out; to = &hall:in; }
+connect hall_back { from = &hall:out; to = &hall_return:in; }
+connect hall_mix { from = &hall_return:out; to = &mix:in; }
+node glue { type = "fx.compressor/1"; config = { channels = 2; }; params = { threshold = -12dB; ratio = 3/2; knee = 6dB; attack = 30ms; release = 300ms; makeup = 0dB; }; }
+node master { type = "fx.limiter/1"; config = { channels = 2; }; params = { gain = 0dB; ceiling = -1.1dB; release = 200ms; }; }
+connect mix_glue { from = &mix:out; to = &glue:in; }
+node trim { type = "core.gain/1"; config = { channels = 2; }; params = { gain = 0.8; }; }
+connect glue_trim { from = &glue:out; to = &trim:in; }
+connect trim_master { from = &trim:out; to = &master:in; }
+
+// ---------------------------------------------------------------- delivery
+// `maac deliver homeward.maac --delivery release --output-dir out --profile song`
+asset schema { kind = descriptor; builtin = "maac.production/1"; }
+extension deliveries {
+  namespace = "maac.production/1"; schema = &schema; render_affecting = true;
+  data = { deliveries = { release = {
+    rate = 48000Hz; resampler = "maac.src.kaiser/1";
+    targets = { master = {
+      role = master; output = &master:out; encoding = wav_pcm24le;
+      dither = { type = tpdf; seed = 2026; };
+      limits = {
+        integrated_loudness = { unit = LUFS; min = -18; max = -14; };
+        true_peak = { unit = dBTP; max = -1; };
+      };
+    }; };
+  }; }; };
+}
