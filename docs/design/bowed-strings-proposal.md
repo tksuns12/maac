@@ -97,7 +97,8 @@ found:
    electronic (round 4, at 11 s). Round 5 fixed this with a bow change that
    finishes the slide first. The bow slows to a stop, rests 30 ms and starts
    back the other way. Round 6 removed the rest and the electronic sound
-   came back, so the rest is part of the played sound.
+   came back, so the rest seemed part of the played sound. Rounds 8 and 9,
+   in MaaC, showed the opposite: see [Results](#results), part 5.
 6. **The new bow must speak on the beat.** In round 5 the new bow reached
    its level 20 ms after the beat, which the owner heard as "like an
    unskilled player". Round 7 starts the change 25 ms earlier, so the bow
@@ -419,7 +420,8 @@ proposal.
 
 ## Results
 
-Parts 1 to 4 have landed. The listening round of step 5 is under way.
+Parts 1 to 4 have landed. The listening round of step 5 is under way:
+the excerpt has been heard (part 5); the full cue has not.
 
 **Part 1, `synth.bow/1`.** The string, bow, players and bodies follow the
 contract above, with these changes, each found by measurement:
@@ -494,9 +496,35 @@ Two findings change what this proposal said:
 
 **Part 4, `std/orchestra/1.0.0`.** `violins`, `violas`, `cellos`,
 `basses` and `concert_harp`, each calibrated so that four bars of its
-reference phrase at velocity 0.7 measure −20 LUFS, within 0.13 dB. The
+reference phrase at velocity 0.7 measure −20 LUFS, within 0.02 dB. The
 harp's level rises with pitch and runs out below C2, so its range is C2–G7,
 not C1–G7. See [orchestra instruments](../orchestra-instruments.md).
+
+**Part 5, listening.** The bow change is no longer the prototype's:
+
+- **Round 8.** The round 7 excerpt from the prototype and from MaaC,
+  blind, both at −18 LUFS through the prototype's hall. The owner did not
+  pick one and named a fault the two share: "not the slurred notes; where
+  the notes are separate, the sound does not part, it is as if it were
+  muted." At every separate bow one player fell 10–32 dB, 20 dB on
+  average, for about 80 ms, and the eight violins together fell 8–18 dB for
+  70–140 ms. The bow stood still on the string for 30 ms, pressed, which
+  clamps the string. After the hole the players started again almost
+  together, and some in the octave regime.
+- **Round 9.** One change: the bow reverses in 10 ms down and 10 ms up
+  without stopping, centred 10 ms before the onset, and a slide into a bow
+  change ends 20 ms before the onset instead of 65. One player now dips
+  6.5 dB for 31 ms on average, and the section about 5 dB. Six changes
+  speak at −5 ms and one at −10 ms. One bare player has 8 frames out of
+  normal motion instead of 29, and no clicks. Owner, against round 8's
+  MaaC: "Ah, much better."
+- **Round 6 reread.** Round 6 also removed the rest, with a 40 ms reversal,
+  and changed the timing at the same time; the owner heard the electronic
+  sound come back. What made it electronic is not known. The 30 ms rest
+  that round 7 kept was the hole of round 8.
+- **Levels.** Without the holes the string sections read 0.2–0.7 dB
+  louder, so their default levels were set again: violins 87/500, violas
+  22/125, cellos 33/250 and basses 37/250.
 
 ## Cost and risk
 

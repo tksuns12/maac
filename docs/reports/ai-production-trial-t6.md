@@ -81,6 +81,8 @@ Friction numbers continue from T5.
 | Round 2 | Harp d: the metal came from `stretch` (F45), now 0, with more damping. Strings: a bowed-string prototype outside MaaC, because no graph can hold one (F48): a waveguide with a friction law, a body of about 50 resonances, eight players | Owner: the harp is "somewhat harp-like now", accepted. The solo violin is fine; the ensemble is "a bit ambiguous" |
 | Rounds 3–7 | The section, then how notes connect: finger changes, slides, continuous vibrato, the bow change and its timing (F49). The [proposal](../design/bowed-strings-proposal.md#what-made-the-strings-sound-electronic) gives each round | Round 7, "not bad", accepted |
 | Proposal | The [bowed strings proposal](../design/bowed-strings-proposal.md): connected notes in the language, a bowed-string node and an orchestral library | The owner accepted every recommendation |
+| Round 8 | The round 7 excerpt from the prototype and from MaaC's new strings, blind | Owner: no preference; at the separate bows "the sound does not part, it is as if it were muted" (F50) |
+| Round 9 | MaaC's bow change without the 30 ms stop on the string | Owner: "Ah, much better" |
 
 ## Friction
 
@@ -120,6 +122,7 @@ Friction numbers continue from T5.
 | F47 | Six detuned saws per voice, with their vibratos and drifts, cost 1.49 billion work units for a 16-beat clip, three times the default profile's limit | Open; the `song` profile covers it |
 | F48 | No bowed string can be built from nodes. A bowed string is a loop with a friction law at the bow, and graphs reject feedback | Accepted: the [bowed strings proposal](../design/bowed-strings-proposal.md#2-the-bowed-string-synthbow1) |
 | F49 | Every note has its own voice, so a line cannot be played with one bow. The owner heard the connection between notes: a glide between pitches, a bow change during a slide, and a bow change 20 ms late each sounded electronic or unskilled | Accepted: the [bowed strings proposal](../design/bowed-strings-proposal.md#1-connected-notes) |
+| F50 | The accepted prototype's bow change held the bow still on the string for 30 ms. Each player fell 20 dB for about 80 ms at every separate bow, and the owner heard the section as muted there. Round 6 had drawn the opposite lesson from a round that changed two things | Fixed in `synth.bow/1`: the bow reverses in 20 ms without stopping ([results](../design/bowed-strings-proposal.md#results), part 5) |
 
 ## What to build next, in order
 

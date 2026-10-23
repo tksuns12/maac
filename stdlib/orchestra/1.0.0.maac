@@ -32,11 +32,11 @@ instrument violins {
     channels = 2;
     output = &gain:out;
     node low_cut { type = "synth.highpass/1"; config = { channels = 2; }; params = { cutoff = 60Hz; }; }
-    node gain { type = "synth.gain/1"; config = { channels = 2; }; params = { level = 9/50; }; }
+    node gain { type = "synth.gain/1"; config = { channels = 2; }; params = { level = 87/500; }; }
     connect input_cut { from = &input:out; to = &low_cut:in; }
     connect cut_gain { from = &low_cut:out; to = &gain:in; }
   }
-  control level { target = &stage.gain.params.level; default = 9/50; }
+  control level { target = &stage.gain.params.level; default = 87/500; }
   control attack { target = &voice.section.params.attack; default = 80ms; }
   control release { target = &voice.amp.params.release; default = 1500ms; }
   control vibrato { target = &voice.section.params.vibrato; default = 25/2; }
@@ -72,11 +72,11 @@ instrument violas {
     channels = 2;
     output = &gain:out;
     node low_cut { type = "synth.highpass/1"; config = { channels = 2; }; params = { cutoff = 60Hz; }; }
-    node gain { type = "synth.gain/1"; config = { channels = 2; }; params = { level = 9/50; }; }
+    node gain { type = "synth.gain/1"; config = { channels = 2; }; params = { level = 22/125; }; }
     connect input_cut { from = &input:out; to = &low_cut:in; }
     connect cut_gain { from = &low_cut:out; to = &gain:in; }
   }
-  control level { target = &stage.gain.params.level; default = 9/50; }
+  control level { target = &stage.gain.params.level; default = 22/125; }
   control attack { target = &voice.section.params.attack; default = 80ms; }
   control release { target = &voice.amp.params.release; default = 1500ms; }
   control vibrato { target = &voice.section.params.vibrato; default = 11; }
@@ -112,11 +112,11 @@ instrument cellos {
     channels = 2;
     output = &gain:out;
     node low_cut { type = "synth.highpass/1"; config = { channels = 2; }; params = { cutoff = 30Hz; }; }
-    node gain { type = "synth.gain/1"; config = { channels = 2; }; params = { level = 7/50; }; }
+    node gain { type = "synth.gain/1"; config = { channels = 2; }; params = { level = 33/250; }; }
     connect input_cut { from = &input:out; to = &low_cut:in; }
     connect cut_gain { from = &low_cut:out; to = &gain:in; }
   }
-  control level { target = &stage.gain.params.level; default = 7/50; }
+  control level { target = &stage.gain.params.level; default = 33/250; }
   control attack { target = &voice.section.params.attack; default = 80ms; }
   control release { target = &voice.amp.params.release; default = 1800ms; }
   control vibrato { target = &voice.section.params.vibrato; default = 10; }
@@ -151,11 +151,11 @@ instrument basses {
     channels = 2;
     output = &gain:out;
     node low_cut { type = "synth.highpass/1"; config = { channels = 2; }; params = { cutoff = 30Hz; }; }
-    node gain { type = "synth.gain/1"; config = { channels = 2; }; params = { level = 4/25; }; }
+    node gain { type = "synth.gain/1"; config = { channels = 2; }; params = { level = 37/250; }; }
     connect input_cut { from = &input:out; to = &low_cut:in; }
     connect cut_gain { from = &low_cut:out; to = &gain:in; }
   }
-  control level { target = &stage.gain.params.level; default = 4/25; }
+  control level { target = &stage.gain.params.level; default = 37/250; }
   control attack { target = &voice.section.params.attack; default = 80ms; }
   control release { target = &voice.amp.params.release; default = 2s; }
   control vibrato { target = &voice.section.params.vibrato; default = 13/2; }

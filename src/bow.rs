@@ -366,15 +366,15 @@ pub(crate) struct Bow {
 
 const MS: f64 = RATE_HZ / 1000.0;
 /// A bow change is centred this long before the note it changes into.
-const EARLY: f64 = 25.0 * MS;
-/// Each half of the reversal, and the rest between them.
-const TURN: f64 = 25.0 * MS;
-const REST: f64 = 30.0 * MS;
+const EARLY: f64 = 10.0 * MS;
+/// Each half of the reversal. The bow does not stop between them: a bow
+/// held still on the string clamps it, and a section of them leaves a hole.
+const TURN: f64 = 10.0 * MS;
 /// The press that makes the string catch again, and its width.
 const CATCH: f64 = 0.25;
 const CATCH_WIDTH: f64 = 40.0 * MS;
 /// A slide into a bow change ends this long before the onset.
-const SLIDE_CLEAR: f64 = EARLY + TURN + REST / 2.0;
+const SLIDE_CLEAR: f64 = EARLY + TURN;
 const FINGER: f64 = 4.0 * MS;
 const LIFT: f64 = 250.0 * MS;
 
@@ -725,7 +725,7 @@ impl Player {
         // The bow: its direction turns at each bow change, it presses as the
         // string catches, and it rises at the first stroke and lifts at the
         // end.
-        let reach = (TURN + REST / 2.0).max(5.0 * CATCH_WIDTH);
+        let reach = TURN.max(5.0 * CATCH_WIDTH);
         while self
             .bow_changes
             .get(self.settled)
@@ -744,18 +744,14 @@ impl Player {
             if (x - centre).abs() < 5.0 * CATCH_WIDTH {
                 catch += CATCH * (-((x - centre) / CATCH_WIDTH).powi(2)).exp();
             }
-            let start = centre - TURN - REST / 2.0;
+            let start = centre - TURN;
             if x < start {
                 continue;
             }
-            let rest_start = centre - REST / 2.0;
-            let rest_end = centre + REST / 2.0;
-            sign = if x < rest_start {
+            sign = if x < centre {
                 direction * (std::f64::consts::FRAC_PI_2 * (x - start) / TURN).cos()
-            } else if x < rest_end {
-                0.0
-            } else if x < rest_end + TURN {
-                -direction * (std::f64::consts::FRAC_PI_2 * (x - rest_end) / TURN).sin()
+            } else if x < centre + TURN {
+                -direction * (std::f64::consts::FRAC_PI_2 * (x - centre) / TURN).sin()
             } else {
                 -direction
             };

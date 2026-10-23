@@ -37,11 +37,13 @@ promise of compatibility beyond the documented interfaces.
   on one string with one bow. A rest lifts the bow. `slur = true` keeps a
   note in the same bow, and `slide = 120ms` slides into it; on a note that
   joins nothing they are `E_INTERVAL`, and on any other instrument
-  `E_CAPABILITY`. A bow change starts 65 ms before the beat and a slide
+  `E_CAPABILITY`. A bow change starts 20 ms before the beat and a slide
   into one finishes on the old bow, so the section reads its line half a
   second ahead. The plan records each join, and MIDI export reports it as
-  `midi.connected_note`. The round 7 excerpt of T6 renders from MaaC with
-  the prototype's timing: every bow change speaks 5 ms before the beat.
+  `midi.connected_note`. Every bow change speaks about 5 ms before the
+  beat. The bow reverses in 20 ms without stopping: the prototype's change,
+  which held the bow still on the string for 30 ms, left a hole at every
+  separate bow that the owner heard as the sound being muted.
 
 - A pitch expression can name a `vibrato`
   ([§8.1](MaaC-1-Specification.md#81-per-note-expression)), such as

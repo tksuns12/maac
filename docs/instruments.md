@@ -737,12 +737,13 @@ line's first note and lifts at its last note's note-off; in between the
 string never stops.
 
 - **A bow change.** A joined note without `slur` changes the bow's
-  direction around a centre 25 ms before the player's onset. Over 25 ms the
-  speed falls to zero through a quarter cosine, the bow rests for 30 ms,
-  and over 25 ms it rises the other way through a quarter sine; the force
-  gains `0.25 exp(−((t − c) / 40 ms)²)` around the centre `c`, the press
-  that makes the string catch again. The change runs from 65 ms before the
-  onset to 15 ms after it, so the new bow speaks about 5 ms before the beat.
+  direction around a centre 10 ms before the player's onset. Over 10 ms the
+  speed falls to zero through a quarter cosine, and over the next 10 ms it
+  rises the other way through a quarter sine; the bow does not stop on the
+  string. The force gains `0.25 exp(−((t − c) / 40 ms)²)` around the
+  centre `c`, the press that makes the string catch again. The change runs
+  from 20 ms before the onset to the onset, so the new bow speaks about
+  5 ms before the beat.
 - **A finger change.** Without `slide`, the pitch moves linearly over 4 ms
   centred on the player's onset, and the vibrato drops to 60 % and returns
   over 180 ms.
@@ -750,7 +751,7 @@ string never stops.
   `20 % × spread`. The pitch moves in cents as `u²` over it: slow to leave,
   quick to land. A slurred slide runs from 65 % of its length before the
   onset to 35 % after; a slide into a bow change ends where the change
-  begins, 65 ms before the onset, so it finishes on the old bow. The vibrato
+  begins, 20 ms before the onset, so it finishes on the old bow. The vibrato
   is at most 20 % during the slide and returns over 300 ms, and the bow
   lightens by up to 15 % in the middle of it.
 - **Timing.** Each player's onset at a bow change differs by a normal draw

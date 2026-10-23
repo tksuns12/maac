@@ -42,8 +42,8 @@ pattern line {
 ```
 
 - **Lines.** A note that starts where the note before it on the track ends
-  continues the string; the bow changes direction, about 65 ms before the
-  beat, so the new bow speaks on it. `slur = true` keeps the bow and only
+  continues the string; the bow changes direction in 20 ms, just before
+  the beat, so the new bow speaks on it. `slur = true` keeps the bow and only
   the finger moves. A rest lifts the bow, and the next note starts a new
   stroke. A line needs one voice, plus a few for the strokes' tails.
 - **Chords** join member by member: a pad of three-note chords on the
