@@ -163,4 +163,7 @@ The owner decides; this is the AI's recommendation.
    cancelling sine and adds the buzz of a real tenor, is ready and has had
    no verdict. A woodwind library should wait for one.
 
+Items 1 and 2 are the [phrases, variation and lines
+proposal](../design/performance-proposal.md), accepted on 2026-11-02.
+
 F54–F57 and F59 are conveniences. They wait until another track needs them.
