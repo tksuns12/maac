@@ -317,7 +317,8 @@ is rejected, including mixed audio/modulation cycles.
 | `synth.sine/1`, `synth.saw/1`, `synth.square/1`, `synth.triangle/1` | `ratio` (1; −64…64), `frequency` (0 Hz; −24000…24000 Hz), `phase` (0; 0…1), `level` (1; 0…16) | Mono |
 | `synth.wavetable/1` | Oscillator parameters plus `position` (0; 0…1); required `config.table = &wavetable` | Mono |
 | `synth.sample/1` | `ratio`, `frequency`, and `level` as for oscillators (no `phase`); required `config.zones` and optional `config.channels` (1) (see [Samples](#samples)) | Mono, or stereo with `channels = 2` |
-| `synth.noise/1` | `level` (1; 0…16); optional nonzero unsigned 32-bit `config.seed` (1831565813) | Mono |
+| `synth.noise/1` | `level` (1; 0…16); optional nonzero unsigned 32-bit `config.seed` (1831565813) and boolean `config.per_note` (false) | Mono |
+| `synth.random/1` | No inputs or parameters; optional nonzero unsigned 32-bit `config.seed` (1); voice-only | Mono per-note constant in −1…1 |
 | `synth.adsr/1` | `attack` (0 s), `decay` (0 s), `sustain` (1; 0…1), `release` (0 s); times 0…1800 s; `curve` (0; 0…16) | Mono control signal |
 | `synth.timbre/1` | No inputs, parameters, or configuration; voice-only | Mono per-note timbre signal (zero when absent) |
 | `synth.pressure/1` | No inputs, parameters, or configuration; voice-only | Mono per-note pressure signal (zero when absent) |
@@ -368,6 +369,16 @@ is the frequency the voice receives, including [per-note pitch](instrument-pitch
 and before node ratios and frequency offsets. It is evaluated every frame, so
 it follows a bend; a note-on capture takes its value at note-on. Under 12-TET,
 A4 is 0.75 and A3 is −0.25.
+
+`synth.random/1` emits a constant for each note: `2u − 1`, where `u` is the
+first unit draw (the top 53 bits over 2^53) of SplitMix64 from the seed
+mixed with the note's address, as in
+[variation](../MaaC-1-Specification.md#94-variation). It does not change
+during the note. On a [connected](../MaaC-1-Specification.md#83-connected-notes)
+note it moves to the joined note's value over 100 ms, as the velocity does.
+Map it like any source, to give each note a few cents of tuning, a little
+brightness or a vibrato of its own:
+`modulate own_tuning { from = &draw:out; to = &reed.params.ratio; depth = 1/400; }`.
 
 Neither source opts the instrument into an expression kind or changes the
 voice path: amplitude still scales by velocity exactly once. They map playing
@@ -484,8 +495,13 @@ uses the new state, not the seed itself. Omitted source seeds resolve to
 1831565813; explicit seeds must be integers in 1…4294967295. The resolved seed
 is stored in the performance plan, so a retained plan does not depend on future
 default changes. A missing, zero, out-of-range or noninteger seed in the plan
-is invalid. No system entropy or note-address hashing is involved. Same-seed
-voices are independent state machines but begin with identical sequences.
+is invalid. No system entropy is involved. Same-seed voices are independent
+state machines but begin with identical sequences, unless `per_note` is true:
+then each voice starts from the high 32 bits of the seed mixed with its note's
+address, by the FNV-1a mix of [variation](../MaaC-1-Specification.md#94-variation),
+or from the seed where those bits are zero. Every note then has its own
+burst, as a breath or a tongue does, and a render range hears the same notes
+as the whole render. The plan records `per_note` only when it is true.
 
 `synth.highpass/1` maintains one independent low-pass state per channel,
 initially zero. At every sample, with `a = exp(-2*pi*cutoff/48000)`, it computes

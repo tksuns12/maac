@@ -208,7 +208,10 @@ fn declared_delay_capacity_is_checked_for_plans_and_direct_runtimes() {
         .iter_mut()
         .find(|n| n.id == "pluck")
         .unwrap()
-        .processor = GraphProcessor::Noise { seed: 1 };
+        .processor = GraphProcessor::Noise {
+        seed: 1,
+        per_note: false,
+    };
     runtime(&old, u32::MAX).unwrap();
     let mut old_plan = plan.clone();
     old_plan.instruments.as_mut().unwrap().programs[0] = old;

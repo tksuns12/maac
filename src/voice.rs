@@ -94,7 +94,9 @@ struct CompiledNode {
 #[derive(Debug)]
 enum ProcessorCode {
     Oscillator(Waveform),
-    Noise(u32),
+    /// The seed, and whether each note mixes its address into it.
+    Noise(u32, bool),
+    Random(u32),
     Pluck(u32),
     /// Modes and strings.
     Modal(u8, u8),
@@ -238,6 +240,9 @@ enum ProcessorState {
     /// The velocity a `synth.velocity/1` node emits: the note-on velocity,
     /// or after a join the glide to the joined note's.
     Velocity(f64, Option<(f64, u64)>),
+    /// The value a `synth.random/1` node emits for its note, gliding like a
+    /// velocity after a join.
+    Random(f64, Option<(f64, u64)>),
     Stateless,
 }
 
@@ -530,6 +535,13 @@ impl InstrumentRuntime {
                 })
             })
         });
+        let graph = GraphState::new_voice(
+            &self.program.voice,
+            &self.controls,
+            frame,
+            velocity,
+            &address,
+        )?;
         let mut voice = VoiceState {
             address,
             pitch_hz,
@@ -541,7 +553,7 @@ impl InstrumentRuntime {
             pressure_expression,
             on_frame: frame,
             released: false,
-            graph: GraphState::new_voice(&self.program.voice, &self.controls, frame, velocity)?,
+            graph,
         };
         if let Some(line) = &line {
             voice.graph.play_line(line)?;
@@ -618,7 +630,9 @@ impl InstrumentRuntime {
         let previous = voice.velocity_at(frame);
         voice.velocity_glide = Some((previous, frame));
         voice.velocity = velocity;
-        voice.graph.glide_velocity(previous, velocity, frame);
+        voice
+            .graph
+            .glide_velocity(&self.program.voice, previous, velocity, &address, frame);
         voice.address = address;
         voice.pitch_hz = pitch_hz;
         voice.on_frame = frame;
@@ -959,6 +973,22 @@ impl InstrumentRuntime {
 const VELOCITY_GLIDE_FRAMES: u64 = 4_800;
 
 /// `velocity`, or on its way there from a joined note's earlier one.
+/// A `synth.random/1` value: uniform in [-1, 1) from the seed and the note's
+/// address.
+fn note_value(seed: u32, address: &str) -> f64 {
+    let mut rng = crate::seeded::Rng::new(crate::seeded::mix(u64::from(seed), address.as_bytes()));
+    2.0 * rng.unit() - 1.0
+}
+
+/// A per-note noise seed: the high half of the seed mixed with the address,
+/// or the seed itself where that is zero, which xorshift cannot leave.
+fn note_noise_seed(seed: u32, address: &str) -> u32 {
+    match (crate::seeded::mix(u64::from(seed), address.as_bytes()) >> 32) as u32 {
+        0 => seed,
+        mixed => mixed,
+    }
+}
+
 fn glided_velocity(velocity: f64, glide: Option<(f64, u64)>, frame: u64) -> f64 {
     match glide {
         Some((from, start)) if frame < start + VELOCITY_GLIDE_FRAMES => {
@@ -1026,8 +1056,9 @@ impl GraphState {
         controls: &[f64],
         frame: u64,
         velocity: f64,
+        address: &str,
     ) -> Result<Self> {
-        Self::new(graph, controls, Some(frame), velocity)
+        Self::new(graph, controls, Some((frame, address)), velocity)
     }
 
     fn new_shared(graph: &CompiledGraph, controls: &[f64], rate: f64) -> Result<Self> {
@@ -1039,12 +1070,16 @@ impl GraphState {
         Ok(state)
     }
 
+    /// `note` is the voice's note-on frame and address; shared graphs have
+    /// none.
     fn new(
         graph: &CompiledGraph,
         controls: &[f64],
-        on_frame: Option<u64>,
+        note: Option<(u64, &str)>,
         velocity: f64,
     ) -> Result<Self> {
+        let on_frame = note.map(|(frame, _)| frame);
+        let address = note.map(|(_, address)| address);
         let mut nodes = Vec::with_capacity(graph.nodes.len());
         for node in &graph.nodes {
             let mut params = node.base_params.clone();
@@ -1054,7 +1089,13 @@ impl GraphState {
                 ProcessorCode::Oscillator(waveform) => {
                     ProcessorState::Oscillator(Oscillator::new(*waveform, params[2])?)
                 }
-                ProcessorCode::Noise(seed) => ProcessorState::Noise(*seed),
+                ProcessorCode::Noise(seed, per_note) => ProcessorState::Noise(match address {
+                    Some(address) if *per_note => note_noise_seed(*seed, address),
+                    _ => *seed,
+                }),
+                ProcessorCode::Random(seed) => {
+                    ProcessorState::Random(address.map_or(0.0, |a| note_value(*seed, a)), None)
+                }
                 ProcessorCode::Pluck(seed) => {
                     ProcessorState::Pluck(crate::pluck::Pluck::new(*seed)?)
                 }
@@ -1110,12 +1151,28 @@ impl GraphState {
         Ok(())
     }
 
-    /// A joined note: velocity sources glide to its velocity from `from`.
-    fn glide_velocity(&mut self, from: f64, velocity: f64, frame: u64) {
-        for runtime in &mut self.nodes {
-            if let ProcessorState::Velocity(target, glide) = &mut runtime.state {
-                *target = velocity;
-                *glide = Some((from, frame));
+    /// A joined note: velocity sources glide to its velocity from `from`,
+    /// and random sources to its value.
+    fn glide_velocity(
+        &mut self,
+        graph: &CompiledGraph,
+        from: f64,
+        velocity: f64,
+        address: &str,
+        frame: u64,
+    ) {
+        for (compiled, runtime) in graph.nodes.iter().zip(&mut self.nodes) {
+            match (&compiled.processor, &mut runtime.state) {
+                (_, ProcessorState::Velocity(target, glide)) => {
+                    *target = velocity;
+                    *glide = Some((from, frame));
+                }
+                (ProcessorCode::Random(seed), ProcessorState::Random(target, glide)) => {
+                    let from = glided_velocity(*target, *glide, frame);
+                    *target = note_value(*seed, address);
+                    *glide = Some((from, frame));
+                }
+                _ => {}
             }
         }
     }
@@ -1784,7 +1841,7 @@ fn process_graph_node(
 ) -> Result<[f64; 2]> {
     let mut output = [0.0; 2];
     match (&compiled.processor, state) {
-        (ProcessorCode::Noise(_), ProcessorState::Noise(state)) => {
+        (ProcessorCode::Noise(..), ProcessorState::Noise(state)) => {
             // Version 1 fixes xorshift32's width, shifts and advance-before-output order.
             let mut next = *state;
             next ^= next << 13;
@@ -1947,7 +2004,8 @@ fn process_graph_node(
         }
         (ProcessorCode::Timbre, ProcessorState::Stateless) => output[0] = timbre,
         (ProcessorCode::Pressure, ProcessorState::Stateless) => output[0] = pressure,
-        (ProcessorCode::Velocity, ProcessorState::Velocity(velocity, glide)) => {
+        (ProcessorCode::Velocity, ProcessorState::Velocity(velocity, glide))
+        | (ProcessorCode::Random(_), ProcessorState::Random(velocity, glide)) => {
             output[0] = glided_velocity(*velocity, *glide, frame)
         }
         // Octaves from C4 = 440 Hz * 2^(-9/12).
@@ -2192,7 +2250,10 @@ fn compile_processor(
         GraphProcessor::Saw => (OSCILLATOR, ProcessorCode::Oscillator(Waveform::Saw)),
         GraphProcessor::Square => (OSCILLATOR, ProcessorCode::Oscillator(Waveform::Square)),
         GraphProcessor::Triangle => (OSCILLATOR, ProcessorCode::Oscillator(Waveform::Triangle)),
-        GraphProcessor::Noise { seed } => (&["level"], ProcessorCode::Noise(*seed)),
+        GraphProcessor::Noise { seed, per_note } => {
+            (&["level"], ProcessorCode::Noise(*seed, *per_note))
+        }
+        GraphProcessor::Random { seed } => (&[], ProcessorCode::Random(*seed)),
         GraphProcessor::Pluck { seed } => (
             &[
                 "ratio", "decay", "damping", "level", "hardness", "position", "pickup",
@@ -2286,7 +2347,7 @@ fn parameter_slot(processor: &ProcessorCode, name: &str) -> Option<usize> {
         ProcessorCode::Sample(_) => &["ratio", "frequency", "level"],
         ProcessorCode::Adsr => &["attack", "decay", "sustain", "release", "curve"],
         ProcessorCode::Lfo => &["frequency", "phase", "level"],
-        ProcessorCode::Gain(_) | ProcessorCode::Noise(_) => &["level"],
+        ProcessorCode::Gain(_) | ProcessorCode::Noise(..) => &["level"],
         ProcessorCode::OnePole(_) | ProcessorCode::HighPass(_) => &["cutoff"],
         ProcessorCode::Svf(..) => &["cutoff", "ratio", "q"],
         ProcessorCode::Drive(_) => &["drive", "bias", "level", "reference"],
@@ -2294,6 +2355,7 @@ fn parameter_slot(processor: &ProcessorCode, name: &str) -> Option<usize> {
         | ProcessorCode::Timbre
         | ProcessorCode::Pressure
         | ProcessorCode::Velocity
+        | ProcessorCode::Random(_)
         | ProcessorCode::Key => &[],
         ProcessorCode::Pan => &["pan"],
     };
@@ -2477,7 +2539,10 @@ mod tests {
                     },
                     GraphNode {
                         id: "noise".into(),
-                        processor: GraphProcessor::Noise { seed: 1 },
+                        processor: GraphProcessor::Noise {
+                            seed: 1,
+                            per_note: false,
+                        },
                         params: BTreeMap::new(),
                     },
                 ],

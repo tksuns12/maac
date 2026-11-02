@@ -222,7 +222,10 @@ fn graph_rejects_noise_in_shared_stage_and_unknown_control_parameters() {
 
 #[test]
 fn typed_plan_rejects_zero_seed_and_level_metadata_is_sample_rate() {
-    let processor = GraphProcessor::Noise { seed: 1 };
+    let processor = GraphProcessor::Noise {
+        seed: 1,
+        per_note: false,
+    };
     let spec = maac::graph::parameter_descriptor(&processor, "level").unwrap();
     assert_eq!(spec.rate, maac::graph::ParameterRate::Sample);
     assert_eq!(spec.unit, maac::graph::GraphUnit::Dimensionless);
@@ -236,7 +239,10 @@ fn typed_plan_rejects_zero_seed_and_level_metadata_is_sample_rate() {
         .iter_mut()
         .find(|n| n.id == "noise")
         .unwrap()
-        .processor = GraphProcessor::Noise { seed: 0 };
+        .processor = GraphProcessor::Noise {
+        seed: 0,
+        per_note: false,
+    };
     assert_eq!(plan.validate().unwrap_err().code, "E_RANGE");
 }
 

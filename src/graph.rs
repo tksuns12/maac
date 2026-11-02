@@ -84,6 +84,10 @@ fn is_mono(channels: &u8) -> bool {
     *channels == 1
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 /// A processor in the version 1 synthesis palette.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind")]
@@ -96,10 +100,20 @@ pub enum GraphProcessor {
     Square,
     #[serde(rename = "synth.triangle/1")]
     Triangle,
+    /// White noise from `seed`, or, with `per_note`, from `seed` mixed with
+    /// each voice's note address.
     #[serde(rename = "synth.noise/1")]
-    Noise { seed: u32 },
+    Noise {
+        seed: u32,
+        #[serde(skip_serializing_if = "is_false")]
+        per_note: bool,
+    },
     #[serde(rename = "synth.pluck/1")]
     Pluck { seed: u32 },
+    /// A constant per note in [-1, 1), drawn from `seed` and the note's
+    /// address.
+    #[serde(rename = "synth.random/1")]
+    Random { seed: u32 },
     /// A bank of decaying resonators at stretched harmonics, excited by its
     /// input.
     #[serde(rename = "synth.modal/1")]
@@ -176,9 +190,15 @@ enum GraphProcessorWire {
     #[serde(rename = "synth.triangle/1")]
     Triangle {},
     #[serde(rename = "synth.noise/1")]
-    Noise { seed: u32 },
+    Noise {
+        seed: u32,
+        #[serde(default)]
+        per_note: bool,
+    },
     #[serde(rename = "synth.pluck/1")]
     Pluck { seed: u32 },
+    #[serde(rename = "synth.random/1")]
+    Random { seed: u32 },
     #[serde(rename = "synth.modal/1")]
     Modal { modes: u8, strings: u8 },
     #[serde(rename = "synth.bow/1")]
@@ -239,10 +259,14 @@ impl<'de> Deserialize<'de> for GraphProcessor {
             GraphProcessorWire::Saw {} => Self::Saw,
             GraphProcessorWire::Square {} => Self::Square,
             GraphProcessorWire::Triangle {} => Self::Triangle,
-            GraphProcessorWire::Noise { seed: 0 } => {
+            GraphProcessorWire::Noise { seed: 0, .. } => {
                 return Err(serde::de::Error::custom("noise seed must be nonzero"));
             }
-            GraphProcessorWire::Noise { seed } => Self::Noise { seed },
+            GraphProcessorWire::Noise { seed, per_note } => Self::Noise { seed, per_note },
+            GraphProcessorWire::Random { seed: 0 } => {
+                return Err(serde::de::Error::custom("random seed must be nonzero"));
+            }
+            GraphProcessorWire::Random { seed } => Self::Random { seed },
             GraphProcessorWire::Pluck { seed: 0 } => {
                 return Err(serde::de::Error::custom("pluck seed must be nonzero"));
             }
@@ -298,6 +322,7 @@ impl GraphProcessor {
             Self::Triangle => "synth.triangle/1",
             Self::Noise { .. } => "synth.noise/1",
             Self::Pluck { .. } => "synth.pluck/1",
+            Self::Random { .. } => "synth.random/1",
             Self::Modal { .. } => "synth.modal/1",
             Self::Bow { .. } => "synth.bow/1",
             Self::Wavetable { .. } => "synth.wavetable/1",
@@ -358,6 +383,7 @@ impl GraphProcessor {
                 | Self::Square
                 | Self::Triangle
                 | Self::Noise { .. }
+                | Self::Random { .. }
                 | Self::Pluck { .. }
                 | Self::Modal { .. }
                 | Self::Bow { .. }
@@ -925,6 +951,7 @@ pub fn parameter_descriptor(processor: &GraphProcessor, name: &str) -> Option<Pa
         | GraphProcessor::Timbre
         | GraphProcessor::Pressure
         | GraphProcessor::Velocity
+        | GraphProcessor::Random { .. }
         | GraphProcessor::Key => None,
     }
 }
@@ -1402,11 +1429,18 @@ fn validate_processor(
                 "pluck seed must be nonzero",
             ));
         }
-        GraphProcessor::Noise { seed: 0 } => {
+        GraphProcessor::Noise { seed: 0, .. } => {
             return Err(error(
                 "E_RANGE",
                 format!("{path}.seed"),
                 "noise seed must be nonzero",
+            ));
+        }
+        GraphProcessor::Random { seed: 0 } => {
+            return Err(error(
+                "E_RANGE",
+                format!("{path}.seed"),
+                "random seed must be nonzero",
             ));
         }
         GraphProcessor::Bow {

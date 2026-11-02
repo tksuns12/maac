@@ -786,8 +786,9 @@ impl Normalizer<'_> {
                 if let GraphProcessor::Sample { .. } = &node.processor {
                     crate::sample_instrument::expand_config_defaults(&mut config);
                 }
-                if let GraphProcessor::Noise { seed } | GraphProcessor::Pluck { seed } =
-                    &node.processor
+                if let GraphProcessor::Noise { seed, .. }
+                | GraphProcessor::Pluck { seed }
+                | GraphProcessor::Random { seed } = &node.processor
                 {
                     config
                         .entry("seed")

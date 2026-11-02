@@ -2015,6 +2015,56 @@ fn lower_graph_node(
         "synth.saw/1" => no_config(config, file, object, &identity, GraphProcessor::Saw)?,
         "synth.square/1" => no_config(config, file, object, &identity, GraphProcessor::Square)?,
         "synth.triangle/1" => no_config(config, file, object, &identity, GraphProcessor::Triangle)?,
+        "synth.noise/1" if config.is_some_and(|config| config.contains_key("per_note")) => {
+            let config = config.expect("checked");
+            if let Some(name) = config
+                .keys()
+                .find(|name| !["seed", "per_note"].contains(&name.as_str()))
+            {
+                return Err(field_error(
+                    DiagnosticCode::UnknownField,
+                    file,
+                    object,
+                    &config[name],
+                    "processor `synth.noise/1` config fields are seed and per_note",
+                ));
+            }
+            let per_note = match &config["per_note"].value.kind {
+                ValueKind::Boolean(value) => *value,
+                _ => {
+                    return Err(field_error(
+                        DiagnosticCode::Unit,
+                        file,
+                        object,
+                        &config["per_note"],
+                        "per_note must be a boolean",
+                    ))
+                }
+            };
+            let seed = match config.get("seed") {
+                Some(field) => integer_value(&field.value, file, object, field, 1, u32::MAX)?,
+                None => crate::graph::DEFAULT_NOISE_SEED,
+            };
+            GraphProcessor::Noise { seed, per_note }
+        }
+        "synth.random/1" => {
+            let seed = match config {
+                None => 1,
+                Some(config) if config.is_empty() => 1,
+                Some(config) => {
+                    let config = exact_record(Some(config), &["seed"], file, object, &identity)?;
+                    integer_value(
+                        &config["seed"].value,
+                        file,
+                        object,
+                        &config["seed"],
+                        1,
+                        u32::MAX,
+                    )?
+                }
+            };
+            GraphProcessor::Random { seed }
+        }
         "synth.noise/1" | "synth.pluck/1" => {
             let seed = match config {
                 None => crate::graph::DEFAULT_NOISE_SEED,
@@ -2034,7 +2084,10 @@ fn lower_graph_node(
             if identity == "synth.pluck/1" {
                 GraphProcessor::Pluck { seed }
             } else {
-                GraphProcessor::Noise { seed }
+                GraphProcessor::Noise {
+                    seed,
+                    per_note: false,
+                }
             }
         }
         "synth.adsr/1" => no_config(config, file, object, &identity, GraphProcessor::Adsr)?,

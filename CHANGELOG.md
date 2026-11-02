@@ -7,6 +7,14 @@ promise of compatibility beyond the documented interfaces.
 
 ### Added
 
+- `synth.random/1`, a voice-only source of one value per note in −1…1,
+  drawn from its `seed` and the note's address, and `per_note` for
+  `synth.noise/1`, which starts each note's noise from its address
+  ([note sources](docs/instruments.md#note-sources)). An instrument can now
+  vary from note to note by itself: T7's tongue played the same burst on all
+  457 notes. Plans of existing noise nodes do not change. Part 1C of the
+  [phrases, variation and lines proposal](docs/design/performance-proposal.md).
+
 - Variation ([§9.4](MaaC-1-Specification.md#94-variation)): a `vary` with a
   `seed`, a `velocity` amount up to 1/2 and a `timing` amount up to 50 ms,
   that a placement names. Each note, chord member and hit moves by an exact

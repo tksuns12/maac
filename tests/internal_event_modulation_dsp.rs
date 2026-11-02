@@ -401,7 +401,10 @@ fn zero_depth_edges_preserve_stateful_source_audio_and_reset_repeat() {
             ]),
         ),
         (
-            GraphProcessor::Noise { seed: 1 },
+            GraphProcessor::Noise {
+                seed: 1,
+                per_note: false,
+            },
             params([("level", r(1, 1))]),
         ),
         (

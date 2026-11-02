@@ -1,7 +1,7 @@
 # Phrases, variation and lines: proposal
 
 **Status:** accepted 2026-11-02, when the owner took every recommended
-[decision](#decisions). Parts 1A, 1B, 2A and 2C have landed; [Results](#results) records them. This is items 1 and 2 of
+[decision](#decisions). Parts 1A, 1B, 1C, 2A and 2C have landed; [Results](#results) records them. This is items 1 and 2 of
 [what to build next](../reports/ai-production-trial-t7.md#what-to-build-next-in-order)
 after the T7 trial. Item 1, performance variation, covers F60, F61 and F62.
 Item 2, writing a line, covers F53, F52 and F58. Part 1 also fixes F39 from
@@ -463,4 +463,18 @@ variation.
   the copies have other addresses, so they would draw other values.
 - **Editing.** A change to a `vary` is reported as possibly affecting every
   event, as a change to any declaration outside patterns and placements is.
+
+### Part 1C: per-note values in instruments (2026-11-02)
+
+- **`synth.random/1`** emits `2u − 1` for each note, `u` the first unit draw
+  of the shared generator from its seed mixed with the note's address. Its
+  default seed is 1, as `synth.bow/1`'s is. On a joined note it glides to
+  the joined note's value over 100 ms, through the same code as the velocity.
+- **`per_note`** on `synth.noise/1` starts each voice from the high 32 bits of
+  the seed mixed with the address, or from the seed where they are zero. A
+  plan records it only when true, so plans of existing noise are unchanged.
+- **Tests** in `tests/per_note_values.rs`: each note's noise differs with
+  `per_note` and is identical without it, a value is constant through its
+  note and differs between notes, and a render range hears the values of
+  the whole render.
 
