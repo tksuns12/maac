@@ -140,6 +140,18 @@ listen before you call a track finished.
 - Vary velocity. On std/studio a harder note is brighter as well as louder,
   so accents and ghost notes change the sound; a part at one velocity sounds
   like a machine.
+- Shape each phrase of a melody with a `phrase`, not a curve per note. Its
+  `dynamics` curve multiplies the velocities written under it, and its
+  `pressure` curve is one breath that every note reads in turn:
+  `phrase p3 { at = 8q; length = 6q; dynamics = &arc; pressure = &rise_fall; }`
+  with `curve arc { clock = score; points = [(0q, 0.92, linear), (4q, 1.08, linear), (6q, 0.95, step)]; }`.
+  The curves count from the phrase's `at`, in the score clock, with `step`
+  and `linear` segments. In T7 a breath per note sounded artificial and a
+  breath through the phrase "less artificial"; arcs over each phrase won
+  over velocities set by rule. Share a few curves among the phrases, and
+  swell a held note within the phrase's own curve. A phrase around a `use`
+  of a roll makes the crescendo across its repetitions. See
+  [phrases](../MaaC-1-Specification.md#93-phrases).
 - Mind the level scales. Every std/studio default puts a typical phrase at
   velocity 0.7 at −20 LUFS, so its instruments start balanced against each
   other. std/basic and std/acoustic use other scales: in the trial, the nylon

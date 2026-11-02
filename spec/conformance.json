@@ -128,6 +128,18 @@
       "pass": true
     },
     {
+      "id": "phrase_nested_velocity",
+      "actual": "121/128",
+      "expected": "121/128",
+      "pass": true
+    },
+    {
+      "id": "phrase_breath_window_start",
+      "actual": "2/5",
+      "expected": "2/5",
+      "pass": true
+    },
+    {
       "id": "vibrato_rising_knot_cents",
       "actual": "38/5",
       "expected": "38/5",

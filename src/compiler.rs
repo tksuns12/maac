@@ -417,6 +417,20 @@ enum PatternChild {
     /// A chord without pitches or a voicing of its own: it lowers at each
     /// occurrence, with the voicing its nearest use or placement supplies.
     Chord(Box<Object>),
+    Phrase(Box<PhraseDef>),
+}
+
+/// A phrase (§9.3): a span of its pattern, and the score-clock curves that
+/// shape the velocity, pressure and timbre of the events under it.
+#[derive(Clone, Debug)]
+struct PhraseDef {
+    id: String,
+    span: Span,
+    at: Rational,
+    length: Rational,
+    dynamics: Option<String>,
+    pressure: Option<String>,
+    timbre: Option<String>,
 }
 
 /// What a use or placement supplies to chords without pitches (§8.2): one
@@ -565,6 +579,10 @@ struct ExpandedNote {
     gain_expression: Option<String>,
     timbre_expression: Option<String>,
     pressure_expression: Option<String>,
+    /// A phrase's pressure and timbre (§9.3), already in the note's own
+    /// score-clock coordinates.
+    phrase_pressure: Option<Vec<CurvePoint>>,
+    phrase_timbre: Option<Vec<CurvePoint>>,
     expression_scale: Rational,
     pitch: Pitch,
     transpose_cents: Rational,
@@ -590,10 +608,53 @@ impl ExpandedEvent {
     }
 }
 
+type CurvePoint = (Rational, Rational, Interpolation);
+
 #[derive(Clone, Debug)]
 struct CurveDef {
     clock: String,
-    points: Vec<(Rational, Rational, Interpolation)>,
+    points: Vec<CurvePoint>,
+}
+
+impl CurveDef {
+    /// The value at `x`, right-continuous; endpoint values hold outside the
+    /// points. Phrase curves are step or linear (§9.3).
+    fn value_at(&self, x: &Rational) -> Rational {
+        let index = self
+            .points
+            .partition_point(|(position, ..)| position <= x)
+            .saturating_sub(1);
+        let (position, value, shape) = &self.points[index];
+        match (self.points.get(index + 1), shape) {
+            (Some((next, next_value, _)), Interpolation::Linear) if x > position => {
+                value + (next_value - value) * (x - position) / (next - position)
+            }
+            _ => value.clone(),
+        }
+    }
+
+    /// The curve from `start` to `end`, moved to begin at 0: the value at
+    /// `start`, each point strictly inside, and a final `step` at the end.
+    fn window(&self, start: &Rational, end: &Rational) -> Vec<CurvePoint> {
+        let index = self
+            .points
+            .partition_point(|(position, ..)| position <= start)
+            .saturating_sub(1);
+        let shape = if index + 1 < self.points.len() {
+            self.points[index].2
+        } else {
+            Interpolation::Step
+        };
+        let mut window = vec![(Rational::zero(), self.value_at(start), shape)];
+        window.extend(
+            self.points
+                .iter()
+                .filter(|(position, ..)| position > start && position < end)
+                .map(|(position, value, shape)| (position - start, value.clone(), *shape)),
+        );
+        window.push((end - start, self.value_at(end), Interpolation::Step));
+        window
+    }
 }
 
 /// A vibrato (§8.1): one cycle of `(position, value, shape)` points,
@@ -3024,6 +3085,37 @@ impl<'a> Compiler<'a> {
         })
     }
 
+    fn parse_phrase(&self, object: &Object) -> CResult<PhraseDef> {
+        self.check_fields(object, &["at", "length", "dynamics", "pressure", "timbre"])?;
+        let at_field = self.field(object, "at")?;
+        let length_field = self.field(object, "length")?;
+        let at = self.q_value(&at_field.value, object, Some(at_field), false)?;
+        let length = self.q_value(&length_field.value, object, Some(length_field), false)?;
+        if at.is_negative() || length <= Rational::zero() {
+            return Err(path_diagnostic(
+                DiagnosticCode::Range,
+                "phrase onset must be nonnegative and length positive",
+                object,
+                None,
+            ));
+        }
+        let curve = |name: &str| {
+            object
+                .field(name)
+                .map(|field| self.one_reference(&field.value, object, Some(field)))
+                .transpose()
+        };
+        Ok(PhraseDef {
+            id: object.id.clone(),
+            span: object.span,
+            at,
+            length,
+            dynamics: curve("dynamics")?,
+            pressure: curve("pressure")?,
+            timbre: curve("timbre")?,
+        })
+    }
+
     fn parse_use(&self, object: &Object) -> CResult<UseDef> {
         self.check_fields(
             object,
@@ -3292,6 +3384,7 @@ impl<'a> Compiler<'a> {
                 let parsed = match child.kind.as_str() {
                     "note" => PatternChild::Leaf(Box::new(self.parse_note(child)?)),
                     "use" => PatternChild::Use(Box::new(self.parse_use(child)?)),
+                    "phrase" => PatternChild::Phrase(Box::new(self.parse_phrase(child)?)),
                     "hit" if self.allow_hits => {
                         PatternChild::Leaf(Box::new(self.parse_hit(child)?))
                     }
@@ -3342,6 +3435,14 @@ impl<'a> Compiler<'a> {
                         return Err(path_diagnostic(
                             DiagnosticCode::Interval,
                             "use onset must be before pattern length",
+                            child,
+                            None,
+                        ))
+                    }
+                    PatternChild::Phrase(phrase) if phrase.at >= length => {
+                        return Err(path_diagnostic(
+                            DiagnosticCode::Interval,
+                            "phrase onset must be before pattern length",
                             child,
                             None,
                         ))
@@ -4156,6 +4257,12 @@ impl<'a> Compiler<'a> {
                 };
                 self.expand_pattern(&place.pattern, &mut state)?;
             }
+            // Phrases multiply velocities; the product is clamped once (§9.3).
+            for event in &mut self.events[first..] {
+                if event.velocity > Rational::one() {
+                    event.velocity = Rational::one();
+                }
+            }
             if let Some(groove) = &place.groove {
                 self.apply_groove(place, groove, first)?;
             }
@@ -4377,7 +4484,7 @@ impl<'a> Compiler<'a> {
                 .map(|child| match child {
                     PatternChild::Leaf(_) => 1,
                     PatternChild::Chord(_) => compiler.max_voicing_pitches(),
-                    PatternChild::Use(_) => 0,
+                    PatternChild::Use(_) | PatternChild::Phrase(_) => 0,
                 })
                 .sum::<u64>();
             for child in &pattern.children {
@@ -4395,6 +4502,20 @@ impl<'a> Compiler<'a> {
                         ));
                     }
                 }
+            }
+            // Each phrase looks at every event the pattern expands.
+            let phrases = pattern
+                .children
+                .iter()
+                .filter(|child| matches!(child, PatternChild::Phrase(_)))
+                .count() as u64;
+            work = work.saturating_add(phrases.saturating_mul(events));
+            if work > MAX_EXPANSION_WORK {
+                return Err(diagnostics(
+                    DiagnosticCode::ResourceLimit,
+                    "bounded pattern expansion exceeds host limits",
+                    Some(pattern.span),
+                ));
             }
             memo.insert(id.to_owned(), (work, events));
             Ok((work, events))
@@ -4469,6 +4590,8 @@ impl<'a> Compiler<'a> {
                     gain_expression: note.gain_expression.clone(),
                     timbre_expression: note.timbre_expression.clone(),
                     pressure_expression: note.pressure_expression.clone(),
+                    phrase_pressure: None,
+                    phrase_timbre: None,
                     expression_scale: state.scale.clone(),
                     pitch: note.pitch.clone(),
                     transpose_cents: state.transpose.clone(),
@@ -4537,6 +4660,8 @@ impl<'a> Compiler<'a> {
                 None,
             )
         })?;
+        let first = self.events.len();
+        let mut phrases = Vec::new();
         for child in pattern.children {
             self.expansion_work = self.expansion_work.saturating_add(1);
             if self.expansion_work > MAX_EXPANSION_WORK {
@@ -4547,6 +4672,7 @@ impl<'a> Compiler<'a> {
                 ));
             }
             match child {
+                PatternChild::Phrase(phrase) => phrases.push(*phrase),
                 PatternChild::Leaf(leaf) => {
                     self.expand_pattern_leaf(&leaf, &pattern.source_path, state)?
                 }
@@ -4634,6 +4760,99 @@ impl<'a> Compiler<'a> {
                         self.expand_pattern(&use_def.pattern, &mut child_state)?;
                         state.address.pop();
                         state.address.pop();
+                    }
+                }
+            }
+        }
+        self.apply_phrases(phrases, first, state)
+    }
+
+    /// Shape the events this pattern occurrence expanded, from `first`, by its
+    /// phrases (§9.3). Phrases of nested patterns have already applied, so an
+    /// expression already present takes precedence; among this pattern's
+    /// phrases, the later one applies first.
+    fn apply_phrases(
+        &mut self,
+        mut phrases: Vec<PhraseDef>,
+        first: usize,
+        state: &ExpansionState<'_>,
+    ) -> CResult<()> {
+        phrases.sort_by(|a, b| {
+            b.at.cmp(&a.at)
+                .then_with(|| b.id.as_bytes().cmp(a.id.as_bytes()))
+        });
+        for phrase in &phrases {
+            let span = Some(phrase.span);
+            let end = checked_add(&phrase.at, &phrase.length, span)?;
+            let curve = |id: &Option<String>| -> CResult<Option<&CurveDef>> {
+                id.as_ref()
+                    .map(|id| {
+                        self.curves.get(id).ok_or_else(|| {
+                            diagnostics(
+                                DiagnosticCode::Reference,
+                                format!("unknown curve reference `&{id}`"),
+                                span,
+                            )
+                        })
+                    })
+                    .transpose()
+            };
+            let (dynamics, pressure, timbre) = (
+                curve(&phrase.dynamics)?.cloned(),
+                curve(&phrase.pressure)?.cloned(),
+                curve(&phrase.timbre)?.cloned(),
+            );
+            let covered = self.events.len() - first;
+            self.expansion_work = self.expansion_work.saturating_add(covered as u64);
+            if self.expansion_work > MAX_EXPANSION_WORK {
+                return Err(diagnostics(
+                    DiagnosticCode::ResourceLimit,
+                    "pattern expansion work exceeds the bounded limit",
+                    span,
+                ));
+            }
+            for event in &mut self.events[first..] {
+                if matches!(
+                    event.kind,
+                    ExpandedKind::Message { .. } | ExpandedKind::Audio(_)
+                ) {
+                    continue;
+                }
+                let local = checked_div(
+                    &checked_sub(&event.score_on_q, &state.origin, span)?,
+                    &state.scale,
+                    span,
+                )?;
+                if local < phrase.at || local >= end {
+                    continue;
+                }
+                let start = checked_sub(&local, &phrase.at, span)?;
+                if let Some(curve) = &dynamics {
+                    event.velocity = checked_mul(&event.velocity, &curve.value_at(&start), span)?;
+                }
+                let ExpandedKind::Note(note) = &mut event.kind else {
+                    continue;
+                };
+                let gate =
+                    checked_add(&start, &checked_div(&note.dur_q, &state.scale, span)?, span)?;
+                // The window, in the note's own score-clock coordinates.
+                let lower = |curve: &CurveDef| -> CResult<Vec<CurvePoint>> {
+                    curve
+                        .window(&start, &gate)
+                        .into_iter()
+                        .map(|(position, value, shape)| {
+                            Ok((checked_mul(&position, &state.scale, span)?, value, shape))
+                        })
+                        .collect()
+                };
+                if let Some(curve) = &pressure {
+                    if note.pressure_expression.is_none() && note.phrase_pressure.is_none() {
+                        note.phrase_pressure = Some(lower(curve)?);
+                    }
+                }
+                if let Some(curve) = &timbre {
+                    if note.timbre_expression.is_none() && note.phrase_timbre.is_none() {
+                        note.phrase_timbre = Some(lower(curve)?);
                     }
                 }
             }
@@ -5006,70 +5225,96 @@ impl<'a> Compiler<'a> {
             ));
         }
         Ok(EventKind::Note {
-            pressure_expression: note
-                .pressure_expression
-                .as_ref()
-                .map(|id| {
-                    let curve = &self.curves[id];
-                    let clock = match curve.clock.as_str() {
-                        "score" => ExpressionClock::Score,
-                        "seconds" => ExpressionClock::Seconds,
-                        _ => ExpressionClock::Normalized,
-                    };
-                    let points = curve
-                        .points
+            pressure_expression: match &note.phrase_pressure {
+                Some(points) if note.pressure_expression.is_none() => Some(PressureExpression {
+                    clock: ExpressionClock::Score,
+                    points: points
                         .iter()
-                        .map(|(position, value, shape)| {
-                            Ok(PressureExpressionPoint {
-                                position: if clock == ExpressionClock::Score {
-                                    checked_mul(
-                                        position,
-                                        &note.expression_scale,
-                                        Some(expanded.source_span),
-                                    )?
-                                } else {
-                                    position.clone()
-                                },
-                                value: value.clone(),
-                                shape: *shape,
-                            })
+                        .map(|(position, value, shape)| PressureExpressionPoint {
+                            position: position.clone(),
+                            value: value.clone(),
+                            shape: *shape,
                         })
-                        .collect::<CResult<Vec<_>>>()?;
-                    Ok(PressureExpression { clock, points })
-                })
-                .transpose()?,
-            timbre_expression: note
-                .timbre_expression
-                .as_ref()
-                .map(|id| {
-                    let curve = &self.curves[id];
-                    let clock = match curve.clock.as_str() {
-                        "score" => ExpressionClock::Score,
-                        "seconds" => ExpressionClock::Seconds,
-                        _ => ExpressionClock::Normalized,
-                    };
-                    let points = curve
-                        .points
+                        .collect(),
+                }),
+                _ => note
+                    .pressure_expression
+                    .as_ref()
+                    .map(|id| {
+                        let curve = &self.curves[id];
+                        let clock = match curve.clock.as_str() {
+                            "score" => ExpressionClock::Score,
+                            "seconds" => ExpressionClock::Seconds,
+                            _ => ExpressionClock::Normalized,
+                        };
+                        let points = curve
+                            .points
+                            .iter()
+                            .map(|(position, value, shape)| {
+                                Ok(PressureExpressionPoint {
+                                    position: if clock == ExpressionClock::Score {
+                                        checked_mul(
+                                            position,
+                                            &note.expression_scale,
+                                            Some(expanded.source_span),
+                                        )?
+                                    } else {
+                                        position.clone()
+                                    },
+                                    value: value.clone(),
+                                    shape: *shape,
+                                })
+                            })
+                            .collect::<CResult<Vec<_>>>()?;
+                        Ok(PressureExpression { clock, points })
+                    })
+                    .transpose()?,
+            },
+            timbre_expression: match &note.phrase_timbre {
+                Some(points) if note.timbre_expression.is_none() => Some(TimbreExpression {
+                    clock: ExpressionClock::Score,
+                    points: points
                         .iter()
-                        .map(|(position, value, shape)| {
-                            Ok(TimbreExpressionPoint {
-                                position: if clock == ExpressionClock::Score {
-                                    checked_mul(
-                                        position,
-                                        &note.expression_scale,
-                                        Some(expanded.source_span),
-                                    )?
-                                } else {
-                                    position.clone()
-                                },
-                                value: value.clone(),
-                                shape: *shape,
-                            })
+                        .map(|(position, value, shape)| TimbreExpressionPoint {
+                            position: position.clone(),
+                            value: value.clone(),
+                            shape: *shape,
                         })
-                        .collect::<CResult<Vec<_>>>()?;
-                    Ok(TimbreExpression { clock, points })
-                })
-                .transpose()?,
+                        .collect(),
+                }),
+                _ => note
+                    .timbre_expression
+                    .as_ref()
+                    .map(|id| {
+                        let curve = &self.curves[id];
+                        let clock = match curve.clock.as_str() {
+                            "score" => ExpressionClock::Score,
+                            "seconds" => ExpressionClock::Seconds,
+                            _ => ExpressionClock::Normalized,
+                        };
+                        let points = curve
+                            .points
+                            .iter()
+                            .map(|(position, value, shape)| {
+                                Ok(TimbreExpressionPoint {
+                                    position: if clock == ExpressionClock::Score {
+                                        checked_mul(
+                                            position,
+                                            &note.expression_scale,
+                                            Some(expanded.source_span),
+                                        )?
+                                    } else {
+                                        position.clone()
+                                    },
+                                    value: value.clone(),
+                                    shape: *shape,
+                                })
+                            })
+                            .collect::<CResult<Vec<_>>>()?;
+                        Ok(TimbreExpression { clock, points })
+                    })
+                    .transpose()?,
+            },
             gain_expression: note
                 .gain_expression
                 .as_ref()
@@ -5201,8 +5446,21 @@ impl<'a> Compiler<'a> {
                         ]
                         .into_iter()
                         .flatten()
-                    })
-                    .map(|id| self.curves[id].points.len()),
+                        .map(|id| self.curves[id].points.len())
+                        .chain(
+                            [
+                                e.phrase_pressure
+                                    .as_ref()
+                                    .filter(|_| e.pressure_expression.is_none()),
+                                e.phrase_timbre
+                                    .as_ref()
+                                    .filter(|_| e.timbre_expression.is_none()),
+                            ]
+                            .into_iter()
+                            .flatten()
+                            .map(Vec::len),
+                        )
+                    }),
             )
         {
             point_count = point_count.checked_add(count).ok_or_else(|| {

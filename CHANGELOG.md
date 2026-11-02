@@ -7,6 +7,16 @@ promise of compatibility beyond the documented interfaces.
 
 ### Added
 
+- Phrases ([§9.3](MaaC-1-Specification.md#93-phrases)): a `phrase` in a
+  pattern spans part of it, and its score-clock curves shape the events
+  under it. `dynamics` multiplies their velocities, and `pressure` and
+  `timbre` give its notes one continuous breath and colour, each note
+  reading its own slice. A note's own expression takes precedence, phrases
+  nest and repeat with their pattern, and the compiler lowers them to each
+  note's values, so plans do not change. T7's saxophone needed 457 named
+  curves for what its 51 phrases say. Part 1A of the
+  [phrases, variation and lines proposal](docs/design/performance-proposal.md).
+
 - `synth.bow/1`, a section of bowed strings: up to 16 players, each a
   bowed waveguide string with its own vibrato, tuning and timing, and a
   violin, viola, cello or bass body of about 50 resonances

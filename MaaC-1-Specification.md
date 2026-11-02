@@ -230,7 +230,7 @@ by that extension. Other top-level kinds in a core composition are:
 | `region` | Named score interval, without playback behavior |
 | `extension` | Namespaced data governed by a required external schema |
 
-Nested pattern kinds are `note`, `chord` (§8.2), `hit`, `message`, `audio` (§9.1), and `use`. A `note` may contain `expression`. A `place` may contain `override` and `insert`. An `insert` contains exactly one `note`, `hit`, `message`, or `audio`. These nesting locations are exclusive unless an extension schema explicitly adds another location.
+Nested pattern kinds are `note`, `chord` (§8.2), `hit`, `message`, `audio` (§9.1), `use`, and `phrase` (§9.3). A `note` may contain `expression`. A `place` may contain `override` and `insert`. An `insert` contains exactly one `note`, `hit`, `message`, or `audio`. These nesting locations are exclusive unless an extension schema explicitly adds another location.
 
 All objects may carry the optional string field `label`. No other implicit fields exist. The field definitions below specify defaults. Defaults are expanded into the normalized source graph, not silently chosen by a host.
 
@@ -667,6 +667,58 @@ final coordinates (§11), audio leaves keep their positions, and physical
 offsets apply afterwards. A groove changes positions only: event identity and
 addresses are unchanged. `groove` is a field of `place` only.
 
+### 9.3 Phrases
+
+A `phrase` is a pattern child that shapes the events under it: their
+velocity, and the pressure and timbre of its notes.
+
+```maac
+curve arc { clock = score; points = [(0q, 23/25, linear), (5q, 27/25, linear), (8q, 19/20, step)]; }
+curve breath { clock = score; points = [(0q, 3/25, linear), (5q, 2/5, linear), (8q, 1/5, step)]; }
+pattern call {
+  length = 8q;
+  note a { at = 0q; dur = 3/2q; pitch = D4; velocity = 0.6; }
+  note b { at = 3/2q; dur = 1/2q; pitch = F4; velocity = 0.6; }
+  note c { at = 2q; dur = 4q; pitch = A4; velocity = 0.7; }
+  phrase whole { at = 0q; length = 8q; dynamics = &arc; pressure = &breath; }
+}
+```
+
+`at` is a nonnegative pattern-local q position before the pattern's
+`length`, and `length` a positive q duration. `dynamics`, `pressure` and
+`timbre` each reference a curve, and at least one is present. Each curve uses
+the score clock and only `step` and `linear` segments; its positions count
+from the phrase's `at`. `dynamics` values are nonnegative dimensionless
+numbers, and `pressure` and `timbre` values dimensionless numbers in `[0,1]`.
+A different clock or a value with a unit is `E_UNIT`; another segment shape or
+a value out of range is `E_RANGE`.
+
+A phrase covers each note, chord member and hit of its pattern, and of the
+patterns its uses expand, whose onset `a`, in the phrase's pattern-local q
+coordinates, satisfies `at <= a < at + length`. Onsets are compared after
+nested uses expand and before groove, physical offsets, overrides and
+inserts; a placement's inserts are not covered.
+
+- **Dynamics.** A covered event's velocity is multiplied by the curve's value
+  at `a - at`. Under several phrases it is multiplied by each, and the
+  product is clamped to 1.
+- **Pressure and timbre.** A covered note that has no expression of that kind
+  receives a score-clock one: the phrase's curve from `a - at` to
+  `a - at + d`, where `d` is the note's final gate in the phrase's
+  coordinates, moved to start at 0. The segments are cut at both ends; the
+  last point is `step`. A note's own expression of the kind takes precedence.
+  Among phrases, the one in the most deeply nested pattern takes precedence,
+  then the one with the later `at`, then the one whose ID sorts last in
+  unsigned UTF-8 byte order. A destination without that expression is
+  `E_CAPABILITY`, as for a note's own.
+
+A phrase repeats and stretches with its pattern: inherited musical stretch
+multiplies its positions and its curves' positions, as it does a score-clock
+expression's. The compiler lowers each covered event to its final velocity and
+expression points, so a plan holds no phrase. The points count towards the
+published expansion limits (§23), and so does the work of finding the covered
+events.
+
 ## 10. Tracks, placement, and event identity
 
 A `track` has an optional event `target` port. A track used by a note/hit/message placement requires that target. Tracks may group audio objects, and placements that expand only audio leaves (§9.1), without an event target. Tracks do not create mixers, faders, pan laws, or implicit connections.
@@ -718,7 +770,7 @@ override late_note {
 
 `event` is a relative expanded event address within that placement; a chord member is addressed individually, as `"3/down.2"`. `set` is a record of replacements for leaf fields; `delete` is an alternative boolean field that must be `true`. Exactly one of `set` and `delete` is present. There is at most one override per addressed event. The target must exist before overrides; dangling overrides are errors.
 
-Overrides apply **after** all pattern expansion, musical stretch, transposition, and groove. `set.at`, when used, is a musical offset from the placement's global origin, not from the source pattern or the selected repetition. `set.dur` is the final musical duration. `set.pitch` replaces the final pitch without reapplying placement transposition. An override cannot change identity, event kind, destination track, or introduce another source reference.
+Overrides apply **after** all pattern expansion, musical stretch, transposition, phrases, and groove. `set.at`, when used, is a musical offset from the placement's global origin, not from the source pattern or the selected repetition. `set.dur` is the final musical duration. `set.pitch` replaces the final pitch without reapplying placement transposition. An override cannot change identity, event kind, destination track, or introduce another source reference.
 
 This final-state rule makes local patches inspectable: replacing the pitch with `C3` means C3, not “C3 and then whatever upstream transposition happens to do.” Allowed replacement fields are the fields of the leaf's kind, except label and order may also be changed. An audio leaf's replacements are limited to those listed in §9.1. Expression children are not replaced through `set`; they are edited by child-addressed patch operations on a materialized instance variant (see below).
 

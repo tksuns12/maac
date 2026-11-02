@@ -441,6 +441,13 @@ impl Builder<'_> {
                         children.insert(use_id, invocation);
                     }
                 }
+                // A copy keeps the pattern's coordinates, so its phrases
+                // shape the same events.
+                Some("phrase") => {
+                    let mut phrase = child.clone();
+                    self.private_dependencies(&mut phrase, &mut BTreeMap::new())?;
+                    children.insert(child_id.clone(), phrase);
+                }
                 _ => {
                     return Err(EditError::new(
                         "E_CAPABILITY",

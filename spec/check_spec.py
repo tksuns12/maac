@@ -313,6 +313,11 @@ def main() -> None:
     # member 0 last, at position 1 of 2.
     exact("pick_strum_up_member0_velocity", Fraction(1, 2) + Fraction(-1, 10) * Fraction(2 - 1 - 0, 2 - 1),
           Fraction(2, 5))
+    # Phrases multiply a velocity through nesting and clamp once: 1/2 under two
+    # arcs at 11/8 each; a linear breath from 0 to 4/5 over 4q is 2/5 at 2q.
+    exact("phrase_nested_velocity", min(1, Fraction(1, 2) * Fraction(11, 8) * Fraction(11, 8)),
+          Fraction(121, 128))
+    exact("phrase_breath_window_start", 0 + (Fraction(4, 5) - 0) * (2 - 0) / (4 - 0), Fraction(2, 5))
     exact("vibrato_rising_knot_cents", 38 * min(1, (Fraction(39, 100) - Fraction(3, 10)) / Fraction(45, 100)),
           Fraction(38, 5))
     near("linear_tempo_ramp_seconds", 60 / 15 * math.log(180 / 120), 1.6218604324326575)
@@ -336,7 +341,7 @@ def main() -> None:
     (ROOT / "conformance.json").write_text(json.dumps(vectors, indent=2) + "\n")
     report = {
         "surface_parse": "pass", "syntax_tree_schema": "pass",
-        "example_expanded_note_count": len(events), "arithmetic_assertions": 28,
+        "example_expanded_note_count": len(events), "arithmetic_assertions": 30,
         "scope": "Syntax plus selected semantics only; no complete validator or renderer is included."
     }
     (ROOT / "check-results.json").write_text(json.dumps(report, indent=2) + "\n")

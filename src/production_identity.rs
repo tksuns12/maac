@@ -424,6 +424,7 @@ impl Normalizer<'_> {
                 | "message"
                 | "expression"
                 | "use"
+                | "phrase"
                 | "override"
                 | "insert"
                 | "import"

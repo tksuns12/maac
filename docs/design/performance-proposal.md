@@ -1,7 +1,7 @@
 # Phrases, variation and lines: proposal
 
 **Status:** accepted 2026-11-02, when the owner took every recommended
-[decision](#decisions). This is items 1 and 2 of
+[decision](#decisions). Part 1A has landed; [Results](#results) records it. This is items 1 and 2 of
 [what to build next](../reports/ai-production-trial-t7.md#what-to-build-next-in-order)
 after the T7 trial. Item 1, performance variation, covers F60, F61 and F62.
 Item 2, writing a line, covers F53, F52 and F58. Part 1 also fixes F39 from
@@ -114,7 +114,8 @@ pattern head_a {
   without that expression is `E_CAPABILITY`, as for a note's own.
 - **Nesting.** Phrases may overlap and nest. Dynamics multiply, as transpositions
   add. For `pressure` and `timbre`, the phrase nearest the note wins: the one in
-  the deepest pattern, then the one that starts later.
+  the deepest pattern, then the one that starts later, then the one whose ID
+  sorts last.
 - **Stretch and repetition.** A phrase repeats and stretches with its pattern;
   a stretch multiplies its positions and its curves' positions, as it does a
   score-clock expression's.
@@ -388,4 +389,26 @@ recommendations").
 
 ## Results
 
-None yet.
+### Part 1A: phrases (2026-11-02)
+
+[§9.3](../../MaaC-1-Specification.md#93-phrases) specifies phrases as
+proposed. Points the proposal left open:
+
+- **Ties.** Two phrases of one pattern that start together and both give a
+  breath: the one whose ID sorts last in byte order gives it.
+- **Curves.** A phrase's curves use the score clock (`E_UNIT` otherwise) and
+  `step` and `linear` segments only (`E_RANGE`), so every cut of a curve at a
+  note's onset and gate end is exact.
+- **Hits.** Dynamics shape hits too, so a phrase around a kit roll is a
+  crescendo; pressure and timbre reach only notes.
+- **Editing.** An edit to a phrase reports every event of its pattern, and
+  of the patterns it uses, as possibly affected. Materializing an instance
+  copies its phrases, with private copies of their curves; the copy keeps
+  each pattern's coordinates, so the phrases shape the same events.
+- **Cost.** Each phrase looks at every event its pattern expands, and that
+  work counts towards the expansion bound.
+
+Tests in `tests/phrase.rs` compare a phrase with the same velocities and
+breaths written by hand, note by note, and cover precedence, nesting,
+stretch, chord members, inserts, overrides, each error, edit impact and
+materialization.

@@ -2187,8 +2187,16 @@ fn enumerate_pattern_occurrences(
         return None;
     }
     let children = pattern["children"].as_object()?;
+    // A phrase may shape any event its pattern expands (§9.3).
+    let mut inherited_dependencies = inherited_dependencies.to_vec();
+    inherited_dependencies.extend(
+        children
+            .iter()
+            .filter(|(_, child)| child["kind"] == "phrase")
+            .map(|(child_id, _)| vec![pattern_id.to_owned(), child_id.clone()]),
+    );
     for (child_id, child) in children {
-        let mut dependencies = inherited_dependencies.to_vec();
+        let mut dependencies = inherited_dependencies.clone();
         dependencies.push(vec![pattern_id.to_owned()]);
         dependencies.push(vec![pattern_id.to_owned(), child_id.clone()]);
         match child["kind"].as_str()? {
