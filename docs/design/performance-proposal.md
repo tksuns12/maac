@@ -1,7 +1,7 @@
 # Phrases, variation and lines: proposal
 
 **Status:** accepted 2026-11-02, when the owner took every recommended
-[decision](#decisions). Parts 1A, 2A and 2C have landed; [Results](#results) records them. This is items 1 and 2 of
+[decision](#decisions). Parts 1A, 1B, 2A and 2C have landed; [Results](#results) records them. This is items 1 and 2 of
 [what to build next](../reports/ai-production-trial-t7.md#what-to-build-next-in-order)
 after the T7 trial. Item 1, performance variation, covers F60, F61 and F62.
 Item 2, writing a line, covers F53, F52 and F58. Part 1 also fixes F39 from
@@ -439,4 +439,28 @@ materialization.
 positions written out, including chords that read a harmony, and covers each
 error, edit impact and materialization; `tests/groove.rs` compares a delay with
 the same offsets written on every note.
+
+### Part 1B: variation (2026-11-02)
+
+[§9.4](../../MaaC-1-Specification.md#94-variation) specifies `vary` as
+proposed, and §9's sentence on probability now names it as declared
+variation.
+
+- **The draw** is written out in the specification: FNV-1a of the address
+  and the field's name from a basis mixed with the seed, then the first two
+  SplitMix64 outputs, the generator `synth.bow/1` already used, now shared.
+  The offset is `amount × (k1 + k2 − 2^53) / 2^53` from their top 53 bits,
+  an exact rational. `spec/check_spec.py` computes one draw independently,
+  and `tests/vary.rs` checks the compiler against its own copy of the
+  formula.
+- **Touching notes.** A note's gate end moves with the onset of the note it
+  touches when exactly one note of the same chord member index starts
+  there, as joining requires.
+- **Listing.** The proposal offered a listing in `maac check --json`. The plan
+  that `maac compile` writes already holds every final velocity and offset,
+  so no listing was added.
+- **Materializing** a placement with a `vary` is refused (`E_CAPABILITY`):
+  the copies have other addresses, so they would draw other values.
+- **Editing.** A change to a `vary` is reported as possibly affecting every
+  event, as a change to any declaration outside patterns and placements is.
 

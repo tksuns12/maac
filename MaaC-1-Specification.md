@@ -220,6 +220,7 @@ by that extension. Other top-level kinds in a core composition are:
 |---|---|
 | `tempo`, `meter`, `tuning` | Musical coordinate systems |
 | `groove` | Named swing map that placements reference (§9.2) |
+| `vary` | Named, seeded departure of velocity and timing that placements reference (§9.4) |
 | `voicing` | Named pitch list that chords play (§8.2) |
 | `harmony`, `voicings` | Named timeline of chord names, and a part's voicing for each name (§8.2) |
 | `vibrato` | Named periodic pitch shape that a pitch expression adds (§8.1) |
@@ -608,7 +609,7 @@ Pitch transpositions add through nesting. Physical offsets do not stretch. A `cu
 
 Simultaneous `use` objects implement layering. Sequentially positioned uses implement concatenation. Independent lengths and repetition counts implement finite polymeters. Silence is simply absence of events; an empty pattern with a positive length is valid.
 
-There is no recursive pattern call, mutable counter, implicit global cycle, or infinite generator. A chord leaf (§8.2) is a finite spelling of simultaneous notes, not a generator. A host may offer a live looping mode, but that transport behavior is outside a closed document. Probability, Euclidean rhythms, reversal, and quantization may be authoring operations; their materialized events or explicit finite uses are stored. They are not hidden runtime interpretation. Swing is instead a declared, exact map of score time, the `groove` of §9.2, in the same class as `stretch`.
+There is no recursive pattern call, mutable counter, implicit global cycle, or infinite generator. A chord leaf (§8.2) is a finite spelling of simultaneous notes, not a generator. A host may offer a live looping mode, but that transport behavior is outside a closed document. Probability, Euclidean rhythms, reversal, and quantization may be authoring operations; their materialized events or explicit finite uses are stored. They are not hidden runtime interpretation. Swing is instead a declared, exact map of score time, the `groove` of §9.2, in the same class as `stretch`. Variation of an event's velocity and timing is likewise declared, as the `vary` of §9.4: an exact function of a seed and each event's address, which adds, removes and reorders no event.
 
 This boundary is intentional: the core preserves compact reusable structure without requiring a language runtime to discover the resulting music. A future pure-generator profile may be added, but is not claimed by this version.
 
@@ -735,6 +736,48 @@ expression points, so a plan holds no phrase. The points count towards the
 published expansion limits (§23), and so does the work of finding the covered
 events.
 
+### 9.4 Variation
+
+A `vary` declares how far a part departs from what is written. A placement
+opts in with `vary = &id`, as it names a groove.
+
+```maac
+vary loose { seed = 7; velocity = 3/50; timing = 8ms; }
+place sax_head { pattern = &head; track = &sax_notes; at = 16q; count = 2; groove = &swing; vary = &loose; }
+```
+
+`seed` is a required integer from 1 to 4294967295. `velocity` is a
+dimensionless amount from 0 to 1/2, and `timing` a duration from `0ms` to
+`50ms`; both default to 0. Values outside these ranges are `E_RANGE`.
+
+For an event with display address `A` (§10) and a field `f`, `velocity` or
+`timing`, let `h` be the 64-bit FNV-1a hash of the UTF-8 bytes of `A/f`, from
+the offset basis `0xCBF29CE484222325` XOR `seed`, with prime
+`0x100000001B3`. Let `x1` and `x2` be the first two outputs of SplitMix64
+from state `h`: each step adds `0x9E3779B97F4A7C15` to the state, sets
+`z = (s ^ (s >> 30)) * 0xBF58476D1CE4E5B9`, then
+`z = (z ^ (z >> 27)) * 0x94D049BB133111EB`, and returns `z ^ (z >> 31)`, all
+modulo 2^64. With `k_i = floor(x_i / 2^11)`, the field's offset is
+`amount * (k1 + k2 - 2^53) / 2^53`: exact, within ±`amount`, and most often
+near 0.
+
+Each note, chord member and hit of the placement's expansion adds its
+velocity offset to its velocity, clamped to `[0,1]`, and its timing offset to
+its `onset_offset`. A note's `release_offset` gains the timing offset of the
+note whose onset its gate end touches, when exactly one note of the
+placement with the same chord member index (§8.3) starts there in score
+time, and its own offset otherwise: notes that touch still touch, and
+connected notes still join. Messages and audio leaves are not varied.
+
+Variation applies after expansion, stretch, transposition, phrases and the
+groove with its delay, and before overrides and inserts: an override's value
+is final, and inserts are not varied. A draw depends only on the seed and
+the address. Adding an event changes no other event's values, a changed
+`count` keeps the surviving repetitions' values, each repetition of a
+pattern has its own address and so its own values, and a render range sees
+the values of a full render. The compiler lowers variation to final
+velocities and offsets, so a plan holds no `vary`.
+
 ## 10. Tracks, placement, and event identity
 
 A `track` has an optional event `target` port. A track used by a note/hit/message placement requires that target. Tracks may group audio objects, and placements that expand only audio leaves (§9.1), without an event target. Tracks do not create mixers, faders, pan laws, or implicit connections.
@@ -753,7 +796,7 @@ place bass_main {
 }
 ```
 
-A `place` has the same repetition, transformation, `voicing`, `harmony` and `voicings` fields as `use`, plus required `track` and an optional `groove` reference (§9.2). Its `at` is a global score position. Its occupied repetition span must fit within the project score. Each expanded leaf carries a structured event address:
+A `place` has the same repetition, transformation, `voicing`, `harmony` and `voicings` fields as `use`, plus required `track` and optional `groove` (§9.2) and `vary` (§9.4) references. Its `at` is a global score position. Its occupied repetition span must fit within the project score. Each expanded leaf carries a structured event address:
 
 `(placement_id, repetition_index, [use_id, repetition_index ...], leaf_id)`.
 
@@ -786,7 +829,7 @@ override late_note {
 
 `event` is a relative expanded event address within that placement; a chord member is addressed individually, as `"3/down.2"`. `set` is a record of replacements for leaf fields; `delete` is an alternative boolean field that must be `true`. Exactly one of `set` and `delete` is present. There is at most one override per addressed event. The target must exist before overrides; dangling overrides are errors.
 
-Overrides apply **after** all pattern expansion, musical stretch, transposition, phrases, and groove. `set.at`, when used, is a musical offset from the placement's global origin, not from the source pattern or the selected repetition. `set.dur` is the final musical duration. `set.pitch` replaces the final pitch without reapplying placement transposition. An override cannot change identity, event kind, destination track, or introduce another source reference.
+Overrides apply **after** all pattern expansion, musical stretch, transposition, phrases, groove, and variation. `set.at`, when used, is a musical offset from the placement's global origin, not from the source pattern or the selected repetition. `set.dur` is the final musical duration. `set.pitch` replaces the final pitch without reapplying placement transposition. An override cannot change identity, event kind, destination track, or introduce another source reference.
 
 This final-state rule makes local patches inspectable: replacing the pitch with `C3` means C3, not “C3 and then whatever upstream transposition happens to do.” Allowed replacement fields are the fields of the leaf's kind, except label and order may also be changed. An audio leaf's replacements are limited to those listed in §9.1. Expression children are not replaced through `set`; they are edited by child-addressed patch operations on a materialized instance variant (see below).
 

@@ -320,6 +320,23 @@ def main() -> None:
     exact("phrase_breath_window_start", 0 + (Fraction(4, 5) - 0) * (2 - 0) / (4 - 0), Fraction(2, 5))
     # Notes in succession: s2 = after(s1) at 1/2 + 1/2, s3 = after(s2, 1/2q).
     exact("succession_onset_with_rest", (Fraction(1, 2) + Fraction(1, 2)) + Fraction(1, 2) + Fraction(1, 2), 2)
+    # A `vary` draw (§9.4): FNV-1a of "address/field" from basis ^ seed, two
+    # SplitMix64 outputs' top 53 bits, amount * (k1 + k2 - 2^53) / 2^53.
+    def vary_offset(seed: int, address: str, field: str, amount: Fraction) -> Fraction:
+        mask = (1 << 64) - 1
+        state = 0xCBF29CE484222325 ^ seed
+        for byte in f"{address}/{field}".encode():
+            state = ((state ^ byte) * 0x100000001B3) & mask
+        draws = []
+        for _ in range(2):
+            state = (state + 0x9E3779B97F4A7C15) & mask
+            z = state
+            z = ((z ^ (z >> 30)) * 0xBF58476D1CE4E5B9) & mask
+            z = ((z ^ (z >> 27)) * 0x94D049BB133111EB) & mask
+            draws.append((z ^ (z >> 31)) >> 11)
+        return amount * Fraction(draws[0] + draws[1] - (1 << 53), 1 << 53)
+    exact("vary_seed7_main_0_a_velocity", vary_offset(7, "main/0/a", "velocity", Fraction(3, 50)),
+          Fraction(531947164078557, 56294995342131200))
     exact("vibrato_rising_knot_cents", 38 * min(1, (Fraction(39, 100) - Fraction(3, 10)) / Fraction(45, 100)),
           Fraction(38, 5))
     near("linear_tempo_ramp_seconds", 60 / 15 * math.log(180 / 120), 1.6218604324326575)
@@ -343,7 +360,7 @@ def main() -> None:
     (ROOT / "conformance.json").write_text(json.dumps(vectors, indent=2) + "\n")
     report = {
         "surface_parse": "pass", "syntax_tree_schema": "pass",
-        "example_expanded_note_count": len(events), "arithmetic_assertions": 31,
+        "example_expanded_note_count": len(events), "arithmetic_assertions": 32,
         "scope": "Syntax plus selected semantics only; no complete validator or renderer is included."
     }
     (ROOT / "check-results.json").write_text(json.dumps(report, indent=2) + "\n")

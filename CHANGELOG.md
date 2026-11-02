@@ -7,6 +7,15 @@ promise of compatibility beyond the documented interfaces.
 
 ### Added
 
+- Variation ([§9.4](MaaC-1-Specification.md#94-variation)): a `vary` with a
+  `seed`, a `velocity` amount up to 1/2 and a `timing` amount up to 50 ms,
+  that a placement names. Each note, chord member and hit moves by an exact
+  draw from the seed and its address, so each repetition plays a little
+  differently, notes that touch still touch, and nothing else changes when
+  an event is added. The compiler lowers it to final velocities and offsets.
+  §9 now says that such variation is declared, not left to tools. Part 1B of
+  the [phrases, variation and lines proposal](docs/design/performance-proposal.md).
+
 - Notes in succession ([§9](MaaC-1-Specification.md#9-finite-patterns-and-composition)):
   a note or chord may write `at = after(id)` or `at = after(id, rest)` to
   start where another of its pattern ends, after a rest, so a line is

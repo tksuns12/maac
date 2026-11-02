@@ -843,6 +843,7 @@ impl<'a> Validator<'a> {
             "connect" => self.validate_connect(object, &path),
             "region" => self.validate_region(object, &path),
             "groove" => self.validate_groove(object, &path),
+            "vary" => self.validate_vary(object, &path),
             "voicing" => self.validate_voicing(object, &path),
             "vibrato" => self.validate_vibrato(object, &path),
             "harmony" => self.validate_harmony(object, &path),
@@ -2509,6 +2510,56 @@ impl<'a> Validator<'a> {
         );
     }
 
+    /// A variation (§9.4): a seed, and how far velocity and timing may move.
+    fn validate_vary(&mut self, object: &Object, path: &[String]) {
+        self.check_schema(
+            object,
+            path,
+            &["seed"],
+            &["seed", "velocity", "timing", "label"],
+            &[],
+        );
+        if let Some(field) = object.field("seed") {
+            let valid = match &field.value.kind {
+                ValueKind::Number(seed) => {
+                    seed.is_integer()
+                        && *seed >= BigRational::one()
+                        && *seed <= BigRational::from_integer(BigInt::from(u32::MAX))
+                }
+                _ => false,
+            };
+            if !valid {
+                self.push(
+                    DiagnosticCode::Range,
+                    "vary.seed must be an integer from 1 to 4294967295",
+                    Some(field.value.span),
+                    path.to_vec(),
+                    vec!["seed".into()],
+                );
+            }
+        }
+        self.validate_unit_range_field(
+            object,
+            path,
+            "velocity",
+            BigRational::zero(),
+            BigRational::new(1.into(), 2.into()),
+        );
+        if let Some(field) = object.field("timing") {
+            if let Some(timing) = self.quantity(field, &[Unit::S, Unit::Ms], path, "timing") {
+                if timing < BigRational::zero() || timing > BigRational::new(1.into(), 20.into()) {
+                    self.push(
+                        DiagnosticCode::Range,
+                        "vary.timing must be from 0ms to 50ms",
+                        Some(field.value.span),
+                        path.to_vec(),
+                        vec!["timing".into()],
+                    );
+                }
+            }
+        }
+    }
+
     /// A phrase (§9.3): a span of its pattern and the score-clock curves
     /// that shape the events under it.
     fn validate_phrase(&mut self, object: &Object, path: &[String]) {
@@ -2645,6 +2696,7 @@ impl<'a> Validator<'a> {
                 "transpose",
                 "boundary",
                 "groove",
+                "vary",
                 "voicing",
                 "harmony",
                 "voicings",
@@ -2660,6 +2712,9 @@ impl<'a> Validator<'a> {
         }
         if let Some(field) = object.field("groove") {
             self.expect_object_ref(field, "groove", &["groove"], path);
+        }
+        if let Some(field) = object.field("vary") {
+            self.expect_object_ref(field, "vary", &["vary"], path);
         }
         self.validate_supply(object, path);
         if let Some(field) = object.field("at") {
@@ -6682,6 +6737,7 @@ fn is_known_kind(kind: &str) -> bool {
             | "track"
             | "place"
             | "groove"
+            | "vary"
             | "voicing"
             | "vibrato"
             | "harmony"

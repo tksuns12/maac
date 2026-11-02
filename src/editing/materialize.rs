@@ -545,6 +545,14 @@ pub(super) fn prepare(
     // The placement keeps its `voicing` or `harmony`, so the copies play
     // what it supplied. A harmony is looked up before the placement's
     // stretch, which the copies take over.
+    // A variation draws from each event's address, and the copies' addresses
+    // differ, so they would play other values.
+    if place["fields"].get("vary").is_some() {
+        return Err(EditError::new(
+            "E_CAPABILITY",
+            "materializing a placement with a `vary` is not supported",
+        ));
+    }
     if place["fields"].get("harmony").is_some() && stretch != BigRational::one() {
         return Err(EditError::new(
             "E_CAPABILITY",

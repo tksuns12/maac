@@ -538,11 +538,38 @@ struct GrooveDef {
     delay: Rational,
 }
 
+/// A declared departure from the score (§9.4): each event's velocity and
+/// timing move by a seeded draw from its address, within ±`velocity` and
+/// ±`timing` seconds.
+#[derive(Clone, Debug)]
+struct VaryDef {
+    seed: u32,
+    velocity: Rational,
+    timing: Rational,
+}
+
+impl VaryDef {
+    /// The offset for `field` of the event at `address`: `amount × (u1 + u2
+    /// − 1)`, where `u1` and `u2` are the top 53 bits of the first two
+    /// SplitMix64 outputs from the seed mixed with `address/field`, over
+    /// 2^53. Exact, triangular within ±`amount`.
+    fn offset(&self, address: &str, field: &str, amount: &Rational) -> Rational {
+        let mut rng = crate::seeded::Rng::new(crate::seeded::mix(
+            u64::from(self.seed),
+            format!("{address}/{field}").as_bytes(),
+        ));
+        let (u1, u2) = (rng.next() >> 11, rng.next() >> 11);
+        let scale = BigInt::from(1u64 << 53);
+        amount * Rational::new(BigInt::from(u1) + BigInt::from(u2) - &scale, scale)
+    }
+}
+
 #[derive(Clone, Debug)]
 struct PlaceDef {
     id: String,
     span: Span,
     groove: Option<GrooveDef>,
+    vary: Option<VaryDef>,
     pattern: String,
     track: String,
     at: Rational,
@@ -1182,11 +1209,13 @@ impl<'a> Compiler<'a> {
                     "transpose",
                     "boundary",
                     "groove",
+                    "vary",
                     "voicing",
                     "harmony",
                     "voicings",
                 ][..],
                 "groove" => &["grid", "ratio", "delay"][..],
+                "vary" => &["seed", "velocity", "timing"][..],
                 "voicing" => &["pitches"][..],
                 "harmony" => &["length", "chords"][..],
                 "voicings" => &["chords"][..],
@@ -3750,10 +3779,15 @@ impl<'a> Compiler<'a> {
                 .field("groove")
                 .map(|field| self.parse_groove_reference(object, field))
                 .transpose()?;
+            let vary = object
+                .field("vary")
+                .map(|field| self.parse_vary_reference(object, field))
+                .transpose()?;
             self.places.push(PlaceDef {
                 id: object.id.clone(),
                 span: object.span,
                 groove,
+                vary,
                 pattern,
                 track,
                 at,
@@ -3767,6 +3801,65 @@ impl<'a> Compiler<'a> {
             });
         }
         Ok(())
+    }
+
+    fn parse_vary_reference(&self, place: &Object, field: &Field) -> CResult<VaryDef> {
+        let id = self.one_reference(&field.value, place, Some(field))?;
+        let vary = self.object(&id)?;
+        if vary.kind != "vary" {
+            return Err(path_diagnostic(
+                DiagnosticCode::Reference,
+                "place.vary must reference a vary",
+                place,
+                Some(field),
+            ));
+        }
+        let seed_field = self.field(vary, "seed")?;
+        let seed = self.rational_value(&seed_field.value, vary, Some(seed_field))?;
+        let seed = seed
+            .is_integer()
+            .then(|| seed.to_integer().to_u32())
+            .flatten()
+            .filter(|seed| *seed != 0)
+            .ok_or_else(|| {
+                path_diagnostic(
+                    DiagnosticCode::Range,
+                    "vary.seed must be an integer from 1 to 4294967295",
+                    vary,
+                    Some(seed_field),
+                )
+            })?;
+        let velocity = vary
+            .field("velocity")
+            .map(|field| self.rational_value(&field.value, vary, Some(field)))
+            .transpose()?
+            .unwrap_or_else(Rational::zero);
+        if velocity.is_negative() || velocity > Rational::new(1.into(), 2.into()) {
+            return Err(path_diagnostic(
+                DiagnosticCode::Range,
+                "vary.velocity must be from 0 to 1/2",
+                vary,
+                vary.field("velocity"),
+            ));
+        }
+        let timing = vary
+            .field("timing")
+            .map(|field| self.seconds_value(&field.value, vary, Some(field)))
+            .transpose()?
+            .unwrap_or_else(Rational::zero);
+        if timing.is_negative() || timing > Rational::new(1.into(), 20.into()) {
+            return Err(path_diagnostic(
+                DiagnosticCode::Range,
+                "vary.timing must be from 0ms to 50ms",
+                vary,
+                vary.field("timing"),
+            ));
+        }
+        Ok(VaryDef {
+            seed,
+            velocity,
+            timing,
+        })
     }
 
     fn parse_groove_reference(&self, place: &Object, field: &Field) -> CResult<GrooveDef> {
@@ -3862,6 +3955,67 @@ impl<'a> Compiler<'a> {
             event.onset_offset_seconds += &groove.delay;
         }
         Ok(())
+    }
+
+    /// Move one placement's expanded events by its variation (§9.4), after
+    /// its groove and before its overrides and inserts. A note's gate end
+    /// that touches the onset of exactly one note of the same chord member
+    /// index moves with that onset, so lines stay connected.
+    fn apply_vary(&mut self, vary: &VaryDef, first: usize) {
+        let member = |address: &str| {
+            address
+                .rsplit('/')
+                .next()
+                .and_then(|leaf| leaf.split_once('.'))
+                // A note that is not a chord member has index 0 (§8.3).
+                .map_or("0", |(_, member)| member)
+                .to_owned()
+        };
+        let timing: Vec<Rational> = self.events[first..]
+            .iter()
+            .map(|event| vary.offset(&event.address, "timing", &vary.timing))
+            .collect();
+        let mut starts: HashMap<(Rational, String), Vec<usize>> = HashMap::new();
+        for (index, event) in self.events[first..].iter().enumerate() {
+            if matches!(event.kind, ExpandedKind::Note(_)) {
+                starts
+                    .entry((event.score_on_q.clone(), member(&event.address)))
+                    .or_default()
+                    .push(index);
+            }
+        }
+        let ends: Vec<Rational> = self.events[first..]
+            .iter()
+            .enumerate()
+            .map(|(index, event)| match &event.kind {
+                ExpandedKind::Note(note) => {
+                    let end = &event.score_on_q + &note.dur_q;
+                    match starts
+                        .get(&(end, member(&event.address)))
+                        .map(Vec::as_slice)
+                    {
+                        Some([next]) => timing[*next].clone(),
+                        _ => timing[index].clone(),
+                    }
+                }
+                _ => Rational::zero(),
+            })
+            .collect();
+        for ((event, onset), end) in self.events[first..].iter_mut().zip(timing).zip(ends) {
+            if matches!(
+                event.kind,
+                ExpandedKind::Message { .. } | ExpandedKind::Audio(_)
+            ) {
+                continue;
+            }
+            let velocity =
+                &event.velocity + vary.offset(&event.address, "velocity", &vary.velocity);
+            event.velocity = velocity.clamp(Rational::zero(), Rational::one());
+            event.onset_offset_seconds += onset;
+            if let ExpandedKind::Note(note) = &mut event.kind {
+                note.release_offset_seconds += end;
+            }
+        }
     }
 
     fn read_curves_and_automation(&mut self, limits: &PlanLimits) -> CResult<()> {
@@ -4294,6 +4448,9 @@ impl<'a> Compiler<'a> {
             }
             if let Some(groove) = &place.groove {
                 self.apply_groove(place, groove, first)?;
+            }
+            if let Some(vary) = &place.vary {
+                self.apply_vary(vary, first);
             }
             self.apply_place_edits(place, target.as_ref())?;
         }

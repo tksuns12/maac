@@ -151,6 +151,13 @@ listen before you call a track finished.
 - Vary velocity. On std/studio a harder note is brighter as well as louder,
   so accents and ghost notes change the sound; a part at one velocity sounds
   like a machine.
+- Let a melody's repeats differ with a `vary`, not with copies of the
+  pattern: `vary loose { seed = 7; velocity = 3/50; timing = 8ms; }` and
+  `vary = &loose` on its placements. Every note moves by its own small
+  amount, and each repetition differently; the same seed always gives the
+  same performance. Write the accents you mean as velocities and let the
+  variation scatter around them. In T7 velocities set by rule were heard as
+  "too uniform". Change `seed` for another take.
 - Shape each phrase of a melody with a `phrase`, not a curve per note. Its
   `dynamics` curve multiplies the velocities written under it, and its
   `pressure` curve is one breath that every note reads in turn:

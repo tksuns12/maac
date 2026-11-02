@@ -409,6 +409,7 @@ impl Normalizer<'_> {
                 | "track"
                 | "place"
                 | "groove"
+                | "vary"
                 | "voicing"
                 | "vibrato"
                 | "harmony"

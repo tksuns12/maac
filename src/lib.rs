@@ -64,6 +64,7 @@ pub mod production_identity;
 mod production_limiter;
 mod production_reverb;
 pub mod sample_instrument;
+mod seeded;
 pub mod semantic;
 pub mod stdlib;
 mod succession;

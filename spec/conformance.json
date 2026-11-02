@@ -146,6 +146,12 @@
       "pass": true
     },
     {
+      "id": "vary_seed7_main_0_a_velocity",
+      "actual": "531947164078557/56294995342131200",
+      "expected": "531947164078557/56294995342131200",
+      "pass": true
+    },
+    {
       "id": "vibrato_rising_knot_cents",
       "actual": "38/5",
       "expected": "38/5",
