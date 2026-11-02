@@ -319,7 +319,7 @@ is rejected, including mixed audio/modulation cycles.
 | `synth.sample/1` | `ratio`, `frequency`, and `level` as for oscillators (no `phase`); required `config.zones` and optional `config.channels` (1) (see [Samples](#samples)) | Mono, or stereo with `channels = 2` |
 | `synth.noise/1` | `level` (1; 0…16); optional nonzero unsigned 32-bit `config.seed` (1831565813) and boolean `config.per_note` (false) | Mono |
 | `synth.random/1` | No inputs or parameters; optional nonzero unsigned 32-bit `config.seed` (1); voice-only | Mono per-note constant in −1…1 |
-| `synth.adsr/1` | `attack` (0 s), `decay` (0 s), `sustain` (1; 0…1), `release` (0 s); times 0…1800 s; `curve` (0; 0…16) | Mono control signal |
+| `synth.adsr/1` | `attack` (0 s), `decay` (0 s), `sustain` (1; 0…1), `release` (0 s); times 0…1800 s; `curve` (0; 0…16); optional `config.on_join` (`hold` or `restart`; `hold`), see [connected notes](#connected-notes) | Mono control signal |
 | `synth.timbre/1` | No inputs, parameters, or configuration; voice-only | Mono per-note timbre signal (zero when absent) |
 | `synth.pressure/1` | No inputs, parameters, or configuration; voice-only | Mono per-note pressure signal (zero when absent) |
 | `synth.velocity/1` | No inputs, parameters, or configuration; voice-only | Mono note velocity, 0…1, constant for the voice's life |
@@ -398,6 +398,39 @@ here a key above 4 octaves from C4 would ask for a negative decay and fail.
 The [complete example](../examples/note-sources.maac) applies the same two
 mappings to a filtered saw at C3, C4 and C5, each played soft, medium and
 hard.
+
+### Connected notes
+
+A voice that declares `connected = true`, beside its `channels`, plays
+[connected notes](../MaaC-1-Specification.md#83-connected-notes): a note that
+touches the one before it on its track continues that note's voice. Nothing
+starts again by itself: oscillators, filters and noise keep their state,
+envelopes keep their stage, the velocity glides to the new note's over 100 ms
+and `synth.random/1` to its value. The rest is the note's `slur` and `slide`:
+
+- **A re-articulation.** A joined note without `slur` restarts each envelope
+  whose `config.on_join` is `restart`: it enters its attack again from its
+  present level, so it rises without first falling. `hold` envelopes, the
+  default, continue. A saxophone holds its amplitude and restarts its tongue
+  and its dark start: a tongued note is articulated without a gap.
+- **A slur.** A slurred note restarts nothing; only the pitch changes.
+- **A slide.** The voice's base pitch moves from the earlier note's to the
+  joined note's, linearly in cents, over `slide` from the joined note's
+  onset. Without it the pitch changes at the onset. A pitch expression, such
+  as a scoop, still adds to the base pitch.
+
+A connected voice reads nothing before a note starts. A bowed section keeps
+its own [connected notes](#connected-notes-on-a-bowed-string) and ignores
+these rules.
+
+```maac
+voice voice {
+  channels = 1; amplitude = &amp; output = &tone:out; connected = true;
+  node amp { type = "synth.adsr/1"; params = { attack = 6ms; sustain = 1; release = 70ms; }; }
+  node tongue { type = "synth.adsr/1"; config = { on_join = restart; }; params = { decay = 20ms; sustain = 0; }; }
+  // ...
+}
+```
 
 ## Timing and audio contract
 

@@ -110,6 +110,12 @@ listen before you call a track finished.
   groove of its own with `delay`, such as
   `groove sax_feel { grid = 1/2q; ratio = 3/5; delay = 18ms; }`, and keep
   the band on one without. T7's saxophone sat 18 ms behind.
+- Let a wind or a lead play its lines as lines. Give its voice
+  `connected = true`, so notes that touch continue one voice, and give the
+  envelopes of its attack, such as a tongue's noise, `on_join = restart`:
+  a note without `slur` is tongued without a gap, and a slurred note only
+  changes pitch. `slide = 60ms` glides into a note. Lay a phrase's notes end
+  to end with `after`, and a rest breaks the line.
 - Write rolls and risers with `count` and `stretch`.
   `use sixteenths { pattern = &snare_once; at = 16q; count = 32; stretch = 1/4; }`
   plays a one-beat snare pattern 32 times, a sixteenth apart. Ramp the

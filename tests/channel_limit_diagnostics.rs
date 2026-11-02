@@ -401,6 +401,7 @@ fn instrument_resources(channels: u8) -> InstrumentResources {
         modulations: Vec::new(),
         output: PortRef::new("pan", "out").unwrap(),
         amplitude: None,
+        connected: false,
     });
     InstrumentResources {
         entry_source: "score.maac".into(),
@@ -412,7 +413,7 @@ fn instrument_resources(channels: u8) -> InstrumentResources {
                 nodes: vec![
                     GraphNode {
                         id: "amp".into(),
-                        processor: GraphProcessor::Adsr,
+                        processor: GraphProcessor::ADSR,
                         params: BTreeMap::new(),
                     },
                     GraphNode {
@@ -425,6 +426,7 @@ fn instrument_resources(channels: u8) -> InstrumentResources {
                 modulations: Vec::new(),
                 output: PortRef::new("osc", "out").unwrap(),
                 amplitude: Some("amp".into()),
+                connected: false,
             },
             shared,
             controls: BTreeMap::new(),

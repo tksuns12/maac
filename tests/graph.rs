@@ -32,13 +32,14 @@ fn voice_graph() -> GraphProgram {
     GraphProgram {
         channels: 1,
         nodes: vec![
-            node("amp", GraphProcessor::Adsr),
+            node("amp", GraphProcessor::ADSR),
             node("osc", GraphProcessor::Sine),
         ],
         connections: vec![],
         modulations: vec![],
         output: port("osc", "out"),
         amplitude: Some("amp".into()),
+        connected: false,
     }
 }
 
@@ -185,6 +186,7 @@ fn validates_voice_shared_io_controls_and_channels() {
         modulations: vec![],
         output: port("pan", "out"),
         amplitude: None,
+        connected: false,
     });
     value.controls.insert(
         "ratio".into(),
@@ -446,6 +448,7 @@ fn voice_adsr_and_phase_event_rate_modulations_allow_signed_depths_only() {
         }],
         output: port("gain", "out"),
         amplitude: None,
+        connected: false,
     };
     validate_graph(&shared, false, Some(1)).unwrap();
 
@@ -498,6 +501,7 @@ fn shared_graph_restrictions_and_reserved_input_are_enforced() {
         modulations: vec![],
         output: port("osc", "out"),
         amplitude: None,
+        connected: false,
     };
     assert_eq!(
         validate_graph(&shared, false, Some(1)).unwrap_err().code,
@@ -524,6 +528,7 @@ fn shared_graph_restrictions_and_reserved_input_are_enforced() {
         modulations: vec![],
         output: port("gain", "out"),
         amplitude: None,
+        connected: false,
     });
     value.controls.insert(
         "phase".into(),
@@ -591,7 +596,7 @@ fn topology_uses_all_edge_types_and_node_ids_for_stable_ties() {
             node("z_source", GraphProcessor::Sine),
             node("output", GraphProcessor::Gain { channels: 1 }),
             node("a_source", GraphProcessor::Lfo),
-            node("amp", GraphProcessor::Adsr),
+            node("amp", GraphProcessor::ADSR),
         ],
         connections: vec![connection("audio", ("z_source", "out"), ("output", "in"))],
         modulations: vec![Modulation {
@@ -605,6 +610,7 @@ fn topology_uses_all_edge_types_and_node_ids_for_stable_ties() {
         }],
         output: port("output", "out"),
         amplitude: Some("amp".into()),
+        connected: false,
     };
     validate_graph(&graph, true, None).unwrap();
     let ordered_ids: Vec<_> = topological_order(&graph)

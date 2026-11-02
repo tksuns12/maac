@@ -4966,7 +4966,7 @@ impl<'a> PlanView<'a> {
                             .iter()
                             .find(|candidate| &candidate.id == program)
                     })
-                    .is_some_and(|program| program.bow_player_count() > 0),
+                    .is_some_and(|program| program.plays_connected()),
                 _ => false,
             };
             if !plays_lines {

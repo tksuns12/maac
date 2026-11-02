@@ -88,6 +88,29 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
+/// What an envelope does when a connected note re-articulates its voice:
+/// continue, or enter its attack again from its present value (§8.3).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdsrJoin {
+    #[default]
+    Hold,
+    Restart,
+}
+
+impl AdsrJoin {
+    fn is_hold(&self) -> bool {
+        *self == Self::Hold
+    }
+}
+
+impl GraphProcessor {
+    /// An envelope that holds through connected notes, the default.
+    pub const ADSR: Self = Self::Adsr {
+        on_join: AdsrJoin::Hold,
+    };
+}
+
 /// A processor in the version 1 synthesis palette.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind")]
@@ -143,8 +166,13 @@ pub enum GraphProcessor {
         )]
         fade_shape: crate::sample_instrument::SampleFadeShape,
     },
+    /// An envelope; `on_join` says whether a re-articulated connected note
+    /// restarts it.
     #[serde(rename = "synth.adsr/1")]
-    Adsr,
+    Adsr {
+        #[serde(skip_serializing_if = "AdsrJoin::is_hold")]
+        on_join: AdsrJoin,
+    },
     #[serde(rename = "synth.timbre/1")]
     Timbre,
     #[serde(rename = "synth.pressure/1")]
@@ -219,7 +247,10 @@ enum GraphProcessorWire {
         fade_shape: crate::sample_instrument::SampleFadeShape,
     },
     #[serde(rename = "synth.adsr/1")]
-    Adsr {},
+    Adsr {
+        #[serde(default)]
+        on_join: AdsrJoin,
+    },
     #[serde(rename = "synth.timbre/1")]
     Timbre {},
     #[serde(rename = "synth.pressure/1")]
@@ -296,7 +327,7 @@ impl<'de> Deserialize<'de> for GraphProcessor {
                 zones,
                 fade_shape,
             },
-            GraphProcessorWire::Adsr {} => Self::Adsr,
+            GraphProcessorWire::Adsr { on_join } => Self::Adsr { on_join },
             GraphProcessorWire::Timbre {} => Self::Timbre,
             GraphProcessorWire::Pressure {} => Self::Pressure,
             GraphProcessorWire::Velocity {} => Self::Velocity,
@@ -327,7 +358,7 @@ impl GraphProcessor {
             Self::Bow { .. } => "synth.bow/1",
             Self::Wavetable { .. } => "synth.wavetable/1",
             Self::Sample { .. } => "synth.sample/1",
-            Self::Adsr => "synth.adsr/1",
+            Self::Adsr { .. } => "synth.adsr/1",
             Self::Timbre => "synth.timbre/1",
             Self::Pressure => "synth.pressure/1",
             Self::Velocity => "synth.velocity/1",
@@ -389,7 +420,7 @@ impl GraphProcessor {
                 | Self::Bow { .. }
                 | Self::Wavetable { .. }
                 | Self::Sample { .. }
-                | Self::Adsr
+                | Self::Adsr { .. }
                 | Self::Timbre
                 | Self::Pressure
                 | Self::Velocity
@@ -436,6 +467,9 @@ pub struct GraphProgram {
     pub output: PortRef,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub amplitude: Option<String>,
+    /// Whether the voice plays connected notes (§8.3).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub connected: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
@@ -505,6 +539,12 @@ impl InstrumentProgram {
             .iter()
             .filter(|node| matches!(node.processor, GraphProcessor::Pluck { .. }))
             .count()
+    }
+
+    /// Whether notes that touch on its track join (§8.3): its voice says
+    /// so, or holds a bowed section.
+    pub(crate) fn plays_connected(&self) -> bool {
+        self.voice.connected || self.bow_player_count() > 0
     }
 
     /// The players of every bowed section in the voice graph.
@@ -857,7 +897,7 @@ pub fn parameter_descriptor(processor: &GraphProcessor, name: &str) -> Option<Pa
             "level" => Some(dimensionless(ParameterRate::Sample, 1, 0, 16)),
             _ => None,
         },
-        GraphProcessor::Adsr => match name {
+        GraphProcessor::Adsr { .. } => match name {
             "attack" => Some(spec(
                 GraphUnit::Seconds,
                 ParameterRate::NoteOn,
@@ -1284,7 +1324,7 @@ fn validate_graph_inner(
         let voice_event_rate = stage == GraphStage::Voice
             && matches!(
                 target.processor,
-                GraphProcessor::Adsr
+                GraphProcessor::Adsr { .. }
                     | GraphProcessor::Sine
                     | GraphProcessor::Saw
                     | GraphProcessor::Square
@@ -1356,13 +1396,20 @@ fn validate_graph_inner(
                         "amplitude node does not exist",
                     )
                 })?;
-            if !matches!(node.processor, GraphProcessor::Adsr) {
+            if !matches!(node.processor, GraphProcessor::Adsr { .. }) {
                 return Err(error(
                     "E_PORT_TYPE",
                     format!("{path}.amplitude"),
                     "amplitude node must be an ADSR",
                 ));
             }
+        }
+        GraphStage::Shared if graph.connected => {
+            return Err(error(
+                "E_RANGE",
+                format!("{path}.connected"),
+                "only a voice graph plays connected notes",
+            ));
         }
         GraphStage::Shared => {}
     }

@@ -31,6 +31,9 @@ pub struct Adsr {
     /// `expm1(-curve)`, the shape's constant term, computed once.
     curve_end: f64,
     release: Option<Release>,
+    /// The level the attack starts from: 0 at note-on, the envelope's
+    /// level when a connected note restarts it.
+    attack_from: f64,
 }
 
 /// The largest envelope curve.
@@ -84,7 +87,17 @@ impl Adsr {
             curve,
             curve_end: (-curve).exp_m1(),
             release: None,
+            attack_from: 0.0,
         })
+    }
+
+    /// Enter the attack again at `frame` from the present level, for a
+    /// re-articulated connected note (§8.3).
+    pub fn restart(&mut self, frame: u64, rate: f64) -> Result<(), RenderError> {
+        self.attack_from = self.value(frame, rate)?;
+        self.on_frame = frame;
+        self.release = None;
+        Ok(())
     }
 
     /// Capture the envelope level and release duration at note-off.
@@ -130,6 +143,10 @@ impl Adsr {
         let elapsed_frames = (frame - self.on_frame) as f64;
         let attack_frames = self.attack_seconds * rate;
         if attack_frames > 0.0 && elapsed_frames < attack_frames {
+            if self.attack_from > 0.0 {
+                let from = self.attack_from;
+                return Ok(from + (1.0 - from) * elapsed_frames / attack_frames);
+            }
             return Ok(elapsed_frames / attack_frames);
         }
         let decay_elapsed_frames = elapsed_frames - attack_frames;

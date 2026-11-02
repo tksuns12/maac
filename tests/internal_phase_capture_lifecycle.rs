@@ -52,7 +52,7 @@ fn program() -> InstrumentProgram {
             nodes: vec![
                 node(
                     "amp",
-                    GraphProcessor::Adsr,
+                    GraphProcessor::ADSR,
                     [
                         ("attack", r(0, 1)),
                         ("decay", r(0, 1)),
@@ -88,6 +88,7 @@ fn program() -> InstrumentProgram {
             ],
             output: port("target"),
             amplitude: Some("amp".into()),
+            connected: false,
         },
         shared: None,
         controls: BTreeMap::new(),

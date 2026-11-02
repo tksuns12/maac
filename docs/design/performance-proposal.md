@@ -1,7 +1,7 @@
 # Phrases, variation and lines: proposal
 
 **Status:** accepted 2026-11-02, when the owner took every recommended
-[decision](#decisions). Parts 1A, 1B, 1C, 2A and 2C have landed; [Results](#results) records them. This is items 1 and 2 of
+[decision](#decisions). Parts 1A to 2C have landed; [Results](#results) records them. This is items 1 and 2 of
 [what to build next](../reports/ai-production-trial-t7.md#what-to-build-next-in-order)
 after the T7 trial. Item 1, performance variation, covers F60, F61 and F62.
 Item 2, writing a line, covers F53, F52 and F58. Part 1 also fixes F39 from
@@ -477,4 +477,25 @@ variation.
   `per_note` and is identical without it, a value is constant through its
   note and differs between notes, and a render range hears the values of
   the whole render.
+
+### Part 2B: connected notes for any instrument (2026-11-02)
+
+As proposed: `connected = true` on a voice, `config.on_join` on
+`synth.adsr/1`, and a generic slide, linear in cents from the joined note's
+onset. [Connected notes](../instruments.md#connected-notes) gives the rules.
+
+- **Restart from the present level.** A restarting envelope's attack runs
+  from its level at the join to 1, so a held note's level never dips. An
+  envelope that never restarts computes exactly as before.
+- **Bowed sections are untouched.** They keep their own slurs and slides
+  from the line they read; the generic slide and restarts apply only to
+  voices without a bowed section.
+- **Plans** record `connected` and `on_join` only when they differ from the
+  defaults, so existing plans and identities do not change.
+  `GraphProcessor::Adsr` gains `on_join`, with `GraphProcessor::ADSR` as the
+  holding envelope, and `GraphProgram` gains `connected`.
+- **Tests** in `tests/connected_any.rs`: notes join only on a connected
+  voice, a tongued join restarts the tongue and a slurred one does not, the
+  amplitude holds through a join, a slide is halfway in cents halfway
+  through, a varied line stays joined, and a random value glides.
 

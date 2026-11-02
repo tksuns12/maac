@@ -60,7 +60,7 @@ fn modulation(id: &str, from: &str, target: &str, parameter: &str, depth: Ration
 fn amp_node() -> GraphNode {
     node(
         "amp",
-        GraphProcessor::Adsr,
+        GraphProcessor::ADSR,
         [
             ("attack", r(0, 1)),
             ("decay", r(0, 1)),
@@ -124,6 +124,7 @@ fn phase_program(
             modulations,
             output: port("target"),
             amplitude: Some("amp".into()),
+            connected: false,
         },
         shared: None,
         controls,
@@ -460,6 +461,7 @@ fn note_off_preview_does_not_recapture_or_reset_voice_phase() {
             ],
             output: port("target"),
             amplitude: Some("amp".into()),
+            connected: false,
         },
         shared: None,
         controls: BTreeMap::new(),
@@ -506,6 +508,7 @@ fn chained_phase_and_adsr_onset_captures_have_no_lag_or_double_advance() {
             ],
             output: port("phase_b"),
             amplitude: Some("amp".into()),
+            connected: false,
         },
         shared: None,
         controls: BTreeMap::new(),

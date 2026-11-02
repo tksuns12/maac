@@ -201,7 +201,7 @@ fn velocity_drives_a_note_on_parameter() {
     let mut program = program("synth.velocity/1");
     program.voice.nodes.push(maac::graph::GraphNode {
         id: "env".into(),
-        processor: GraphProcessor::Adsr,
+        processor: GraphProcessor::ADSR,
         params: BTreeMap::from([
             ("decay".into(), maac::parse_rational("1/480").unwrap()),
             ("sustain".into(), maac::parse_rational("0").unwrap()),

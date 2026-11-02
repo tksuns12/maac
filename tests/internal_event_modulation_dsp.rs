@@ -91,7 +91,7 @@ fn source_program(
             nodes: vec![
                 node(
                     "amp",
-                    GraphProcessor::Adsr,
+                    GraphProcessor::ADSR,
                     [
                         ("attack", r(0, 1)),
                         ("decay", r(0, 1)),
@@ -105,6 +105,7 @@ fn source_program(
             modulations,
             output: port("source"),
             amplitude: Some("amp".into()),
+            connected: false,
         },
         shared: None,
         controls: BTreeMap::new(),
@@ -235,7 +236,7 @@ fn note_off_captures_filter_pre_state_then_advances_filter_once() {
             nodes: vec![
                 node(
                     "driver",
-                    GraphProcessor::Adsr,
+                    GraphProcessor::ADSR,
                     [
                         ("attack", r(0, 1)),
                         ("decay", r(0, 1)),
@@ -250,7 +251,7 @@ fn note_off_captures_filter_pre_state_then_advances_filter_once() {
                 ),
                 node(
                     "amp",
-                    GraphProcessor::Adsr,
+                    GraphProcessor::ADSR,
                     [
                         ("attack", r(0, 1)),
                         ("decay", r(0, 1)),
@@ -271,6 +272,7 @@ fn note_off_captures_filter_pre_state_then_advances_filter_once() {
             }],
             output: port("filter"),
             amplitude: Some("amp".into()),
+            connected: false,
         },
         shared: None,
         controls: BTreeMap::new(),
@@ -323,7 +325,7 @@ fn note_off_reduces_all_adsr_releases_from_the_same_pre_release_snapshot() {
             nodes: vec![
                 node(
                     "a",
-                    GraphProcessor::Adsr,
+                    GraphProcessor::ADSR,
                     [
                         ("attack", r(0, 1)),
                         ("decay", r(0, 1)),
@@ -333,7 +335,7 @@ fn note_off_reduces_all_adsr_releases_from_the_same_pre_release_snapshot() {
                 ),
                 node(
                     "b",
-                    GraphProcessor::Adsr,
+                    GraphProcessor::ADSR,
                     [
                         ("attack", r(0, 1)),
                         ("decay", r(0, 1)),
@@ -364,6 +366,7 @@ fn note_off_reduces_all_adsr_releases_from_the_same_pre_release_snapshot() {
             }],
             output: port("source"),
             amplitude: Some("b".into()),
+            connected: false,
         },
         shared: None,
         controls: BTreeMap::new(),

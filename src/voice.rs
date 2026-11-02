@@ -104,7 +104,8 @@ enum ProcessorCode {
     Bow(u8, crate::bow::BowBody, u8, u32),
     Wavetable(Arc<TableBank>),
     Sample(Arc<CompiledSampleNode>),
-    Adsr,
+    /// Whether a re-articulated connected note restarts the envelope.
+    Adsr(bool),
     Lfo,
     Timbre,
     Pressure,
@@ -191,6 +192,9 @@ struct VoiceState {
     /// A joined note's velocity moves from this one over 100 ms from the
     /// frame it joined.
     velocity_glide: Option<(f64, u64)>,
+    /// A sliding joined note's base pitch moves from this one, in cents,
+    /// over this many frames from the frame it joined.
+    pitch_glide: Option<(f64, u64, f64)>,
     pitch_expression: Option<ExpressionRuntime<PitchExpression>>,
     gain_expression: Option<ExpressionRuntime<GainExpression>>,
     timbre_expression: Option<ExpressionRuntime<TimbreExpression>>,
@@ -547,6 +551,7 @@ impl InstrumentRuntime {
             pitch_hz,
             velocity,
             velocity_glide: None,
+            pitch_glide: None,
             pitch_expression,
             gain_expression,
             timbre_expression,
@@ -595,7 +600,9 @@ impl InstrumentRuntime {
     /// Continue the voice of the note at `from` with a joined note (§8.3).
     /// The voice keeps every node's state and takes the joined note's
     /// address, pitch and expressions; its velocity glides to the joined
-    /// note's over 100 ms.
+    /// note's over 100 ms. Outside a bowed section, a note without `slur`
+    /// restarts the envelopes that restart on a join, and `slide` moves the
+    /// base pitch over that many seconds.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn note_join(
         &mut self,
@@ -604,6 +611,7 @@ impl InstrumentRuntime {
         pitch_hz: f64,
         velocity: f64,
         frame: u64,
+        (slur, slide_seconds): (bool, f64),
         pitch_expression: Option<ExpressionRuntime<PitchExpression>>,
         gain_expression: Option<ExpressionRuntime<GainExpression>>,
         timbre_expression: Option<ExpressionRuntime<TimbreExpression>>,
@@ -612,6 +620,11 @@ impl InstrumentRuntime {
         if !pitch_hz.is_finite() || !velocity.is_finite() || !(0.0..=1.0).contains(&velocity) {
             return Err(RenderError::Nonfinite(
                 "joined note pitch must be finite and velocity must be within 0..=1".into(),
+            ));
+        }
+        if !slide_seconds.is_finite() || slide_seconds < 0.0 {
+            return Err(RenderError::Nonfinite(
+                "joined note slide must be finite and nonnegative".into(),
             ));
         }
         self.check_nothing_ahead(frame)?;
@@ -633,6 +646,16 @@ impl InstrumentRuntime {
         voice
             .graph
             .glide_velocity(&self.program.voice, previous, velocity, &address, frame);
+        // A bowed section plays its own slurs and slides from the line.
+        if !self.program.plays_lines {
+            voice.pitch_glide = (slide_seconds > 0.0)
+                .then(|| (voice.base_pitch_at(frame), frame, slide_seconds * self.rate));
+            if !slur {
+                voice
+                    .graph
+                    .restart_envelopes(&self.program.voice, frame, self.rate)?;
+            }
+        }
         voice.address = address;
         voice.pitch_hz = pitch_hz;
         voice.on_frame = frame;
@@ -1004,6 +1027,18 @@ impl VoiceState {
         glided_velocity(self.velocity, self.velocity_glide, frame)
     }
 
+    /// The pitch before expression: the note's, or on its way there from
+    /// the note it joined, linear in cents.
+    fn base_pitch_at(&self, frame: u64) -> f64 {
+        match self.pitch_glide {
+            Some((from, start, frames)) if (frame.saturating_sub(start) as f64) < frames => {
+                let progress = frame.saturating_sub(start) as f64 / frames;
+                from * (self.pitch_hz / from).powf(progress)
+            }
+            _ => self.pitch_hz,
+        }
+    }
+
     fn expression_inputs(&self, frame: u64, rate: f64) -> Result<(f64, f64, f64)> {
         let pitch_hz = if let Some(expression) = &self.pitch_expression {
             let cents = expression
@@ -1013,7 +1048,7 @@ impl VoiceState {
                 .ok_or_else(|| {
                     RenderError::Nonfinite("pitch expression cents cannot be represented".into())
                 })?;
-            let frequency = self.pitch_hz * 2.0_f64.powf(cents / 1200.0);
+            let frequency = self.base_pitch_at(frame) * 2.0_f64.powf(cents / 1200.0);
             if !frequency.is_finite() || frequency <= 0.0 || frequency >= rate / 2.0 {
                 return Err(RenderError::RenderState(format!(
                     "pitch expression at {} is outside (0, Nyquist)",
@@ -1022,7 +1057,7 @@ impl VoiceState {
             }
             frequency
         } else {
-            self.pitch_hz
+            self.base_pitch_at(frame)
         };
         let timbre = self.timbre_expression.as_ref().map_or(0.0, |expression| {
             expression
@@ -1110,7 +1145,7 @@ impl GraphState {
                     velocity,
                     layers: None,
                 },
-                ProcessorCode::Adsr => ProcessorState::Adsr(Adsr::new_curved(
+                ProcessorCode::Adsr(_) => ProcessorState::Adsr(Adsr::new_curved(
                     on_frame.unwrap_or(0),
                     params[0],
                     params[1],
@@ -1175,6 +1210,19 @@ impl GraphState {
                 _ => {}
             }
         }
+    }
+
+    /// A re-articulated connected note: every envelope that restarts on a
+    /// join enters its attack again from its present level.
+    fn restart_envelopes(&mut self, graph: &CompiledGraph, frame: u64, rate: f64) -> Result<()> {
+        for (compiled, runtime) in graph.nodes.iter().zip(&mut self.nodes) {
+            if let (ProcessorCode::Adsr(true), ProcessorState::Adsr(envelope)) =
+                (&compiled.processor, &mut runtime.state)
+            {
+                envelope.restart(frame, rate)?;
+            }
+        }
+        Ok(())
     }
 
     /// The voice's note-off: every bowed section lifts its bow.
@@ -1307,7 +1355,7 @@ impl GraphState {
         let mut releases = [0.0; MAX_GRAPH_NODES];
         let mut has_release = [false; MAX_GRAPH_NODES];
         for (index, compiled) in graph.nodes.iter().enumerate() {
-            if !matches!(compiled.processor, ProcessorCode::Adsr) {
+            if !matches!(compiled.processor, ProcessorCode::Adsr(_)) {
                 continue;
             }
             let mut params = parameter_scratch(compiled);
@@ -1367,7 +1415,7 @@ impl GraphState {
             }
             let compiled = &graph.nodes[node_index];
             if capture == PreviewCapture::NoteOn
-                && (matches!(compiled.processor, ProcessorCode::Adsr)
+                && (matches!(compiled.processor, ProcessorCode::Adsr(_))
                     || compiled.has_note_on_modulations)
             {
                 let mut event_params = parameter_scratch(compiled);
@@ -1385,7 +1433,7 @@ impl GraphState {
                     &mut event_params,
                 )?;
                 match (&compiled.processor, &mut self.nodes[node_index].state) {
-                    (ProcessorCode::Adsr, state) => {
+                    (ProcessorCode::Adsr(_), state) => {
                         for parameter in [0, 1, 2, 4] {
                             validate_event_parameter(compiled, parameter, event_params[parameter])?;
                         }
@@ -1649,7 +1697,7 @@ fn capture_dependency_masks(
     let mut note_off = [false; MAX_GRAPH_NODES];
     let mut reset = [false; MAX_GRAPH_NODES];
     for (index, node) in nodes.iter().enumerate() {
-        if matches!(node.processor, ProcessorCode::Adsr) {
+        if matches!(node.processor, ProcessorCode::Adsr(_)) {
             note_on[index] = true;
             for binding in &node.modulations {
                 if binding.rate == ParameterRate::NoteOff {
@@ -1991,7 +2039,7 @@ fn process_graph_node(
                 }
             }
         }
-        (ProcessorCode::Adsr, ProcessorState::Adsr(envelope)) => {
+        (ProcessorCode::Adsr(_), ProcessorState::Adsr(envelope)) => {
             output[0] = envelope.value(frame, rate)?;
         }
         (ProcessorCode::Lfo, ProcessorState::Lfo(oscillator)) => {
@@ -2304,9 +2352,9 @@ fn compile_processor(
                 fade_shape: *fade_shape,
             })),
         ),
-        GraphProcessor::Adsr => (
+        GraphProcessor::Adsr { on_join } => (
             &["attack", "decay", "sustain", "release", "curve"],
-            ProcessorCode::Adsr,
+            ProcessorCode::Adsr(*on_join == crate::graph::AdsrJoin::Restart),
         ),
         GraphProcessor::Timbre => (&[], ProcessorCode::Timbre),
         GraphProcessor::Pressure => (&[], ProcessorCode::Pressure),
@@ -2345,7 +2393,7 @@ fn parameter_slot(processor: &ProcessorCode, name: &str) -> Option<usize> {
         ProcessorCode::Bow(..) => BOW_PARAMETERS,
         ProcessorCode::Wavetable(_) => &["ratio", "frequency", "phase", "level", "position"],
         ProcessorCode::Sample(_) => &["ratio", "frequency", "level"],
-        ProcessorCode::Adsr => &["attack", "decay", "sustain", "release", "curve"],
+        ProcessorCode::Adsr(_) => &["attack", "decay", "sustain", "release", "curve"],
         ProcessorCode::Lfo => &["frequency", "phase", "level"],
         ProcessorCode::Gain(_) | ProcessorCode::Noise(..) => &["level"],
         ProcessorCode::OnePole(_) | ProcessorCode::HighPass(_) => &["cutoff"],
@@ -2534,7 +2582,7 @@ mod tests {
                 nodes: vec![
                     GraphNode {
                         id: "amp".into(),
-                        processor: GraphProcessor::Adsr,
+                        processor: GraphProcessor::ADSR,
                         params: BTreeMap::new(),
                     },
                     GraphNode {
@@ -2550,6 +2598,7 @@ mod tests {
                 modulations: Vec::new(),
                 output: crate::plan::PortRef::new("noise", "out").unwrap(),
                 amplitude: Some("amp".into()),
+                connected: false,
             },
             shared: None,
             controls: BTreeMap::new(),
@@ -2580,7 +2629,7 @@ mod tests {
         use crate::graph::{GraphNode, Modulation, ParameterTarget, ProgramSource};
         let adsr = |id: &str| GraphNode {
             id: id.into(),
-            processor: GraphProcessor::Adsr,
+            processor: GraphProcessor::ADSR,
             params: BTreeMap::from([
                 ("attack".into(), rat(0)),
                 ("decay".into(), rat(0)),
@@ -2621,6 +2670,7 @@ mod tests {
                 }],
                 output: crate::plan::PortRef::new("tone", "out").unwrap(),
                 amplitude: Some("amp".into()),
+                connected: false,
             },
             shared: None,
             controls: BTreeMap::new(),
@@ -2657,7 +2707,7 @@ mod tests {
                 nodes: vec![
                     GraphNode {
                         id: "amp".into(),
-                        processor: GraphProcessor::Adsr,
+                        processor: GraphProcessor::ADSR,
                         params: BTreeMap::from([("sustain".into(), rat(0))]),
                     },
                     GraphNode {
@@ -2700,6 +2750,7 @@ mod tests {
                 ],
                 output: source,
                 amplitude: Some("amp".into()),
+                connected: false,
             },
             shared: None,
             controls: BTreeMap::new(),
@@ -2727,7 +2778,7 @@ mod tests {
         use crate::graph::{GraphNode, ProgramSource};
         let adsr = |id: &str, sustain: i64| GraphNode {
             id: id.into(),
-            processor: GraphProcessor::Adsr,
+            processor: GraphProcessor::ADSR,
             params: BTreeMap::from([("sustain".into(), rat(sustain))]),
         };
         InstrumentProgram {
@@ -2752,6 +2803,7 @@ mod tests {
                 modulations,
                 output: crate::plan::PortRef::new("tone", "out").unwrap(),
                 amplitude: Some("amp".into()),
+                connected: false,
             },
             shared: None,
             controls: BTreeMap::new(),
@@ -2872,7 +2924,7 @@ mod tests {
                 nodes: vec![
                     GraphNode {
                         id: "amp".into(),
-                        processor: GraphProcessor::Adsr,
+                        processor: GraphProcessor::ADSR,
                         params: BTreeMap::new(),
                     },
                     GraphNode {
@@ -2885,6 +2937,7 @@ mod tests {
                 modulations: Vec::new(),
                 output: crate::plan::PortRef::new("tone", "out").unwrap(),
                 amplitude: Some("amp".into()),
+                connected: false,
             },
             shared: Some(shared),
             controls,
@@ -2968,6 +3021,7 @@ mod tests {
             ],
             output: out("mix"),
             amplitude: None,
+            connected: false,
         };
         let program = shared_reset_program(shared, BTreeMap::new());
         let compiled = Arc::new(CompiledInstrument::compile(&program, &BTreeMap::new()).unwrap());
@@ -3027,6 +3081,7 @@ mod tests {
             }],
             output: crate::plan::PortRef::new("target", "out").unwrap(),
             amplitude: None,
+            connected: false,
         };
         let controls = BTreeMap::from([(
             "phase".into(),

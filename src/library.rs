@@ -1890,7 +1890,7 @@ fn lower_graph(
     exports: &ResourceExports,
 ) -> Result<GraphProgram, Diagnostics> {
     let allowed = if stage == GraphStage::Voice {
-        &["amplitude", "channels", "output"][..]
+        &["amplitude", "channels", "connected", "output"][..]
     } else {
         &["channels", "output"][..]
     };
@@ -1989,6 +1989,22 @@ fn lower_graph(
             Some(reference.path[0].clone())
         }
     };
+    let connected = match graph
+        .field("connected")
+        .map(|field| (field, &field.value.kind))
+    {
+        None => false,
+        Some((_, ValueKind::Boolean(connected))) => *connected,
+        Some((field, _)) => {
+            return Err(field_error(
+                DiagnosticCode::Unit,
+                file,
+                graph,
+                field,
+                "connected must be a boolean",
+            ))
+        }
+    };
     Ok(GraphProgram {
         channels,
         nodes,
@@ -1996,6 +2012,7 @@ fn lower_graph(
         modulations,
         output,
         amplitude,
+        connected,
     })
 }
 
@@ -2090,7 +2107,28 @@ fn lower_graph_node(
                 }
             }
         }
-        "synth.adsr/1" => no_config(config, file, object, &identity, GraphProcessor::Adsr)?,
+        "synth.adsr/1" => {
+            let on_join = match config.filter(|config| !config.is_empty()) {
+                None => crate::graph::AdsrJoin::Hold,
+                Some(config) => {
+                    let config = exact_record(Some(config), &["on_join"], file, object, &identity)?;
+                    match config["on_join"].value.as_symbol() {
+                        Some("hold") => crate::graph::AdsrJoin::Hold,
+                        Some("restart") => crate::graph::AdsrJoin::Restart,
+                        _ => {
+                            return Err(field_error(
+                                DiagnosticCode::Range,
+                                file,
+                                object,
+                                &config["on_join"],
+                                "on_join must be hold or restart",
+                            ))
+                        }
+                    }
+                }
+            };
+            GraphProcessor::Adsr { on_join }
+        }
         "synth.timbre/1" => no_config(config, file, object, &identity, GraphProcessor::Timbre)?,
         "synth.pressure/1" => no_config(config, file, object, &identity, GraphProcessor::Pressure)?,
         "synth.velocity/1" => no_config(config, file, object, &identity, GraphProcessor::Velocity)?,

@@ -27,7 +27,7 @@ fn oscillator_program() -> InstrumentProgram {
             nodes: vec![
                 GraphNode {
                     id: "amp".into(),
-                    processor: GraphProcessor::Adsr,
+                    processor: GraphProcessor::ADSR,
                     params: BTreeMap::new(),
                 },
                 GraphNode {
@@ -42,6 +42,7 @@ fn oscillator_program() -> InstrumentProgram {
             modulations: Vec::new(),
             output: PortRef::new("osc", "out").unwrap(),
             amplitude: Some("amp".into()),
+            connected: false,
         },
         shared: None,
         controls: BTreeMap::new(),
@@ -249,6 +250,7 @@ fn shared_palette_processes_filter_tails_without_active_voices_and_resets_exactl
         }],
         output: PortRef::new("pan", "out").unwrap(),
         amplitude: None,
+        connected: false,
     });
     let mut runtime = runtime(&program, 1);
     runtime.note_on("note", 480.0, 1.0, 0).unwrap();

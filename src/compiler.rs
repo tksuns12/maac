@@ -5854,7 +5854,7 @@ impl<'a> Compiler<'a> {
                 .unwrap_or(0);
             let plays = *plays
                 .entry(node.to_owned())
-                .or_insert_with(|| self.plays_lines(node));
+                .or_insert_with(|| self.plays_connected(node));
             notes.push(Some(Line {
                 note,
                 track,
@@ -5931,9 +5931,9 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    /// Whether an event target's instrument has a bowed section, which plays
-    /// connected notes.
-    fn plays_lines(&self, node: &str) -> bool {
+    /// Whether an event target's instrument plays connected notes: its voice
+    /// says so, or holds a bowed section.
+    fn plays_connected(&self, node: &str) -> bool {
         let Some(Node {
             processor: Processor::Instrument { program, .. },
             ..
@@ -5949,7 +5949,7 @@ impl<'a> Compiler<'a> {
                     .iter()
                     .find(|candidate| &candidate.id == program)
             })
-            .is_some_and(|program| program.bow_player_count() > 0)
+            .is_some_and(|program| program.plays_connected())
     }
 
     fn schedule_score_events(

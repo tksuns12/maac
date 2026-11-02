@@ -779,7 +779,10 @@ impl Normalizer<'_> {
                         | GraphProcessor::Saw
                         | GraphProcessor::Square
                         | GraphProcessor::Triangle
-                        | GraphProcessor::Adsr
+                        // An envelope's config is written only to restart.
+                        | GraphProcessor::Adsr {
+                            on_join: crate::graph::AdsrJoin::Hold
+                        }
                         | GraphProcessor::Lfo
                         | GraphProcessor::Pan
                 );

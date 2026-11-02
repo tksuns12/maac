@@ -422,7 +422,11 @@ Versions 3–7 reuse the instrument resource representation introduced in versio
 
 A program has `id`, `voice`, optional `shared`, `controls`, and `source`.
 Its graph contains `channels`, `nodes`, `connections`, `modulations`, `output`,
-and a designated `amplitude` node for the voice graph. Graph processors use
+and a designated `amplitude` node for the voice graph, which has `connected`
+only when it plays [connected notes](instruments.md#connected-notes). A
+`synth.adsr/1` node has `on_join` only when it is `restart`, and a
+`synth.noise/1` node `per_note` only when it is true, so earlier plans keep
+their bytes. Graph processors use
 versioned `kind` tags such as `synth.sine/1` and `synth.wavetable/1`; a wavetable
 processor references an embedded table ID. A control maps its name to a
 `target` (`graph`, `node`, `parameter`) and rational `default`. A modulation has

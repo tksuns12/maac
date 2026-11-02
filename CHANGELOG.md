@@ -7,6 +7,15 @@ promise of compatibility beyond the documented interfaces.
 
 ### Added
 
+- Connected notes on any instrument
+  ([connected notes](docs/instruments.md#connected-notes)): a voice that
+  declares `connected = true` continues its voice into a note that touches
+  the one before it. A note without `slur` restarts the envelopes whose
+  `config.on_join` is `restart`, from their present level, and `slide`
+  moves the pitch in cents. A saxophone can now slur, and tongue without a
+  gap. Bowed sections and every other instrument play as before. Part 2B of
+  the [phrases, variation and lines proposal](docs/design/performance-proposal.md).
+
 - `synth.random/1`, a voice-only source of one value per note in −1…1,
   drawn from its `seed` and the note's address, and `per_note` for
   `synth.noise/1`, which starts each note's noise from its address

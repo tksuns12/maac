@@ -50,7 +50,7 @@ fn voice_graph() -> GraphProgram {
         nodes: vec![
             node(
                 "amp",
-                GraphProcessor::Adsr,
+                GraphProcessor::ADSR,
                 [
                     ("attack", r(0, 1)),
                     ("decay", r(0, 1)),
@@ -73,6 +73,7 @@ fn voice_graph() -> GraphProgram {
         modulations: Vec::new(),
         output: port("voice"),
         amplitude: Some("amp".into()),
+        connected: false,
     }
 }
 
@@ -112,6 +113,7 @@ fn reset_lfo_program(
             modulations,
             output: port("target"),
             amplitude: None,
+            connected: false,
         }),
         controls,
         source: ProgramSource {

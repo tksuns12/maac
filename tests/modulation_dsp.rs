@@ -208,7 +208,7 @@ fn add_instrument(v: &mut Value) {
             nodes: vec![
                 GraphNode {
                     id: "amp".into(),
-                    processor: GraphProcessor::Adsr,
+                    processor: GraphProcessor::ADSR,
                     params: BTreeMap::from([
                         ("attack".into(), r("0/1")),
                         ("decay".into(), r("0/1")),
@@ -226,6 +226,7 @@ fn add_instrument(v: &mut Value) {
             modulations: vec![],
             output: maac::plan::PortRef::new("osc", "out").unwrap(),
             amplitude: Some("amp".into()),
+            connected: false,
         },
         shared: None,
         controls: BTreeMap::from([(

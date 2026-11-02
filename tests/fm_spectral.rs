@@ -193,7 +193,7 @@ fn fm_program(carrier_hz: i64, modulator_hz: i64, depth_hz: i64) -> InstrumentPr
             nodes: vec![
                 GraphNode {
                     id: "amp".into(),
-                    processor: GraphProcessor::Adsr,
+                    processor: GraphProcessor::ADSR,
                     params: BTreeMap::new(),
                 },
                 oscillator("carrier", carrier_hz),
@@ -211,6 +211,7 @@ fn fm_program(carrier_hz: i64, modulator_hz: i64, depth_hz: i64) -> InstrumentPr
             }],
             output: PortRef::new("carrier", "out").unwrap(),
             amplitude: Some("amp".into()),
+            connected: false,
         },
         shared: None,
         controls: BTreeMap::new(),

@@ -1346,6 +1346,7 @@ impl<'a> DspEngine<'a> {
                     pitch_hz,
                     velocity,
                     frame,
+                    (join.slur, join.slide_seconds),
                     pitch_expression,
                     gain_expression,
                     timbre_expression,

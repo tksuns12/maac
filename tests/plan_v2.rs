@@ -33,13 +33,14 @@ fn program() -> InstrumentProgram {
         voice: GraphProgram {
             channels: 1,
             nodes: vec![
-                graph_node("amp", GraphProcessor::Adsr),
+                graph_node("amp", GraphProcessor::ADSR),
                 graph_node("osc", GraphProcessor::Sine),
             ],
             connections: Vec::new(),
             modulations: Vec::new(),
             output: PortRef::new("osc", "out").unwrap(),
             amplitude: Some("amp".into()),
+            connected: false,
         },
         shared: None,
         controls: BTreeMap::from([(
@@ -401,6 +402,7 @@ fn shared_graph_work_counts_every_output_frame_even_without_events() {
         modulations: Vec::new(),
         output: PortRef::new("mix", "out").unwrap(),
         amplitude: None,
+        connected: false,
     });
     let limits = maac::plan::PlanLimits {
         max_execution_work: plan.output.total_frames - 1,

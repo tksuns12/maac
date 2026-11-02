@@ -290,7 +290,7 @@ fn instrument_resources() -> InstrumentResources {
         nodes: vec![
             GraphNode {
                 id: "amp".into(),
-                processor: GraphProcessor::Adsr,
+                processor: GraphProcessor::ADSR,
                 params: BTreeMap::from([
                     ("attack".into(), rational("0/1")),
                     ("decay".into(), rational("0/1")),
@@ -308,6 +308,7 @@ fn instrument_resources() -> InstrumentResources {
         modulations: Vec::new(),
         output: maac::plan::PortRef::new("osc", "out").unwrap(),
         amplitude: Some("amp".into()),
+        connected: false,
     };
     let controls = BTreeMap::from([
         (
