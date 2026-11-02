@@ -5,6 +5,19 @@ promise of compatibility beyond the documented interfaces.
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-11-02
+
+The fourth experimental release. It brings the answers of four production
+trials into the language: a vibrato that a pitch expression names,
+harmonies and picked chord members, so that a progression is written once;
+bowed strings that play connected notes, with a built-in orchestra; and,
+from the jazz trial, phrases, notes in succession, a groove's delay, seeded
+variation, per-note values in instruments and connected notes on any
+instrument, so that a saxophone line can be written by hand. "Afterlight",
+"Homeward" and "After the Rain" join the examples. The `song` profile
+allows 100 billion work units, and analysis reports move from profile
+`maac.analyze.default/7` to `default/10`.
+
 ### Added
 
 - "After the Rain" ([`examples/rain/rain.maac`](examples/rain/rain.maac)),
