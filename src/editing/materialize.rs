@@ -376,8 +376,9 @@ impl Builder<'_> {
                         let objects = self.catalog["objects"].as_object().ok_or_else(|| {
                             EditError::new("E_SYNTAX", "objects must be a dictionary")
                         })?;
-                        let members = super::foundation::chord_pitches(objects, child, supplied)
-                            .map_or(0, |pitches| pitches.len());
+                        let members =
+                            super::foundation::chord_pitches(objects, &source, child, supplied)
+                                .map_or(0, |pitches| pitches.len());
                         (0..members).map(|k| format!("{child_id}.{k}")).collect()
                     } else {
                         vec![child_id.clone()]

@@ -7,6 +7,18 @@ promise of compatibility beyond the documented interfaces.
 
 ### Added
 
+- Notes in succession ([§9](MaaC-1-Specification.md#9-finite-patterns-and-composition)):
+  a note or chord may write `at = after(id)` or `at = after(id, rest)` to
+  start where another of its pattern ends, after a rest, so a line is
+  written without adding up positions. Each note keeps its identity.
+  Editing reports the notes that follow an edited one. Part 2A of the
+  [phrases, variation and lines proposal](docs/design/performance-proposal.md).
+
+- A groove's `delay` ([§9.2](MaaC-1-Specification.md#92-grooves)), from
+  −50 ms to 50 ms: every event the groove moves sits that much behind the
+  beat, or ahead of it, as if each `onset_offset` and `release_offset` were
+  larger. One line lays a part back. Part 2C of the proposal.
+
 - Phrases ([§9.3](MaaC-1-Specification.md#93-phrases)): a `phrase` in a
   pattern spans part of it, and its score-clock curves shape the events
   under it. `dynamics` multiplies their velocities, and `pressure` and

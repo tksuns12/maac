@@ -1,7 +1,7 @@
 # Phrases, variation and lines: proposal
 
 **Status:** accepted 2026-11-02, when the owner took every recommended
-[decision](#decisions). Part 1A has landed; [Results](#results) records it. This is items 1 and 2 of
+[decision](#decisions). Parts 1A, 2A and 2C have landed; [Results](#results) records them. This is items 1 and 2 of
 [what to build next](../reports/ai-production-trial-t7.md#what-to-build-next-in-order)
 after the T7 trial. Item 1, performance variation, covers F60, F61 and F62.
 Item 2, writing a line, covers F53, F52 and F58. Part 1 also fixes F39 from
@@ -412,3 +412,31 @@ Tests in `tests/phrase.rs` compare a phrase with the same velocities and
 breaths written by hand, note by note, and cover precedence, nesting,
 stretch, chord members, inserts, overrides, each error, edit impact and
 materialization.
+
+### Parts 2A and 2C: notes in succession and lay-back (2026-11-02)
+
+- **`at = after(id, rest)`, not `after = &id`.** References name top-level
+  objects, and library imports rewrite them to their resolved IDs, so a
+  sibling cannot be a reference. A constructor in `at` keeps one position
+  field per note: `at = after(s1)` or `at = after(s1, 1/2q)`, with the
+  note's ID as a bare name. `after` joins the core constructors of
+  [§3.2](../../MaaC-1-Specification.md#32-constructors).
+- **Errors.** An `id` that names no note or chord of the pattern is
+  `E_REFERENCE`, a chain that returns to itself `E_PATTERN_CYCLE`, a
+  negative rest `E_RANGE`, a rest in seconds `E_UNIT`, and `after` on a
+  hit, use, phrase or inserted leaf `E_RANGE`.
+- **Editing.** An event in succession depends on every note it follows, so
+  lengthening a note reports the notes after it. A chord without pitches
+  that follows another reads the harmony at its resolved position, and
+  materializing keeps `after`, since the copy keeps the leaves' IDs.
+- **Delay.** A groove's `delay` is added to each moved event's onset offset
+  and each moved note's release offset. An override that sets an offset
+  replaces the sum; inserts, which a groove does not move, keep their own.
+  A negative delay that takes the first note before the score start is
+  `E_INTERVAL`, as any offset would be.
+
+`tests/succession.rs` compares lines written with `after` against the same
+positions written out, including chords that read a harmony, and covers each
+error, edit impact and materialization; `tests/groove.rs` compares a delay with
+the same offsets written on every note.
+

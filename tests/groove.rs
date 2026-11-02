@@ -111,6 +111,47 @@ fn overrides_and_inserts_keep_their_final_positions() {
 }
 
 #[test]
+fn a_delay_lays_every_event_back_as_offsets_would() {
+    let laid_back = source("", EVEN, PLACE).replace("ratio = 2/3;", "ratio = 2/3; delay = 18ms;");
+    let by_hand = source(
+        "",
+        &SWUNG.replace(
+            "pitch =",
+            "onset_offset = 18ms; release_offset = 18ms; pitch =",
+        ),
+        STRAIGHT,
+    );
+    assert_eq!(events(&laid_back), events(&by_hand));
+    // Pushing ahead is a negative delay; the first note may not leave the score.
+    let pushed = source("", EVEN, &PLACE.replace("at = 0q", "at = 4q"))
+        .replace("ratio = 2/3;", "ratio = 2/3; delay = -10ms;");
+    let event = events(&pushed)
+        .into_iter()
+        .find(|e| e["address"] == "main/1/n0")
+        .unwrap();
+    assert_eq!(event["onset_offset_seconds"], "-1/100");
+}
+
+#[test]
+fn a_delay_spares_inserts_and_yields_to_an_override() {
+    let place = PLACE.replace(
+        " }",
+        r#"
+  override exact { event = "0/n1"; set = { onset_offset = 5ms; }; }
+  insert extra { note x { at = 5/2q; dur = 1/4q; pitch = G4; } }
+}"#,
+    );
+    let source = source("", EVEN, &place).replace("ratio = 2/3;", "ratio = 2/3; delay = 18ms;");
+    let events = events(&source);
+    let offset = |address: &str| {
+        events.iter().find(|e| e["address"] == address).unwrap()["onset_offset_seconds"].clone()
+    };
+    assert_eq!(offset("main/0/n0"), "9/500");
+    assert_eq!(offset("main/0/n1"), "1/200");
+    assert_eq!(offset("main/extra/x"), "0/1");
+}
+
+#[test]
 fn adjacent_gates_stay_adjacent() {
     // Back-to-back eighths remain back to back after the map.
     let legato = r#"  note a { at = 0q; dur = 1/2q; pitch = C4; }
@@ -170,6 +211,20 @@ fn malformed_grooves_are_rejected() {
     has(
         with("groove lazy { grid = 1/2q; }", PLACE),
         DiagnosticCode::Range,
+    );
+    has(
+        with(
+            "groove lazy { grid = 1/2q; ratio = 2/3; delay = 60ms; }",
+            PLACE,
+        ),
+        DiagnosticCode::Range,
+    );
+    has(
+        with(
+            "groove lazy { grid = 1/2q; ratio = 2/3; delay = 1/8q; }",
+            PLACE,
+        ),
+        DiagnosticCode::Unit,
     );
     has(
         with(

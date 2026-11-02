@@ -529,11 +529,13 @@ impl Strum {
 }
 
 /// A named swing map (§9.2): within each pair of `grid` steps, counted from
-/// the bar line, the first step takes `ratio` of the pair.
+/// the bar line, the first step takes `ratio` of the pair; then every onset
+/// and gate end is `delay` seconds later.
 #[derive(Clone, Debug)]
 struct GrooveDef {
     grid: Rational,
     ratio: Rational,
+    delay: Rational,
 }
 
 #[derive(Clone, Debug)]
@@ -1184,7 +1186,7 @@ impl<'a> Compiler<'a> {
                     "harmony",
                     "voicings",
                 ][..],
-                "groove" => &["grid", "ratio"][..],
+                "groove" => &["grid", "ratio", "delay"][..],
                 "voicing" => &["pitches"][..],
                 "harmony" => &["length", "chords"][..],
                 "voicings" => &["chords"][..],
@@ -3352,6 +3354,17 @@ impl<'a> Compiler<'a> {
                     Some(length_field),
                 ));
             }
+            // Notes in succession read a plain `at` from here on (§9).
+            let (placed, errors) = crate::succession::resolve(object);
+            if let Some(error) = errors.first() {
+                return Err(diagnostics(
+                    error.code,
+                    error.message.clone(),
+                    Some(error.span),
+                ));
+            }
+            let lowered = (!placed.is_empty()).then(|| crate::succession::lower(object, &placed));
+            let object = lowered.as_ref().unwrap_or(object);
             let mut children = Vec::new();
             for child in object.children.values() {
                 if child.kind == "chord" {
@@ -3787,12 +3800,26 @@ impl<'a> Compiler<'a> {
                 Some(ratio_field),
             ));
         }
-        Ok(GrooveDef { grid, ratio })
+        let delay = groove
+            .field("delay")
+            .map(|field| self.seconds_value(&field.value, groove, Some(field)))
+            .transpose()?
+            .unwrap_or_else(Rational::zero);
+        if delay.abs() > Rational::new(1.into(), 20.into()) {
+            return Err(path_diagnostic(
+                DiagnosticCode::Range,
+                "groove.delay must be from -50ms to 50ms",
+                groove,
+                groove.field("delay"),
+            ));
+        }
+        Ok(GrooveDef { grid, ratio, delay })
     }
 
     /// Move one placement's expanded events through its groove (§9.2): note
-    /// onsets and gate ends, and hit and message onsets. Audio leaves keep
-    /// their positions; overrides and inserts apply afterwards, unswung.
+    /// onsets and gate ends, and hit and message onsets, then its delay.
+    /// Audio leaves keep their positions; overrides and inserts apply
+    /// afterwards, unswung.
     fn apply_groove(&mut self, place: &PlaceDef, groove: &GrooveDef, first: usize) -> CResult<()> {
         let at = |meter: &MeterMap, position: &Rational| {
             groove_position(meter, groove, position).map_err(|message| {
@@ -3829,8 +3856,10 @@ impl<'a> Compiler<'a> {
             };
             if let (Some(off), ExpandedKind::Note(note)) = (off, &mut event.kind) {
                 note.dur_q = off - &on;
+                note.release_offset_seconds += &groove.delay;
             }
             event.score_on_q = on;
+            event.onset_offset_seconds += &groove.delay;
         }
         Ok(())
     }

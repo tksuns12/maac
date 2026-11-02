@@ -428,7 +428,10 @@ fn value_inner(value: &mut Value, depth: usize, visits: &mut usize) -> EditResul
         "list" | "tuple" | "call" => {
             let items = if tag == "call" {
                 keys(fields, &["t", "fn", "args"], &[])?;
-                if !matches!(text(&fields["fn"])?, "key" | "degree" | "ratio" | "bar") {
+                if !matches!(
+                    text(&fields["fn"])?,
+                    "key" | "degree" | "ratio" | "bar" | "after"
+                ) {
                     return Err(error("E_SYNTAX", "unknown core constructor"));
                 }
                 "args"

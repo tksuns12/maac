@@ -99,6 +99,17 @@ listen before you call a track finished.
   member by member. Velocity and pressure set the bow's dynamics, so swell
   a held note with a pressure curve. A pattern with `slur` or `slide` only
   plays on a bowed section: give the strings their own patterns.
+- Write a melody as a line: give the first note of each phrase its `at`, and
+  each later note `at = after(previous)`, or `after(previous, 1/2q)` after a
+  rest:
+  `note s2 { at = after(s1); dur = 1/2q; pitch = F3; velocity = 0.66; }`.
+  No position needs adding up, and lengthening one note moves the rest of
+  the phrase. In T7 a script computed all 2069 positions, and its own bug
+  scooped 383 notes. A walking bass, a note a beat, writes the same way.
+- Lay a part back with its groove, not with offsets on every note: give it a
+  groove of its own with `delay`, such as
+  `groove sax_feel { grid = 1/2q; ratio = 3/5; delay = 18ms; }`, and keep
+  the band on one without. T7's saxophone sat 18 ms behind.
 - Write rolls and risers with `count` and `stretch`.
   `use sixteenths { pattern = &snare_once; at = 16q; count = 32; stretch = 1/4; }`
   plays a one-beat snare pattern 32 times, a sixteenth apart. Ramp the

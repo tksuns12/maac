@@ -66,6 +66,7 @@ mod production_reverb;
 pub mod sample_instrument;
 pub mod semantic;
 pub mod stdlib;
+mod succession;
 pub mod syntax;
 pub mod synth;
 pub mod takes;

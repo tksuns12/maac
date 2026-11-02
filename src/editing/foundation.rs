@@ -1624,7 +1624,7 @@ fn resolve_occurrence_pitches<'a>(
                 return (position + 1 == segments.len()).then_some((mappings, None));
             }
             ("chord", Some(member)) => {
-                let pitches = chord_pitches(objects, child, supplied.as_ref())?;
+                let pitches = chord_pitches(objects, pattern, child, supplied.as_ref())?;
                 return (position + 1 == segments.len() && member < pitches.len())
                     .then_some((mappings, Some(pitches)));
             }
@@ -1773,11 +1773,40 @@ fn supplied_voicing_id(
         .map(str::to_owned)
 }
 
-/// The pitches a chord plays (§8.2): its own `pitches`, those of the voicing
-/// it names, or else those `supplied` by its nearest use or placement,
-/// narrowed by `top`, `bottom` or `pick`.
+/// A pattern child's onset in pattern-local q, following `at = after(id,
+/// rest)` (§9) back to a written position, with the IDs it follows on the
+/// way, nearest first.
+pub(super) fn child_onset(pattern: &Value, child: &Value) -> Option<(BigRational, Vec<String>)> {
+    let children = pattern["children"].as_object()?;
+    let mut onset = BigRational::zero();
+    let mut chain = Vec::new();
+    let mut current = child;
+    loop {
+        let at = &current["fields"]["at"];
+        if at["t"] != "call" {
+            return Some((onset + typed_rational(at).ok()?, chain));
+        }
+        if at["fn"] != "after" || chain.len() > children.len() {
+            return None;
+        }
+        let args = at["args"].as_array()?;
+        let previous = args.first()?["v"].as_str()?;
+        if let Some(rest) = args.get(1) {
+            onset += typed_rational(rest).ok()?;
+        }
+        let before = children.get(previous)?;
+        onset += typed_rational(&before["fields"]["dur"]).ok()?;
+        chain.push(previous.to_owned());
+        current = before;
+    }
+}
+
+/// The pitches a chord of `pattern` plays (§8.2): its own `pitches`, those of
+/// the voicing it names, or else those `supplied` by its nearest use or
+/// placement, narrowed by `top`, `bottom` or `pick`.
 pub(super) fn chord_pitches<'a>(
     objects: &'a Map<String, Value>,
+    pattern: &Value,
     chord: &'a Value,
     supplied: Option<&Supplied>,
 ) -> Option<Vec<&'a Value>> {
@@ -1786,7 +1815,8 @@ pub(super) fn chord_pitches<'a>(
         (Some(pitches), _) => pitches,
         (None, Some(voicing)) => &objects.get(source_object_id(voicing)?)?["fields"]["pitches"],
         (None, None) => {
-            let id = supplied_voicing_id(objects, supplied?, fields.get("at")?)?;
+            let at = rational(&child_onset(pattern, chord)?.0, Some(Unit::Q));
+            let id = supplied_voicing_id(objects, supplied?, &at)?;
             &objects.get(&id)?["fields"]["pitches"]
         }
     };
@@ -2199,6 +2229,10 @@ fn enumerate_pattern_occurrences(
         let mut dependencies = inherited_dependencies.clone();
         dependencies.push(vec![pattern_id.to_owned()]);
         dependencies.push(vec![pattern_id.to_owned(), child_id.clone()]);
+        // A note in succession moves with each note it follows (§9).
+        if let Some((_, chain)) = child_onset(pattern, child) {
+            dependencies.extend(chain.into_iter().map(|id| vec![pattern_id.to_owned(), id]));
+        }
         match child["kind"].as_str()? {
             "note" | "hit" | "message" | "audio" => {
                 address.push(child_id.clone());
@@ -2215,11 +2249,12 @@ fn enumerate_pattern_occurrences(
                 } else if fields.get("pitches").is_none() {
                     let supplied = supplied?;
                     dependencies.extend(supplied.dependencies().into_iter().map(|id| vec![id]));
-                    if let Some(id) = supplied_voicing_id(objects, supplied, fields.get("at")?) {
+                    let at = rational(&child_onset(pattern, child)?.0, Some(Unit::Q));
+                    if let Some(id) = supplied_voicing_id(objects, supplied, &at) {
                         dependencies.push(vec![id]);
                     }
                 }
-                for member in 0..chord_pitches(objects, child, supplied)?.len() {
+                for member in 0..chord_pitches(objects, pattern, child, supplied)?.len() {
                     address.push(format!("{child_id}.{member}"));
                     out.push(EventOccurrence {
                         address: address.join("/"),

@@ -140,6 +140,12 @@
       "pass": true
     },
     {
+      "id": "succession_onset_with_rest",
+      "actual": "2",
+      "expected": "2",
+      "pass": true
+    },
+    {
       "id": "vibrato_rising_knot_cents",
       "actual": "38/5",
       "expected": "38/5",

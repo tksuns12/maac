@@ -191,6 +191,7 @@ The only core value constructors are:
 - `degree(k, &tuning)`: integer index into an explicitly declared tuning.
 - `ratio(r, f)`: positive dimensionless frequency ratio times a positive frequency literal.
 - `bar(b, u)`: musical position from a one-based bar number and a one-based, possibly fractional, denominator-note position within that bar, using the project's meter map.
+- `after(id, rest)`: the pattern-local position where note or chord `id` of the same pattern ends, after an optional nonnegative `q` rest (§9).
 
 For `bar`, `b` is any integer, `u` is rational, and `1 <= u < numerator+1`. Bar 1 begins at `0q`; bar 0 is the preceding bar. The next bar is addressed as `bar(b+1, 1)`, not by an out-of-range beat. `bar(...)` is allowed only in global score-position fields, not pattern-local positions or durations. Semantic normalization lowers it to exact `q` in the separate execution view. Lowering it into the authored source is an explicit edit that adopts the current meter resolution; it is never silent, and a later meter edit does not re-resolve the resulting `q` address.
 
@@ -571,6 +572,16 @@ A plan records each join on the joined note as `join`, with `from`, the address 
 
 A `pattern` has a required positive musical `length`. Its children are leaf events and/or `use` objects. Every child onset must satisfy `0 <= at < length`. A note may end after length; length defines the repeat interval, not an automatic note-off. Pattern definitions form a directed acyclic reference graph.
 
+A note or chord may write its `at` as `after(id)` or `after(id, rest)`: it starts where the note or chord `id` of the same pattern ends, `id.at + id.dur`, after `rest`, a nonnegative `q` duration, default `0q`. The position is exact pattern-local q, resolved before any transformation, so lengthening a note moves the notes that follow it. Each note keeps its own identity and address.
+
+```maac
+note s1 { at = 1/2q; dur = 1/2q; pitch = D3; }
+note s2 { at = after(s1); dur = 1/2q; pitch = F3; }
+note s3 { at = after(s2, 1/2q); dur = 3/2q; pitch = A3; }
+```
+
+Here `s2` starts at `1q` and `s3` at `2q`. An `id` that names no note or chord of the pattern is `E_REFERENCE`, a chain that returns to itself `E_PATTERN_CYCLE`, a negative rest `E_RANGE`, and `after` on any other child, or on an inserted leaf, `E_RANGE`.
+
 ```maac
 pattern eight_quarters {
   length = 8q;
@@ -640,8 +651,10 @@ place hats_main { pattern = &hats; track = &hat_notes; at = 16q; count = 22; gro
 `grid` is a required positive musical duration: `1/2q` swings eighths and
 `1/4q` swings sixteenths. `ratio` is a required dimensionless rational from
 1/2 through 3/4: the fraction of each pair of grid steps that the first step
-takes. 1/2 is straight, 2/3 is triplet swing, and 3/4 is dotted. Values
-outside these ranges are `E_RANGE`.
+takes. 1/2 is straight, 2/3 is triplet swing, and 3/4 is dotted. `delay` is
+an optional duration from −50 ms to 50 ms, default `0s`, by which a part
+sits behind the beat, or ahead of it when negative. Values outside these
+ranges are `E_RANGE`.
 
 Let `g = grid`, `P = 2*g`, and `r = ratio`. For a final score position `t`,
 let `b` be the start of the bar containing `t` under the project meter map
@@ -664,8 +677,11 @@ transposition, and `cut`, and before its overrides and inserts. A note's onset
 and gate end are mapped independently, so adjacent gates stay adjacent; hit
 and message onsets are mapped. Override `set.at` values and inserts keep their
 final coordinates (§11), audio leaves keep their positions, and physical
-offsets apply afterwards. A groove changes positions only: event identity and
-addresses are unchanged. `groove` is a field of `place` only.
+offsets apply afterwards. A groove's `delay` is then added to the
+`onset_offset` of each event the map moved and the `release_offset` of each
+such note (§6); an override that sets either offset replaces the sum, and
+inserts keep their own. A groove changes positions and offsets only: event
+identity and addresses are unchanged. `groove` is a field of `place` only.
 
 ### 9.3 Phrases
 

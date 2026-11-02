@@ -1601,6 +1601,17 @@ impl<'a> Validator<'a> {
                 );
             }
         }
+        // Notes in succession (§9): `at = after(id, rest)`.
+        let (placed, errors) = crate::succession::resolve(object);
+        for error in errors {
+            self.push(
+                error.code,
+                error.message,
+                Some(error.span),
+                child_path(path, &error.child),
+                vec!["at".into()],
+            );
+        }
         let children: Vec<Object> = object.children.values().cloned().collect();
         for child in &children {
             let child_path = child_path(path, &child.id);
@@ -1616,11 +1627,11 @@ impl<'a> Validator<'a> {
             if let Some(length) = &length {
                 // Pattern-local onsets are q-only; `bar` is reported by the
                 // child's own validator, never lowered through the meter here.
-                if let Some(at) = child
+                let written = child
                     .field("at")
                     .filter(|field| matches!(field.value.kind, ValueKind::Quantity { .. }))
-                    .and_then(|field| self.position_q_value(&field.value, &child_path, "at"))
-                {
+                    .and_then(|field| self.position_q_value(&field.value, &child_path, "at"));
+                if let Some(at) = written.or_else(|| placed.get(&child.id).cloned()) {
                     if at >= *length {
                         self.push(
                             DiagnosticCode::Interval,
@@ -2321,7 +2332,11 @@ impl<'a> Validator<'a> {
 
     /// The nonnegative onset and positive gate shared by notes and chords.
     fn validate_note_gate(&mut self, object: &Object, path: &[String]) {
-        if let Some(field) = object.field("at") {
+        // A note in succession is placed, and checked, with its pattern.
+        if let Some(field) = object
+            .field("at")
+            .filter(|_| !crate::succession::follows(object))
+        {
             if let Some(value) = self.quantity(field, &[Unit::Q], path, "at") {
                 if value < BigRational::zero() {
                     self.push(
@@ -2455,9 +2470,23 @@ impl<'a> Validator<'a> {
             object,
             path,
             &["grid", "ratio"],
-            &["grid", "ratio", "label"],
+            &["grid", "ratio", "delay", "label"],
             &[],
         );
+        if let Some(field) = object.field("delay") {
+            if let Some(delay) = self.quantity(field, &[Unit::S, Unit::Ms], path, "delay") {
+                let limit = BigRational::new(1.into(), 20.into());
+                if delay > limit || delay < -limit {
+                    self.push(
+                        DiagnosticCode::Range,
+                        "groove.delay must be from -50ms to 50ms",
+                        Some(field.value.span),
+                        path.to_vec(),
+                        vec!["delay".into()],
+                    );
+                }
+            }
+        }
         if let Some(field) = object.field("grid") {
             if let Some(grid) = self.quantity(field, &[Unit::Q], path, "grid") {
                 if grid <= BigRational::zero() {
@@ -2873,6 +2902,18 @@ impl<'a> Validator<'a> {
         let children: Vec<Object> = object.children.values().cloned().collect();
         for child in &children {
             let child_path = child_path(path, &child.id);
+            if let Some(field) = child
+                .field("at")
+                .filter(|_| crate::succession::follows(child))
+            {
+                self.push(
+                    DiagnosticCode::Range,
+                    "an inserted leaf has no note before it to follow",
+                    Some(field.value.span),
+                    child_path.clone(),
+                    vec!["at".into()],
+                );
+            }
             match child.kind.as_str() {
                 "note" => self.validate_note(child, &child_path),
                 "hit" | "message" => self.validate_deferred_object(child, &child_path),
