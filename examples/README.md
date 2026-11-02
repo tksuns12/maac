@@ -472,6 +472,30 @@ limits; it takes about five minutes. The owner's verdicts: the harp "seems
 fine", and the violins "somewhat like a violin". At version 1's level the
 violins sounded like background; 6 dB louder, "it's fine".
 
+# After the Rain: a jazz quartet
+
+[`rain/rain.maac`](rain/rain.maac) is a 133-second medium swing in B-flat
+at 160 bpm for tenor saxophone, piano, double bass and drums. An AI made it
+during the [T7 production trial](../docs/reports/ai-production-trial-t7.md):
+
+- the tune, AABA, then a chorus of saxophone solo, then the tune from its
+  bridge, and a tag that slows to 112 bpm;
+- walking bass, and piano comping in rootless voicings from `harmony` and
+  `voicings`; the piano and the drum kit are std/studio/1.2.0's;
+- the saxophone, the double bass and the ride cymbal are built in the song.
+  Each of the saxophone's 457 notes has its own velocity and its own breath,
+  a pressure curve, drawn by the AI's script from seeded random rules.
+
+```sh
+maac build examples/rain/rain.maac --profile song -o after-the-rain.wav --format pcm16
+maac analyze examples/rain/rain.maac --profile song --section regions --lead sax:out
+maac deliver examples/rain/rain.maac --delivery release --output-dir out --profile song
+```
+
+The release delivery measured −14.67 LUFS and −1.10 dBTP and passed its
+limits. The owner's verdict: "The arrangement itself is fine." The
+saxophone's sound was left open; the report gives each round.
+
 # Audio inside patterns
 
 [`pattern-audio.maac`](pattern-audio.maac) builds a one-bar drum loop from
