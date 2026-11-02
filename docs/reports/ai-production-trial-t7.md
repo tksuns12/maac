@@ -2,10 +2,12 @@
 
 **Date:** 2026-10-23 to 2026-11-02. **Producer:** Claude, an AI model,
 working in this repository. **Listeners:** the project owner, and once a
-second listener, a jazz fan. **Result:** "After the Rain", version 4
-([`examples/rain/rain.maac`](../../examples/rain/rain.maac)). The owner
-closed the trial with the arrangement approved and the saxophone's sound
-still open.
+second listener, a jazz fan. **Result:** "After the Rain", version 4. The
+owner closed the trial with the arrangement approved and the saxophone's
+sound still open. Version 5
+([`examples/rain/rain.maac`](../../examples/rain/rain.maac)) writes the
+saxophone directly in MaaC with what the trial asked for; see
+[after the trial](#after-the-trial).
 
 T2 to T6 covered lo-fi hip-hop, folk-pop, pop, dance music and an orchestra.
 T7 tested jazz, the owner's choice: a small band that swings, a horn that
@@ -128,17 +130,17 @@ Two lessons for the next trial:
 
 | ID | Problem | Status |
 | --- | --- | --- |
-| F52 | A saxophone's line cannot be slurred. Only an instrument with a `synth.bow/1` plays [connected notes](../../MaaC-1-Specification.md#83-connected-notes); every other note starts its own voice, so each eighth is attacked anew | Open |
-| F53 | A line cannot be written as a succession of notes: each note needs its own `at`. The AI wrote a script to place all 2069 notes and 615 hits, and the script's own parsing bug put a 120-cent scoop on 383 of 457 saxophone notes in version 1 | Open |
+| F52 | A saxophone's line cannot be slurred. Only an instrument with a `synth.bow/1` plays [connected notes](../../MaaC-1-Specification.md#83-connected-notes); every other note starts its own voice, so each eighth is attacked anew | Fixed: [connected notes on any instrument](../instruments.md#connected-notes) |
+| F53 | A line cannot be written as a succession of notes: each note needs its own `at`. The AI wrote a script to place all 2069 notes and 615 hits, and the script's own parsing bug put a 120-cent scoop on 383 of 457 saxophone notes in version 1 | Fixed: [`at = after(...)`](../../MaaC-1-Specification.md#9-finite-patterns-and-composition) |
 | F54 | Chord names are labels. A walking bass cannot ask for the chord's root or third, so every line was written out. A comping hit on the last eighth of a bar, anticipating the next chord, reads the current one, so the comping avoided anticipations | Open |
 | F55 | `maac instruments --library std/studio/1.2.0 drums` lists `hat_brightness: default 14000` with no unit; `14000` is `E_UNIT`, and `14000Hz` is needed | Open; small |
 | F56 | Each stroke on a ride is a new voice, so a ride in time is many cymbals at once. Twelve voices were `E_VOICE_LIMIT`; the song gives the ride 32 | Open |
 | F57 | A 19.5-second mono take of 3.7 MB cannot be compiled: the plan embeds it as a JSON array of numbers, over the 4 MiB limit (`E_RESOURCE_LIMIT`). `build --disk-media` works, but `build` has no render range, so each 25-second clip rendered the whole song | Open |
-| F58 | A part cannot be laid back. The 18 ms lay-back is an `onset_offset` and a `release_offset` on each of the 457 saxophone notes; a `groove` has only a grid and a ratio | Open |
+| F58 | A part cannot be laid back. The 18 ms lay-back is an `onset_offset` and a `release_offset` on each of the 457 saxophone notes; a `groove` has only a grid and a ratio | Fixed: a groove's [`delay`](../../MaaC-1-Specification.md#92-grooves) |
 | F59 | A filter's cutoff can be modulated below zero on a single note. A dark start of −1500 Hz was `E_NONFINITE` on a soft low note; finding the floor meant adding the base cutoff, key tracking and every modulation's depth by hand | Open |
-| F60 | Nothing varies a performance. An instrument cannot differ from one note to the next, since `synth.noise/1` restarts from its seed in every voice and no source gives a note a random value, and a score has no humanize. What the owner heard as "too uniform" was rules: two velocities for the eighths and one envelope for every note. All the variation in version 4 was drawn by the AI's script | Open; first below |
-| F61 | A curve cannot be written inline. Each note's breath is a named curve: 457 of them, a quarter of the song | Open |
-| F62 | A placed pattern repeats verbatim. To play the tune's second and third A differently, three patterns were copies | Open |
+| F60 | Nothing varies a performance. An instrument cannot differ from one note to the next, since `synth.noise/1` restarts from its seed in every voice and no source gives a note a random value, and a score has no humanize. What the owner heard as "too uniform" was rules: two velocities for the eighths and one envelope for every note. All the variation in version 4 was drawn by the AI's script | Fixed: [`vary`](../../MaaC-1-Specification.md#94-variation) and [`synth.random/1`](../instruments.md#note-sources) |
+| F61 | A curve cannot be written inline. Each note's breath is a named curve: 457 of them, a quarter of the song | Fixed: [phrases](../../MaaC-1-Specification.md#93-phrases) |
+| F62 | A placed pattern repeats verbatim. To play the tune's second and third A differently, three patterns were copies | Fixed: [`vary`](../../MaaC-1-Specification.md#94-variation) |
 | F63 | The saxophone's sine, meant to add to the saw's fundamental, cancelled most of it from version 1 on. The [instruments reference](../instruments.md) gives the saw's harmonics as `-2/(pi*k)` and the sine's as `+1`, so at the same phase they oppose; the AI missed it. Only the measurement against a recording found it. Version 4 still has it; round 9's fitted tone removes it | Open; works as specified. The producer guide could say that a sine reinforces a saw at phase 0.5 |
 
 F37, F42 and F51 recurred. F37: `E_DUPLICATE_ID` twice, a placement and a
@@ -167,3 +169,31 @@ Items 1 and 2 are the [phrases, variation and lines
 proposal](../design/performance-proposal.md), accepted on 2026-11-02.
 
 F54–F57 and F59 are conveniences. They wait until another track needs them.
+
+## After the trial
+
+The [phrases, variation and lines proposal](../design/performance-proposal.md)
+landed on 2026-11-02, and "After the Rain" version 5 tested it.
+
+- **Written by hand.** The AI wrote the saxophone's 341 notes in eight
+  patterns, with no script: lines with `at = after(...)`, velocities as a
+  player accents them, 26 phrases on ten shared curves, the lay-back in the
+  saxophone's groove and a `vary` for each take. The tune's repeats reuse
+  their patterns. Every one of the 457 notes it plays falls where version 4's
+  did, at the same pitch. The song shrank from 1745 lines to 1203.
+- **Round 10, version 4 against version 5 with version 4's instrument.** Two
+  excerpts, the head and the solo, with the letters swapped between them.
+  Owner (translated): "b is strangely smoother in both." The smoother clip
+  followed the letter, not the version: the hand-written saxophone is not
+  heard as worse, and the order bias suspected above is now likely.
+- **Round 11, with and without slurs.** The connected voice slurs into the
+  beat and tongues off it, restarting its tongue, with noise of its own on
+  each note. Asked to play each pair both ways round, the owner heard the
+  slurred version as "a bit more dynamic" in both pairs, whichever its
+  letter. Version 5 keeps the slurs.
+- **Delivery.** −14.79 LUFS and −1.10 dBTP, passed. The saxophone leads by
+  +5.3 dB in the tune, +3.6 in the solo, +5.5 in the tune's return and +4.9
+  in the tag.
+
+F52, F53, F58 and F60–F62 are fixed. F63, the saxophone's tone, stays open.
+

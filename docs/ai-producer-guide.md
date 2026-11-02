@@ -303,3 +303,5 @@ ask for a verdict.
 | `E_DUPLICATE_ID` on a node | Imports, instruments, nodes and the project share one namespace | Name nodes by role (`violins`) and import aliases apart (`orch`); T6 hit this with `flute`, `orchestra` and the project |
 | "The glide doesn't slide" | The glide is too short: 80 ms at 126 bpm | Not measured. Give it about a sixteenth |
 | True peak over the limit after a sound change | Plucked attacks through compressors standing in for a limiter | `true_peak_over`; master through `fx.limiter/1` with its ceiling under the limit |
+| "Too uniform", "it gets louder and softer in a pattern" | Velocities set by rule, one envelope on every note, repeats played verbatim | Not measured. Accent by hand, shape each `phrase`, and give the part a `vary` |
+| b wins every blind pair | The second clip heard is favoured: in T7 b won 11 of 13, and later both pairs of the same two versions with the letters swapped | Send each comparison as two excerpts with the letters swapped, and ask the listener to play each pair both ways round |

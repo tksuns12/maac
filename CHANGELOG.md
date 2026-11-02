@@ -7,6 +7,14 @@ promise of compatibility beyond the documented interfaces.
 
 ### Added
 
+- "After the Rain" ([`examples/rain/rain.maac`](examples/rain/rain.maac)),
+  a medium swing for tenor saxophone, piano, double bass and drums from the
+  [T7 production trial](docs/reports/ai-production-trial-t7.md). Version 5
+  writes the saxophone directly in MaaC with phrases, `after`, a groove's
+  `delay`, a `vary` and a connected voice that slurs; blind, it could not be
+  told from the script-written version 4, and its slurs sounded "a bit more
+  dynamic".
+
 - Connected notes on any instrument
   ([connected notes](docs/instruments.md#connected-notes)): a voice that
   declares `connected = true` continues its voice into a note that touches

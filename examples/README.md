@@ -482,9 +482,14 @@ during the [T7 production trial](../docs/reports/ai-production-trial-t7.md):
   bridge, and a tag that slows to 112 bpm;
 - walking bass, and piano comping in rootless voicings from `harmony` and
   `voicings`; the piano and the drum kit are std/studio/1.2.0's;
-- the saxophone, the double bass and the ride cymbal are built in the song.
-  Each of the saxophone's 457 notes has its own velocity and its own breath,
-  a pressure curve, drawn by the AI's script from seeded random rules.
+- the saxophone, the double bass and the ride cymbal are built in the song;
+- in version 5 the saxophone is written directly in MaaC with the
+  [phrases, variation and lines](../docs/design/performance-proposal.md):
+  each line with `at = after(...)`, 26 `phrase`s that shape its dynamics
+  and breath from ten shared curves, its 18 ms lay-back in its groove's
+  `delay`, a `vary` so that each repeat of the tune plays a little
+  differently, and a [connected](../docs/instruments.md#connected-notes)
+  voice that slurs into the beat and tongues off it.
 
 ```sh
 maac build examples/rain/rain.maac --profile song -o after-the-rain.wav --format pcm16
@@ -492,9 +497,11 @@ maac analyze examples/rain/rain.maac --profile song --section regions --lead sax
 maac deliver examples/rain/rain.maac --delivery release --output-dir out --profile song
 ```
 
-The release delivery measured −14.67 LUFS and −1.10 dBTP and passed its
-limits. The owner's verdict: "The arrangement itself is fine." The
-saxophone's sound was left open; the report gives each round.
+The release delivery measured −14.79 LUFS and −1.10 dBTP and passed its
+limits. The owner's verdict on the trial: "The arrangement itself is fine."
+Blind, the hand-written saxophone could not be told from the script's, and
+with slurs it sounded "a bit more dynamic" in both orders of play. The
+saxophone's tone was left open; the report gives each round.
 
 # Audio inside patterns
 

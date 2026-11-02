@@ -1,7 +1,7 @@
 # Phrases, variation and lines: proposal
 
 **Status:** accepted 2026-11-02, when the owner took every recommended
-[decision](#decisions). Parts 1A to 2C have landed; [Results](#results) records them. This is items 1 and 2 of
+[decision](#decisions). Every part has landed, and "After the Rain" version 5 passed the listening rounds; [Results](#results) records them. This is items 1 and 2 of
 [what to build next](../reports/ai-production-trial-t7.md#what-to-build-next-in-order)
 after the T7 trial. Item 1, performance variation, covers F60, F61 and F62.
 Item 2, writing a line, covers F53, F52 and F58. Part 1 also fixes F39 from
@@ -498,4 +498,25 @@ onset. [Connected notes](../instruments.md#connected-notes) gives the rules.
   voice, a tongued join restarts the tongue and a slurred one does not, the
   amplitude holds through a join, a slide is halfway in cents halfway
   through, a varied line stays joined, and a random value glides.
+
+### "After the Rain" version 5 and the listening rounds (2026-11-02)
+
+- **By hand.** The AI wrote the saxophone directly in MaaC: 341 notes in
+  eight patterns (not 333, as [estimated](#effect-on-after-the-rain)),
+  26 phrases on ten shared curves, the lay-back in `sax_feel` and one
+  `vary`. No breath curve belongs to one note and no pattern is a copy. The
+  song went from 1745 lines to 1203. The notes of the bass, piano and drums
+  are still version 4's.
+- **No loss (round 10).** Version 4 against version 5 on version 4's
+  instrument, in the head and in the solo, the letters swapped between the
+  two. The owner heard b as "strangely smoother" in both, so the version
+  made no audible difference, and the order bias T7 suspected is now
+  likely.
+- **Slurs (round 11).** With the connected voice, slurs into the beat, the
+  restarting tongue and per-note tongue noise, against without; the owner
+  played each pair both ways round and heard the slurred version as "a bit
+  more dynamic" in both pairs. Kept.
+- **Delivery.** −14.79 LUFS and −1.10 dBTP, passed, at 11.3 billion units of
+  work. [`examples/rain/rain.maac`](../../examples/rain/rain.maac) is
+  version 5.
 

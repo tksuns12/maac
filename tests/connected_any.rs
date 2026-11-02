@@ -194,3 +194,33 @@ fn a_random_value_glides_to_the_joined_notes() {
     assert!((samples[JOIN + 2_400] - (before + after) / 2.0).abs() < 1e-9);
     assert_eq!(samples[JOIN + 4_800], samples[JOIN + 9_600]);
 }
+
+/// "After the Rain" version 5: the saxophone written with `after`, phrases,
+/// a groove's delay and a `vary`, on a connected voice that slurs.
+#[test]
+fn after_the_rain_plays_its_saxophone_in_connected_lines() {
+    let source = include_str!("../examples/rain/rain.maac");
+    let plan = compile(source).unwrap_or_else(|error| panic!("{error:?}"));
+    let wire: Value =
+        serde_json::from_slice(&plan.to_json_with_limits(&PlanLimits::song()).unwrap()).unwrap();
+    let sax: Vec<&Value> = wire["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|event| event["target"]["node"] == "sax")
+        .collect();
+    assert_eq!(sax.len(), 457);
+    let joins: Vec<&Value> = sax.iter().filter_map(|event| event.get("join")).collect();
+    assert_eq!(joins.len(), 379);
+    assert_eq!(
+        joins
+            .iter()
+            .filter(|join| join.get("slur").is_some())
+            .count(),
+        202
+    );
+    // Every saxophone note breathes with its phrase.
+    assert!(sax
+        .iter()
+        .all(|event| event["kind"]["pressure_expression"].is_object()));
+}
