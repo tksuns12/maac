@@ -83,6 +83,20 @@ packages reusable content, introduces an engine algorithm, or provides an
 authoring or delivery workflow. A feature may span several of these boundaries;
 state each responsibility explicitly.
 
+Three questions, asked in order, sort most needs. First, does it change the
+rendered sound? If not, it belongs to a tool or to the engine's
+implementation. Second, can the language already write that sound? If not, no
+tool can produce it: it needs language semantics, a library contract or an
+engine processor. Third, does the written form keep the intent? A tool may
+lower a request to explicit data when that data can still be read and edited
+directly: inserting two bars before a chorus moves many positions, but leaves
+ordinary placements and curves. When the lowered form can only be changed by
+running the tool again, the intent belongs in the document. In the [T7
+production trial](../reports/ai-production-trial-t7.md), a script drew 457
+breath curves from rules that the source kept only as numbers, so changing a
+rule meant running the script again; [phrases](../../MaaC-1-Specification.md#93-phrases)
+now carry that intent.
+
 Before expanding the language, explain why existing library, extension, or tool
 contracts cannot meet the need. Record the intended behavior, compatibility,
 finite execution and resource bounds, and observable acceptance criteria.
