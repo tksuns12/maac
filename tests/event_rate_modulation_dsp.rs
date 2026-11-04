@@ -349,6 +349,7 @@ fn instrument_resources() -> InstrumentResources {
     InstrumentResources {
         entry_source: "fixture.maac".into(),
         kits: Vec::new(),
+        effects: Vec::new(),
         programs: vec![InstrumentProgram {
             id: "program".into(),
             voice,

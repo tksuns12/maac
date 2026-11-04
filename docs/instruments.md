@@ -303,6 +303,82 @@ and their sound are unchanged from 1.0.0.
 Run `maac instruments drums --library std/basic/1.1.0` for its keys and
 controls and a runnable composition.
 
+## Effects
+
+An effect processes audio in the project graph the way an instrument's
+shared graph processes its voices: one graph of `synth.*` nodes behind named
+controls, declared once, imported with a pin and placed as one node. It has
+no voices and receives no events.
+
+```maac
+effect warmth {
+  channels = 2; input = 1;
+  shared main {
+    channels = 2; output = &place:out;
+    node heat { type = "synth.drive/1"; config = { channels = 1; }; params = { drive = 2; reference = 1; }; }
+    node tone { type = "synth.onepole/1"; config = { channels = 1; }; params = { cutoff = 6000Hz; }; }
+    node place { type = "synth.pan/1"; }
+    connect in_heat { from = &input:out; to = &heat:in; }
+    connect heat_tone { from = &heat:out; to = &tone:in; }
+    connect tone_place { from = &tone:out; to = &place:in; }
+  }
+  control drive { target = &main.heat.params.drive; default = 2; }
+  control pan { target = &main.place.params.pan; default = 0; }
+}
+preset hot { effect = &warmth; params = { drive = 8; }; }
+
+node bass_drive { effect = &warmth; preset = &hot; params = { pan = -0.2; }; }
+connect bass_in { from = &bass:out; to = &bass_drive:in; }
+connect bass_mix { from = &bass_drive:out; to = &mix:in; }
+```
+
+**Declaration.**
+- An effect has `channels` (1 or 2), the width of its output, and an
+  optional `input` (1 or 2, default `channels`), the width of its input. It
+  has exactly one `shared` graph and optional `control` children; a `voice`
+  graph or any other child is `E_UNKNOWN_KIND`.
+- The graph follows the [shared graph](#instruments-controls-and-presets)
+  contract unchanged, with `&input:out` carrying the audio at the node's
+  `in`. It may use what a shared graph may: gain, the one-pole low-pass, the
+  high-pass, `synth.svf/1` with ratio 0, `synth.drive/1`, mix, pan, balance,
+  width and the shared LFO; and the [delay line](#delay-line), which only an
+  effect may hold. A voice-only node is `E_CAPABILITY`. The graph's `channels`
+  must equal the effect's (`E_PORT_TYPE`), and it must be a DAG.
+- A `control` has `target = &graph.node.params.parameter` and a required
+  `default`, as an instrument's control does, and keeps the parameter's
+  unit, range and rate. An effect exposes at most 64 controls.
+- A `preset` names the effect with `effect = &id` instead of `instrument`.
+
+**Instance.** An effect node takes `effect`, optional `preset`, and `params`
+for its controls; it takes no `config` (`E_UNKNOWN_FIELD`). Its ports are an
+audio `in` of the effect's input width and an audio `out` of its output
+width. `in` sums its connections in connection-ID order, as `core.sum/1`'s
+does, and needs at least one (`E_PORT_TYPE` otherwise), so an effect used as
+a send needs no sum in front of it. It has no `events` port. Its controls
+can be automated, and modulated by a top-level `core.lfo/1` or
+`core.constant/1`: a score-clock LFO moves an effect in time with the tempo.
+
+**Processing.** The graph's state resets at the project's reset origin and
+runs every frame through the tail. Each frame the node sums its inputs and
+runs the graph once. It declares current-sample feedthrough from `in` and its
+controls to `out` and no technical latency, so it cannot break a feedback
+cycle in the project graph. A node in an effect behaves as the same node
+does in a shared graph: an effect of a `synth.gain/1` and a `synth.onepole/1`
+renders sample for sample as `core.gain/1` into `core.onepole/1`.
+
+**Plan and limits.**
+- Effects travel in the plan's instrument resources as `effects`, absent
+  when a plan has none. The instance is an `effect` processor that names its
+  effect and both widths.
+- An effect node counts as one of the project's nodes. Its graph counts
+  towards the aggregate graph node and edge limits, and the effect towards
+  the 128 programs. Work charges the graph's per-frame cost, plus two units
+  per input channel, for every frame of the render, as a shared graph's is
+  charged. A delay line's memory counts with the native delays and reverbs
+  against `PlanLimits::max_production_delay_cells`.
+- Native archives and the generic renderer do not yet support effects and
+  refuse them with `E_CAPABILITY`.
+
 ## Graph processors
 
 Connections use existing `connect { from = &source:out; to = &destination:in; }`
@@ -334,12 +410,16 @@ is rejected, including mixed audio/modulation cycles.
 | `synth.bow/1` | `ratio` (1; 1/8…8), `dynamics` (1/2; 0…1), `position` (1/8; 1/10…1/7), `vibrato` (25/2; 0…50, a number of cents), `rate` (28/5 Hz; 3…8 Hz), `attack` (80 ms; 5…500 ms), `timing` (18 ms; 0…40 ms), `spread` (1; 0…1), `width` (7/10; 0…2), `pan` (0; −1…1), `level` (1; 0…16); optional `config.players` (1; 1…16), `config.body` (`violin`, `viola`, `cello`, `bass` or `none`; `violin`), `config.channels` (1; 1…2) and `config.seed` (1); voice-only, no inputs (see [Bowed strings](#bowed-strings)) | Mono, or stereo with `channels = 2` |
 | `synth.mix/1` | Required `config.channels`; no parameters | Mono/stereo sum |
 | `synth.pan/1` | `pan` (0; −1…1) | Equal-power stereo from mono |
+| `synth.balance/1` | `balance` (0; −1…1); stereo input | Stereo, the far side lowered (see [Stereo balance and width](#stereo-balance-and-width)) |
+| `synth.width/1` | `width` (1; 0…4); stereo input | Stereo, mid and side reweighted |
+| `synth.delay/1` | `time` (½ s, or 1 q on the score clock; above 0 up to 60 s or 256 q, and per frame one frame through `max`), `feedback` (0; 0…99/100), `damping` (0; 0…1); required `config.channels` and `config.max` (seconds, above 0 up to 60 s), optional `config.clock` (`seconds` or `score`; `seconds`); effects only (see [Delay line](#delay-line)) | Same channels as input |
 
 Numbers are dimensionless; seconds accept `s` and `ms`, hertz accept `Hz` and
-`kHz`. Parameters and controls use exact rationals until the DSP boundary.
+`kHz`, and a delay's length on the score clock accepts quarter notes, `q`. Parameters and controls use exact rationals until the DSP boundary.
 Unknown fields, wrong units, invalid ranges, and nonfinite values fail.
 Oscillators, noise, the modal bank and bowed strings are voice-only; high-pass, the resonant filter and the
-drive are allowed in both voice and shared graphs. ADSR attack/decay/sustain/curve and oscillator/LFO phase
+drive are allowed in both voice and shared graphs, as are balance and width. The delay line is allowed only in
+an [effect](#effects); in an instrument it is `E_CAPABILITY`. ADSR attack/decay/sustain/curve and oscillator/LFO phase
 are captured at note-on (shared LFO phase at render reset). Release is captured
 at note-off. Other parameters are sampled each frame. Shared LFO phase controls
 accept defaults, presets, and instance values at render reset; they cannot be
@@ -645,6 +725,85 @@ Band limiting the underlying wave does not eliminate modulation sidebands or
 bank-switching artifacts. Strong/high-frequency FM can still alias; automated
 spectral fixtures must characterize this residual behavior. See Nielsen's
 [DAFx 2020 discussion of through-zero FM and antialiasing](https://karmafx.net/docs/karmafx_DAFx2020_paper_61.pdf).
+
+### Stereo balance and width
+
+Both take a stereo input and give a stereo output.
+
+- **`synth.balance/1`** lowers the side away from `balance`, `b`, and passes
+  the other unchanged: the left is multiplied by `cos(π/2 · max(b, 0))` and
+  the right by `cos(π/2 · max(−b, 0))`. At 0 the signal passes unchanged; at
+  1 the left is exactly silent, and at −1 the right. Unlike
+  [`synth.pan/1`](#graph-processors), which places a mono signal, it keeps a
+  stereo source's own image.
+- **`synth.width/1`** reweights the mid and side signals. With
+  `M = (L + R)/2` and `S = (L − R)/2`, the output is `M + w·S` on the left
+  and `M − w·S` on the right, for `width` `w`. At 0 the output is mono, at 1
+  it equals the input, and above 1 it is wider.
+
+A top-level score-clock `core.lfo/1` on an effect control that targets
+`balance` moves a stereo part from side to side in time with the tempo.
+
+### Delay line
+
+`synth.delay/1` delays its input by a length that is a parameter, so it can
+change from frame to frame, and feeds its delayed signal back inside the
+node. Only an [effect](#effects) may hold one.
+
+```maac
+effect echo {
+  channels = 2;
+  shared main {
+    channels = 2; output = &out:out;
+    node line { type = "synth.delay/1"; config = { channels = 2; clock = score; max = 2s; };
+                params = { time = 3/4q; feedback = 0.35; damping = 0.5; }; }
+    node tone { type = "synth.onepole/1"; config = { channels = 2; }; params = { cutoff = 4000Hz; }; }
+    node wet { type = "synth.gain/1"; config = { channels = 2; }; params = { level = 0.25; }; }
+    node out { type = "synth.mix/1"; config = { channels = 2; }; }
+    connect in_line { from = &input:out; to = &line:in; }
+    connect line_tone { from = &line:out; to = &tone:in; }
+    connect tone_wet { from = &tone:out; to = &wet:in; }
+    connect dry { from = &input:out; to = &out:in; }
+    connect wet_out { from = &wet:out; to = &out:in; }
+  }
+  control time { target = &main.line.params.time; default = 3/4q; }
+  control return { target = &main.wet.params.level; default = 0.25; }
+}
+```
+
+**Configuration.** `channels` (1 or 2) is required. `max`, the longest the
+delay may be in seconds, above 0 and at most 60 s, is required: the line
+holds `ceil(48000 · max) + 2` frames per channel, and that memory counts
+against the production delay-cell limit. `clock`, `seconds` or `score`,
+default `seconds`, says how `time` counts.
+
+**Length.**
+- On the seconds clock, `time` is in seconds: the line reads its input
+  `time` seconds ago, `48000 · time` frames.
+- On the score clock, `time` is in quarter notes of score time. At engine
+  instant `t` the line reads the input from the instant `T(T⁻¹(t) − d)` of
+  the [tempo map](../MaaC-1-Specification.md#51-tempo-map), for `time = d`.
+  An echo of a note at score position `q` therefore sounds at `q + d`, on
+  the beat, through tempo ramps. During the tail the length holds the value
+  it had at the score end. The tempo map is evaluated in binary64.
+- `time` is sampled every frame and may be automated and modulated; an LFO
+  on it makes a chorus or a flanger. The read position falls between
+  frames and is interpolated linearly between the two nearest written
+  frames. A length below one frame or above `max` is `E_RANGE` at the frame
+  where it occurs. Reads before the reset origin are zero.
+
+**Feedback.** Each frame, for each channel independently, the line reads its
+delayed value `r`, outputs it, and writes `input + feedback · f`, where
+`f = (1 − damping/2) · r + (damping/2) · r_prev` and `r_prev` is the
+previous frame's `r`. This is the damping `fx.reverb/1` applies in its loop:
+it darkens each repeat. The output is the delayed signal only; an effect
+mixes it with the dry signal, as above.
+
+**State and work.** The line and `r_prev` reset at the reset origin and run
+through the tail. Work charges 1 unit per sample, or 2 on the score clock,
+which evaluates the tempo map and its inverse each frame: on an Apple M1, 40
+chained lines in an effect took 14 ns and 34 ns per line and frame, where
+`synth.drive/1`, charged 2, took 67 ns.
 
 ### Modal bank
 

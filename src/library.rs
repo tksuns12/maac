@@ -10,9 +10,9 @@ use crate::bundle::{normalize_file_reference, ResolvedBundle, MAX_BUNDLE_SOURCE_
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Diagnostics, Span};
 use crate::exact::Rational;
 use crate::graph::{
-    parameter_descriptor_for_stage, Control, ControlTarget, GraphNode, GraphProcessor,
-    GraphProgram, GraphStage, GraphUnit, InstrumentProgram, Modulation, ParameterSpec,
-    ParameterTarget, ProgramSource, MAX_EMBEDDED_SAMPLES, MAX_GRAPH_PROGRAMS,
+    parameter_descriptor_for_stage, Control, ControlTarget, EffectProgram, GraphNode,
+    GraphProcessor, GraphProgram, GraphStage, GraphUnit, InstrumentProgram, Modulation,
+    ParameterSpec, ParameterTarget, ProgramSource, MAX_EMBEDDED_SAMPLES, MAX_GRAPH_PROGRAMS,
     MAX_TOTAL_GRAPH_EDGES, MAX_TOTAL_GRAPH_NODES,
 };
 use crate::kit_instrument::{
@@ -72,12 +72,16 @@ pub struct ResolvedInstance {
     pub params: BTreeMap<String, Rational>,
     /// Whether `program_id` names a kit, which receives hits.
     pub kit: bool,
+    /// For an effect, the width of its `in`; `program_id` then names an
+    /// effect.
+    pub effect_input: Option<u8>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct LibrarySet {
     pub programs: Vec<InstrumentProgram>,
     pub kits: Vec<KitProgram>,
+    pub effects: Vec<EffectProgram>,
     pub wavetables: Vec<Wavetable>,
     pub wavetable_sources: Vec<WavetableSource>,
     pub samples: Vec<InstrumentSample>,
@@ -90,6 +94,7 @@ pub struct LibrarySet {
     pattern_source_paths: BTreeMap<String, Vec<String>>,
     program_exports: BTreeMap<ExportKey, usize>,
     kit_exports: BTreeMap<ExportKey, usize>,
+    effect_exports: BTreeMap<ExportKey, usize>,
     presets: BTreeMap<ExportKey, Preset>,
     imports: BTreeMap<String, BTreeMap<String, String>>,
 }
@@ -106,7 +111,12 @@ impl LibrarySet {
         let instrument_keys = export_keys(bundle, "instrument");
         let wavetable_keys = export_keys(bundle, "wavetable");
         let sample_keys = export_keys(bundle, "sample");
-        preflight(bundle, instrument_keys.len(), wavetable_keys.len())?;
+        let effect_keys = export_keys(bundle, "effect");
+        preflight(
+            bundle,
+            instrument_keys.len().saturating_add(effect_keys.len()),
+            wavetable_keys.len(),
+        )?;
         if sample_keys.len() > crate::sample_instrument::MAX_LIBRARY_SAMPLE_DECLARATIONS {
             return Err(simple_error(
                 DiagnosticCode::ResourceLimit,
@@ -220,6 +230,23 @@ impl LibrarySet {
             )?);
         }
 
+        let effect_exports = effect_keys
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(index, key)| (key, index))
+            .collect::<BTreeMap<_, _>>();
+        let mut effects = Vec::with_capacity(effect_keys.len());
+        for (index, (file, object_id)) in effect_keys.iter().enumerate() {
+            effects.push(lower_effect(
+                bundle,
+                file,
+                &bundle.documents[file].objects[object_id],
+                format!("effect_{index}"),
+                &exports,
+            )?);
+        }
+
         let mut presets = BTreeMap::new();
         for (file, object_id) in export_keys(bundle, "preset") {
             let object = &bundle.documents[&file].objects[&object_id];
@@ -233,6 +260,8 @@ impl LibrarySet {
                     &programs,
                     &kit_exports,
                     &kits,
+                    &effect_exports,
+                    &effects,
                 )?,
             );
         }
@@ -242,6 +271,7 @@ impl LibrarySet {
         Ok(Self {
             programs,
             kits,
+            effects,
             wavetables,
             wavetable_sources,
             samples,
@@ -253,6 +283,7 @@ impl LibrarySet {
             pattern_source_paths: documents.pattern_source_paths,
             program_exports,
             kit_exports,
+            effect_exports,
             presets,
             imports: bundle.imports.clone(),
         })
@@ -264,6 +295,9 @@ impl LibrarySet {
         node: &Object,
     ) -> Result<ResolvedInstance, Diagnostics> {
         require_kind(node, "node", file)?;
+        if node.field("effect").is_some() {
+            return self.resolve_effect_instance(file, node);
+        }
         exact_fields(
             node,
             &["config", "instrument", "params", "preset"],
@@ -335,6 +369,7 @@ impl LibrarySet {
             voices,
             params,
             kit: false,
+            effect_input: None,
         })
     }
 
@@ -398,7 +433,124 @@ impl LibrarySet {
             voices: kit.voices(),
             params,
             kit: true,
+            effect_input: None,
         })
+    }
+
+    /// An effect instance layers the effect's control defaults, a preset,
+    /// and its own params. It has no voices, so it takes no config.
+    fn resolve_effect_instance(
+        &self,
+        file: &str,
+        node: &Object,
+    ) -> Result<ResolvedInstance, Diagnostics> {
+        exact_fields(node, &["effect", "params", "preset"], &["effect"], file)?;
+        no_children(node, file)?;
+        let key = resolve_export_key_from_maps(
+            file,
+            reference_field(node, "effect", file)?,
+            self.imports.get(file),
+        )?;
+        let index = *self.effect_exports.get(&key).ok_or_else(|| {
+            object_error(
+                DiagnosticCode::Reference,
+                file,
+                node,
+                "effect reference does not name an effect export",
+            )
+        })?;
+        let effect = &self.effects[index];
+        let mut params = effect
+            .controls
+            .iter()
+            .map(|(name, control)| (name.clone(), control.default.clone()))
+            .collect::<BTreeMap<_, _>>();
+        if let Some(field) = node.field("preset") {
+            let preset_key = resolve_export_key_from_maps(
+                file,
+                expect_reference(field, file, node)?,
+                self.imports.get(file),
+            )?;
+            let preset = self.presets.get(&preset_key).ok_or_else(|| {
+                field_error(
+                    DiagnosticCode::Reference,
+                    file,
+                    node,
+                    field,
+                    "preset reference does not name a preset export",
+                )
+            })?;
+            if preset.instrument != key {
+                return Err(field_error(
+                    DiagnosticCode::Reference,
+                    file,
+                    node,
+                    field,
+                    "preset selects a different effect",
+                ));
+            }
+            params.extend(preset.params.clone());
+        }
+        if let Some(field) = node.field("params") {
+            params.extend(lower_control_values(field, file, node, &|name| {
+                effect.control_spec(name)
+            })?);
+        }
+        Ok(ResolvedInstance {
+            program_id: effect.id.clone(),
+            channels: effect.channels(),
+            voices: 0,
+            params,
+            kit: false,
+            effect_input: Some(effect.input_channels),
+        })
+    }
+
+    /// The metadata of a resolved instance's public control.
+    pub(crate) fn instance_control_spec(
+        &self,
+        instance: &ResolvedInstance,
+        name: &str,
+    ) -> Option<ParameterSpec> {
+        if instance.effect_input.is_some() {
+            self.effects
+                .iter()
+                .find(|effect| effect.id == instance.program_id)?
+                .control_spec(name)
+        } else if instance.kit {
+            self.kits
+                .iter()
+                .find(|kit| kit.id == instance.program_id)?
+                .control_spec(&self.programs, name)
+        } else {
+            self.programs
+                .iter()
+                .find(|program| program.id == instance.program_id)?
+                .control_spec(name)
+        }
+    }
+
+    /// The public control names of a resolved instance.
+    pub(crate) fn instance_control_names(&self, instance: &ResolvedInstance) -> Vec<String> {
+        if instance.effect_input.is_some() {
+            self.effects
+                .iter()
+                .find(|effect| effect.id == instance.program_id)
+                .map(|effect| effect.controls.keys().cloned().collect())
+                .unwrap_or_default()
+        } else if instance.kit {
+            self.kits
+                .iter()
+                .find(|kit| kit.id == instance.program_id)
+                .map(|kit| kit.controls.keys().cloned().collect())
+                .unwrap_or_default()
+        } else {
+            self.programs
+                .iter()
+                .find(|program| program.id == instance.program_id)
+                .map(|program| program.controls.keys().cloned().collect())
+                .unwrap_or_default()
+        }
     }
 
     pub fn entry_document(&self) -> Document {
@@ -455,7 +607,7 @@ fn resolve_entry_document(bundle: &ResolvedBundle) -> Result<ResolvedEntryDocume
     entry_document.objects.retain(|_, object| {
         !matches!(
             object.kind.as_str(),
-            "library" | "import" | "instrument" | "preset" | "wavetable" | "sample"
+            "library" | "import" | "instrument" | "effect" | "preset" | "wavetable" | "sample"
         )
     });
 
@@ -884,6 +1036,7 @@ fn validate_documents(bundle: &ResolvedBundle) -> Result<Vec<LibraryMetadata>, D
                     "library"
                         | "import"
                         | "instrument"
+                        | "effect"
                         | "preset"
                         | "wavetable"
                         | "sample"
@@ -956,7 +1109,7 @@ fn preflight(bundle: &ResolvedBundle, programs: usize, tables: usize) -> Result<
         for instrument in document
             .objects
             .values()
-            .filter(|object| object.kind == "instrument")
+            .filter(|object| matches!(object.kind.as_str(), "instrument" | "effect"))
         {
             for graph in instrument
                 .children
@@ -1615,6 +1768,87 @@ fn lower_instrument(
     Ok(program)
 }
 
+/// Lower an effect declaration: one `shared` graph that processes the audio
+/// at the node's `in`, and `control` children that expose its parameters.
+fn lower_effect(
+    bundle: &ResolvedBundle,
+    file: &str,
+    object: &Object,
+    id: String,
+    exports: &ResourceExports,
+) -> Result<EffectProgram, Diagnostics> {
+    exact_fields(object, &["channels", "input"], &["channels"], file)?;
+    let declared_channels = integer_field(object, "channels", file, 1, 2)? as u8;
+    let input_channels = match object.field("input") {
+        Some(_) => integer_field(object, "input", file, 1, 2)? as u8,
+        None => declared_channels,
+    };
+    for child in object.children.values() {
+        if !matches!(child.kind.as_str(), "shared" | "control") {
+            return Err(object_error(
+                DiagnosticCode::UnknownKind,
+                file,
+                child,
+                format!("unexpected effect child `{}`", child.kind),
+            ));
+        }
+    }
+    let graphs = object
+        .children
+        .values()
+        .filter(|child| child.kind == "shared")
+        .collect::<Vec<_>>();
+    if graphs.len() != 1 {
+        return Err(object_error(
+            DiagnosticCode::Conflict,
+            file,
+            object,
+            "effect requires exactly one shared graph",
+        ));
+    }
+    let graph = lower_graph(bundle, file, graphs[0], GraphStage::Shared, exports)?;
+    let graph_names = BTreeMap::from([(graphs[0].id.as_str(), GraphStage::Shared)]);
+    let mut controls = BTreeMap::new();
+    for control in object
+        .children
+        .values()
+        .filter(|child| child.kind == "control")
+    {
+        // An effect has no voice graph; its one graph stands in for it, and
+        // the graph names map only to the shared stage.
+        controls.insert(
+            control.id.clone(),
+            lower_control(control, file, &graph_names, &graph, Some(&graph))?,
+        );
+    }
+    let program = EffectProgram {
+        id,
+        input_channels,
+        graph,
+        controls,
+        source: ProgramSource {
+            file: file.to_owned(),
+            object: object.id.clone(),
+            span: Some(SourceSpan {
+                start: object.span.start,
+                end: object.span.end,
+            }),
+        },
+    };
+    if program.channels() != declared_channels {
+        return Err(object_error(
+            DiagnosticCode::PortType,
+            file,
+            object,
+            "effect channels do not match its graph's output",
+        ));
+    }
+    program
+        .validate()
+        .map_err(|error| plan_diagnostics(error, file, object))?;
+    Ok(program)
+}
+
 /// Lower a kit declaration: `piece` children that play other instruments by
 /// hit key, and `control` children that expose piece controls.
 fn lower_kit(
@@ -1709,6 +1943,8 @@ fn lower_kit(
                 program_exports,
                 programs,
                 kit_exports,
+                &[],
+                &BTreeMap::new(),
                 &[],
             )?;
             if preset.instrument != instrument {
@@ -2135,6 +2371,72 @@ fn lower_graph_node(
         "synth.key/1" => no_config(config, file, object, &identity, GraphProcessor::Key)?,
         "synth.lfo/1" => no_config(config, file, object, &identity, GraphProcessor::Lfo)?,
         "synth.pan/1" => no_config(config, file, object, &identity, GraphProcessor::Pan)?,
+        "synth.balance/1" => no_config(config, file, object, &identity, GraphProcessor::Balance)?,
+        "synth.width/1" => no_config(config, file, object, &identity, GraphProcessor::Width)?,
+        "synth.delay/1" => {
+            let config = config.ok_or_else(|| {
+                object_error(
+                    DiagnosticCode::UnknownField,
+                    file,
+                    object,
+                    "processor `synth.delay/1` requires config",
+                )
+            })?;
+            if let Some(name) = config
+                .keys()
+                .find(|name| !["channels", "clock", "max"].contains(&name.as_str()))
+            {
+                return Err(field_error(
+                    DiagnosticCode::UnknownField,
+                    file,
+                    object,
+                    &config[name],
+                    "processor `synth.delay/1` config fields are channels, clock and max",
+                ));
+            }
+            let channels_field = config.get("channels").ok_or_else(|| {
+                object_error(
+                    DiagnosticCode::UnknownField,
+                    file,
+                    object,
+                    "synth.delay/1 requires config.channels",
+                )
+            })?;
+            let channels =
+                integer_value(&channels_field.value, file, object, channels_field, 1, 2)? as u8;
+            let clock = match config.get("clock") {
+                None => crate::graph::DelayClock::Seconds,
+                Some(field) => match field.value.as_symbol() {
+                    Some("seconds") => crate::graph::DelayClock::Seconds,
+                    Some("score") => crate::graph::DelayClock::Score,
+                    _ => {
+                        return Err(field_error(
+                            DiagnosticCode::Range,
+                            file,
+                            object,
+                            field,
+                            "delay clock must be seconds or score",
+                        ))
+                    }
+                },
+            };
+            let max_field = config.get("max").ok_or_else(|| {
+                object_error(
+                    DiagnosticCode::Range,
+                    file,
+                    object,
+                    "synth.delay/1 requires config.max, its longest length in seconds",
+                )
+            })?;
+            let max = source_number(&max_field.value, GraphUnit::Seconds).map_err(|message| {
+                field_error(DiagnosticCode::Unit, file, object, max_field, message)
+            })?;
+            GraphProcessor::Delay {
+                channels,
+                clock,
+                max,
+            }
+        }
         "synth.gain/1" => GraphProcessor::Gain {
             channels: config_channels(config, file, object, &identity)?,
         },
@@ -2418,6 +2720,7 @@ fn lower_control(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn lower_preset(
     bundle: &ResolvedBundle,
     file: &str,
@@ -2426,7 +2729,30 @@ fn lower_preset(
     programs: &[InstrumentProgram],
     kit_exports: &BTreeMap<ExportKey, usize>,
     kits: &[KitProgram],
+    effect_exports: &BTreeMap<ExportKey, usize>,
+    effects: &[EffectProgram],
 ) -> Result<Preset, Diagnostics> {
+    if object.field("effect").is_some() {
+        exact_fields(object, &["effect", "params"], &["effect", "params"], file)?;
+        no_children(object, file)?;
+        let effect = resolve_export_key(bundle, file, reference_field(object, "effect", file)?)?;
+        let index = *effect_exports.get(&effect).ok_or_else(|| {
+            object_error(
+                DiagnosticCode::Reference,
+                file,
+                object,
+                "preset effect reference does not name an effect export",
+            )
+        })?;
+        let field = object.field("params").expect("required field checked");
+        let params = lower_control_values(field, file, object, &|name| {
+            effects[index].control_spec(name)
+        })?;
+        return Ok(Preset {
+            instrument: effect,
+            params,
+        });
+    }
     exact_fields(
         object,
         &["instrument", "params"],
@@ -2583,7 +2909,15 @@ fn source_number(value: &Value, expected: GraphUnit) -> Result<Rational, &'stati
                 unit: Unit::KHz,
             },
         ) => Ok(value * Rational::from_integer(BigInt::from(1_000))),
+        (
+            GraphUnit::Quarter,
+            ValueKind::Quantity {
+                value,
+                unit: Unit::Q,
+            },
+        ) => Ok(value.clone()),
         (GraphUnit::Dimensionless, _) => Err("parameter requires a dimensionless number"),
+        (GraphUnit::Quarter, _) => Err("parameter requires quarter notes using q"),
         (GraphUnit::Seconds, _) => Err("parameter requires seconds using s or ms"),
         (GraphUnit::Hertz, _) => Err("parameter requires frequency using Hz or kHz"),
     }

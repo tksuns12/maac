@@ -728,6 +728,13 @@ pub enum Processor {
         kit: String,
         channels: u8,
     },
+    /// An effect instance, which processes the audio summed at its `in`:
+    /// `effect` names an entry of the instrument resources' `effects`.
+    Effect {
+        effect: String,
+        channels: u8,
+        input_channels: u8,
+    },
 }
 
 impl Processor {
@@ -801,6 +808,7 @@ impl Processor {
             Self::Sum { .. } => "sum",
             Self::Instrument { .. } => "instrument",
             Self::KitInstrument { .. } => "kit_instrument",
+            Self::Effect { .. } => "effect",
         }
     }
 
@@ -835,7 +843,7 @@ impl Processor {
             Self::Limiter { .. } => matches!(parameter, "gain" | "ceiling" | "release"),
             Self::Pan => parameter == "pan",
             Self::Sum { .. } => false,
-            Self::Instrument { .. } | Self::KitInstrument { .. } => false,
+            Self::Instrument { .. } | Self::KitInstrument { .. } | Self::Effect { .. } => false,
         }
     }
 
@@ -2345,7 +2353,9 @@ impl<'a> PlanView<'a> {
                         matches!(
                             node.processor,
                             ProcessorView::Core(
-                                Processor::Instrument { .. } | Processor::KitInstrument { .. }
+                                Processor::Instrument { .. }
+                                    | Processor::KitInstrument { .. }
+                                    | Processor::Effect { .. }
                             )
                         )
                     })
@@ -2363,7 +2373,9 @@ impl<'a> PlanView<'a> {
                         matches!(
                             n.processor,
                             ProcessorView::Core(
-                                Processor::Instrument { .. } | Processor::KitInstrument { .. }
+                                Processor::Instrument { .. }
+                                    | Processor::KitInstrument { .. }
+                                    | Processor::Effect { .. }
                             )
                         )
                     })
@@ -2539,6 +2551,14 @@ impl<'a> PlanView<'a> {
         self.instruments?.kits.iter().find(|kit| kit.id == id)
     }
 
+    /// Look up an effect embedded in this standalone plan.
+    pub fn effect_program(&self, id: &str) -> Option<&'a crate::graph::EffectProgram> {
+        self.instruments?
+            .effects
+            .iter()
+            .find(|effect| effect.id == id)
+    }
+
     /// Return the processor metadata for an instrument or kit instance's
     /// public control. Core processors and unknown controls return `None`.
     pub fn instrument_control_spec(
@@ -2553,6 +2573,7 @@ impl<'a> PlanView<'a> {
             Processor::KitInstrument { kit, .. } => self
                 .kit_program(kit)?
                 .control_spec(&self.instruments?.programs, control),
+            Processor::Effect { effect, .. } => self.effect_program(effect)?.control_spec(control),
             _ => None,
         }
     }
@@ -2595,6 +2616,32 @@ impl<'a> PlanView<'a> {
                         "E_UNKNOWN_FIELD",
                         format!("nodes.{}.params.{name}", node.id),
                         "kit has no such public control",
+                    )
+                })?;
+                validate_parameter_spec(value, &spec, format!("nodes.{}.params.{name}", node.id))?;
+                params.insert(name.clone(), value.clone());
+            }
+            return Ok(params);
+        }
+        if let Processor::Effect { effect, .. } = node.processor.core()? {
+            let effect = self.effect_program(effect).ok_or_else(|| {
+                err(
+                    "E_REFERENCE",
+                    format!("nodes.{}.processor.effect", node.id),
+                    "effect does not exist",
+                )
+            })?;
+            let mut params = effect
+                .controls
+                .iter()
+                .map(|(name, control)| (name.clone(), control.default.clone()))
+                .collect::<BTreeMap<_, _>>();
+            for (name, value) in node.params {
+                let spec = effect.control_spec(name).ok_or_else(|| {
+                    err(
+                        "E_UNKNOWN_FIELD",
+                        format!("nodes.{}.params.{name}", node.id),
+                        "effect has no such public control",
                     )
                 })?;
                 validate_parameter_spec(value, &spec, format!("nodes.{}.params.{name}", node.id))?;
@@ -2918,6 +2965,9 @@ impl<'a> PlanView<'a> {
                     .saturating_add(program.voice.nodes.len())
                     .saturating_add(program.shared.as_ref().map_or(0, |graph| graph.nodes.len()))
             });
+            let graph_nodes = resources.effects.iter().fold(graph_nodes, |total, effect| {
+                total.saturating_add(effect.graph.nodes.len())
+            });
             let graph_edges = resources.programs.iter().fold(0usize, |total, program| {
                 let count = |graph: &crate::graph::GraphProgram| {
                     graph
@@ -2929,13 +2979,22 @@ impl<'a> PlanView<'a> {
                     .saturating_add(count(&program.voice))
                     .saturating_add(program.shared.as_ref().map_or(0, count))
             });
+            let graph_edges = resources.effects.iter().fold(graph_edges, |total, effect| {
+                total
+                    .saturating_add(effect.graph.connections.len())
+                    .saturating_add(effect.graph.modulations.len())
+            });
             let raw_samples = resources
                 .wavetables
                 .iter()
                 .map(|table| table.samples.len())
                 .chain(resources.samples.iter().map(|sample| sample.samples.len()))
                 .fold(0usize, usize::saturating_add);
-            if resources.programs.len() > limits.max_instrument_programs
+            if resources
+                .programs
+                .len()
+                .saturating_add(resources.effects.len())
+                > limits.max_instrument_programs
                 || graph_nodes > limits.max_graph_nodes
                 || graph_edges > limits.max_graph_edges
                 || resources.wavetables.len() > limits.max_wavetables
@@ -2944,6 +3003,10 @@ impl<'a> PlanView<'a> {
                     .programs
                     .iter()
                     .any(|program| program.controls.len() > limits.max_instrument_controls)
+                || resources
+                    .effects
+                    .iter()
+                    .any(|effect| effect.controls.len() > limits.max_instrument_controls)
             {
                 return Err(err(
                     "E_RESOURCE_LIMIT",
@@ -3061,6 +3124,24 @@ impl<'a> PlanView<'a> {
                                 .saturating_add(program.source.span.is_some() as usize)
                         })
                         .fold(0usize, usize::saturating_add),
+                )
+                .saturating_add(
+                    resources
+                        .effects
+                        .iter()
+                        .map(|effect| {
+                            let graph_params = effect
+                                .graph
+                                .nodes
+                                .iter()
+                                .map(|node| node.params.len())
+                                .fold(0usize, usize::saturating_add);
+                            3usize
+                                .saturating_add(effect.controls.len())
+                                .saturating_add(graph_params)
+                                .saturating_add(effect.source.span.is_some() as usize)
+                        })
+                        .fold(0usize, usize::saturating_add),
                 );
 
             for (program_index, program) in resources.programs.iter().enumerate() {
@@ -3102,6 +3183,41 @@ impl<'a> PlanView<'a> {
                         &control.default,
                         limits,
                         format!("instruments.programs[{program_index}].controls.{name}.default"),
+                    )?;
+                }
+            }
+            for (effect_index, effect) in resources.effects.iter().enumerate() {
+                let path = format!("instruments.effects[{effect_index}]");
+                if let Some(span) = effect.source.span {
+                    if span.start > span.end || span.end > limits.max_json_bytes {
+                        return Err(err(
+                            "E_RANGE",
+                            format!("{path}.source.span"),
+                            "effect source span is not a bounded half-open byte range",
+                        ));
+                    }
+                }
+                for (node_index, node) in effect.graph.nodes.iter().enumerate() {
+                    for (name, value) in &node.params {
+                        rational_bit_limit(
+                            value,
+                            limits,
+                            format!("{path}.graph.nodes[{node_index}].params.{name}"),
+                        )?;
+                    }
+                }
+                for (edge_index, modulation) in effect.graph.modulations.iter().enumerate() {
+                    rational_bit_limit(
+                        &modulation.depth,
+                        limits,
+                        format!("{path}.graph.modulations[{edge_index}].depth"),
+                    )?;
+                }
+                for (name, control) in &effect.controls {
+                    rational_bit_limit(
+                        &control.default,
+                        limits,
+                        format!("{path}.controls.{name}.default"),
                     )?;
                 }
             }
@@ -3328,6 +3444,9 @@ impl<'a> PlanView<'a> {
             }
             if let ProcessorView::Core(Processor::KitInstrument { kit, .. }) = node.processor {
                 count_string(kit, format!("nodes.{}.processor.kit", node.id))?;
+            }
+            if let ProcessorView::Core(Processor::Effect { effect, .. }) = node.processor {
+                count_string(effect, format!("nodes.{}.processor.effect", node.id))?;
             }
             for key in node.params.keys() {
                 count_string(key, format!("nodes.{}.params", node.id))?;
@@ -4188,6 +4307,41 @@ impl<'a> PlanView<'a> {
                         ));
                     }
                 }
+                Processor::Effect {
+                    effect,
+                    channels,
+                    input_channels,
+                } => {
+                    validate_identifier_limit(
+                        effect,
+                        format!("nodes.{}.processor.effect", node.id),
+                        limits.max_id_bytes,
+                    )?;
+                    for (name, count) in
+                        [("channels", channels), ("input_channels", input_channels)]
+                    {
+                        validate_channel_count(
+                            *count,
+                            limits,
+                            format!("nodes.{}.processor.{name}", node.id),
+                            "effect channels",
+                        )?;
+                    }
+                    let effect = self.effect_program(effect).ok_or_else(|| {
+                        err(
+                            "E_REFERENCE",
+                            format!("nodes.{}.processor.effect", node.id),
+                            "effect does not exist",
+                        )
+                    })?;
+                    if effect.channels() != *channels || effect.input_channels != *input_channels {
+                        return Err(err(
+                            "E_PORT_TYPE",
+                            format!("nodes.{}.processor.channels", node.id),
+                            "effect instance channels differ from its effect",
+                        ));
+                    }
+                }
             }
             match node.processor.core()? {
                 Processor::Compressor {
@@ -4231,7 +4385,9 @@ impl<'a> PlanView<'a> {
                 )?;
                 if matches!(
                     node.processor.core()?,
-                    Processor::Instrument { .. } | Processor::KitInstrument { .. }
+                    Processor::Instrument { .. }
+                        | Processor::KitInstrument { .. }
+                        | Processor::Effect { .. }
                 ) {
                     let spec = self
                         .instrument_control_spec(node, parameter)
@@ -4286,7 +4442,11 @@ impl<'a> PlanView<'a> {
         match node.processor {
             ProcessorView::Constant if name == "value" => Ok(()),
             ProcessorView::Kit { .. } if name == "level" => Ok(()),
-            ProcessorView::Core(Processor::Instrument { .. } | Processor::KitInstrument { .. }) => {
+            ProcessorView::Core(
+                Processor::Instrument { .. }
+                | Processor::KitInstrument { .. }
+                | Processor::Effect { .. },
+            ) => {
                 self.instrument_control_spec(node, name)
                     .ok_or_else(missing)?;
                 Ok(())
@@ -4384,6 +4544,7 @@ impl<'a> PlanView<'a> {
                         | Processor::Compressor { .. }
                         | Processor::Reverb { .. }
                         | Processor::Pan
+                        | Processor::Effect { .. }
                 )
             );
             if requires_audio_input
@@ -5059,7 +5220,9 @@ impl<'a> PlanView<'a> {
                 }
             } else if matches!(
                 node.processor.core()?,
-                Processor::Instrument { .. } | Processor::KitInstrument { .. }
+                Processor::Instrument { .. }
+                    | Processor::KitInstrument { .. }
+                    | Processor::Effect { .. }
             ) {
                 let spec = self
                     .instrument_control_spec(*node, &lane.target.port)
@@ -5810,6 +5973,64 @@ impl<'a> PlanView<'a> {
                     })?;
                     16 + 50 * u64::from(*channels) + 2 * (u64::from(*lookahead_frames) + 1)
                 }
+                // An effect's graph runs every frame of the render, as an
+                // instrument's shared graph does, after summing its inputs.
+                // A reset-rate modulation is previewed once, at construction.
+                Processor::Effect {
+                    effect,
+                    input_channels,
+                    ..
+                } => {
+                    let program = self.effect_program(effect).ok_or_else(|| {
+                        err(
+                            "E_REFERENCE",
+                            format!("nodes.{}.processor.effect", node.id),
+                            "effect does not exist",
+                        )
+                    })?;
+                    let graph = &program.graph;
+                    let cost =
+                        graph_sample_cost(graph).saturating_add(2 * u64::from(*input_channels));
+                    // Each delay line's history counts with the native
+                    // delays and reverbs.
+                    for graph_node in &graph.nodes {
+                        if let crate::graph::GraphProcessor::Delay { channels, max, .. } =
+                            &graph_node.processor
+                        {
+                            let count = crate::graph::delay_line_frames(max)
+                                .and_then(|frames| frames.checked_mul(usize::from(*channels)))
+                                .ok_or_else(|| {
+                                    err("E_RESOURCE_LIMIT", "production", "native storage overflow")
+                                })?;
+                            cells = cells.checked_add(count).ok_or_else(|| {
+                                err("E_RESOURCE_LIMIT", "production", "native storage overflow")
+                            })?;
+                        }
+                    }
+                    let resets = graph.modulations.iter().any(|modulation| {
+                        graph
+                            .nodes
+                            .iter()
+                            .find(|candidate| candidate.id == modulation.to.node)
+                            .and_then(|target| {
+                                crate::graph::parameter_descriptor_for_stage(
+                                    &target.processor,
+                                    &modulation.to.parameter,
+                                    crate::graph::GraphStage::Shared,
+                                )
+                            })
+                            .is_some_and(|spec| spec.rate == ParameterRate::Reset)
+                    });
+                    if resets {
+                        let preview = cost
+                            .saturating_add(graph.nodes.len() as u64)
+                            .saturating_add(graph.modulations.len() as u64);
+                        work = work.checked_add(preview).ok_or_else(|| {
+                            err("E_RESOURCE_LIMIT", "production", "native work overflow")
+                        })?;
+                    }
+                    cost
+                }
                 _ => 0,
             };
             work =
@@ -6199,6 +6420,10 @@ fn graph_sample_cost(graph: &crate::graph::GraphProgram) -> u64 {
                 crate::graph::GraphProcessor::Pluck { .. } => crate::graph::PLUCK_SAMPLE_WORK,
                 crate::graph::GraphProcessor::Svf { .. } => crate::graph::SVF_SAMPLE_WORK,
                 crate::graph::GraphProcessor::Drive { .. } => crate::graph::DRIVE_SAMPLE_WORK,
+                crate::graph::GraphProcessor::Delay { clock, .. } => match clock {
+                    crate::graph::DelayClock::Seconds => crate::graph::DELAY_SAMPLE_WORK,
+                    crate::graph::DelayClock::Score => crate::graph::SCORE_DELAY_SAMPLE_WORK,
+                },
                 crate::graph::GraphProcessor::Modal { modes, strings } => {
                     crate::graph::modal_sample_work(modes, strings)
                 }
@@ -6559,13 +6784,20 @@ fn port_descriptor(node: NodeView<'_>, port: &str, input: bool) -> Option<PortDe
             })
         }
         (
-            Processor::Instrument { channels, .. } | Processor::KitInstrument { channels, .. },
+            Processor::Instrument { channels, .. }
+            | Processor::KitInstrument { channels, .. }
+            | Processor::Effect { channels, .. },
             false,
             "out",
         ) => Some(PortDescriptor {
             kind: PortKind::Audio,
             channels: *channels,
             summing: false,
+        }),
+        (Processor::Effect { input_channels, .. }, true, "in") => Some(PortDescriptor {
+            kind: PortKind::Audio,
+            channels: *input_channels,
+            summing: true,
         }),
         _ => None,
     }

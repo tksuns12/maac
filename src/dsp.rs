@@ -23,6 +23,7 @@ use crate::production_eq::Eq;
 use crate::production_limiter::{Limiter, LimiterParams};
 use crate::production_reverb::Reverb;
 use crate::tempo::TimeValue;
+use crate::voice::{CompiledEffect, EffectRuntime};
 use crate::voice::{CompiledInstrument, InstrumentRuntime};
 use crate::wavetable::TableBank;
 use num_bigint::BigInt;
@@ -354,6 +355,7 @@ impl<'a> DspEngine<'a> {
             }
         }
         let mut nodes = Vec::with_capacity(plan.nodes.len());
+        let mut effect_tempo: Option<Arc<crate::delay::TempoCurve>> = None;
         for (index, node) in plan.nodes.iter().enumerate() {
             let (mut state, compiled) = match node.processor {
                 ProcessorView::Lfo(config) => {
@@ -470,6 +472,29 @@ impl<'a> DspEngine<'a> {
                     &instrument_programs,
                     plan.output.sample_rate_hz,
                     &state.current_params,
+                )?);
+            }
+            if let ProcessorView::Core(Processor::Effect { effect, .. }) = node.processor {
+                let program = plan.effect_program(effect).ok_or_else(|| {
+                    RenderError::RenderState(format!(
+                        "effect node {} refers to a missing effect {effect}",
+                        node.id
+                    ))
+                })?;
+                let tempo = match &effect_tempo {
+                    Some(tempo) => Arc::clone(tempo),
+                    None => {
+                        let tempo =
+                            Arc::new(crate::delay::TempoCurve::new(plan.tempo, plan.output)?);
+                        effect_tempo = Some(Arc::clone(&tempo));
+                        tempo
+                    }
+                };
+                state.effect = Some(EffectRuntime::new(
+                    Arc::new(CompiledEffect::compile_validated(program)?),
+                    rate,
+                    &state.current_params,
+                    &tempo,
                 )?);
             }
             nodes.push(state);
@@ -1204,6 +1229,9 @@ impl<'a> DspEngine<'a> {
             if let Some(kit) = &mut node.kit_instrument {
                 kit.update_controls(&node.current_params)?;
             }
+            if let Some(effect) = &mut node.effect {
+                effect.update_controls(&node.current_params)?;
+            }
             self.parameters_settled[index] = true;
         }
         Ok(())
@@ -1275,6 +1303,15 @@ impl<'a> DspEngine<'a> {
                         "E_RANGE",
                         "modulations.target",
                         "kit control is outside its declared range",
+                    )
+                })?;
+            }
+            if let Some(effect) = &mut node.effect {
+                effect.update_controls(&node.current_params).map_err(|_| {
+                    crate::plan::err(
+                        "E_RANGE",
+                        "modulations.target",
+                        "effect control is outside its declared range",
                     )
                 })?;
             }
@@ -1484,6 +1521,30 @@ impl<'a> DspEngine<'a> {
     }
 
     fn process_node(&mut self, node_index: usize, frame: u64) -> Result<()> {
+        if self.nodes[node_index].effect.is_some() {
+            let mut input = [0.0; 2];
+            for &connection_index in &self.incoming[node_index] {
+                let source = &self.nodes[self.connections[connection_index].from].output;
+                for (channel, sample) in source.iter().enumerate().take(2) {
+                    input[channel] += sample;
+                }
+            }
+            if input.iter().any(|sample| !sample.is_finite()) {
+                return Err(RenderError::Nonfinite(format!(
+                    "effect node {} input sum is nonfinite",
+                    self.nodes[node_index].id
+                )));
+            }
+            let node = &mut self.nodes[node_index];
+            let output = node
+                .effect
+                .as_mut()
+                .expect("checked above")
+                .process(frame, input)?;
+            let channels = node.output.len();
+            node.output.copy_from_slice(&output[..channels]);
+            return Ok(());
+        }
         if let Some(matrix) = self.nodes[node_index].matrix {
             let connection = &self.connections[self.incoming[node_index][0]];
             let mut input = [0.0; 2];
@@ -1788,6 +1849,9 @@ impl<'a> DspEngine<'a> {
             Processor::Delay { .. } => unreachable!("delay uses the frame scheduler"),
             Processor::Instrument { .. } | Processor::KitInstrument { .. } => {
                 unreachable!("instruments render before the processor dispatch")
+            }
+            Processor::Effect { .. } => {
+                unreachable!("effects process before the processor dispatch")
             }
         }
         Ok(())
@@ -2356,6 +2420,7 @@ struct NodeState {
     voices: Vec<Voice>,
     instrument: Option<InstrumentRuntime>,
     kit_instrument: Option<KitInstrumentRuntime>,
+    effect: Option<EffectRuntime>,
     eq: Option<Eq>,
     compressor: Option<Compressor>,
     reverb: Option<Reverb>,
@@ -2387,9 +2452,9 @@ impl NodeState {
             Processor::Delay { channels, .. } => usize::from(channels),
             Processor::Matrix { outputs, .. } => usize::from(outputs),
             Processor::Pan => 2,
-            Processor::Instrument { channels, .. } | Processor::KitInstrument { channels, .. } => {
-                usize::from(channels)
-            }
+            Processor::Instrument { channels, .. }
+            | Processor::KitInstrument { channels, .. }
+            | Processor::Effect { channels, .. } => usize::from(channels),
         };
         let mut base_params = BTreeMap::new();
         match processor {
@@ -2429,8 +2494,9 @@ impl NodeState {
                     })?
                     .default_controls();
             }
-            // Kit control defaults arrive with the plan's resolved params.
-            Processor::KitInstrument { .. } => {}
+            // Kit and effect control defaults arrive with the plan's
+            // resolved params.
+            Processor::KitInstrument { .. } | Processor::Effect { .. } => {}
         }
         let eq = if let Processor::Eq { channels, mode } = processor {
             Some(Eq::new(channels, mode)?)
@@ -2519,6 +2585,7 @@ impl NodeState {
             voices: Vec::new(),
             instrument: None,
             kit_instrument: None,
+            effect: None,
             eq,
             compressor,
             reverb,
@@ -2549,6 +2616,7 @@ impl NodeState {
             voices: Vec::new(),
             instrument: None,
             kit_instrument: None,
+            effect: None,
             eq: None,
             compressor: None,
             reverb: None,
@@ -2577,6 +2645,7 @@ impl NodeState {
             voices: Vec::new(),
             instrument: None,
             kit_instrument: None,
+            effect: None,
             eq: None,
             compressor: None,
             reverb: None,
@@ -2609,6 +2678,7 @@ impl NodeState {
             voices: Vec::new(),
             instrument: None,
             kit_instrument: None,
+            effect: None,
             eq: None,
             compressor: None,
             reverb: None,
@@ -2676,6 +2746,9 @@ impl NodeState {
         }
         if let Some(kit) = &mut self.kit_instrument {
             kit.reset_state();
+        }
+        if let Some(effect) = &mut self.effect {
+            effect.reset_state();
         }
         if let Some(eq) = &mut self.eq {
             eq.reset();

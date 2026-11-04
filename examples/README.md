@@ -90,6 +90,27 @@ maac render core-modulation.plan.json -o core-modulation-from-plan.wav --format 
 See the [modulation contract](../docs/core-modulation.md) for waves, clocks,
 additive amounts, and supported continuous parameters.
 
+# Effects
+
+[`effects.maac`](effects.maac) is four bars on std/studio/1.2.0 instruments,
+two steady and two slowing from 112 to 84 bpm, with one
+[effect](../docs/instruments.md#effects) of each kind:
+
+- `bus_drive` on the drum kit: a drive whose `reference` holds the kit's
+  level, so it shaves 4.5 dB off the peaks without making the bus louder;
+- `chorus` on the electric piano: a short `synth.delay/1` whose length an
+  LFO sways, mixed with the dry signal and widened by `synth.width/1`;
+- `dotted_echo`, a send from the chorused piano: a `synth.delay/1` of
+  `3/4q` on the score clock, whose echoes stay on the beat as the tempo
+  slows, with feedback and damping;
+- `lean` on the pad: a `synth.balance/1` that a score-clock `core.lfo/1`
+  moves from side to side once a bar, keeping the pad's own stereo image.
+
+```sh
+maac build examples/effects.maac -o effects.wav
+maac analyze examples/effects.maac --profile song
+```
+
 # Event-rate modulation
 
 [`event-rate-modulation.maac`](event-rate-modulation.maac) modulates attack at

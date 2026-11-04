@@ -1,0 +1,140 @@
+maac 1;
+
+// Effects outside instruments: a drive on the drum bus, a chorus on the
+// electric piano, an echo counted in beats that stays on the beat as the
+// tempo slows, and a stereo pad that moves from side to side once a bar.
+//
+//    maac build examples/effects.maac -o effects.wav
+
+project effects {
+  score = [0q, 16q]; rate = 48000Hz; tail = 2s;
+  tempo = &clock; meter = &metre; output = &master:out;
+  requires = ["maac.production/1"];
+}
+// Steady for two bars, then slowing from 112 to 84 bpm over the last two.
+tempo clock { points = [(0q, 112bpm, step), (8q, 112bpm, linear), (16q, 84bpm, step)]; }
+meter metre { points = [(0q, 4, 4)]; }
+import studio { builtin = "std/studio/1.2.0"; }
+
+node drums { instrument = &studio.drums; }
+node keys { instrument = &studio.electric_piano; config = { voices = 16; }; }
+node pad { instrument = &studio.pad; config = { voices = 16; }; }
+
+// ---------------------------------------------------------------- effects
+// Warmth for a bus: a drive whose level holds for peaks near 1/4, so more
+// drive adds bite rather than loudness, and a gentle low-pass.
+effect bus_drive {
+  channels = 2;
+  shared main {
+    channels = 2; output = &tone:out;
+    node heat { type = "synth.drive/1"; config = { channels = 2; }; params = { drive = 3; reference = 1/4; }; }
+    node tone { type = "synth.onepole/1"; config = { channels = 2; }; params = { cutoff = 9000Hz; }; }
+    connect in_heat { from = &input:out; to = &heat:in; }
+    connect heat_tone { from = &heat:out; to = &tone:in; }
+  }
+  control drive { target = &main.heat.params.drive; default = 3; }
+}
+
+// A chorus: a short delay whose length an LFO sways, mixed with the dry
+// signal, a little wider than it came in.
+effect chorus {
+  channels = 2;
+  shared main {
+    channels = 2; output = &wide:out;
+    node line { type = "synth.delay/1"; config = { channels = 2; max = 40ms; }; params = { time = 12ms; }; }
+    node sway { type = "synth.lfo/1"; params = { frequency = 0.8Hz; }; }
+    node wet { type = "synth.gain/1"; config = { channels = 2; }; params = { level = 0.6; }; }
+    node blend { type = "synth.mix/1"; config = { channels = 2; }; }
+    node wide { type = "synth.width/1"; params = { width = 1.4; }; }
+    connect in_line { from = &input:out; to = &line:in; }
+    connect line_wet { from = &line:out; to = &wet:in; }
+    connect dry { from = &input:out; to = &blend:in; }
+    connect wet_blend { from = &wet:out; to = &blend:in; }
+    connect blend_wide { from = &blend:out; to = &wide:in; }
+    modulate swaying { from = &sway:out; to = &line.params.time; depth = 4ms; }
+  }
+}
+
+// A dotted-eighth echo, counted in beats: it follows the tempo as it slows.
+// Only the echoes come out; a send feeds it and its return joins the mix.
+effect dotted_echo {
+  channels = 2;
+  shared main {
+    channels = 2; output = &wet:out;
+    node line { type = "synth.delay/1"; config = { channels = 2; clock = score; max = 1s; };
+                params = { time = 3/4q; feedback = 0.4; damping = 1; }; }
+    node tone { type = "synth.onepole/1"; config = { channels = 2; }; params = { cutoff = 4000Hz; }; }
+    node wet { type = "synth.gain/1"; config = { channels = 2; }; params = { level = 0.3; }; }
+    connect in_line { from = &input:out; to = &line:in; }
+    connect line_tone { from = &line:out; to = &tone:in; }
+    connect tone_wet { from = &tone:out; to = &wet:in; }
+  }
+}
+
+// A balance that a score-clock LFO moves: the pad keeps its own stereo
+// image as it leans left and right.
+effect lean {
+  channels = 2;
+  shared main {
+    channels = 2; output = &tilt:out;
+    node tilt { type = "synth.balance/1"; }
+    connect in_tilt { from = &input:out; to = &tilt:in; }
+  }
+  control balance { target = &main.tilt.params.balance; default = 0; }
+}
+
+node drum_bus { effect = &bus_drive; params = { drive = 4; }; }
+node keys_chorus { effect = &chorus; }
+node echo { effect = &dotted_echo; }
+node pad_lean { effect = &lean; }
+node bar_swing { type = "core.lfo/1"; config = { period = 4q; }; }
+modulate lean_motion { from = &bar_swing:out; target = &pad_lean.params.balance; amount = 0.7; }
+
+// ---------------------------------------------------------------- music
+harmony changes { length = 8q; chords = [(0q, "Am9"), (2q, "Fmaj7"), (4q, "C69"), (6q, "G6")]; }
+voicing ep_am9 { pitches = [A2, G3, B3, C4, E4]; }
+voicing ep_fmaj7 { pitches = [F2, E3, A3, C4, E4]; }
+voicing ep_c69 { pitches = [C3, E3, A3, D4, G4]; }
+voicing ep_g6 { pitches = [G2, D3, E3, B3, D4]; }
+voicings rhodes { chords = [("Am9", &ep_am9), ("Fmaj7", &ep_fmaj7), ("C69", &ep_c69), ("G6", &ep_g6)]; }
+voicing air_am9 { pitches = [E4, G4, B4]; }
+voicing air_fmaj7 { pitches = [E4, A4, C5]; }
+voicing air_c69 { pitches = [E4, A4, D5]; }
+voicing air_g6 { pitches = [D4, G4, B4]; }
+voicings pad_air { chords = [("Am9", &air_am9), ("Fmaj7", &air_fmaj7), ("C69", &air_c69), ("G6", &air_g6)]; }
+pattern comp { length = 2q;
+  chord hit { at = 0q; dur = 3/4q; velocity = 0.62; }
+  chord push { at = 3/2q; dur = 1/2q; velocity = 0.5; }
+}
+pattern hold { length = 2q; chord held { at = 0q; dur = 2q; velocity = 0.5; } }
+pattern beat { length = 4q;
+  hit k1 { at = 0q; key = "kick"; velocity = 0.8; }
+  hit h1 { at = 1/2q; key = "hat"; velocity = 0.45; }
+  hit s1 { at = 1q; key = "snare"; velocity = 0.7; }
+  hit h2 { at = 3/2q; key = "hat"; velocity = 0.4; }
+  hit k2 { at = 2q; key = "kick"; velocity = 0.7; }
+  hit k3 { at = 5/2q; key = "kick"; velocity = 0.55; }
+  hit s2 { at = 3q; key = "snare"; velocity = 0.72; }
+  hit h3 { at = 7/2q; key = "hat"; velocity = 0.45; }
+}
+
+track kit { target = &drums:events; }
+track ep { target = &keys:events; }
+track air { target = &pad:events; }
+place groove { pattern = &beat; track = &kit; at = 0q; count = 4; }
+place comping { pattern = &comp; track = &ep; at = 0q; count = 8; harmony = &changes; voicings = &rhodes; }
+place wash { pattern = &hold; track = &air; at = 0q; count = 8; harmony = &changes; voicings = &pad_air; }
+
+// ---------------------------------------------------------------- mix
+node mix { type = "core.sum/1"; config = { channels = 2; }; }
+node master { type = "fx.limiter/1"; config = { channels = 2; }; params = { gain = 0dB; ceiling = -1dB; }; }
+connect drums_bus { from = &drums:out; to = &drum_bus:in; }
+connect bus_mix { from = &drum_bus:out; to = &mix:in; }
+connect keys_in { from = &keys:out; to = &keys_chorus:in; }
+connect chorus_mix { from = &keys_chorus:out; to = &mix:in; }
+connect pad_in { from = &pad:out; to = &pad_lean:in; }
+connect lean_mix { from = &pad_lean:out; to = &mix:in; }
+// The echo is a send from the chorused electric piano.
+connect keys_send { from = &keys_chorus:out; to = &echo:in; }
+connect echo_mix { from = &echo:out; to = &mix:in; }
+connect mix_master { from = &mix:out; to = &master:in; }

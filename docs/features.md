@@ -142,6 +142,14 @@ larger projects. Existing explicit-file commands remain compatible.
 
 ## Mixing and delivery
 
+[Effects](instruments.md#effects) build the rest of a mix's processing from
+the same `synth.*` nodes as instruments: one graph behind named controls that
+processes the audio at a node's `in`, declared once and imported like an
+instrument. A drive on a bus, a chorus, a stereo [balance or
+width](instruments.md#stereo-balance-and-width) and a [delay
+line](instruments.md#delay-line) counted in beats are each one node.
+Try `maac build examples/effects.maac -o effects.wav`.
+
 The experimental [native mixing and delivery implementation](production.md)
 adds EQ, compression, algorithmic reverb, and named master/stem deliveries under
 `maac.production/1`. The graph runs at 48 kHz; `maac deliver` exports 44.1, 48,

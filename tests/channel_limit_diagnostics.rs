@@ -406,6 +406,7 @@ fn instrument_resources(channels: u8) -> InstrumentResources {
     InstrumentResources {
         entry_source: "score.maac".into(),
         kits: Vec::new(),
+        effects: Vec::new(),
         programs: vec![InstrumentProgram {
             id: "program".into(),
             voice: GraphProgram {

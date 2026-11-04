@@ -3731,6 +3731,7 @@ fn format_instrument(instrument: &crate::stdlib::InstrumentInfo) -> String {
             crate::graph::GraphUnit::Dimensionless => "dimensionless",
             crate::graph::GraphUnit::Seconds => "seconds",
             crate::graph::GraphUnit::Hertz => "hertz",
+            crate::graph::GraphUnit::Quarter => "quarter notes",
         };
         let rate = match control.rate {
             crate::graph::ParameterRate::Sample => "sample",

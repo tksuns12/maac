@@ -171,6 +171,12 @@ fn processor_type(processor: &Processor) -> Result<&'static str, LockError> {
                 "generic renderer does not yet execute instrument-program processors",
             ))
         }
+        Processor::Effect { .. } => {
+            return Err(error(
+                "E_CAPABILITY",
+                "generic renderer does not yet execute effect processors",
+            ))
+        }
     })
 }
 

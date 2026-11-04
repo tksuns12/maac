@@ -1222,6 +1222,14 @@ impl<'a> Compiler<'a> {
                 "vibrato" => &["rate", "depth", "delay", "rise", "shape"][..],
                 "curve" => &["clock", "points"][..],
                 "automation" => &["target", "curve", "at"][..],
+                "node"
+                    if self
+                        .instrument_instances
+                        .get(&object.id)
+                        .is_some_and(|instance| instance.effect_input.is_some()) =>
+                {
+                    &["effect", "preset", "params"][..]
+                }
                 "node" if self.instrument_instances.contains_key(&object.id) => {
                     &["instrument", "preset", "config", "params"][..]
                 }
@@ -1817,7 +1825,13 @@ impl<'a> Compiler<'a> {
                 continue;
             }
             if let Some(instance) = self.instrument_instances.get(&object.id).cloned() {
-                let processor = if instance.kit {
+                let processor = if let Some(input_channels) = instance.effect_input {
+                    Processor::Effect {
+                        effect: instance.program_id,
+                        channels: instance.channels,
+                        input_channels,
+                    }
+                } else if instance.kit {
                     Processor::KitInstrument {
                         kit: instance.program_id,
                         channels: instance.channels,
@@ -2103,6 +2117,7 @@ impl<'a> Compiler<'a> {
                 Processor::Sum { .. }
                 | Processor::Instrument { .. }
                 | Processor::KitInstrument { .. }
+                | Processor::Effect { .. }
                 | Processor::Eq { .. }
                 | Processor::Compressor { .. }
                 | Processor::Reverb { .. }
@@ -4288,6 +4303,10 @@ impl<'a> Compiler<'a> {
             ValueKind::Quantity { unit: Unit::S, .. }
             | ValueKind::Quantity { unit: Unit::Ms, .. } => {
                 self.seconds_value(value, object, field)
+            }
+            // A delay length counted in quarter notes.
+            ValueKind::Quantity { unit: Unit::Q, .. } => {
+                self.quantity(value, Unit::Q, object, field)
             }
             _ => Err(path_diagnostic(
                 DiagnosticCode::Unit,
@@ -7028,9 +7047,9 @@ impl<'a> Compiler<'a> {
             | Processor::Reverb { channels, .. }
             | Processor::Limiter { channels, .. } => Ok(channels),
             Processor::Sine { .. } => Ok(1),
-            Processor::Instrument { channels, .. } | Processor::KitInstrument { channels, .. } => {
-                Ok(channels)
-            }
+            Processor::Instrument { channels, .. }
+            | Processor::KitInstrument { channels, .. }
+            | Processor::Effect { channels, .. } => Ok(channels),
         }
     }
 }
@@ -7053,52 +7072,39 @@ pub(crate) fn validate_musical_catalog(document: &Document) -> CResult<()> {
     compiler.read_curves()
 }
 
-/// The public control surface of a resolved instrument or kit instance.
+/// The public control surface of a resolved instrument, kit or effect
+/// instance.
 fn instance_descriptor(
     libraries: &LibrarySet,
     instance: &crate::library::ResolvedInstance,
     node: &Object,
 ) -> CResult<InstrumentNodeDescriptor> {
-    let missing = |message: String| {
-        path_diagnostic(
-            DiagnosticCode::Reference,
-            message,
-            node,
-            node.field("instrument"),
-        )
-    };
+    let field = node.field("instrument").or_else(|| node.field("effect"));
     let mut controls = BTreeMap::new();
-    if instance.kit {
-        let kit = libraries
-            .kits
-            .iter()
-            .find(|kit| kit.id == instance.program_id)
-            .ok_or_else(|| missing("resolved kit is missing".into()))?;
-        for name in kit.controls.keys() {
-            let spec = kit.control_spec(&libraries.programs, name).ok_or_else(|| {
-                missing(format!("kit control `{name}` has no parameter metadata"))
+    for name in libraries.instance_control_names(instance) {
+        let spec = libraries
+            .instance_control_spec(instance, &name)
+            .ok_or_else(|| {
+                path_diagnostic(
+                    DiagnosticCode::Reference,
+                    format!("control `{name}` has no parameter metadata"),
+                    node,
+                    field,
+                )
             })?;
-            controls.insert(name.clone(), spec);
-        }
-    } else {
-        let program = libraries
-            .programs
-            .iter()
-            .find(|program| program.id == instance.program_id)
-            .ok_or_else(|| missing("resolved instrument program is missing".into()))?;
-        for name in program.controls.keys() {
-            let spec = program.control_spec(name).ok_or_else(|| {
-                missing(format!(
-                    "instrument control `{name}` has no parameter metadata"
-                ))
-            })?;
-            controls.insert(name.clone(), spec);
-        }
+        controls.insert(name, spec);
     }
     Ok(InstrumentNodeDescriptor {
         channels: instance.channels,
+        input_channels: instance.effect_input,
         controls,
     })
+}
+
+/// Whether a node instantiates a library instrument, kit or effect.
+pub(crate) fn is_library_instance(object: &Object) -> bool {
+    object.kind == "node"
+        && (object.field("instrument").is_some() || object.field("effect").is_some())
 }
 
 pub(crate) fn instrument_descriptors_for_editing(
@@ -7110,7 +7116,7 @@ pub(crate) fn instrument_descriptors_for_editing(
     for node in document
         .objects
         .values()
-        .filter(|object| object.kind == "node" && object.field("instrument").is_some())
+        .filter(|object| is_library_instance(object))
     {
         let instance = libraries.resolve_instance(&resolved.entry, node)?;
         descriptors.insert(
@@ -7132,7 +7138,7 @@ fn prepare_instrument_compiler<'a>(
     for node in document
         .objects
         .values()
-        .filter(|object| object.kind == "node" && object.field("instrument").is_some())
+        .filter(|object| is_library_instance(object))
     {
         let instance = libraries.resolve_instance(&resolved.entry, node)?;
         descriptors.insert(
@@ -7146,6 +7152,7 @@ fn prepare_instrument_compiler<'a>(
         entry_source: resolved.entry.clone(),
         programs: libraries.programs,
         kits: libraries.kits,
+        effects: libraries.effects,
         wavetables: libraries.wavetables,
         wavetable_sources: libraries.wavetable_sources,
         samples: libraries.samples,
@@ -7272,8 +7279,8 @@ fn has_library_syntax(document: &Document) -> bool {
     document.objects.values().any(|object| {
         matches!(
             object.kind.as_str(),
-            "library" | "instrument" | "preset" | "wavetable" | "sample"
-        ) || (object.kind == "node" && object.field("instrument").is_some())
+            "library" | "instrument" | "effect" | "preset" | "wavetable" | "sample"
+        ) || is_library_instance(object)
     })
 }
 

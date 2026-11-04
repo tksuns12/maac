@@ -9,7 +9,7 @@ use crate::plan::{
     rational_map_serde, rational_serde, Connection, PlanError, PortRef, Rational, SourceSpan,
 };
 use num_bigint::BigInt;
-use num_traits::{Signed, Zero};
+use num_traits::{Signed, ToPrimitive, Zero};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -31,6 +31,14 @@ pub const PLUCK_SAMPLE_WORK: u64 = 16;
 /// 1.4 and 1.9 times a one-unit oscillator node, rounded up.
 pub const SVF_SAMPLE_WORK: u64 = 2;
 pub const DRIVE_SAMPLE_WORK: u64 = 2;
+/// Per-sample work of a `synth.delay/1` counted in seconds, and in quarter
+/// notes, which evaluates the tempo map and its inverse each frame. On an
+/// Apple M1 in an effect, per node and frame, the first took 14 ns and the
+/// second 34 ns, where `synth.drive/1` (2 units) took 67 ns.
+pub const DELAY_SAMPLE_WORK: u64 = 1;
+pub const SCORE_DELAY_SAMPLE_WORK: u64 = 2;
+/// The longest a `synth.delay/1` line may be, in seconds.
+pub const MAX_DELAY_SECONDS: i64 = 60;
 /// Resonators of a `synth.modal/1` node per unit of per-sample work. One
 /// resonator measured at about 1/6 of a one-unit oscillator node.
 pub const MODAL_RESONATORS_PER_WORK: u64 = 4;
@@ -109,6 +117,16 @@ impl GraphProcessor {
     pub const ADSR: Self = Self::Adsr {
         on_join: AdsrJoin::Hold,
     };
+}
+
+/// How a `synth.delay/1` counts its length: in seconds, or in quarter notes
+/// of score time.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DelayClock {
+    #[default]
+    Seconds,
+    Score,
 }
 
 /// A processor in the version 1 synthesis palette.
@@ -204,6 +222,21 @@ pub enum GraphProcessor {
     Mix { channels: u8 },
     #[serde(rename = "synth.pan/1")]
     Pan,
+    /// A stereo balance: the side away from it is lowered.
+    #[serde(rename = "synth.balance/1")]
+    Balance,
+    /// A stereo width, applied to the mid and side signals.
+    #[serde(rename = "synth.width/1")]
+    Width,
+    /// A delay line whose length is a parameter, with feedback inside the
+    /// node; `max` seconds bounds the length and sets the line's memory.
+    #[serde(rename = "synth.delay/1")]
+    Delay {
+        channels: u8,
+        clock: DelayClock,
+        #[serde(with = "rational_serde")]
+        max: Rational,
+    },
 }
 
 #[derive(Deserialize)]
@@ -278,6 +311,17 @@ enum GraphProcessorWire {
     Mix { channels: u8 },
     #[serde(rename = "synth.pan/1")]
     Pan {},
+    #[serde(rename = "synth.balance/1")]
+    Balance {},
+    #[serde(rename = "synth.width/1")]
+    Width {},
+    #[serde(rename = "synth.delay/1")]
+    Delay {
+        channels: u8,
+        clock: DelayClock,
+        #[serde(with = "rational_serde")]
+        max: Rational,
+    },
 }
 
 impl<'de> Deserialize<'de> for GraphProcessor {
@@ -340,6 +384,17 @@ impl<'de> Deserialize<'de> for GraphProcessor {
             GraphProcessorWire::Drive { channels } => Self::Drive { channels },
             GraphProcessorWire::Mix { channels } => Self::Mix { channels },
             GraphProcessorWire::Pan {} => Self::Pan,
+            GraphProcessorWire::Balance {} => Self::Balance,
+            GraphProcessorWire::Width {} => Self::Width,
+            GraphProcessorWire::Delay {
+                channels,
+                clock,
+                max,
+            } => Self::Delay {
+                channels,
+                clock,
+                max,
+            },
         })
     }
 }
@@ -371,6 +426,9 @@ impl GraphProcessor {
             Self::Drive { .. } => "synth.drive/1",
             Self::Mix { .. } => "synth.mix/1",
             Self::Pan => "synth.pan/1",
+            Self::Balance => "synth.balance/1",
+            Self::Width => "synth.width/1",
+            Self::Delay { .. } => "synth.delay/1",
         }
     }
 
@@ -383,8 +441,9 @@ impl GraphProcessor {
             | Self::Drive { channels }
             | Self::Mix { channels }
             | Self::Sample { channels, .. }
-            | Self::Bow { channels, .. } => *channels,
-            Self::Pan => 2,
+            | Self::Bow { channels, .. }
+            | Self::Delay { channels, .. } => *channels,
+            Self::Pan | Self::Balance | Self::Width => 2,
             _ => 1,
         }
     }
@@ -396,8 +455,10 @@ impl GraphProcessor {
             | Self::HighPass { channels }
             | Self::Svf { channels, .. }
             | Self::Drive { channels }
-            | Self::Mix { channels } => Some(*channels),
+            | Self::Mix { channels }
+            | Self::Delay { channels, .. } => Some(*channels),
             Self::Pan | Self::Modal { .. } => Some(1),
+            Self::Balance | Self::Width => Some(2),
             _ => None,
         }
     }
@@ -599,6 +660,21 @@ impl InstrumentProgram {
 
         validate_identifier(&self.id, "id")?;
         validate_source(&self.source)?;
+        for (stage, graph) in std::iter::once(("voice", &self.voice))
+            .chain(self.shared.as_ref().map(|graph| ("shared", graph)))
+        {
+            if let Some(node) = graph
+                .nodes
+                .iter()
+                .find(|node| matches!(node.processor, GraphProcessor::Delay { .. }))
+            {
+                return Err(error(
+                    "E_CAPABILITY",
+                    format!("{stage}.nodes.{}.processor", node.id),
+                    "synth.delay/1 is allowed only in an effect",
+                ));
+            }
+        }
         validate_graph_inner(&self.voice, GraphStage::Voice, None, "voice")?;
         if let Some(shared) = &self.shared {
             validate_graph_inner(
@@ -664,12 +740,128 @@ impl InstrumentProgram {
     }
 }
 
+/// An effect: one graph, under the rules of an instrument's shared graph,
+/// that processes the audio arriving at its node's `in` (`&input:out`)
+/// behind named controls. It has no voices.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EffectProgram {
+    pub id: String,
+    /// The width of the audio at `in`; the graph's own `channels` is `out`'s.
+    pub input_channels: u8,
+    pub graph: GraphProgram,
+    #[serde(default, with = "control_map_serde")]
+    pub controls: BTreeMap<String, Control>,
+    pub source: ProgramSource,
+}
+
+impl EffectProgram {
+    pub fn channels(&self) -> u8 {
+        self.graph.channels
+    }
+
+    pub fn control_spec(&self, name: &str) -> Option<ParameterSpec> {
+        let control = self.controls.get(name)?;
+        if control.target.graph != GraphStage::Shared {
+            return None;
+        }
+        let node = self
+            .graph
+            .nodes
+            .iter()
+            .find(|node| node.id == control.target.node)?;
+        parameter_descriptor_for_stage(
+            &node.processor,
+            &control.target.parameter,
+            GraphStage::Shared,
+        )
+    }
+
+    pub fn validate(&self) -> Result<(), PlanError> {
+        if self.controls.len() > MAX_INSTRUMENT_CONTROLS {
+            return Err(error(
+                "E_RESOURCE_LIMIT",
+                "controls",
+                "effect control limit exceeded",
+            ));
+        }
+        validate_graph_resources(&self.graph, "graph")?;
+        validate_identifier(&self.id, "id")?;
+        validate_source(&self.source)?;
+        if !(1..=2).contains(&self.input_channels) {
+            return Err(error(
+                "E_PORT_TYPE",
+                "input_channels",
+                "effect input must have one or two channels",
+            ));
+        }
+        validate_graph_inner(
+            &self.graph,
+            GraphStage::Shared,
+            Some(self.input_channels),
+            "graph",
+        )?;
+        let mut targets = BTreeSet::new();
+        for (name, control) in &self.controls {
+            let path = format!("controls.{name}");
+            validate_identifier(name, &path)?;
+            validate_identifier(&control.target.node, format!("{path}.target.node"))?;
+            validate_identifier(
+                &control.target.parameter,
+                format!("{path}.target.parameter"),
+            )?;
+            if control.target.graph != GraphStage::Shared {
+                return Err(error(
+                    "E_REFERENCE",
+                    format!("{path}.target.graph"),
+                    "an effect control must target its graph",
+                ));
+            }
+            if !targets.insert(control.target.clone()) {
+                return Err(error(
+                    "E_AUTOMATION_WRITER",
+                    format!("{path}.target"),
+                    "two controls cannot expose the same graph parameter",
+                ));
+            }
+            let node = self
+                .graph
+                .nodes
+                .iter()
+                .find(|node| node.id == control.target.node)
+                .ok_or_else(|| {
+                    error(
+                        "E_REFERENCE",
+                        format!("{path}.target.node"),
+                        "control target node does not exist",
+                    )
+                })?;
+            let spec = parameter_descriptor_for_stage(
+                &node.processor,
+                &control.target.parameter,
+                GraphStage::Shared,
+            )
+            .ok_or_else(|| {
+                error(
+                    "E_REFERENCE",
+                    format!("{path}.target.parameter"),
+                    "control target parameter does not exist",
+                )
+            })?;
+            validate_parameter_value(&control.default, &spec, format!("{path}.default"))?;
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GraphUnit {
     Dimensionless,
     Seconds,
     Hertz,
+    /// Quarter notes of score time (`q`).
+    Quarter,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
@@ -987,6 +1179,47 @@ pub fn parameter_descriptor(processor: &GraphProcessor, name: &str) -> Option<Pa
         GraphProcessor::Pan => {
             (name == "pan").then(|| dimensionless(ParameterRate::Sample, 0, -1, 1))
         }
+        GraphProcessor::Balance => {
+            (name == "balance").then(|| dimensionless(ParameterRate::Sample, 0, -1, 1))
+        }
+        GraphProcessor::Width => {
+            (name == "width").then(|| dimensionless(ParameterRate::Sample, 1, 0, 4))
+        }
+        GraphProcessor::Delay { clock, .. } => match name {
+            // The length's range here is static; the node also checks each
+            // frame that it is at least one frame and at most `max`.
+            "time" => Some(match clock {
+                DelayClock::Seconds => {
+                    let mut result = spec(
+                        GraphUnit::Seconds,
+                        ParameterRate::Sample,
+                        0,
+                        0,
+                        MAX_DELAY_SECONDS,
+                        true,
+                        false,
+                    );
+                    result.default = Rational::new(1.into(), 2.into());
+                    result
+                }
+                DelayClock::Score => spec(
+                    GraphUnit::Quarter,
+                    ParameterRate::Sample,
+                    1,
+                    0,
+                    256,
+                    true,
+                    false,
+                ),
+            }),
+            "feedback" => {
+                let mut result = dimensionless(ParameterRate::Sample, 0, 0, 1);
+                result.max = Rational::new(99.into(), 100.into());
+                Some(result)
+            }
+            "damping" => Some(dimensionless(ParameterRate::Sample, 0, 0, 1)),
+            _ => None,
+        },
         GraphProcessor::Mix { .. }
         | GraphProcessor::Timbre
         | GraphProcessor::Pressure
@@ -1549,9 +1782,28 @@ fn validate_processor(
             // Sample channel counts are checked against the plan's resources.
             crate::sample_instrument::validate_zones(zones, *channels, &path, |_| Some(*channels))?;
         }
+        GraphProcessor::Delay { channels, max, .. } => {
+            validate_channels(*channels, format!("{path}.channels"))?;
+            validate_rational(max, &format!("{path}.max"))?;
+            if !max.is_positive() || max > &Rational::from_integer(BigInt::from(MAX_DELAY_SECONDS))
+            {
+                return Err(error(
+                    "E_RANGE",
+                    format!("{path}.max"),
+                    format!("delay max must be above 0 and at most {MAX_DELAY_SECONDS} s"),
+                ));
+            }
+        }
         _ => {}
     }
     Ok(())
+}
+
+/// The frames a `synth.delay/1` line holds: its max at 48 kHz, rounded up,
+/// plus two for interpolation.
+pub fn delay_line_frames(max: &Rational) -> Option<usize> {
+    let frames = (max * Rational::from_integer(BigInt::from(48_000))).ceil();
+    frames.to_integer().to_usize()?.checked_add(2)
 }
 
 fn validate_parameter_value(
@@ -1574,6 +1826,7 @@ fn validate_modulation_depth(
     let bound = match unit {
         GraphUnit::Hertz => 48_000,
         GraphUnit::Seconds => 1_800,
+        GraphUnit::Quarter => 256,
         GraphUnit::Dimensionless => 128,
     };
     let bound = Rational::from_integer(BigInt::from(bound));

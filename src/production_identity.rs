@@ -293,6 +293,7 @@ fn graph_unit(unit: GraphUnit) -> Option<Unit> {
         GraphUnit::Dimensionless => None,
         GraphUnit::Hertz => Some(Unit::Hz),
         GraphUnit::Seconds => Some(Unit::S),
+        GraphUnit::Quarter => Some(Unit::Q),
     }
 }
 fn record_fields(
@@ -313,6 +314,7 @@ fn record_fields(
 enum Scope<'a> {
     Top,
     Instrument(&'a InstrumentProgram),
+    Effect(&'a crate::graph::EffectProgram),
     Graph(&'a GraphProgram, GraphStage),
     Nested,
 }
@@ -430,6 +432,7 @@ impl Normalizer<'_> {
                 | "insert"
                 | "import"
                 | "instrument"
+                | "effect"
                 | "preset"
                 | "wavetable"
                 | "sample"
@@ -606,6 +609,28 @@ impl Normalizer<'_> {
                     })?;
                 child_scope = Scope::Instrument(program);
             }
+            "effect" => {
+                let resources = self.plan.instruments.as_ref().ok_or_else(|| {
+                    error("local effect normalization requires compiled resources")
+                })?;
+                let effect = resources
+                    .effects
+                    .iter()
+                    .find(|e| {
+                        e.source.file == resources.entry_source && e.source.object == object.id
+                    })
+                    .ok_or_else(|| error("local effect descriptor missing from compiled plan"))?;
+                fields
+                    .entry("input")
+                    .or_insert_with(|| number(i64::from(effect.input_channels)));
+                child_scope = Scope::Effect(effect);
+            }
+            "shared" if matches!(scope, Scope::Effect(_)) => {
+                let Scope::Effect(effect) = scope else {
+                    unreachable!("matched above")
+                };
+                child_scope = Scope::Graph(&effect.graph, GraphStage::Shared);
+            }
             "voice" | "shared" => {
                 let Scope::Instrument(program) = scope else {
                     return Err(error("instrument graph has no descriptor context"));
@@ -728,16 +753,14 @@ impl Normalizer<'_> {
                         }
                         ProcessorView::Kit { .. } => None,
                         ProcessorView::Core(processor) => match processor {
-                            Processor::Instrument { .. } | Processor::KitInstrument { .. } => {
-                                graph_unit(
-                                    self.plan
-                                        .instrument_control_spec(node, name)
-                                        .ok_or_else(|| {
-                                            error("instrument control descriptor missing")
-                                        })?
-                                        .unit,
-                                )
-                            }
+                            Processor::Instrument { .. }
+                            | Processor::KitInstrument { .. }
+                            | Processor::Effect { .. } => graph_unit(
+                                self.plan
+                                    .instrument_control_spec(node, name)
+                                    .ok_or_else(|| error("instrument control descriptor missing"))?
+                                    .unit,
+                            ),
                             Processor::Sine { .. }
                                 if matches!(name.as_str(), "attack" | "release") =>
                             {
@@ -785,7 +808,17 @@ impl Normalizer<'_> {
                         }
                         | GraphProcessor::Lfo
                         | GraphProcessor::Pan
+                        | GraphProcessor::Balance
+                        | GraphProcessor::Width
                 );
+                if let GraphProcessor::Delay { clock, .. } = &node.processor {
+                    config.entry("clock").or_insert_with(|| {
+                        symbol(match clock {
+                            crate::graph::DelayClock::Seconds => "seconds",
+                            crate::graph::DelayClock::Score => "score",
+                        })
+                    });
+                }
                 if let GraphProcessor::Sample { .. } = &node.processor {
                     crate::sample_instrument::expand_config_defaults(&mut config);
                 }
@@ -812,6 +845,10 @@ impl Normalizer<'_> {
                     "release",
                     "cutoff",
                     "pan",
+                    "balance",
+                    "width",
+                    "time",
+                    "feedback",
                 ] {
                     if let Some(spec) = parameter_descriptor_for_stage(&node.processor, name, stage)
                     {

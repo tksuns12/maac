@@ -285,3 +285,73 @@ recommendations").
    changes a Core Audio processor and its conformance vectors.
 5. **Listening:** one blind round on "Afterlight"'s echo, one pair sent
    twice with the letters swapped (recommended); then T9.
+
+## Results
+
+### Part 1: effects (2026-11-04)
+
+`effect` declarations, effect presets and `node { effect = &id; }` landed
+with the nodes a shared graph already allows. A node in an effect behaves as
+in a shared graph, so the [instruments guide](../instruments.md#effects)
+specifies effects by reference to that contract rather than restating it.
+
+- **Same samples.** An effect of a `synth.gain/1` into a `synth.onepole/1`
+  renders sample for sample as `core.gain/1` into `core.onepole/1`. With two
+  connections into its `in`, an automated control and a score-clock
+  `core.lfo/1` modulating it, it renders as a `core.sum/1` into the same
+  chain with the same automation and modulation. A saved plan replays
+  identically.
+- **Libraries.** A library exports an effect and a preset; a song imports
+  them with a pin and renders as with the effect declared locally.
+- **Editing.** `maac patch` edits an effect node's controls and its graph;
+  normalized, the node holds its controls' defaults, so an expectation can
+  name them, as for an instrument node.
+- **Production.** `maac deliver` and `maac analyze` accept projects with
+  effects. The analyzer's roles are structural, so an effect fed by two or
+  more connections is a mix point, as a sum is.
+- **Unchanged.** Plans without effects carry no `effects` resource, and
+  their bytes do not change.
+- **Refused.** Native archives and the generic renderer refuse effect nodes
+  with `E_CAPABILITY`, as they refuse kits.
+
+### Parts 2 and 3: stereo nodes and the delay line (2026-11-04)
+
+`synth.balance/1`, `synth.width/1` and `synth.delay/1` landed as the
+proposal describes, with three decisions the proposal left open:
+
+- **The delay is for effects only.** In an instrument it is `E_CAPABILITY`.
+  A delay line in a voice graph would multiply its memory by the voice
+  count, and only an effect's runtime holds the tempo map that a length in
+  quarter notes needs. Balance and width work in effects and in instruments'
+  shared graphs.
+- **A full balance is exact.** `cos(π/2)` is about 6×10⁻¹⁷ in binary64, so a
+  balance of ±1 silences the far side by definition rather than by the
+  formula.
+- **A quarter note is a unit of graph parameters.** A score-clock length,
+  its control, and automation curves on that control take `q`.
+
+Evidence:
+
+- **Same samples.** A delay of 250 ms, a whole 12000 frames, renders sample
+  for sample as `core.delay/1` with 12000 frames. Half a beat at 120 bpm on
+  the score clock differs from it by at most 6×10⁻¹¹, the binary64 tempo
+  arithmetic leaving a vanishing interpolation weight.
+- **On the beat.** On a ramp from 60 to 180 bpm over 8q, a note at 2q echoed
+  by one beat sounds within 3 frames of `T(3q)`, where an echo of one beat at
+  the starting tempo would have come half a second early.
+- **Balance and width.** A balance of 0 passes a stereo source unchanged,
+  of 1 silences the left exactly and leaves the right unchanged, and of −1
+  the reverse. A width of 1 leaves the source unchanged, of 0 makes it mono,
+  and of 2 doubles the difference between its channels.
+- **Movement and feedback.** An LFO on the length changes the output; a
+  feedback of 0.9 keeps the line sounding through the tail after its input
+  has stopped, where no feedback leaves it silent.
+- **Identity.** `clock = seconds` and an omitted clock give the same
+  execution identity in a delivery.
+- **Work.** On an Apple M1, 40 chained lines in an effect took 14 ns per
+  line and frame in seconds and 34 ns on the score clock, where
+  `synth.drive/1`, charged 2 units, took 67 ns. They are charged 1 and 2.
+- **Refusals.** A missing or out-of-range `max`, an unknown clock or config
+  field, a length in the wrong unit, a feedback of 1 and a delay in an
+  instrument are rejected at check time; a length beyond `max` stops the
+  render with `E_RANGE`.

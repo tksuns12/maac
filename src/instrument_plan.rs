@@ -31,6 +31,10 @@ pub struct InstrumentResources {
     /// without kits, so earlier resource payloads are byte-identical.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub kits: Vec<crate::kit_instrument::KitProgram>,
+    /// Effects, whose graphs process the audio at a node's `in`. Absent in
+    /// plans without effects, so earlier resource payloads are byte-identical.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub effects: Vec<crate::graph::EffectProgram>,
     pub source_files: Vec<SourceIdentity>,
     pub dependencies: Vec<DependencyIdentity>,
     pub libraries: Vec<LibraryMetadata>,
@@ -208,6 +212,34 @@ impl InstrumentResources {
                 ));
             }
             validate_identifier(&kit.source.object, format!("{path}.source.object"))?;
+        }
+        if self.effects.len() > MAX_GRAPH_PROGRAMS {
+            return Err(error(
+                "E_RESOURCE_LIMIT",
+                "instruments.effects",
+                "effect program limit exceeded",
+            ));
+        }
+        for (index, effect) in self.effects.iter().enumerate() {
+            let path = format!("instruments.effects[{index}]");
+            if !program_ids.insert(effect.id.as_str()) {
+                return Err(error(
+                    "E_DUPLICATE_ID",
+                    format!("{path}.id"),
+                    "duplicate instrument program, kit or effect ID",
+                ));
+            }
+            effect
+                .validate()
+                .map_err(|error| contextualize(error, &path))?;
+            if !source_by_path.contains_key(effect.source.file.as_str()) {
+                return Err(error(
+                    "E_REFERENCE",
+                    format!("{path}.source.file"),
+                    "effect source has no source identity",
+                ));
+            }
+            validate_identifier(&effect.source.object, format!("{path}.source.object"))?;
         }
 
         let mut table_ids = BTreeSet::new();

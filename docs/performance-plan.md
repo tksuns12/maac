@@ -324,6 +324,14 @@ processor in artifact plans. `kit` names an entry of the resources' `kits`, and
 its parameter map holds the kit's public control values. It accepts hit events
 only, and every hit key must name one of its pieces.
 
+An [effect](instruments.md#effects) instance is
+`{"kind":"effect","effect":"effect_0","channels":2,"input_channels":1}`, wrapped
+as a core processor in artifact plans. `effect` names an entry of the
+resources' `effects`, and both widths must match it. Its parameter map holds the
+effect's public control values. It has a summing audio `in` of
+`input_channels`, which needs at least one connection, and an audio `out` of
+`channels`; it receives no events.
+
 A connection has `id`, `from`, and `to` port references. Channel counts must
 match. Single-input ports require one incoming edge; summing inputs accept zero
 or more. Graph execution orders available nodes by ID and sums inputs by
@@ -419,6 +427,7 @@ Versions 3–7 reuse the instrument resource representation introduced in versio
 | `dependencies` | Declaring source, namespace alias, imported path, and matching source hash |
 | `libraries` | Declaring file/object, nonempty version, and optional creator/license metadata |
 | `kits` | Optional kit instruments; absent when there are none, so earlier payloads keep their bytes |
+| `effects` | Optional effects; absent when there are none, so earlier payloads keep their bytes |
 
 A program has `id`, `voice`, optional `shared`, `controls`, and `source`.
 Its graph contains `channels`, `nodes`, `connections`, `modulations`, `output`,
@@ -426,7 +435,8 @@ and a designated `amplitude` node for the voice graph, which has `connected`
 only when it plays [connected notes](instruments.md#connected-notes). A
 `synth.adsr/1` node has `on_join` only when it is `restart`, and a
 `synth.noise/1` node `per_note` only when it is true, so earlier plans keep
-their bytes. Graph processors use
+their bytes. A `synth.delay/1` node, found only in effects, has `channels`,
+`clock` (`seconds` or `score`) and a rational `max` in seconds. Graph processors use
 versioned `kind` tags such as `synth.sine/1` and `synth.wavetable/1`; a wavetable
 processor references an embedded table ID. A control maps its name to a
 `target` (`graph`, `node`, `parameter`) and rational `default`. A modulation has
@@ -438,6 +448,11 @@ has `id`, `key`, the `program` it plays, `voices`, `pitch_hz`, a rational
 `gate_seconds`, an optional `choke` group, and optional fixed `params`. A kit
 control maps its name to a `piece`, that piece's `control`, and a rational
 `default`.
+
+An effect has `id`, `input_channels`, one shared-stage `graph`, `controls`, and
+`source`. Its graph has the fields of a shared graph, and its `input` source
+carries `input_channels`. Its controls target that graph, with `graph` set to
+`shared`.
 
 The [instrument contract](instruments.md) specifies processor behavior, graph
 ports, units, rates, and source syntax. The [resource bounds](capabilities.md#resource-bounds)

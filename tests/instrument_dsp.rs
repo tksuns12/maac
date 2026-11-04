@@ -388,6 +388,7 @@ fn instrument_plan(program: InstrumentProgram, frames: u64) -> Plan {
         instruments: Some(InstrumentResources {
             entry_source: "test.maac".into(),
             kits: Vec::new(),
+            effects: Vec::new(),
             programs: vec![program],
             wavetables: Vec::new(),
             wavetable_sources: Vec::new(),

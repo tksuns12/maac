@@ -253,6 +253,15 @@ impl NativeProcessorContext {
                         ),
                     ))
                 }
+                ProcessorView::Core(Processor::Effect { .. }) => {
+                    return Err(fail(
+                        DiagnosticCode::Capability,
+                        format!(
+                            "native archives do not yet capture the effect `{}`",
+                            node.id
+                        ),
+                    ))
+                }
                 _ => None,
             };
             let record = NodeRecord {

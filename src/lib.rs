@@ -47,6 +47,7 @@ pub use plan_artifact::{
 };
 pub mod bow;
 mod core_control;
+mod delay;
 mod modal;
 pub mod plan_v3;
 mod plan_v4;

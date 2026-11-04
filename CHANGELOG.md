@@ -7,6 +7,29 @@ promise of compatibility beyond the documented interfaces.
 
 ### Added
 
+- Effects ([effects](docs/instruments.md#effects)): an `effect` declaration
+  holds one graph under an instrument's shared-graph rules that processes the
+  audio summed at its node's `in`, behind named controls. A node places it
+  with `effect = &id`; presets, automation and modulation of its controls
+  work as an instrument's, and libraries export it like an instrument. A
+  drive on a bus, a filter that a score-clock LFO moves, or a mono part
+  panned into stereo is now one node. Part 1 of the
+  [effects proposal](docs/design/effects-proposal.md).
+
+- `synth.balance/1` and `synth.width/1`
+  ([stereo balance and width](docs/instruments.md#stereo-balance-and-width)):
+  a stereo part can lean to one side, or be narrowed or widened, and a
+  score-clock LFO can move it, which `core.pan/1` could not do for a stereo
+  source. Part 2 of the effects proposal.
+
+- `synth.delay/1` ([delay line](docs/instruments.md#delay-line)), in effects:
+  a delay whose length is a parameter, counted in seconds or, with
+  `clock = score`, in quarter notes of score time, so an echo lands on the
+  beat through tempo ramps. An LFO on its length makes a chorus or a
+  flanger; feedback and damping work inside the node. Part 3 of the effects
+  proposal; it closes T5's F32, a dotted-eighth echo computed by hand in
+  frames.
+
 - "Rain on the Eaves" ([`examples/sanjo/sanjo.maac`](examples/sanjo/sanjo.maac)),
   a gayageum sanjo with janggu from the
   [T8 production trial](docs/reports/ai-production-trial-t8.md), written

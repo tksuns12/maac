@@ -238,9 +238,19 @@ maac analyze main.maac --window region:b --preroll 4 --json   # quick, approxima
   the compressor's own output dips deep there, route more of the mix
   through it, and if not, deepen it. A pump lowers a drop's average level, so lower the
   breakdowns under it rather than push the limiter.
-- **Tempo-synced delay.** `core.delay/1` takes frames: beats × 60 / bpm ×
-  48000, rounded. A dotted eighth at 126 bpm is 17,143 frames. Feed it back
-  through a `core.onepole/1` and a `core.gain/1` for darkening repeats.
+- **Effects.** Processing that the mix needs beyond EQ, compression,
+  reverb and limiting is an [effect](instruments.md#effects): a graph of
+  `synth.*` nodes placed as one node, whose `in` sums whatever feeds it.
+  A drive on a drum bus, a filter, a chorus, a stereo part that leans or
+  widens, all are effects. On a drive, set `reference` near the signal's
+  peaks, about 1/4 for a kit at −20 LUFS; at 1 a quiet bus comes out up to
+  `drive` times louder.
+- **Tempo-synced delay.** Use a [`synth.delay/1`](instruments.md#delay-line)
+  in an effect with `clock = score` and `time` in quarter notes, `3/4q` for
+  a dotted eighth: it stays on the beat when the tempo changes, which a
+  `core.delay/1` in frames does not. Give it `feedback` and `damping` for
+  repeats that darken, and a `synth.onepole/1` after it to darken the first
+  echo too. Return only the echoes and mix them in, as a send.
 - **Master.** End the chain with an optional glue `fx.compressor/1` (ratio
   2–3, attack about 20 ms), then `fx.limiter/1` as the project output. Its
   `gain` sets the loudness and its `ceiling` caps the true peak. Raising the

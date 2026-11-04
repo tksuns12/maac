@@ -56,6 +56,13 @@ must start on the frame where a note with the same chord member index on the
 same track ends ([connected notes](../MaaC-1-Specification.md#83-connected-notes)).
 On a destination without a bowed section, either field is `E_CAPABILITY`.
 
+An [effect](instruments.md#effects) node whose `in` has no connection is
+`E_PORT_TYPE`, as is an effect whose `channels` differ from its graph's
+output. A voice-only node in an effect's graph, or a `synth.delay/1` in an
+instrument, is `E_CAPABILITY`. A delay whose length leaves one frame through
+its `max` while rendering stops the render with `E_RANGE` at that frame; the
+static range of `time` and `max` is checked at compile time.
+
 A hit onset must schedule before the score-end frame. If a physically pre-end
 onset rounds to that frame, compilation returns `E_INTERVAL`; move the onset
 earlier or extend the score. The declared tail allows samples that already

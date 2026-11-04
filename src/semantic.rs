@@ -46,6 +46,7 @@ pub enum ProcessorKind {
     Pan,
     Sum,
     Instrument,
+    Effect,
 }
 
 impl ProcessorKind {
@@ -65,6 +66,7 @@ impl ProcessorKind {
             Self::Pan => "core.pan/1",
             Self::Sum => "core.sum/1",
             Self::Instrument => "instrument",
+            Self::Effect => "effect",
         }
     }
 
@@ -118,6 +120,8 @@ pub enum ParameterUnit {
     Seconds,
     Hertz,
     Decibels,
+    /// Quarter notes of score time.
+    Quarter,
 }
 
 /// Range policy from the reference processor descriptor.
@@ -141,6 +145,8 @@ pub struct ParameterDescriptor {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct InstrumentNodeDescriptor {
     pub channels: u8,
+    /// For an effect instance, the width of its summing `in`.
+    pub input_channels: Option<u8>,
     pub controls: BTreeMap<String, ParameterSpec>,
 }
 
@@ -3236,19 +3242,35 @@ impl<'a> Validator<'a> {
         }
 
         if let Some(instrument) = self.instrument_nodes.get(&object.id).cloned() {
-            self.check_schema(
-                object,
-                path,
-                &["instrument"],
-                &["instrument", "preset", "config", "params", "label"],
-                &[],
-            );
+            if instrument.input_channels.is_some() {
+                self.check_schema(
+                    object,
+                    path,
+                    &["effect"],
+                    &["effect", "preset", "params", "label"],
+                    &[],
+                );
+            } else {
+                self.check_schema(
+                    object,
+                    path,
+                    &["instrument"],
+                    &["instrument", "preset", "config", "params", "label"],
+                    &[],
+                );
+            }
             self.reject_children(object, path);
             let mut config = BTreeMap::new();
             config.insert(
                 "channels".into(),
                 BigRational::from_integer(BigInt::from(instrument.channels)),
             );
+            if let Some(input_channels) = instrument.input_channels {
+                config.insert(
+                    "inputs".into(),
+                    BigRational::from_integer(BigInt::from(input_channels)),
+                );
+            }
             let params = object
                 .field("params")
                 .and_then(|field| match &field.value.kind {
@@ -3265,7 +3287,11 @@ impl<'a> Validator<'a> {
                 object.id.clone(),
                 NodeDescriptor {
                     id: object.id.clone(),
-                    processor: ProcessorKind::Instrument,
+                    processor: if instrument.input_channels.is_some() {
+                        ProcessorKind::Effect
+                    } else {
+                        ProcessorKind::Instrument
+                    },
                     config,
                     params,
                 },
@@ -3818,6 +3844,7 @@ impl<'a> Validator<'a> {
             ProcessorKind::Pan => &[],
             ProcessorKind::Sum => &["channels"],
             ProcessorKind::Instrument
+            | ProcessorKind::Effect
             | ProcessorKind::Eq(_)
             | ProcessorKind::Compressor(_)
             | ProcessorKind::Reverb
@@ -4048,6 +4075,7 @@ impl<'a> Validator<'a> {
             ProcessorKind::Pan => &["pan"],
             ProcessorKind::Sum => &[],
             ProcessorKind::Instrument
+            | ProcessorKind::Effect
             | ProcessorKind::Eq(_)
             | ProcessorKind::Compressor(_)
             | ProcessorKind::Reverb
@@ -4124,7 +4152,7 @@ impl<'a> Validator<'a> {
                 (ProcessorKind::Pan, "pan") => {
                     self.number_at(&field.value, path, &at, name).is_some()
                 }
-                (ProcessorKind::Instrument, _) => false,
+                (ProcessorKind::Instrument | ProcessorKind::Effect, _) => false,
                 _ => false,
             };
             if valid {
@@ -4706,6 +4734,7 @@ impl<'a> Validator<'a> {
             ParameterUnit::Seconds => self.quantity(field, &[Unit::S], path, "amount"),
             ParameterUnit::Hertz => self.quantity(field, &[Unit::Hz], path, "amount"),
             ParameterUnit::Decibels => self.quantity(field, &[Unit::Db], path, "amount"),
+            ParameterUnit::Quarter => self.quantity(field, &[Unit::Q], path, "amount"),
         }
         .and_then(|v| self.control_number(v, field, path, true));
         if let (Some(from), Some(amount)) = (from, amount) {
@@ -5733,6 +5762,7 @@ impl<'a> Validator<'a> {
                             | (ParameterUnit::Seconds, Some(CurveDimension::Seconds))
                             | (ParameterUnit::Hertz, Some(CurveDimension::Hertz))
                             | (ParameterUnit::Decibels, Some(CurveDimension::Decibels))
+                            | (ParameterUnit::Quarter, Some(CurveDimension::QuarterNotes))
                     );
                     if !compatible {
                         self.push(
@@ -5917,9 +5947,12 @@ impl<'a> Validator<'a> {
             );
             return None;
         };
-        let is_instrument = descriptor
-            .as_ref()
-            .is_some_and(|d| d.processor == ProcessorKind::Instrument);
+        let is_instrument = descriptor.as_ref().is_some_and(|d| {
+            matches!(
+                d.processor,
+                ProcessorKind::Instrument | ProcessorKind::Effect
+            )
+        });
         let parameter = if is_constant {
             (parameter_name == "value").then_some((
                 ParameterUnit::Dimensionless,
@@ -7061,6 +7094,34 @@ fn ports_for(
                 },
             ]
         }
+        ProcessorKind::Effect => {
+            let channels = config
+                .get("channels")
+                .and_then(|value| value.to_u32())
+                .unwrap_or(1);
+            let inputs = config
+                .get("inputs")
+                .and_then(|value| value.to_u32())
+                .unwrap_or(channels);
+            vec![
+                PortDescriptor {
+                    name: "in",
+                    direction: PortDirection::Input,
+                    kind: PortKind::Audio,
+                    channels: inputs,
+                    accepts_multiple: true,
+                    zero_default: false,
+                },
+                PortDescriptor {
+                    name: "out",
+                    direction: PortDirection::Output,
+                    kind: PortKind::Audio,
+                    channels,
+                    accepts_multiple: false,
+                    zero_default: true,
+                },
+            ]
+        }
     }
 }
 
@@ -7150,7 +7211,7 @@ fn parameters_for(processor: ProcessorKind) -> Vec<ParameterDescriptor> {
             rate: ParameterRate::Sample,
         }],
         ProcessorKind::Sum => Vec::new(),
-        ProcessorKind::Instrument => Vec::new(),
+        ProcessorKind::Instrument | ProcessorKind::Effect => Vec::new(),
     }
 }
 
@@ -7159,6 +7220,7 @@ fn graph_unit(unit: GraphUnit) -> ParameterUnit {
         GraphUnit::Dimensionless => ParameterUnit::Dimensionless,
         GraphUnit::Seconds => ParameterUnit::Seconds,
         GraphUnit::Hertz => ParameterUnit::Hertz,
+        GraphUnit::Quarter => ParameterUnit::Quarter,
     }
 }
 

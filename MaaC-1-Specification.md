@@ -51,7 +51,8 @@ An implementation states its profiles and its supported extension identifiers. A
 The normative [reusable library and instrument contract](docs/instruments.md)
 defines this repository's local-library extension: library documents,
 hash-pinned imports, reusable patterns, curves and tunings, instruments,
-kit instruments played by hit key, presets, explicit WAV wavetables, zoned pitched samples (mono or stereo WAV,
+kit instruments played by hit key, effects that process the audio at a node's
+`in`, presets, explicit WAV wavetables, zoned pitched samples (mono or stereo WAV,
 core PCM files, or a composition's own audio asset) with velocity layers and
 key/velocity crossfades, and versioned `synth.* /1` voice/shared
 processors, including note velocity and key sources and curved envelopes. It specifies declaration and namespace rules, musical reference

@@ -3,8 +3,8 @@
 use crate::dsp::{one_pole_step, pan_sample, RenderError, Result};
 use crate::expression::ExpressionRuntime;
 use crate::graph::{
-    parameter_descriptor_for_stage, topological_order, GraphProcessor, GraphProgram, GraphStage,
-    InstrumentProgram, ParameterRate, ParameterSpec, MAX_GRAPH_NODES,
+    parameter_descriptor_for_stage, topological_order, Control, EffectProgram, GraphProcessor,
+    GraphProgram, GraphStage, InstrumentProgram, ParameterRate, ParameterSpec, MAX_GRAPH_NODES,
 };
 use crate::plan::{GainExpression, PitchExpression, PressureExpression, TimbreExpression};
 use crate::sample_instrument::{SampleFadeShape, SamplePlayback, SampleZone};
@@ -118,6 +118,11 @@ enum ProcessorCode {
     Drive(usize),
     Mix(usize),
     Pan,
+    Balance,
+    Width,
+    /// Channels, whether the length counts quarter notes, and the frames
+    /// the line holds.
+    Delay(usize, bool, usize),
 }
 
 /// A `synth.sample/1` node's channels, zones, bound sample data, and fade
@@ -247,6 +252,7 @@ enum ProcessorState {
     /// The value a `synth.random/1` node emits for its note, gliding like a
     /// velocity after a join.
     Random(f64, Option<(f64, u64)>),
+    Delay(Box<crate::delay::DelayLine>),
     Stateless,
 }
 
@@ -281,64 +287,14 @@ impl CompiledInstrument {
             .map(|graph| compile_graph(graph, GraphStage::Shared, tables, samples))
             .transpose()?;
 
-        let controls: Vec<CompiledControl> = program
-            .controls
-            .iter()
-            .map(|(name, control)| {
-                let spec = program.control_spec(name).ok_or_else(|| {
-                    RenderError::RenderState(format!(
-                        "instrument {} control {name} has no parameter descriptor",
-                        program.id
-                    ))
-                })?;
-                Ok(CompiledControl {
-                    name: name.clone(),
-                    default: rational_f64(&control.default, "control default")?,
-                    rate: spec.rate,
-                    bounds: compile_bounds(&spec, format!("control {name}"))?,
-                })
-            })
-            .collect::<Result<_>>()?;
-        let control_indices: BTreeMap<String, usize> = controls
-            .iter()
-            .enumerate()
-            .map(|(index, control)| (control.name.clone(), index))
-            .collect();
-
-        for (name, control) in &program.controls {
-            let control_index = control_indices[name];
-            let graph = match control.target.graph {
-                GraphStage::Voice => &mut voice,
-                GraphStage::Shared => shared.as_mut().ok_or_else(|| {
-                    RenderError::RenderState(format!(
-                        "instrument {} control {name} targets a missing shared graph",
-                        program.id
-                    ))
-                })?,
-            };
-            let node = graph
-                .nodes
-                .iter_mut()
-                .find(|node| node.id == control.target.node)
-                .ok_or_else(|| {
-                    RenderError::RenderState(format!(
-                        "instrument {} control {name} targets a missing node",
-                        program.id
-                    ))
-                })?;
-            let parameter =
-                parameter_slot(&node.processor, &control.target.parameter).ok_or_else(|| {
-                    RenderError::RenderState(format!(
-                        "instrument {} control {name} targets a missing parameter",
-                        program.id
-                    ))
-                })?;
-            node.controls.push(ControlBinding {
-                control: control_index,
-                parameter,
-                rate: controls[control_index].rate,
-            });
-        }
+        let (controls, control_indices) = compile_controls(
+            "instrument",
+            &program.id,
+            &program.controls,
+            &|name| program.control_spec(name),
+            Some(&mut voice),
+            shared.as_mut(),
+        )?;
 
         Ok(Self {
             id: program.id.clone(),
@@ -418,7 +374,12 @@ impl InstrumentRuntime {
                 span: None,
             }));
         }
-        let resolved = resolve_controls(&program, controls)?;
+        let resolved = resolve_controls(
+            &program.id,
+            &program.controls,
+            &program.control_indices,
+            controls,
+        )?;
         let shared = program
             .shared
             .as_ref()
@@ -467,7 +428,13 @@ impl InstrumentRuntime {
     pub fn update_controls(&mut self, controls: &BTreeMap<String, f64>) -> Result<()> {
         if self.buffered_start + self.buffered.len() as u64 > self.next_frame {
             let before = self.controls.clone();
-            update_resolved_controls(&self.program, controls, &mut self.controls)?;
+            update_resolved_controls(
+                &self.program.id,
+                &self.program.controls,
+                &self.program.control_indices,
+                controls,
+                &mut self.controls,
+            )?;
             if before != self.controls {
                 return Err(RenderError::RenderState(format!(
                     "instrument {} controls changed inside a block rendered ahead",
@@ -476,7 +443,13 @@ impl InstrumentRuntime {
             }
             return Ok(());
         }
-        update_resolved_controls(&self.program, controls, &mut self.controls)
+        update_resolved_controls(
+            &self.program.id,
+            &self.program.controls,
+            &self.program.control_indices,
+            controls,
+            &mut self.controls,
+        )
     }
 
     pub fn note_on(
@@ -962,7 +935,12 @@ impl InstrumentRuntime {
     }
 
     pub fn reset(&mut self, controls: &BTreeMap<String, f64>) -> Result<()> {
-        let resolved = resolve_controls(&self.program, controls)?;
+        let resolved = resolve_controls(
+            &self.program.id,
+            &self.program.controls,
+            &self.program.control_indices,
+            controls,
+        )?;
         let shared = self
             .program
             .shared
@@ -989,6 +967,147 @@ impl InstrumentRuntime {
 
     pub fn active_voice_count(&self) -> usize {
         self.voices.len()
+    }
+}
+
+/// Immutable executable code shared by every instance of one effect.
+#[derive(Debug)]
+pub struct CompiledEffect {
+    id: String,
+    graph: CompiledGraph,
+    controls: Vec<CompiledControl>,
+    control_indices: BTreeMap<String, usize>,
+    channels: usize,
+    input_channels: usize,
+}
+
+impl CompiledEffect {
+    /// Compile a program already covered by the enclosing plan validation.
+    pub(crate) fn compile_validated(program: &EffectProgram) -> Result<Self> {
+        let mut graph = compile_graph(
+            &program.graph,
+            GraphStage::Shared,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        )?;
+        let (controls, control_indices) = compile_controls(
+            "effect",
+            &program.id,
+            &program.controls,
+            &|name| program.control_spec(name),
+            None,
+            Some(&mut graph),
+        )?;
+        Ok(Self {
+            id: program.id.clone(),
+            graph,
+            controls,
+            control_indices,
+            channels: usize::from(program.channels()),
+            input_channels: usize::from(program.input_channels),
+        })
+    }
+
+    pub fn channels(&self) -> usize {
+        self.channels
+    }
+
+    pub fn input_channels(&self) -> usize {
+        self.input_channels
+    }
+}
+
+/// Mutable state for one effect node: its graph's state from the reset
+/// origin, and its public control values.
+#[derive(Debug)]
+pub struct EffectRuntime {
+    program: Arc<CompiledEffect>,
+    rate: f64,
+    controls: Vec<f64>,
+    state: GraphState,
+    reset: GraphState,
+    /// Node outputs of the frame being processed, one per node.
+    scratch: Vec<[f64; 2]>,
+}
+
+impl EffectRuntime {
+    pub fn new(
+        program: Arc<CompiledEffect>,
+        rate: f64,
+        controls: &BTreeMap<String, f64>,
+        tempo: &Arc<crate::delay::TempoCurve>,
+    ) -> Result<Self> {
+        validate_rate(rate)?;
+        let resolved = resolve_controls(
+            &program.id,
+            &program.controls,
+            &program.control_indices,
+            controls,
+        )?;
+        let mut state = GraphState::new_shared(&program.graph, &resolved, rate)?;
+        for node in &mut state.nodes {
+            if let ProcessorState::Delay(line) = &mut node.state {
+                line.attach_tempo(tempo);
+            }
+        }
+        Ok(Self {
+            scratch: vec![[0.0; 2]; program.graph.nodes.len()],
+            reset: state.clone(),
+            state,
+            controls: resolved,
+            rate,
+            program,
+        })
+    }
+
+    /// Replace the instance's public control values for the current frame.
+    pub fn update_controls(&mut self, controls: &BTreeMap<String, f64>) -> Result<()> {
+        update_resolved_controls(
+            &self.program.id,
+            &self.program.controls,
+            &self.program.control_indices,
+            controls,
+            &mut self.controls,
+        )
+    }
+
+    /// Process one frame of the audio at `in`. Channels beyond the input's
+    /// width are ignored.
+    pub fn process(&mut self, frame: u64, input: [f64; 2]) -> Result<[f64; 2]> {
+        let program = Arc::clone(&self.program);
+        let mut input = input;
+        if program.input_channels < 2 {
+            input[1] = 0.0;
+        }
+        let (rendered, error) = self.state.render_block(
+            &program.graph,
+            &self.controls,
+            frame,
+            1,
+            self.rate,
+            &[(0.0, 0.0, 0.0)],
+            Some(&[input]),
+            &mut self.scratch,
+            1,
+        );
+        if let Some(error) = error {
+            return Err(error);
+        }
+        if rendered != 1 {
+            return Err(RenderError::RenderState(format!(
+                "effect {} rendered no frame",
+                program.id
+            )));
+        }
+        let mut output = self.scratch[program.graph.output];
+        if program.channels < 2 {
+            output[1] = 0.0;
+        }
+        Ok(output)
+    }
+
+    pub(crate) fn reset_state(&mut self) {
+        self.state.clone_from(&self.reset);
     }
 }
 
@@ -1161,10 +1280,15 @@ impl GraphState {
                 ProcessorCode::Svf(..) => ProcessorState::Svf([[0.0; 2]; 2]),
                 ProcessorCode::Drive(_) => ProcessorState::Drive([DriveState::default(); 2]),
                 ProcessorCode::Velocity => ProcessorState::Velocity(velocity, None),
+                ProcessorCode::Delay(_, _, frames) => {
+                    ProcessorState::Delay(Box::new(crate::delay::DelayLine::new(*frames)))
+                }
                 ProcessorCode::Gain(_)
                 | ProcessorCode::Key
                 | ProcessorCode::Mix(_)
                 | ProcessorCode::Pan
+                | ProcessorCode::Balance
+                | ProcessorCode::Width
                 | ProcessorCode::Timbre
                 | ProcessorCode::Pressure => ProcessorState::Stateless,
             };
@@ -2139,6 +2263,37 @@ fn process_graph_node(
         (ProcessorCode::Pan, ProcessorState::Stateless) => {
             output = pan_sample(audio_input[0], params[0])?;
         }
+        (ProcessorCode::Balance, ProcessorState::Stateless) => {
+            // cos(π/2) is not exactly zero in binary64; a full balance
+            // silences the far side exactly.
+            let lowered = |amount: f64| {
+                if amount >= 1.0 {
+                    0.0
+                } else {
+                    (std::f64::consts::FRAC_PI_2 * amount.max(0.0)).cos()
+                }
+            };
+            output = [
+                audio_input[0] * lowered(params[0]),
+                audio_input[1] * lowered(-params[0]),
+            ];
+        }
+        (ProcessorCode::Width, ProcessorState::Stateless) => {
+            let mid = (audio_input[0] + audio_input[1]) / 2.0;
+            let side = (audio_input[0] - audio_input[1]) / 2.0;
+            output = [mid + params[0] * side, mid - params[0] * side];
+        }
+        (ProcessorCode::Delay(channels, score, _), ProcessorState::Delay(line)) => {
+            output = line.process(
+                frame,
+                rate,
+                audio_input,
+                *channels,
+                *score,
+                [params[0], params[1], params[2]],
+                commit,
+            )?;
+        }
         _ => {
             return Err(RenderError::RenderState(format!(
                 "instrument graph node {} has mismatched compiled state",
@@ -2378,6 +2533,22 @@ fn compile_processor(
         ),
         GraphProcessor::Mix { channels } => (&[], ProcessorCode::Mix(*channels as usize)),
         GraphProcessor::Pan => (&["pan"], ProcessorCode::Pan),
+        GraphProcessor::Balance => (&["balance"], ProcessorCode::Balance),
+        GraphProcessor::Width => (&["width"], ProcessorCode::Width),
+        GraphProcessor::Delay {
+            channels,
+            clock,
+            max,
+        } => (
+            &["time", "feedback", "damping"],
+            ProcessorCode::Delay(
+                *channels as usize,
+                *clock == crate::graph::DelayClock::Score,
+                crate::graph::delay_line_frames(max).ok_or_else(|| {
+                    RenderError::RenderState("delay line length overflowed".into())
+                })? - 2,
+            ),
+        ),
     })
 }
 
@@ -2406,6 +2577,9 @@ fn parameter_slot(processor: &ProcessorCode, name: &str) -> Option<usize> {
         | ProcessorCode::Random(_)
         | ProcessorCode::Key => &[],
         ProcessorCode::Pan => &["pan"],
+        ProcessorCode::Balance => &["balance"],
+        ProcessorCode::Width => &["width"],
+        ProcessorCode::Delay(..) => &["time", "feedback", "damping"],
     };
     names.iter().position(|candidate| *candidate == name)
 }
@@ -2432,20 +2606,88 @@ fn apply_controls(node: &CompiledNode, controls: &[f64], rate: ParameterRate, pa
     }
 }
 
+/// Compile a program's public controls and bind each to the graph node
+/// parameter it targets. `kind` names the program in errors.
+#[allow(clippy::type_complexity)]
+fn compile_controls(
+    kind: &str,
+    id: &str,
+    declared: &BTreeMap<String, Control>,
+    spec_of: &dyn Fn(&str) -> Option<ParameterSpec>,
+    mut voice: Option<&mut CompiledGraph>,
+    mut shared: Option<&mut CompiledGraph>,
+) -> Result<(Vec<CompiledControl>, BTreeMap<String, usize>)> {
+    let controls: Vec<CompiledControl> = declared
+        .iter()
+        .map(|(name, control)| {
+            let spec = spec_of(name).ok_or_else(|| {
+                RenderError::RenderState(format!(
+                    "{kind} {id} control {name} has no parameter descriptor"
+                ))
+            })?;
+            Ok(CompiledControl {
+                name: name.clone(),
+                default: rational_f64(&control.default, "control default")?,
+                rate: spec.rate,
+                bounds: compile_bounds(&spec, format!("control {name}"))?,
+            })
+        })
+        .collect::<Result<_>>()?;
+    let control_indices: BTreeMap<String, usize> = controls
+        .iter()
+        .enumerate()
+        .map(|(index, control)| (control.name.clone(), index))
+        .collect();
+
+    for (name, control) in declared {
+        let control_index = control_indices[name];
+        let graph = match control.target.graph {
+            GraphStage::Voice => voice.as_deref_mut(),
+            GraphStage::Shared => shared.as_deref_mut(),
+        }
+        .ok_or_else(|| {
+            RenderError::RenderState(format!(
+                "{kind} {id} control {name} targets a missing shared graph"
+            ))
+        })?;
+        let node = graph
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == control.target.node)
+            .ok_or_else(|| {
+                RenderError::RenderState(format!(
+                    "{kind} {id} control {name} targets a missing node"
+                ))
+            })?;
+        let parameter =
+            parameter_slot(&node.processor, &control.target.parameter).ok_or_else(|| {
+                RenderError::RenderState(format!(
+                    "{kind} {id} control {name} targets a missing parameter"
+                ))
+            })?;
+        node.controls.push(ControlBinding {
+            control: control_index,
+            parameter,
+            rate: controls[control_index].rate,
+        });
+    }
+    Ok((controls, control_indices))
+}
+
 fn resolve_controls(
-    program: &CompiledInstrument,
+    id: &str,
+    controls: &[CompiledControl],
+    indices: &BTreeMap<String, usize>,
     supplied: &BTreeMap<String, f64>,
 ) -> Result<Vec<f64>> {
     for name in supplied.keys() {
-        if !program.control_indices.contains_key(name) {
+        if !indices.contains_key(name) {
             return Err(RenderError::RenderState(format!(
-                "instrument {} has no public control {name}",
-                program.id
+                "{id} has no public control {name}"
             )));
         }
     }
-    program
-        .controls
+    controls
         .iter()
         .map(|control| {
             let value = supplied
@@ -2459,26 +2701,27 @@ fn resolve_controls(
 }
 
 fn update_resolved_controls(
-    program: &CompiledInstrument,
+    id: &str,
+    controls: &[CompiledControl],
+    indices: &BTreeMap<String, usize>,
     supplied: &BTreeMap<String, f64>,
     resolved: &mut [f64],
 ) -> Result<()> {
     for name in supplied.keys() {
-        if !program.control_indices.contains_key(name) {
+        if !indices.contains_key(name) {
             return Err(RenderError::RenderState(format!(
-                "instrument {} has no public control {name}",
-                program.id
+                "{id} has no public control {name}"
             )));
         }
     }
-    for control in &program.controls {
+    for control in controls {
         let value = supplied
             .get(&control.name)
             .copied()
             .unwrap_or(control.default);
         validate_value(value, &control.bounds)?;
     }
-    for (index, control) in program.controls.iter().enumerate() {
+    for (index, control) in controls.iter().enumerate() {
         let value = supplied
             .get(&control.name)
             .copied()

@@ -490,28 +490,15 @@ impl BundleEditContext {
         let instance = libraries
             .resolve_instance(&self.source_path, syntax_object)
             .map_err(map_diagnostics)?;
-        let control_spec = |name: &str| {
-            if instance.kit {
-                libraries
-                    .kits
-                    .iter()
-                    .find(|kit| kit.id == instance.program_id)
-                    .and_then(|kit| kit.control_spec(&libraries.programs, name))
-            } else {
-                libraries
-                    .programs
-                    .iter()
-                    .find(|program| program.id == instance.program_id)
-                    .and_then(|program| program.control_spec(name))
-            }
-        };
+        let control_spec = |name: &str| libraries.instance_control_spec(&instance, name);
 
         let mut normalized = normalize_plain_object(object, &meter, &seed)?;
         let fields = normalized["fields"]
             .as_object_mut()
             .ok_or_else(|| EditError::new("E_SYNTAX", "normalized fields are malformed"))?;
-        // A kit instance takes no config: each piece declares its voices.
-        if !instance.kit {
+        // A kit instance takes no config: each piece declares its voices. An
+        // effect has no voices.
+        if !instance.kit && instance.effect_input.is_none() {
             fields.insert(
                 "config".into(),
                 record(Map::from_iter([(
@@ -601,7 +588,10 @@ impl EditContext for BundleEditContext {
             let normalized = self.normalized_composition(&synthetic)?;
             return Ok(object_at(&normalized, base_path)?.clone());
         }
-        if object["kind"] == "node" && object["fields"].get("instrument").is_some() {
+        if object["kind"] == "node"
+            && (object["fields"].get("instrument").is_some()
+                || object["fields"].get("effect").is_some())
+        {
             return self.normalize_instrument_instance(base, base_path, object);
         }
         let (meter, seed) = bundle_normalization_context(base)?;
@@ -785,6 +775,7 @@ fn graph_value(value: &BigRational, unit: GraphUnit) -> Value {
         GraphUnit::Dimensionless => rational(value, None),
         GraphUnit::Seconds => rational(value, Some(Unit::S)),
         GraphUnit::Hertz => rational(value, Some(Unit::Hz)),
+        GraphUnit::Quarter => rational(value, Some(Unit::Q)),
     }
 }
 
@@ -840,7 +831,14 @@ fn reject_unsupported_capabilities(document: &Document) -> EditResult<()> {
     for object in document.objects.values() {
         if matches!(
             object.kind.as_str(),
-            "extension" | "import" | "library" | "instrument" | "preset" | "wavetable" | "sample"
+            "extension"
+                | "import"
+                | "library"
+                | "instrument"
+                | "effect"
+                | "preset"
+                | "wavetable"
+                | "sample"
         ) {
             return Err(EditError::new(
                 "E_CAPABILITY",
@@ -852,7 +850,7 @@ fn reject_unsupported_capabilities(document: &Document) -> EditResult<()> {
             .at(std::slice::from_ref(&object.id), &[]));
         }
         if object.kind == "node" {
-            if object.field("instrument").is_some() {
+            if object.field("instrument").is_some() || object.field("effect").is_some() {
                 return Err(EditError::new(
                     "E_CAPABILITY",
                     "local instrument editing requires a library-aware context",
