@@ -152,6 +152,7 @@ The owner decides; this is the AI's recommendation.
    `core.delay/1` counts frames, so an echo cannot be written in beats
    (`E_UNIT`) and drifts when the tempo moves. A proposal can start from
    what cannot be written, checked on the existing songs, and a next trial
-   in a genre that leans on the mix would set its order.
+   in a genre that leans on the mix would set its order. The
+   [effects proposal](../design/effects-proposal.md) does this.
 3. **The gayageum's sound,** if the owner wants it, in a standard-library
    track separate from the trials.
