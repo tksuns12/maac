@@ -503,6 +503,35 @@ Blind, the hand-written saxophone could not be told from the script's, and
 with slurs it sounded "a bit more dynamic" in both orders of play. The
 saxophone's tone was left open; the report gives each round.
 
+# Rain on the Eaves: a gayageum sanjo
+
+[`sanjo/sanjo.maac`](sanjo/sanjo.maac) is a 135-second sanjo for gayageum
+and janggu in gyemyeonjo on A. An AI wrote it directly in MaaC during the
+[T8 production trial](../docs/reports/ai-production-trial-t8.md):
+
+- four jangdan that gather speed, as sanjo does: jinyangjo in 18/8, then
+  jungmori in 12/4, jajinmori and hwimori in 12/8, each a region whose
+  tempo ramps up through it;
+- the left hand's ornaments are shared declarations: mi trembles with a
+  `vibrato` of `shape = up`, since pressing the string only raises it; do
+  bends down to si with a slow curve when the line falls and a quick one
+  when it rises; a note can be pushed up from a whole tone below. Each of
+  the 40 ornamented notes chooses its own;
+- the gayageum is built in the song from `synth.modal/1`, struck by a short
+  burst of per-note noise at a point that `synth.random/1` moves; the
+  janggu is a kit of two instruments built in the song, its left and
+  right heads, and 덩 is both at once.
+
+```sh
+maac build examples/sanjo/sanjo.maac --profile song -o sanjo.wav --format pcm16
+maac analyze examples/sanjo/sanjo.maac --profile song --section regions --lead gaya:out
+maac deliver examples/sanjo/sanjo.maac --delivery release --output-dir out --profile song
+```
+
+The release delivery measured −16.16 LUFS and −1.10 dBTP and passed its
+limits. In a blind round the owner preferred this steady quickening to a
+version whose slow section pushed and pulled: "a somehow felt natural".
+
 # Audio inside patterns
 
 [`pattern-audio.maac`](pattern-audio.maac) builds a one-bar drum loop from

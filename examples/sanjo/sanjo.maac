@@ -1,0 +1,523 @@
+maac 1;
+
+// "Rain on the Eaves" (처마 끝 빗소리): a short gayageum sanjo, for gayageum
+// and janggu, in gyemyeonjo on A: mi trembles, la is plain, and do bends down
+// to si. Written directly in MaaC by an AI producer as the T8 production
+// trial. As sanjo does, it begins slow and gathers speed through four jangdan.
+//
+//    0q  jinyangjo: two jangdan of four gak, six beats each, 45 to 50
+//   72q  jungmori: five jangdan of twelve beats, 84 to 96
+//  132q  jajinmori: twelve jangdan of four dotted beats, 100 to 140
+//  204q  hwimori: six jangdan, 150 to 165, and the last stroke
+
+project sanjo {
+  score = [0q, 243q]; rate = 48000Hz; tail = 3s;
+  tempo = &clock; meter = &metre; output = &master:out;
+  requires = ["maac.production/1"];
+}
+// Quarter notes per minute: a jinyang beat is a dotted quarter, 45 = 67.5.
+// Each jangdan quickens to its end, and the next starts faster still: a ramp
+// ends at the next point's tempo, so each ramp's top is held for its last beat.
+tempo clock { points = [(0q, 135/2bpm, linear), (71q, 75bpm, step), (72q, 84bpm, linear), (131q, 96bpm, step), (132q, 150bpm, linear), (203q, 210bpm, step), (204q, 225bpm, linear), (240q, 495/2bpm, linear), (243q, 180bpm, step)]; }
+meter metre { points = [(0q, 18, 8), (72q, 12, 4), (132q, 12, 8)]; }
+region jinyang { span = [0q, 72q]; }
+region jungmori { span = [72q, 132q]; }
+region jajinmori { span = [132q, 204q]; }
+region hwimori { span = [204q, 243q]; }
+// ---------------------------------------------------------------- instruments
+// A gayageum: twelve silk strings plucked by the fingers over a paulownia
+// board. Silk loses its upper harmonics quickly, so the string is a bank of
+// harmonic modes whose higher modes die sooner. No two plucks are alike: the
+// finger is a short burst of noise of its own for each note, brighter when
+// harder, and it takes the string at a slightly different point each time.
+// Then the finger's snap on silk, and the board's hollow around 280 Hz. The
+// left hand's trembling and bending come from each note's pitch expression,
+// which the whole bank follows.
+instrument gayageum {
+  channels = 2;
+  voice voice {
+    channels = 1; amplitude = &amp; output = &blend:out;
+    node amp { type = "synth.adsr/1"; params = { attack = 1ms; sustain = 1; release = 350ms; curve = 2; }; }
+    node vel { type = "synth.velocity/1"; }
+    node key { type = "synth.key/1"; }
+    node finger { type = "synth.noise/1"; config = { seed = 2654435761; per_note = true; }; params = { level = 0; }; }
+    node finger_env { type = "synth.adsr/1"; params = { decay = 5ms; sustain = 0; curve = 2; }; }
+    modulate finger_shape { from = &finger_env:out; to = &finger.params.level; depth = 0.5; }
+    node pad { type = "synth.onepole/1"; config = { channels = 1; }; params = { cutoff = 1500Hz; }; }
+    modulate harder_brighter { from = &vel:out; to = &pad.params.cutoff; depth = 3000Hz; }
+    connect finger_pad { from = &finger:out; to = &pad:in; }
+    node spot { type = "synth.random/1"; config = { seed = 2166136261; }; }
+    node string { type = "synth.modal/1"; config = { modes = 24; }; params = { decay = 3s; damping = 0.6; position = 1/8; level = 1/9; }; }
+    modulate spot_moves { from = &spot:out; to = &string.params.position; depth = 1/40; }
+    connect pad_string { from = &pad:out; to = &string:in; }
+    modulate higher_shorter { from = &key:out; to = &string.params.decay; depth = -900ms; }
+    node snap { type = "synth.noise/1"; config = { seed = 3266489917; per_note = true; }; params = { level = 0; }; }
+    node snap_env { type = "synth.adsr/1"; params = { decay = 10ms; sustain = 0; curve = 4; }; }
+    modulate snap_shape { from = &snap_env:out; to = &snap.params.level; depth = 0.08; }
+    node snap_band { type = "synth.svf/1"; config = { channels = 1; mode = bandpass; }; params = { cutoff = 1200Hz; ratio = 3; q = 1.2; }; }
+    connect snap_in { from = &snap:out; to = &snap_band:in; }
+    node blend { type = "synth.mix/1"; config = { channels = 1; }; }
+    connect string_blend { from = &string:out; to = &blend:in; }
+    connect snap_blend { from = &snap_band:out; to = &blend:in; }
+  }
+  shared body {
+    channels = 2; output = &place:out;
+    node low_cut { type = "synth.highpass/1"; config = { channels = 1; }; params = { cutoff = 55Hz; }; }
+    node air { type = "synth.onepole/1"; config = { channels = 1; }; params = { cutoff = 4500Hz; }; }
+    node board { type = "synth.svf/1"; config = { channels = 1; mode = bandpass; }; params = { cutoff = 280Hz; q = 1.4; }; }
+    node board_gain { type = "synth.gain/1"; config = { channels = 1; }; params = { level = 0.6; }; }
+    node sum { type = "synth.mix/1"; config = { channels = 1; }; }
+    node gain { type = "synth.gain/1"; config = { channels = 1; }; params = { level = 1; }; }
+    node place { type = "synth.pan/1"; params = { pan = -0.2; }; }
+    connect input_cut { from = &input:out; to = &low_cut:in; }
+    connect cut_air { from = &low_cut:out; to = &air:in; }
+    connect cut_board { from = &low_cut:out; to = &board:in; }
+    connect board_lift { from = &board:out; to = &board_gain:in; }
+    connect air_sum { from = &air:out; to = &sum:in; }
+    connect board_sum { from = &board_gain:out; to = &sum:in; }
+    connect sum_gain { from = &sum:out; to = &gain:in; }
+    connect gain_place { from = &gain:out; to = &place:in; }
+  }
+  control level { target = &body.gain.params.level; default = 1; }
+}
+
+// The janggu's left head, 북편: thick leather under the palm. A low,
+// hollow "kung" whose pitch sinks as it rings, and the palm's thump.
+instrument buk {
+  channels = 2;
+  voice voice {
+    channels = 1; amplitude = &amp; output = &mix:out;
+    node amp { type = "synth.adsr/1"; params = { attack = 0.5ms; decay = 450ms; sustain = 0; release = 300ms; curve = 4; }; }
+    node vel { type = "synth.velocity/1"; }
+    node drop_env { type = "synth.adsr/1"; params = { decay = 70ms; sustain = 0; curve = 4; }; }
+    node mode_1 { type = "synth.sine/1"; params = { ratio = 0; frequency = 92Hz; level = 7/10; }; }
+    node mode_2 { type = "synth.sine/1"; params = { ratio = 0; frequency = 148Hz; level = 3/10; }; }
+    node mode_3 { type = "synth.sine/1"; params = { ratio = 0; frequency = 205Hz; level = 3/25; }; }
+    modulate drop_1 { from = &drop_env:out; to = &mode_1.params.frequency; depth = 28Hz; }
+    modulate drop_2 { from = &drop_env:out; to = &mode_2.params.frequency; depth = 40Hz; }
+    modulate drop_3 { from = &drop_env:out; to = &mode_3.params.frequency; depth = 50Hz; }
+    node palm { type = "synth.noise/1"; config = { seed = 2654435769; per_note = true; }; params = { level = 0; }; }
+    node palm_env { type = "synth.adsr/1"; params = { decay = 18ms; sustain = 0; curve = 4; }; }
+    modulate palm_shape { from = &palm_env:out; to = &palm.params.level; depth = 0.5; }
+    node palm_tone { type = "synth.onepole/1"; config = { channels = 1; }; params = { cutoff = 450Hz; }; }
+    connect palm_in { from = &palm:out; to = &palm_tone:in; }
+    node mix { type = "synth.mix/1"; config = { channels = 1; }; }
+    connect mode_1_mix { from = &mode_1:out; to = &mix:in; }
+    connect mode_2_mix { from = &mode_2:out; to = &mix:in; }
+    connect mode_3_mix { from = &mode_3:out; to = &mix:in; }
+    connect palm_mix { from = &palm_tone:out; to = &mix:in; }
+  }
+  shared stage {
+    channels = 2; output = &stereo:out;
+    node tone { type = "synth.onepole/1"; config = { channels = 1; }; params = { cutoff = 3000Hz; }; }
+    node gain { type = "synth.gain/1"; config = { channels = 1; }; params = { level = 1; }; }
+    node stereo { type = "synth.pan/1"; params = { pan = 0.1; }; }
+    connect input_tone { from = &input:out; to = &tone:in; }
+    connect tone_gain { from = &tone:out; to = &gain:in; }
+    connect gain_stereo { from = &gain:out; to = &stereo:in; }
+  }
+  control level { target = &stage.gain.params.level; default = 1; }
+}
+
+// The right head, 채편: thin skin struck with a bamboo stick. A dry crack and
+// a short, high ring.
+instrument chae {
+  channels = 2;
+  voice voice {
+    channels = 1; amplitude = &amp; output = &mix:out;
+    node amp { type = "synth.adsr/1"; params = { attack = 0.2ms; decay = 160ms; sustain = 0; release = 80ms; curve = 5; }; }
+    node crack { type = "synth.noise/1"; config = { seed = 1597334677; per_note = true; }; params = { level = 0; }; }
+    node crack_env { type = "synth.adsr/1"; params = { decay = 7ms; sustain = 0; curve = 4; }; }
+    modulate crack_shape { from = &crack_env:out; to = &crack.params.level; depth = 1; }
+    node crack_band { type = "synth.svf/1"; config = { channels = 1; mode = bandpass; }; params = { cutoff = 3200Hz; q = 0.9; }; }
+    connect crack_in { from = &crack:out; to = &crack_band:in; }
+    node ring_1 { type = "synth.sine/1"; params = { ratio = 0; frequency = 540Hz; level = 3/10; }; }
+    node ring_2 { type = "synth.sine/1"; params = { ratio = 0; frequency = 1230Hz; level = 3/20; }; }
+    node mix { type = "synth.mix/1"; config = { channels = 1; }; }
+    connect crack_mix { from = &crack_band:out; to = &mix:in; }
+    connect ring_1_mix { from = &ring_1:out; to = &mix:in; }
+    connect ring_2_mix { from = &ring_2:out; to = &mix:in; }
+  }
+  shared stage {
+    channels = 2; output = &stereo:out;
+    node tone { type = "synth.onepole/1"; config = { channels = 1; }; params = { cutoff = 9000Hz; }; }
+    node gain { type = "synth.gain/1"; config = { channels = 1; }; params = { level = 1; }; }
+    node stereo { type = "synth.pan/1"; params = { pan = 0.3; }; }
+    connect input_tone { from = &input:out; to = &tone:in; }
+    connect tone_gain { from = &tone:out; to = &gain:in; }
+    connect gain_stereo { from = &gain:out; to = &stereo:in; }
+  }
+  control level { target = &stage.gain.params.level; default = 1; }
+}
+
+// The janggu: hits keyed "kung" on the left head and "deok" on the right;
+// 덩 is both at once.
+instrument janggu {
+  channels = 2;
+  piece kung { instrument = &buk; key = "kung"; gate = 300ms; }
+  piece deok { instrument = &chae; key = "deok"; gate = 120ms; }
+  control kung_level { target = &kung.params.level; default = 1; }
+  control deok_level { target = &deok.params.level; default = 1; }
+}
+
+// ---------------------------------------------------------------- the left hand
+// Mi trembles: the left hand presses the string behind its bridge, so the
+// pitch only rises and returns. Slow and wide in jinyang, quicker later.
+vibrato tteo_slow { rate = 4Hz; depth = 90ct; delay = 200ms; rise = 500ms; shape = up; }
+vibrato tteo { rate = 5Hz; depth = 70ct; delay = 120ms; rise = 300ms; shape = up; }
+vibrato tteo_fast { rate = 6Hz; depth = 45ct; delay = 60ms; rise = 120ms; shape = up; }
+// After a push from below, the trembling waits for the push to land.
+vibrato tteo_after { rate = 5Hz; depth = 70ct; delay = 250ms; rise = 300ms; shape = up; }
+// Do bends down to si: slowly when the line falls, with a small press first,
+// and quickly when it rises.
+curve kkeok_down { clock = normalized; points = [(0, 0ct, step), (1/5, 0ct, linear), (3/10, 30ct, linear), (4/5, -100ct, step), (1, -100ct, step)]; }
+curve kkeok_up { clock = seconds; points = [(0ms, 0ct, step), (60ms, 0ct, linear), (140ms, -100ct, step)]; }
+// A note pushed up from the string a whole tone below.
+curve mireo { clock = seconds; points = [(0ms, -200ct, step), (40ms, -200ct, linear), (220ms, 0ct, step)]; }
+
+// Each jinyang jangdan swells to its third gak, which binds, and lets go in
+// the fourth.
+curve jin_arc { clock = score; points = [(0q, 17/20, linear), (18q, 1, linear), (24q, 28/25, linear), (30q, 1, linear), (36q, 41/50, step)]; }
+curve arc { clock = score; points = [(0q, 9/10, linear), (6q, 27/25, linear), (12q, 19/20, step)]; }
+
+// ---------------------------------------------------------------- jinyangjo
+// Two jangdan, 72q. Each gak is 9q, six beats of three eighths.
+pattern jy_line { length = 72q;
+  // Gak 1 pushes off from la, and do bends down to si.
+  chord g1a { at = 0q; dur = 3q; pitches = [A2, A3]; velocity = 0.72; }
+  note g1b { at = after(g1a); dur = 3q; pitch = C4; velocity = 0.62; expression k { kind = pitch; curve = &kkeok_down; } }
+  note g1c { at = after(g1b); dur = 2q; pitch = A3; velocity = 0.58; }
+  note g1d { at = after(g1c); dur = 1q; pitch = G3; velocity = 0.5; }
+  // Gak 2 hangs on mi.
+  note g2a { at = after(g1d); dur = 9/2q; pitch = E4; velocity = 0.7; expression v { kind = pitch; vibrato = &tteo_slow; } }
+  note g2b { at = after(g2a); dur = 3/2q; pitch = D4; velocity = 0.55; }
+  note g2c { at = after(g2b); dur = 3/2q; pitch = E4; velocity = 0.6; expression v { kind = pitch; vibrato = &tteo; } }
+  note g2d { at = after(g2c); dur = 1/2q; pitch = D4; velocity = 0.5; }
+  note g2e { at = after(g2d); dur = 1q; pitch = C4; velocity = 0.56; expression k { kind = pitch; curve = &kkeok_up; } }
+  // Gak 3 binds, high.
+  chord g3a { at = after(g2e); dur = 3q; pitches = [A3, A4]; velocity = 0.78; }
+  note g3b { at = after(g3a); dur = 1q; pitch = G4; velocity = 0.58; }
+  note g3c { at = after(g3b); dur = 2q; pitch = E4; velocity = 0.68; expression v { kind = pitch; vibrato = &tteo_slow; } }
+  note g3d { at = after(g3c); dur = 1q; pitch = D4; velocity = 0.55; }
+  note g3e { at = after(g3d); dur = 2q; pitch = C4; velocity = 0.6; expression k { kind = pitch; curve = &kkeok_down; } }
+  // Gak 4 lets go, down to the low mi.
+  note g4a { at = after(g3e); dur = 3q; pitch = A3; velocity = 0.6; }
+  note g4b { at = after(g4a); dur = 9/2q; pitch = E3; velocity = 0.66; expression v { kind = pitch; vibrato = &tteo_slow; } }
+  // The second jangdan climbs higher.
+  note g5a { at = after(g4b, 3/2q); dur = 3/2q; pitch = E4; velocity = 0.66; expression m { kind = pitch; curve = &mireo; vibrato = &tteo_after; } }
+  note g5b { at = after(g5a); dur = 3/2q; pitch = G4; velocity = 0.6; }
+  note g5c { at = after(g5b); dur = 3q; pitch = A4; velocity = 0.74; }
+  note g5d { at = after(g5c); dur = 3/2q; pitch = G4; velocity = 0.58; }
+  note g5e { at = after(g5d); dur = 3/2q; pitch = E4; velocity = 0.64; expression v { kind = pitch; vibrato = &tteo; } }
+  note g6a { at = after(g5e); dur = 1q; pitch = D4; velocity = 0.55; }
+  note g6b { at = after(g6a); dur = 2q; pitch = E4; velocity = 0.66; expression v { kind = pitch; vibrato = &tteo_slow; } }
+  note g6c { at = after(g6b); dur = 1q; pitch = D4; velocity = 0.52; }
+  note g6d { at = after(g6c); dur = 2q; pitch = C4; velocity = 0.62; expression k { kind = pitch; curve = &kkeok_down; } }
+  note g6e { at = after(g6d); dur = 3q; pitch = A3; velocity = 0.6; }
+  note g7a { at = after(g6e); dur = 3q; pitch = E4; velocity = 0.76; expression v { kind = pitch; vibrato = &tteo_slow; } }
+  note g7b { at = after(g7a); dur = 3/2q; pitch = C4; velocity = 0.64; expression k { kind = pitch; curve = &kkeok_down; } }
+  note g7c { at = after(g7b); dur = 3/2q; pitch = A3; velocity = 0.58; }
+  note g7d { at = after(g7c); dur = 1q; pitch = G3; velocity = 0.5; }
+  note g7e { at = after(g7d); dur = 2q; pitch = A3; velocity = 0.6; }
+  note g8a { at = after(g7e); dur = 3q; pitch = E3; velocity = 0.66; expression v { kind = pitch; vibrato = &tteo_slow; } }
+  chord g8b { at = after(g8a); dur = 9/2q; pitches = [A2, A3]; velocity = 0.7; }
+  phrase first { at = 0q; length = 36q; dynamics = &jin_arc; }
+  phrase second { at = 36q; length = 36q; dynamics = &jin_arc; }
+}
+
+// ---------------------------------------------------------------- jungmori
+// Five jangdan of twelve quarter beats, 60q.
+pattern jm_line { length = 60q;
+  note j1a { at = 0q; dur = 2q; pitch = A3; velocity = 0.66; }
+  note j1b { at = after(j1a); dur = 1q; pitch = C4; velocity = 0.58; expression k { kind = pitch; curve = &kkeok_up; } }
+  note j1c { at = after(j1b); dur = 1q; pitch = A3; velocity = 0.55; }
+  note j1d { at = after(j1c); dur = 2q; pitch = E4; velocity = 0.68; expression v { kind = pitch; vibrato = &tteo; } }
+  note j1e { at = after(j1d); dur = 1q; pitch = D4; velocity = 0.56; }
+  note j1f { at = after(j1e); dur = 1q; pitch = E4; velocity = 0.6; }
+  note j1g { at = after(j1f); dur = 1q; pitch = D4; velocity = 0.54; }
+  note j1h { at = after(j1g); dur = 1q; pitch = C4; velocity = 0.58; expression k { kind = pitch; curve = &kkeok_up; } }
+  note j1i { at = after(j1h); dur = 2q; pitch = A3; velocity = 0.6; }
+  note j2a { at = after(j1i); dur = 3q; pitch = E4; velocity = 0.7; expression v { kind = pitch; vibrato = &tteo; } }
+  note j2b { at = after(j2a); dur = 1q; pitch = G4; velocity = 0.6; }
+  note j2c { at = after(j2b); dur = 2q; pitch = A4; velocity = 0.72; }
+  note j2d { at = after(j2c); dur = 1q; pitch = G4; velocity = 0.56; }
+  note j2e { at = after(j2d); dur = 1q; pitch = E4; velocity = 0.62; expression v { kind = pitch; vibrato = &tteo_fast; } }
+  note j2f { at = after(j2e); dur = 1q; pitch = D4; velocity = 0.54; }
+  note j2g { at = after(j2f); dur = 1q; pitch = C4; velocity = 0.58; expression k { kind = pitch; curve = &kkeok_up; } }
+  note j2h { at = after(j2g); dur = 2q; pitch = A3; velocity = 0.6; }
+  chord j3a { at = after(j2h); dur = 1q; pitches = [A2, A3]; velocity = 0.74; }
+  note j3b { at = after(j3a, 1/2q); dur = 1/2q; pitch = A3; velocity = 0.52; }
+  note j3c { at = after(j3b); dur = 1q; pitch = C4; velocity = 0.58; expression k { kind = pitch; curve = &kkeok_up; } }
+  note j3d { at = after(j3c); dur = 1q; pitch = D4; velocity = 0.56; }
+  note j3e { at = after(j3d); dur = 2q; pitch = E4; velocity = 0.68; expression v { kind = pitch; vibrato = &tteo; } }
+  note j3f { at = after(j3e); dur = 1/2q; pitch = E4; velocity = 0.56; }
+  note j3g { at = after(j3f); dur = 1/2q; pitch = D4; velocity = 0.52; }
+  note j3h { at = after(j3g); dur = 1q; pitch = C4; velocity = 0.6; expression k { kind = pitch; curve = &kkeok_down; } }
+  note j3i { at = after(j3h); dur = 1q; pitch = A3; velocity = 0.56; }
+  note j3j { at = after(j3i); dur = 1q; pitch = G3; velocity = 0.5; }
+  note j3k { at = after(j3j); dur = 2q; pitch = A3; velocity = 0.6; }
+  note j4a { at = after(j3k); dur = 2q; pitch = E4; velocity = 0.66; expression m { kind = pitch; curve = &mireo; vibrato = &tteo_after; } }
+  note j4b { at = after(j4a); dur = 1q; pitch = D4; velocity = 0.54; }
+  note j4c { at = after(j4b); dur = 3q; pitch = E4; velocity = 0.7; expression v { kind = pitch; vibrato = &tteo; } }
+  chord j4d { at = after(j4c); dur = 2q; pitches = [A3, A4]; velocity = 0.76; }
+  note j4e { at = after(j4d); dur = 1q; pitch = G4; velocity = 0.56; }
+  note j4f { at = after(j4e); dur = 1q; pitch = E4; velocity = 0.6; }
+  note j4g { at = after(j4f); dur = 1/2q; pitch = D4; velocity = 0.52; }
+  note j4h { at = after(j4g); dur = 1/2q; pitch = C4; velocity = 0.56; expression k { kind = pitch; curve = &kkeok_up; } }
+  note j4i { at = after(j4h); dur = 1q; pitch = A3; velocity = 0.58; }
+  note j5a { at = after(j4i); dur = 2q; pitch = C4; velocity = 0.62; expression k { kind = pitch; curve = &kkeok_down; } }
+  note j5b { at = after(j5a); dur = 1q; pitch = A3; velocity = 0.56; }
+  note j5c { at = after(j5b); dur = 1q; pitch = G3; velocity = 0.5; }
+  note j5d { at = after(j5c); dur = 2q; pitch = E3; velocity = 0.66; expression v { kind = pitch; vibrato = &tteo; } }
+  chord j5e { at = after(j5d); dur = 3q; pitches = [A2, A3]; velocity = 0.72; }
+  note j5f { at = after(j5e); dur = 1q; pitch = E3; velocity = 0.56; expression v { kind = pitch; vibrato = &tteo_fast; } }
+  note j5g { at = after(j5f); dur = 2q; pitch = A3; velocity = 0.62; }
+  phrase j1 { at = 0q; length = 12q; dynamics = &arc; }
+  phrase j2 { at = 12q; length = 12q; dynamics = &arc; }
+  phrase j3 { at = 24q; length = 12q; dynamics = &arc; }
+  phrase j4 { at = 36q; length = 12q; dynamics = &arc; }
+  phrase j5 { at = 48q; length = 12q; dynamics = &arc; }
+}
+
+// ---------------------------------------------------------------- jajinmori
+// Six figures of one jangdan each, four dotted beats, 6q.
+pattern jj_rise { length = 6q;
+  note a { at = 0q; dur = 1/2q; pitch = A3; velocity = 0.66; }
+  note b { at = after(a); dur = 1/2q; pitch = C4; velocity = 0.52; }
+  note c { at = after(b); dur = 1/2q; pitch = D4; velocity = 0.56; }
+  note d { at = after(c); dur = 3/2q; pitch = E4; velocity = 0.7; expression v { kind = pitch; vibrato = &tteo_fast; } }
+  note e { at = after(d); dur = 1/2q; pitch = D4; velocity = 0.58; }
+  note f { at = after(e); dur = 1/2q; pitch = C4; velocity = 0.54; expression k { kind = pitch; curve = &kkeok_up; } }
+  note g { at = after(f); dur = 1/2q; pitch = A3; velocity = 0.56; }
+  note h { at = after(g); dur = 3/2q; pitch = A3; velocity = 0.64; }
+}
+pattern jj_high { length = 6q;
+  note a { at = 0q; dur = 1/2q; pitch = E4; velocity = 0.66; }
+  note b { at = after(a); dur = 1/2q; pitch = G4; velocity = 0.54; }
+  note c { at = after(b); dur = 1/2q; pitch = A4; velocity = 0.6; }
+  note d { at = after(c); dur = 1/2q; pitch = G4; velocity = 0.62; }
+  note e { at = after(d); dur = 1/2q; pitch = E4; velocity = 0.54; }
+  note f { at = after(e); dur = 1/2q; pitch = D4; velocity = 0.56; }
+  note g { at = after(f); dur = 1q; pitch = E4; velocity = 0.66; expression v { kind = pitch; vibrato = &tteo_fast; } }
+  note h { at = after(g); dur = 1/2q; pitch = D4; velocity = 0.54; }
+  note i { at = after(h); dur = 1q; pitch = C4; velocity = 0.6; expression k { kind = pitch; curve = &kkeok_up; } }
+  note j { at = after(i); dur = 1/2q; pitch = A3; velocity = 0.56; }
+}
+pattern jj_turn { length = 6q;
+  note a { at = 0q; dur = 1/2q; pitch = A3; velocity = 0.66; }
+  note b { at = after(a); dur = 1/2q; pitch = A3; velocity = 0.5; }
+  note c { at = after(b); dur = 1/2q; pitch = C4; velocity = 0.56; }
+  note d { at = after(c); dur = 1/2q; pitch = D4; velocity = 0.6; }
+  note e { at = after(d); dur = 1q; pitch = E4; velocity = 0.66; expression v { kind = pitch; vibrato = &tteo_fast; } }
+  note f { at = after(e); dur = 1/2q; pitch = G4; velocity = 0.62; }
+  note g { at = after(f); dur = 1/2q; pitch = E4; velocity = 0.54; }
+  note h { at = after(g); dur = 1/2q; pitch = D4; velocity = 0.56; }
+  note i { at = after(h); dur = 1/2q; pitch = C4; velocity = 0.6; expression k { kind = pitch; curve = &kkeok_up; } }
+  note j { at = after(i); dur = 1q; pitch = A3; velocity = 0.6; }
+}
+pattern jj_push { length = 6q;
+  note a { at = 0q; dur = 3/2q; pitch = E4; velocity = 0.7; expression m { kind = pitch; curve = &mireo; } }
+  note b { at = after(a); dur = 1/2q; pitch = D4; velocity = 0.58; }
+  note c { at = after(b); dur = 1/2q; pitch = C4; velocity = 0.54; }
+  note d { at = after(c); dur = 1/2q; pitch = A3; velocity = 0.56; }
+  note e { at = after(d); dur = 1/2q; pitch = G3; velocity = 0.6; }
+  note f { at = after(e); dur = 1/2q; pitch = A3; velocity = 0.52; }
+  note g { at = after(f); dur = 1/2q; pitch = C4; velocity = 0.56; }
+  note h { at = after(g); dur = 3/2q; pitch = A3; velocity = 0.64; }
+}
+pattern jj_peak { length = 6q;
+  note a { at = 0q; dur = 1/2q; pitch = A4; velocity = 0.72; }
+  note b { at = after(a); dur = 1/2q; pitch = G4; velocity = 0.54; }
+  note c { at = after(b); dur = 1/2q; pitch = A4; velocity = 0.6; }
+  note d { at = after(c); dur = 1/2q; pitch = G4; velocity = 0.62; }
+  note e { at = after(d); dur = 1/2q; pitch = E4; velocity = 0.54; }
+  note f { at = after(e); dur = 1/2q; pitch = D4; velocity = 0.56; }
+  note g { at = after(f); dur = 3/2q; pitch = E4; velocity = 0.7; expression v { kind = pitch; vibrato = &tteo_fast; } }
+  note h { at = after(g); dur = 1/2q; pitch = D4; velocity = 0.56; }
+  note i { at = after(h); dur = 1/2q; pitch = C4; velocity = 0.58; expression k { kind = pitch; curve = &kkeok_up; } }
+  note j { at = after(i); dur = 1/2q; pitch = A3; velocity = 0.56; }
+}
+pattern jj_low { length = 6q;
+  note a { at = 0q; dur = 3/2q; pitch = E3; velocity = 0.7; expression v { kind = pitch; vibrato = &tteo_fast; } }
+  note b { at = after(a); dur = 1/2q; pitch = G3; velocity = 0.54; }
+  note c { at = after(b); dur = 1/2q; pitch = A3; velocity = 0.56; }
+  note d { at = after(c); dur = 1/2q; pitch = C4; velocity = 0.6; }
+  note e { at = after(d); dur = 1q; pitch = A3; velocity = 0.62; }
+  note f { at = after(e); dur = 1/2q; pitch = G3; velocity = 0.52; }
+  note g { at = after(f); dur = 3/2q; pitch = E3; velocity = 0.66; expression v { kind = pitch; vibrato = &tteo_fast; } }
+}
+// Twelve jangdan, 72q, rising to the high figure and settling low.
+pattern jj_line { length = 72q;
+  use u1 { pattern = &jj_rise; at = 0q; }
+  use u2 { pattern = &jj_high; at = 6q; }
+  use u3 { pattern = &jj_rise; at = 12q; }
+  use u4 { pattern = &jj_turn; at = 18q; }
+  use u5 { pattern = &jj_push; at = 24q; }
+  use u6 { pattern = &jj_peak; at = 30q; }
+  use u7 { pattern = &jj_high; at = 36q; }
+  use u8 { pattern = &jj_turn; at = 42q; }
+  use u9 { pattern = &jj_peak; at = 48q; count = 2; }
+  use u10 { pattern = &jj_push; at = 60q; }
+  use u11 { pattern = &jj_low; at = 66q; }
+  phrase climb { at = 0q; length = 24q; dynamics = &arc; }
+  phrase crest { at = 24q; length = 36q; dynamics = &arc; }
+  phrase settle { at = 60q; length = 12q; dynamics = &arc; }
+}
+
+// ---------------------------------------------------------------- hwimori
+pattern hw_a { length = 6q;
+  note a { at = 0q; dur = 1/2q; pitch = A3; velocity = 0.7; }
+  note b { at = after(a); dur = 1/2q; pitch = C4; velocity = 0.54; }
+  note c { at = after(b); dur = 1/2q; pitch = A3; velocity = 0.56; }
+  note d { at = after(c); dur = 1/2q; pitch = E4; velocity = 0.66; }
+  note e { at = after(d); dur = 1/2q; pitch = D4; velocity = 0.54; }
+  note f { at = after(e); dur = 1/2q; pitch = C4; velocity = 0.56; }
+  note g { at = after(f); dur = 1/2q; pitch = A3; velocity = 0.66; }
+  note h { at = after(g); dur = 1/2q; pitch = C4; velocity = 0.54; }
+  note i { at = after(h); dur = 1/2q; pitch = A3; velocity = 0.56; }
+  note j { at = after(i); dur = 1/2q; pitch = E4; velocity = 0.66; }
+  note k { at = after(j); dur = 1/2q; pitch = D4; velocity = 0.54; }
+  note l { at = after(k); dur = 1/2q; pitch = C4; velocity = 0.56; }
+}
+pattern hw_b { length = 6q;
+  note a { at = 0q; dur = 1/2q; pitch = E4; velocity = 0.7; }
+  note b { at = after(a); dur = 1/2q; pitch = G4; velocity = 0.54; }
+  note c { at = after(b); dur = 1/2q; pitch = E4; velocity = 0.56; }
+  note d { at = after(c); dur = 1/2q; pitch = D4; velocity = 0.66; }
+  note e { at = after(d); dur = 1/2q; pitch = C4; velocity = 0.54; }
+  note f { at = after(e); dur = 1/2q; pitch = A3; velocity = 0.56; }
+  note g { at = after(f); dur = 1/2q; pitch = E4; velocity = 0.66; }
+  note h { at = after(g); dur = 1/2q; pitch = G4; velocity = 0.54; }
+  note i { at = after(h); dur = 1/2q; pitch = E4; velocity = 0.56; }
+  note j { at = after(i); dur = 1/2q; pitch = D4; velocity = 0.66; }
+  note k { at = after(j); dur = 1/2q; pitch = C4; velocity = 0.54; }
+  note l { at = after(k); dur = 1/2q; pitch = A3; velocity = 0.56; }
+}
+pattern hw_end { length = 6q;
+  note a { at = 0q; dur = 1/2q; pitch = A3; velocity = 0.7; }
+  note b { at = after(a); dur = 1/2q; pitch = C4; velocity = 0.62; }
+  note c { at = after(b); dur = 1/2q; pitch = E4; velocity = 0.7; }
+  chord d { at = after(c); dur = 3/2q; pitches = [A3, A4]; velocity = 0.82; }
+}
+pattern hw_line { length = 36q;
+  use u1 { pattern = &hw_a; at = 0q; count = 2; }
+  use u2 { pattern = &hw_b; at = 12q; count = 2; }
+  use u3 { pattern = &hw_a; at = 24q; }
+  use u4 { pattern = &hw_end; at = 30q; }
+}
+// The last stroke: la in two octaves and mi, with the janggu's last 덩.
+pattern last { length = 3q;
+  chord a { at = 0q; dur = 3q; pitches = [A2, E3, A3]; velocity = 0.86; }
+}
+
+// ---------------------------------------------------------------- the janggu
+// 덩 is both heads together.
+pattern jin_gak { length = 9q;
+  hit d1 { at = 0q; key = "kung"; velocity = 0.82; }
+  hit d2 { at = 0q; key = "deok"; velocity = 0.76; }
+  hit k { at = 6q; key = "kung"; velocity = 0.62; }
+  hit t { at = 15/2q; key = "deok"; velocity = 0.42; }
+}
+pattern jin_gak4 { length = 9q;
+  hit k1 { at = 0q; key = "kung"; velocity = 0.66; }
+  hit t { at = 3q; key = "deok"; velocity = 0.6; }
+  hit k2 { at = 6q; key = "kung"; velocity = 0.62; }
+}
+pattern jin_jangdan { length = 36q;
+  use gak { pattern = &jin_gak; at = 0q; count = 3; }
+  use pul { pattern = &jin_gak4; at = 27q; }
+}
+// 중모리: 덩 . 쿵 덕 쿵 . 덕 . 쿵 덕 쿵 .
+pattern jm { length = 12q;
+  hit d1 { at = 0q; key = "kung"; velocity = 0.8; }
+  hit d2 { at = 0q; key = "deok"; velocity = 0.74; }
+  hit k3 { at = 2q; key = "kung"; velocity = 0.6; }
+  hit t4 { at = 3q; key = "deok"; velocity = 0.58; }
+  hit k5 { at = 4q; key = "kung"; velocity = 0.6; }
+  hit t7 { at = 6q; key = "deok"; velocity = 0.66; }
+  hit k9 { at = 8q; key = "kung"; velocity = 0.6; }
+  hit t10 { at = 9q; key = "deok"; velocity = 0.56; }
+  hit k11 { at = 10q; key = "kung"; velocity = 0.58; }
+}
+// 자진모리, in eighths: 덩 . . 쿵 . . 쿵 . 덕 쿵 . .
+pattern jj { length = 6q;
+  hit d1 { at = 0q; key = "kung"; velocity = 0.8; }
+  hit d2 { at = 0q; key = "deok"; velocity = 0.72; }
+  hit k2 { at = 3/2q; key = "kung"; velocity = 0.6; }
+  hit k3 { at = 3q; key = "kung"; velocity = 0.6; }
+  hit t3 { at = 4q; key = "deok"; velocity = 0.58; }
+  hit k4 { at = 9/2q; key = "kung"; velocity = 0.62; }
+}
+// 휘모리: 덩 . 덕 쿵 . 덕 쿵 . 덕 쿵 . .
+pattern hw { length = 6q;
+  hit d1 { at = 0q; key = "kung"; velocity = 0.82; }
+  hit d2 { at = 0q; key = "deok"; velocity = 0.74; }
+  hit t1 { at = 1q; key = "deok"; velocity = 0.56; }
+  hit k2 { at = 3/2q; key = "kung"; velocity = 0.62; }
+  hit t2 { at = 5/2q; key = "deok"; velocity = 0.56; }
+  hit k3 { at = 3q; key = "kung"; velocity = 0.62; }
+  hit t3 { at = 4q; key = "deok"; velocity = 0.58; }
+  hit k4 { at = 9/2q; key = "kung"; velocity = 0.64; }
+}
+pattern last_deong { length = 3q;
+  hit d1 { at = 0q; key = "kung"; velocity = 0.9; }
+  hit d2 { at = 0q; key = "deok"; velocity = 0.84; }
+}
+
+// A player's hands are never quite the same twice.
+vary hand { seed = 8; velocity = 1/20; timing = 8ms; }
+vary sticks { seed = 3; velocity = 1/20; timing = 5ms; }
+
+// ---------------------------------------------------------------- the players
+node gaya { instrument = &gayageum; config = { voices = 10; }; params = { level = 1.24; }; }
+node jang { instrument = &janggu; params = { kung_level = 0.7; deok_level = 0.7; }; }
+track gaya_notes { target = &gaya:events; }
+track jang_hits { target = &jang:events; }
+
+place g_jinyang { pattern = &jy_line; track = &gaya_notes; at = 0q; vary = &hand; }
+place g_jungmori { pattern = &jm_line; track = &gaya_notes; at = 72q; vary = &hand; }
+place g_jajinmori { pattern = &jj_line; track = &gaya_notes; at = 132q; vary = &hand; }
+place g_hwimori { pattern = &hw_line; track = &gaya_notes; at = 204q; vary = &hand; }
+place g_last { pattern = &last; track = &gaya_notes; at = 240q; }
+place j_jinyang { pattern = &jin_jangdan; track = &jang_hits; at = 0q; count = 2; vary = &sticks; }
+place j_jungmori { pattern = &jm; track = &jang_hits; at = 72q; count = 5; vary = &sticks; }
+place j_jajinmori { pattern = &jj; track = &jang_hits; at = 132q; count = 12; vary = &sticks; }
+place j_hwimori { pattern = &hw; track = &jang_hits; at = 204q; count = 6; vary = &sticks; }
+place j_last { pattern = &last_deong; track = &jang_hits; at = 240q; }
+
+// ---------------------------------------------------------------- mix
+node band { type = "core.sum/1"; config = { channels = 2; }; }
+connect gaya_out { from = &gaya:out; to = &band:in; }
+connect jang_out { from = &jang:out; to = &band:in; }
+// A wooden room, then a gentle glue and the limiter.
+node room { type = "fx.reverb/1"; config = { channels = 2; predelay = 15ms; damping = 0.45; }; params = { mix = 1; decay = 1.6s; }; }
+node room_return { type = "core.gain/1"; config = { channels = 2; }; params = { gain = 0.2; }; }
+node mix { type = "core.sum/1"; config = { channels = 2; }; }
+connect band_dry { from = &band:out; to = &mix:in; }
+connect band_room { from = &band:out; to = &room:in; }
+connect room_back { from = &room:out; to = &room_return:in; }
+connect room_mix { from = &room_return:out; to = &mix:in; }
+node glue { type = "fx.compressor/1"; config = { channels = 2; }; params = { threshold = -16dB; ratio = 3/2; knee = 6dB; attack = 20ms; release = 300ms; makeup = 0dB; }; }
+node trim { type = "core.gain/1"; config = { channels = 2; }; params = { gain = 1.4; }; }
+node master { type = "fx.limiter/1"; config = { channels = 2; }; params = { gain = 0dB; ceiling = -1.1dB; release = 150ms; }; }
+connect mix_glue { from = &mix:out; to = &glue:in; }
+connect glue_trim { from = &glue:out; to = &trim:in; }
+connect trim_master { from = &trim:out; to = &master:in; }
+
+// ---------------------------------------------------------------- delivery
+// `maac deliver examples/sanjo/sanjo.maac --delivery release --output-dir out --profile song`
+asset schema { kind = descriptor; builtin = "maac.production/1"; }
+extension deliveries {
+  namespace = "maac.production/1"; schema = &schema; render_affecting = true;
+  data = { deliveries = { release = {
+    rate = 48000Hz; resampler = "maac.src.kaiser/1";
+    targets = { master = {
+      role = master; output = &master:out; encoding = wav_pcm24le;
+      dither = { type = tpdf; seed = 2026; };
+      limits = {
+        integrated_loudness = { unit = LUFS; min = -18; max = -14; };
+        true_peak = { unit = dBTP; max = -1; };
+      };
+    }; };
+  }; }; };
+}

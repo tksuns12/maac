@@ -5,6 +5,15 @@ promise of compatibility beyond the documented interfaces.
 
 ## [Unreleased]
 
+### Added
+
+- "Rain on the Eaves" ([`examples/sanjo/sanjo.maac`](examples/sanjo/sanjo.maac)),
+  a gayageum sanjo with janggu from the
+  [T8 production trial](docs/reports/ai-production-trial-t8.md), written
+  directly in MaaC with no language change: four jangdan in three meters
+  that quicken through tempo ramps, and the left hand's trembling and
+  bending as shared `vibrato` and curve declarations.
+
 ## [0.4.0] — 2026-11-02
 
 The fourth experimental release. It brings the answers of four production
