@@ -204,8 +204,8 @@ meter metre { points=[(0q,4,4)]; }
 node s { label="sine"; type="core.sine/1"; }
 "#;
     let parsed = maac::parse(source).unwrap();
-    let plan = maac::compile(&parsed).unwrap();
-    let identity = maac::production_identity::execution_identity(&parsed, &plan).unwrap();
+    maac::compile(&parsed).unwrap();
+    let identity = maac::production_identity::execution_identity(&parsed).unwrap();
     let authored = AuthoredDocument::from_document(&parsed).unwrap();
     let mut editing = FoundationEditContext.normalize_document(&authored).unwrap();
     strip_object_labels(&mut editing);

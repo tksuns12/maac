@@ -52,8 +52,8 @@ fn execution_identity(frames: &str) -> maac::production_identity::ExecutionIdent
             .expect("delay source entry"),
     )
     .unwrap();
-    let plan = maac::compile(&document).unwrap();
-    maac::production_identity::execution_identity(&document, &plan).unwrap()
+    maac::compile(&document).unwrap();
+    maac::production_identity::execution_identity(&document).unwrap()
 }
 
 #[test]

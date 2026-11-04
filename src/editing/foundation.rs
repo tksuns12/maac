@@ -13,9 +13,10 @@ use num_traits::{ToPrimitive, Zero};
 use serde_json::{json, Map, Value};
 
 use crate::diagnostic::Diagnostics;
-use crate::graph::GraphUnit;
-use crate::music::{MeterMap, MeterPoint, Pitch};
 use crate::syntax::{Document, Unit};
+
+use crate::compiler::LOCAL_SOURCE;
+use crate::normalization::NormalizationContext;
 
 use super::{
     AuthoredDocument, EditContext, EditError, EditImpact, EditResult, Path, RenderInvalidationScope,
@@ -315,46 +316,6 @@ impl BundleEditContext {
         let libraries = crate::library::LibrarySet::resolve(&resolved).map_err(map_diagnostics)?;
         Ok((resolved, libraries))
     }
-
-    fn needs_artifact_normalization(&self, authored: &Value) -> bool {
-        self.source_path == self.bundle.entry
-            && authored["objects"].as_object().is_some_and(|objects| {
-                objects.values().any(|object| {
-                    object["kind"] == "extension"
-                        || (object["kind"] == "project"
-                            && object["fields"]["requires"]["items"]
-                                .as_array()
-                                .is_some_and(|items| {
-                                    items.iter().any(|item| {
-                                        item["t"] == "string"
-                                            && item["v"]
-                                                .as_str()
-                                                .is_some_and(crate::takes::is_capability)
-                                    })
-                                }))
-                        || (object["kind"] == "node"
-                            && object["fields"]["type"]["v"]
-                                .as_str()
-                                .is_some_and(|processor| processor.starts_with("fx.")))
-                })
-            })
-    }
-
-    fn normalized_composition(&self, authored: &Value) -> EditResult<Value> {
-        let bundle = self.candidate_bundle(authored)?;
-        let artifact = if let Some(assets) = &self.disk_assets {
-            crate::compiler::compile_disk_media_artifact(&bundle, assets, &self.limits)
-                .map_err(map_diagnostics)?
-        } else {
-            crate::compiler::compile_bundle_artifact(&bundle).map_err(map_diagnostics)?
-        };
-        let source = bundle.sources.get(&self.source_path).ok_or_else(|| {
-            EditError::new("E_REFERENCE", "editable composition source is missing")
-        })?;
-        let document = crate::syntax::parse(source).map_err(map_diagnostics)?;
-        crate::production_identity::normalized_document_for_editing(&document, &artifact.view())
-            .map_err(|error| EditError::new("E_RANGE", error.to_string()))
-    }
 }
 
 fn repin_graph(
@@ -471,57 +432,6 @@ fn replace_import_hash(source: &str, alias: &str, hash: &str) -> EditResult<Stri
     Ok(output)
 }
 
-impl BundleEditContext {
-    fn normalize_instrument_instance(
-        &self,
-        base: &Value,
-        base_path: &[String],
-        object: &Value,
-    ) -> EditResult<Value> {
-        let (meter, seed) = bundle_normalization_context(base)?;
-        let mut synthetic = base.clone();
-        *super::object_at_mut(&mut synthetic, base_path)? = object.clone();
-        let (resolved, libraries) = self.resolved_candidate(&synthetic)?;
-        let document = resolved
-            .documents
-            .get(&self.source_path)
-            .ok_or_else(|| EditError::new("E_REFERENCE", "resolved editable source is missing"))?;
-        let syntax_object = syntax_object_at(document, base_path)?;
-        let instance = libraries
-            .resolve_instance(&self.source_path, syntax_object)
-            .map_err(map_diagnostics)?;
-        let control_spec = |name: &str| libraries.instance_control_spec(&instance, name);
-
-        let mut normalized = normalize_plain_object(object, &meter, &seed)?;
-        let fields = normalized["fields"]
-            .as_object_mut()
-            .ok_or_else(|| EditError::new("E_SYNTAX", "normalized fields are malformed"))?;
-        // A kit instance takes no config: each piece declares its voices. An
-        // effect has no voices.
-        if !instance.kit && instance.effect_input.is_none() {
-            fields.insert(
-                "config".into(),
-                record(Map::from_iter([(
-                    "voices".into(),
-                    number(i64::from(instance.voices), 1),
-                )])),
-            );
-        }
-        let mut params = Map::new();
-        for (name, value) in &instance.params {
-            let spec = control_spec(name).ok_or_else(|| {
-                EditError::new(
-                    "E_REFERENCE",
-                    format!("instrument control `{name}` has no metadata"),
-                )
-            })?;
-            params.insert(name.clone(), graph_value(value, spec.unit));
-        }
-        fields.insert("params".into(), record(params));
-        Ok(normalized)
-    }
-}
-
 impl EditContext for BundleEditContext {
     fn validate_document(&self, authored: &Value) -> EditResult<()> {
         let bundle = self.candidate_bundle(authored)?;
@@ -582,20 +492,14 @@ impl EditContext for BundleEditContext {
         base_path: &[String],
         object: &Value,
     ) -> EditResult<Value> {
-        if self.needs_artifact_normalization(base) {
-            let mut synthetic = base.clone();
-            *super::object_at_mut(&mut synthetic, base_path)? = object.clone();
-            let normalized = self.normalized_composition(&synthetic)?;
-            return Ok(object_at(&normalized, base_path)?.clone());
-        }
-        if object["kind"] == "node"
-            && (object["fields"].get("instrument").is_some()
-                || object["fields"].get("effect").is_some())
-        {
-            return self.normalize_instrument_instance(base, base_path, object);
-        }
-        let (meter, seed) = bundle_normalization_context(base)?;
-        normalize_object_inner(object, &meter, &seed)
+        let libraries = if needs_libraries(base, base_path, object) {
+            Some(self.resolved_candidate(base)?.1)
+        } else {
+            None
+        };
+        let context = NormalizationContext::new(base, &self.source_path, libraries.as_ref())
+            .map_err(edit_error)?;
+        crate::normalization::normalize_object(&context, base_path, object).map_err(edit_error)
     }
 
     fn normalize_value(
@@ -605,20 +509,9 @@ impl EditContext for BundleEditContext {
         field: &[String],
         value: &Value,
     ) -> EditResult<Value> {
-        let object = object_at(base, base_path)?;
-        let (meter, _) = bundle_normalization_context(base)?;
-        let kind = object["kind"].as_str().unwrap_or_default();
-        if let [name] = field {
-            if matches!(
-                (kind, name.as_str()),
-                ("chord" | "voicing", "pitches") | ("chord", "pick")
-            ) {
-                return normalize_field_value(kind, name, value, true, &meter);
-            }
-        }
-        let pitch = (matches!(kind, "note" | "piece") && field.len() == 1 && field[0] == "pitch")
-            || (kind == "override" && field.len() == 2 && field[0] == "set" && field[1] == "pitch");
-        normalize_value_inner(value, pitch, true, &meter)
+        let context =
+            NormalizationContext::new(base, &self.source_path, None).map_err(edit_error)?;
+        crate::normalization::normalize_value(&context, base_path, field, value).map_err(edit_error)
     }
 
     fn rewrite_structural_references(
@@ -669,7 +562,9 @@ impl FoundationEditContext {
     /// preconditions. This is not the execution-hash projection.
     pub fn normalize_document(&self, document: &AuthoredDocument) -> EditResult<Value> {
         self.validate_document(document.tree())?;
-        normalize_document_tree(document.tree())
+        let context =
+            NormalizationContext::new(document.tree(), LOCAL_SOURCE, None).map_err(edit_error)?;
+        crate::normalization::normalize_document(&context).map_err(edit_error)
     }
 }
 
@@ -687,12 +582,11 @@ impl EditContext for FoundationEditContext {
     fn normalize_object(
         &self,
         base: &Value,
-        _base_path: &[String],
+        base_path: &[String],
         object: &Value,
     ) -> EditResult<Value> {
-        let meter = meter_map(base)?;
-        let seed = project_seed(base)?;
-        normalize_object_inner(object, &meter, &seed)
+        let context = NormalizationContext::new(base, LOCAL_SOURCE, None).map_err(edit_error)?;
+        crate::normalization::normalize_object(&context, base_path, object).map_err(edit_error)
     }
 
     fn normalize_value(
@@ -702,20 +596,8 @@ impl EditContext for FoundationEditContext {
         field: &[String],
         value: &Value,
     ) -> EditResult<Value> {
-        let meter = meter_map(base)?;
-        let object = object_at(base, base_path)?;
-        let kind = object["kind"].as_str().unwrap_or_default();
-        if let [name] = field {
-            if matches!(
-                (kind, name.as_str()),
-                ("chord" | "voicing", "pitches") | ("chord", "pick")
-            ) {
-                return normalize_field_value(kind, name, value, true, &meter);
-            }
-        }
-        let pitch = (matches!(kind, "note" | "piece") && field.len() == 1 && field[0] == "pitch")
-            || (kind == "override" && field.len() == 2 && field[0] == "set" && field[1] == "pitch");
-        normalize_value_inner(value, pitch, true, &meter)
+        let context = NormalizationContext::new(base, LOCAL_SOURCE, None).map_err(edit_error)?;
+        crate::normalization::normalize_value(&context, base_path, field, value).map_err(edit_error)
     }
 
     fn rewrite_structural_references(
@@ -742,66 +624,33 @@ impl EditContext for FoundationEditContext {
     }
 }
 
-fn syntax_object_at<'a>(
-    document: &'a Document,
-    path: &[String],
-) -> EditResult<&'a crate::syntax::Object> {
-    let mut objects = &document.objects;
-    let mut current = None;
-    for id in path {
-        let object = objects
-            .get(id)
-            .ok_or_else(|| EditError::new("E_REFERENCE", "resolved object path does not exist"))?;
-        current = Some(object);
-        objects = &object.children;
-    }
-    current.ok_or_else(|| EditError::new("E_REFERENCE", "object path is empty"))
-}
-
-fn bundle_normalization_context(tree: &Value) -> EditResult<(MeterMap, Value)> {
-    let has_project = tree["objects"]
-        .as_object()
-        .is_some_and(|objects| objects.values().any(|object| object["kind"] == "project"));
-    if has_project {
-        return Ok((meter_map(tree)?, project_seed(tree)?));
-    }
-    let meter = MeterMap::new(vec![MeterPoint::new(BigRational::zero(), 4, 4)])
-        .map_err(|error| EditError::new("E_METER_BOUNDARY", error.to_string()))?;
-    Ok((meter, number(0, 1)))
-}
-
-fn graph_value(value: &BigRational, unit: GraphUnit) -> Value {
-    match unit {
-        GraphUnit::Dimensionless => rational(value, None),
-        GraphUnit::Seconds => rational(value, Some(Unit::S)),
-        GraphUnit::Hertz => rational(value, Some(Unit::Hz)),
-        GraphUnit::Quarter => rational(value, Some(Unit::Q)),
+fn edit_error(error: crate::normalization::NormalizationError) -> EditError {
+    let path = (error.object_path.clone(), error.field_path.clone());
+    let edit = EditError::new(error.code, error.message);
+    if path.0.is_empty() {
+        edit
+    } else {
+        edit.at(&path.0, &path.1)
     }
 }
 
-fn normalize_plain_object(object: &Value, meter: &MeterMap, seed: &Value) -> EditResult<Value> {
-    let kind = object["kind"]
-        .as_str()
-        .ok_or_else(|| EditError::new("E_SYNTAX", "object kind must be a string"))?;
-    let constructors = kind != "extension";
-    let mut fields = Map::new();
-    for (name, field) in object["fields"]
-        .as_object()
-        .ok_or_else(|| EditError::new("E_SYNTAX", "object fields must be a dictionary"))?
-    {
-        fields.insert(
-            name.clone(),
-            normalize_field_value(kind, name, field, constructors, meter)?,
-        );
+/// Whether normalizing `object` at `base_path` reads the resolved libraries:
+/// it sits in an instrument or effect, or declares or names one.
+fn needs_libraries(base: &Value, base_path: &[String], object: &Value) -> bool {
+    fn declares(object: &Value) -> bool {
+        matches!(object["kind"].as_str(), Some("instrument" | "effect"))
+            || (object["kind"] == "node"
+                && (object["fields"].get("instrument").is_some()
+                    || object["fields"].get("effect").is_some()))
+            || object["children"]
+                .as_object()
+                .is_some_and(|children| children.values().any(declares))
     }
-    let mut children = Map::new();
-    for (id, child) in object["children"]
-        .as_object()
-        .ok_or_else(|| EditError::new("E_SYNTAX", "children must be a dictionary"))?
-    {
-        children.insert(id.clone(), normalize_object_inner(child, meter, seed)?);
-    }
-    Ok(json!({"kind":kind,"fields":fields,"children":children}))
+    let enclosing = base_path
+        .first()
+        .and_then(|id| base["objects"].get(id))
+        .and_then(|object| object["kind"].as_str());
+    matches!(enclosing, Some("instrument" | "effect")) || declares(object)
 }
 
 fn map_diagnostics(diagnostics: Diagnostics) -> EditError {
@@ -924,637 +773,6 @@ fn rational(value: &BigRational, unit: Option<Unit>) -> Value {
             "d":value.denom().to_string()
         }),
     }
-}
-
-fn number(numerator: i64, denominator: i64) -> Value {
-    rational(
-        &BigRational::new(numerator.into(), denominator.into()),
-        None,
-    )
-}
-
-fn quantity(numerator: i64, denominator: i64, unit: Unit) -> Value {
-    rational(
-        &BigRational::new(numerator.into(), denominator.into()),
-        Some(unit),
-    )
-}
-
-fn record(fields: Map<String, Value>) -> Value {
-    json!({"t":"record","fields":fields})
-}
-
-fn symbol(value: &str) -> Value {
-    json!({"t":"symbol","v":value})
-}
-
-fn boolean(value: bool) -> Value {
-    json!({"t":"boolean","v":value})
-}
-
-/// Spelled pitches lower to `key(k)` in a note's `pitch`, each item of a
-/// chord's or voicing's `pitches`, and an override's `set.pitch`. One
-/// position in a chord's `pick` is a list of one.
-fn normalize_field_value(
-    kind: &str,
-    name: &str,
-    value: &Value,
-    constructors: bool,
-    meter: &MeterMap,
-) -> EditResult<Value> {
-    if kind == "chord" && name == "pick" && value["t"] != "list" {
-        let position = normalize_value_inner(value, false, constructors, meter)?;
-        return Ok(json!({"t":"list","items":[position]}));
-    }
-    if matches!(kind, "chord" | "voicing") && name == "pitches" && value["t"] == "list" {
-        let items = value["items"]
-            .as_array()
-            .ok_or_else(|| EditError::new("E_SYNTAX", "items must be an array"))?
-            .iter()
-            .map(|item| normalize_value_inner(item, true, constructors, meter))
-            .collect::<EditResult<Vec<_>>>()?;
-        return Ok(json!({"t":"list","items":items}));
-    }
-    let pitch = (matches!(kind, "note" | "piece") && name == "pitch")
-        || (kind == "override" && name == "set");
-    normalize_value_inner(value, pitch, constructors, meter)
-}
-
-fn normalize_value_inner(
-    value: &Value,
-    pitch: bool,
-    constructors: bool,
-    meter: &MeterMap,
-) -> EditResult<Value> {
-    if pitch {
-        if let Some(text) = value.get("v").and_then(Value::as_str) {
-            if matches!(value["t"].as_str(), Some("symbol" | "string")) {
-                let parsed = Pitch::parse_spelled(text)
-                    .map_err(|error| EditError::new("E_RANGE", error.to_string()))?;
-                let key = match parsed {
-                    Pitch::Spelled(spelling) => spelling
-                        .key()
-                        .map_err(|error| EditError::new("E_RANGE", error.to_string()))?,
-                    _ => return Err(EditError::new("E_RANGE", "expected a spelled pitch")),
-                };
-                return Ok(json!({
-                    "t":"call",
-                    "fn":"key",
-                    "args":[number(key, 1)]
-                }));
-            }
-        }
-    }
-
-    match value["t"].as_str() {
-        Some("quantity") if value["u"] == "ms" => Ok(rational(
-            &(typed_rational(value)? / BigRational::from_integer(1000.into())),
-            Some(Unit::S),
-        )),
-        Some("quantity") if value["u"] == "kHz" => Ok(rational(
-            &(typed_rational(value)? * BigRational::from_integer(1000.into())),
-            Some(Unit::Hz),
-        )),
-        Some("call") if constructors && value["fn"] == "bar" => {
-            let args = value["args"]
-                .as_array()
-                .ok_or_else(|| EditError::new("E_SYNTAX", "bar args must be an array"))?;
-            if args.len() != 2 {
-                return Err(EditError::new("E_RANGE", "bar requires two arguments"));
-            }
-            let bar = typed_rational(&args[0])?;
-            if !bar.is_integer() {
-                return Err(EditError::new("E_RANGE", "bar number must be an integer"));
-            }
-            let bar = bar
-                .to_integer()
-                .to_i64()
-                .ok_or_else(|| EditError::new("E_RESOURCE_LIMIT", "bar number is out of range"))?;
-            let q = meter
-                .bar_to_q(bar, &typed_rational(&args[1])?)
-                .map_err(|error| EditError::new("E_RANGE", error.to_string()))?;
-            Ok(rational(&q, Some(Unit::Q)))
-        }
-        Some("call") if constructors && value["fn"] == "ratio" => {
-            let args = value["args"]
-                .as_array()
-                .ok_or_else(|| EditError::new("E_SYNTAX", "ratio args must be an array"))?;
-            if args.len() != 2 {
-                return Err(EditError::new("E_RANGE", "ratio requires two arguments"));
-            }
-            let ratio = typed_rational(&args[0])?;
-            let frequency = match args[1]["t"].as_str() {
-                Some("quantity") if args[1]["u"] == "Hz" => typed_rational(&args[1])?,
-                Some("quantity") if args[1]["u"] == "kHz" => {
-                    typed_rational(&args[1])? * BigRational::from_integer(1000.into())
-                }
-                _ => {
-                    return Err(EditError::new(
-                        "E_UNIT",
-                        "ratio requires a frequency reference",
-                    ))
-                }
-            };
-            Ok(rational(&(ratio * frequency), Some(Unit::Hz)))
-        }
-        Some("record") => {
-            let mut fields = Map::new();
-            for (name, child) in value["fields"]
-                .as_object()
-                .ok_or_else(|| EditError::new("E_SYNTAX", "record fields must be a dictionary"))?
-            {
-                fields.insert(
-                    name.clone(),
-                    normalize_value_inner(child, pitch && name == "pitch", constructors, meter)?,
-                );
-            }
-            Ok(record(fields))
-        }
-        Some("list" | "tuple") => {
-            let tag = value["t"].as_str().expect("matched string");
-            let mut items = Vec::new();
-            for child in value["items"]
-                .as_array()
-                .ok_or_else(|| EditError::new("E_SYNTAX", "items must be an array"))?
-            {
-                items.push(normalize_value_inner(child, false, constructors, meter)?);
-            }
-            Ok(json!({"t":tag,"items":items}))
-        }
-        Some("call") => {
-            let mut args = Vec::new();
-            for child in value["args"]
-                .as_array()
-                .ok_or_else(|| EditError::new("E_SYNTAX", "call args must be an array"))?
-            {
-                args.push(normalize_value_inner(child, false, constructors, meter)?);
-            }
-            Ok(json!({"t":"call","fn":value["fn"].clone(),"args":args}))
-        }
-        _ => Ok(value.clone()),
-    }
-}
-
-fn normalize_document_tree(tree: &Value) -> EditResult<Value> {
-    let meter = meter_map(tree)?;
-    let seed = project_seed(tree)?;
-    let mut objects = Map::new();
-    for (id, object) in tree["objects"]
-        .as_object()
-        .ok_or_else(|| EditError::new("E_SYNTAX", "objects must be a dictionary"))?
-    {
-        objects.insert(id.clone(), normalize_object_inner(object, &meter, &seed)?);
-    }
-    Ok(json!({"version":1,"objects":objects}))
-}
-
-fn normalize_object_inner(
-    object: &Value,
-    meter: &MeterMap,
-    project_seed: &Value,
-) -> EditResult<Value> {
-    let kind = object["kind"]
-        .as_str()
-        .ok_or_else(|| EditError::new("E_SYNTAX", "object kind must be a string"))?;
-    let constructors = kind != "extension";
-    let mut fields = Map::new();
-    for (name, field) in object["fields"]
-        .as_object()
-        .ok_or_else(|| EditError::new("E_SYNTAX", "object fields must be a dictionary"))?
-    {
-        fields.insert(
-            name.clone(),
-            normalize_field_value(kind, name, field, constructors, meter)?,
-        );
-    }
-
-    match kind {
-        "project" => {
-            fields
-                .entry("tail")
-                .or_insert_with(|| quantity(0, 1, Unit::S));
-            fields.entry("seed").or_insert_with(|| number(0, 1));
-            fields
-                .entry("requires")
-                .or_insert_with(|| json!({"t":"list","items":[]}));
-        }
-        "piece" => {
-            fields
-                .entry("pitch")
-                .or_insert_with(|| json!({"t":"call","fn":"key","args":[number(60, 1)]}));
-            fields.entry("voices").or_insert_with(|| {
-                number(i64::from(crate::kit_instrument::DEFAULT_PIECE_VOICES), 1)
-            });
-        }
-        "note" | "chord" => {
-            for (name, value) in [
-                ("velocity", number(1, 1)),
-                ("release_velocity", number(1, 2)),
-                ("onset_offset", quantity(0, 1, Unit::S)),
-                ("release_offset", quantity(0, 1, Unit::S)),
-                ("order", number(0, 1)),
-            ] {
-                fields.entry(name).or_insert(value);
-            }
-            // A note that joins nothing has neither field, so a default
-            // `slur` or `slide` is dropped rather than added: earlier
-            // documents keep their identity (§8.3).
-            if fields.get("slur") == Some(&boolean(false)) {
-                fields.remove("slur");
-            }
-            if fields
-                .get("slide")
-                .is_some_and(|slide| slide["t"] == "quantity" && slide["n"] == "0")
-            {
-                fields.remove("slide");
-            }
-            // A strum strikes one string every 8 ms with no tilt.
-            if fields.contains_key("strum") {
-                fields
-                    .entry("stagger")
-                    .or_insert_with(|| quantity(1, 125, Unit::S));
-                fields.entry("tilt").or_insert_with(|| number(0, 1));
-            }
-        }
-        // A vibrato starts at once, at full depth, centered.
-        "vibrato" => {
-            fields
-                .entry("delay")
-                .or_insert_with(|| quantity(0, 1, Unit::S));
-            fields
-                .entry("rise")
-                .or_insert_with(|| quantity(0, 1, Unit::S));
-            fields.entry("shape").or_insert_with(|| symbol("centered"));
-        }
-        "hit" => {
-            for (name, value) in [
-                ("velocity", number(1, 1)),
-                ("onset_offset", quantity(0, 1, Unit::S)),
-                ("order", number(0, 1)),
-            ] {
-                fields.entry(name).or_insert(value);
-            }
-        }
-        "message" => {
-            for (name, value) in [
-                ("onset_offset", quantity(0, 1, Unit::S)),
-                ("order", number(0, 1)),
-            ] {
-                fields.entry(name).or_insert(value);
-            }
-        }
-        "place" | "use" => {
-            for (name, value) in [
-                ("count", number(1, 1)),
-                ("stretch", number(1, 1)),
-                ("transpose", quantity(0, 1, Unit::Ct)),
-                ("boundary", symbol("spill")),
-            ] {
-                fields.entry(name).or_insert(value);
-            }
-        }
-        "audio" => {
-            if fields.get("mode").and_then(|value| value["v"].as_str()) == Some("rate") {
-                fields.entry("speed").or_insert_with(|| number(1, 1));
-                fields.entry("reverse").or_insert_with(|| boolean(false));
-            }
-            for (name, value) in [
-                ("gain", number(1, 1)),
-                ("fade_in", quantity(0, 1, Unit::S)),
-                ("fade_out", quantity(0, 1, Unit::S)),
-                ("fade_shape", symbol("linear")),
-            ] {
-                fields.entry(name).or_insert(value);
-            }
-        }
-        "node" => normalize_node_fields(&mut fields, project_seed)?,
-        _ => {}
-    }
-
-    let mut children = Map::new();
-    for (id, child) in object["children"]
-        .as_object()
-        .ok_or_else(|| EditError::new("E_SYNTAX", "children must be a dictionary"))?
-    {
-        children.insert(
-            id.clone(),
-            normalize_object_inner(child, meter, project_seed)?,
-        );
-    }
-    Ok(json!({"kind":kind,"fields":fields,"children":children}))
-}
-
-fn record_fields(fields: &mut Map<String, Value>, name: &str) -> EditResult<Map<String, Value>> {
-    match fields.remove(name) {
-        None => Ok(Map::new()),
-        Some(value) if value["t"] == "record" => value["fields"]
-            .as_object()
-            .cloned()
-            .ok_or_else(|| EditError::new("E_SYNTAX", "record fields must be a dictionary")),
-        Some(_) => Err(EditError::new("E_UNIT", format!("{name} must be a record"))),
-    }
-}
-
-fn normalize_node_fields(fields: &mut Map<String, Value>, project_seed: &Value) -> EditResult<()> {
-    let processor = fields
-        .get("type")
-        .and_then(|value| value["v"].as_str())
-        .ok_or_else(|| EditError::new("E_RANGE", "node.type is required"))?
-        .to_owned();
-    if processor.starts_with("fx.") {
-        return Err(EditError::new(
-            "E_CAPABILITY",
-            "native production node normalization is not implemented",
-        ));
-    }
-
-    let had_config = fields.contains_key("config");
-    let had_params = fields.contains_key("params");
-    let mut config = record_fields(fields, "config")?;
-    let mut params = record_fields(fields, "params")?;
-    if processor.starts_with("synth.") {
-        let mut config_defaults = false;
-        match processor.as_str() {
-            "synth.sine/1" | "synth.saw/1" | "synth.square/1" | "synth.triangle/1" => {
-                for (name, value) in [
-                    ("ratio", number(1, 1)),
-                    ("frequency", quantity(0, 1, Unit::Hz)),
-                    ("phase", number(0, 1)),
-                    ("level", number(1, 1)),
-                ] {
-                    params.entry(name).or_insert(value);
-                }
-            }
-            "synth.wavetable/1" => {
-                for (name, value) in [
-                    ("ratio", number(1, 1)),
-                    ("frequency", quantity(0, 1, Unit::Hz)),
-                    ("phase", number(0, 1)),
-                    ("level", number(1, 1)),
-                    ("position", number(0, 1)),
-                ] {
-                    params.entry(name).or_insert(value);
-                }
-            }
-            "synth.sample/1" => {
-                crate::sample_instrument::expand_config_defaults(&mut config);
-                for (name, value) in [
-                    ("ratio", number(1, 1)),
-                    ("frequency", quantity(0, 1, Unit::Hz)),
-                    ("level", number(1, 1)),
-                ] {
-                    params.entry(name).or_insert(value);
-                }
-            }
-            "synth.noise/1" => {
-                config
-                    .entry("seed")
-                    .or_insert_with(|| number(1_831_565_813, 1));
-                config_defaults = true;
-                params.entry("level").or_insert_with(|| number(1, 1));
-            }
-            "synth.pluck/1" => {
-                config
-                    .entry("seed")
-                    .or_insert_with(|| number(1_831_565_813, 1));
-                config_defaults = true;
-                for (name, value) in [
-                    ("ratio", number(1, 1)),
-                    ("decay", quantity(3, 1, Unit::S)),
-                    ("damping", number(1, 2)),
-                    ("level", number(1, 1)),
-                    ("hardness", number(1, 1)),
-                    ("position", number(0, 1)),
-                    ("pickup", number(0, 1)),
-                ] {
-                    params.entry(name).or_insert(value);
-                }
-            }
-            "synth.modal/1" => {
-                config.entry("strings").or_insert_with(|| number(1, 1));
-                config_defaults = true;
-                for (name, value) in [
-                    ("ratio", number(1, 1)),
-                    ("stretch", number(0, 1)),
-                    ("decay", quantity(2, 1, Unit::S)),
-                    ("damping", number(0, 1)),
-                    ("position", number(0, 1)),
-                    ("detune", number(0, 1)),
-                    ("level", number(1, 1)),
-                ] {
-                    params.entry(name).or_insert(value);
-                }
-            }
-            "synth.bow/1" => {
-                config.entry("players").or_insert_with(|| number(1, 1));
-                config.entry("body").or_insert_with(|| symbol("violin"));
-                config.entry("channels").or_insert_with(|| number(1, 1));
-                config.entry("seed").or_insert_with(|| number(1, 1));
-                config_defaults = true;
-                for (name, value) in [
-                    ("ratio", number(1, 1)),
-                    ("dynamics", number(1, 2)),
-                    ("position", number(1, 8)),
-                    ("vibrato", number(25, 2)),
-                    ("rate", quantity(28, 5, Unit::Hz)),
-                    ("attack", quantity(2, 25, Unit::S)),
-                    ("timing", quantity(9, 500, Unit::S)),
-                    ("spread", number(1, 1)),
-                    ("width", number(7, 10)),
-                    ("pan", number(0, 1)),
-                    ("level", number(1, 1)),
-                ] {
-                    params.entry(name).or_insert(value);
-                }
-            }
-            "synth.adsr/1" => {
-                for (name, value) in [
-                    ("attack", quantity(0, 1, Unit::S)),
-                    ("decay", quantity(0, 1, Unit::S)),
-                    ("sustain", number(1, 1)),
-                    ("release", quantity(0, 1, Unit::S)),
-                    ("curve", number(0, 1)),
-                ] {
-                    params.entry(name).or_insert(value);
-                }
-            }
-            "synth.lfo/1" => {
-                for (name, value) in [
-                    ("frequency", quantity(1, 1, Unit::Hz)),
-                    ("phase", number(0, 1)),
-                    ("level", number(1, 1)),
-                ] {
-                    params.entry(name).or_insert(value);
-                }
-            }
-            "synth.gain/1" => {
-                params.entry("level").or_insert_with(|| number(1, 1));
-            }
-            "synth.onepole/1" | "synth.highpass/1" => {
-                params
-                    .entry("cutoff")
-                    .or_insert_with(|| quantity(1000, 1, Unit::Hz));
-            }
-            "synth.svf/1" => {
-                for (name, value) in [
-                    ("cutoff", quantity(1000, 1, Unit::Hz)),
-                    ("ratio", number(0, 1)),
-                    ("q", number(707, 1000)),
-                ] {
-                    params.entry(name).or_insert(value);
-                }
-            }
-            "synth.drive/1" => {
-                for (name, value) in [
-                    ("drive", number(1, 1)),
-                    ("bias", number(0, 1)),
-                    ("level", number(1, 1)),
-                    ("reference", number(0, 1)),
-                ] {
-                    params.entry(name).or_insert(value);
-                }
-            }
-            "synth.pan/1" => {
-                params.entry("pan").or_insert_with(|| number(0, 1));
-            }
-            "synth.mix/1" | "synth.timbre/1" | "synth.pressure/1" | "synth.velocity/1"
-            | "synth.key/1" => {}
-            other => {
-                return Err(EditError::new(
-                    "E_CAPABILITY",
-                    format!("processor `{other}` is outside BundleEditContext"),
-                ))
-            }
-        }
-        if had_config || config_defaults || !config.is_empty() {
-            fields.insert("config".into(), record(config));
-        }
-        if had_params || !params.is_empty() {
-            fields.insert("params".into(), record(params));
-        }
-        return Ok(());
-    }
-    match processor.as_str() {
-        "core.sine/1" => {
-            config.entry("voices").or_insert_with(|| number(64, 1));
-            for (name, value) in [
-                ("attack", quantity(1, 200, Unit::S)),
-                ("release", quantity(2, 25, Unit::S)),
-                ("level", number(1, 5)),
-            ] {
-                params.entry(name).or_insert(value);
-            }
-        }
-        "core.onepole/1" => {
-            params
-                .entry("cutoff")
-                .or_insert_with(|| quantity(1000, 1, Unit::Hz));
-        }
-        "core.gain/1" => {
-            params.entry("gain").or_insert_with(|| number(1, 1));
-        }
-        "core.fader/1" => {
-            params
-                .entry("level")
-                .or_insert_with(|| quantity(0, 1, Unit::Db));
-        }
-        "core.pan/1" => {
-            params.entry("pan").or_insert_with(|| number(0, 1));
-        }
-        "core.noise/1" => {
-            config.entry("seed").or_insert_with(|| project_seed.clone());
-        }
-        "core.kit/1" => {
-            config.entry("voices").or_insert_with(|| number(64, 1));
-            params.entry("level").or_insert_with(|| number(1, 1));
-        }
-        "core.lfo/1" => {
-            config.entry("wave").or_insert_with(|| symbol("sine"));
-            config.entry("phase").or_insert_with(|| number(0, 1));
-        }
-        "core.constant/1" => {
-            params.entry("value").or_insert_with(|| number(0, 1));
-        }
-        "core.matrix/1" | "core.delay/1" | "core.sum/1" => {}
-        other => {
-            return Err(EditError::new(
-                "E_CAPABILITY",
-                format!("processor `{other}` is outside FoundationEditContext"),
-            ))
-        }
-    }
-    fields.insert("config".into(), record(config));
-    fields.insert("params".into(), record(params));
-    Ok(())
-}
-
-fn project_seed(tree: &Value) -> EditResult<Value> {
-    let project = tree["objects"]
-        .as_object()
-        .and_then(|objects| objects.values().find(|object| object["kind"] == "project"))
-        .ok_or_else(|| EditError::new("E_RANGE", "one project is required"))?;
-    match project["fields"].get("seed") {
-        Some(seed) => Ok(seed.clone()),
-        None => Ok(number(0, 1)),
-    }
-}
-
-fn meter_map(tree: &Value) -> EditResult<MeterMap> {
-    let objects = tree["objects"]
-        .as_object()
-        .ok_or_else(|| EditError::new("E_SYNTAX", "objects must be a dictionary"))?;
-    let project = objects
-        .values()
-        .find(|object| object["kind"] == "project")
-        .ok_or_else(|| EditError::new("E_RANGE", "one project is required"))?;
-    let meter_id = project["fields"]["meter"]["path"]
-        .as_array()
-        .and_then(|path| path.first())
-        .and_then(Value::as_str)
-        .ok_or_else(|| EditError::new("E_REFERENCE", "project meter reference is missing"))?;
-    let meter = objects
-        .get(meter_id)
-        .ok_or_else(|| EditError::new("E_REFERENCE", "project meter object is missing"))?;
-    let points = meter["fields"]["points"]["items"]
-        .as_array()
-        .ok_or_else(|| EditError::new("E_RANGE", "meter points are missing"))?;
-    let mut result = Vec::new();
-    for point in points {
-        let items = point["items"]
-            .as_array()
-            .ok_or_else(|| EditError::new("E_RANGE", "meter point must be a tuple"))?;
-        if items.len() != 3 {
-            return Err(EditError::new(
-                "E_RANGE",
-                "meter point must have three values",
-            ));
-        }
-        if items[0]["u"] != "q" {
-            return Err(EditError::new(
-                "E_UNIT",
-                "meter anchors require q positions",
-            ));
-        }
-        let integer = |value: &Value| -> EditResult<u32> {
-            let value = typed_rational(value)?;
-            if !value.is_integer() {
-                return Err(EditError::new(
-                    "E_RANGE",
-                    "meter signature requires integers",
-                ));
-            }
-            value
-                .to_integer()
-                .to_u32()
-                .ok_or_else(|| EditError::new("E_RANGE", "meter signature is out of range"))
-        };
-        result.push(MeterPoint::new(
-            typed_rational(&items[0])?,
-            integer(&items[1])?,
-            integer(&items[2])?,
-        ));
-    }
-    MeterMap::new(result).map_err(|error| EditError::new("E_METER_BOUNDARY", error.to_string()))
 }
 
 fn source_object_id(value: &Value) -> Option<&str> {

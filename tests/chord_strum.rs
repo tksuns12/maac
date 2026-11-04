@@ -170,8 +170,8 @@ fn strum_defaults_normalize_away() {
             "",
         );
         let document = parse(&text).unwrap();
-        let plan = compile(&document).unwrap();
-        execution_identity(&document, &plan).unwrap().execution_hash
+        compile(&document).unwrap();
+        execution_identity(&document).unwrap().execution_hash
     };
     assert_eq!(
         identity("strum = down;"),

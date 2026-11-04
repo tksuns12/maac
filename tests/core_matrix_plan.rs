@@ -50,8 +50,8 @@ fn execution_identity(coefficients: &str) -> maac::production_identity::Executio
             .expect("matrix source entry"),
     )
     .unwrap();
-    let plan = maac::compile(&document).unwrap();
-    maac::production_identity::execution_identity(&document, &plan).unwrap()
+    maac::compile(&document).unwrap();
+    maac::production_identity::execution_identity(&document).unwrap()
 }
 
 #[test]

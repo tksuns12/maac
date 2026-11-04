@@ -34,6 +34,7 @@ pub mod media_import;
 mod module_artifact;
 pub mod music;
 pub(crate) mod node_freeze;
+pub mod normalization;
 pub use module_artifact::{
     ModuleArtifact, ModuleArtifactLimits, ModuleExport, MAX_MODULE_ARTIFACT_JSON_BYTES,
     MODULE_ARTIFACT_FORMAT, MODULE_ARTIFACT_VERSION,

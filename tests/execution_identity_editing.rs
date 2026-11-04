@@ -63,8 +63,8 @@ fn production_event_normalization_allows_revision_bound_source_edits_atomically(
     );
 
     let parsed = maac::parse(document.source()).unwrap();
-    let plan = maac::compile(&parsed).unwrap();
-    let before_identity = execution_identity(&parsed, &plan).unwrap();
+    maac::compile(&parsed).unwrap();
+    let before_identity = execution_identity(&parsed).unwrap();
     before_identity.validate().unwrap();
 
     let transaction = Transaction::new(
@@ -84,8 +84,8 @@ fn production_event_normalization_allows_revision_bound_source_edits_atomically(
     assert_eq!(applied.new_revision, document.revision());
     assert!(document.source().contains("label=\"edited label\""));
     let reparsed = maac::parse(document.source()).unwrap();
-    let edited_plan = maac::compile(&reparsed).unwrap();
-    let after_identity = execution_identity(&reparsed, &edited_plan).unwrap();
+    maac::compile(&reparsed).unwrap();
+    let after_identity = execution_identity(&reparsed).unwrap();
     after_identity.validate().unwrap();
     assert_eq!(
         before_identity.execution_hash,

@@ -69,9 +69,9 @@ fn identity(source: &str) -> ExecutionIdentity {
     bundle
         .assets
         .insert("production.schema.json".into(), SCHEMA_BYTES.to_vec());
-    let plan = compile_bundle(&bundle).expect("metadata-role bundle compiles");
+    compile_bundle(&bundle).expect("metadata-role bundle compiles");
     let document = maac::parse(source).unwrap();
-    execution_identity(&document, &plan).unwrap()
+    execution_identity(&document).unwrap()
 }
 
 fn json(text: &str) -> Value {

@@ -407,8 +407,8 @@ fn vibrato_defaults_normalize_and_its_fields_change_the_identity() {
     let identity = |vibrato: &str| {
         let text = source(vibrato, "1q", "vibrato = &v;", "");
         let document = parse(&text).unwrap();
-        let plan = compile(&document).unwrap();
-        execution_identity(&document, &plan).unwrap().execution_hash
+        compile(&document).unwrap();
+        execution_identity(&document).unwrap().execution_hash
     };
     let short = identity("vibrato v { rate = 5Hz; depth = 40ct; }");
     assert_eq!(

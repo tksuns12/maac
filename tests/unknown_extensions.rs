@@ -120,9 +120,9 @@ fn unknown_extensions_are_refused_at_their_namespace() {
 #[test]
 fn unknown_extensions_have_no_execution_identity() {
     let plain = source("", "");
-    let plan = compile_bundle(&bundle(&plain.replace("asset notes_schema", "// "))).unwrap();
+    compile_bundle(&bundle(&plain.replace("asset notes_schema", "// "))).unwrap();
     let document = maac::parse(&unknown()).unwrap();
-    let error = execution_identity(&document, &plan).unwrap_err();
+    let error = execution_identity(&document).unwrap_err();
     assert!(error.to_string().contains("org.example.notes/1"), "{error}");
 }
 

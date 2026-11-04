@@ -908,9 +908,55 @@ impl ParameterSpec {
     }
 }
 
+/// Every parameter name a `synth.*/1` descriptor accepts. Semantic
+/// normalization expands each one a node's descriptor defines, so a new
+/// parameter is listed here with its descriptor; debug builds check that.
+pub(crate) const PARAMETER_NAMES: [&str; 30] = [
+    "attack",
+    "balance",
+    "bias",
+    "curve",
+    "cutoff",
+    "damping",
+    "decay",
+    "detune",
+    "drive",
+    "dynamics",
+    "feedback",
+    "frequency",
+    "hardness",
+    "level",
+    "pan",
+    "phase",
+    "pickup",
+    "position",
+    "q",
+    "rate",
+    "ratio",
+    "reference",
+    "release",
+    "spread",
+    "stretch",
+    "sustain",
+    "time",
+    "timing",
+    "vibrato",
+    "width",
+];
+
 /// Processor-owned parameter metadata. LFO phase has voice semantics here;
 /// use [`parameter_descriptor_for_stage`] for a shared graph.
 pub fn parameter_descriptor(processor: &GraphProcessor, name: &str) -> Option<ParameterSpec> {
+    let result = descriptor(processor, name);
+    debug_assert!(
+        result.is_none() || PARAMETER_NAMES.contains(&name),
+        "parameter `{name}` of `{}` is missing from PARAMETER_NAMES",
+        processor.identity()
+    );
+    result
+}
+
+fn descriptor(processor: &GraphProcessor, name: &str) -> Option<ParameterSpec> {
     let dimensionless = |rate, default, min, max| {
         spec(
             GraphUnit::Dimensionless,

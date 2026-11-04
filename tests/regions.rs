@@ -241,8 +241,8 @@ region cross { span = [7q, 9q]; }
 fn region_spans_enter_the_execution_hash_but_labels_do_not() {
     let identity = |regions: &str| {
         let document = parse(&project(regions)).unwrap();
-        let plan = compile(&document).unwrap();
-        execution_identity(&document, &plan).unwrap()
+        compile(&document).unwrap();
+        execution_identity(&document).unwrap()
     };
     let plain = identity("");
     let chorus = identity("region chorus { span = [8q, 12q]; }");

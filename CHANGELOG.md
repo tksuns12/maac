@@ -37,6 +37,36 @@ promise of compatibility beyond the documented interfaces.
   that quicken through tempo ramps, and the left hand's trembling and
   bending as shared `vibrato` and curve declarations.
 
+### Changed
+
+- One semantic normalization, `maac::normalization`, computes N(A) (§20.2)
+  for both edit preconditions and the execution hash. It replaces two
+  hand-written normalizers that had drifted apart, and it needs no compiled
+  plan. `production_identity::execution_identity` therefore takes only the
+  document, `execution_identity(&document)`, and
+  `bundle_execution_identity(&bundle)` gives a bundle composition's, with
+  the libraries and assets the bundle resolves.
+
+- N(A) now expands every parameter a graph node's descriptor defines, and the
+  config defaults of `synth.modal/1` and `synth.bow/1`. The execution hash of
+  a document whose instruments use `synth.adsr/1`, `synth.drive/1`,
+  `synth.pluck/1`, `synth.modal/1` or `synth.bow/1` without writing those
+  defaults changes once: recompiling it gives a new
+  `production.execution_identity`. No sound changes.
+
+### Fixed
+
+- Writing a default out no longer changes the execution hash: `slur = false`
+  or `slide = 0s` on a note, or a node parameter at its default such as
+  `q = 707/1000` on `synth.svf/1`, now hashes like leaving it out. §8.3 now
+  says that N(A) omits `slur` and `slide` at their defaults, and that only a
+  true `slur` or a nonzero `slide` on a note that joins nothing is
+  `E_INTERVAL`.
+
+- An edit whose precondition names a node built from `synth.delay/1`,
+  `synth.balance/1`, `synth.width/1` or `synth.random/1` no longer fails with
+  `E_CAPABILITY`.
+
 ## [0.4.0] — 2026-11-02
 
 The fourth experimental release. It brings the answers of four production

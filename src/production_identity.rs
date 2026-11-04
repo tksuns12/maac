@@ -1,23 +1,21 @@
-//! Explicit production input identities; canonical serialization is shared by
-//! source and render-context hashing. This module performs no I/O.
+//! Execution identity and render keys: the SHA-256 of a document's
+//! execution view N(A) (MaaC-1 §20.2), and of a render's complete context.
+//! Canonical serialization is shared by source and render-context hashing.
+//! This module performs no I/O.
 
 use std::{collections::BTreeMap, fmt};
 
-use num_bigint::BigInt;
 use num_rational::BigRational;
 use num_traits::ToPrimitive;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::graph::{
-    parameter_descriptor_for_stage, GraphProcessor, GraphProgram, GraphStage, GraphUnit,
-    InstrumentProgram,
-};
-use crate::music::{MeterMap, MeterPoint, Pitch};
-use crate::plan::{Plan, Processor, ProcessorView};
-use crate::syntax::{Document, Object, Unit, Value, ValueKind};
+use crate::library::LibrarySet;
+use crate::music::{MeterMap, MeterPoint};
+use crate::normalization::{execution_view, normalize_document, NormalizationContext};
+use crate::syntax::{Document, Unit, Value, ValueKind};
 
-use serde_json::{json, Map, Value as JsonValue};
+use serde_json::{json, Value as JsonValue};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct IdentityError(pub String);
@@ -139,68 +137,53 @@ impl ExecutionIdentity {
     }
 }
 
-/// Normalize an accepted entry document using its compiled plan's resolved
-/// processor descriptors. Call only after source/bundle/capability validation;
-/// the original document MUST still include imports and production extensions.
-/// The plan supplies exact defaults and local instrument descriptor context,
-/// never the compact source structure or expanded event representation.
-pub fn execution_identity(
-    document: &Document,
-    plan: &Plan,
-) -> Result<ExecutionIdentity, IdentityError> {
-    execution_identity_for_view(document, &plan.view())
+/// The execution identity of a document compiled on its own, with the
+/// libraries its own declarations resolve to. Call only for a document that
+/// validates; it MUST still include its production extensions.
+pub fn execution_identity(document: &Document) -> Result<ExecutionIdentity, IdentityError> {
+    let libraries = crate::compiler::local_libraries(document)
+        .map_err(|diagnostics| error(format!("libraries: {diagnostics:?}")))?;
+    execution_identity_with(document, crate::compiler::LOCAL_SOURCE, libraries.as_ref())
 }
 
-pub(crate) fn execution_identity_for_view(
+/// The execution identity of a bundle's entry composition, with the
+/// libraries and assets the bundle resolves. Call only for a bundle that
+/// compiles.
+pub fn bundle_execution_identity(
+    bundle: &crate::bundle::SourceBundle,
+) -> Result<ExecutionIdentity, IdentityError> {
+    let (entry, original, libraries) = crate::compiler::bundle_libraries(bundle)
+        .map_err(|diagnostics| error(format!("libraries: {diagnostics:?}")))?;
+    execution_identity_with(&original, &entry, Some(&libraries))
+}
+
+/// The execution identity of `document`, named `source` among the resolved
+/// `libraries` its instrument and effect nodes use.
+pub(crate) fn execution_identity_with(
     document: &Document,
-    plan: &crate::plan::PlanView<'_>,
+    source: &str,
+    libraries: Option<&LibrarySet>,
 ) -> Result<ExecutionIdentity, IdentityError> {
     if document.version != 1 {
         return Err(error("execution identity supports MaaC/1 only"));
     }
     reject_unsupported_extensions(document)?;
-    let meter = meter_map(document)?;
-    let normalizer = Normalizer {
-        plan,
-        meter,
-        strip_object_labels: true,
-    };
-    let mut objects = Map::new();
-    for (id, object) in &document.objects {
-        objects.insert(id.clone(), normalizer.object(object, Scope::Top)?);
-    }
-    let normalized = json!({"version":1,"objects":objects});
+    let authored = document.to_syntax_json_value();
+    let context = NormalizationContext::new(&authored, source, libraries)
+        .map_err(|e| error(e.to_string()))?;
+    let normalized = execution_view(&normalize_document(&context).map_err(|e| {
+        error(match e.object_path.is_empty() {
+            true => e.message,
+            false => format!("{}: {}", e.object_path.join("."), e.message),
+        })
+    })?);
     let bytes = canonical_json_bytes(&normalized)?;
     Ok(ExecutionIdentity {
         algorithm: EXECUTION_ALGORITHM.into(),
         execution_hash: digest(&bytes),
-        source_input_hash: digest(&canonical_json_bytes(&document.to_syntax_json_value())?),
+        source_input_hash: digest(&canonical_json_bytes(&authored)?),
         normalized_source_json: String::from_utf8(bytes).map_err(|e| error(e.to_string()))?,
     })
-}
-
-/// Label-retaining N(A) for Protocol 2 preconditions. This shares the
-/// production execution normalizer but deliberately keeps actual source-object
-/// labels; only the execution-hash projection removes them.
-pub(crate) fn normalized_document_for_editing(
-    document: &Document,
-    plan: &crate::plan::PlanView<'_>,
-) -> Result<JsonValue, IdentityError> {
-    if document.version != 1 {
-        return Err(error("editing normalization supports MaaC/1 only"));
-    }
-    reject_unsupported_extensions(document)?;
-    let meter = meter_map(document)?;
-    let normalizer = Normalizer {
-        plan,
-        meter,
-        strip_object_labels: false,
-    };
-    let mut objects = Map::new();
-    for (id, object) in &document.objects {
-        objects.insert(id.clone(), normalizer.object(object, Scope::Top)?);
-    }
-    Ok(json!({"version":1,"objects":objects}))
 }
 
 /// Hash a complete caller-supplied render context alongside normalized source
@@ -268,628 +251,13 @@ fn reject_unsupported_extensions(document: &Document) -> Result<(), IdentityErro
 fn error(message: impl Into<String>) -> IdentityError {
     IdentityError(message.into())
 }
-fn rational(value: &BigRational, unit: Option<Unit>) -> JsonValue {
-    match unit {
-        Some(unit) => {
-            json!({"t":"quantity","n":value.numer().to_string(),"d":value.denom().to_string(),"u":unit.as_str()})
-        }
-        None => json!({"t":"number","n":value.numer().to_string(),"d":value.denom().to_string()}),
-    }
-}
-fn number(value: i64) -> JsonValue {
-    rational(&BigRational::from_integer(value.into()), None)
-}
-fn quantity(n: i64, d: i64, unit: Unit) -> JsonValue {
-    rational(&BigRational::new(n.into(), d.into()), Some(unit))
-}
-fn symbol(value: &str) -> JsonValue {
-    json!({"t":"symbol","v":value})
-}
-fn record(fields: Map<String, JsonValue>) -> JsonValue {
-    json!({"t":"record","fields":fields})
-}
-fn graph_unit(unit: GraphUnit) -> Option<Unit> {
-    match unit {
-        GraphUnit::Dimensionless => None,
-        GraphUnit::Hertz => Some(Unit::Hz),
-        GraphUnit::Seconds => Some(Unit::S),
-        GraphUnit::Quarter => Some(Unit::Q),
-    }
-}
-fn record_fields(
-    fields: &mut Map<String, JsonValue>,
-    key: &str,
-) -> Result<Map<String, JsonValue>, IdentityError> {
-    match fields.remove(key) {
-        None => Ok(Map::new()),
-        Some(value) => value
-            .get("fields")
-            .and_then(JsonValue::as_object)
-            .cloned()
-            .ok_or_else(|| error(format!("{key} must be a tagged record"))),
-    }
-}
-
-#[derive(Clone, Copy)]
-enum Scope<'a> {
-    Top,
-    Instrument(&'a InstrumentProgram),
-    Effect(&'a crate::graph::EffectProgram),
-    Graph(&'a GraphProgram, GraphStage),
-    Nested,
-}
-
-struct Normalizer<'a> {
-    plan: &'a crate::plan::PlanView<'a>,
-    meter: MeterMap,
-    strip_object_labels: bool,
-}
-
-impl Normalizer<'_> {
-    fn value(
-        &self,
-        value: &Value,
-        pitch: bool,
-        constructors: bool,
-    ) -> Result<JsonValue, IdentityError> {
-        if pitch {
-            if let ValueKind::Symbol(text) | ValueKind::String(text) = &value.kind {
-                let key = match Pitch::parse_spelled(text).map_err(|e| error(e.to_string()))? {
-                    Pitch::Spelled(spelling) => spelling.key().map_err(|e| error(e.to_string()))?,
-                    _ => return Err(error("unexpected spelled-pitch representation")),
-                };
-                return Ok(json!({"t":"call","fn":"key","args":[number(key)]}));
-            }
-        }
-        match &value.kind {
-            ValueKind::Quantity {
-                value,
-                unit: Unit::Ms,
-            } => Ok(rational(
-                &(value / BigRational::from_integer(1000.into())),
-                Some(Unit::S),
-            )),
-            ValueKind::Quantity {
-                value,
-                unit: Unit::KHz,
-            } => Ok(rational(
-                &(value * BigRational::from_integer(1000.into())),
-                Some(Unit::Hz),
-            )),
-            ValueKind::Call { function, args } if constructors && function == "bar" => {
-                if args.len() != 2 {
-                    return Err(error("bar requires two arguments"));
-                }
-                let bar = exact_number(&args[0])?
-                    .to_integer()
-                    .to_i64()
-                    .ok_or_else(|| error("bar number out of range"))?;
-                if !exact_number(&args[0])?.is_integer() {
-                    return Err(error("bar number must be an integer"));
-                }
-                let q = self
-                    .meter
-                    .bar_to_q(bar, exact_number(&args[1])?)
-                    .map_err(|e| error(e.to_string()))?;
-                Ok(rational(&q, Some(Unit::Q)))
-            }
-            ValueKind::Call { function, args } if constructors && function == "ratio" => {
-                if args.len() != 2 {
-                    return Err(error("ratio requires two arguments"));
-                }
-                let hz = exact_frequency(&args[1])?;
-                Ok(rational(&(exact_number(&args[0])? * hz), Some(Unit::Hz)))
-            }
-            ValueKind::Call { function, args } => Ok(
-                json!({"t":"call","fn":function,"args":args.iter().map(|v| self.value(v,false,constructors)).collect::<Result<Vec<_>,_>>()?}),
-            ),
-            ValueKind::List(items) | ValueKind::Tuple(items) => Ok(
-                json!({"t":if matches!(value.kind,ValueKind::List(_)) {"list"} else {"tuple"},"items":items.iter().map(|v|self.value(v,false,constructors)).collect::<Result<Vec<_>,_>>()?}),
-            ),
-            ValueKind::Record(fields) => {
-                let mut result = Map::new();
-                for (name, field) in fields {
-                    result.insert(
-                        name.clone(),
-                        self.value(&field.value, pitch && name == "pitch", constructors)?,
-                    );
-                }
-                Ok(record(result))
-            }
-            _ => Ok(value.to_syntax_json_value()),
-        }
-    }
-
-    fn object(&self, object: &Object, scope: Scope<'_>) -> Result<JsonValue, IdentityError> {
-        let known = matches!(
-            object.kind.as_str(),
-            "project"
-                | "tempo"
-                | "meter"
-                | "tuning"
-                | "pattern"
-                | "track"
-                | "place"
-                | "groove"
-                | "vary"
-                | "voicing"
-                | "vibrato"
-                | "harmony"
-                | "voicings"
-                | "curve"
-                | "automation"
-                | "node"
-                | "connect"
-                | "region"
-                | "note"
-                | "chord"
-                | "hit"
-                | "message"
-                | "expression"
-                | "use"
-                | "phrase"
-                | "override"
-                | "insert"
-                | "import"
-                | "instrument"
-                | "effect"
-                | "preset"
-                | "wavetable"
-                | "sample"
-                | "voice"
-                | "shared"
-                | "piece"
-                | "control"
-                | "modulate"
-                | "asset"
-                | "audio"
-                | "extension"
-        );
-        if !known {
-            return Err(error(format!(
-                "normalization is not defined for object kind `{}`",
-                object.kind
-            )));
-        }
-        let constructors = object.kind != "extension";
-        let mut fields = Map::new();
-        for (name, field) in &object.fields {
-            if self.strip_object_labels && name == "label" {
-                continue;
-            }
-            let pitch = (matches!(object.kind.as_str(), "note" | "piece") && name == "pitch")
-                || (object.kind == "override" && name == "set");
-            let value = match &field.value.kind {
-                // Each spelled chord or voicing pitch lowers like a note's `pitch`.
-                ValueKind::List(items)
-                    if matches!(object.kind.as_str(), "chord" | "voicing") && name == "pitches" =>
-                {
-                    json!({
-                    "t": "list",
-                    "items": items
-                        .iter()
-                        .map(|item| self.value(item, true, constructors))
-                        .collect::<Result<Vec<_>, _>>()?,
-                    })
-                }
-                _ => self.value(&field.value, pitch, constructors)?,
-            };
-            fields.insert(name.clone(), value);
-        }
-        let mut child_scope = Scope::Nested;
-        match object.kind.as_str() {
-            "project" => {
-                fields
-                    .entry("tail")
-                    .or_insert_with(|| quantity(0, 1, Unit::S));
-                fields.entry("seed").or_insert_with(|| number(0));
-                fields
-                    .entry("requires")
-                    .or_insert_with(|| json!({"t":"list","items":[]}));
-            }
-            "note" | "chord" => {
-                for (name, value) in [
-                    ("velocity", number(1)),
-                    (
-                        "release_velocity",
-                        rational(&BigRational::new(1.into(), 2.into()), None),
-                    ),
-                    ("onset_offset", quantity(0, 1, Unit::S)),
-                    ("release_offset", quantity(0, 1, Unit::S)),
-                    ("order", number(0)),
-                ] {
-                    fields.entry(name).or_insert(value);
-                }
-                // A strum strikes one string every 8 ms with no tilt.
-                if fields.contains_key("strum") {
-                    fields
-                        .entry("stagger")
-                        .or_insert_with(|| quantity(1, 125, Unit::S));
-                    fields.entry("tilt").or_insert_with(|| number(0));
-                }
-                // One picked position is a list of one.
-                if let Some(pick) = fields.get_mut("pick").filter(|pick| pick["t"] != "list") {
-                    *pick = json!({"t": "list", "items": [pick.take()]});
-                }
-            }
-            // A vibrato starts at once, at full depth, centered.
-            "vibrato" => {
-                fields
-                    .entry("delay")
-                    .or_insert_with(|| quantity(0, 1, Unit::S));
-                fields
-                    .entry("rise")
-                    .or_insert_with(|| quantity(0, 1, Unit::S));
-                fields.entry("shape").or_insert_with(|| symbol("centered"));
-            }
-            "audio" => {
-                if object
-                    .field("mode")
-                    .and_then(|field| field.value.as_symbol())
-                    == Some("rate")
-                {
-                    fields.entry("speed").or_insert(number(1));
-                    fields
-                        .entry("reverse")
-                        .or_insert(json!({"t":"boolean","v":false}));
-                }
-                for (name, value) in [
-                    ("gain", number(1)),
-                    ("fade_in", quantity(0, 1, Unit::S)),
-                    ("fade_out", quantity(0, 1, Unit::S)),
-                    ("fade_shape", symbol("linear")),
-                ] {
-                    fields.entry(name).or_insert(value);
-                }
-            }
-            // A core PCM sample is mono unless it declares two channels; a
-            // WAV sample takes its channels from the file.
-            "sample" if object.field("format").is_some() => {
-                fields.entry("channels").or_insert(number(1));
-            }
-            "hit" => {
-                for (name, value) in [
-                    ("velocity", number(1)),
-                    ("onset_offset", quantity(0, 1, Unit::S)),
-                    ("order", number(0)),
-                ] {
-                    fields.entry(name).or_insert(value);
-                }
-            }
-            "message" => {
-                for (name, value) in [
-                    ("onset_offset", quantity(0, 1, Unit::S)),
-                    ("order", number(0)),
-                ] {
-                    fields.entry(name).or_insert(value);
-                }
-            }
-            "place" | "use" => {
-                for (name, value) in [
-                    ("count", number(1)),
-                    ("stretch", number(1)),
-                    ("transpose", quantity(0, 1, Unit::Ct)),
-                    ("boundary", symbol("spill")),
-                ] {
-                    fields.entry(name).or_insert(value);
-                }
-            }
-            "node" => self.node(object, scope, &mut fields)?,
-            "instrument" if object.children.values().any(|child| child.kind == "piece") => {
-                let resources =
-                    self.plan.instruments.as_ref().ok_or_else(|| {
-                        error("local kit normalization requires compiled resources")
-                    })?;
-                if !resources.kits.iter().any(|kit| {
-                    kit.source.file == resources.entry_source && kit.source.object == object.id
-                }) {
-                    return Err(error("local kit descriptor missing from compiled plan"));
-                }
-            }
-            "piece" => {
-                fields
-                    .entry("pitch")
-                    .or_insert_with(|| json!({"t":"call","fn":"key","args":[number(60)]}));
-                fields.entry("voices").or_insert_with(|| {
-                    number(i64::from(crate::kit_instrument::DEFAULT_PIECE_VOICES))
-                });
-            }
-            "instrument" => {
-                let resources = self.plan.instruments.as_ref().ok_or_else(|| {
-                    error("local instrument normalization requires compiled resources")
-                })?;
-                let program = resources
-                    .programs
-                    .iter()
-                    .find(|p| {
-                        p.source.file == resources.entry_source && p.source.object == object.id
-                    })
-                    .ok_or_else(|| {
-                        error("local instrument descriptor missing from compiled plan")
-                    })?;
-                child_scope = Scope::Instrument(program);
-            }
-            "effect" => {
-                let resources = self.plan.instruments.as_ref().ok_or_else(|| {
-                    error("local effect normalization requires compiled resources")
-                })?;
-                let effect = resources
-                    .effects
-                    .iter()
-                    .find(|e| {
-                        e.source.file == resources.entry_source && e.source.object == object.id
-                    })
-                    .ok_or_else(|| error("local effect descriptor missing from compiled plan"))?;
-                fields
-                    .entry("input")
-                    .or_insert_with(|| number(i64::from(effect.input_channels)));
-                child_scope = Scope::Effect(effect);
-            }
-            "shared" if matches!(scope, Scope::Effect(_)) => {
-                let Scope::Effect(effect) = scope else {
-                    unreachable!("matched above")
-                };
-                child_scope = Scope::Graph(&effect.graph, GraphStage::Shared);
-            }
-            "voice" | "shared" => {
-                let Scope::Instrument(program) = scope else {
-                    return Err(error("instrument graph has no descriptor context"));
-                };
-                child_scope = if object.kind == "voice" {
-                    Scope::Graph(&program.voice, GraphStage::Voice)
-                } else {
-                    Scope::Graph(
-                        program
-                            .shared
-                            .as_ref()
-                            .ok_or_else(|| error("shared graph descriptor missing"))?,
-                        GraphStage::Shared,
-                    )
-                };
-            }
-            _ => {}
-        }
-        let mut children = Map::new();
-        for (id, child) in &object.children {
-            children.insert(id.clone(), self.object(child, child_scope)?);
-        }
-        Ok(json!({"kind":object.kind,"fields":fields,"children":children}))
-    }
-
-    fn node(
-        &self,
-        object: &Object,
-        scope: Scope<'_>,
-        fields: &mut Map<String, JsonValue>,
-    ) -> Result<(), IdentityError> {
-        let mut config = record_fields(fields, "config")?;
-        let mut accepts_config = true;
-        let mut params = record_fields(fields, "params")?;
-        match scope {
-            Scope::Top => {
-                let node = self
-                    .plan
-                    .nodes
-                    .iter()
-                    .find(|n| *n.id == object.id)
-                    .ok_or_else(|| error(format!("compiled node `{}` missing", object.id)))?;
-                if let ProcessorView::Lfo(lfo) = node.processor {
-                    config.entry("wave").or_insert_with(|| {
-                        symbol(match lfo.wave {
-                            crate::plan_v7::LfoWave::Sine => "sine",
-                            crate::plan_v7::LfoWave::Triangle => "triangle",
-                            crate::plan_v7::LfoWave::Saw => "saw",
-                            crate::plan_v7::LfoWave::Square => "square",
-                        })
-                    });
-                    config.entry("phase").or_insert_with(|| number(0));
-                }
-                if matches!(node.processor, ProcessorView::Constant) {
-                    params.entry("value").or_insert_with(|| number(0));
-                }
-                if let ProcessorView::Kit {
-                    voices, channels, ..
-                } = node.processor
-                {
-                    config
-                        .entry("voices")
-                        .or_insert_with(|| number(i64::from(voices)));
-                    config
-                        .entry("channels")
-                        .or_insert_with(|| number(i64::from(channels)));
-                }
-                if let ProcessorView::Core(processor) = node.processor {
-                    match processor {
-                        Processor::Sine { voices } => {
-                            config
-                                .entry("voices")
-                                .or_insert_with(|| number(i64::from(*voices)));
-                        }
-                        Processor::Instrument { voices, .. } => {
-                            config
-                                .entry("voices")
-                                .or_insert_with(|| number(i64::from(*voices)));
-                        }
-                        Processor::Compressor {
-                            sidechain_channels, ..
-                        } => {
-                            config.entry("detector").or_insert_with(|| {
-                                symbol(if sidechain_channels.is_some() {
-                                    "external"
-                                } else {
-                                    "internal"
-                                })
-                            });
-                        }
-                        Processor::Reverb { .. } => {
-                            config
-                                .entry("predelay")
-                                .or_insert_with(|| quantity(0, 1, Unit::S));
-                            config.entry("damping").or_insert_with(|| {
-                                rational(&BigRational::new(1.into(), 2.into()), None)
-                            });
-                        }
-                        Processor::Limiter { .. } => {
-                            config
-                                .entry("lookahead")
-                                .or_insert_with(|| quantity(3, 2000, Unit::S));
-                        }
-                        Processor::Noise { seed, .. } => {
-                            config.entry("seed").or_insert_with(|| {
-                                rational(&BigRational::from_integer(BigInt::from(*seed)), None)
-                            });
-                        }
-                        _ => {}
-                    }
-                }
-                for (name, value) in node.params {
-                    let unit = match node.processor {
-                        ProcessorView::Constant => None,
-                        ProcessorView::Lfo(_) => return Err(error("LFO cannot carry parameters")),
-                        ProcessorView::Audio(_)
-                        | ProcessorView::WarpRate(_)
-                        | ProcessorView::Clips { .. } => {
-                            return Err(error("audio transports cannot carry node parameters"))
-                        }
-                        ProcessorView::Kit { .. } => None,
-                        ProcessorView::Core(processor) => match processor {
-                            Processor::Instrument { .. }
-                            | Processor::KitInstrument { .. }
-                            | Processor::Effect { .. } => graph_unit(
-                                self.plan
-                                    .instrument_control_spec(node, name)
-                                    .ok_or_else(|| error("instrument control descriptor missing"))?
-                                    .unit,
-                            ),
-                            Processor::Sine { .. }
-                                if matches!(name.as_str(), "attack" | "release") =>
-                            {
-                                Some(Unit::S)
-                            }
-                            Processor::OnePole { .. } => Some(Unit::Hz),
-                            Processor::Fader { .. } if name == "level" => Some(Unit::Db),
-                            Processor::Eq { .. } => match name.as_str() {
-                                "frequency" => Some(Unit::Hz),
-                                "gain" => Some(Unit::Db),
-                                _ => None,
-                            },
-                            Processor::Compressor { .. } => match name.as_str() {
-                                "attack" | "release" => Some(Unit::S),
-                                "threshold" | "knee" | "makeup" => Some(Unit::Db),
-                                _ => None,
-                            },
-                            Processor::Reverb { .. } if name == "decay" => Some(Unit::S),
-                            Processor::Limiter { .. } => match name.as_str() {
-                                "release" => Some(Unit::S),
-                                "gain" | "ceiling" => Some(Unit::Db),
-                                _ => None,
-                            },
-                            _ => None,
-                        },
-                    };
-                    params.entry(name).or_insert_with(|| rational(value, unit));
-                }
-            }
-            Scope::Graph(graph, stage) => {
-                let node = graph
-                    .nodes
-                    .iter()
-                    .find(|n| n.id == object.id)
-                    .ok_or_else(|| error("local graph node descriptor missing"))?;
-                accepts_config = !matches!(
-                    node.processor,
-                    GraphProcessor::Sine
-                        | GraphProcessor::Saw
-                        | GraphProcessor::Square
-                        | GraphProcessor::Triangle
-                        // An envelope's config is written only to restart.
-                        | GraphProcessor::Adsr {
-                            on_join: crate::graph::AdsrJoin::Hold
-                        }
-                        | GraphProcessor::Lfo
-                        | GraphProcessor::Pan
-                        | GraphProcessor::Balance
-                        | GraphProcessor::Width
-                );
-                if let GraphProcessor::Delay { clock, .. } = &node.processor {
-                    config.entry("clock").or_insert_with(|| {
-                        symbol(match clock {
-                            crate::graph::DelayClock::Seconds => "seconds",
-                            crate::graph::DelayClock::Score => "score",
-                        })
-                    });
-                }
-                if let GraphProcessor::Sample { .. } = &node.processor {
-                    crate::sample_instrument::expand_config_defaults(&mut config);
-                }
-                if let GraphProcessor::Noise { seed, .. }
-                | GraphProcessor::Pluck { seed }
-                | GraphProcessor::Random { seed } = &node.processor
-                {
-                    config
-                        .entry("seed")
-                        .or_insert_with(|| number(i64::from(*seed)));
-                }
-                // The descriptor is the authority for values/units. This is the
-                // bounded union of parameter names in the accepted synth/1 set.
-                for name in [
-                    "ratio",
-                    "frequency",
-                    "phase",
-                    "level",
-                    "position",
-                    "decay",
-                    "damping",
-                    "attack",
-                    "sustain",
-                    "release",
-                    "cutoff",
-                    "pan",
-                    "balance",
-                    "width",
-                    "time",
-                    "feedback",
-                ] {
-                    if let Some(spec) = parameter_descriptor_for_stage(&node.processor, name, stage)
-                    {
-                        params.entry(name).or_insert_with(|| {
-                            rational(
-                                node.params.get(name).unwrap_or(&spec.default),
-                                graph_unit(spec.unit),
-                            )
-                        });
-                    }
-                }
-            }
-            _ => return Err(error("node is outside a supported graph context")),
-        }
-        if accepts_config {
-            fields.insert("config".into(), record(config));
-        }
-        fields.insert("params".into(), record(params));
-        Ok(())
-    }
-}
-
 fn exact_number(value: &Value) -> Result<&BigRational, IdentityError> {
     match &value.kind {
         ValueKind::Number(n) => Ok(n),
         _ => Err(error("constructor requires an exact dimensionless number")),
     }
 }
-fn exact_frequency(value: &Value) -> Result<BigRational, IdentityError> {
-    match &value.kind {
-        ValueKind::Quantity {
-            value,
-            unit: Unit::Hz,
-        } => Ok(value.clone()),
-        ValueKind::Quantity {
-            value,
-            unit: Unit::KHz,
-        } => Ok(value * BigRational::from_integer(1000.into())),
-        _ => Err(error("ratio requires an exact Hz reference")),
-    }
-}
+/// The meter map of a document's project.
 pub(crate) fn meter_map(document: &Document) -> Result<MeterMap, IdentityError> {
     let project = document
         .objects
@@ -944,7 +312,7 @@ pub(crate) fn meter_map(document: &Document) -> Result<MeterMap, IdentityError> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use serde_json::{json, Map};
 
     #[test]
     fn canonical_vector_has_exact_control_escapes_and_unicode_order() {
@@ -965,9 +333,7 @@ place play { pattern=&riff; track=&notes; at=0q; }
 "#;
 
     fn identity(source: &str) -> ExecutionIdentity {
-        let document = crate::syntax::parse(source).unwrap();
-        let plan = crate::compiler::compile(&document).unwrap();
-        execution_identity(&document, &plan).unwrap()
+        execution_identity(&crate::syntax::parse(source).unwrap()).unwrap()
     }
 
     #[test]
@@ -991,67 +357,25 @@ place play { pattern=&riff; track=&notes; at=0q; }
         assert_eq!(original.execution_hash, other.execution_hash);
         assert_ne!(original.source_input_hash, other.source_input_hash);
         let mut document = crate::syntax::parse(SOURCE).unwrap();
-        let plan = crate::compiler::compile(&document).unwrap();
         let objects = std::mem::take(&mut document.objects);
         document.objects = objects.into_iter().rev().collect();
         assert_eq!(
-            execution_identity(&document, &plan).unwrap().execution_hash,
+            execution_identity(&document).unwrap().execution_hash,
             original.execution_hash
         );
     }
 
     #[test]
-    fn supported_defaults_units_and_pitch_spellings_normalize_equally() {
-        let explicit = SOURCE.replace("output=&s:out;", "output=&s:out; tail=0ms; seed=0; requires=[];")
-            .replace("rate=48000Hz", "rate=48kHz")
-            .replace("type=\"core.sine/1\";", "type=\"core.sine/1\"; config={voices=64;}; params={attack=5ms;release=0.08s;level=2/10;};")
-            .replace("pitch=C4;", "pitch=key(60);velocity=1;release_velocity=0.5;onset_offset=0ms;release_offset=0s;order=0;")
-            .replace("track=&notes; at=0q;", "track=&notes; at=0q;count=1;stretch=1;transpose=0ct;boundary=spill;");
-        assert_eq!(
-            identity(SOURCE).execution_hash,
-            identity(&explicit).execution_hash
-        );
-    }
-
-    #[test]
-    fn ratio_and_global_bar_positions_lower_without_flattening_source() {
-        let source = SOURCE
-            .replace("(0q,4,4)", "(0q,3,4)")
-            .replace("pitch=C4", "pitch=ratio(3/2,400Hz)")
-            .replace("track=&notes; at=0q;", "track=&notes; at=bar(2,1);count=3;");
-        let lowered = source
-            .replace("ratio(3/2,400Hz)", "600Hz")
-            .replace("bar(2,1)", "3q");
-        let normalized = identity(&source);
-        assert_eq!(normalized.execution_hash, identity(&lowered).execution_hash);
-        let value: JsonValue = serde_json::from_str(&normalized.normalized_source_json).unwrap();
-        assert_eq!(
-            value["objects"]["riff"]["children"]
-                .as_object()
-                .unwrap()
-                .len(),
-            1
-        );
-        assert_eq!(value["objects"]["play"]["fields"]["count"], number(3));
-        assert!(value.get("events").is_none());
-    }
-
-    #[test]
     fn complete_extensions_and_payload_labels_are_never_discarded() {
-        let base = crate::syntax::parse(SOURCE).unwrap();
-        let plan = crate::compiler::compile(&base).unwrap();
         // Preservation test at the identity boundary: unselected and payload
         // data stay in the hash. Bundle compilation validates this data.
         let with_extension = format!("{SOURCE} extension ext {{ namespace=\"maac.production/1\";schema=&schema;render_affecting=true;data={{deliveries={{release={{limit=-14;}};unused={{limit=-20;}};}};label=\"payload\";}};}}");
-        let first =
-            execution_identity(&crate::syntax::parse(&with_extension).unwrap(), &plan).unwrap();
+        let first = identity(&with_extension);
         for changed in [
             with_extension.replace("limit=-20", "limit=-21"),
             with_extension.replace("payload", "different"),
         ] {
-            let second =
-                execution_identity(&crate::syntax::parse(&changed).unwrap(), &plan).unwrap();
-            assert_ne!(first.execution_hash, second.execution_hash);
+            assert_ne!(first.execution_hash, identity(&changed).execution_hash);
         }
         assert!(first.normalized_source_json.contains("payload"));
         assert!(first.normalized_source_json.contains("unused"));
@@ -1059,51 +383,9 @@ place play { pattern=&riff; track=&notes; at=0q; }
 
     #[test]
     fn unsupported_extensions_have_no_execution_identity() {
-        let base = crate::syntax::parse(SOURCE).unwrap();
-        let plan = crate::compiler::compile(&base).unwrap();
         let source = format!("{SOURCE} extension ext {{ namespace=\"unknown/1\";schema=&schema;render_affecting=false;data={{}};}}");
-        let error = execution_identity(&crate::syntax::parse(&source).unwrap(), &plan).unwrap_err();
+        let error = execution_identity(&crate::syntax::parse(&source).unwrap()).unwrap_err();
         assert!(error.0.contains("`unknown/1`"), "{error}");
-    }
-
-    #[test]
-    fn local_instrument_descriptor_defaults_and_instance_defaults_are_expanded() {
-        let source = r#"maac 1;
-project p {score=[0q,1q];rate=48000Hz;tempo=&t;meter=&m;output=&s:out;}
-tempo t {points=[(0q,120bpm,step)];} meter m {points=[(0q,4,4)];}
-instrument sound {channels=1;
- voice v {channels=1;output=&osc:out;amplitude=&env;
-  node osc {type="synth.sine/1";}
-  node env {type="synth.adsr/1";}
- }
- control amount {target=&v.osc.params.level;default=0.5;}
-}
-node s {instrument=&sound;}
-"#;
-        let explicit = source
-            .replace(
-                "type=\"synth.sine/1\";",
-                "type=\"synth.sine/1\";params={ratio=1;frequency=0Hz;phase=0;level=1;};",
-            )
-            .replace(
-                "type=\"synth.adsr/1\";",
-                "type=\"synth.adsr/1\";params={attack=0ms;decay=0s;sustain=1;release=0s;};",
-            )
-            .replace(
-                "instrument=&sound;",
-                "instrument=&sound;config={voices=64;};params={amount=1/2;};",
-            );
-        let normalized = identity(source);
-        assert_eq!(
-            normalized.execution_hash,
-            identity(&explicit).execution_hash
-        );
-        let value: JsonValue = serde_json::from_str(&normalized.normalized_source_json).unwrap();
-        assert!(
-            value["objects"]["sound"]["children"]["v"]["children"]["osc"]["fields"]
-                .get("config")
-                .is_none()
-        );
     }
 
     fn context() -> JsonValue {
@@ -1175,58 +457,15 @@ node s {instrument=&sound;}
     }
 
     #[test]
-    fn production_processor_defaults_normalize_like_explicit_native_values() {
-        for (kind, config, defaults, explicit_config) in [
-            (
-                "fx.eq/1",
-                "channels=1;mode=peak;",
-                "frequency=1kHz;q=1;gain=0dB;",
-                "channels=1;mode=peak;",
-            ),
-            (
-                "fx.compressor/1",
-                "channels=1;",
-                "threshold=-18dB;ratio=4;knee=6dB;attack=10ms;release=100ms;makeup=0dB;",
-                "channels=1;detector=internal;",
-            ),
-            (
-                "fx.reverb/1",
-                "channels=1;",
-                "decay=1500ms;mix=0.2;",
-                "channels=1;predelay=0ms;damping=0.5;",
-            ),
-            (
-                "fx.limiter/1",
-                "channels=1;",
-                "gain=0dB;ceiling=-1dB;release=100ms;",
-                "channels=1;lookahead=1.5ms;",
-            ),
-        ] {
-            let source = SOURCE.replace("output=&s:out;", "output=&fx:out;requires=[\"maac.production/1\"];")
-                + &format!("node fx {{type=\"{kind}\";config={{{config}}};}} connect edge {{from=&s:out;to=&fx:in;}}");
-            let explicit = source.replace(
-                &format!("config={{{config}}};"),
-                &format!("config={{{explicit_config}}};params={{{defaults}}};"),
-            );
-            assert_eq!(
-                identity(&source).execution_hash,
-                identity(&explicit).execution_hash,
-                "{kind}"
-            );
-        }
-    }
-
-    #[test]
     fn complete_production_delivery_changes_affect_execution_identity() {
         fn production(source: &str) -> ExecutionIdentity {
-            let document = crate::syntax::parse(source).unwrap();
             let mut bundle = crate::bundle::SourceBundle::new("examples/production.maac", source);
             bundle.assets.insert(
                 "schemas/production.schema.json".into(),
                 include_bytes!("../schemas/production.schema.json").to_vec(),
             );
-            let plan = crate::compiler::compile_bundle(&bundle).unwrap();
-            execution_identity(&document, &plan).unwrap()
+            crate::compiler::compile_bundle(&bundle).unwrap();
+            identity(source)
         }
         let source = include_str!("../examples/production.maac");
         let first = production(source);
@@ -1239,59 +478,5 @@ node s {instrument=&sound;}
         let changed = source.replace("max = -1;", "max = -2;");
         assert_ne!(changed, source, "example must contain the chosen limit");
         assert_ne!(first.execution_hash, production(&changed).execution_hash);
-    }
-
-    #[test]
-    fn core_constant_normalization_retains_explicit_empty_config_record() {
-        let source = r#"maac 1;
-project p {score=[0q,1q];rate=48000Hz;tempo=&t;meter=&m;output=&s:out;}
-tempo t {points=[(0q,120bpm,step)];}
-meter m {points=[(0q,4,4)];}
-node s {type="core.sine/1";}
-node c {type="core.constant/1";config={};}
-"#;
-        let document = crate::syntax::parse(source).unwrap();
-        let bundle = crate::bundle::SourceBundle::new("score.maac", source);
-        let artifact = crate::compiler::compile_bundle_artifact(&bundle).unwrap();
-        let identity = execution_identity_for_view(&document, &artifact.view()).unwrap();
-        let normalized: JsonValue = serde_json::from_str(&identity.normalized_source_json).unwrap();
-        assert_eq!(
-            normalized["objects"]["c"]["fields"]["config"],
-            record(Map::new())
-        );
-        assert_eq!(
-            normalized["objects"]["c"]["fields"]["params"]["fields"]["value"],
-            number(0)
-        );
-    }
-
-    #[test]
-    fn project_bar_normalization_and_compilation_use_the_declared_meter() {
-        let source = SOURCE
-            .split("pattern riff")
-            .next()
-            .unwrap()
-            .replace("[0q,8q]", "[bar(2,1),bar(3,1)]")
-            .replace("(0q,4,4)", "(0q,3,4)");
-        let literal = source.replace("[bar(2,1),bar(3,1)]", "[3q,6q]");
-        let document = crate::syntax::parse(&source).unwrap();
-        let literal_document = crate::syntax::parse(&literal).unwrap();
-        let plan = crate::compiler::compile(&document).unwrap();
-        let literal_plan = crate::compiler::compile(&literal_document).unwrap();
-        assert_eq!(
-            plan.output.score_start_q,
-            BigRational::from_integer(3.into())
-        );
-        assert_eq!(plan.output.score_end_q, BigRational::from_integer(6.into()));
-        assert_eq!(plan.output.total_frames, 72_000);
-        assert_eq!(plan.output.score_start_q, literal_plan.output.score_start_q);
-        assert_eq!(plan.output.score_end_q, literal_plan.output.score_end_q);
-        assert_eq!(plan.output.total_frames, literal_plan.output.total_frames);
-        assert_eq!(
-            execution_identity(&document, &plan).unwrap().execution_hash,
-            execution_identity(&literal_document, &literal_plan)
-                .unwrap()
-                .execution_hash
-        );
     }
 }

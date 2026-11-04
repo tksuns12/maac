@@ -8,8 +8,8 @@ use serde_json::Value;
 
 fn identity_for_source(source: &str) -> ExecutionIdentity {
     let document = parse(source).unwrap();
-    let plan = compile(&document).unwrap();
-    execution_identity(&document, &plan).unwrap()
+    compile(&document).unwrap();
+    execution_identity(&document).unwrap()
 }
 
 fn production_artifact(source: &str) -> PlanArtifact {
@@ -41,7 +41,7 @@ fn pitch_expression_example_has_a_valid_execution_identity() {
     let plan = compile(&document).unwrap();
     assert_eq!(plan.events.len(), 2);
 
-    let identity = execution_identity(&document, &plan).unwrap();
+    let identity = execution_identity(&document).unwrap();
     identity.validate().unwrap();
     let normalized: Value = serde_json::from_str(&identity.normalized_source_json).unwrap();
     assert_eq!(
@@ -77,10 +77,7 @@ fn other_supported_expression_examples_have_execution_identities() {
         let document = parse(source).unwrap();
         let plan = compile(&document).unwrap();
         assert!(!plan.events.is_empty());
-        execution_identity(&document, &plan)
-            .unwrap()
-            .validate()
-            .unwrap();
+        execution_identity(&document).unwrap().validate().unwrap();
     }
 }
 

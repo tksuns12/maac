@@ -172,8 +172,8 @@ fn spelled_chord_pitches_normalize_like_note_pitches() {
             "",
         );
         let document = parse(&text).unwrap();
-        let plan = compile(&document).unwrap();
-        execution_identity(&document, &plan).unwrap().execution_hash
+        compile(&document).unwrap();
+        execution_identity(&document).unwrap().execution_hash
     };
     assert_eq!(identity("[C4, E4]"), identity("[key(60), key(64)]"));
     assert_ne!(identity("[C4, E4]"), identity("[C4, F4]"));

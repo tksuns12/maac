@@ -51,6 +51,49 @@ pub const MAX_EXPANSION_WORK: u64 = 20_000_000;
 
 type CResult<T> = Result<T, Diagnostics>;
 
+/// The execution identity of a document with production settings. Lowering
+/// consumes the resolved libraries it is computed from, so it is computed
+/// first; an error waits until compilation has succeeded, so source
+/// diagnostics come first.
+type PendingIdentity = Option<
+    Result<
+        crate::production_identity::ExecutionIdentity,
+        crate::production_identity::IdentityError,
+    >,
+>;
+
+/// The name a document compiled on its own has among its libraries.
+pub(crate) const LOCAL_SOURCE: &str = "document.maac";
+
+fn pending_identity(
+    production: &Option<crate::production_data::ProductionSettings>,
+    original: &Document,
+    source: &str,
+    libraries: Option<&LibrarySet>,
+) -> PendingIdentity {
+    production
+        .as_ref()
+        .map(|_| crate::production_identity::execution_identity_with(original, source, libraries))
+}
+
+fn settled_identity(
+    pending: &PendingIdentity,
+) -> CResult<crate::production_identity::ExecutionIdentity> {
+    match pending {
+        Some(Ok(identity)) => Ok(identity.clone()),
+        Some(Err(error)) => Err(diagnostics(
+            DiagnosticCode::Range,
+            format!("execution identity: {error}"),
+            None,
+        )),
+        None => Err(diagnostics(
+            DiagnosticCode::Range,
+            "execution identity was not computed for these production settings",
+            None,
+        )),
+    }
+}
+
 fn diagnostics(
     code: DiagnosticCode,
     message: impl Into<String>,
@@ -883,6 +926,7 @@ struct Compiler<'a> {
     instrument_instances: BTreeMap<String, ResolvedInstance>,
     instrument_descriptors: BTreeMap<String, InstrumentNodeDescriptor>,
     instrument_resources: Option<InstrumentResources>,
+    execution_identity: PendingIdentity,
 }
 
 impl<'a> Compiler<'a> {
@@ -944,6 +988,7 @@ impl<'a> Compiler<'a> {
             instrument_instances: BTreeMap::new(),
             instrument_descriptors: BTreeMap::new(),
             instrument_resources: None,
+            execution_identity: None,
         }
     }
 
@@ -1014,7 +1059,8 @@ impl<'a> Compiler<'a> {
         let plan = self.finish_plan(limits)?;
         plan.validate_with_limits(limits)
             .map_err(plan_error_in!(plan.events))?;
-        attach_production(plan, production, original, limits).map(VersionedPlan::Legacy)
+        attach_production(plan, production, &self.execution_identity, original, limits)
+            .map(VersionedPlan::Legacy)
     }
 
     fn object(&self, id: &str) -> CResult<&Object> {
@@ -6024,16 +6070,7 @@ impl<'a> Compiler<'a> {
             production: None,
         };
         if let Some(settings) = &mut production {
-            settings.execution_identity = Some(
-                crate::production_identity::execution_identity_for_view(original, &plan.view())
-                    .map_err(|error| {
-                        diagnostics(
-                            DiagnosticCode::Range,
-                            format!("execution identity: {error}"),
-                            None,
-                        )
-                    })?,
-            );
+            settings.execution_identity = Some(settled_identity(&self.execution_identity)?);
         }
         plan.production = production;
         if let Some(settings) = &plan.production {
@@ -6391,16 +6428,7 @@ impl<'a> Compiler<'a> {
             production: None,
         };
         if let Some(settings) = &mut production {
-            settings.execution_identity = Some(
-                crate::production_identity::execution_identity_for_view(original, &plan.view())
-                    .map_err(|error| {
-                        diagnostics(
-                            DiagnosticCode::Range,
-                            format!("execution identity: {error}"),
-                            None,
-                        )
-                    })?,
-            );
+            settings.execution_identity = Some(settled_identity(&self.execution_identity)?);
         }
         plan.production = production;
         if let Some(settings) = &plan.production {
@@ -6525,16 +6553,7 @@ impl<'a> Compiler<'a> {
             production: None,
         };
         if let Some(settings) = &mut production {
-            settings.execution_identity = Some(
-                crate::production_identity::execution_identity_for_view(original, &plan.view())
-                    .map_err(|error| {
-                        diagnostics(
-                            DiagnosticCode::Range,
-                            format!("execution identity: {error}"),
-                            None,
-                        )
-                    })?,
-            );
+            settings.execution_identity = Some(settled_identity(&self.execution_identity)?);
         }
         plan.production = production;
         if let Some(settings) = &plan.production {
@@ -6661,16 +6680,7 @@ impl<'a> Compiler<'a> {
             production: None,
         };
         if let Some(settings) = &mut production {
-            settings.execution_identity = Some(
-                crate::production_identity::execution_identity_for_view(original, &plan.view())
-                    .map_err(|error| {
-                        diagnostics(
-                            DiagnosticCode::Range,
-                            format!("execution identity: {error}"),
-                            None,
-                        )
-                    })?,
-            );
+            settings.execution_identity = Some(settled_identity(&self.execution_identity)?);
         }
         plan.production = production;
         if let Some(settings) = &plan.production {
@@ -6772,16 +6782,7 @@ impl<'a> Compiler<'a> {
             production: None,
         };
         if let Some(settings) = &mut production {
-            settings.execution_identity = Some(
-                crate::production_identity::execution_identity_for_view(original, &plan.view())
-                    .map_err(|error| {
-                        diagnostics(
-                            DiagnosticCode::Range,
-                            format!("execution identity: {error}"),
-                            None,
-                        )
-                    })?,
-            );
+            settings.execution_identity = Some(settled_identity(&self.execution_identity)?);
         }
         plan.production = production;
         if let Some(settings) = &plan.production {
@@ -7211,9 +7212,11 @@ pub fn compile_bundle_with_limits(
         crate::production_data::prepare_document(&original, &bundle.assets)?;
     resolved.documents.insert(resolved.entry.clone(), document);
     let libraries = LibrarySet::resolve(&resolved)?;
+    let identity = pending_identity(&production, &original, &resolved.entry, Some(&libraries));
     attach_production(
         compile_resolved(&resolved, libraries, limits)?,
         production,
+        &identity,
         &original,
         limits,
     )
@@ -7246,9 +7249,11 @@ pub fn check_bundle_with_limits(
         .values()
         .any(|object| object.kind == "project")
     {
+        let identity = pending_identity(&production, &original, &resolved.entry, Some(&libraries));
         attach_production(
             compile_resolved(&resolved, libraries, limits)?,
             production,
+            &identity,
             &original,
             limits,
         )
@@ -7259,7 +7264,7 @@ pub fn check_bundle_with_limits(
 }
 
 fn local_resolved(document: &Document) -> ResolvedBundle {
-    let entry = "document.maac".to_owned();
+    let entry = LOCAL_SOURCE.to_owned();
     ResolvedBundle {
         entry: entry.clone(),
         documents: BTreeMap::from([(entry.clone(), document.clone())]),
@@ -7311,14 +7316,43 @@ pub fn compile_with_limits(document: &Document, limits: &PlanLimits) -> Result<P
     reject_unresolved_imports(document)?;
     let (prepared, production) =
         crate::production_data::prepare_document(document, &BTreeMap::new())?;
-    let plan = if has_library_syntax(&prepared) {
+    let (plan, identity) = if has_library_syntax(&prepared) {
         let resolved = local_resolved(&prepared);
         let libraries = LibrarySet::resolve(&resolved)?;
-        compile_resolved(&resolved, libraries, limits)?
+        let identity = pending_identity(&production, document, LOCAL_SOURCE, Some(&libraries));
+        (compile_resolved(&resolved, libraries, limits)?, identity)
     } else {
-        Compiler::new(&prepared).run(limits)?
+        let identity = pending_identity(&production, document, LOCAL_SOURCE, None);
+        (Compiler::new(&prepared).run(limits)?, identity)
     };
-    attach_production(plan, production, document, limits)
+    attach_production(plan, production, &identity, document, limits)
+}
+
+/// A bundle's authored entry and the libraries its compilation resolves,
+/// with production extensions and takes prepared as [`compile_bundle`]
+/// prepares them.
+pub(crate) fn bundle_libraries(bundle: &SourceBundle) -> CResult<(String, Document, LibrarySet)> {
+    let mut resolved = bundle.resolve()?;
+    let original = resolved
+        .documents
+        .get(&resolved.entry)
+        .expect("resolved entry exists")
+        .clone();
+    let (document, _) = crate::production_data::prepare_document(&original, &bundle.assets)?;
+    resolved.documents.insert(resolved.entry.clone(), document);
+    let libraries = LibrarySet::resolve(&resolved)?;
+    Ok((resolved.entry, original, libraries))
+}
+
+/// The libraries a document compiled on its own declares; `None` when it
+/// declares none. Production extensions and takes leave its instruments and
+/// effects as written, so they need no assets here.
+pub(crate) fn local_libraries(document: &Document) -> CResult<Option<LibrarySet>> {
+    reject_unresolved_imports(document)?;
+    if !has_library_syntax(document) {
+        return Ok(None);
+    }
+    LibrarySet::resolve(&local_resolved(document)).map(Some)
 }
 
 /// Validate a document through the same resolution path used by [`compile`].
@@ -7360,19 +7394,12 @@ impl FieldValueRef for Field {
 fn attach_production(
     mut plan: Plan,
     mut production: Option<crate::production_data::ProductionSettings>,
+    identity: &PendingIdentity,
     original: &Document,
     limits: &PlanLimits,
 ) -> CResult<Plan> {
     if let Some(settings) = &mut production {
-        settings.execution_identity = Some(
-            crate::production_identity::execution_identity(original, &plan).map_err(|error| {
-                diagnostics(
-                    DiagnosticCode::Range,
-                    format!("execution identity: {error}"),
-                    None,
-                )
-            })?,
-        );
+        settings.execution_identity = Some(settled_identity(identity)?);
     }
     plan.production = production;
     if let Some(settings) = &plan.production {
@@ -7404,8 +7431,10 @@ fn compile_resolved_versioned(
         ));
     }
     {
+        let identity = pending_identity(&production, original, &resolved.entry, Some(&libraries));
         let mut compiler = prepare_instrument_compiler(resolved, libraries, &document)?;
         compiler.allow_ramps = true;
+        compiler.execution_identity = identity;
         compiler.run_versioned(limits, production, original)
     }
 }
@@ -7495,8 +7524,10 @@ fn compile_resolved_artifact(
             None,
         ));
     }
-    prepare_instrument_compiler(resolved, libraries, &document)?
-        .run_artifact(resolved, limits, production, original)
+    let identity = pending_identity(&production, original, &resolved.entry, Some(&libraries));
+    let mut compiler = prepare_instrument_compiler(resolved, libraries, &document)?;
+    compiler.execution_identity = identity;
+    compiler.run_artifact(resolved, limits, production, original)
 }
 
 /// Compile a bundle to a self-contained artifact, including native sample kits.
@@ -7650,6 +7681,7 @@ pub fn compile_versioned_with_limits(
     } else {
         let mut compiler = Compiler::new(&prepared);
         compiler.allow_ramps = true;
+        compiler.execution_identity = pending_identity(&production, document, LOCAL_SOURCE, None);
         compiler.run_versioned(limits, production, document)
     }
 }

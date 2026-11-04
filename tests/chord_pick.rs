@@ -204,8 +204,8 @@ fn one_position_is_a_list_of_one() {
             "",
         );
         let document = parse(&text).unwrap();
-        let plan = compile(&document).unwrap();
-        execution_identity(&document, &plan).unwrap().execution_hash
+        compile(&document).unwrap();
+        execution_identity(&document).unwrap().execution_hash
     };
     assert_eq!(identity("2"), identity("[2]"));
     assert_ne!(identity("2"), identity("3"));

@@ -34,7 +34,7 @@ fn example_resolves_exact_data_and_strips_only_validated_objects() {
     );
     let plan = maac::compile(&document).unwrap();
     settings.execution_identity =
-        Some(maac::production_identity::execution_identity(&original, &plan).unwrap());
+        Some(maac::production_identity::execution_identity(&original).unwrap());
     settings.validate(&plan).unwrap();
     assert_eq!(
         plan.audio_output_channels(&settings.deliveries["release_cd"].targets["master"].output)
@@ -140,9 +140,8 @@ fn plan_boundary_rejects_dangling_input_and_mismatched_master_ports() {
     let (document, settings) = prepared(EXAMPLE).unwrap();
     let plan = maac::compile(&document).unwrap();
     let mut settings = settings;
-    settings.as_mut().unwrap().execution_identity = Some(
-        maac::production_identity::execution_identity(&parse(EXAMPLE).unwrap(), &plan).unwrap(),
-    );
+    settings.as_mut().unwrap().execution_identity =
+        Some(maac::production_identity::execution_identity(&parse(EXAMPLE).unwrap()).unwrap());
     let original_settings = settings.clone().unwrap();
     for (node, port) in [
         ("missing", "out"),
@@ -166,8 +165,7 @@ fn plan_boundary_rejects_dangling_input_and_mismatched_master_ports() {
             1,
         );
         settings.execution_identity = Some(
-            maac::production_identity::execution_identity(&parse(&authored).unwrap(), &plan)
-                .unwrap(),
+            maac::production_identity::execution_identity(&parse(&authored).unwrap()).unwrap(),
         );
         let code = settings.validate(&plan).unwrap_err().code;
         assert_eq!(
@@ -194,9 +192,8 @@ fn plan_boundary_rejects_dangling_input_and_mismatched_master_ports() {
         "role = master;\n            output = &bass_room:out;",
         1,
     );
-    settings.execution_identity = Some(
-        maac::production_identity::execution_identity(&parse(&authored).unwrap(), &plan).unwrap(),
-    );
+    settings.execution_identity =
+        Some(maac::production_identity::execution_identity(&parse(&authored).unwrap()).unwrap());
     assert_eq!(settings.validate(&plan).unwrap_err().code, "E_REFERENCE");
     let mut plan = plan;
     if let maac::plan::Processor::Compressor { channels, .. } = &mut plan
@@ -320,9 +317,8 @@ fn complete_plan_requires_identity_and_rejects_stale_unselected_definitions() {
     let plan = maac::compile(&document).unwrap();
     let mut settings = settings.unwrap();
     assert_eq!(settings.validate(&plan).unwrap_err().code, "E_HASH");
-    settings.execution_identity = Some(
-        maac::production_identity::execution_identity(&parse(EXAMPLE).unwrap(), &plan).unwrap(),
-    );
+    settings.execution_identity =
+        Some(maac::production_identity::execution_identity(&parse(EXAMPLE).unwrap()).unwrap());
     settings.validate(&plan).unwrap();
     let original = settings.clone();
     settings
@@ -419,9 +415,8 @@ fn optional_source_labels_survive_the_generic_object_contract() {
     let (document, settings) = prepared(&source).unwrap();
     let plan = maac::compile(&document).unwrap();
     let mut settings = settings.unwrap();
-    settings.execution_identity = Some(
-        maac::production_identity::execution_identity(&parse(&source).unwrap(), &plan).unwrap(),
-    );
+    settings.execution_identity =
+        Some(maac::production_identity::execution_identity(&parse(&source).unwrap()).unwrap());
     settings.validate(&plan).unwrap();
 }
 

@@ -62,8 +62,8 @@ fn execution_identity(
             .expect("noise source entry"),
     )
     .unwrap();
-    let plan = maac::compile(&document).unwrap();
-    maac::production_identity::execution_identity(&document, &plan).unwrap()
+    maac::compile(&document).unwrap();
+    maac::production_identity::execution_identity(&document).unwrap()
 }
 
 fn processor_json(artifact: &PlanArtifact, node_id: &str) -> Value {

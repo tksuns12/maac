@@ -182,9 +182,10 @@ corpus to `FoundationEditContext`, added source-preserving projection, and added
 source, reruns the complete bounded `SourceBundle` resolver for every candidate, and therefore
 rechecks edited import path/hash declarations, cycles, built-in identities, path containment and
 SHA-256 pins before atomic commit. `for_source` permits Protocol 2 editing of caller-owned reusable
-library sources. Composition preconditions reuse the label-retaining production N(A) normalizer
-when the recognized production extension or `fx.*` descriptors are present; local instrument and
-`synth.* /1` defaults are resolved in their library context. `maac patch --project-root` exposes
+library sources. Both contexts normalize preconditions with `maac::normalization`, the one N(A)
+that the execution hash also covers: an expectation is normalized in its base document's
+context, and one in or naming an instrument or effect takes its defaults from the resolved
+libraries. Production (`fx.*`) nodes need no compilation. `maac patch --project-root` exposes
 this same bundle-aware path while retaining source-preserving projection.
 
 ## Source edits with disk-backed media

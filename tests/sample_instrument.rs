@@ -582,8 +582,8 @@ fn zone_defaults_do_not_change_execution_identity() {
         }
         let mut bundle = bundle;
         bundle.sources.insert("main.maac".into(), source.clone());
-        let plan = compile_bundle(&bundle).unwrap();
-        maac::production_identity::execution_identity(&maac::parse(&source).unwrap(), &plan)
+        compile_bundle(&bundle).unwrap();
+        maac::production_identity::bundle_execution_identity(&bundle)
             .unwrap()
             .execution_hash
     };

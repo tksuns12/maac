@@ -74,7 +74,7 @@ fn fader_defaults_roundtrip_and_accepts_unrestricted_finite_db_levels() {
             .expect("default source entry"),
     )
     .unwrap();
-    let default_plan = maac::compile(&default_document).unwrap();
+    maac::compile(&default_document).unwrap();
     let explicit_bundle = source("0dB", "");
     let explicit_document = maac::parse(
         explicit_bundle
@@ -83,11 +83,11 @@ fn fader_defaults_roundtrip_and_accepts_unrestricted_finite_db_levels() {
             .expect("explicit source entry"),
     )
     .unwrap();
-    let explicit_plan = maac::compile(&explicit_document).unwrap();
+    maac::compile(&explicit_document).unwrap();
     let default_identity =
-        maac::production_identity::execution_identity(&default_document, &default_plan).unwrap();
+        maac::production_identity::execution_identity(&default_document).unwrap();
     let explicit_identity =
-        maac::production_identity::execution_identity(&explicit_document, &explicit_plan).unwrap();
+        maac::production_identity::execution_identity(&explicit_document).unwrap();
     assert_eq!(
         default_identity.execution_hash,
         explicit_identity.execution_hash
