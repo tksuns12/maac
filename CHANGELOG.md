@@ -5,6 +5,20 @@ promise of compatibility beyond the documented interfaces.
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-11-05
+
+The fifth experimental release. Effects move outside instruments: an
+`effect` declaration processes the audio at a node's input behind named
+controls; `synth.balance/1` and `synth.width/1` lean, narrow or widen a
+stereo part; and `synth.delay/1` counts its length in seconds or in beats
+of score time, so an echo stays on the beat through tempo changes. "Rain on
+the Eaves", a gayageum sanjo from the T8 trial, joins the examples. One
+semantic normalization now serves both editing and the execution hash:
+`execution_identity` takes only the document, and the execution hash of a
+document whose instruments use `synth.adsr/1`, `synth.drive/1`,
+`synth.pluck/1`, `synth.modal/1` or `synth.bow/1` changes once, with no
+change to the sound.
+
 ### Added
 
 - Effects ([effects](docs/instruments.md#effects)): an `effect` declaration
