@@ -28,7 +28,9 @@ changes it.
 _Avoid_: source hash, document hash
 
 **Execution hash**:
-The SHA-256 of N(A)'s canonical bytes without display labels. Writing a default
-out or leaving it implicit gives the same execution hash.
+The SHA-256 of N(A)'s canonical bytes without display labels, and without the
+fields the language gained after the hash was defined while they hold their
+defaults. Writing a default out or leaving it implicit gives the same
+execution hash.
 _Avoid_: execution identity (the hash together with the N(A) bytes it covers),
 normalized hash

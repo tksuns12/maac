@@ -564,7 +564,7 @@ A receiver may play connected notes; an instrument whose voice graph holds a `sy
 
 A joined note continues the earlier note's voice instead of starting one. The earlier note receives no note-off. The voice keeps every node's state, takes the joined note's address, base pitch and expressions, which are evaluated on the joined note's own gate, and moves the velocity that scales its output, and that `synth.velocity/1` emits, linearly to the joined note's over 100 ms. Envelopes do not restart.
 
-`slur` is a boolean, default false, and `slide` a duration from 0s to 250ms, default 0s. A slurred note is played in the same stroke as the note it joins; otherwise the receiver re-articulates it without stopping, as a bow change. `slide` moves the pitch from the earlier note over about that time instead of at once. The receiver defines both; [bowed strings](docs/instruments.md#connected-notes-on-a-bowed-string) gives `synth.bow/1`'s. On a note that joins nothing, a true `slur` or a nonzero `slide` is `E_INTERVAL`; on a destination that does not play connected notes, `E_CAPABILITY`. A chord's `slur` and `slide` apply to every member. Semantic normalization (§20.2) omits `slur` and `slide` at their defaults instead of expanding them, so documents written before connected notes keep their execution hash.
+`slur` is a boolean, default false, and `slide` a duration from 0s to 250ms, default 0s. A slurred note is played in the same stroke as the note it joins; otherwise the receiver re-articulates it without stopping, as a bow change. `slide` moves the pitch from the earlier note over about that time instead of at once. The receiver defines both; [bowed strings](docs/instruments.md#connected-notes-on-a-bowed-string) gives `synth.bow/1`'s. On a note that joins nothing, a true `slur` or a nonzero `slide` is `E_INTERVAL`; on a destination that does not play connected notes, `E_CAPABILITY`. A chord's `slur` and `slide` apply to every member. The execution hash (§20.2) leaves out `slur` and `slide` at their defaults, so documents written before connected notes keep their hash.
 
 A receiver that plays connected notes may read each note of a voice's line, its onset, gate, pitch, `slur` and `slide`, up to 500 ms before the note starts, so that a bow can change before the beat and a slide finish on the old bow. Its output at a frame depends on no note that starts more than 500 ms later. Offline rendering is unaffected; a live adapter for such a receiver needs that much latency.
 
@@ -1264,9 +1264,15 @@ incorporates no hidden schema or normalization state.
 The **execution hash** is SHA-256 of canonical JSON bytes for the normalized
 execution graph **N(A)** after removing the optional `label` entry in an actual
 source object's `fields` map and excluding nonexecuting extension data
-identified by an understood explicit schema. It uses the same canonical JSON
-encoding defined above for **A**, with no extra prefix bytes. While traversing
-source objects and their actual children, this label exclusion preserves
+identified by an understood explicit schema. It also leaves out five fields
+at their defaults, which the language gained after this hash was defined, so
+that earlier documents keep their hash: a `note`'s or `chord`'s `slur`
+(false) and `slide` (0 s), a `voice`'s `connected` (false), a `synth.noise/1`
+node's `config.per_note` (false), and a `synth.adsr/1` node's
+`config.on_join` (`hold`), with the `config` record that leaves empty.
+**N(A)** itself expands them like any other default. The hash uses the same
+canonical JSON encoding defined above for **A**, with no extra prefix bytes.
+While traversing source objects and their actual children, this label exclusion preserves
 `label` fields nested in params, config, or other records (including
 `extension.data`), object IDs named `label`, and `override.set.label`. There is
 no name-based recursion through record values; any additional omission requires

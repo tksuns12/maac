@@ -3,7 +3,8 @@
 //! One implementation computes the execution view of an authored document:
 //! specified defaults are expanded, execution units made canonical, and pitch
 //! letters, `ratio` and `bar` lowered. The editing view is N(A) itself; the
-//! execution hash covers [`execution_view`], which drops display labels.
+//! execution hash covers [`execution_view`], which drops display labels and
+//! the fields added after the hash was defined, at their defaults.
 //! Normalization reads the authored document and never changes it.
 //!
 //! Input and output use the typed syntax-tree JSON of §20.1. Defaults come
@@ -186,11 +187,19 @@ pub fn normalize_value(
 
 /// The execution view of an editing view: N(A) without the `label` field of
 /// each source object. A `label` inside a record is data and stays.
+///
+/// The fields added to the language after the execution hash was defined
+/// are left out at their defaults, so that earlier documents keep their
+/// hash: a note's or chord's `slur` and `slide`, a voice's `connected`, a
+/// `synth.noise/1` node's `config.per_note`, and a `synth.adsr/1` node's
+/// `config.on_join` with the config record it leaves empty.
 pub fn execution_view(editing_view: &Value) -> Value {
     fn strip(objects: &mut Map<String, Value>) {
         for object in objects.values_mut() {
+            let kind = object["kind"].as_str().unwrap_or_default().to_owned();
             if let Some(fields) = object.get_mut("fields").and_then(Value::as_object_mut) {
                 fields.remove("label");
+                leave_out_late_defaults(&kind, fields);
             }
             if let Some(children) = object.get_mut("children").and_then(Value::as_object_mut) {
                 strip(children);
@@ -202,6 +211,40 @@ pub fn execution_view(editing_view: &Value) -> Value {
         strip(objects);
     }
     view
+}
+
+fn leave_out_late_defaults(kind: &str, fields: &mut Map<String, Value>) {
+    fn remove_at(fields: &mut Map<String, Value>, name: &str, default: &Value) {
+        if fields.get(name) == Some(default) {
+            fields.remove(name);
+        }
+    }
+    match kind {
+        "note" | "chord" => {
+            remove_at(fields, "slur", &boolean(false));
+            remove_at(fields, "slide", &quantity(0, 1, Unit::S));
+        }
+        "voice" => remove_at(fields, "connected", &boolean(false)),
+        "node" => {
+            let (name, default) = match fields.get("type").and_then(|value| value["v"].as_str()) {
+                Some("synth.noise/1") => ("per_note", boolean(false)),
+                Some("synth.adsr/1") => ("on_join", symbol("hold")),
+                _ => return,
+            };
+            let Some(config) = fields
+                .get_mut("config")
+                .and_then(|config| config.get_mut("fields"))
+                .and_then(Value::as_object_mut)
+            else {
+                return;
+            };
+            remove_at(config, name, &default);
+            if name == "on_join" && config.is_empty() {
+                fields.remove("config");
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Where an object sits, for the nodes beneath it.
@@ -302,20 +345,10 @@ impl<'a> NormalizationContext<'a> {
                     ("onset_offset", quantity(0, 1, Unit::S)),
                     ("release_offset", quantity(0, 1, Unit::S)),
                     ("order", number(0)),
+                    ("slur", boolean(false)),
+                    ("slide", quantity(0, 1, Unit::S)),
                 ] {
                     fields.entry(name).or_insert(value);
-                }
-                // `slur` and `slide` at their defaults are omitted, not
-                // added, so documents written before connected notes keep
-                // their execution hash (§8.3).
-                if fields.get("slur") == Some(&boolean(false)) {
-                    fields.remove("slur");
-                }
-                if fields
-                    .get("slide")
-                    .is_some_and(|slide| slide["t"] == "quantity" && slide["n"] == "0")
-                {
-                    fields.remove("slide");
                 }
                 // A strum strikes one string every 8 ms with no tilt.
                 if fields.contains_key("strum") {
@@ -394,6 +427,9 @@ impl<'a> NormalizationContext<'a> {
                 fields
                     .entry("input")
                     .or_insert_with(|| number(i64::from(effect.input_channels)));
+            }
+            "voice" => {
+                fields.entry("connected").or_insert_with(|| boolean(false));
             }
             "node" => self.node(path, object, &mut fields, scope)?,
             _ => {}
@@ -774,6 +810,7 @@ fn graph_node(
             config
                 .entry("seed")
                 .or_insert_with(|| number(i64::from(crate::graph::DEFAULT_NOISE_SEED)));
+            config.entry("per_note").or_insert_with(|| boolean(false));
         }
         "synth.pluck/1" => {
             config
@@ -798,6 +835,9 @@ fn graph_node(
         "synth.delay/1" => {
             config.entry("clock").or_insert_with(|| symbol("seconds"));
         }
+        "synth.adsr/1" => {
+            config.entry("on_join").or_insert_with(|| symbol("hold"));
+        }
         "synth.sample/1" => crate::sample_instrument::expand_config_defaults(config),
         _ => {}
     }
@@ -808,13 +848,17 @@ fn graph_node(
                 .or_insert_with(|| rational(&spec.default, graph_unit(spec.unit)));
         }
     }
-    Ok(match processor {
-        "synth.sine/1" | "synth.saw/1" | "synth.square/1" | "synth.triangle/1" | "synth.lfo/1"
-        | "synth.pan/1" | "synth.balance/1" | "synth.width/1" => false,
-        // An envelope's config is written only to restart.
-        "synth.adsr/1" => config.get("on_join") == Some(&symbol("restart")),
-        _ => true,
-    })
+    Ok(!matches!(
+        processor,
+        "synth.sine/1"
+            | "synth.saw/1"
+            | "synth.square/1"
+            | "synth.triangle/1"
+            | "synth.lfo/1"
+            | "synth.pan/1"
+            | "synth.balance/1"
+            | "synth.width/1"
+    ))
 }
 
 /// The defaults of a production processor (`fx.*`), as lowered.

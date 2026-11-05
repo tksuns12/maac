@@ -57,11 +57,14 @@ promise of compatibility beyond the documented interfaces.
 ### Fixed
 
 - Writing a default out no longer changes the execution hash: `slur = false`
-  or `slide = 0s` on a note, or a node parameter at its default such as
-  `q = 707/1000` on `synth.svf/1`, now hashes like leaving it out. §8.3 now
-  says that N(A) omits `slur` and `slide` at their defaults, and that only a
-  true `slur` or a nonzero `slide` on a note that joins nothing is
-  `E_INTERVAL`.
+  or `slide = 0s` on a note, `connected = false` on a voice,
+  `per_note = false` on `synth.noise/1`, or a node parameter at its default
+  such as `q = 707/1000` on `synth.svf/1`, now hashes like leaving it out.
+  N(A) expands these like any other default, so an edit may expect them. The
+  execution hash leaves out `slur`, `slide`, `connected`, `per_note` and
+  `synth.adsr/1`'s `on_join` at their defaults, because the language gained
+  them after the hash was defined (§20.2). §8.3 now says that only a true
+  `slur` or a nonzero `slide` on a note that joins nothing is `E_INTERVAL`.
 
 - An edit whose precondition names a node built from `synth.delay/1`,
   `synth.balance/1`, `synth.width/1` or `synth.random/1` no longer fails with

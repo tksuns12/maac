@@ -1,7 +1,8 @@
 //! Semantic normalization N(A) (§20.2): one module computes the execution
 //! view of an authored document. Writing a specified default out and leaving
 //! it implicit give the same N(A); the editing view keeps display labels and
-//! the execution view drops them.
+//! the execution view drops them, with the fields added after the execution
+//! hash was defined while they hold their defaults.
 
 use std::fs;
 use std::path::Path;
@@ -62,7 +63,7 @@ meter metre { points = [(0q, 4, 4)]; }
 instrument tone {
  channels = 1;
  voice v {
-  channels = 1; amplitude = &amp; output = &out_gain:out;
+  channels = 1; amplitude = &amp; output = &out_gain:out; {voice}
   node amp { type = "synth.adsr/1"; params = { release = 100ms; {amp} }; {amp_config} }
   node hiss { type = "synth.noise/1"; {hiss} }
   node pick { type = "synth.pluck/1"; {pick} }
@@ -134,6 +135,7 @@ place bow_go { track = &string_track; pattern = &body_pattern; at = 0q; }
 }
 
 const PLACEHOLDERS: &[&str] = &[
+    "voice",
     "amp_config",
     "amp",
     "hiss",
@@ -158,9 +160,13 @@ const PLACEHOLDERS: &[&str] = &[
 /// Every default each node, instance, effect and note in [`song`] takes,
 /// written out.
 const WRITTEN: &[(&str, &str)] = &[
+    ("voice", "connected = false;"),
     ("amp", "attack = 0s; decay = 0ms; sustain = 1; curve = 0;"),
     ("amp_config", "config = { on_join = hold; };"),
-    ("hiss", "config = { seed = 1831565813; }; params = { level = 1; };"),
+    (
+        "hiss",
+        "config = { seed = 1831565813; per_note = false; }; params = { level = 1; };",
+    ),
     (
         "pick",
         "config = { seed = 1831565813; }; params = { ratio = 1; decay = 3s; damping = 1/2; level = 1; hardness = 1; position = 0; pickup = 0; };",
@@ -218,6 +224,8 @@ fn a_value_away_from_its_default_is_kept() {
         ("section", "params = { vibrato = 5; };"),
         ("body_config", "strings = 2;"),
         ("hiss", "config = { seed = 5; };"),
+        ("hiss", "config = { per_note = true; };"),
+        ("voice", "connected = true;"),
         ("line", "params = { feedback = 1/2; };"),
         ("lean", "params = { balance = 1/2; };"),
         ("note", "slur = true;"),
@@ -232,12 +240,63 @@ fn a_value_away_from_its_default_is_kept() {
     }
 }
 
+/// The fields added to the language after the execution hash was defined:
+/// each object path, the field, and its value away from the default.
+fn late_fields(view: &Value) -> [(&'static str, Option<&Value>); 5] {
+    let note = &view["objects"]["body_pattern"]["children"]["n"]["fields"];
+    let voice = &view["objects"]["tone"]["children"]["v"];
+    let nodes = &voice["children"];
+    [
+        ("slur", note.get("slur")),
+        ("slide", note.get("slide")),
+        ("connected", voice["fields"].get("connected")),
+        (
+            "per_note",
+            nodes["hiss"]["fields"]["config"]["fields"].get("per_note"),
+        ),
+        (
+            "on_join",
+            nodes["amp"]["fields"]
+                .get("config")
+                .and_then(|config| config["fields"].get("on_join")),
+        ),
+    ]
+}
+
 #[test]
-fn slur_and_slide_at_their_defaults_are_omitted() {
-    let normalized = normalized(&song(&[("note", "slur = false; slide = 0ms;")]));
-    let note = &normalized["objects"]["body_pattern"]["children"]["n"]["fields"];
-    assert!(note.get("slur").is_none());
-    assert!(note.get("slide").is_none());
+fn late_fields_are_expanded_like_any_default() {
+    let editing = normalized(&song(&[]));
+    let defaults = [
+        json!({"t":"boolean","v":false}),
+        json!({"t":"quantity","n":"0","d":"1","u":"s"}),
+        json!({"t":"boolean","v":false}),
+        json!({"t":"boolean","v":false}),
+        json!({"t":"symbol","v":"hold"}),
+    ];
+    for ((name, value), default) in late_fields(&editing).into_iter().zip(defaults) {
+        assert_eq!(value, Some(&default), "N(A) expands {name}");
+    }
+}
+
+#[test]
+fn the_execution_view_leaves_out_late_fields_at_their_defaults() {
+    let execution = execution_view(&normalized(&song(WRITTEN)));
+    for (name, value) in late_fields(&execution) {
+        assert_eq!(value, None, "the execution view keeps {name}");
+    }
+    // The holding envelope's config record goes with its only field.
+    let amp = &execution["objects"]["tone"]["children"]["v"]["children"]["amp"];
+    assert!(amp["fields"].get("config").is_none());
+
+    let set = execution_view(&normalized(&song(&[
+        ("note", "slur = true; slide = 30ms;"),
+        ("voice", "connected = true;"),
+        ("hiss", "config = { per_note = true; };"),
+        ("amp_config", "config = { on_join = restart; };"),
+    ])));
+    for (name, value) in late_fields(&set) {
+        assert!(value.is_some(), "{name} away from its default is kept");
+    }
 }
 
 #[test]
@@ -322,8 +381,10 @@ fn a_node_that_takes_config_always_has_a_config_record() {
         omitted,
         "an empty config is the omitted config"
     );
-    // A holding envelope takes no config; one that restarts keeps its own.
-    assert!(voice["amp"]["fields"].get("config").is_none());
+    assert_eq!(
+        voice["amp"]["fields"]["config"]["fields"]["on_join"],
+        json!({"t":"symbol","v":"hold"})
+    );
 }
 
 #[test]
@@ -432,11 +493,53 @@ fn an_effect_with_a_delay_line_is_editable_with_expectations() {
     }
 }
 
+#[test]
+fn an_expectation_of_a_late_field_at_its_default_matches_its_omission() {
+    let source = song(&[("hiss", "config = { seed = 5; };")]);
+    let bundle = SourceBundle::new("main.maac", source.clone());
+    let context = BundleEditContext::new(&bundle).unwrap();
+    let no = json!({"t":"boolean","v":false});
+    for (object, field, value) in [
+        (vec!["body_pattern", "n"], vec!["slur"], no.clone()),
+        (
+            vec!["body_pattern", "n"],
+            vec!["slide"],
+            json!({"t":"quantity","n":"0","d":"1","u":"ms"}),
+        ),
+        (vec!["tone", "v"], vec!["connected"], no.clone()),
+        (
+            vec!["tone", "v", "hiss"],
+            vec!["config", "per_note"],
+            no.clone(),
+        ),
+        (
+            vec!["tone", "v", "amp"],
+            vec!["config"],
+            json!({"t":"record","fields":{"on_join":{"t":"symbol","v":"hold"}}}),
+        ),
+    ] {
+        let mut document = AuthoredDocument::from_document(&maac::parse(&source).unwrap()).unwrap();
+        let transaction = Transaction::new(
+            document.revision().to_owned(),
+            vec![Operation::Set {
+                object: object.iter().map(|id| id.to_string()).collect(),
+                field: field.iter().map(|name| name.to_string()).collect(),
+                value: value.clone(),
+                expect: Some(value),
+                expect_absent: false,
+            }],
+        )
+        .unwrap();
+        apply_transaction(&mut document, &transaction, &context)
+            .unwrap_or_else(|e| panic!("{field:?}: {e:?}"));
+    }
+}
+
 // ---------------------------------------------------------------------------
 // The execution view and hash.
 
 #[test]
-fn the_execution_view_drops_object_labels_only() {
+fn the_execution_view_drops_object_labels_not_record_labels() {
     let source = song(&[]).replace(
         "note n { at = 0q;",
         "note n { label = \"first\"; expression e { kind = gain; curve = &swell; label = \"rise\"; } at = 0q;",
