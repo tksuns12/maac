@@ -5,6 +5,17 @@ promise of compatibility beyond the documented interfaces.
 
 ## [Unreleased]
 
+### Added
+
+- "Low Tide" ([`examples/dub/dub.maac`](examples/dub/dub.maac)), a roots dub
+  from the [T9 production trial](docs/reports/ai-production-trial-t9.md), the
+  first trial on 0.5.0's effects. The desk plays the dub. A sweep runs on the
+  drum bus. The tape echo's time is written in beats and changes in beats.
+  Its returns swing across the stereo field. A feedback loop in the project
+  graph darkens each repeat and runs away. The report ranks desk moves that
+  travel with the music next: every throw and drop-out is now one curve over
+  the whole song at positions counted by hand.
+
 ### Fixed
 
 - A note or hit that a timing check rejects is named, as §23 requires (T9's

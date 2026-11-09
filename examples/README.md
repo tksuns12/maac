@@ -553,6 +553,36 @@ The release delivery measured −16.16 LUFS and −1.10 dBTP and passed its
 limits. In a blind round the owner preferred this steady quickening to a
 version whose slow section pushed and pulled: "a somehow felt natural".
 
+# Low Tide: a roots dub
+
+[`dub/dub.maac`](dub/dub.maac) is a three-minute dub in G minor at 74 bpm
+for drums, bass, guitar, organ, melodica and siren. An AI wrote it directly
+in MaaC during the
+[T9 production trial](../docs/reports/ai-production-trial-t9.md):
+
+- a one-drop riddim. The guitar's skank and the organ's bubble come from
+  one `harmony` through two `voicings`. The drums, bass, guitar and organ
+  are std/studio/1.2.0's and std/basic/1.1.0's. The melodica and the siren
+  are built in the song;
+- the desk as effects. A sweep runs on the drum bus. A tape echo on the
+  score clock changes from a dotted eighth to an eighth and back, and a
+  score-clock LFO swings its returns across the stereo field;
+- a feedback loop in the project graph, broken by one frame of
+  `core.delay/1`. Each pass darkens and thins the repeats, and above unity
+  gain the echo runs away until the desk cuts it back;
+- the dub's moves as global curves: drop-outs, 27 throws into the echo and
+  three runaways, at positions counted by hand. The report's F68 is about
+  that.
+
+```sh
+maac build examples/dub/dub.maac --profile song -o low-tide.wav --format pcm16
+maac analyze examples/dub/dub.maac --profile song --section regions
+maac deliver examples/dub/dub.maac --delivery release --output-dir out --profile song
+```
+
+The release delivery measured −17.42 LUFS and −1.10 dBTP and passed its
+limits.
+
 # Audio inside patterns
 
 [`pattern-audio.maac`](pattern-audio.maac) builds a one-bar drum loop from
