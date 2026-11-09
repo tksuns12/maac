@@ -184,8 +184,9 @@ The owner accepted this order on 2026-11-09.
    the music is. A throw could be named as a `vibrato` or a `phrase` is,
    and placed with a hit, a pattern or a placement. Several moves on one
    parameter would then combine instead of conflicting. A proposal can
-   start from version 3's 99 points and the `reed_b` case. F67, a small
-   bug, was fixed after the trial.
+   start from version 3's 99 points and the `reed_b` case. The
+   [desk moves proposal](../design/desk-moves-proposal.md) does this.
+   F67, a small bug, was fixed after the trial.
 2. **Feedback inside effects (F70).** An effect that holds a loop, broken
    by a delay, so that a tape echo that wears and runs away is one
    library effect.
