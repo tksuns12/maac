@@ -206,10 +206,11 @@ fn source_vectors() -> Vec<Vector> {
         ),
         vector(
             AutomationWriter,
-            "node fader { type = \"core.fader/1\"; config = { channels = 1; }; }\ncurve c { clock = score; points = [(0q, 0dB, step)]; }\nautomation a { target = &fader.params.level; curve = &c; at = 0q; }\nautomation b { target = &fader.params.level; curve = &c; at = 2q; }",
+            // Two automations on one parameter that overlap in time (§12).
+            "node fader { type = \"core.fader/1\"; config = { channels = 1; }; }\nconnect tone_fader { from = &tone:out; to = &fader:in; }\nconnect fader_out { from = &fader:out; to = &master:in; }\ncurve c { clock = score; points = [(0q, 0dB, linear), (2q, -6dB, step)]; }\nautomation a { target = &fader.params.level; curve = &c; at = 0q; }\nautomation b { target = &fader.params.level; curve = &c; at = 1q; }",
             &["b"],
-            &["target"],
-            "&fader.params.level",
+            &["at"],
+            "at = 1q",
         ),
         vector(
             Capability,

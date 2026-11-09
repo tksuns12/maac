@@ -224,7 +224,7 @@ fn rejects_unknown_kinds_and_fields_with_stable_codes() {
 }
 
 #[test]
-fn validates_units_references_curves_and_single_automation_writer() {
+fn validates_units_references_and_curves() {
     let wrong_unit = base(
         r#"node filter { type = "core.onepole/1"; config = { channels = 1; }; params = { cutoff = 500ms; }; }
 connect filter_to_master { from = &filter:out; to = &master:in; }
@@ -239,9 +239,10 @@ automation a { target = &filter.params.cutoff; curve = &c; at = 0q; }
 automation b { target = &filter.params.cutoff; curve = &c; at = 2q; }
 "#,
     );
+    // Two automations on one parameter that do not overlap are valid (§12).
     let diagnostics = codes(&bad_curve);
     assert!(diagnostics.contains(&DiagnosticCode::Range));
-    assert!(diagnostics.contains(&DiagnosticCode::AutomationWriter));
+    assert!(!diagnostics.contains(&DiagnosticCode::AutomationWriter));
 }
 
 #[test]

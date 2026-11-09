@@ -1,7 +1,8 @@
 # Desk moves with the music: proposal
 
 **Status:** accepted 2026-11-09, when the owner took every recommended
-[decision](#decisions).
+[decision](#decisions), and landed the same day (see
+[Implementation notes](#implementation-notes)).
 This is item 1 of
 [what to build next](../reports/ai-production-trial-t9.md#what-to-build-next-in-order)
 after the T9 trial, and it closes F68.
@@ -97,10 +98,10 @@ place snare_main {
   after expansion, stretch, phrases, groove and overrides. Physical
   offsets, including `vary`'s timing, do not move it; a negative `at`
   covers them.
-- **An event that is not there** is `E_REFERENCE` at the automation's
-  `event`. This covers an address that names no event, an event that an
-  override deletes, and a repetition that a smaller `count` removes, as for
-  a dangling override.
+- **An event that is not there** is `E_INSTANCE_TARGET` at the
+  automation's `event`. This covers an address that names no event, an
+  event that an override deletes, and a repetition that a smaller `count`
+  removes, as for a dangling override.
 - **One rule for all moves.** Part 1's overlap rule covers every
   automation on a parameter, whether global or in a placement.
 - **Lowered.** The compiler gives each automation in a placement its
@@ -144,7 +145,7 @@ Every other song is unchanged and renders bit-identically.
   automations by 4q. A groove or override that moves an event moves its
   throw.
 - **Refused.** An overlap is `E_AUTOMATION_WRITER` at the later
-  automation. An `event` that names nothing is `E_REFERENCE`.
+  automation. An `event` that names nothing is `E_INSTANCE_TARGET`.
 - **Unchanged.** Every existing example, fixture and trial song renders
   bit-identically. Documents with one automation per parameter keep their
   plan bytes and execution hashes.
@@ -217,3 +218,24 @@ The owner accepted every recommendation on 2026-11-09 ("yes").
    event's micro-timing from `vary`.
 4. **Listening:** none, since version 4 renders sample for sample as
    version 3 (recommended). Then F70.
+
+## Implementation notes
+
+Landed 2026-11-09.
+
+- **The error for a missing event.** This proposal first said
+  `E_REFERENCE`, "as for a dangling override". A dangling override is
+  `E_INSTANCE_TARGET`, so an automation whose `event` names nothing is
+  `E_INSTANCE_TARGET` too.
+- **Inserted events.** An `event` can also name an insert's event,
+  `insert_id/leaf_id`, which an override cannot.
+- **Clocks.** Automations on one parameter are compared exactly on the
+  physical timeline, so a seconds-clock move and a score-clock move on one
+  parameter follow the same overlap rule.
+- **Plan IDs.** An automation in a placement becomes a plan lane named
+  `placement_id__automation_id`.
+- **"Low Tide" version 4.** Its desk has 14 curves of 33 points. Its 27
+  throws are automations in 7 placements, and its sweeps, drop-outs,
+  runaways, tape speed and fade are 14 global automations. Version 3's desk
+  had 11 curves of 99 points. The two versions' release masters have the
+  same SHA-256.

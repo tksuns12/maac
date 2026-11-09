@@ -345,6 +345,19 @@ physical seconds under `T`. Relative point positions begin at zero. Before the
 anchor, the authored base parameter applies. During the tail, all automation
 holds its exact score-end value.
 
+Several lanes may target one parameter, in any order in the array, as long as
+they do not overlap in time
+([§12](../MaaC-1-Specification.md#12-curves-and-parameter-automation)). A
+lane spans from its anchor instant to its last point's. Validation compares
+the lanes on one parameter exactly on the physical timeline and refuses, with
+`E_AUTOMATION_WRITER` at `automation[i].at` of the later one, a lane that
+starts before the one before it ends or at the same instant. The renderer
+plays the lane with the latest anchor at or before each frame, so each lane's
+final value holds until the next lane starts. A compiler lowers an automation
+written in a placement to a lane with a q anchor and the ID
+`placement_id__automation_id`. A renderer that predates several lanes on one
+parameter refuses them with `E_AUTOMATION_WRITER`.
+
 Instrument automation targets only public controls and inherits each underlying
 parameter's unit, range, and rate. Sample-rate parameters evaluate every frame;
 note-on parameters are captured at note-on, and release is captured at note-off.

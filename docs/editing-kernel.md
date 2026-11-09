@@ -85,8 +85,9 @@ The context must provide all of the following, within its declared supported
 capabilities and resource limits:
 
 1. Complete source semantic validation, including references, types, required
-   fields, temporal constraints, pattern cycles, occurrence overrides, writer
-   uniqueness, graph causality and applicable dependencies.
+   fields, temporal constraints, pattern cycles, the occurrences that
+   overrides and placement automations name, writer conflicts, graph
+   causality and applicable dependencies.
 2. Fixed-base object normalization with specified defaults and **labels retained**.
 3. Fixed-base field normalization in the actual source type, meter, name and
    dependency context. Do not use audible equivalence or candidate context.

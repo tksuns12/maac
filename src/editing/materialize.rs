@@ -650,6 +650,27 @@ pub(super) fn prepare(
                 }
                 copied_place["children"][child_id] = copied;
             }
+            // An automation keeps its position: one at the placement's `at`
+            // stays, and one that names an event follows it to its copy.
+            // Inserted events keep their addresses.
+            Some("automation") => {
+                let mut copied = child.clone();
+                if let Some(event) = child["fields"]["event"]["v"].as_str() {
+                    let old_address = format!("{placement_id}/{event}");
+                    if let Some(new_address) = replacements.get(&old_address) {
+                        copied["fields"]["event"] = json!({"t":"string","v":new_address.strip_prefix(&format!("{placement_id}/")).expect("local mapping")});
+                    } else if !place["children"]
+                        .get(event.split_once('/').map_or("", |(insert, _)| insert))
+                        .is_some_and(|insert| insert["kind"] == "insert")
+                    {
+                        return Err(EditError::new(
+                            "E_INSTANCE_TARGET",
+                            "automation has no materialized event mapping",
+                        ));
+                    }
+                }
+                copied_place["children"][child_id] = copied;
+            }
             Some("insert") => {
                 let mut copied = child.clone();
                 for (leaf_id, leaf) in copied["children"]

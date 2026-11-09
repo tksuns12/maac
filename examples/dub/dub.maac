@@ -6,6 +6,9 @@ maac 1;
 // desk plays the dub: it drops parts out and back in, throws single hits into
 // a tape echo whose repeats darken and swing across the stereo field, lets the
 // echo run away and cuts it back, sweeps the drums, and cries with a siren.
+// Version 4 writes each throw in the placement of the hit it throws, and
+// renders sample for sample as version 3, whose throws were points counted
+// by hand in one curve per send (T9's F68).
 //
 //    0q  intro: drums through a closing low-pass that opens, siren
 //   16q  riddim_a: the full riddim and the melodica
@@ -361,20 +364,55 @@ track reed_notes { target = &reed:events; }
 track wail_notes { target = &wail:events; }
 
 // The riddim runs from the end of the intro to the outro; the drums from the top.
+// Each throw is written with the hit it throws, named by its repetition and leaf.
 place drums_intro { pattern = &one_drop; track = &kit_hits; at = 0q; count = 4; groove = &lilt; }
 place drums_main { pattern = &one_drop; track = &kit_hits; at = 16q; count = 36; vary = &hands; groove = &lilt; }
 place drums_steppers { pattern = &steppers; track = &kit_hits; at = 160q; count = 13; vary = &hands; groove = &lilt; }
-place snare_intro { pattern = &drop_snare; track = &snare_notes; at = 0q; count = 4; vary = &hands; }
-place snare_main { pattern = &drop_snare_ghost; track = &snare_notes; at = 16q; count = 49; vary = &hands; groove = &lilt; }
+place snare_intro { pattern = &drop_snare; track = &snare_notes; at = 0q; count = 4; vary = &hands;
+  automation bar_3 { event = "2/s"; target = &snare_send.params.gain; curve = &snare_throw; }
+}
+place snare_main { pattern = &drop_snare_ghost; track = &snare_notes; at = 16q; count = 49; vary = &hands; groove = &lilt;
+  automation bar_14 { event = "9/s"; target = &snare_send.params.gain; curve = &snare_throw; }
+  automation bar_18 { event = "13/s"; target = &snare_send.params.gain; curve = &snare_throw; }
+  automation bar_19 { event = "14/s"; target = &snare_send.params.gain; curve = &snare_throw; }
+  automation bar_20 { event = "15/s"; target = &snare_send.params.gain; curve = &snare_throw; }
+  automation bar_30 { event = "25/s"; target = &snare_send.params.gain; curve = &snare_throw; }
+  automation bar_32 { event = "27/s"; target = &snare_send.params.gain; curve = &snare_throw; }
+  automation bar_36 { event = "31/s"; target = &snare_send.params.gain; curve = &snare_throw; }
+  automation bar_38 { event = "33/s"; target = &snare_send.params.gain; curve = &snare_throw; }
+  automation bar_52 { event = "47/s"; target = &snare_send.params.gain; curve = &snare_throw; }
+}
 place bass_main { pattern = &bass_line; track = &bass_notes; at = 16q; count = 12; vary = &hands; }
 place bass_end { pattern = &bass_line; track = &bass_notes; at = 208q; count = 1; vary = &hands; }
-place guitar_main { pattern = &skank; track = &guitar_notes; at = 16q; count = 13; harmony = &riddim; voicings = &skank_voicings; vary = &hands; }
-place guitar_last { pattern = &last_chord; track = &guitar_notes; at = 218q; harmony = &riddim; voicings = &skank_voicings; }
+place guitar_main { pattern = &skank; track = &guitar_notes; at = 16q; count = 13; harmony = &riddim; voicings = &skank_voicings; vary = &hands;
+  automation bar_15 { event = "2/c6.0"; target = &guitar_send.params.gain; curve = &skank_throw; }
+  automation bar_16 { event = "2/c8.0"; target = &guitar_send.params.gain; curve = &skank_throw; }
+  automation bar_39 { event = "8/c6.0"; target = &guitar_send.params.gain; curve = &skank_throw; }
+  automation bar_40 { event = "8/c8.0"; target = &guitar_send.params.gain; curve = &skank_throw; }
+}
+place guitar_last { pattern = &last_chord; track = &guitar_notes; at = 218q; harmony = &riddim; voicings = &skank_voicings;
+  automation into_echo { event = "0/c.0"; target = &guitar_send.params.gain; curve = &skank_throw; }
+}
 place organ_main { pattern = &bubble; track = &organ_notes; at = 16q; count = 11; harmony = &riddim; voicings = &bubble_voicings; vary = &hands; groove = &lilt; }
 place organ_end { pattern = &bubble; track = &organ_notes; at = 192q; count = 1; harmony = &riddim; voicings = &bubble_voicings; vary = &hands; groove = &lilt; }
-place reed_a { pattern = &melody_a; track = &reed_notes; at = 16q; vary = &hands; }
-place reed_b { pattern = &melody_b; track = &reed_notes; at = 80q; vary = &hands; }
-place reed_c { pattern = &melody_a; track = &reed_notes; at = 160q; vary = &hands; }
+place reed_a { pattern = &melody_a; track = &reed_notes; at = 16q; vary = &hands;
+  automation end_1 { event = "0/n8"; target = &reed_send.params.gain; curve = &reed_throw; }
+  automation end_2 { event = "0/n17"; target = &reed_send.params.gain; curve = &reed_throw; }
+  automation end_3 { event = "0/n26"; target = &reed_send.params.gain; curve = &reed_throw; }
+  automation end_4 { event = "0/n35"; target = &reed_send.params.gain; curve = &reed_throw; }
+}
+place reed_b { pattern = &melody_b; track = &reed_notes; at = 80q; vary = &hands;
+  automation end_1 { event = "0/n9"; target = &reed_send.params.gain; curve = &reed_throw; }
+  automation end_2 { event = "0/n18"; target = &reed_send.params.gain; curve = &reed_throw; }
+  automation end_3 { event = "0/n27"; target = &reed_send.params.gain; curve = &reed_throw; }
+  automation end_4 { event = "0/n37"; target = &reed_send.params.gain; curve = &reed_throw; }
+}
+place reed_c { pattern = &melody_a; track = &reed_notes; at = 160q; vary = &hands;
+  automation end_1 { event = "0/n8"; target = &reed_send.params.gain; curve = &reed_throw; }
+  automation end_2 { event = "0/n17"; target = &reed_send.params.gain; curve = &reed_throw; }
+  automation end_3 { event = "0/n26"; target = &reed_send.params.gain; curve = &reed_throw; }
+  automation end_4 { event = "0/n35"; target = &reed_send.params.gain; curve = &reed_throw; }
+}
 place wail_intro { pattern = &sirens; track = &wail_notes; at = 6q; }
 place wail_dub { pattern = &sirens; track = &wail_notes; at = 136q; count = 2; }
 place wail_out { pattern = &sirens; track = &wail_notes; at = 204q; }
@@ -458,60 +496,44 @@ connect glue_trim { from = &glue:out; to = &trim:in; }
 connect trim_master { from = &trim:out; to = &master:in; }
 
 // ---------------------------------------------------------------- the dub
-// Every desk move is one curve per parameter over the whole song, on the
-// score clock from 0q, at positions counted by hand (T9's F68): a throw opens
-// a send for one hit and closes it.
+// The desk's moves. A throw opens a send for one hit and closes it; each is
+// written in its placement, naming the hit it throws, so it moves with the
+// music. Its level is its curve's.
+curve snare_throw { clock = score; points = [(0q, 5/2, step), (1/2q, 0, step)]; }
+curve skank_throw { clock = score; points = [(0q, 2, step), (1/4q, 0, step)]; }
+curve reed_throw { clock = score; points = [(0q, 0.8, step), (2q, 0, step)]; }
 
 // The intro opens the drums' low-pass; dub 2 sweeps the high-pass up and down.
 curve sweep_low { clock = score; points = [(0q, 300Hz, exponential), (16q, 18000Hz, step)]; }
 automation open_drums { target = &drum_sweep.params.low; curve = &sweep_low; at = 0q; }
-curve sweep_high { clock = score; points = [(0q, 20Hz, step), (128q, 20Hz, exponential), (144q, 1500Hz, exponential), (156q, 20Hz, step)]; }
-automation thin_drums { target = &drum_sweep.params.high; curve = &sweep_high; at = 0q; }
+curve sweep_high { clock = score; points = [(0q, 20Hz, exponential), (16q, 1500Hz, exponential), (28q, 20Hz, step)]; }
+automation thin_drums { target = &drum_sweep.params.high; curve = &sweep_high; at = 128q; }
 
-// Drop-outs.
-curve bass_moves { clock = score; points = [(0q, 1, step), (64q, 0, step), (72q, 1, step), (112q, 1, step), (136q, 0, step), (144q, 1, step)]; }
-automation bass_drops { target = &bass_fader.params.gain; curve = &bass_moves; at = 0q; }
-curve guitar_moves { clock = score; points = [(0q, 1, step), (48q, 0, step), (56q, 1, step), (64q, 0, step), (80q, 1, step), (112q, 0, step), (152q, 1, step)]; }
-automation guitar_drops { target = &guitar_fader.params.gain; curve = &guitar_moves; at = 0q; }
-curve organ_moves { clock = score; points = [(0q, 1, step), (48q, 0, step), (76q, 1, step), (112q, 0, step), (160q, 1, step)]; }
-automation organ_drops { target = &organ_fader.params.gain; curve = &organ_moves; at = 0q; }
-
-// Throws: the snare on beat three of chosen bars, the skank on beat four,
-// the melodica's held notes at the ends of its phrases.
-curve snare_throws { clock = score; points = [
-  (0q, 0, step), (10q, 5/2, step), (21/2q, 0, step),
-  (54q, 5/2, step), (109/2q, 0, step), (70q, 5/2, step), (141/2q, 0, step),
-  (74q, 5/2, step), (149/2q, 0, step), (78q, 5/2, step), (157/2q, 0, step),
-  (118q, 5/2, step), (237/2q, 0, step), (126q, 5/2, step), (253/2q, 0, step),
-  (142q, 5/2, step), (285/2q, 0, step), (150q, 5/2, step), (301/2q, 0, step),
-  (206q, 5/2, step), (413/2q, 0, step)]; }
-automation snare_throw { target = &snare_send.params.gain; curve = &snare_throws; at = 0q; }
-curve guitar_throws { clock = score; points = [
-  (0q, 0, step), (59q, 2, step), (237/4q, 0, step), (63q, 2, step), (253/4q, 0, step),
-  (155q, 2, step), (621/4q, 0, step), (159q, 2, step), (637/4q, 0, step),
-  (218q, 2, step), (873/4q, 0, step)]; }
-automation guitar_throw { target = &guitar_send.params.gain; curve = &guitar_throws; at = 0q; }
-curve reed_throws { clock = score; points = [
-  (0q, 0, step), (22q, 0.8, step), (24q, 0, step), (30q, 0.8, step), (32q, 0, step),
-  (38q, 0.8, step), (40q, 0, step), (46q, 0.8, step), (48q, 0, step),
-  (86q, 0.8, step), (88q, 0, step), (94q, 0.8, step), (96q, 0, step),
-  (102q, 0.8, step), (104q, 0, step), (110q, 0.8, step), (112q, 0, step),
-  (166q, 0.8, step), (168q, 0, step), (174q, 0.8, step), (176q, 0, step),
-  (182q, 0.8, step), (184q, 0, step), (190q, 0.8, step), (192q, 0, step)]; }
-automation reed_throw { target = &reed_send.params.gain; curve = &reed_throws; at = 0q; }
+// Drop-outs: a part leaves for some bars and comes back.
+curve out_2_bars { clock = score; points = [(0q, 0, step), (8q, 1, step)]; }
+curve out_4_bars { clock = score; points = [(0q, 0, step), (16q, 1, step)]; }
+curve out_7_bars { clock = score; points = [(0q, 0, step), (28q, 1, step)]; }
+curve out_10_bars { clock = score; points = [(0q, 0, step), (40q, 1, step)]; }
+curve out_12_bars { clock = score; points = [(0q, 0, step), (48q, 1, step)]; }
+automation bass_out_dub_1 { target = &bass_fader.params.gain; curve = &out_2_bars; at = 64q; }
+automation bass_out_dub_2 { target = &bass_fader.params.gain; curve = &out_2_bars; at = 136q; }
+automation guitar_out_dub_1 { target = &guitar_fader.params.gain; curve = &out_2_bars; at = 48q; }
+automation guitar_out_dub_1_again { target = &guitar_fader.params.gain; curve = &out_4_bars; at = 64q; }
+automation guitar_out_dub_2 { target = &guitar_fader.params.gain; curve = &out_10_bars; at = 112q; }
+automation organ_out_dub_1 { target = &organ_fader.params.gain; curve = &out_7_bars; at = 48q; }
+automation organ_out_dub_2 { target = &organ_fader.params.gain; curve = &out_12_bars; at = 112q; }
 
 // The echo runs away at the ends of the dubs and in the outro, then is cut
 // back; in dub 2 the tape speeds up to an eighth and slows back.
-curve echo_feedback { clock = score; points = [
-  (0q, 0.55, step), (72q, 0.55, linear), (78q, 1.15, step), (80q, 0.55, step),
-  (152q, 0.55, linear), (158q, 1.15, step), (160q, 0.55, step),
-  (216q, 0.55, linear), (221q, 1.12, step), (222q, 0.75, step)]; }
-automation echo_swell { target = &regen.params.gain; curve = &echo_feedback; at = 0q; }
-curve echo_time { clock = score; points = [
-  (0q, 3/4q, step), (132q, 3/4q, linear), (134q, 1/2q, step), (146q, 1/2q, linear), (148q, 3/4q, step)]; }
-automation echo_speed { target = &echo.params.time; curve = &echo_time; at = 0q; }
-curve echo_level { clock = score; points = [(0q, 1, step), (222q, 1, linear), (224q, 0.6, step)]; }
-automation echo_fade { target = &echo_return.params.gain; curve = &echo_level; at = 0q; }
+curve runaway { clock = score; points = [(0q, 0.55, linear), (6q, 1.15, step), (8q, 0.55, step)]; }
+curve last_runaway { clock = score; points = [(0q, 0.55, linear), (5q, 1.12, step), (6q, 0.75, step)]; }
+automation runaway_dub_1 { target = &regen.params.gain; curve = &runaway; at = 72q; }
+automation runaway_dub_2 { target = &regen.params.gain; curve = &runaway; at = 152q; }
+automation runaway_outro { target = &regen.params.gain; curve = &last_runaway; at = 216q; }
+curve speed_up { clock = score; points = [(0q, 3/4q, linear), (2q, 1/2q, step), (14q, 1/2q, linear), (16q, 3/4q, step)]; }
+automation echo_speed { target = &echo.params.time; curve = &speed_up; at = 132q; }
+curve fade { clock = score; points = [(0q, 1, linear), (2q, 0.6, step)]; }
+automation echo_fade { target = &echo_return.params.gain; curve = &fade; at = 222q; }
 
 // ---------------------------------------------------------------- delivery
 asset schema { kind = descriptor; builtin = "maac.production/1"; }

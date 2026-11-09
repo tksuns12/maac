@@ -17,8 +17,8 @@ UTF-8 byte ranges; they refer to the original authored source.
 | `E_TEMPO`, `E_METER_BOUNDARY` | Use a positive ordered tempo map and meter changes at bar boundaries |
 | `E_SUBSAMPLE_NOTE` | The positive physical gate collapses to one frame boundary; author a longer gate |
 | `E_PATTERN_CYCLE` | Remove recursive pattern references |
-| `E_INSTANCE_TARGET` | Correct an occurrence address after a structural edit |
-| `E_AUTOMATION_WRITER` | Combine replacement lanes into one curve per parameter |
+| `E_INSTANCE_TARGET` | Correct an override's or a placement automation's occurrence address after a structural edit |
+| `E_AUTOMATION_WRITER` | Move an automation so that it starts after the one before it on the parameter ends, or join the two into one curve |
 | `E_CAPABILITY` | The declared feature is outside the foundation capability set |
 | `E_PORT_TYPE`, `E_ALGEBRAIC_LOOP` | Correct channel/port/cardinality mismatches or cyclic routing |
 | `E_VOICE_LIMIT` | Increase declared capacity within bounds or reduce overlapping notes or one-shot sample lifetimes |

@@ -431,6 +431,13 @@ impl<'a> NormalizationContext<'a> {
             "voice" => {
                 fields.entry("connected").or_insert_with(|| boolean(false));
             }
+            // An automation in a placement starts at the placement or at the
+            // event it names; a global automation always writes its `at`.
+            "automation" => {
+                fields
+                    .entry("at")
+                    .or_insert_with(|| quantity(0, 1, Unit::Q));
+            }
             "node" => self.node(path, object, &mut fields, scope)?,
             _ => {}
         }

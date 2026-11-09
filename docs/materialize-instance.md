@@ -47,6 +47,9 @@ Existing overrides keep their final-state replacements, with their event targets
 redirected to the copied occurrences. A deleted occurrence still has an address
 mapping and remains deleted. Inserts stay beneath the placement and still occur
 once in placement-local coordinates; they are not repeated with the new pattern.
+An automation in the placement keeps its position: one timed from the
+placement's `at` is unchanged, and one that names an event names the copied
+occurrence instead, so it still starts at that event's final onset.
 
 ## Address mapping and identity
 

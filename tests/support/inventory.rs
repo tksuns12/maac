@@ -114,7 +114,7 @@ pub const KINDS: &[Kind] = &[
         minimal: "pattern = &cell; track = &lead; at = 0q;",
         full: r#"pattern = &cell; track = &lead; at = 1q; count = 2; stretch = 1/2; transpose = 100ct; boundary = cut; label = "p";"#,
         required: &["pattern", "track", "at"],
-        children: &["override", "insert"],
+        children: &["override", "insert", "automation"],
     },
     Kind {
         name: "curve",
@@ -258,6 +258,16 @@ pub const KINDS: &[Kind] = &[
         minimal: r#"event = "0/n"; delete = true;"#,
         full: r#"event = "0/n"; set = { velocity = 1/2; }; label = "o";"#,
         required: &["event"],
+        children: &[],
+    },
+    // §12.1: an automation in a placement, timed from it or one of its events.
+    Kind {
+        name: "place_automation",
+        kind: "automation",
+        location: Location::Place,
+        minimal: "target = &synth.params.level; curve = &level_shape;",
+        full: r#"target = &synth.params.level; curve = &level_shape; event = "0/n"; at = -1/4q; label = "a";"#,
+        required: &["target", "curve"],
         children: &[],
     },
     Kind {

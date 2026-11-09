@@ -233,7 +233,7 @@ by that extension. Other top-level kinds in a core composition are:
 | `region` | Named score interval, without playback behavior |
 | `extension` | Namespaced data governed by a required external schema |
 
-Nested pattern kinds are `note`, `chord` (§8.2), `hit`, `message`, `audio` (§9.1), `use`, and `phrase` (§9.3). A `note` may contain `expression`. A `place` may contain `override` and `insert`. An `insert` contains exactly one `note`, `hit`, `message`, or `audio`. These nesting locations are exclusive unless an extension schema explicitly adds another location.
+Nested pattern kinds are `note`, `chord` (§8.2), `hit`, `message`, `audio` (§9.1), `use`, and `phrase` (§9.3). A `note` may contain `expression`. A `place` may contain `override`, `insert` and `automation` (§12.1). An `insert` contains exactly one `note`, `hit`, `message`, or `audio`. These nesting locations are exclusive unless an extension schema explicitly adds another location.
 
 All objects may carry the optional string field `label`. No other implicit fields exist. The field definitions below specify defaults. Defaults are expanded into the normalized source graph, not silently chosen by a host.
 
@@ -797,7 +797,7 @@ place bass_main {
 }
 ```
 
-A `place` has the same repetition, transformation, `voicing`, `harmony` and `voicings` fields as `use`, plus required `track` and optional `groove` (§9.2) and `vary` (§9.4) references. Its `at` is a global score position. Its occupied repetition span must fit within the project score. Each expanded leaf carries a structured event address:
+A `place` has the same repetition, transformation, `voicing`, `harmony` and `voicings` fields as `use`, plus required `track` and optional `groove` (§9.2) and `vary` (§9.4) references. Its children are overrides and inserts (§11) and automations (§12.1). Its `at` is a global score position. Its occupied repetition span must fit within the project score. Each expanded leaf carries a structured event address:
 
 `(placement_id, repetition_index, [use_id, repetition_index ...], leaf_id)`.
 
@@ -836,6 +836,8 @@ This final-state rule makes local patches inspectable: replacing the pitch with 
 
 An `insert` adds one new leaf to a placement, in placement-local final q coordinates. Its child may include note expression. It is not repeated automatically. The inserted event address is `insert_id/leaf_id`, in a disjoint address form whose first component is an identifier rather than a repetition integer.
 
+An `automation` in a placement is timed from the placement or from one of its events, and is described in §12.1.
+
 For complex per-occurrence expression changes, `materialize-instance` creates an explicit new pattern for the selected placement, preserving a source-address mapping, then redirects that placement. This is an explicit authoring operation, never an automatic consequence of moving a note in a piano roll. Sharing is broken only by a declared edit.
 
 ## 12. Curves and parameter automation
@@ -871,7 +873,30 @@ An `automation` targets a node parameter and references a score- or seconds-cloc
 
 For `x < 0`, the node's base parameter applies. At `x = 0`, point zero applies by right continuity; after the last point, the final point value holds. The `t*` clamp is only for global automation: audio transports and seconds-clock LFOs continue on physical time and retain their existing contracts. There is no additional anchor bound; an anchor may precede the reset origin. If the physical anchor instant—`T(at_q)` for a q anchor or `at_s` for a seconds anchor—is after `E`, global automation remains at its base value throughout the tail; if that physical anchor instant equals `E`, point zero applies there by right continuity.
 
-There is at most one global replacement automation per parameter. No “last writer wins,” track-order priority, or overlapping-lane blend is implied. Multiple desired segments are represented as one curve. Missing endpoints and undeclared crossfades must not be invented by a host.
+A parameter may have several automations, as long as they do not overlap in time. An automation spans from its physical anchor instant to the instant of its last point: from `T(at_q)` to `T(at_q + x_last)` for a score clock, and from `T(at_q)` or `at_s` to that instant plus `x_last` for a seconds clock. On one parameter, each automation starts at or after the end of the one before it, and no two start at the same instant; otherwise the later one is `E_AUTOMATION_WRITER`. Automations on different clocks are compared on this physical timeline. At time `t*`, the automation with the latest anchor instant at or before `t*` applies, with `x` computed as above; after its last point its final value holds until the next one starts, and before the first one the node's base parameter applies. The parameter thus follows the curve that joins the automations' curves in time order, each final value holding until the next point zero. Through the tail, the latest automation whose anchor instant is at or before `E` applies, or the base parameter if there is none.
+
+No “last writer wins,” track-order priority, or overlapping-lane blend is implied. Missing endpoints and undeclared crossfades must not be invented by a host.
+
+### 12.1 Automations in a placement
+
+An `automation` may be a child of a `place`, so that a move on the desk is written once, with the music it moves:
+
+```maac
+curve snare_throw { clock = score; points = [(0q, 5/2, step), (1/2q, 0, step)]; }
+
+place snare_main {
+  pattern = &drop_snare;
+  track = &snare_notes;
+  at = 16q;
+  count = 49;
+  automation bar_14 { event = "9/s"; target = &snare_send.params.gain; curve = &snare_throw; }
+  automation bar_18 { event = "13/s"; target = &snare_send.params.gain; curve = &snare_throw; }
+}
+```
+
+It has a global automation's `target`, `curve` and `label`, an optional `event`, and an optional `at`: a q offset that defaults to `0q` and may be negative. Without `event`, its q anchor is the placement's `at` plus its own. With `event`, a relative event address in the placement, written as an override's is (§11) or as an insert's, its q anchor is that event's final score onset plus its `at`. The final onset is the one after expansion, stretch, phrases, groove and overrides; physical offsets, including a variation's timing (§9.4), do not move it, and a negative `at` opens a move before the event. An `event` that names no event of the placement, including one that an override deletes, is `E_INSTANCE_TARGET` at the automation's `event`. Otherwise the automation is a global automation with that q anchor, under every rule above, the overlap rule included.
+
+Moving the placement, changing its groove, or overriding the event's `at` therefore moves the automation with it. An edit that renames the event's leaf rewrites the automation's `event`, as it does an override's, and `materialize-instance` (§11) carries the automation to the new pattern's address of the same event.
 
 ## 13. Modulation
 
@@ -1541,8 +1566,8 @@ valid reference.
 | `E_TIME_PRECISION` | Scheduling boundary cannot be established |
 | `E_SUBSAMPLE_NOTE` | Positive gate collapses to zero engine frames |
 | `E_PATTERN_CYCLE` | Recursive pattern-reference graph |
-| `E_INSTANCE_TARGET` | Override references a missing occurrence |
-| `E_AUTOMATION_WRITER` | Multiple replacement lanes on one parameter |
+| `E_INSTANCE_TARGET` | Override or placement automation references a missing occurrence |
+| `E_AUTOMATION_WRITER` | Replacement lanes on one parameter overlap or start together |
 | `E_CAPABILITY` | Receiver, processor, or extension cannot execute declared semantics |
 | `E_PORT_TYPE` | Incompatible port types, channels, or cardinality |
 | `E_ALGEBRAIC_LOOP` | Same-sample dependency cycle |
@@ -1626,7 +1651,7 @@ Required cases for a full implementation include:
 12. A placement-local override changes one occurrence, not its source or sibling repetitions.
 13. Reordering declarations does not reorder event identity or audio summation; changing explicit IDs may.
 14. Exponential interpolation from 500Hz to 2000Hz has midpoint 1000Hz; linear dB interpolation from -12 to 0 has midpoint -6dB.
-15. Duplicate automation writers, dangling overrides, zero-delay graph cycles, and absent asset bytes each produce their designated errors.
+15. Overlapping automation writers, dangling overrides and placement automations, zero-delay graph cycles, and absent asset bytes each produce their designated errors.
 16. A graph feedback loop with an explicit one-frame delay is causal; a cycle with only an opaque reported-latency plug-in is not automatically accepted.
 17. A seek render with proper prehistory equals the matching full-render crop; a reset-at-crop shortcut must not pass this test.
 18. A byte-identical source with an altered processor binary fails lock verification.

@@ -7,14 +7,30 @@ promise of compatibility beyond the documented interfaces.
 
 ### Added
 
+- Desk moves that travel with the music
+  ([desk moves proposal](docs/design/desk-moves-proposal.md), T9's F68).
+  A parameter can have several automations, as long as they do not overlap
+  in time, so one curve can serve every drop-out of the same length. An
+  `automation` can be written in a `place`, timed from the placement's `at`
+  or, with `event`, from the final score onset of one of its events, with
+  an optional `at` offset that may be negative. A throw into an echo is
+  then written once, with the hit it throws, and follows the placement, its
+  groove and its overrides. An overlap is `E_AUTOMATION_WRITER` at the
+  later automation, and an `event` that names no event is
+  `E_INSTANCE_TARGET`. Edits that rename the event's leaf rewrite the
+  `event`, and `materialize-instance` carries it to the copied event. A
+  document with one automation per parameter compiles to the same plan
+  and renders the same samples; a renderer from before this change refuses
+  a plan with several lanes on one parameter.
 - "Low Tide" ([`examples/dub/dub.maac`](examples/dub/dub.maac)), a roots dub
   from the [T9 production trial](docs/reports/ai-production-trial-t9.md), the
   first trial on 0.5.0's effects. The desk plays the dub. A sweep runs on the
   drum bus. The tape echo's time is written in beats and changes in beats.
   Its returns swing across the stereo field. A feedback loop in the project
-  graph darkens each repeat and runs away. The report ranks desk moves that
-  travel with the music next: every throw and drop-out is now one curve over
-  the whole song at positions counted by hand.
+  graph darkens each repeat and runs away. Version 4 writes its 27 throws
+  in the placements of the hits they throw and renders sample for sample as
+  version 3, whose throws and drop-outs were points counted by hand in one
+  curve per parameter.
 
 ### Fixed
 

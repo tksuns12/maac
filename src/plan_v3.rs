@@ -406,6 +406,32 @@ impl TimingContext {
         }
         Ok(())
     }
+    /// An automation's span, from its anchor to its last point, on the
+    /// timeline that every clock shares.
+    pub(crate) fn automation_span(
+        &self,
+        lane: &AutomationView<'_>,
+    ) -> Result<(TimeValue, TimeValue), PlanError> {
+        let last = &lane
+            .points
+            .last()
+            .expect("validated nonempty lane")
+            .position;
+        match (lane.clock, lane.anchor) {
+            (AutomationClock::Score, AutomationAnchorView::Score(q)) => Ok((
+                self.relative_at_score(q, &Rational::zero())?,
+                self.relative_at_score(&(q + last), &Rational::zero())?,
+            )),
+            (AutomationClock::Seconds, AutomationAnchorView::Score(q)) => Ok((
+                self.relative_at_score(q, &Rational::zero())?,
+                self.relative_at_score(q, last)?,
+            )),
+            (_, AutomationAnchorView::Seconds(s)) => Ok((
+                self.relative_at_seconds(s)?,
+                self.relative_at_seconds(&(s + last))?,
+            )),
+        }
+    }
     pub(crate) fn duration_frames(
         &self,
         output: &OutputSettings,

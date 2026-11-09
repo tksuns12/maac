@@ -11,6 +11,13 @@ use crate::plan_v7::{ControlClock, LfoConfig, LfoWave, ModulationV7, NodeV7, Pro
 use num_integer::Integer;
 use std::collections::{BTreeMap, BTreeSet};
 
+/// What writes a parameter from outside its node.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Writer {
+    Automation,
+    Modulation,
+}
+
 use num_bigint::BigInt;
 use num_rational::BigRational;
 use num_traits::{One, ToPrimitive, Zero};
@@ -651,7 +658,7 @@ struct Validator<'a> {
     control_nodes: BTreeMap<String, NodeV7>,
     modulations: Vec<ModulationV7>,
     references: BTreeMap<String, ReferenceTarget>,
-    automation_writers: BTreeSet<String>,
+    automation_writers: BTreeMap<String, Writer>,
     total_objects: usize,
     validated_gain_curves: BTreeSet<String>,
     validated_timbre_curves: BTreeSet<String>,
@@ -686,7 +693,7 @@ impl<'a> Validator<'a> {
             control_nodes: BTreeMap::new(),
             modulations: Vec::new(),
             references: BTreeMap::new(),
-            automation_writers: BTreeSet::new(),
+            automation_writers: BTreeMap::new(),
             total_objects: 0,
             validated_gain_curves: BTreeSet::new(),
             validated_timbre_curves: BTreeSet::new(),
@@ -2750,8 +2757,53 @@ impl<'a> Validator<'a> {
             match child.kind.as_str() {
                 "override" => self.validate_override(child, &child_path),
                 "insert" => self.validate_insert(child, &child_path),
+                "automation" => self.validate_place_automation(child, &child_path),
                 _ => self.validate_misplaced_child(child, path),
             }
+        }
+    }
+
+    /// An automation in a placement (§12): `at` is a musical offset from the
+    /// placement, or from the event that `event` names, and may be negative.
+    fn validate_place_automation(&mut self, object: &Object, path: &[String]) {
+        self.reject_children(object, path);
+        self.check_schema(
+            object,
+            path,
+            &["target", "curve"],
+            &["target", "curve", "at", "event", "label"],
+            &[],
+        );
+        if let Some(field) = object.field("event") {
+            self.expect_string(field, path, "event");
+        }
+        if let Some(field) = object.field("at") {
+            self.quantity(field, &[Unit::Q], path, "at");
+        }
+        let target = object
+            .field("target")
+            .and_then(|field| self.expect_parameter_ref(field, path, Writer::Automation));
+        if let Some(field) = object.field("curve") {
+            let clock = self
+                .expect_object_ref(field, "curve", &["curve"], path)
+                .and_then(|target| match target {
+                    ReferenceTarget::Object { id, .. } => self.document.object(&id),
+                    _ => None,
+                })
+                .and_then(|curve| curve.field("clock"))
+                .and_then(|field| field.value.as_symbol());
+            if clock == Some("normalized") {
+                self.push(
+                    DiagnosticCode::Capability,
+                    "normalized curves cannot be automation",
+                    Some(field.value.span),
+                    path.to_vec(),
+                    vec!["curve".into()],
+                );
+            }
+        }
+        if let Some(target) = target {
+            self.check_curve_target_units(object, path, target);
         }
     }
 
@@ -3189,7 +3241,7 @@ impl<'a> Validator<'a> {
         );
         let target = object
             .field("target")
-            .and_then(|field| self.expect_parameter_ref(field, path));
+            .and_then(|field| self.expect_parameter_ref(field, path, Writer::Automation));
         let curve_clock = object.field("curve").and_then(|field| {
             let target = self.expect_object_ref(field, "curve", &["curve"], path);
             target
@@ -4706,7 +4758,7 @@ impl<'a> Validator<'a> {
     fn validate_core_modulation(&mut self, object: &Object, path: &[String]) {
         let target = object
             .field("target")
-            .and_then(|f| self.resolve_parameter_ref(f, path, false));
+            .and_then(|f| self.resolve_parameter_ref(f, path, None));
         let from = object.field("from").and_then(|f| {
             self.expect_port_ref(
                 f,
@@ -4760,7 +4812,7 @@ impl<'a> Validator<'a> {
         }
 
         if let Some(field) = object.field("target") {
-            self.expect_parameter_ref(field, path);
+            self.expect_parameter_ref(field, path, Writer::Modulation);
         }
         if let Some(field) = object.field("from") {
             self.expect_port_ref(
@@ -5906,14 +5958,19 @@ impl<'a> Validator<'a> {
         Some(port)
     }
 
-    fn expect_parameter_ref(&mut self, field: &Field, path: &[String]) -> Option<ReferenceTarget> {
-        self.resolve_parameter_ref(field, path, true)
+    fn expect_parameter_ref(
+        &mut self,
+        field: &Field,
+        path: &[String],
+        writer: Writer,
+    ) -> Option<ReferenceTarget> {
+        self.resolve_parameter_ref(field, path, Some(writer))
     }
     fn resolve_parameter_ref(
         &mut self,
         field: &Field,
         path: &[String],
-        writer: bool,
+        writer: Option<Writer>,
     ) -> Option<ReferenceTarget> {
         let Some(reference) = field.value.reference() else {
             self.push_type(field, path, "target", "a node parameter reference");
@@ -5986,7 +6043,7 @@ impl<'a> Validator<'a> {
             );
             return None;
         };
-        if is_instrument && rate == ParameterRate::Reset && writer {
+        if is_instrument && rate == ParameterRate::Reset && writer.is_some() {
             self.push(
                 DiagnosticCode::Capability,
                 format!(
@@ -5999,10 +6056,18 @@ impl<'a> Validator<'a> {
             return None;
         }
         let key = format!("{node_id}.{parameter_name}");
-        if writer && !self.automation_writers.insert(key) {
+        // §12: one parameter may have several automations, which the plan
+        // puts in time order and refuses if they overlap. A modulation
+        // without controls replaces the parameter and stays its only writer.
+        let conflict =
+            writer.is_some_and(|writer| match self.automation_writers.insert(key, writer) {
+                None => false,
+                Some(earlier) => earlier == Writer::Modulation || writer == Writer::Modulation,
+            });
+        if conflict {
             self.push(
                 DiagnosticCode::AutomationWriter,
-                "a parameter may have only one global automation writer",
+                "a modulation cannot share a parameter with another writer",
                 Some(field.value.span),
                 path.to_vec(),
                 vec!["target".into()],
@@ -7641,10 +7706,14 @@ mod kit_profile_tests {
             r#"node unused { type = "core.kit/1"; config = { channels = 1; samples = [{ key = "unused"; asset = &missing; }]; }; }"#,
             r#"asset unused { kind = audio; path = "unused"; hash = "bad"; format = "pcm_f32le_interleaved/1"; rate = 48000Hz; channels = 1; frames = 0; }"#,
             r#"curve c { clock = score; points = [(0q, 1, step)]; } automation a { target = &kit.params.attack; curve = &c; at = 0q; }"#,
-            r#"curve c { clock = score; points = [(0q, 1, step)]; } automation a { target = &kit.params.level; curve = &c; at = 0q; } automation b { target = &kit.params.level; curve = &c; at = 1q; }"#,
         ] {
             assert!(validate(&source(extra)).is_err(), "accepted {extra}");
         }
+        // Two automations on one parameter that do not overlap (§12).
+        assert!(validate(&source(
+            r#"curve c { clock = score; points = [(0q, 1, step)]; } automation a { target = &kit.params.level; curve = &c; at = 0q; } automation b { target = &kit.params.level; curve = &c; at = 1q; }"#
+        ))
+        .is_ok());
         assert!(validate(&source("").replace("from = &kit:out", "from = &kit:events")).is_err());
         assert!(validate(&source("").replace("output = &mix:out", "output = &kit:out")).is_ok());
         let input = source("").replace("place place { pattern = &pat; track = &t; at = 0q; }", r#"place place { pattern = &pat; track = &t; at = 0q; override o { event = "0/h"; set = { key = "other"; }; } }"#);

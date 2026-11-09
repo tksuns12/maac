@@ -3466,7 +3466,46 @@ struct AutomationBinding {
     id: String,
     node: usize,
     parameter: String,
-    lane: AutomationRuntime,
+    lane: AutomationLanes,
+}
+
+/// The automations on one parameter (§12). Several are in time order and do
+/// not overlap: the latest to start applies, its final value holds until the
+/// next starts, and before the first the node's base value applies. That is
+/// the curve an author would get by joining their curves by hand.
+#[derive(Clone, Debug)]
+struct AutomationLanes {
+    lanes: Vec<AutomationRuntime>,
+    tail_value: f64,
+}
+
+impl AutomationLanes {
+    fn new(lanes: Vec<AutomationRuntime>) -> Self {
+        let tail_value = lanes
+            .iter()
+            .rev()
+            .find(|lane| lane.starts_by_end)
+            .map_or(lanes[0].base, |lane| lane.tail_value);
+        Self { lanes, tail_value }
+    }
+
+    fn value_at(&self, frame: u64, tempo: &TempoRuntime) -> Result<f64> {
+        if let [lane] = self.lanes.as_slice() {
+            return lane.value_at(frame, tempo);
+        }
+        if frame >= tempo.score_end_frame {
+            return Ok(self.tail_value);
+        }
+        let frame_i64 = i64::try_from(frame).unwrap_or(i64::MAX);
+        match self
+            .lanes
+            .iter()
+            .rposition(|lane| lane.knot_frames[0] <= frame_i64)
+        {
+            Some(index) => self.lanes[index].value_at(frame, tempo),
+            None => Ok(self.lanes[0].base),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -3481,6 +3520,9 @@ struct AutomationRuntime {
     knot_frames: Vec<i64>,
     base: f64,
     tail_value: f64,
+    /// Whether the lane starts at or before the score's end, so that its
+    /// value, not an earlier one, holds through the tail.
+    starts_by_end: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -3590,7 +3632,7 @@ fn build_automations(
     rate: f64,
     timing: Option<&TimingContext>,
 ) -> Result<Vec<AutomationBinding>> {
-    let mut result = Vec::with_capacity(plan.automations().len());
+    let mut runtimes = Vec::with_capacity(plan.automations().len());
     for automation in plan.automations() {
         let node = *node_indices.get(&automation.target.node).ok_or_else(|| {
             RenderError::RenderState(format!("automation {} has no target node", automation.id))
@@ -3623,14 +3665,10 @@ fn build_automations(
             },
         };
         if let Some(timing) = timing {
-            result.push(build_automation_v3(
-                &automation,
+            runtimes.push((
                 node,
-                base,
-                timing,
-                tempo,
-                &plan.output.score_end_q,
-            )?);
+                build_automation_v3(&automation, base, timing, tempo, &plan.output.score_end_q)?,
+            ));
             continue;
         }
         let anchor = match automation.anchor {
@@ -3680,6 +3718,7 @@ fn build_automations(
                     - tempo.origin_seconds.as_ref().expect("legacy clock").clone()
             }
         };
+        let starts_by_end = !(tail_coordinate.clone() - at_exact.clone()).is_negative();
         let lane = AutomationRuntime {
             clock: automation.clock,
             at,
@@ -3689,17 +3728,38 @@ fn build_automations(
             knot_frames,
             base,
             tail_value: 0.0,
+            starts_by_end,
         };
         let tail_value = lane.value_at_exact(&tail_coordinate)?;
-        result.push(AutomationBinding {
-            id: automation.id.clone(),
-            node,
-            parameter: automation.target.port.clone(),
-            lane: AutomationRuntime { tail_value, ..lane },
-        });
+        runtimes.push((node, AutomationRuntime { tail_value, ..lane }));
     }
     let _ = rate;
-    Ok(result)
+    let lanes: Vec<_> = plan.automations().collect();
+    let mut runtimes: Vec<_> = runtimes.into_iter().map(Some).collect();
+    plan.automation_order(timing)
+        .map_err(RenderError::Plan)?
+        .into_iter()
+        .map(|order| {
+            let first = &lanes[order[0]];
+            let node = runtimes[order[0]].as_ref().expect("one runtime per lane").0;
+            let id = order
+                .iter()
+                .map(|&index| lanes[index].id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let parameter = first.target.port.clone();
+            let lanes = order
+                .iter()
+                .map(|&index| runtimes[index].take().expect("one runtime per lane").1)
+                .collect();
+            Ok(AutomationBinding {
+                id,
+                node,
+                parameter,
+                lane: AutomationLanes::new(lanes),
+            })
+        })
+        .collect()
 }
 
 fn default_parameter(processor: &Processor, parameter: &str) -> f64 {
@@ -3973,12 +4033,11 @@ fn saturating_frame(frame: BigInt) -> i64 {
 
 fn build_automation_v3(
     lane: &crate::plan::AutomationView<'_>,
-    node: usize,
     base: f64,
     timing: &TimingContext,
     tempo: &TempoRuntime,
     score_end: &Rational,
-) -> Result<AutomationBinding> {
+) -> Result<AutomationRuntime> {
     let anchor = match (lane.clock, lane.anchor) {
         (AutomationClock::Score, AutomationAnchorView::Score(q)) => {
             TimeValue::from_rational(q - &timing.origin).map_err(timing_error)?
@@ -4077,20 +4136,16 @@ fn build_automation_v3(
             "automation tail is nonfinite".into(),
         ));
     }
-    Ok(AutomationBinding {
-        id: lane.id.clone(),
-        node,
-        parameter: lane.target.port.clone(),
-        lane: AutomationRuntime {
-            clock: lane.clock,
-            at: 0.0,
-            at_exact: None,
-            points,
-            point_positions_exact: Vec::new(),
-            knot_frames,
-            base,
-            tail_value,
-        },
+    Ok(AutomationRuntime {
+        clock: lane.clock,
+        at: 0.0,
+        at_exact: None,
+        points,
+        point_positions_exact: Vec::new(),
+        knot_frames,
+        base,
+        tail_value,
+        starts_by_end: active.is_some(),
     })
 }
 

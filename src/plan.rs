@@ -5155,7 +5155,6 @@ impl<'a> PlanView<'a> {
             .iter()
             .map(|node| (node.id.as_str(), node))
             .collect();
-        let mut targets = BTreeSet::new();
         let mut lane_ids = BTreeSet::new();
         let mut work = 0u64;
         for (index, lane) in self.automations().enumerate() {
@@ -5169,13 +5168,6 @@ impl<'a> PlanView<'a> {
                     "E_DUPLICATE_ID",
                     format!("automation[{index}].id"),
                     "duplicate automation ID",
-                ));
-            }
-            if !targets.insert((lane.target.node.clone(), lane.target.port.clone())) {
-                return Err(err(
-                    "E_AUTOMATION_WRITER",
-                    format!("automation[{index}].target"),
-                    "parameter has more than one replacement automation",
                 ));
             }
             let node = node_by_id.get(lane.target.node.as_str()).ok_or_else(|| {
@@ -5358,7 +5350,73 @@ impl<'a> PlanView<'a> {
                 "automation work exceeds the plan limit",
             ));
         }
+        self.automation_order(timing)?;
         Ok(())
+    }
+
+    /// The automations on each parameter in time order (§12). Each one spans
+    /// from its anchor to its last point. On one parameter, each starts at or
+    /// after the end of the one before it, and no two start at the same
+    /// instant; an overlap is `E_AUTOMATION_WRITER` at the later one. The
+    /// result lists each parameter's automation indices in time order.
+    pub(crate) fn automation_order(
+        &self,
+        timing: Option<&crate::plan_v3::TimingContext>,
+    ) -> Result<Vec<Vec<usize>>, PlanError> {
+        let lanes: Vec<AutomationView<'_>> = self.automations().collect();
+        let mut groups: BTreeMap<(&str, &str), Vec<usize>> = BTreeMap::new();
+        for (index, lane) in lanes.iter().enumerate() {
+            groups
+                .entry((lane.target.node.as_str(), lane.target.port.as_str()))
+                .or_default()
+                .push(index);
+        }
+        let mut order = Vec::with_capacity(groups.len());
+        for indices in groups.into_values() {
+            if indices.len() == 1 {
+                order.push(indices);
+                continue;
+            }
+            order.push(match timing {
+                Some(timing) => order_lanes(
+                    &lanes,
+                    indices,
+                    |lane| timing.automation_span(lane),
+                    |a, b| timing.compare_times(a, b),
+                )?,
+                None => order_lanes(
+                    &lanes,
+                    indices,
+                    |lane| self.exact_automation_span(lane),
+                    |a, b| Ok(a.cmp(b)),
+                )?,
+            });
+        }
+        Ok(order)
+    }
+
+    /// An automation's span in absolute seconds under a step tempo.
+    fn exact_automation_span(
+        &self,
+        lane: &AutomationView<'_>,
+    ) -> Result<(Rational, Rational), PlanError> {
+        let last = &lane
+            .points
+            .last()
+            .expect("validated nonempty lane")
+            .position;
+        match (lane.clock, lane.anchor) {
+            (AutomationClock::Score, AutomationAnchorView::Score(q)) => Ok((
+                self.tempo.seconds_at(q)?,
+                self.tempo.seconds_at(&(q + last))?,
+            )),
+            (_, AutomationAnchorView::Seconds(s)) => Ok((s.clone(), s + last)),
+            (AutomationClock::Seconds, AutomationAnchorView::Score(q)) => {
+                let start = self.tempo.seconds_at(q)?;
+                let end = &start + last;
+                Ok((start, end))
+            }
+        }
     }
 
     fn validate_regions(&self, limits: &PlanLimits) -> Result<(), PlanError> {
@@ -6586,6 +6644,78 @@ fn validate_parameter_spec(
         ));
     }
     Ok(())
+}
+
+/// Put one parameter's automations in time order by exact comparisons, and
+/// refuse two that start together or overlap.
+fn order_lanes<T>(
+    lanes: &[AutomationView<'_>],
+    indices: Vec<usize>,
+    span: impl Fn(&AutomationView<'_>) -> Result<(T, T), PlanError>,
+    compare: impl Fn(&T, &T) -> Result<std::cmp::Ordering, PlanError>,
+) -> Result<Vec<usize>, PlanError> {
+    let spans = indices
+        .into_iter()
+        .map(|index| span(&lanes[index]).map(|(start, end)| (index, start, end)))
+        .collect::<Result<Vec<_>, _>>()?;
+    let spans = merge_sort_by(spans, &|a, b| {
+        Ok(compare(&b.1, &a.1)? == std::cmp::Ordering::Less)
+    })?;
+    for pair in spans.windows(2) {
+        let (earlier, start, end) = &pair[0];
+        let (later, later_start, _) = &pair[1];
+        let (earlier_id, later_id) = (lanes[*earlier].id, lanes[*later].id);
+        if compare(later_start, start)? == std::cmp::Ordering::Equal {
+            return Err(err(
+                "E_AUTOMATION_WRITER",
+                format!("automation[{later}].at"),
+                format!(
+                    "automations `{earlier_id}` and `{later_id}` on one parameter start at the same instant"
+                ),
+            ));
+        }
+        if compare(later_start, end)? == std::cmp::Ordering::Less {
+            return Err(err(
+                "E_AUTOMATION_WRITER",
+                format!("automation[{later}].at"),
+                format!(
+                    "automation `{later_id}` starts before automation `{earlier_id}` on the same parameter ends"
+                ),
+            ));
+        }
+    }
+    Ok(spans.into_iter().map(|(index, ..)| index).collect())
+}
+
+/// A stable merge sort whose comparison may fail. `before(a, b)` says
+/// whether `b` must come before `a`.
+fn merge_sort_by<T>(
+    mut items: Vec<T>,
+    before: &impl Fn(&T, &T) -> Result<bool, PlanError>,
+) -> Result<Vec<T>, PlanError> {
+    if items.len() <= 1 {
+        return Ok(items);
+    }
+    let right = items.split_off(items.len() / 2);
+    let left = merge_sort_by(items, before)?;
+    let right = merge_sort_by(right, before)?;
+    let mut merged = Vec::with_capacity(left.len() + right.len());
+    let mut left = left.into_iter().peekable();
+    let mut right = right.into_iter().peekable();
+    loop {
+        let take_right = match (left.peek(), right.peek()) {
+            (Some(a), Some(b)) => before(a, b)?,
+            (Some(_), None) => false,
+            (None, Some(_)) => true,
+            (None, None) => break,
+        };
+        merged.extend(if take_right {
+            right.next()
+        } else {
+            left.next()
+        });
+    }
+    Ok(merged)
 }
 
 fn validate_automation_parameter(

@@ -570,9 +570,14 @@ in MaaC during the
 - a feedback loop in the project graph, broken by one frame of
   `core.delay/1`. Each pass darkens and thins the repeats, and above unity
   gain the echo runs away until the desk cuts it back;
-- the dub's moves as global curves: drop-outs, 27 throws into the echo and
-  three runaways, at positions counted by hand. The report's F68 is about
-  that.
+- the dub's moves written with the music. Each of the 27 throws into the
+  echo is an automation in the placement of the hit it throws, such as
+  `automation bar_14 { event = "9/s"; ... }` in `snare_main`, and each
+  send's throws share one curve. Each drop-out and runaway is one
+  automation, and the drop-outs of the same length share a curve. Version
+  3 wrote all of them as points counted by hand, in one curve per
+  parameter (the report's F68); version 4 renders sample for sample as
+  version 3.
 
 ```sh
 maac build examples/dub/dub.maac --profile song -o low-tide.wav --format pcm16

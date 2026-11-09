@@ -2,8 +2,9 @@
 
 **Date:** 2026-11-05 to 2026-11-09. **Producer:** Claude, an AI model,
 working in this repository. **Listener:** the project owner. **Result:**
-"Low Tide", version 3
-([`examples/dub/dub.maac`](../../examples/dub/dub.maac)). The riddim was
+"Low Tide", version 3. Version 4
+([`examples/dub/dub.maac`](../../examples/dub/dub.maac)) rewrote the desk
+after the trial and renders sample for sample as version 3. The riddim was
 written as easily as earlier trials' music. The dub, the performance on
 the desk, was not. Every desk move is one curve over the whole song at
 positions counted by hand (F68). The tape echo's feedback loop had to be
@@ -164,7 +165,7 @@ Two lessons for the next trial:
 | ID | Problem | Status |
 | --- | --- | --- |
 | F67 | An event that fails a timing check is not named. `maac check` said "E_INTERVAL: resolved onset lies outside score interval at events", and `--json` gave only `"path": "events"`. A `vary` of 6 ms on the drums placed at 0q had moved the first hat before the score's start, and the cause was found by removing each `vary` in turn. [§23](../../MaaC-1-Specification.md#23-validation-and-diagnostics) says an event failure names the note, hit or message that produced it. `schedule_view` in `src/plan_v3.rs` has the event in hand when it raises this error and the two checks beside it | Fixed after the trial: the error names the note or hit, and its message begins with the event's address, such as `drums_intro/0/h1` |
-| F68 | A desk move cannot be written with the music. [§12](../../MaaC-1-Specification.md#12-curves-and-parameter-automation) allows one global automation per parameter, so each send and each fader is one curve over the whole song. Each throw is two step points at positions counted by hand: the guitar's chord on beat four of bar 16 is `(63q, 2, step), (253/4q, 0, step)`. A throw cannot be named once and used twice: the same curve at 6q and 14q on one send is `E_AUTOMATION_WRITER`. It cannot be written in its section, or carried by a pattern or a placement, so moving `reed_b` would leave its throws behind. Raising the throws' level meant editing 15 points one by one. The other way, a second node that plays copies of the thrown notes into the echo only, plays a different hit under `vary`: the copy of bar 2's snare is 2.01 ms late at velocity 0.791, the dry hit 1.37 ms at 0.807 | Open; the main finding |
+| F68 | A desk move cannot be written with the music. [§12](../../MaaC-1-Specification.md#12-curves-and-parameter-automation) allows one global automation per parameter, so each send and each fader is one curve over the whole song. Each throw is two step points at positions counted by hand: the guitar's chord on beat four of bar 16 is `(63q, 2, step), (253/4q, 0, step)`. A throw cannot be named once and used twice: the same curve at 6q and 14q on one send is `E_AUTOMATION_WRITER`. It cannot be written in its section, or carried by a pattern or a placement, so moving `reed_b` would leave its throws behind. Raising the throws' level meant editing 15 points one by one. The other way, a second node that plays copies of the thrown notes into the echo only, plays a different hit under `vary`: the copy of bar 2's snare is 2.01 ms late at velocity 0.791, the dry hit 1.37 ms at 0.807 | Closed after the trial by the [desk moves proposal](../design/desk-moves-proposal.md): a parameter can have several automations, and a throw is written in the placement of the hit it throws. Version 4 renders sample for sample as version 3 |
 | F69 | A kit has one output. To throw only the snare, it left the kit for a node and patterns of its own (`drop_snare`, `drop_snare_ghost`), while the kick and hats stayed in the kit, so one drum part became two placements. A kit's pieces have their own `level` and `pan`, but not their own outputs or sends | Open; the split snare works |
 | F70 | A feedback loop cannot be part of an effect. Inside an effect, a cycle is `E_ALGEBRAIC_LOOP`, and an effect node cannot break a cycle in the project graph. `synth.delay/1`'s own feedback stops at 0.99, and only its damping acts inside the loop. Its repeats therefore all wear the same, and the echo cannot run away. With one frame of `core.delay/1` the project graph holds the loop, as above. But each song that uses it needs 3 effects, 6 nodes and 6 connections, and each pass is one frame longer than the echo's time. None of it can be exported from a library as one tape echo | Open |
 
@@ -185,8 +186,8 @@ The owner accepted this order on 2026-11-09.
    and placed with a hit, a pattern or a placement. Several moves on one
    parameter would then combine instead of conflicting. A proposal can
    start from version 3's 99 points and the `reed_b` case. The
-   [desk moves proposal](../design/desk-moves-proposal.md) does this.
-   F67, a small bug, was fixed after the trial.
+   [desk moves proposal](../design/desk-moves-proposal.md) does this, and
+   landed 2026-11-09. F67, a small bug, was fixed after the trial.
 2. **Feedback inside effects (F70).** An effect that holds a loop, broken
    by a delay, so that a tape echo that wears and runs away is one
    library effect.

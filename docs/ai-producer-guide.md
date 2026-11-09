@@ -251,6 +251,17 @@ maac analyze main.maac --window region:b --preroll 4 --json   # quick, approxima
   `core.delay/1` in frames does not. Give it `feedback` and `damping` for
   repeats that darken, and a `synth.onepole/1` after it to darken the first
   echo too. Return only the echoes and mix them in, as a send.
+- **Desk moves.** Write each drop-out, ride or throw once, where the music
+  is. A parameter can have several automations as long as they do not
+  overlap, so one curve serves every drop of the same length:
+  `automation bass_out_dub_1 { target = &bass_fader.params.gain; curve = &out_2_bars; at = 64q; }`.
+  Write a throw into an echo in the placement of the hit it throws, naming
+  the hit: in `snare_main`,
+  `automation bar_14 { event = "9/s"; target = &snare_send.params.gain; curve = &snare_throw; }`
+  opens the send on repetition 9's `s`. It moves with the placement, its
+  groove and its overrides, and its level is its curve's, so raising every
+  throw is one number. A negative `at`, such as `-1/8q`, opens the send
+  before the hit. In T9 a dub's 27 throws were points counted by hand.
 - **Master.** End the chain with an optional glue `fx.compressor/1` (ratio
   2–3, attack about 20 ms), then `fx.limiter/1` as the project output. Its
   `gain` sets the loudness and its `ceiling` caps the true peak. Raising the

@@ -1067,6 +1067,25 @@ pub(super) fn chord_pitches<'a>(
     }
 }
 
+/// The occurrence a placement child names: an override's `event`, or the
+/// `event` of an automation in the placement (§12).
+fn named_occurrence(child: &Value) -> Option<&str> {
+    match child["kind"].as_str()? {
+        "override" | "automation" => child["fields"]["event"]["v"].as_str(),
+        _ => None,
+    }
+}
+
+/// An inserted event's address, `insert_id/leaf_id`, names an insert of
+/// the placement and its leaf.
+fn names_insert(place: &Value, address: &str) -> bool {
+    address.split_once('/').is_some_and(|(insert, leaf)| {
+        place["children"]
+            .get(insert)
+            .is_some_and(|child| child["kind"] == "insert" && child["children"].get(leaf).is_some())
+    })
+}
+
 /// A chord member is identified by its index. When an edit changes the
 /// length of the pitches a chord plays, through its `pitches`, its voicing,
 /// or its `top`, `bottom` or `pick`, members after the first changed
@@ -1087,19 +1106,17 @@ fn reject_shifted_chord_members(base: &Value, candidate: &Value) -> EditResult<(
             continue;
         };
         for (override_id, override_object) in children {
-            if override_object["kind"] != "override" {
-                continue;
-            }
-            let Some(event) = override_object["fields"]["event"]["v"].as_str() else {
+            let Some(event) = named_occurrence(override_object) else {
                 continue;
             };
+            let kind = override_object["kind"].as_str().unwrap_or_default();
             let Some(base_place) = base_objects.get(place_id) else {
                 continue;
             };
             let existed = base_place["children"]
                 .get(override_id.as_str())
                 .is_some_and(|before| {
-                    before["kind"] == "override" && before["fields"]["event"]["v"] == event
+                    before["kind"] == kind && before["fields"]["event"]["v"] == event
                 });
             if !existed {
                 continue;
@@ -1122,7 +1139,7 @@ fn reject_shifted_chord_members(base: &Value, candidate: &Value) -> EditResult<(
                 return Err(EditError::new(
                     "E_INSTANCE_TARGET",
                     format!(
-                        "chord `{}` changed length, so override target `{event}` would address a different member",
+                        "chord `{}` changed length, so {kind} target `{event}` would address a different member",
                         source_path.join(".")
                     ),
                 )
@@ -1145,6 +1162,41 @@ fn validate_occurrence_targets(root: &Value) -> EditResult<()> {
         let Some(children) = place["children"].as_object() else {
             continue;
         };
+        // An automation may name any event of the placement, an inserted
+        // one included, that no override deletes.
+        let deleted: BTreeMap<&str, &str> = children
+            .iter()
+            .filter(|(_, child)| {
+                child["kind"] == "override" && child["fields"]["delete"]["v"] == true
+            })
+            .filter_map(|(id, child)| Some((child["fields"]["event"]["v"].as_str()?, id.as_str())))
+            .collect();
+        for (automation_id, automation) in children {
+            if automation["kind"] != "automation" {
+                continue;
+            }
+            let Some(event) = named_occurrence(automation) else {
+                continue;
+            };
+            let at = |error: EditError| {
+                error.at(
+                    &[place_id.clone(), automation_id.clone()],
+                    &["event".into()],
+                )
+            };
+            if let Some(by) = deleted.get(event) {
+                return Err(at(EditError::new(
+                    "E_INSTANCE_TARGET",
+                    format!("automation event `{event}` is deleted by override `{by}`"),
+                )));
+            }
+            if resolve_occurrence(root, place, event).is_none() && !names_insert(place, event) {
+                return Err(at(EditError::new(
+                    "E_INSTANCE_TARGET",
+                    format!("automation event `{event}` does not exist"),
+                )));
+            }
+        }
         for (override_id, override_object) in children {
             if override_object["kind"] != "override" {
                 continue;
@@ -1202,10 +1254,7 @@ fn rewrite_occurrence_addresses(
             continue;
         };
         for (override_id, before_override) in before_children {
-            if before_override["kind"] != "override" {
-                continue;
-            }
-            let Some(event) = before_override["fields"]["event"]["v"].as_str() else {
+            let Some(event) = named_occurrence(before_override) else {
                 continue;
             };
             let Some(mappings) = resolve_occurrence(before, before_place, event) else {

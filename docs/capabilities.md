@@ -44,7 +44,7 @@ it. See the [unknown-extension decision](design/unknown-extensions-proposal.md).
 | Per-note gain | `core.sine/1` and reusable mono/stereo instruments (basic, acoustic, custom); nonnegative amplitude curves on all three clocks; step/linear/exponential interpolation; simultaneous independent pitch |
 | Per-note timbre | Voice graphs explicitly declaring `synth.timbre/1`; exact 0…1 curves on all three clocks; step/linear/exponential interpolation; independent pitch/gain coexistence and release holding |
 | Per-note pressure | Voice graphs explicitly declaring `synth.pressure/1`; exact 0…1 curves on all three clocks; step/linear/exponential interpolation; independent pitch/gain/timbre coexistence and release holding |
-| Automation | Global score/seconds clocks; step, linear and exponential interpolation; sample/event parameter rates |
+| Automation | Global score/seconds clocks; step, linear and exponential interpolation; sample/event parameter rates; several automations per parameter that do not overlap; automations in a placement, timed from the placement or one of its events |
 | Routing | Explicit mono/stereo audio graph and note/hit targets; no implicit channel conversions or mixers |
 | Processors | `core.sine/1`, `core.kit/1`, `core.onepole/1`, `core.pan/1`, `core.sum/1`, `core.gain/1`, `core.fader/1`, `core.matrix/1`, `core.delay/1`, `core.noise/1` (mono/stereo); explicit delays permit causal feedback |
 | Sample kits | Pinned raw float32 mono/stereo assets, native-rate one-shot playback, linear interpolation, natural tails and sample-rate level automation |

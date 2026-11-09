@@ -144,11 +144,62 @@ fn event_plan_error(error: crate::plan::PlanError, source: Option<&SourceMapping
     diagnostics
 }
 
+fn automation_points_of(curve: &CurveDef) -> Vec<AutomationPoint> {
+    curve
+        .points
+        .iter()
+        .map(|(position, value, shape)| AutomationPoint {
+            position: position.clone(),
+            value: value.clone(),
+            shape: *shape,
+        })
+        .collect()
+}
+
+/// Plan validation addresses an automation as `automation[i]`.
+fn plan_automation_index(error: &crate::plan::PlanError) -> Option<usize> {
+    let rest = error.path.strip_prefix("automation[")?;
+    rest[..rest.find(']')?].parse().ok()
+}
+
+/// Where an automation was written: its object path and span, and the
+/// field that sets its anchor, `at` or a placement automation's `event`.
+#[derive(Clone, Debug)]
+struct AutomationSource {
+    path: Vec<String>,
+    span: Span,
+    anchor_field: &'static str,
+    anchor_span: Span,
+}
+
+fn automation_plan_error(error: crate::plan::PlanError, source: &AutomationSource) -> Diagnostics {
+    let mut diagnostic = error.diagnostic();
+    diagnostic.object_path = source.path.clone();
+    if error.path.ends_with("].at") {
+        diagnostic.field_path = vec![source.anchor_field.into()];
+        diagnostic.span = Some(source.anchor_span);
+    } else {
+        diagnostic.field_path.clear();
+        diagnostic.span = Some(source.span);
+    }
+    let mut diagnostics = Diagnostics::new();
+    diagnostics.push(diagnostic);
+    diagnostics
+}
+
+/// Report a plan validation failure at the note, hit, message or automation
+/// that produced the failing plan entry.
 macro_rules! plan_error_in {
-    ($events:expr) => {
+    ($compiler:ident, $plan:ident) => {
         |error: crate::plan::PlanError| {
+            if let Some(source) = plan_automation_index(&error)
+                .and_then(|index| $plan.automation.get(index))
+                .and_then(|lane| $compiler.automation_sources.get(&lane.id))
+            {
+                return automation_plan_error(error, source);
+            }
             let source = plan_event_index(&error)
-                .and_then(|index| $events.get(index))
+                .and_then(|index| $plan.events.get(index))
                 .map(|event| &event.source);
             event_plan_error(error, source)
         }
@@ -520,6 +571,20 @@ struct OverrideDef {
     set: BTreeMap<String, Value>,
 }
 
+/// An automation written in a placement (§12). Its `at` counts from the
+/// placement's `at`, or from the final score onset of the event it names.
+#[derive(Clone, Debug)]
+struct PlaceAutomationDef {
+    id: String,
+    /// The relative event address and the span of its field.
+    event: Option<(String, Span)>,
+    at: Rational,
+    span: Span,
+    /// The field that sets the anchor, `at` or else `event`, and its span.
+    anchor_field: &'static str,
+    anchor_span: Span,
+}
+
 #[derive(Clone, Debug)]
 struct InsertDef {
     id: String,
@@ -623,6 +688,7 @@ struct PlaceDef {
     supply: Option<Supply>,
     overrides: Vec<OverrideDef>,
     inserts: Vec<InsertDef>,
+    automations: Vec<PlaceAutomationDef>,
 }
 
 #[derive(Clone, Debug)]
@@ -917,6 +983,8 @@ struct Compiler<'a> {
     /// Each part's voicings: chord name to voicing ID.
     voicing_sets: BTreeMap<String, BTreeMap<String, String>>,
     automations: Vec<AutomationV3>,
+    /// Each automation's source, by its plan ID.
+    automation_sources: BTreeMap<String, AutomationSource>,
     allow_ramps: bool,
     allow_hits: bool,
     allow_messages: bool,
@@ -979,6 +1047,7 @@ impl<'a> Compiler<'a> {
             harmonies: BTreeMap::new(),
             voicing_sets: BTreeMap::new(),
             automations: Vec::new(),
+            automation_sources: BTreeMap::new(),
             allow_ramps: false,
             allow_hits: false,
             allow_messages: false,
@@ -1058,7 +1127,7 @@ impl<'a> Compiler<'a> {
         }
         let plan = self.finish_plan(limits)?;
         plan.validate_with_limits(limits)
-            .map_err(plan_error_in!(plan.events))?;
+            .map_err(plan_error_in!(self, plan))?;
         attach_production(plan, production, &self.execution_identity, original, limits)
             .map(VersionedPlan::Legacy)
     }
@@ -3730,8 +3799,36 @@ impl<'a> Compiler<'a> {
             }
             let mut overrides = Vec::new();
             let mut inserts = Vec::new();
+            let mut automations = Vec::new();
             for child in object.children.values() {
                 match child.kind.as_str() {
+                    "automation" => {
+                        let event = child
+                            .field("event")
+                            .map(|field| {
+                                self.string_value(&field.value, child, Some(field), "event")
+                                    .map(|event| (event, field.span))
+                            })
+                            .transpose()?;
+                        let at = child
+                            .field("at")
+                            .map(|field| self.q_value(&field.value, child, Some(field), false))
+                            .transpose()?
+                            .unwrap_or_else(Rational::zero);
+                        let (anchor_field, anchor_span) = match (child.field("at"), &event) {
+                            (Some(field), _) => ("at", field.span),
+                            (None, Some((_, span))) => ("event", *span),
+                            (None, None) => ("at", child.span),
+                        };
+                        automations.push(PlaceAutomationDef {
+                            id: child.id.clone(),
+                            event,
+                            at,
+                            span: child.span,
+                            anchor_field,
+                            anchor_span,
+                        });
+                    }
                     "override" => {
                         let event_field = self.field(child, "event")?;
                         let event = self.string_value(
@@ -3859,6 +3956,7 @@ impl<'a> Compiler<'a> {
                 supply: self.supplied_voicing(object)?,
                 overrides,
                 inserts,
+                automations,
             });
         }
         Ok(())
@@ -4089,43 +4187,7 @@ impl<'a> Compiler<'a> {
             .values()
             .filter(|object| object.kind == "automation")
         {
-            let target_ref = self.reference(
-                &self.field(object, "target")?.value,
-                object,
-                object.field("target"),
-            )?;
-            if target_ref.path.len() != 3
-                || target_ref.path[1] != "params"
-                || target_ref.port.is_some()
-            {
-                return Err(path_diagnostic(
-                    DiagnosticCode::Reference,
-                    "automation target must be a node parameter reference",
-                    object,
-                    object.field("target"),
-                ));
-            }
-            let curve_id = self.one_reference(
-                &self.field(object, "curve")?.value,
-                object,
-                object.field("curve"),
-            )?;
-            let curve = self.curves.get(&curve_id).ok_or_else(|| {
-                path_diagnostic(
-                    DiagnosticCode::Reference,
-                    "automation curve does not exist",
-                    object,
-                    object.field("curve"),
-                )
-            })?;
-            if curve.clock == "normalized" {
-                return Err(path_diagnostic(
-                    DiagnosticCode::Capability,
-                    "normalized curves cannot be global automation",
-                    object,
-                    object.field("curve"),
-                ));
-            }
+            let (target, curve) = self.automation_curve(object)?;
             automation_points = automation_points
                 .checked_add(curve.points.len())
                 .ok_or_else(|| {
@@ -4159,18 +4221,7 @@ impl<'a> Compiler<'a> {
                     seconds: self.seconds_value(&at_value.value, object, Some(at_value))?,
                 }
             };
-            let target = PortRef::new(target_ref.path[0].clone(), target_ref.path[2].clone())
-                .map_err(plan_error)?;
-            let points = curve
-                .points
-                .iter()
-                .map(|(position, value, shape)| AutomationPoint {
-                    position: position.clone(),
-                    value: value.clone(),
-                    shape: *shape,
-                })
-                .collect();
-            self.automations.push(AutomationV3 {
+            let lane = AutomationV3 {
                 id: object.id.clone(),
                 target,
                 clock: if curve.clock == "score" {
@@ -4179,8 +4230,134 @@ impl<'a> Compiler<'a> {
                     AutomationClock::Seconds
                 },
                 at,
-                points,
-            });
+                points: automation_points_of(curve),
+            };
+            self.automation_sources.insert(
+                object.id.clone(),
+                AutomationSource {
+                    path: vec![object.id.clone()],
+                    span: object.span,
+                    anchor_field: "at",
+                    anchor_span: at_value.span,
+                },
+            );
+            self.automations.push(lane);
+        }
+        Ok(())
+    }
+
+    /// The parameter an automation writes and the curve it plays.
+    fn automation_curve(&self, object: &Object) -> CResult<(PortRef, &CurveDef)> {
+        let target_ref = self.reference(
+            &self.field(object, "target")?.value,
+            object,
+            object.field("target"),
+        )?;
+        if target_ref.path.len() != 3 || target_ref.path[1] != "params" || target_ref.port.is_some()
+        {
+            return Err(path_diagnostic(
+                DiagnosticCode::Reference,
+                "automation target must be a node parameter reference",
+                object,
+                object.field("target"),
+            ));
+        }
+        let curve_id = self.one_reference(
+            &self.field(object, "curve")?.value,
+            object,
+            object.field("curve"),
+        )?;
+        let curve = self.curves.get(&curve_id).ok_or_else(|| {
+            path_diagnostic(
+                DiagnosticCode::Reference,
+                "automation curve does not exist",
+                object,
+                object.field("curve"),
+            )
+        })?;
+        if curve.clock == "normalized" {
+            return Err(path_diagnostic(
+                DiagnosticCode::Capability,
+                "normalized curves cannot be global automation",
+                object,
+                object.field("curve"),
+            ));
+        }
+        let target = PortRef::new(target_ref.path[0].clone(), target_ref.path[2].clone())
+            .map_err(plan_error)?;
+        Ok((target, curve))
+    }
+
+    /// Give each automation in a placement its position in the score: the
+    /// placement's `at`, or the final score onset of the event it names,
+    /// plus its own `at`. Physical offsets, such as a variation's timing, do
+    /// not move it. Runs after the placement's overrides.
+    fn lower_place_automations(&mut self, place: &PlaceDef) -> CResult<()> {
+        if place.automations.is_empty() {
+            return Ok(());
+        }
+        let prefix = format!("{}/", place.id);
+        let onsets: HashMap<&str, &Rational> = self
+            .events
+            .iter()
+            .filter_map(|event| {
+                event
+                    .address
+                    .strip_prefix(&prefix)
+                    .map(|address| (address, &event.score_on_q))
+            })
+            .collect();
+        let object = self.object(&place.id)?;
+        let mut lanes = Vec::with_capacity(place.automations.len());
+        for automation in &place.automations {
+            let origin = match &automation.event {
+                None => place.at.clone(),
+                Some((event, span)) => (*onsets.get(event.as_str()).ok_or_else(|| {
+                    let mut diagnostics = Diagnostics::new();
+                    diagnostics.push(
+                        Diagnostic::error(
+                            DiagnosticCode::InstanceTarget,
+                            format!("automation event `{event}` does not exist"),
+                            Some(*span),
+                        )
+                        .object_path([place.id.clone(), automation.id.clone()])
+                        .field_path(["event"]),
+                    );
+                    diagnostics
+                })?)
+                .clone(),
+            };
+            let child = object
+                .children
+                .get(&automation.id)
+                .expect("a placement automation is its child");
+            let (target, curve) = self.automation_curve(child)?;
+            let id = format!("{}__{}", place.id, automation.id);
+            lanes.push((
+                AutomationV3 {
+                    id: id.clone(),
+                    target,
+                    clock: if curve.clock == "score" {
+                        AutomationClock::Score
+                    } else {
+                        AutomationClock::Seconds
+                    },
+                    at: AutomationAnchor::Score {
+                        q: checked_add(&origin, &automation.at, Some(automation.span))?,
+                    },
+                    points: automation_points_of(curve),
+                },
+                AutomationSource {
+                    path: vec![place.id.clone(), automation.id.clone()],
+                    span: automation.span,
+                    anchor_field: automation.anchor_field,
+                    anchor_span: automation.anchor_span,
+                },
+            ));
+        }
+        for (lane, source) in lanes {
+            self.automation_sources.insert(lane.id.clone(), source);
+            self.automations.push(lane);
         }
         Ok(())
     }
@@ -4518,6 +4695,7 @@ impl<'a> Compiler<'a> {
                 self.apply_vary(vary, first);
             }
             self.apply_place_edits(place, target.as_ref())?;
+            self.lower_place_automations(place)?;
         }
         self.collect_pattern_clips()
     }
@@ -6077,14 +6255,14 @@ impl<'a> Compiler<'a> {
             settings.check_compiled(&plan.view(), original, limits)?;
         }
         plan.preflight_with_limits(limits)
-            .map_err(plan_error_in!(plan.events))?;
+            .map_err(plan_error_in!(self, plan))?;
         let timing = TimingContext::new_with_limits(&plan.tempo, &plan.output, limits)
             .map_err(plan_error)?;
         Self::schedule_score_events(&mut plan.output, &mut plan.events, &timing, limits)?;
         self.assign_joins(&mut plan.events)?;
         plan.view()
             .validate_with_timing(limits, &timing)
-            .map_err(plan_error_in!(plan.events))?;
+            .map_err(plan_error_in!(self, plan))?;
         Ok(plan)
     }
 
@@ -6437,7 +6615,7 @@ impl<'a> Compiler<'a> {
         let limits = limits.bounded();
         plan.view()
             .preflight_timing(&limits)
-            .map_err(plan_error_in!(plan.events))?;
+            .map_err(plan_error_in!(self, plan))?;
         let timing = TimingContext::new_with_limits(&plan.tempo, &plan.output, &limits)
             .map_err(plan_error)?;
         Self::schedule_score_events(&mut plan.output, &mut plan.events, &timing, &limits)?;
@@ -6482,7 +6660,7 @@ impl<'a> Compiler<'a> {
         }
         plan.view()
             .validate_performance_with_timing(&limits, &timing)
-            .map_err(plan_error_in!(plan.events))?;
+            .map_err(plan_error_in!(self, plan))?;
         struct ByteBudget(usize);
         impl std::io::Write for ByteBudget {
             fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
@@ -6562,7 +6740,7 @@ impl<'a> Compiler<'a> {
         let limits = limits.bounded();
         plan.view()
             .preflight_timing(&limits)
-            .map_err(plan_error_in!(plan.events))?;
+            .map_err(plan_error_in!(self, plan))?;
         let timing = TimingContext::new_with_limits(&plan.tempo, &plan.output, &limits)
             .map_err(plan_error)?;
         Self::schedule_score_events(&mut plan.output, &mut plan.events, &timing, &limits)?;
@@ -6607,7 +6785,7 @@ impl<'a> Compiler<'a> {
         }
         plan.view()
             .validate_performance_with_timing(&limits, &timing)
-            .map_err(plan_error_in!(plan.events))?;
+            .map_err(plan_error_in!(self, plan))?;
         struct ByteBudget(usize);
         impl std::io::Write for ByteBudget {
             fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
@@ -6689,7 +6867,7 @@ impl<'a> Compiler<'a> {
         let limits = limits.bounded();
         plan.view()
             .preflight_timing(&limits)
-            .map_err(plan_error_in!(plan.events))?;
+            .map_err(plan_error_in!(self, plan))?;
         let timing = TimingContext::new_with_limits(&plan.tempo, &plan.output, &limits)
             .map_err(plan_error)?;
         Self::schedule_score_events(&mut plan.output, &mut plan.events, &timing, &limits)?;
@@ -6720,7 +6898,7 @@ impl<'a> Compiler<'a> {
         }
         plan.view()
             .validate_performance_with_timing(&limits, &timing)
-            .map_err(plan_error_in!(plan.events))?;
+            .map_err(plan_error_in!(self, plan))?;
         struct ByteBudget(usize);
         impl std::io::Write for ByteBudget {
             fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
@@ -6791,14 +6969,14 @@ impl<'a> Compiler<'a> {
         let limits = limits.bounded();
         plan.view()
             .preflight_timing(&limits)
-            .map_err(plan_error_in!(plan.events))?;
+            .map_err(plan_error_in!(self, plan))?;
         let timing = TimingContext::new_with_limits(&plan.tempo, &plan.output, &limits)
             .map_err(plan_error)?;
         Self::schedule_score_events(&mut plan.output, &mut plan.events, &timing, &limits)?;
         self.assign_joins(&mut plan.events)?;
         plan.view()
             .validate_performance_with_timing(&limits, &timing)
-            .map_err(plan_error_in!(plan.events))?;
+            .map_err(plan_error_in!(self, plan))?;
         // Bound the encoded artifact without constructing another timing context or retaining JSON.
         struct ByteBudget(usize);
         impl std::io::Write for ByteBudget {
