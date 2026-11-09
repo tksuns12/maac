@@ -5,6 +5,17 @@ promise of compatibility beyond the documented interfaces.
 
 ## [Unreleased]
 
+### Fixed
+
+- A note or hit that a timing check rejects is named, as §23 requires (T9's
+  F67). When a `vary`, an offset or a placement moved an event outside the
+  score in a document with instruments, kits, audio or a tempo ramp, the
+  error was reported at `events`, the plan's event list, with nothing to say
+  which note or hit failed. It is now reported at the note or hit that
+  produced the event. Each event timing message begins with the event's
+  address, such as `drums_intro/0/h1`, which names the placement and the
+  repetition.
+
 ## [0.5.0] — 2026-11-05
 
 The fifth experimental release. Effects move outside instruments: an

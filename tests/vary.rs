@@ -242,3 +242,42 @@ fn a_varied_placement_is_not_materialized() {
         .unwrap_err();
     assert_eq!(error.code, "E_CAPABILITY");
 }
+
+/// F67: a draw that moves an event outside the score names that event, not
+/// the plan's event list (§23), under a steady tempo and under a ramp, which
+/// schedule events by different routes.
+#[test]
+fn an_event_moved_out_of_the_score_is_named() {
+    let timing = rational("1/125");
+    let seed = (1..100)
+        .find(|&seed| offset(seed, "opening/0/n", "timing", &timing).is_negative())
+        .expect("a seed that draws the first note early");
+    let pattern = "  note n { at = 0q; dur = 1q; pitch = C4; }";
+    let place = "place opening { pattern = &line; track = &t; at = 0q; vary = &loose; }";
+    let steady = source("", pattern, place).replace("seed = 7;", &format!("seed = {seed};"));
+    let ramp = steady.replace(
+        "(0q, 120bpm, step)",
+        "(0q, 120bpm, linear), (32q, 132bpm, step)",
+    );
+    for text in [steady, ramp] {
+        let diagnostics = compile_bundle_artifact(&SourceBundle::new("main.maac", text.as_str()))
+            .unwrap_err()
+            .into_vec();
+        let diagnostic = diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.code == DiagnosticCode::Interval)
+            .unwrap_or_else(|| panic!("expected E_INTERVAL, got {diagnostics:#?}"));
+        assert_eq!(diagnostic.object_path, ["line", "n"], "{diagnostic:#?}");
+        assert!(
+            diagnostic.message.contains("`opening/0/n`"),
+            "{}",
+            diagnostic.message
+        );
+        let span = diagnostic.span.expect("span");
+        assert!(
+            span.slice(&text).contains("note n"),
+            "{:?}",
+            span.slice(&text)
+        );
+    }
+}

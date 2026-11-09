@@ -453,7 +453,10 @@ impl TimingContext {
             return Err(err(
                 "E_INTERVAL",
                 "events",
-                "score onset or gate outside valid interval",
+                format!(
+                    "`{}`: score onset or gate outside valid interval",
+                    event.address
+                ),
             ));
         }
         let on = self.relative_at_score(event.score_on_q, event.onset_offset_seconds)?;
@@ -463,7 +466,10 @@ impl TimingContext {
             return Err(err(
                 "E_INTERVAL",
                 "events",
-                "resolved onset lies outside score interval",
+                format!(
+                    "`{}`: resolved onset lies outside score interval",
+                    event.address
+                ),
             ));
         }
         let on_frame = self.frame(&on, rate)?;
@@ -478,7 +484,10 @@ impl TimingContext {
                 return Err(err(
                     "E_INTERVAL",
                     "events",
-                    "effective physical gate must be positive",
+                    format!(
+                        "`{}`: effective physical gate must be positive",
+                        event.address
+                    ),
                 ));
             }
             let off_frame = self.frame(off, rate)?;
@@ -486,7 +495,10 @@ impl TimingContext {
                 return Err(err(
                     "E_SUBSAMPLE_NOTE",
                     "events",
-                    "positive note gate collapsed to one frame",
+                    format!(
+                        "`{}`: positive note gate collapsed to one frame",
+                        event.address
+                    ),
                 ));
             }
             Some(off_frame)

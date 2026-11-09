@@ -4823,7 +4823,11 @@ impl<'a> PlanView<'a> {
                 EventTimingView::ExactScore => {
                     let (on, off) = timing
                         .expect("v3 timing")
-                        .schedule_view(&event, u64::from(self.output.sample_rate_hz))?;
+                        .schedule_view(&event, u64::from(self.output.sample_rate_hz))
+                        .map_err(|error| PlanError {
+                            path: format!("events[{index}]"),
+                            ..error
+                        })?;
                     if on != event.on_frame || off != event.off_frame {
                         return Err(err(
                             "E_INTERVAL",

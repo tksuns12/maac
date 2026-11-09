@@ -5825,7 +5825,7 @@ impl<'a> Compiler<'a> {
                 if note.vibrato.is_some() {
                     let (on, off) = timing
                         .schedule(&event, u64::from(self.sample_rate))
-                        .map_err(plan_error)?;
+                        .map_err(|error| event_plan_error(error, Some(&event.source)))?;
                     if let Some(off) = off {
                         self.add_vibrato(&mut event.kind, expanded, off - on, &mut budget)?;
                     }
@@ -6029,7 +6029,7 @@ impl<'a> Compiler<'a> {
         for event in events.iter_mut() {
             (event.on_frame, event.off_frame) = timing
                 .schedule(event, u64::from(output.sample_rate_hz))
-                .map_err(plan_error)?;
+                .map_err(|error| event_plan_error(error, Some(&event.source)))?;
         }
         events.sort_by(|a, b| {
             a.on_frame
@@ -6856,7 +6856,10 @@ impl<'a> Compiler<'a> {
             if expanded.score_on_q < self.score_start || expanded.score_on_q >= self.score_end {
                 return Err(event_diagnostic(
                     DiagnosticCode::Interval,
-                    "effective note onset lies outside the score",
+                    format!(
+                        "`{}`: effective note onset lies outside the score",
+                        expanded.address
+                    ),
                     expanded,
                     &["at"],
                 ));
@@ -6877,7 +6880,10 @@ impl<'a> Compiler<'a> {
             if on_seconds < score_start_seconds || on_seconds >= score_end_seconds {
                 return Err(event_diagnostic(
                     DiagnosticCode::Interval,
-                    "effective note onset lies outside the score",
+                    format!(
+                        "`{}`: effective note onset lies outside the score",
+                        expanded.address
+                    ),
                     expanded,
                     &["onset_offset"],
                 ));
@@ -6894,7 +6900,10 @@ impl<'a> Compiler<'a> {
             if off_seconds <= on_seconds {
                 return Err(event_diagnostic(
                     DiagnosticCode::Interval,
-                    "physical note gate must be positive",
+                    format!(
+                        "`{}`: physical note gate must be positive",
+                        expanded.address
+                    ),
                     expanded,
                     &["release_offset"],
                 ));
@@ -6928,7 +6937,10 @@ impl<'a> Compiler<'a> {
             if off_frame == on_frame {
                 return Err(event_diagnostic(
                     DiagnosticCode::SubsampleNote,
-                    "positive note gate collapses to zero engine frames",
+                    format!(
+                        "`{}`: positive note gate collapses to zero engine frames",
+                        expanded.address
+                    ),
                     expanded,
                     &["dur"],
                 ));
