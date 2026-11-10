@@ -6,9 +6,9 @@ maac 1;
 // desk plays the dub: it drops parts out and back in, throws single hits into
 // a tape echo whose repeats darken and swing across the stereo field, lets the
 // echo run away and cuts it back, sweeps the drums, and cries with a siren.
-// Version 4 writes each throw in the placement of the hit it throws, and
-// renders sample for sample as version 3, whose throws were points counted
-// by hand in one curve per send (T9's F68).
+// Version 4 writes each throw in the placement of the hit it throws (T9's
+// F68). Version 5 makes the tape echo one effect with the loop inside it
+// (T9's F70); in version 4 the loop ran through the desk.
 //
 //    0q  intro: drums through a closing low-pass that opens, siren
 //   16q  riddim_a: the full riddim and the melodica
@@ -101,42 +101,41 @@ instrument siren {
 }
 
 // ---------------------------------------------------------------- effects
-// A tape echo for throws, in three parts, because an effect cannot hold a
-// feedback loop (T9's F70): the tape, what each pass does to the sound, and
-// the spread of the returns. The loop itself is in the desk below.
-effect tape {
+// A tape echo for throws. Each repeat goes back through the tape: every pass
+// saturates it, loses low end, darkens and crosses the field, because a
+// width of -1/2 sends three quarters of each side across. Above 1 the
+// regeneration runs away until the drive holds it. The returns lean from
+// side to side and open a little wider.
+effect tape_echo {
   channels = 2;
   shared main {
-    channels = 2; output = &line:out;
+    channels = 2; output = &back:out;
+    node feed { type = "synth.mix/1"; config = { channels = 2; }; }
     node line { type = "synth.delay/1"; config = { channels = 2; clock = score; max = 4s; }; params = { time = 3/4q; }; }
-    connect in_line { from = &input:out; to = &line:in; }
-  }
-  control time { target = &main.line.params.time; default = 3/4q; }
-}
-// Each pass saturates the tape, loses low end and darkens.
-effect wear {
-  channels = 2;
-  shared main {
-    channels = 2; output = &dark:out;
     node heat { type = "synth.drive/1"; config = { channels = 2; }; params = { drive = 2; reference = 1/4; }; }
     node thin { type = "synth.highpass/1"; config = { channels = 2; }; params = { cutoff = 300Hz; }; }
     node dark { type = "synth.onepole/1"; config = { channels = 2; }; params = { cutoff = 3200Hz; }; }
-    connect in_heat { from = &input:out; to = &heat:in; }
-    connect heat_thin { from = &heat:out; to = &thin:in; }
-    connect thin_dark { from = &thin:out; to = &dark:in; }
-  }
-}
-// The returns lean from side to side and open a little wider.
-effect spread {
-  channels = 2;
-  shared main {
-    channels = 2; output = &wide:out;
+    node cross { type = "synth.width/1"; params = { width = -1/2; }; }
+    node regen { type = "synth.gain/1"; config = { channels = 2; }; params = { level = 0.55; }; }
     node lean { type = "synth.balance/1"; }
     node wide { type = "synth.width/1"; params = { width = 1.3; }; }
-    connect in_lean { from = &input:out; to = &lean:in; }
+    node back { type = "synth.gain/1"; config = { channels = 2; }; }
+    connect in_feed { from = &input:out; to = &feed:in; }
+    connect feed_line { from = &feed:out; to = &line:in; }
+    connect line_heat { from = &line:out; to = &heat:in; }
+    connect heat_thin { from = &heat:out; to = &thin:in; }
+    connect thin_dark { from = &thin:out; to = &dark:in; }
+    connect dark_cross { from = &dark:out; to = &cross:in; }
+    connect cross_regen { from = &cross:out; to = &regen:in; }
+    connect regen_feed { from = &regen:out; to = &feed:in; }
+    connect dark_lean { from = &dark:out; to = &lean:in; }
     connect lean_wide { from = &lean:out; to = &wide:in; }
+    connect wide_back { from = &wide:out; to = &back:in; }
   }
+  control time { target = &main.line.params.time; default = 3/4q; }
+  control regen { target = &main.regen.params.level; default = 0.55; }
   control balance { target = &main.lean.params.balance; default = 0; }
+  control return { target = &main.back.params.level; default = 1; }
 }
 
 // A skank's guitar keeps no low end.
@@ -446,29 +445,14 @@ node reed_send { type = "core.gain/1"; config = { channels = 2; }; params = { ga
 connect snare_to_send { from = &snare:out; to = &snare_send:in; }
 connect guitar_to_send { from = &guitar_fader:out; to = &guitar_send:in; }
 connect reed_to_send { from = &reed_fader:out; to = &reed_send:in; }
-// The echo loop: tape, wear, a partial swap of the sides so the repeats
-// cross the field, one frame to break the cycle, and the regeneration gain.
-// Above 1 the echo runs away, held by the wear's drive.
-node echo { effect = &tape; }
-node worn { effect = &wear; }
-node cross { type = "core.matrix/1"; config = { inputs = 2; outputs = 2; coefficients = [[1/4, 3/4], [3/4, 1/4]]; }; }
-node gap { type = "core.delay/1"; config = { channels = 2; frames = 1; }; }
-node regen { type = "core.gain/1"; config = { channels = 2; }; params = { gain = 0.55; }; }
+// The tape echo, fed by the three sends.
+node echo { effect = &tape_echo; }
 connect snare_echo { from = &snare_send:out; to = &echo:in; }
 connect guitar_echo { from = &guitar_send:out; to = &echo:in; }
 connect reed_echo { from = &reed_send:out; to = &echo:in; }
-connect echo_wear { from = &echo:out; to = &worn:in; }
-connect wear_cross { from = &worn:out; to = &cross:in; }
-connect cross_gap { from = &cross:out; to = &gap:in; }
-connect gap_regen { from = &gap:out; to = &regen:in; }
-connect regen_echo { from = &regen:out; to = &echo:in; }
-node echo_spread { effect = &spread; }
-connect wear_spread { from = &worn:out; to = &echo_spread:in; }
-node echo_return { type = "core.gain/1"; config = { channels = 2; }; params = { gain = 1; }; }
-connect echo_back { from = &echo_spread:out; to = &echo_return:in; }
 // The returns swing across the field once every two bars.
 node swing_lfo { type = "core.lfo/1"; config = { period = 8q; }; }
-modulate echo_swing { from = &swing_lfo:out; target = &echo_spread.params.balance; amount = 0.6; }
+modulate echo_swing { from = &swing_lfo:out; target = &echo.params.balance; amount = 0.6; }
 
 // The spring: the snare and the siren.
 node spring_send { type = "core.sum/1"; config = { channels = 2; }; }
@@ -486,7 +470,7 @@ connect guitar_mix { from = &guitar_fader:out; to = &mix:in; }
 connect organ_mix { from = &organ_fader:out; to = &mix:in; }
 connect reed_mix { from = &reed_fader:out; to = &mix:in; }
 connect wail_mix { from = &wail:out; to = &mix:in; }
-connect echo_mix { from = &echo_return:out; to = &mix:in; }
+connect echo_mix { from = &echo:out; to = &mix:in; }
 connect spring_mix { from = &spring_return:out; to = &mix:in; }
 node glue { type = "fx.compressor/1"; config = { channels = 2; }; params = { threshold = -16dB; ratio = 2; knee = 6dB; attack = 15ms; release = 200ms; makeup = 0dB; }; }
 node trim { type = "core.gain/1"; config = { channels = 2; }; params = { gain = 1; }; }
@@ -527,13 +511,13 @@ automation organ_out_dub_2 { target = &organ_fader.params.gain; curve = &out_12_
 // back; in dub 2 the tape speeds up to an eighth and slows back.
 curve runaway { clock = score; points = [(0q, 0.55, linear), (6q, 1.15, step), (8q, 0.55, step)]; }
 curve last_runaway { clock = score; points = [(0q, 0.55, linear), (5q, 1.12, step), (6q, 0.75, step)]; }
-automation runaway_dub_1 { target = &regen.params.gain; curve = &runaway; at = 72q; }
-automation runaway_dub_2 { target = &regen.params.gain; curve = &runaway; at = 152q; }
-automation runaway_outro { target = &regen.params.gain; curve = &last_runaway; at = 216q; }
+automation runaway_dub_1 { target = &echo.params.regen; curve = &runaway; at = 72q; }
+automation runaway_dub_2 { target = &echo.params.regen; curve = &runaway; at = 152q; }
+automation runaway_outro { target = &echo.params.regen; curve = &last_runaway; at = 216q; }
 curve speed_up { clock = score; points = [(0q, 3/4q, linear), (2q, 1/2q, step), (14q, 1/2q, linear), (16q, 3/4q, step)]; }
 automation echo_speed { target = &echo.params.time; curve = &speed_up; at = 132q; }
 curve fade { clock = score; points = [(0q, 1, linear), (2q, 0.6, step)]; }
-automation echo_fade { target = &echo_return.params.gain; curve = &fade; at = 222q; }
+automation echo_fade { target = &echo.params.return; curve = &fade; at = 222q; }
 
 // ---------------------------------------------------------------- delivery
 asset schema { kind = descriptor; builtin = "maac.production/1"; }

@@ -251,6 +251,13 @@ maac analyze main.maac --window region:b --preroll 4 --json   # quick, approxima
   `core.delay/1` in frames does not. Give it `feedback` and `damping` for
   repeats that darken, and a `synth.onepole/1` after it to darken the first
   echo too. Return only the echoes and mix them in, as a send.
+- **Echo loops.** For repeats that each get dirtier, thinner and darker,
+  as a tape echo's do, feed the line's output back to its `in` through a
+  drive and filters inside the effect: a
+  [loop through the delay line](instruments.md#loops-through-a-delay-line).
+  A `synth.width/1` of −1/2 in the loop makes each repeat cross the field.
+  A loop gain above 1 runs away until the drive holds it, so automate it
+  up for a swell and back down below 1. "Low Tide"'s `tape_echo` is one.
 - **Desk moves.** Write each drop-out, ride or throw once, where the music
   is. A parameter can have several automations as long as they do not
   overlap, so one curve serves every drop of the same length:

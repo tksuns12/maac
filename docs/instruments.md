@@ -343,7 +343,8 @@ connect bass_mix { from = &bass_drive:out; to = &mix:in; }
   high-pass, `synth.svf/1` with ratio 0, `synth.drive/1`, mix, pan, balance,
   width and the shared LFO; and the [delay line](#delay-line), which only an
   effect may hold. A voice-only node is `E_CAPABILITY`. The graph's `channels`
-  must equal the effect's (`E_PORT_TYPE`), and it must be a DAG.
+  must equal the effect's (`E_PORT_TYPE`). A cycle in it must pass through
+  a delay line's `in` ([loops](#loops-through-a-delay-line)).
 - A `control` has `target = &graph.node.params.parameter` and a required
   `default`, as an instrument's control does, and keeps the parameter's
   unit, range and rate. An effect exposes at most 64 controls.
@@ -383,10 +384,13 @@ renders sample for sample as `core.gain/1` into `core.onepole/1`.
 
 Connections use existing `connect { from = &source:out; to = &destination:in; }`
 fields and require matching channels. Gain, filters, drive, the modal bank and pan require one input;
-mix accepts zero or more inputs (zero means silence). Every graph must be a DAG
-when both audio and modulation edges are considered. Stable ordering uses node
-IDs for topological ties and connection/modulation IDs for reductions. Feedback
-is rejected, including mixed audio/modulation cycles.
+mix accepts zero or more inputs (zero means silence). Audio and modulation
+edges together must form no same-sample cycle. The one exception is an audio
+connection into a [delay line](#loops-through-a-delay-line)'s `in`, which is
+not a same-sample dependence, so a cycle may close there. Any other cycle,
+including a mixed audio/modulation cycle, is `E_ALGEBRAIC_LOOP`, and the
+message names its nodes in order. Stable ordering uses node IDs for
+topological ties and connection/modulation IDs for reductions.
 
 | Versioned processor | Parameters (default; allowed range) | Output |
 | --- | --- | --- |
@@ -411,7 +415,7 @@ is rejected, including mixed audio/modulation cycles.
 | `synth.mix/1` | Required `config.channels`; no parameters | Mono/stereo sum |
 | `synth.pan/1` | `pan` (0; −1…1) | Equal-power stereo from mono |
 | `synth.balance/1` | `balance` (0; −1…1); stereo input | Stereo, the far side lowered (see [Stereo balance and width](#stereo-balance-and-width)) |
-| `synth.width/1` | `width` (1; 0…4); stereo input | Stereo, mid and side reweighted |
+| `synth.width/1` | `width` (1; −4…4); stereo input | Stereo, mid and side reweighted; a negative width mirrors the sides |
 | `synth.delay/1` | `time` (½ s, or 1 q on the score clock; above 0 up to 60 s or 256 q, and per frame one frame through `max`), `feedback` (0; 0…99/100), `damping` (0; 0…1); required `config.channels` and `config.max` (seconds, above 0 up to 60 s), optional `config.clock` (`seconds` or `score`; `seconds`); effects only (see [Delay line](#delay-line)) | Same channels as input |
 
 Numbers are dimensionless; seconds accept `s` and `ms`, hertz accept `Hz` and
@@ -739,7 +743,11 @@ Both take a stereo input and give a stereo output.
 - **`synth.width/1`** reweights the mid and side signals. With
   `M = (L + R)/2` and `S = (L − R)/2`, the output is `M + w·S` on the left
   and `M − w·S` on the right, for `width` `w`. At 0 the output is mono, at 1
-  it equals the input, and above 1 it is wider.
+  it equals the input, and above 1 it is wider. A negative width mirrors
+  the field: at −1 left and right swap, and at −1/2 three quarters of each
+  side cross over, `L/4 + 3R/4` on the left and `3L/4 + R/4` on the right.
+  In an echo's [loop](#loops-through-a-delay-line), each repeat then lands
+  on the other side.
 
 A top-level score-clock `core.lfo/1` on an effect control that targets
 `balance` moves a stereo part from side to side in time with the tempo.
@@ -747,8 +755,10 @@ A top-level score-clock `core.lfo/1` on an effect control that targets
 ### Delay line
 
 `synth.delay/1` delays its input by a length that is a parameter, so it can
-change from frame to frame, and feeds its delayed signal back inside the
-node. Only an [effect](#effects) may hold one.
+change from frame to frame. It feeds its delayed signal back inside the
+node, and a graph may also feed the line's output back to its `in` through
+other nodes ([loops](#loops-through-a-delay-line)). Only an
+[effect](#effects) may hold one.
 
 ```maac
 effect echo {
@@ -798,6 +808,58 @@ delayed value `r`, outputs it, and writes `input + feedback · f`, where
 previous frame's `r`. This is the damping `fx.reverb/1` applies in its loop:
 it darkens each repeat. The output is the delayed signal only; an effect
 mixes it with the dry signal, as above.
+
+#### Loops through a delay line
+
+A length is at least one frame, so what the line outputs in a frame was
+written in earlier frames. Its output does not depend on its `in` in the
+same frame, and a cycle in an effect's graph may close through a delay
+line's `in`. Every repeat can then pass through other nodes again, as a
+tape echo's does:
+
+```maac
+effect tape_echo {
+  channels = 2;
+  shared main {
+    channels = 2; output = &dark:out;
+    node feed { type = "synth.mix/1"; config = { channels = 2; }; }
+    node line { type = "synth.delay/1"; config = { channels = 2; clock = score; max = 4s; }; params = { time = 3/4q; }; }
+    node heat { type = "synth.drive/1"; config = { channels = 2; }; params = { drive = 2; reference = 1/4; }; }
+    node thin { type = "synth.highpass/1"; config = { channels = 2; }; params = { cutoff = 300Hz; }; }
+    node dark { type = "synth.onepole/1"; config = { channels = 2; }; params = { cutoff = 3200Hz; }; }
+    node regen { type = "synth.gain/1"; config = { channels = 2; }; params = { level = 0.55; }; }
+    connect in_feed { from = &input:out; to = &feed:in; }
+    connect feed_line { from = &feed:out; to = &line:in; }
+    connect line_heat { from = &line:out; to = &heat:in; }
+    connect heat_thin { from = &heat:out; to = &thin:in; }
+    connect thin_dark { from = &thin:out; to = &dark:in; }
+    connect dark_regen { from = &dark:out; to = &regen:in; }
+    connect regen_feed { from = &regen:out; to = &feed:in; }
+  }
+  control time { target = &main.line.params.time; default = 3/4q; }
+  control regen { target = &main.regen.params.level; default = 0.55; }
+}
+```
+
+- **Each pass.** Every repeat goes through the drive and the filters again,
+  so it comes out dirtier, thinner and darker than the one before, and each
+  pass takes exactly the line's `time`.
+- **Gain above one.** The repeats grow until something in the loop, such
+  as a drive, holds them. Nothing limits a loop silently: one that grows
+  without bound stops the render at its first nonfinite sample with
+  `E_NONFINITE`.
+- **Still refused.** A cycle that passes through no delay line, or one that
+  closes through a line's `time` because something in the loop modulates
+  it, is `E_ALGEBRAIC_LOOP`.
+- **Order.** In each frame, a line produces its output once whatever
+  modulates it has run, in its place in the graph's stable order. It writes
+  its input after the rest of the graph has run. A graph without a cycle
+  therefore renders as it did before loops were allowed.
+- **Where.** Only an effect may hold a delay line, so an instrument's
+  graphs have no cycles. An effect node still declares that its output
+  depends on its input in the same frame, so it does not break a cycle in
+  the project graph; `core.delay/1` does
+  ([§16](../MaaC-1-Specification.md#16-causality-and-graph-execution)).
 
 **State and work.** The line and `r_prev` reset at the reset origin and run
 through the tail. Work charges 1 unit per sample, or 2 on the score clock,

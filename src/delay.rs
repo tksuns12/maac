@@ -156,22 +156,18 @@ impl DelayLine {
         self.tempo = Some(Arc::clone(tempo));
     }
 
-    /// Process engine frame `frame`: read the line `time` (seconds, or
-    /// quarter notes with `score`) earlier, interpolating linearly between
-    /// frames, and write `input + feedback * damped`. Returns the delayed
-    /// value. Without `commit` the line is left as it was.
-    #[allow(clippy::too_many_arguments)]
-    pub fn process(
-        &mut self,
+    /// The line's output at engine frame `frame`: its input `time` (seconds,
+    /// or quarter notes with `score`) earlier, interpolated linearly between
+    /// frames. A length is at least one frame, so the output depends only on
+    /// what earlier frames wrote, and a graph may feed it back to `in`.
+    pub fn read(
+        &self,
         frame: u64,
         rate: f64,
-        input: [f64; 2],
         channels: usize,
         score: bool,
-        params: [f64; 3],
-        commit: bool,
+        time: f64,
     ) -> Result<[f64; 2]> {
-        let [time, feedback, damping] = params;
         let max_frames = (self.buffer.len() - 2) as f64;
         let frames = if score {
             self.tempo
@@ -211,25 +207,46 @@ impl DelayLine {
             [0.0; 2]
         };
         let mut output = [0.0; 2];
-        let mut written = [0.0; 2];
         for channel in 0..channels {
             let delayed = earlier[channel] * (1.0 - fraction) + later[channel] * fraction;
-            let damped = (1.0 - damping / 2.0) * delayed + (damping / 2.0) * self.previous[channel];
-            let write = input[channel] + feedback * damped;
-            if !delayed.is_finite() || !write.is_finite() {
-                return Err(RenderError::Nonfinite(format!(
-                    "delay at frame {frame} produced a nonfinite value"
-                )));
+            if !delayed.is_finite() {
+                return Err(nonfinite(frame));
             }
             output[channel] = delayed;
-            written[channel] = write;
-        }
-        if commit {
-            self.buffer[(frame % length) as usize] = written;
-            self.previous = output;
         }
         Ok(output)
     }
+
+    /// Write frame `frame`'s `input + feedback * damped`, where `delayed` is
+    /// what [`Self::read`] returned for this frame.
+    pub fn write(
+        &mut self,
+        frame: u64,
+        input: [f64; 2],
+        delayed: [f64; 2],
+        channels: usize,
+        feedback: f64,
+        damping: f64,
+    ) -> Result<()> {
+        let mut written = [0.0; 2];
+        for channel in 0..channels {
+            let damped =
+                (1.0 - damping / 2.0) * delayed[channel] + (damping / 2.0) * self.previous[channel];
+            let write = input[channel] + feedback * damped;
+            if !write.is_finite() {
+                return Err(nonfinite(frame));
+            }
+            written[channel] = write;
+        }
+        let length = self.buffer.len() as u64;
+        self.buffer[(frame % length) as usize] = written;
+        self.previous = delayed;
+        Ok(())
+    }
+}
+
+fn nonfinite(frame: u64) -> RenderError {
+    RenderError::Nonfinite(format!("delay at frame {frame} produced a nonfinite value"))
 }
 
 #[cfg(test)]
@@ -306,16 +323,9 @@ mod tests {
         for frame in 0..8 {
             let input = if frame == 0 { [1.0, 0.0] } else { [0.0; 2] };
             let delayed = line
-                .process(
-                    frame,
-                    48_000.0,
-                    input,
-                    1,
-                    false,
-                    [2.5 / 48_000.0, 0.5, 0.0],
-                    true,
-                )
+                .read(frame, 48_000.0, 1, false, 2.5 / 48_000.0)
                 .unwrap();
+            line.write(frame, input, delayed, 1, 0.5, 0.0).unwrap();
             out.push(delayed[0]);
         }
         // An impulse 2.5 frames late lands half at frame 2 and half at 3. Fed
@@ -325,15 +335,7 @@ mod tests {
         assert_eq!(&out[..4], &[0.0, 0.0, 0.5, 0.5]);
         assert_eq!(&out[4..7], &[0.125, 0.25, 0.15625]);
         let error = DelayLine::new(4)
-            .process(
-                0,
-                48_000.0,
-                [0.0; 2],
-                1,
-                false,
-                [5.0 / 48_000.0, 0.0, 0.0],
-                true,
-            )
+            .read(0, 48_000.0, 1, false, 5.0 / 48_000.0)
             .unwrap_err();
         assert!(matches!(error, RenderError::Plan(ref plan) if plan.code == "E_RANGE"));
     }

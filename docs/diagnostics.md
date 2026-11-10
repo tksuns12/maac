@@ -20,7 +20,8 @@ UTF-8 byte ranges; they refer to the original authored source.
 | `E_INSTANCE_TARGET` | Correct an override's or a placement automation's occurrence address after a structural edit |
 | `E_AUTOMATION_WRITER` | Move an automation so that it starts after the one before it on the parameter ends, or join the two into one curve |
 | `E_CAPABILITY` | The declared feature is outside the foundation capability set |
-| `E_PORT_TYPE`, `E_ALGEBRAIC_LOOP` | Correct channel/port/cardinality mismatches or cyclic routing |
+| `E_PORT_TYPE` | Correct channel/port/cardinality mismatches |
+| `E_ALGEBRAIC_LOOP` | Break the cycle the message names: in the project graph with `core.delay/1`, in an effect by passing the loop through a `synth.delay/1`'s `in` |
 | `E_VOICE_LIMIT` | Increase declared capacity within bounds or reduce overlapping notes or one-shot sample lifetimes |
 | `E_NONFINITE` | Reduce values that make a DSP or export calculation nonfinite |
 | `E_PCM16_RANGE` | Keep raw samples within `[-1,1]` before PCM16 export; samples are never clipped or normalized |

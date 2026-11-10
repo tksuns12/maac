@@ -1229,7 +1229,7 @@ fn descriptor(processor: &GraphProcessor, name: &str) -> Option<ParameterSpec> {
             (name == "balance").then(|| dimensionless(ParameterRate::Sample, 0, -1, 1))
         }
         GraphProcessor::Width => {
-            (name == "width").then(|| dimensionless(ParameterRate::Sample, 1, 0, 4))
+            (name == "width").then(|| dimensionless(ParameterRate::Sample, 1, -4, 4))
         }
         GraphProcessor::Delay { clock, .. } => match name {
             // The length's range here is static; the node also checks each
@@ -1309,7 +1309,9 @@ pub fn validate_graph(
 }
 
 /// Return node indices in deterministic dependency order. Audio and
-/// modulation edges both participate; node IDs break ties.
+/// modulation edges both participate; node IDs break ties. An audio
+/// connection into a `synth.delay/1` does not: the line's output in a frame
+/// was written in earlier frames, so a cycle may close through its `in`.
 pub fn topological_order(graph: &GraphProgram) -> Result<Vec<usize>, PlanError> {
     validate_graph_resources(graph, "graph")?;
     let mut index = HashMap::with_capacity(graph.nodes.len());
@@ -1324,7 +1326,8 @@ pub fn topological_order(graph: &GraphProgram) -> Result<Vec<usize>, PlanError> 
     }
     let mut indegree = vec![0usize; graph.nodes.len()];
     let mut outgoing = vec![Vec::new(); graph.nodes.len()];
-    for (path, from, to) in graph
+    let mut incoming = vec![Vec::new(); graph.nodes.len()];
+    for (path, from, to, audio) in graph
         .connections
         .iter()
         .map(|edge| {
@@ -1332,6 +1335,7 @@ pub fn topological_order(graph: &GraphProgram) -> Result<Vec<usize>, PlanError> 
                 format!("connections.{}", edge.id),
                 &edge.from.node,
                 &edge.to.node,
+                true,
             )
         })
         .chain(graph.modulations.iter().map(|edge| {
@@ -1339,6 +1343,7 @@ pub fn topological_order(graph: &GraphProgram) -> Result<Vec<usize>, PlanError> 
                 format!("modulations.{}", edge.id),
                 &edge.from.node,
                 &edge.to.node,
+                false,
             )
         }))
     {
@@ -1359,8 +1364,17 @@ pub fn topological_order(graph: &GraphProgram) -> Result<Vec<usize>, PlanError> 
                 "target node does not exist",
             ));
         };
+        if audio
+            && matches!(
+                graph.nodes[to_index].processor,
+                GraphProcessor::Delay { .. }
+            )
+        {
+            continue;
+        }
         indegree[to_index] = indegree[to_index].saturating_add(1);
         outgoing[from_index].push(to_index);
+        incoming[to_index].push(from_index);
     }
 
     let mut ready = BTreeSet::new();
@@ -1381,13 +1395,64 @@ pub fn topological_order(graph: &GraphProgram) -> Result<Vec<usize>, PlanError> 
         }
     }
     if order.len() != graph.nodes.len() {
+        let cycle = same_sample_cycle(graph, &indegree, &incoming);
         return Err(error(
             "E_ALGEBRAIC_LOOP",
             "graph",
-            "audio and modulation graph must be acyclic",
+            format!(
+                "same-sample cycle {}: a cycle must pass through a delay line's `in`",
+                cycle.join(" -> ")
+            ),
         ));
     }
     Ok(order)
+}
+
+/// One cycle among the nodes that a topological sort left unordered, as node
+/// IDs from its least ID around to that ID again. Each such node still has
+/// an unordered predecessor, so walking back from one must repeat a node.
+fn same_sample_cycle(
+    graph: &GraphProgram,
+    indegree: &[usize],
+    incoming: &[Vec<usize>],
+) -> Vec<String> {
+    let id = |index: usize| graph.nodes[index].id.as_str();
+    let unordered = |index: &usize| indegree[*index] > 0;
+    let Some(start) = (0..graph.nodes.len())
+        .filter(unordered)
+        .min_by_key(|&i| id(i))
+    else {
+        return Vec::new();
+    };
+    let mut walk = vec![start];
+    let mut seen = BTreeMap::from([(start, 0usize)]);
+    let first = loop {
+        let current = *walk.last().expect("the walk starts with a node");
+        let Some(previous) = incoming[current]
+            .iter()
+            .copied()
+            .filter(unordered)
+            .min_by_key(|&i| id(i))
+        else {
+            return vec![id(start).to_owned()];
+        };
+        if let Some(&position) = seen.get(&previous) {
+            break position;
+        }
+        seen.insert(previous, walk.len());
+        walk.push(previous);
+    };
+    // The walk went against the edges; the cycle runs the other way.
+    let mut cycle: Vec<usize> = walk[first..].iter().rev().copied().collect();
+    let least = (0..cycle.len())
+        .min_by_key(|&i| id(cycle[i]))
+        .expect("a cycle has a node");
+    cycle.rotate_left(least);
+    cycle.push(cycle[0]);
+    cycle
+        .into_iter()
+        .map(|index| id(index).to_owned())
+        .collect()
 }
 
 fn validate_graph_resources(graph: &GraphProgram, path: &str) -> Result<(), PlanError> {

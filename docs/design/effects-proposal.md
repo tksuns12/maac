@@ -276,7 +276,9 @@ recommendations").
    shared-graph `synth.*` nodes directly as project nodes.
 2. **Feedback in the delay:** inside the node, with `feedback` and
    `damping` (recommended). The alternative allows cycles through the delay
-   in effect graphs.
+   in effect graphs. The [effect loops proposal](effect-loops-proposal.md)
+   reversed this on 2026-11-10, after T9 showed that a tape echo's repeats
+   must pass through a drive and filters again.
 3. **A delay in beats:** measured in score time, so an echo lands on the
    beat across a tempo ramp (recommended). The alternative counts beats at
    the current tempo, which drifts off the beat during a ramp.

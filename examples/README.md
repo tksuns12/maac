@@ -567,9 +567,12 @@ in MaaC during the
 - the desk as effects. A sweep runs on the drum bus. A tape echo on the
   score clock changes from a dotted eighth to an eighth and back, and a
   score-clock LFO swings its returns across the stereo field;
-- a feedback loop in the project graph, broken by one frame of
-  `core.delay/1`. Each pass darkens and thins the repeats, and above unity
-  gain the echo runs away until the desk cuts it back;
+- a tape echo that is one effect, `tape_echo`, with its feedback loop
+  inside it. Each pass goes through the drive and filters again, so the
+  repeats darken and thin, and a width of −1/2 sends each repeat across the
+  field. Above unity gain the echo runs away until the desk cuts it back.
+  Version 4 ran this loop through the project graph, broken by one frame of
+  `core.delay/1` (the report's F70);
 - the dub's moves written with the music. Each of the 27 throws into the
   echo is an automation in the placement of the hit it throws, such as
   `automation bar_14 { event = "9/s"; ... }` in `snare_main`, and each

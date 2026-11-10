@@ -7,6 +7,18 @@ promise of compatibility beyond the documented interfaces.
 
 ### Added
 
+- Feedback inside effects
+  ([effect loops proposal](docs/design/effect-loops-proposal.md), T9's F70).
+  A cycle in an effect's graph may close through a `synth.delay/1`'s `in`,
+  since a line's output in a frame was written in earlier frames. Each
+  repeat of an echo can then pass through a drive and filters again, and a
+  loop gain above 1 runs away until the drive holds it. A tape echo that
+  wears and runs away is now one effect, which a library can export. Any
+  other cycle is still `E_ALGEBRAIC_LOOP`, and the message now names the
+  cycle's nodes. `synth.width/1` accepts a width from −4 to 4: a negative
+  width mirrors the sides, so −1 swaps left and right. A graph without a
+  cycle renders the same samples; a renderer from before this change
+  refuses a plan with a loop or a negative width.
 - Desk moves that travel with the music
   ([desk moves proposal](docs/design/desk-moves-proposal.md), T9's F68).
   A parameter can have several automations, as long as they do not overlap
@@ -26,11 +38,13 @@ promise of compatibility beyond the documented interfaces.
   from the [T9 production trial](docs/reports/ai-production-trial-t9.md), the
   first trial on 0.5.0's effects. The desk plays the dub. A sweep runs on the
   drum bus. The tape echo's time is written in beats and changes in beats.
-  Its returns swing across the stereo field. A feedback loop in the project
-  graph darkens each repeat and runs away. Version 4 writes its 27 throws
-  in the placements of the hits they throw and renders sample for sample as
-  version 3, whose throws and drop-outs were points counted by hand in one
-  curve per parameter.
+  Its returns swing across the stereo field. A feedback loop darkens each
+  repeat and runs away. Version 4 writes its 27 throws in the placements of
+  the hits they throw and renders sample for sample as version 3, whose
+  throws and drop-outs were points counted by hand in one curve per
+  parameter. Version 5 makes the tape echo one effect with the loop inside
+  it, where version 4 ran the loop through the project graph with one extra
+  frame on each pass.
 
 ### Fixed
 

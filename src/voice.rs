@@ -64,6 +64,9 @@ const BLOCK_FRAMES: usize = 128;
 struct CompiledGraph {
     nodes: Vec<CompiledNode>,
     order: Vec<usize>,
+    /// The `synth.delay/1` nodes, in `order`. Each reads its line in its
+    /// place in the order and writes its input after the rest of the graph.
+    delays: Vec<usize>,
     has_note_on_modulations: bool,
     has_note_off_modulations: bool,
     has_reset_modulations: bool,
@@ -1697,6 +1700,16 @@ impl GraphState {
         // until a control changes, so it keeps the values it already checked.
         let settled = self.settled_controls.as_deref() == Some(controls);
         let input_at = |offset: usize| input.map_or([0.0; 2], |input| input[offset]);
+        if !graph.delays.is_empty() && frames > 1 {
+            // A line may feed back to its own input one frame later, so a
+            // block cannot run node by node.
+            return (
+                0,
+                Some(RenderError::RenderState(
+                    "a graph with a delay line renders one frame at a time".into(),
+                )),
+            );
+        }
         let mut limit = frames;
         let mut error = None;
         for &node_index in &graph.order {
@@ -1753,25 +1766,17 @@ impl GraphState {
                     }
                 }
                 let mut audio_input = [0.0; 2];
-                let mut failure = None;
-                'sum: for source in &compiled.incoming {
-                    let source = match source {
+                if !matches!(compiled.processor, ProcessorCode::Delay(..)) {
+                    match sum_incoming(compiled, |source| match source {
                         Source::Input => input_at(offset),
                         Source::Node(index) => scratch[index * stride + offset],
-                    };
-                    for channel in 0..2 {
-                        audio_input[channel] += source[channel];
-                        if !audio_input[channel].is_finite() {
-                            failure = Some(RenderError::Nonfinite(
-                                "instrument graph input sum is nonfinite".into(),
-                            ));
-                            break 'sum;
+                    }) {
+                        Ok(sum) => audio_input = sum,
+                        Err(failure) => {
+                            stopped = Some((offset, failure));
+                            break;
                         }
                     }
-                }
-                if let Some(failure) = failure {
-                    stopped = Some((offset, failure));
-                    break;
                 }
                 let (pitch_hz, timbre, pressure) = expressions[offset];
                 let runtime = &mut self.nodes[node_index];
@@ -1799,6 +1804,39 @@ impl GraphState {
                 error = Some(failure);
             }
         }
+        for &node_index in &graph.delays {
+            if limit == 0 {
+                break;
+            }
+            let compiled = &graph.nodes[node_index];
+            let written = sum_incoming(compiled, |source| match source {
+                Source::Input => input_at(0),
+                Source::Node(index) => scratch[index * stride],
+            })
+            .and_then(|sum| {
+                let runtime = &mut self.nodes[node_index];
+                let (ProcessorCode::Delay(channels, ..), ProcessorState::Delay(line)) =
+                    (&compiled.processor, &mut runtime.state)
+                else {
+                    return Err(RenderError::RenderState(format!(
+                        "instrument graph node {} has mismatched compiled state",
+                        compiled.id
+                    )));
+                };
+                line.write(
+                    start,
+                    sum,
+                    scratch[node_index * stride],
+                    *channels,
+                    runtime.params[1],
+                    runtime.params[2],
+                )
+            });
+            if let Err(failure) = written {
+                limit = 0;
+                error = Some(failure);
+            }
+        }
         if !settled && error.is_none() && frames > 0 {
             match &mut self.settled_controls {
                 Some(previous) => previous.clone_from_slice(controls),
@@ -1807,6 +1845,23 @@ impl GraphState {
         }
         (limit, error)
     }
+}
+
+/// The sum of a node's audio connections, in connection-ID order.
+fn sum_incoming(compiled: &CompiledNode, value: impl Fn(&Source) -> [f64; 2]) -> Result<[f64; 2]> {
+    let mut sum = [0.0; 2];
+    for source in &compiled.incoming {
+        let source = value(source);
+        for channel in 0..2 {
+            sum[channel] += source[channel];
+            if !sum[channel].is_finite() {
+                return Err(RenderError::Nonfinite(
+                    "instrument graph input sum is nonfinite".into(),
+                ));
+            }
+        }
+    }
+    Ok(sum)
 }
 
 fn capture_dependency_masks(
@@ -2284,15 +2339,10 @@ fn process_graph_node(
             output = [mid + params[0] * side, mid - params[0] * side];
         }
         (ProcessorCode::Delay(channels, score, _), ProcessorState::Delay(line)) => {
-            output = line.process(
-                frame,
-                rate,
-                audio_input,
-                *channels,
-                *score,
-                [params[0], params[1], params[2]],
-                commit,
-            )?;
+            // The input is written after the rest of the graph has run; see
+            // `GraphState::write_delays`.
+            let _ = (audio_input, commit);
+            output = line.read(frame, rate, *channels, *score, params[0])?;
         }
         _ => {
             return Err(RenderError::RenderState(format!(
@@ -2421,8 +2471,14 @@ fn compile_graph(
     let has_reset_modulations = nodes.iter().any(|node| node.has_reset_modulations);
     let (note_on_required, note_off_required, reset_required) =
         capture_dependency_masks(&nodes, &order);
+    let delays = order
+        .iter()
+        .copied()
+        .filter(|&index| matches!(nodes[index].processor, ProcessorCode::Delay(..)))
+        .collect();
     Ok(CompiledGraph {
         order,
+        delays,
         has_note_on_modulations,
         has_note_off_modulations,
         has_reset_modulations,
