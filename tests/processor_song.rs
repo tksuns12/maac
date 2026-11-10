@@ -222,42 +222,26 @@ N(A) sha256:bb3692fc6e535cf416c78f5a6c628f7b7b5f2638fb42843fa0517221bc759969
 work 7354084
 ";
 
-const IDENTITIES: [&str; 27] = [
-    "synth.sine/1",
-    "synth.saw/1",
-    "synth.square/1",
-    "synth.triangle/1",
-    "synth.noise/1",
-    "synth.pluck/1",
-    "synth.random/1",
-    "synth.modal/1",
-    "synth.bow/1",
-    "synth.wavetable/1",
-    "synth.sample/1",
-    "synth.adsr/1",
-    "synth.timbre/1",
-    "synth.pressure/1",
-    "synth.velocity/1",
-    "synth.key/1",
-    "synth.lfo/1",
-    "synth.gain/1",
-    "synth.onepole/1",
-    "synth.highpass/1",
-    "synth.svf/1",
-    "synth.drive/1",
-    "synth.mix/1",
-    "synth.pan/1",
-    "synth.balance/1",
-    "synth.width/1",
-    "synth.delay/1",
-];
+/// Every processor the facts snapshot names, which a unit test keeps equal
+/// to the crate's declarations.
+fn identities() -> Vec<String> {
+    let facts = include_str!("fixtures/processor_facts.txt");
+    let mut identities: Vec<String> = facts
+        .lines()
+        .filter_map(|line| line.strip_prefix(r#"{"kind":""#))
+        .map(|rest| rest[..rest.find('"').unwrap()].to_string())
+        .collect();
+    identities.dedup();
+    identities
+}
 
 #[test]
 fn the_song_of_every_processor_uses_every_processor_and_renders() {
     let source = SOURCE;
-    let mut missing: Vec<&str> = IDENTITIES
+    let identities = identities();
+    assert_eq!(identities.len(), 27, "{identities:?}");
+    let mut missing: Vec<&String> = identities
         .iter()
-        .copied()
         .filter(|identity| !source.contains(&format!("\"{identity}\"")))
         .collect();
     missing.sort();
