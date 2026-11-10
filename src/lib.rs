@@ -114,6 +114,8 @@ pub fn load_plan_with_limits(
 }
 
 #[cfg(test)]
+mod processor_facts;
+#[cfg(test)]
 mod syntax_tests;
 
 pub use export::{

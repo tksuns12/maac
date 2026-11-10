@@ -6473,7 +6473,7 @@ fn validate_identifier_limit(
 /// Per-sample work of one instrument graph: one unit per node (a pluck,
 /// resonant filter, drive, modal bank or bowed section costs more),
 /// connection, and modulation edge.
-fn graph_sample_cost(graph: &crate::graph::GraphProgram) -> u64 {
+pub(crate) fn graph_sample_cost(graph: &crate::graph::GraphProgram) -> u64 {
     graph
         .nodes
         .iter()

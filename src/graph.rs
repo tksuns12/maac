@@ -432,7 +432,7 @@ impl GraphProcessor {
         }
     }
 
-    fn output_channels(&self) -> u8 {
+    pub(crate) fn output_channels(&self) -> u8 {
         match self {
             Self::Gain { channels }
             | Self::OnePole { channels }
@@ -448,7 +448,7 @@ impl GraphProcessor {
         }
     }
 
-    fn required_input_channels(&self) -> Option<u8> {
+    pub(crate) fn required_input_channels(&self) -> Option<u8> {
         match self {
             Self::Gain { channels }
             | Self::OnePole { channels }
@@ -463,11 +463,11 @@ impl GraphProcessor {
         }
     }
 
-    fn accepts_many_inputs(&self) -> bool {
+    pub(crate) fn accepts_many_inputs(&self) -> bool {
         matches!(self, Self::Mix { .. })
     }
 
-    fn forbidden_in_shared(&self) -> bool {
+    pub(crate) fn forbidden_in_shared(&self) -> bool {
         matches!(
             self,
             Self::Sine

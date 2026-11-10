@@ -2382,7 +2382,8 @@ fn compile_graph(
         .collect();
     let mut nodes = Vec::with_capacity(graph.nodes.len());
     for node in &graph.nodes {
-        let (names, processor) = compile_processor(&node.processor, tables, samples)?;
+        let names = slot_names(&node.processor);
+        let processor = compile_processor(&node.processor, tables, samples)?;
         if names.len() > MAX_PARAMETER_SLOTS {
             return Err(RenderError::RenderState(format!(
                 "graph node {} has {} parameter slots, more than {MAX_PARAMETER_SLOTS}",
@@ -2513,112 +2514,112 @@ const BOW_PARAMETERS: &[&str] = &[
     "pan", "level",
 ];
 
+/// The parameter slots of a node of `processor`, in the order its kernel
+/// reads them.
+pub(crate) fn slot_names(processor: &GraphProcessor) -> &'static [&'static str] {
+    const OSCILLATOR: &[&str] = &["ratio", "frequency", "phase", "level"];
+    match processor {
+        GraphProcessor::Sine
+        | GraphProcessor::Saw
+        | GraphProcessor::Square
+        | GraphProcessor::Triangle => OSCILLATOR,
+        GraphProcessor::Noise { .. } | GraphProcessor::Gain { .. } => &["level"],
+        GraphProcessor::Random { .. }
+        | GraphProcessor::Timbre
+        | GraphProcessor::Pressure
+        | GraphProcessor::Velocity
+        | GraphProcessor::Key
+        | GraphProcessor::Mix { .. } => &[],
+        GraphProcessor::Pluck { .. } => &[
+            "ratio", "decay", "damping", "level", "hardness", "position", "pickup",
+        ],
+        GraphProcessor::Modal { .. } => &[
+            "ratio", "stretch", "decay", "damping", "position", "detune", "level",
+        ],
+        GraphProcessor::Bow { .. } => BOW_PARAMETERS,
+        GraphProcessor::Wavetable { .. } => &["ratio", "frequency", "phase", "level", "position"],
+        GraphProcessor::Sample { .. } => &["ratio", "frequency", "level"],
+        GraphProcessor::Adsr { .. } => &["attack", "decay", "sustain", "release", "curve"],
+        GraphProcessor::Lfo => &["frequency", "phase", "level"],
+        GraphProcessor::OnePole { .. } | GraphProcessor::HighPass { .. } => &["cutoff"],
+        GraphProcessor::Svf { .. } => &["cutoff", "ratio", "q"],
+        GraphProcessor::Drive { .. } => &["drive", "bias", "level", "reference"],
+        GraphProcessor::Pan => &["pan"],
+        GraphProcessor::Balance => &["balance"],
+        GraphProcessor::Width => &["width"],
+        GraphProcessor::Delay { .. } => &["time", "feedback", "damping"],
+    }
+}
+
 fn compile_processor(
     processor: &GraphProcessor,
     tables: &BTreeMap<String, Arc<TableBank>>,
     samples: &BTreeMap<String, Arc<SamplePlayback>>,
-) -> Result<(&'static [&'static str], ProcessorCode)> {
-    const OSCILLATOR: &[&str] = &["ratio", "frequency", "phase", "level"];
+) -> Result<ProcessorCode> {
     Ok(match processor {
-        GraphProcessor::Sine => (OSCILLATOR, ProcessorCode::Oscillator(Waveform::Sine)),
-        GraphProcessor::Saw => (OSCILLATOR, ProcessorCode::Oscillator(Waveform::Saw)),
-        GraphProcessor::Square => (OSCILLATOR, ProcessorCode::Oscillator(Waveform::Square)),
-        GraphProcessor::Triangle => (OSCILLATOR, ProcessorCode::Oscillator(Waveform::Triangle)),
-        GraphProcessor::Noise { seed, per_note } => {
-            (&["level"], ProcessorCode::Noise(*seed, *per_note))
-        }
-        GraphProcessor::Random { seed } => (&[], ProcessorCode::Random(*seed)),
-        GraphProcessor::Pluck { seed } => (
-            &[
-                "ratio", "decay", "damping", "level", "hardness", "position", "pickup",
-            ],
-            ProcessorCode::Pluck(*seed),
-        ),
-        GraphProcessor::Modal { modes, strings } => (
-            &[
-                "ratio", "stretch", "decay", "damping", "position", "detune", "level",
-            ],
-            ProcessorCode::Modal(*modes, *strings),
-        ),
+        GraphProcessor::Sine => ProcessorCode::Oscillator(Waveform::Sine),
+        GraphProcessor::Saw => ProcessorCode::Oscillator(Waveform::Saw),
+        GraphProcessor::Square => ProcessorCode::Oscillator(Waveform::Square),
+        GraphProcessor::Triangle => ProcessorCode::Oscillator(Waveform::Triangle),
+        GraphProcessor::Noise { seed, per_note } => ProcessorCode::Noise(*seed, *per_note),
+        GraphProcessor::Random { seed } => ProcessorCode::Random(*seed),
+        GraphProcessor::Pluck { seed } => ProcessorCode::Pluck(*seed),
+        GraphProcessor::Modal { modes, strings } => ProcessorCode::Modal(*modes, *strings),
         GraphProcessor::Bow {
             players,
             body,
             channels,
             seed,
-        } => (
-            BOW_PARAMETERS,
-            ProcessorCode::Bow(*players, *body, *channels, *seed),
-        ),
-        GraphProcessor::Wavetable { table } => (
-            &["ratio", "frequency", "phase", "level", "position"],
+        } => ProcessorCode::Bow(*players, *body, *channels, *seed),
+        GraphProcessor::Wavetable { table } => {
             ProcessorCode::Wavetable(tables.get(table).cloned().ok_or_else(|| {
                 RenderError::RenderState(format!("wavetable {table} has no prebuilt table bank"))
-            })?),
-        ),
+            })?)
+        }
         GraphProcessor::Sample {
             channels,
             zones,
             fade_shape,
-        } => (
-            &["ratio", "frequency", "level"],
-            ProcessorCode::Sample(Arc::new(CompiledSampleNode {
-                channels: usize::from(*channels),
-                zones: zones.clone(),
-                playbacks: zones
-                    .iter()
-                    .map(|zone| {
-                        samples.get(&zone.sample).cloned().ok_or_else(|| {
-                            RenderError::RenderState(format!(
-                                "sample {} is not embedded",
-                                zone.sample
-                            ))
-                        })
+        } => ProcessorCode::Sample(Arc::new(CompiledSampleNode {
+            channels: usize::from(*channels),
+            zones: zones.clone(),
+            playbacks: zones
+                .iter()
+                .map(|zone| {
+                    samples.get(&zone.sample).cloned().ok_or_else(|| {
+                        RenderError::RenderState(format!("sample {} is not embedded", zone.sample))
                     })
-                    .collect::<Result<_>>()?,
-                fade_shape: *fade_shape,
-            })),
-        ),
-        GraphProcessor::Adsr { on_join } => (
-            &["attack", "decay", "sustain", "release", "curve"],
-            ProcessorCode::Adsr(*on_join == crate::graph::AdsrJoin::Restart),
-        ),
-        GraphProcessor::Timbre => (&[], ProcessorCode::Timbre),
-        GraphProcessor::Pressure => (&[], ProcessorCode::Pressure),
-        GraphProcessor::Velocity => (&[], ProcessorCode::Velocity),
-        GraphProcessor::Key => (&[], ProcessorCode::Key),
-        GraphProcessor::Lfo => (&["frequency", "phase", "level"], ProcessorCode::Lfo),
-        GraphProcessor::Gain { channels } => (&["level"], ProcessorCode::Gain(*channels as usize)),
-        GraphProcessor::OnePole { channels } => {
-            (&["cutoff"], ProcessorCode::OnePole(*channels as usize))
+                })
+                .collect::<Result<_>>()?,
+            fade_shape: *fade_shape,
+        })),
+        GraphProcessor::Adsr { on_join } => {
+            ProcessorCode::Adsr(*on_join == crate::graph::AdsrJoin::Restart)
         }
-        GraphProcessor::HighPass { channels } => {
-            (&["cutoff"], ProcessorCode::HighPass(*channels as usize))
-        }
-        GraphProcessor::Svf { channels, mode } => (
-            &["cutoff", "ratio", "q"],
-            ProcessorCode::Svf(*channels as usize, *mode),
-        ),
-        GraphProcessor::Drive { channels } => (
-            &["drive", "bias", "level", "reference"],
-            ProcessorCode::Drive(*channels as usize),
-        ),
-        GraphProcessor::Mix { channels } => (&[], ProcessorCode::Mix(*channels as usize)),
-        GraphProcessor::Pan => (&["pan"], ProcessorCode::Pan),
-        GraphProcessor::Balance => (&["balance"], ProcessorCode::Balance),
-        GraphProcessor::Width => (&["width"], ProcessorCode::Width),
+        GraphProcessor::Timbre => ProcessorCode::Timbre,
+        GraphProcessor::Pressure => ProcessorCode::Pressure,
+        GraphProcessor::Velocity => ProcessorCode::Velocity,
+        GraphProcessor::Key => ProcessorCode::Key,
+        GraphProcessor::Lfo => ProcessorCode::Lfo,
+        GraphProcessor::Gain { channels } => ProcessorCode::Gain(*channels as usize),
+        GraphProcessor::OnePole { channels } => ProcessorCode::OnePole(*channels as usize),
+        GraphProcessor::HighPass { channels } => ProcessorCode::HighPass(*channels as usize),
+        GraphProcessor::Svf { channels, mode } => ProcessorCode::Svf(*channels as usize, *mode),
+        GraphProcessor::Drive { channels } => ProcessorCode::Drive(*channels as usize),
+        GraphProcessor::Mix { channels } => ProcessorCode::Mix(*channels as usize),
+        GraphProcessor::Pan => ProcessorCode::Pan,
+        GraphProcessor::Balance => ProcessorCode::Balance,
+        GraphProcessor::Width => ProcessorCode::Width,
         GraphProcessor::Delay {
             channels,
             clock,
             max,
-        } => (
-            &["time", "feedback", "damping"],
-            ProcessorCode::Delay(
-                *channels as usize,
-                *clock == crate::graph::DelayClock::Score,
-                crate::graph::delay_line_frames(max).ok_or_else(|| {
-                    RenderError::RenderState("delay line length overflowed".into())
-                })? - 2,
-            ),
+        } => ProcessorCode::Delay(
+            *channels as usize,
+            *clock == crate::graph::DelayClock::Score,
+            crate::graph::delay_line_frames(max)
+                .ok_or_else(|| RenderError::RenderState("delay line length overflowed".into()))?
+                - 2,
         ),
     })
 }

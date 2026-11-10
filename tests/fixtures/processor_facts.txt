@@ -1,0 +1,375 @@
+{"kind":"synth.sine/1"}
+  channels: out 1, audio in none, many inputs no
+  placement: instrument voice yes, instrument shared no, effect no
+  sample work: 1
+  slots: ratio frequency phase level
+  N(A) writes no config
+  frequency: Hz, sample, default 0, [-24000, 24000]
+  level: 1, sample, default 1, [0, 16]
+  phase: 1, note-on, default 0, [0, 1]
+  ratio: 1, sample, default 1, [-64, 64]
+{"kind":"synth.saw/1"}
+  channels: out 1, audio in none, many inputs no
+  placement: instrument voice yes, instrument shared no, effect no
+  sample work: 1
+  slots: ratio frequency phase level
+  N(A) writes no config
+  frequency: Hz, sample, default 0, [-24000, 24000]
+  level: 1, sample, default 1, [0, 16]
+  phase: 1, note-on, default 0, [0, 1]
+  ratio: 1, sample, default 1, [-64, 64]
+{"kind":"synth.square/1"}
+  channels: out 1, audio in none, many inputs no
+  placement: instrument voice yes, instrument shared no, effect no
+  sample work: 1
+  slots: ratio frequency phase level
+  N(A) writes no config
+  frequency: Hz, sample, default 0, [-24000, 24000]
+  level: 1, sample, default 1, [0, 16]
+  phase: 1, note-on, default 0, [0, 1]
+  ratio: 1, sample, default 1, [-64, 64]
+{"kind":"synth.triangle/1"}
+  channels: out 1, audio in none, many inputs no
+  placement: instrument voice yes, instrument shared no, effect no
+  sample work: 1
+  slots: ratio frequency phase level
+  N(A) writes no config
+  frequency: Hz, sample, default 0, [-24000, 24000]
+  level: 1, sample, default 1, [0, 16]
+  phase: 1, note-on, default 0, [0, 1]
+  ratio: 1, sample, default 1, [-64, 64]
+{"kind":"synth.noise/1","seed":1}
+  channels: out 1, audio in none, many inputs no
+  placement: instrument voice yes, instrument shared no, effect no
+  sample work: 1
+  slots: level
+  N(A) config defaults: {"per_note":{"t":"boolean","v":false},"seed":{"d":"1","n":"1831565813","t":"number"}}
+  level: 1, sample, default 1, [0, 16]
+{"kind":"synth.noise/1","seed":7,"per_note":true}
+  channels: out 1, audio in none, many inputs no
+  placement: instrument voice yes, instrument shared no, effect no
+  sample work: 1
+  slots: level
+  N(A) config defaults: {"per_note":{"t":"boolean","v":false},"seed":{"d":"1","n":"1831565813","t":"number"}}
+  level: 1, sample, default 1, [0, 16]
+{"kind":"synth.pluck/1","seed":5}
+  channels: out 1, audio in none, many inputs no
+  placement: instrument voice yes, instrument shared no, effect no
+  sample work: 16
+  memory: 2402 cells per voice
+  slots: ratio decay damping level hardness position pickup
+  N(A) config defaults: {"seed":{"d":"1","n":"1831565813","t":"number"}}
+  damping: 1, sample, default 1/2, [0, 1]
+  decay: s, sample, default 3, [1/20, 30]
+  hardness: 1, note-on, default 1, [1/100, 1]
+  level: 1, sample, default 1, [0, 16]
+  pickup: 1, sample, default 0, [0, 1/2]
+  position: 1, note-on, default 0, [0, 1/2]
+  ratio: 1, sample, default 1, [1/8, 8]
+{"kind":"synth.random/1","seed":9}
+  channels: out 1, audio in none, many inputs no
+  placement: instrument voice yes, instrument shared no, effect no
+  sample work: 1
+  slots: 
+  N(A) config defaults: {"seed":{"d":"1","n":"1","t":"number"}}
+{"kind":"synth.modal/1","modes":16,"strings":3}
+  channels: out 1, audio in 1, many inputs no
+  placement: instrument voice yes, instrument shared no, effect no
+  audio input in the same sample: yes
+  sample work: 12
+  slots: ratio stretch decay damping position detune level
+  N(A) config defaults: {"strings":{"d":"1","n":"1","t":"number"}}
+  damping: 1, sample, default 0, [0, 4]
+  decay: s, sample, default 2, [1/100, 60]
+  detune: 1, sample, default 0, [0, 50]
+  level: 1, sample, default 1, [0, 16]
+  position: 1, sample, default 0, [0, 1/2]
+  ratio: 1, sample, default 1, [1/8, 8]
+  stretch: 1, sample, default 0, [0, 1/16]
+{"kind":"synth.modal/1","modes":5,"strings":1}
+  channels: out 1, audio in 1, many inputs no
+  placement: instrument voice yes, instrument shared no, effect no
+  audio input in the same sample: yes
+  sample work: 2
+  slots: ratio stretch decay damping position detune level
+  N(A) config defaults: {"strings":{"d":"1","n":"1","t":"number"}}
+  damping: 1, sample, default 0, [0, 4]
+  decay: s, sample, default 2, [1/100, 60]
+  detune: 1, sample, default 0, [0, 50]
+  level: 1, sample, default 1, [0, 16]
+  position: 1, sample, default 0, [0, 1/2]
+  ratio: 1, sample, default 1, [1/8, 8]
+  stretch: 1, sample, default 0, [0, 1/16]
+{"kind":"synth.bow/1","players":1,"body":"violin","channels":1,"seed":1}
+  channels: out 1, audio in none, many inputs no
+  placement: instrument voice yes, instrument shared no, effect no
+  sample work: 33
+  memory: 8192 cells per voice
+  slots: ratio dynamics position vibrato rate attack timing spread width pan level
+  N(A) config defaults: {"body":{"t":"symbol","v":"violin"},"channels":{"d":"1","n":"1","t":"number"},"players":{"d":"1","n":"1","t":"number"},"seed":{"d":"1","n":"1","t":"number"}}
+  attack: s, sample, default 2/25, [1/200, 1/2]
+  dynamics: 1, sample, default 1/2, [0, 1]
+  level: 1, sample, default 1, [0, 16]
+  pan: 1, sample, default 0, [-1, 1]
+  position: 1, sample, default 1/8, [1/10, 1/7]
+  rate: Hz, sample, default 28/5, [3, 8]
+  ratio: 1, sample, default 1, [1/8, 8]
+  spread: 1, sample, default 1, [0, 1]
+  timing: s, sample, default 9/500, [0, 1/25]
+  vibrato: 1, sample, default 25/2, [0, 50]
+  width: 1, sample, default 7/10, [0, 2]
+{"kind":"synth.bow/1","players":8,"body":"none","channels":2,"seed":3}
+  channels: out 2, audio in none, many inputs no
+  placement: instrument voice yes, instrument shared no, effect no
+  sample work: 184
+  memory: 65536 cells per voice
+  slots: ratio dynamics position vibrato rate attack timing spread width pan level
+  N(A) config defaults: {"body":{"t":"symbol","v":"violin"},"channels":{"d":"1","n":"1","t":"number"},"players":{"d":"1","n":"1","t":"number"},"seed":{"d":"1","n":"1","t":"number"}}
+  attack: s, sample, default 2/25, [1/200, 1/2]
+  dynamics: 1, sample, default 1/2, [0, 1]
+  level: 1, sample, default 1, [0, 16]
+  pan: 1, sample, default 0, [-1, 1]
+  position: 1, sample, default 1/8, [1/10, 1/7]
+  rate: Hz, sample, default 28/5, [3, 8]
+  ratio: 1, sample, default 1, [1/8, 8]
+  spread: 1, sample, default 1, [0, 1]
+  timing: s, sample, default 9/500, [0, 1/25]
+  vibrato: 1, sample, default 25/2, [0, 50]
+  width: 1, sample, default 7/10, [0, 2]
+{"kind":"synth.wavetable/1","table":"colors"}
+  channels: out 1, audio in none, many inputs no
+  placement: instrument voice yes, instrument shared no, effect no
+  sample work: 1
+  slots: ratio frequency phase level position
+  N(A) config defaults: {}
+  frequency: Hz, sample, default 0, [-24000, 24000]
+  level: 1, sample, default 1, [0, 16]
+  phase: 1, note-on, default 0, [0, 1]
+  position: 1, sample, default 0, [0, 1]
+  ratio: 1, sample, default 1, [-64, 64]
+{"kind":"synth.sample/1","zones":[{"sample":"tone","low_key":0,"high_key":127}]}
+  channels: out 1, audio in none, many inputs no
+  placement: instrument voice yes, instrument shared no, effect no
+  sample work: 1
+  slots: ratio frequency level
+  N(A) config defaults: {"channels":{"d":"1","n":"1","t":"number"},"fade_shape":{"t":"symbol","v":"linear"}}
+  frequency: Hz, sample, default 0, [-24000, 24000]
+  level: 1, sample, default 1, [0, 16]
+  ratio: 1, sample, default 1, [-64, 64]
+{"kind":"synth.sample/1","channels":2,"zones":[{"sample":"tone","low_key":0,"high_key":127}],"fade_shape":"equal_power"}
+  channels: out 2, audio in none, many inputs no
+  placement: instrument voice yes, instrument shared no, effect no
+  sample work: 1
+  slots: ratio frequency level
+  N(A) config defaults: {"channels":{"d":"1","n":"1","t":"number"},"fade_shape":{"t":"symbol","v":"linear"}}
+  frequency: Hz, sample, default 0, [-24000, 24000]
+  level: 1, sample, default 1, [0, 16]
+  ratio: 1, sample, default 1, [-64, 64]
+{"kind":"synth.adsr/1"}
+  channels: out 1, audio in none, many inputs no
+  placement: instrument voice yes, instrument shared no, effect no
+  sample work: 1
+  slots: attack decay sustain release curve
+  N(A) config defaults: {"on_join":{"t":"symbol","v":"hold"}}
+  attack: s, note-on, default 0, [0, 1800]
+  curve: 1, note-on, default 0, [0, 16]
+  decay: s, note-on, default 0, [0, 1800]
+  release: s, note-off, default 0, [0, 1800]
+  sustain: 1, note-on, default 1, [0, 1]
+{"kind":"synth.adsr/1","on_join":"restart"}
+  channels: out 1, audio in none, many inputs no
+  placement: instrument voice yes, instrument shared no, effect no
+  sample work: 1
+  slots: attack decay sustain release curve
+  N(A) config defaults: {"on_join":{"t":"symbol","v":"hold"}}
+  attack: s, note-on, default 0, [0, 1800]
+  curve: 1, note-on, default 0, [0, 16]
+  decay: s, note-on, default 0, [0, 1800]
+  release: s, note-off, default 0, [0, 1800]
+  sustain: 1, note-on, default 1, [0, 1]
+{"kind":"synth.timbre/1"}
+  channels: out 1, audio in none, many inputs no
+  placement: instrument voice yes, instrument shared no, effect no
+  sample work: 1
+  slots: 
+  N(A) config defaults: {}
+{"kind":"synth.pressure/1"}
+  channels: out 1, audio in none, many inputs no
+  placement: instrument voice yes, instrument shared no, effect no
+  sample work: 1
+  slots: 
+  N(A) config defaults: {}
+{"kind":"synth.velocity/1"}
+  channels: out 1, audio in none, many inputs no
+  placement: instrument voice yes, instrument shared no, effect no
+  sample work: 1
+  slots: 
+  N(A) config defaults: {}
+{"kind":"synth.key/1"}
+  channels: out 1, audio in none, many inputs no
+  placement: instrument voice yes, instrument shared no, effect no
+  sample work: 1
+  slots: 
+  N(A) config defaults: {}
+{"kind":"synth.lfo/1"}
+  channels: out 1, audio in none, many inputs no
+  placement: instrument voice yes, instrument shared yes, effect yes
+  sample work: 1
+  slots: frequency phase level
+  N(A) writes no config
+  frequency: Hz, sample, default 1, [-200, 200]
+  level: 1, sample, default 1, [0, 16]
+  phase: 1, note-on, default 0, [0, 1]
+  phase in a shared graph: 1, reset, default 0, [0, 1]
+{"kind":"synth.gain/1","channels":1}
+  channels: out 1, audio in 1, many inputs no
+  placement: instrument voice yes, instrument shared yes, effect yes
+  audio input in the same sample: yes
+  sample work: 1
+  slots: level
+  N(A) config defaults: {}
+  level: 1, sample, default 1, [0, 16]
+{"kind":"synth.gain/1","channels":2}
+  channels: out 2, audio in 2, many inputs no
+  placement: instrument voice yes, instrument shared yes, effect yes
+  audio input in the same sample: yes
+  sample work: 1
+  slots: level
+  N(A) config defaults: {}
+  level: 1, sample, default 1, [0, 16]
+{"kind":"synth.onepole/1","channels":1}
+  channels: out 1, audio in 1, many inputs no
+  placement: instrument voice yes, instrument shared yes, effect yes
+  audio input in the same sample: yes
+  sample work: 1
+  slots: cutoff
+  N(A) config defaults: {}
+  cutoff: Hz, sample, default 1000, (0, 24000)
+{"kind":"synth.onepole/1","channels":2}
+  channels: out 2, audio in 2, many inputs no
+  placement: instrument voice yes, instrument shared yes, effect yes
+  audio input in the same sample: yes
+  sample work: 1
+  slots: cutoff
+  N(A) config defaults: {}
+  cutoff: Hz, sample, default 1000, (0, 24000)
+{"kind":"synth.highpass/1","channels":1}
+  channels: out 1, audio in 1, many inputs no
+  placement: instrument voice yes, instrument shared yes, effect yes
+  audio input in the same sample: yes
+  sample work: 1
+  slots: cutoff
+  N(A) config defaults: {}
+  cutoff: Hz, sample, default 1000, (0, 24000)
+{"kind":"synth.highpass/1","channels":2}
+  channels: out 2, audio in 2, many inputs no
+  placement: instrument voice yes, instrument shared yes, effect yes
+  audio input in the same sample: yes
+  sample work: 1
+  slots: cutoff
+  N(A) config defaults: {}
+  cutoff: Hz, sample, default 1000, (0, 24000)
+{"kind":"synth.svf/1","channels":1,"mode":"lowpass"}
+  channels: out 1, audio in 1, many inputs no
+  placement: instrument voice yes, instrument shared yes, effect yes
+  audio input in the same sample: yes
+  sample work: 2
+  slots: cutoff ratio q
+  N(A) config defaults: {}
+  cutoff: Hz, sample, default 1000, [0, 24000)
+  q: 1, sample, default 707/1000, [1/10, 40]
+  ratio: 1, sample, default 0, [0, 64]
+  ratio in a shared graph: 1, sample, default 0, [0, 0]
+{"kind":"synth.svf/1","channels":2,"mode":"bandpass"}
+  channels: out 2, audio in 2, many inputs no
+  placement: instrument voice yes, instrument shared yes, effect yes
+  audio input in the same sample: yes
+  sample work: 2
+  slots: cutoff ratio q
+  N(A) config defaults: {}
+  cutoff: Hz, sample, default 1000, [0, 24000)
+  q: 1, sample, default 707/1000, [1/10, 40]
+  ratio: 1, sample, default 0, [0, 64]
+  ratio in a shared graph: 1, sample, default 0, [0, 0]
+{"kind":"synth.drive/1","channels":1}
+  channels: out 1, audio in 1, many inputs no
+  placement: instrument voice yes, instrument shared yes, effect yes
+  audio input in the same sample: yes
+  sample work: 2
+  slots: drive bias level reference
+  N(A) config defaults: {}
+  bias: 1, sample, default 0, [-4, 4]
+  drive: 1, sample, default 1, [0, 64]
+  level: 1, sample, default 1, [0, 16]
+  reference: 1, sample, default 0, [0, 1]
+{"kind":"synth.drive/1","channels":2}
+  channels: out 2, audio in 2, many inputs no
+  placement: instrument voice yes, instrument shared yes, effect yes
+  audio input in the same sample: yes
+  sample work: 2
+  slots: drive bias level reference
+  N(A) config defaults: {}
+  bias: 1, sample, default 0, [-4, 4]
+  drive: 1, sample, default 1, [0, 64]
+  level: 1, sample, default 1, [0, 16]
+  reference: 1, sample, default 0, [0, 1]
+{"kind":"synth.mix/1","channels":1}
+  channels: out 1, audio in 1, many inputs yes
+  placement: instrument voice yes, instrument shared yes, effect yes
+  audio input in the same sample: yes
+  sample work: 1
+  slots: 
+  N(A) config defaults: {}
+{"kind":"synth.mix/1","channels":2}
+  channels: out 2, audio in 2, many inputs yes
+  placement: instrument voice yes, instrument shared yes, effect yes
+  audio input in the same sample: yes
+  sample work: 1
+  slots: 
+  N(A) config defaults: {}
+{"kind":"synth.pan/1"}
+  channels: out 2, audio in 1, many inputs no
+  placement: instrument voice yes, instrument shared yes, effect yes
+  audio input in the same sample: yes
+  sample work: 1
+  slots: pan
+  N(A) writes no config
+  pan: 1, sample, default 0, [-1, 1]
+{"kind":"synth.balance/1"}
+  channels: out 2, audio in 2, many inputs no
+  placement: instrument voice yes, instrument shared yes, effect yes
+  audio input in the same sample: yes
+  sample work: 1
+  slots: balance
+  N(A) writes no config
+  balance: 1, sample, default 0, [-1, 1]
+{"kind":"synth.width/1"}
+  channels: out 2, audio in 2, many inputs no
+  placement: instrument voice yes, instrument shared yes, effect yes
+  audio input in the same sample: yes
+  sample work: 1
+  slots: width
+  N(A) writes no config
+  width: 1, sample, default 1, [-4, 4]
+{"kind":"synth.delay/1","channels":1,"clock":"seconds","max":"1/2"}
+  channels: out 1, audio in 1, many inputs no
+  placement: instrument voice no, instrument shared no, effect yes
+  audio input in the same sample: no
+  sample work: 1
+  memory: 24002 cells
+  slots: time feedback damping
+  N(A) config defaults: {"clock":{"t":"symbol","v":"seconds"}}
+  damping: 1, sample, default 0, [0, 1]
+  feedback: 1, sample, default 0, [0, 99/100]
+  time: s, sample, default 1/2, (0, 60]
+{"kind":"synth.delay/1","channels":2,"clock":"score","max":"4/1"}
+  channels: out 2, audio in 2, many inputs no
+  placement: instrument voice no, instrument shared no, effect yes
+  audio input in the same sample: no
+  sample work: 2
+  memory: 384004 cells
+  slots: time feedback damping
+  N(A) config defaults: {"clock":{"t":"symbol","v":"seconds"}}
+  damping: 1, sample, default 0, [0, 1]
+  feedback: 1, sample, default 0, [0, 99/100]
+  time: q, sample, default 1, (0, 256]

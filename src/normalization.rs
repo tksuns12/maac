@@ -812,6 +812,19 @@ fn graph_node(
         .get("type")
         .and_then(|value| value["v"].as_str())
         .ok_or_else(|| error("E_RANGE", "node.type is required"))?;
+    expand_graph_config_defaults(processor, config);
+    for name in PARAMETER_NAMES {
+        if let Some(spec) = parameter_descriptor_for_stage(&node.processor, name, stage) {
+            params
+                .entry(name)
+                .or_insert_with(|| rational(&spec.default, graph_unit(spec.unit)));
+        }
+    }
+    Ok(writes_graph_config(processor))
+}
+
+/// Fill in the config defaults of a graph node of type `processor`.
+pub(crate) fn expand_graph_config_defaults(processor: &str, config: &mut Map<String, Value>) {
     match processor {
         "synth.noise/1" => {
             config
@@ -848,14 +861,15 @@ fn graph_node(
         "synth.sample/1" => crate::sample_instrument::expand_config_defaults(config),
         _ => {}
     }
-    for name in PARAMETER_NAMES {
-        if let Some(spec) = parameter_descriptor_for_stage(&node.processor, name, stage) {
-            params
-                .entry(name)
-                .or_insert_with(|| rational(&spec.default, graph_unit(spec.unit)));
-        }
-    }
-    Ok(!matches!(
+}
+
+/// Whether N(A) writes a `config` record for a graph node of type
+/// `processor`. It writes an empty one for `synth.timbre/1`,
+/// `synth.pressure/1`, `synth.velocity/1` and `synth.key/1`, although they
+/// take no config. Execution hashes and the locks that pin them depend on
+/// it, so it stays.
+pub(crate) fn writes_graph_config(processor: &str) -> bool {
+    !matches!(
         processor,
         "synth.sine/1"
             | "synth.saw/1"
@@ -865,7 +879,7 @@ fn graph_node(
             | "synth.pan/1"
             | "synth.balance/1"
             | "synth.width/1"
-    ))
+    )
 }
 
 /// The defaults of a production processor (`fx.*`), as lowered.
