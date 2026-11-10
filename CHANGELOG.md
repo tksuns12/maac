@@ -56,6 +56,10 @@ promise of compatibility beyond the documented interfaces.
   produced the event. Each event timing message begins with the event's
   address, such as `drums_intro/0/h1`, which names the placement and the
   repetition.
+- A `synth.bow/1` whose output moves a note-on, reset or note-off
+  parameter, such as an envelope's `release`, no longer crashes the
+  renderer. Those captures evaluated parameters in room for seven, and a
+  bowed section has eleven.
 
 ## [0.5.0] — 2026-11-05
 

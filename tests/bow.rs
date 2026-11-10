@@ -340,3 +340,62 @@ fn string_storage_is_bounded_per_instance() {
         "{error:?}"
     );
 }
+
+/// A song whose envelope's release may be moved by a bowed section's output
+/// at note-off: `{modulate}` is written inside the voice.
+fn release_source(modulate: &str) -> SourceBundle {
+    SourceBundle::new(
+        "score.maac",
+        format!(
+            r#"maac 1;
+project p {{ score = [0q, 2q]; rate = 48000Hz; tail = 1s; tempo = &clock; meter = &metre; output = &sound:out; }}
+tempo clock {{ points = [(0q, 60bpm, step)]; }}
+meter metre {{ points = [(0q, 4, 4)]; }}
+instrument tone {{
+ channels = 1;
+ voice v {{
+  channels = 1; amplitude = &amp; output = &osc:out;
+  node amp {{ type = "synth.adsr/1"; params = {{ sustain = 1; release = 300ms; }}; }}
+  node osc {{ type = "synth.sine/1"; }}
+  node section {{ type = "synth.bow/1"; }}
+  {modulate}
+ }}
+}}
+node sound {{ instrument = &tone; config = {{ voices = 1; }}; }}
+track t {{ target = &sound:events; }}
+pattern one {{ length = 1q; note a {{ at = 0q; dur = 1q; pitch = A4; }} }}
+place p1 {{ pattern = &one; track = &t; at = 0q; }}
+"#
+        ),
+    )
+}
+
+#[test]
+fn a_bowed_section_may_move_a_release_at_note_off() {
+    // The note-off capture evaluates the bow with all eleven of its
+    // parameters; it once had room for seven, and panicked.
+    use maac::plan::PlanLimits;
+    let render = |modulate: &str| {
+        let artifact = maac::compiler::compile_bundle_artifact_with_limits(
+            &release_source(modulate),
+            &PlanLimits::song(),
+        )
+        .unwrap_or_else(|error| panic!("{error:?}"));
+        let mut out = Vec::new();
+        maac::render_artifact_with_limits(&artifact, &PlanLimits::song(), |frame| {
+            out.extend_from_slice(frame);
+            Ok(())
+        })
+        .unwrap();
+        out
+    };
+    let fixed = render("");
+    let moved =
+        render("modulate rel { from = &section:out; to = &amp.params.release; depth = 100ms; }");
+    assert_eq!(fixed.len(), moved.len());
+    assert!(moved.iter().all(|sample| sample.is_finite()));
+    // Up to the note-off the two are the same; the release then differs.
+    let note_off = 48_000;
+    assert_eq!(fixed[..note_off], moved[..note_off]);
+    assert_ne!(fixed[note_off..], moved[note_off..]);
+}

@@ -14,7 +14,10 @@ use num_traits::ToPrimitive;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-const MAX_PARAMETER_SLOTS: usize = 7;
+/// The most parameter slots any processor has: `synth.bow/1`'s eleven. The
+/// note-on, reset and note-off captures evaluate parameters in a scratch of
+/// this size.
+const MAX_PARAMETER_SLOTS: usize = BOW_PARAMETERS.len();
 
 /// Immutable executable code shared by every instance of one instrument.
 #[derive(Debug)]
@@ -2375,6 +2378,13 @@ fn compile_graph(
     let mut nodes = Vec::with_capacity(graph.nodes.len());
     for node in &graph.nodes {
         let (names, processor) = compile_processor(&node.processor, tables, samples)?;
+        if names.len() > MAX_PARAMETER_SLOTS {
+            return Err(RenderError::RenderState(format!(
+                "graph node {} has {} parameter slots, more than {MAX_PARAMETER_SLOTS}",
+                node.id,
+                names.len()
+            )));
+        }
         let mut base_params = Vec::with_capacity(names.len());
         let mut specs = Vec::with_capacity(names.len());
         for name in names {
