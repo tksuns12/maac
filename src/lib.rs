@@ -56,6 +56,7 @@ mod plan_v5;
 mod plan_v6;
 mod plan_v7;
 mod pluck;
+mod processor;
 pub mod production_analysis;
 mod production_compressor;
 pub mod production_convert;

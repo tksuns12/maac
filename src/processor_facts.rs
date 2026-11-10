@@ -13,9 +13,44 @@ use serde_json::{Map, Value};
 use crate::graph::{
     delay_line_frames, parameter_descriptor_for_stage, topological_order, GraphNode,
     GraphProcessor, GraphProgram, GraphStage, GraphUnit, ParameterRate, ParameterSpec,
-    BOW_STRING_CELLS, PARAMETER_NAMES, PLUCK_DELAY_CELLS,
+    BOW_STRING_CELLS, PLUCK_DELAY_CELLS,
 };
 use crate::plan::{Connection, PortRef};
+
+/// Every parameter name any processor has had, in order: the snapshot asks
+/// each processor for each, so a parameter a processor loses or gains shows.
+const PARAMETER_NAMES: [&str; 30] = [
+    "attack",
+    "balance",
+    "bias",
+    "curve",
+    "cutoff",
+    "damping",
+    "decay",
+    "detune",
+    "drive",
+    "dynamics",
+    "feedback",
+    "frequency",
+    "hardness",
+    "level",
+    "pan",
+    "phase",
+    "pickup",
+    "position",
+    "q",
+    "rate",
+    "ratio",
+    "reference",
+    "release",
+    "spread",
+    "stretch",
+    "sustain",
+    "time",
+    "timing",
+    "vibrato",
+    "width",
+];
 
 /// One processor of each kind, and a second where a config value changes a
 /// fact: its channels, its body, its clock or its line's length.
@@ -179,14 +214,20 @@ fn facts(wire: &str, processor: &GraphProcessor) -> String {
     writeln!(
         out,
         "  slots: {}",
-        crate::voice::slot_names(processor).join(" ")
+        processor
+            .declaration()
+            .params
+            .iter()
+            .map(|param| param.name)
+            .collect::<Vec<_>>()
+            .join(" ")
     )
     .unwrap();
     // What N(A) writes for a node of this type whose config leaves every
     // default out.
     let mut config = Map::new();
-    crate::normalization::expand_graph_config_defaults(identity, &mut config);
-    if crate::normalization::writes_graph_config(identity) {
+    crate::normalization::expand_graph_config_defaults(processor.declaration(), &mut config);
+    if crate::normalization::writes_graph_config(processor.declaration()) {
         writeln!(out, "  N(A) config defaults: {}", Value::Object(config)).unwrap();
     } else {
         assert!(config.is_empty(), "{identity}");

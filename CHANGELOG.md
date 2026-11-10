@@ -66,6 +66,13 @@ promise of compatibility beyond the documented interfaces.
   note-on read the string's `hardness` and `position` slots on every node
   of the voice before checking that it was a string. The fault dates from
   0.2.0.
+- A performance plan whose `synth.svf/1` or `synth.drive/1` node has a
+  channel count other than 1 or 2 is refused at that node's `channels`
+  with `E_RANGE`; before, only the connection check caught it, as
+  `E_PORT_TYPE`. The same check now names the `channels` field for
+  `synth.gain/1`, `synth.onepole/1`, `synth.highpass/1`, `synth.mix/1` and
+  `synth.bow/1`. A `synth.delay/1` in a voice graph is refused by every
+  graph check, not only an instrument's.
 
 ## [0.5.0] — 2026-11-05
 

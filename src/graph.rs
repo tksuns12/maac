@@ -9,6 +9,8 @@ use crate::plan::{
     rational_map_serde, rational_serde, Connection, PlanError, PortRef, Rational, SourceSpan,
 };
 use num_bigint::BigInt;
+
+use crate::processor::Memory;
 use num_traits::{Signed, ToPrimitive, Zero};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -401,92 +403,7 @@ impl<'de> Deserialize<'de> for GraphProcessor {
 
 impl GraphProcessor {
     pub const fn identity(&self) -> &'static str {
-        match self {
-            Self::Sine => "synth.sine/1",
-            Self::Saw => "synth.saw/1",
-            Self::Square => "synth.square/1",
-            Self::Triangle => "synth.triangle/1",
-            Self::Noise { .. } => "synth.noise/1",
-            Self::Pluck { .. } => "synth.pluck/1",
-            Self::Random { .. } => "synth.random/1",
-            Self::Modal { .. } => "synth.modal/1",
-            Self::Bow { .. } => "synth.bow/1",
-            Self::Wavetable { .. } => "synth.wavetable/1",
-            Self::Sample { .. } => "synth.sample/1",
-            Self::Adsr { .. } => "synth.adsr/1",
-            Self::Timbre => "synth.timbre/1",
-            Self::Pressure => "synth.pressure/1",
-            Self::Velocity => "synth.velocity/1",
-            Self::Key => "synth.key/1",
-            Self::Lfo => "synth.lfo/1",
-            Self::Gain { .. } => "synth.gain/1",
-            Self::OnePole { .. } => "synth.onepole/1",
-            Self::HighPass { .. } => "synth.highpass/1",
-            Self::Svf { .. } => "synth.svf/1",
-            Self::Drive { .. } => "synth.drive/1",
-            Self::Mix { .. } => "synth.mix/1",
-            Self::Pan => "synth.pan/1",
-            Self::Balance => "synth.balance/1",
-            Self::Width => "synth.width/1",
-            Self::Delay { .. } => "synth.delay/1",
-        }
-    }
-
-    pub(crate) fn output_channels(&self) -> u8 {
-        match self {
-            Self::Gain { channels }
-            | Self::OnePole { channels }
-            | Self::HighPass { channels }
-            | Self::Svf { channels, .. }
-            | Self::Drive { channels }
-            | Self::Mix { channels }
-            | Self::Sample { channels, .. }
-            | Self::Bow { channels, .. }
-            | Self::Delay { channels, .. } => *channels,
-            Self::Pan | Self::Balance | Self::Width => 2,
-            _ => 1,
-        }
-    }
-
-    pub(crate) fn required_input_channels(&self) -> Option<u8> {
-        match self {
-            Self::Gain { channels }
-            | Self::OnePole { channels }
-            | Self::HighPass { channels }
-            | Self::Svf { channels, .. }
-            | Self::Drive { channels }
-            | Self::Mix { channels }
-            | Self::Delay { channels, .. } => Some(*channels),
-            Self::Pan | Self::Modal { .. } => Some(1),
-            Self::Balance | Self::Width => Some(2),
-            _ => None,
-        }
-    }
-
-    pub(crate) fn accepts_many_inputs(&self) -> bool {
-        matches!(self, Self::Mix { .. })
-    }
-
-    pub(crate) fn forbidden_in_shared(&self) -> bool {
-        matches!(
-            self,
-            Self::Sine
-                | Self::Saw
-                | Self::Square
-                | Self::Triangle
-                | Self::Noise { .. }
-                | Self::Random { .. }
-                | Self::Pluck { .. }
-                | Self::Modal { .. }
-                | Self::Bow { .. }
-                | Self::Wavetable { .. }
-                | Self::Sample { .. }
-                | Self::Adsr { .. }
-                | Self::Timbre
-                | Self::Pressure
-                | Self::Velocity
-                | Self::Key
-        )
+        self.declaration().identity
     }
 }
 
@@ -598,7 +515,7 @@ impl InstrumentProgram {
         self.voice
             .nodes
             .iter()
-            .filter(|node| matches!(node.processor, GraphProcessor::Pluck { .. }))
+            .filter(|node| node.processor.declaration().memory == Memory::PluckString)
             .count()
     }
 
@@ -613,10 +530,14 @@ impl InstrumentProgram {
         self.voice
             .nodes
             .iter()
-            .map(|node| match node.processor {
-                GraphProcessor::Bow { players, .. } => usize::from(players),
-                _ => 0,
-            })
+            .map(
+                |node| match (node.processor.declaration().memory, &node.processor) {
+                    (Memory::BowStrings, GraphProcessor::Bow { players, .. }) => {
+                        usize::from(*players)
+                    }
+                    _ => 0,
+                },
+            )
             .sum()
     }
 
@@ -666,12 +587,12 @@ impl InstrumentProgram {
             if let Some(node) = graph
                 .nodes
                 .iter()
-                .find(|node| matches!(node.processor, GraphProcessor::Delay { .. }))
+                .find(|node| node.processor.only_in_effects())
             {
                 return Err(error(
                     "E_CAPABILITY",
                     format!("{stage}.nodes.{}.processor", node.id),
-                    "synth.delay/1 is allowed only in an effect",
+                    format!("{} is allowed only in an effect", node.processor.identity()),
                 ));
             }
         }
@@ -908,371 +829,10 @@ impl ParameterSpec {
     }
 }
 
-/// Every parameter name a `synth.*/1` descriptor accepts. Semantic
-/// normalization expands each one a node's descriptor defines, so a new
-/// parameter is listed here with its descriptor; debug builds check that.
-pub(crate) const PARAMETER_NAMES: [&str; 30] = [
-    "attack",
-    "balance",
-    "bias",
-    "curve",
-    "cutoff",
-    "damping",
-    "decay",
-    "detune",
-    "drive",
-    "dynamics",
-    "feedback",
-    "frequency",
-    "hardness",
-    "level",
-    "pan",
-    "phase",
-    "pickup",
-    "position",
-    "q",
-    "rate",
-    "ratio",
-    "reference",
-    "release",
-    "spread",
-    "stretch",
-    "sustain",
-    "time",
-    "timing",
-    "vibrato",
-    "width",
-];
-
 /// Processor-owned parameter metadata. LFO phase has voice semantics here;
 /// use [`parameter_descriptor_for_stage`] for a shared graph.
 pub fn parameter_descriptor(processor: &GraphProcessor, name: &str) -> Option<ParameterSpec> {
-    let result = descriptor(processor, name);
-    debug_assert!(
-        result.is_none() || PARAMETER_NAMES.contains(&name),
-        "parameter `{name}` of `{}` is missing from PARAMETER_NAMES",
-        processor.identity()
-    );
-    result
-}
-
-fn descriptor(processor: &GraphProcessor, name: &str) -> Option<ParameterSpec> {
-    let dimensionless = |rate, default, min, max| {
-        spec(
-            GraphUnit::Dimensionless,
-            rate,
-            default,
-            min,
-            max,
-            false,
-            false,
-        )
-    };
-    let oscillator = || match name {
-        "ratio" => Some(dimensionless(ParameterRate::Sample, 1, -64, 64)),
-        "frequency" => Some(spec(
-            GraphUnit::Hertz,
-            ParameterRate::Sample,
-            0,
-            -24_000,
-            24_000,
-            false,
-            false,
-        )),
-        "phase" => Some(dimensionless(ParameterRate::NoteOn, 0, 0, 1)),
-        "level" => Some(dimensionless(ParameterRate::Sample, 1, 0, 16)),
-        _ => None,
-    };
-
-    match processor {
-        GraphProcessor::Sine
-        | GraphProcessor::Saw
-        | GraphProcessor::Square
-        | GraphProcessor::Triangle => oscillator(),
-        GraphProcessor::Wavetable { .. } => oscillator().or_else(|| {
-            (name == "position").then(|| dimensionless(ParameterRate::Sample, 0, 0, 1))
-        }),
-        // Oscillator frequency controls without a phase: playback starts at
-        // the first sample frame.
-        GraphProcessor::Sample { .. } => (name != "phase").then(oscillator).flatten(),
-        GraphProcessor::Pluck { .. } => match name {
-            "ratio" => {
-                let mut result = dimensionless(ParameterRate::Sample, 1, 0, 8);
-                result.min = Rational::new(1.into(), 8.into());
-                Some(result)
-            }
-            "decay" => {
-                let mut result = spec(
-                    GraphUnit::Seconds,
-                    ParameterRate::Sample,
-                    3,
-                    0,
-                    30,
-                    false,
-                    false,
-                );
-                result.min = Rational::new(1.into(), 20.into());
-                Some(result)
-            }
-            "damping" => {
-                let mut result = dimensionless(ParameterRate::Sample, 0, 0, 1);
-                result.default = Rational::new(1.into(), 2.into());
-                Some(result)
-            }
-            "level" => Some(dimensionless(ParameterRate::Sample, 1, 0, 16)),
-            "hardness" => {
-                let mut result = dimensionless(ParameterRate::NoteOn, 1, 0, 1);
-                result.min = Rational::new(1.into(), 100.into());
-                Some(result)
-            }
-            "position" => {
-                let mut result = dimensionless(ParameterRate::NoteOn, 0, 0, 1);
-                result.max = Rational::new(1.into(), 2.into());
-                Some(result)
-            }
-            "pickup" => {
-                let mut result = dimensionless(ParameterRate::Sample, 0, 0, 1);
-                result.max = Rational::new(1.into(), 2.into());
-                Some(result)
-            }
-            _ => None,
-        },
-        GraphProcessor::Bow { .. } => {
-            let fraction = |rate, default: (i64, i64), min: (i64, i64), max: (i64, i64)| {
-                let mut result = dimensionless(rate, 0, 0, 1);
-                result.default = Rational::new(default.0.into(), default.1.into());
-                result.min = Rational::new(min.0.into(), min.1.into());
-                result.max = Rational::new(max.0.into(), max.1.into());
-                result
-            };
-            match name {
-                "ratio" => Some(fraction(ParameterRate::Sample, (1, 1), (1, 8), (8, 1))),
-                "dynamics" => Some(fraction(ParameterRate::Sample, (1, 2), (0, 1), (1, 1))),
-                "position" => Some(fraction(ParameterRate::Sample, (1, 8), (1, 10), (1, 7))),
-                // Numbers of cents: graph parameters have no cents unit.
-                "vibrato" => Some(fraction(ParameterRate::Sample, (25, 2), (0, 1), (50, 1))),
-                "rate" => {
-                    let mut result = spec(
-                        GraphUnit::Hertz,
-                        ParameterRate::Sample,
-                        0,
-                        3,
-                        8,
-                        false,
-                        false,
-                    );
-                    result.default = Rational::new(28.into(), 5.into());
-                    Some(result)
-                }
-                "attack" => {
-                    let mut result = spec(
-                        GraphUnit::Seconds,
-                        ParameterRate::Sample,
-                        0,
-                        0,
-                        1,
-                        false,
-                        false,
-                    );
-                    result.default = Rational::new(2.into(), 25.into());
-                    result.min = Rational::new(1.into(), 200.into());
-                    result.max = Rational::new(1.into(), 2.into());
-                    Some(result)
-                }
-                "timing" => {
-                    let mut result = spec(
-                        GraphUnit::Seconds,
-                        ParameterRate::Sample,
-                        0,
-                        0,
-                        1,
-                        false,
-                        false,
-                    );
-                    result.default = Rational::new(9.into(), 500.into());
-                    result.max = Rational::new(1.into(), 25.into());
-                    Some(result)
-                }
-                "spread" => Some(fraction(ParameterRate::Sample, (1, 1), (0, 1), (1, 1))),
-                "width" => Some(fraction(ParameterRate::Sample, (7, 10), (0, 1), (2, 1))),
-                "pan" => Some(fraction(ParameterRate::Sample, (0, 1), (-1, 1), (1, 1))),
-                "level" => Some(dimensionless(ParameterRate::Sample, 1, 0, 16)),
-                _ => None,
-            }
-        }
-        GraphProcessor::Modal { .. } => match name {
-            "ratio" => {
-                let mut result = dimensionless(ParameterRate::Sample, 1, 0, 8);
-                result.min = Rational::new(1.into(), 8.into());
-                Some(result)
-            }
-            "stretch" => {
-                let mut result = dimensionless(ParameterRate::Sample, 0, 0, 1);
-                result.max = Rational::new(1.into(), 16.into());
-                Some(result)
-            }
-            "decay" => {
-                let mut result = spec(
-                    GraphUnit::Seconds,
-                    ParameterRate::Sample,
-                    2,
-                    0,
-                    60,
-                    false,
-                    false,
-                );
-                result.min = Rational::new(1.into(), 100.into());
-                Some(result)
-            }
-            "damping" => Some(dimensionless(ParameterRate::Sample, 0, 0, 4)),
-            "position" => {
-                let mut result = dimensionless(ParameterRate::Sample, 0, 0, 1);
-                result.max = Rational::new(1.into(), 2.into());
-                Some(result)
-            }
-            // A number of cents: graph parameters have no cents unit.
-            "detune" => Some(dimensionless(ParameterRate::Sample, 0, 0, 50)),
-            "level" => Some(dimensionless(ParameterRate::Sample, 1, 0, 16)),
-            _ => None,
-        },
-        GraphProcessor::Adsr { .. } => match name {
-            "attack" => Some(spec(
-                GraphUnit::Seconds,
-                ParameterRate::NoteOn,
-                0,
-                0,
-                1_800,
-                false,
-                false,
-            )),
-            "decay" => Some(spec(
-                GraphUnit::Seconds,
-                ParameterRate::NoteOn,
-                0,
-                0,
-                1_800,
-                false,
-                false,
-            )),
-            "sustain" => Some(dimensionless(ParameterRate::NoteOn, 1, 0, 1)),
-            "curve" => Some(dimensionless(ParameterRate::NoteOn, 0, 0, 16)),
-            "release" => Some(spec(
-                GraphUnit::Seconds,
-                ParameterRate::NoteOff,
-                0,
-                0,
-                1_800,
-                false,
-                false,
-            )),
-            _ => None,
-        },
-        GraphProcessor::Lfo => match name {
-            "frequency" => Some(spec(
-                GraphUnit::Hertz,
-                ParameterRate::Sample,
-                1,
-                -200,
-                200,
-                false,
-                false,
-            )),
-            "phase" => Some(dimensionless(ParameterRate::NoteOn, 0, 0, 1)),
-            "level" => Some(dimensionless(ParameterRate::Sample, 1, 0, 16)),
-            _ => None,
-        },
-        GraphProcessor::Gain { .. } | GraphProcessor::Noise { .. } => {
-            (name == "level").then(|| dimensionless(ParameterRate::Sample, 1, 0, 16))
-        }
-        GraphProcessor::OnePole { .. } | GraphProcessor::HighPass { .. } => (name == "cutoff")
-            .then(|| {
-                spec(
-                    GraphUnit::Hertz,
-                    ParameterRate::Sample,
-                    1_000,
-                    0,
-                    24_000,
-                    true,
-                    true,
-                )
-            }),
-        GraphProcessor::Svf { .. } => match name {
-            "cutoff" => Some(spec(
-                GraphUnit::Hertz,
-                ParameterRate::Sample,
-                1_000,
-                0,
-                24_000,
-                false,
-                true,
-            )),
-            "ratio" => Some(dimensionless(ParameterRate::Sample, 0, 0, 64)),
-            "q" => {
-                let mut result = dimensionless(ParameterRate::Sample, 0, 0, 40);
-                result.default = Rational::new(707.into(), 1_000.into());
-                result.min = Rational::new(1.into(), 10.into());
-                Some(result)
-            }
-            _ => None,
-        },
-        GraphProcessor::Drive { .. } => match name {
-            "drive" => Some(dimensionless(ParameterRate::Sample, 1, 0, 64)),
-            "bias" => Some(dimensionless(ParameterRate::Sample, 0, -4, 4)),
-            "level" => Some(dimensionless(ParameterRate::Sample, 1, 0, 16)),
-            "reference" => Some(dimensionless(ParameterRate::Sample, 0, 0, 1)),
-            _ => None,
-        },
-        GraphProcessor::Pan => {
-            (name == "pan").then(|| dimensionless(ParameterRate::Sample, 0, -1, 1))
-        }
-        GraphProcessor::Balance => {
-            (name == "balance").then(|| dimensionless(ParameterRate::Sample, 0, -1, 1))
-        }
-        GraphProcessor::Width => {
-            (name == "width").then(|| dimensionless(ParameterRate::Sample, 1, -4, 4))
-        }
-        GraphProcessor::Delay { clock, .. } => match name {
-            // The length's range here is static; the node also checks each
-            // frame that it is at least one frame and at most `max`.
-            "time" => Some(match clock {
-                DelayClock::Seconds => {
-                    let mut result = spec(
-                        GraphUnit::Seconds,
-                        ParameterRate::Sample,
-                        0,
-                        0,
-                        MAX_DELAY_SECONDS,
-                        true,
-                        false,
-                    );
-                    result.default = Rational::new(1.into(), 2.into());
-                    result
-                }
-                DelayClock::Score => spec(
-                    GraphUnit::Quarter,
-                    ParameterRate::Sample,
-                    1,
-                    0,
-                    256,
-                    true,
-                    false,
-                ),
-            }),
-            "feedback" => {
-                let mut result = dimensionless(ParameterRate::Sample, 0, 0, 1);
-                result.max = Rational::new(99.into(), 100.into());
-                Some(result)
-            }
-            "damping" => Some(dimensionless(ParameterRate::Sample, 0, 0, 1)),
-            _ => None,
-        },
-        GraphProcessor::Mix { .. }
-        | GraphProcessor::Timbre
-        | GraphProcessor::Pressure
-        | GraphProcessor::Velocity
-        | GraphProcessor::Random { .. }
-        | GraphProcessor::Key => None,
-    }
+    parameter_descriptor_for_stage(processor, name, GraphStage::Voice)
 }
 
 pub fn parameter_descriptor_for_stage(
@@ -1280,18 +840,7 @@ pub fn parameter_descriptor_for_stage(
     name: &str,
     stage: GraphStage,
 ) -> Option<ParameterSpec> {
-    let mut result = parameter_descriptor(processor, name)?;
-    if stage == GraphStage::Shared && matches!(processor, GraphProcessor::Lfo) && name == "phase" {
-        result.rate = ParameterRate::Reset;
-    }
-    // A shared graph has no note, so its filters cannot track one.
-    if stage == GraphStage::Shared
-        && matches!(processor, GraphProcessor::Svf { .. })
-        && name == "ratio"
-    {
-        result.max = Rational::from_integer(BigInt::zero());
-    }
-    Some(result)
+    Some(processor.declaration().param(name)?.spec(stage))
 }
 
 pub fn validate_graph(
@@ -1364,12 +913,7 @@ pub fn topological_order(graph: &GraphProgram) -> Result<Vec<usize>, PlanError> 
                 "target node does not exist",
             ));
         };
-        if audio
-            && matches!(
-                graph.nodes[to_index].processor,
-                GraphProcessor::Delay { .. }
-            )
-        {
+        if audio && graph.nodes[to_index].processor.reads_input_later() {
             continue;
         }
         indegree[to_index] = indegree[to_index].saturating_add(1);
@@ -1665,23 +1209,12 @@ fn validate_graph_inner(
                         "modulation target parameter does not exist",
                     )
                 })?;
+        // An event-rate parameter is read when its graph has the event: a
+        // voice's note-on and note-off, a shared graph's reset.
         let voice_event_rate = stage == GraphStage::Voice
-            && matches!(
-                target.processor,
-                GraphProcessor::Adsr { .. }
-                    | GraphProcessor::Sine
-                    | GraphProcessor::Saw
-                    | GraphProcessor::Square
-                    | GraphProcessor::Triangle
-                    | GraphProcessor::Wavetable { .. }
-                    | GraphProcessor::Lfo
-                    | GraphProcessor::Pluck { .. }
-            )
             && matches!(spec.rate, ParameterRate::NoteOn | ParameterRate::NoteOff);
-        let shared_lfo_reset = stage == GraphStage::Shared
-            && matches!(target.processor, GraphProcessor::Lfo)
-            && spec.rate == ParameterRate::Reset;
-        if spec.rate != ParameterRate::Sample && !voice_event_rate && !shared_lfo_reset {
+        let shared_reset = stage == GraphStage::Shared && spec.rate == ParameterRate::Reset;
+        if spec.rate != ParameterRate::Sample && !voice_event_rate && !shared_reset {
             return Err(error(
                 "E_PORT_TYPE",
                 format!("{edge_path}.to.parameter"),
@@ -1812,6 +1345,17 @@ fn validate_processor(
     if stage == GraphStage::Shared && processor.forbidden_in_shared() {
         return Err(error("E_CAPABILITY", path, "processor is voice-only"));
     }
+    if stage == GraphStage::Voice && processor.only_in_effects() {
+        return Err(error(
+            "E_CAPABILITY",
+            path,
+            format!("{} is allowed only in an effect", processor.identity()),
+        ));
+    }
+    // Every processor whose channels its config gives is mono or stereo.
+    if let Some(channels) = processor.configured_channels() {
+        validate_channels(channels, format!("{path}.channels"))?;
+    }
     match processor {
         GraphProcessor::Pluck { seed: 0 } => {
             return Err(error(
@@ -1834,24 +1378,12 @@ fn validate_processor(
                 "random seed must be nonzero",
             ));
         }
-        GraphProcessor::Bow {
-            players,
-            channels,
-            seed,
-            ..
-        } => {
+        GraphProcessor::Bow { players, seed, .. } => {
             if !(1..=crate::bow::MAX_PLAYERS).contains(players) {
                 return Err(error(
                     "E_RANGE",
                     format!("{path}.players"),
                     "bowed section needs 1 to 16 players",
-                ));
-            }
-            if !(1..=2).contains(channels) {
-                return Err(error(
-                    "E_RANGE",
-                    format!("{path}.channels"),
-                    "bowed section needs 1 or 2 channels",
                 ));
             }
             if *seed == 0 {
@@ -1878,23 +1410,17 @@ fn validate_processor(
                 ));
             }
         }
-        GraphProcessor::Gain { channels }
-        | GraphProcessor::OnePole { channels }
-        | GraphProcessor::HighPass { channels }
-        | GraphProcessor::Mix { channels } => validate_channels(*channels, path)?,
         GraphProcessor::Wavetable { table } => validate_identifier(table, format!("{path}.table"))?,
         GraphProcessor::Sample {
             channels, zones, ..
         } => {
-            validate_channels(*channels, format!("{path}.channels"))?;
             for (index, zone) in zones.iter().enumerate() {
                 validate_identifier(&zone.sample, format!("{path}.zones[{index}].sample"))?;
             }
             // Sample channel counts are checked against the plan's resources.
             crate::sample_instrument::validate_zones(zones, *channels, &path, |_| Some(*channels))?;
         }
-        GraphProcessor::Delay { channels, max, .. } => {
-            validate_channels(*channels, format!("{path}.channels"))?;
+        GraphProcessor::Delay { max, .. } => {
             validate_rational(max, &format!("{path}.max"))?;
             if !max.is_positive() || max > &Rational::from_integer(BigInt::from(MAX_DELAY_SECONDS))
             {
@@ -2035,26 +1561,6 @@ fn validate_source(source: &ProgramSource) -> Result<(), PlanError> {
         }
     }
     Ok(())
-}
-
-fn spec(
-    unit: GraphUnit,
-    rate: ParameterRate,
-    default: i64,
-    min: i64,
-    max: i64,
-    min_open: bool,
-    max_open: bool,
-) -> ParameterSpec {
-    ParameterSpec {
-        unit,
-        rate,
-        default: Rational::from_integer(BigInt::from(default)),
-        min: Rational::from_integer(BigInt::from(min)),
-        max: Rational::from_integer(BigInt::from(max)),
-        min_open,
-        max_open,
-    }
 }
 
 fn error(code: &str, path: impl Into<String>, message: impl Into<String>) -> PlanError {

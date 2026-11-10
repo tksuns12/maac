@@ -19,13 +19,11 @@ use num_traits::{ToPrimitive, Zero};
 use serde_json::{json, Map, Value};
 
 use crate::diagnostic::{Diagnostic, Diagnostics};
-use crate::graph::{
-    parameter_descriptor_for_stage, EffectProgram, GraphProgram, GraphStage, GraphUnit,
-    InstrumentProgram, PARAMETER_NAMES,
-};
+use crate::graph::{EffectProgram, GraphProgram, GraphStage, GraphUnit, InstrumentProgram};
 use crate::library::LibrarySet;
 use crate::music::{MeterMap, MeterPoint, Pitch};
 use crate::plan::Processor;
+use crate::processor::{declaration_of, ConfigDefault, ConfigValue, Declaration, NormalConfig};
 use crate::syntax::Unit;
 
 /// Why a document, object or value has no N(A), with a MaaC diagnostic code
@@ -226,11 +224,17 @@ fn leave_out_late_defaults(kind: &str, fields: &mut Map<String, Value>) {
         }
         "voice" => remove_at(fields, "connected", &boolean(false)),
         "node" => {
-            let (name, default) = match fields.get("type").and_then(|value| value["v"].as_str()) {
-                Some("synth.noise/1") => ("per_note", boolean(false)),
-                Some("synth.adsr/1") => ("on_join", symbol("hold")),
-                _ => return,
+            let Some(NormalConfig::Defaults(defaults)) = fields
+                .get("type")
+                .and_then(|value| value["v"].as_str())
+                .and_then(declaration_of)
+                .map(|declaration| declaration.config)
+            else {
+                return;
             };
+            if !defaults.iter().any(|default| default.late) {
+                return;
+            }
             let Some(config) = fields
                 .get_mut("config")
                 .and_then(|config| config.get_mut("fields"))
@@ -238,8 +242,11 @@ fn leave_out_late_defaults(kind: &str, fields: &mut Map<String, Value>) {
             else {
                 return;
             };
-            remove_at(config, name, &default);
-            if name == "on_join" && config.is_empty() {
+            for default in defaults.iter().filter(|default| default.late) {
+                remove_at(config, default.key, &config_value(default.value));
+            }
+            // A config made only of late keys was not written before them.
+            if config.is_empty() && defaults.iter().all(|default| default.late) {
                 fields.remove("config");
             }
         }
@@ -812,74 +819,54 @@ fn graph_node(
         .get("type")
         .and_then(|value| value["v"].as_str())
         .ok_or_else(|| error("E_RANGE", "node.type is required"))?;
-    expand_graph_config_defaults(processor, config);
-    for name in PARAMETER_NAMES {
-        if let Some(spec) = parameter_descriptor_for_stage(&node.processor, name, stage) {
-            params
-                .entry(name)
-                .or_insert_with(|| rational(&spec.default, graph_unit(spec.unit)));
-        }
+    let declaration = node.processor.declaration();
+    if processor != declaration.identity {
+        return Err(error(
+            "E_REFERENCE",
+            format!(
+                "graph node `{id}` is a {processor} here but resolved as a {}",
+                declaration.identity
+            ),
+        ));
     }
-    Ok(writes_graph_config(processor))
+    expand_graph_config_defaults(declaration, config);
+    for param in declaration.params {
+        let spec = param.spec(stage);
+        params
+            .entry(param.name)
+            .or_insert_with(|| rational(&spec.default, graph_unit(spec.unit)));
+    }
+    Ok(writes_graph_config(declaration))
 }
 
-/// Fill in the config defaults of a graph node of type `processor`.
-pub(crate) fn expand_graph_config_defaults(processor: &str, config: &mut Map<String, Value>) {
-    match processor {
-        "synth.noise/1" => {
-            config
-                .entry("seed")
-                .or_insert_with(|| number(i64::from(crate::graph::DEFAULT_NOISE_SEED)));
-            config.entry("per_note").or_insert_with(|| boolean(false));
+/// Fill in the config defaults of a graph node with this declaration.
+pub(crate) fn expand_graph_config_defaults(
+    declaration: &Declaration,
+    config: &mut Map<String, Value>,
+) {
+    match declaration.config {
+        NormalConfig::None => {}
+        NormalConfig::Defaults(defaults) => {
+            for ConfigDefault { key, value, .. } in defaults {
+                config.entry(*key).or_insert_with(|| config_value(*value));
+            }
         }
-        "synth.pluck/1" => {
-            config
-                .entry("seed")
-                .or_insert_with(|| number(i64::from(crate::graph::DEFAULT_PLUCK_SEED)));
-        }
-        "synth.random/1" => {
-            config.entry("seed").or_insert_with(|| number(1));
-        }
-        "synth.modal/1" => {
-            config.entry("strings").or_insert_with(|| number(1));
-        }
-        // One mono violin player.
-        "synth.bow/1" => {
-            config.entry("players").or_insert_with(|| number(1));
-            config
-                .entry("body")
-                .or_insert_with(|| symbol(crate::bow::BowBody::Violin.name()));
-            config.entry("channels").or_insert_with(|| number(1));
-            config.entry("seed").or_insert_with(|| number(1));
-        }
-        "synth.delay/1" => {
-            config.entry("clock").or_insert_with(|| symbol("seconds"));
-        }
-        "synth.adsr/1" => {
-            config.entry("on_join").or_insert_with(|| symbol("hold"));
-        }
-        "synth.sample/1" => crate::sample_instrument::expand_config_defaults(config),
-        _ => {}
+        NormalConfig::Sample => crate::sample_instrument::expand_config_defaults(config),
     }
 }
 
-/// Whether N(A) writes a `config` record for a graph node of type
-/// `processor`. It writes an empty one for `synth.timbre/1`,
-/// `synth.pressure/1`, `synth.velocity/1` and `synth.key/1`, although they
-/// take no config. Execution hashes and the locks that pin them depend on
-/// it, so it stays.
-pub(crate) fn writes_graph_config(processor: &str) -> bool {
-    !matches!(
-        processor,
-        "synth.sine/1"
-            | "synth.saw/1"
-            | "synth.square/1"
-            | "synth.triangle/1"
-            | "synth.lfo/1"
-            | "synth.pan/1"
-            | "synth.balance/1"
-            | "synth.width/1"
-    )
+fn config_value(value: ConfigValue) -> Value {
+    match value {
+        ConfigValue::Number(value) => number(value),
+        ConfigValue::Boolean(value) => boolean(value),
+        ConfigValue::Symbol(value) => symbol(value),
+    }
+}
+
+/// Whether N(A) writes a `config` record for a graph node with this
+/// declaration.
+pub(crate) fn writes_graph_config(declaration: &Declaration) -> bool {
+    declaration.config != NormalConfig::None
 }
 
 /// The defaults of a production processor (`fx.*`), as lowered.

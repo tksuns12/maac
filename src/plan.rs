@@ -6056,9 +6056,13 @@ impl<'a> PlanView<'a> {
                     // Each delay line's history counts with the native
                     // delays and reverbs.
                     for graph_node in &graph.nodes {
-                        if let crate::graph::GraphProcessor::Delay { channels, max, .. } =
-                            &graph_node.processor
-                        {
+                        if let (
+                            crate::processor::Memory::DelayLine,
+                            crate::graph::GraphProcessor::Delay { channels, max, .. },
+                        ) = (
+                            graph_node.processor.declaration().memory,
+                            &graph_node.processor,
+                        ) {
                             let count = crate::graph::delay_line_frames(max)
                                 .and_then(|frames| frames.checked_mul(usize::from(*channels)))
                                 .ok_or_else(|| {
@@ -6478,22 +6482,7 @@ pub(crate) fn graph_sample_cost(graph: &crate::graph::GraphProgram) -> u64 {
         .nodes
         .iter()
         .fold(0u64, |cost, node| {
-            cost.saturating_add(match node.processor {
-                crate::graph::GraphProcessor::Pluck { .. } => crate::graph::PLUCK_SAMPLE_WORK,
-                crate::graph::GraphProcessor::Svf { .. } => crate::graph::SVF_SAMPLE_WORK,
-                crate::graph::GraphProcessor::Drive { .. } => crate::graph::DRIVE_SAMPLE_WORK,
-                crate::graph::GraphProcessor::Delay { clock, .. } => match clock {
-                    crate::graph::DelayClock::Seconds => crate::graph::DELAY_SAMPLE_WORK,
-                    crate::graph::DelayClock::Score => crate::graph::SCORE_DELAY_SAMPLE_WORK,
-                },
-                crate::graph::GraphProcessor::Modal { modes, strings } => {
-                    crate::graph::modal_sample_work(modes, strings)
-                }
-                crate::graph::GraphProcessor::Bow { players, body, .. } => {
-                    crate::graph::bow_sample_work(players, body)
-                }
-                _ => 1,
-            })
+            cost.saturating_add(node.processor.sample_work())
         })
         .saturating_add(graph.connections.len() as u64)
         .saturating_add(graph.modulations.len() as u64)

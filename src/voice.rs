@@ -7,6 +7,7 @@ use crate::graph::{
     GraphProgram, GraphStage, InstrumentProgram, ParameterRate, ParameterSpec, MAX_GRAPH_NODES,
 };
 use crate::plan::{GainExpression, PitchExpression, PressureExpression, TimbreExpression};
+use crate::processor::Declaration;
 use crate::sample_instrument::{SampleFadeShape, SamplePlayback, SampleZone};
 use crate::synth::{Adsr, DriveState, Oscillator, SvfCoefficients, SvfMode, Waveform};
 use crate::wavetable::TableBank;
@@ -17,7 +18,7 @@ use std::sync::Arc;
 /// The most parameter slots any processor has: `synth.bow/1`'s eleven. The
 /// note-on, reset and note-off captures evaluate parameters in a scratch of
 /// this size.
-const MAX_PARAMETER_SLOTS: usize = BOW_PARAMETERS.len();
+const MAX_PARAMETER_SLOTS: usize = crate::processor::BOW.params.len();
 
 /// Immutable executable code shared by every instance of one instrument.
 #[derive(Debug)]
@@ -84,6 +85,10 @@ struct CompiledGraph {
 #[derive(Debug)]
 struct CompiledNode {
     id: String,
+    declaration: &'static Declaration,
+    /// Whether it reads its audio input from earlier frames, as a delay
+    /// line does: its input is summed and written after the graph has run.
+    reads_input_later: bool,
     processor: ProcessorCode,
     base_params: Vec<f64>,
     specs: Vec<CompiledBounds>,
@@ -1246,9 +1251,10 @@ impl GraphState {
             apply_controls(node, controls, ParameterRate::NoteOn, &mut params);
             apply_controls(node, controls, ParameterRate::Reset, &mut params);
             let state = match &node.processor {
-                ProcessorCode::Oscillator(waveform) => {
-                    ProcessorState::Oscillator(Oscillator::new(*waveform, params[2])?)
-                }
+                ProcessorCode::Oscillator(waveform) => ProcessorState::Oscillator(Oscillator::new(
+                    *waveform,
+                    params[slot::OSCILLATOR_PHASE],
+                )?),
                 ProcessorCode::Noise(seed, per_note) => ProcessorState::Noise(match address {
                     Some(address) if *per_note => note_noise_seed(*seed, address),
                     _ => *seed,
@@ -1265,20 +1271,22 @@ impl GraphState {
                 ProcessorCode::Bow(players, body, channels, seed) => ProcessorState::Bow(Box::new(
                     crate::bow::Bow::new(*players, *body, *channels, *seed)?,
                 )),
-                ProcessorCode::Wavetable(_) => ProcessorState::Wavetable { phase: params[2] },
+                ProcessorCode::Wavetable(_) => ProcessorState::Wavetable {
+                    phase: params[slot::WAVETABLE_PHASE],
+                },
                 ProcessorCode::Sample(_) => ProcessorState::Sample {
                     velocity,
                     layers: None,
                 },
                 ProcessorCode::Adsr(_) => ProcessorState::Adsr(Adsr::new_curved(
                     on_frame.unwrap_or(0),
-                    params[0],
-                    params[1],
-                    params[2],
-                    params[4],
+                    params[slot::ADSR_ATTACK],
+                    params[slot::ADSR_DECAY],
+                    params[slot::ADSR_SUSTAIN],
+                    params[slot::ADSR_CURVE],
                 )?),
                 ProcessorCode::Lfo => {
-                    ProcessorState::Lfo(Oscillator::new(Waveform::Sine, params[1])?)
+                    ProcessorState::Lfo(Oscillator::new(Waveform::Sine, params[slot::LFO_PHASE])?)
                 }
                 ProcessorCode::OnePole(_) | ProcessorCode::HighPass(_) => {
                     ProcessorState::OnePole([0.0; 2])
@@ -1394,8 +1402,12 @@ impl GraphState {
                 continue;
             }
             if let ProcessorState::Pluck(pluck) = &mut runtime.state {
-                let ratio = note_on_ratio(compiled, controls, runtime.params[0]);
-                pluck.excite(pitch_hz * ratio, runtime.params[4], runtime.params[5])?;
+                let ratio = note_on_ratio(compiled, controls, runtime.params[slot::PLUCK_RATIO]);
+                pluck.excite(
+                    pitch_hz * ratio,
+                    runtime.params[slot::PLUCK_HARDNESS],
+                    runtime.params[slot::PLUCK_POSITION],
+                )?;
             }
         }
         Ok(())
@@ -1450,9 +1462,11 @@ impl GraphState {
     ) -> Result<()> {
         for (compiled, runtime) in graph.nodes.iter().zip(&mut self.nodes) {
             if let ProcessorState::Adsr(envelope) = &mut runtime.state {
-                let mut release = compiled.base_params[3];
+                let mut release = compiled.base_params[slot::ADSR_RELEASE];
                 for binding in &compiled.controls {
-                    if binding.rate == ParameterRate::NoteOff && binding.parameter == 3 {
+                    if binding.rate == ParameterRate::NoteOff
+                        && binding.parameter == slot::ADSR_RELEASE
+                    {
                         release = controls[binding.control];
                     }
                 }
@@ -1507,8 +1521,8 @@ impl GraphState {
                 [0.0; 2],
                 &mut params,
             )?;
-            validate_event_parameter(compiled, 3, params[3])?;
-            releases[index] = params[3];
+            validate_event_parameter(compiled, slot::ADSR_RELEASE, params[slot::ADSR_RELEASE])?;
+            releases[index] = params[slot::ADSR_RELEASE];
             has_release[index] = true;
         }
         for index in 0..graph.nodes.len() {
@@ -1569,35 +1583,60 @@ impl GraphState {
                 )?;
                 match (&compiled.processor, &mut self.nodes[node_index].state) {
                     (ProcessorCode::Adsr(_), state) => {
-                        for parameter in [0, 1, 2, 4] {
+                        for parameter in [
+                            slot::ADSR_ATTACK,
+                            slot::ADSR_DECAY,
+                            slot::ADSR_SUSTAIN,
+                            slot::ADSR_CURVE,
+                        ] {
                             validate_event_parameter(compiled, parameter, event_params[parameter])?;
                         }
                         *state = ProcessorState::Adsr(Adsr::new_curved(
                             frame,
-                            event_params[0],
-                            event_params[1],
-                            event_params[2],
-                            event_params[4],
+                            event_params[slot::ADSR_ATTACK],
+                            event_params[slot::ADSR_DECAY],
+                            event_params[slot::ADSR_SUSTAIN],
+                            event_params[slot::ADSR_CURVE],
                         )?);
                     }
                     (ProcessorCode::Oscillator(_), ProcessorState::Oscillator(oscillator)) => {
-                        validate_event_parameter(compiled, 2, event_params[2])?;
-                        oscillator.reset(event_params[2])?;
+                        validate_event_parameter(
+                            compiled,
+                            slot::OSCILLATOR_PHASE,
+                            event_params[slot::OSCILLATOR_PHASE],
+                        )?;
+                        oscillator.reset(event_params[slot::OSCILLATOR_PHASE])?;
                     }
                     (ProcessorCode::Wavetable(_), ProcessorState::Wavetable { phase }) => {
-                        validate_event_parameter(compiled, 2, event_params[2])?;
-                        *phase = canonical_event_phase(event_params[2]);
+                        validate_event_parameter(
+                            compiled,
+                            slot::WAVETABLE_PHASE,
+                            event_params[slot::WAVETABLE_PHASE],
+                        )?;
+                        *phase = canonical_event_phase(event_params[slot::WAVETABLE_PHASE]);
                     }
                     (ProcessorCode::Lfo, ProcessorState::Lfo(oscillator)) => {
-                        validate_event_parameter(compiled, 1, event_params[1])?;
-                        oscillator.reset(event_params[1])?;
+                        validate_event_parameter(
+                            compiled,
+                            slot::LFO_PHASE,
+                            event_params[slot::LFO_PHASE],
+                        )?;
+                        oscillator.reset(event_params[slot::LFO_PHASE])?;
                     }
                     (ProcessorCode::Pluck(_), ProcessorState::Pluck(pluck)) => {
-                        for parameter in [4, 5] {
+                        for parameter in [slot::PLUCK_HARDNESS, slot::PLUCK_POSITION] {
                             validate_event_parameter(compiled, parameter, event_params[parameter])?;
                         }
-                        let ratio = note_on_ratio(compiled, controls, compiled.base_params[0]);
-                        pluck.excite(pitch_hz * ratio, event_params[4], event_params[5])?;
+                        let ratio = note_on_ratio(
+                            compiled,
+                            controls,
+                            compiled.base_params[slot::PLUCK_RATIO],
+                        );
+                        pluck.excite(
+                            pitch_hz * ratio,
+                            event_params[slot::PLUCK_HARDNESS],
+                            event_params[slot::PLUCK_POSITION],
+                        )?;
                     }
                     _ => {
                         return Err(RenderError::RenderState(format!(
@@ -1623,8 +1662,12 @@ impl GraphState {
                 )?;
                 match (&compiled.processor, &mut self.nodes[node_index].state) {
                     (ProcessorCode::Lfo, ProcessorState::Lfo(oscillator)) => {
-                        validate_event_parameter(compiled, 1, event_params[1])?;
-                        oscillator.reset(event_params[1])?;
+                        validate_event_parameter(
+                            compiled,
+                            slot::LFO_PHASE,
+                            event_params[slot::LFO_PHASE],
+                        )?;
+                        oscillator.reset(event_params[slot::LFO_PHASE])?;
                     }
                     _ => {
                         return Err(RenderError::RenderState(format!(
@@ -1774,7 +1817,8 @@ impl GraphState {
                     }
                 }
                 let mut audio_input = [0.0; 2];
-                if !matches!(compiled.processor, ProcessorCode::Delay(..)) {
+                // A delay line's input is written after the graph has run.
+                if !compiled.reads_input_later {
                     match sum_incoming(compiled, |source| match source {
                         Source::Input => input_at(offset),
                         Source::Node(index) => scratch[index * stride + offset],
@@ -1836,8 +1880,8 @@ impl GraphState {
                     sum,
                     scratch[node_index * stride],
                     *channels,
-                    runtime.params[1],
-                    runtime.params[2],
+                    runtime.params[slot::DELAY_FEEDBACK],
+                    runtime.params[slot::DELAY_DAMPING],
                 )
             });
             if let Err(failure) = written {
@@ -1937,7 +1981,7 @@ fn mark_source(required: &mut [bool; MAX_GRAPH_NODES], source: Source) {
 
 /// Whether a pluck's note-on `hardness` and `position` change its fill.
 fn plucked_fill_is_shaped(params: &[f64]) -> bool {
-    params[4] != 1.0 || params[5] != 0.0
+    params[slot::PLUCK_HARDNESS] != 1.0 || params[slot::PLUCK_POSITION] != 0.0
 }
 
 /// A pluck's `ratio` at note-on: `base` with any control on it, before
@@ -1945,7 +1989,7 @@ fn plucked_fill_is_shaped(params: &[f64]) -> bool {
 fn note_on_ratio(node: &CompiledNode, controls: &[f64], base: f64) -> f64 {
     node.controls
         .iter()
-        .filter(|binding| binding.parameter == 0)
+        .filter(|binding| binding.parameter == slot::PLUCK_RATIO)
         .fold(base, |_, binding| controls[binding.control])
 }
 
@@ -2082,7 +2126,7 @@ fn process_graph_node(
             next ^= next << 13;
             next ^= next >> 17;
             next ^= next << 5;
-            output[0] = (next as f64 / 2147483648.0 - 1.0) * params[0];
+            output[0] = (next as f64 / 2147483648.0 - 1.0) * params[slot::NOISE_LEVEL];
             if commit {
                 *state = next;
             }
@@ -2090,35 +2134,35 @@ fn process_graph_node(
         (ProcessorCode::Pluck(_), ProcessorState::Pluck(pluck)) => {
             output[0] = if commit {
                 pluck.sample(
-                    pitch_hz * params[0],
-                    params[1],
-                    params[2],
-                    params[3],
-                    params[6],
+                    pitch_hz * params[slot::PLUCK_RATIO],
+                    params[slot::PLUCK_DECAY],
+                    params[slot::PLUCK_DAMPING],
+                    params[slot::PLUCK_LEVEL],
+                    params[slot::PLUCK_PICKUP],
                 )?
             } else {
                 pluck.preview(
-                    pitch_hz * params[0],
-                    params[1],
-                    params[2],
-                    params[3],
-                    params[6],
+                    pitch_hz * params[slot::PLUCK_RATIO],
+                    params[slot::PLUCK_DECAY],
+                    params[slot::PLUCK_DAMPING],
+                    params[slot::PLUCK_LEVEL],
+                    params[slot::PLUCK_PICKUP],
                 )?
             };
         }
         (ProcessorCode::Bow(..), ProcessorState::Bow(bow)) => {
             let params = crate::bow::BowParams {
-                ratio: params[0],
-                dynamics: params[1],
-                position: params[2],
-                vibrato: params[3],
-                rate: params[4],
-                attack: params[5],
-                timing: params[6],
-                spread: params[7],
-                width: params[8],
-                pan: params[9],
-                level: params[10],
+                ratio: params[slot::BOW_RATIO],
+                dynamics: params[slot::BOW_DYNAMICS],
+                position: params[slot::BOW_POSITION],
+                vibrato: params[slot::BOW_VIBRATO],
+                rate: params[slot::BOW_RATE],
+                attack: params[slot::BOW_ATTACK],
+                timing: params[slot::BOW_TIMING],
+                spread: params[slot::BOW_SPREAD],
+                width: params[slot::BOW_WIDTH],
+                pan: params[slot::BOW_PAN],
+                level: params[slot::BOW_LEVEL],
             };
             output = if commit {
                 bow.sample(frame, &params, pitch_hz)?
@@ -2128,39 +2172,43 @@ fn process_graph_node(
         }
         (ProcessorCode::Modal(..), ProcessorState::Modal(bank)) => {
             let shape = crate::modal::ModalShape {
-                frequency_hz: pitch_hz * params[0],
-                stretch: params[1],
-                decay: params[2],
-                damping: params[3],
-                position: params[4],
-                detune_cents: params[5],
+                frequency_hz: pitch_hz * params[slot::MODAL_RATIO],
+                stretch: params[slot::MODAL_STRETCH],
+                decay: params[slot::MODAL_DECAY],
+                damping: params[slot::MODAL_DAMPING],
+                position: params[slot::MODAL_POSITION],
+                detune_cents: params[slot::MODAL_DETUNE],
             };
             output[0] = if commit {
-                bank.sample(&shape, params[6], audio_input[0])?
+                bank.sample(&shape, params[slot::MODAL_LEVEL], audio_input[0])?
             } else {
-                bank.preview(&shape, params[6], audio_input[0])?
+                bank.preview(&shape, params[slot::MODAL_LEVEL], audio_input[0])?
             };
         }
         (ProcessorCode::Oscillator(_), ProcessorState::Oscillator(oscillator)) => {
-            let frequency = pitch_hz * params[0] + params[1];
+            let frequency =
+                pitch_hz * params[slot::OSCILLATOR_RATIO] + params[slot::OSCILLATOR_FREQUENCY];
             validate_frequency(frequency)?;
+            let level = params[slot::OSCILLATOR_LEVEL];
             if commit {
-                output[0] = oscillator.sample(frequency, rate)? * params[3];
+                output[0] = oscillator.sample(frequency, rate)? * level;
             } else {
                 let mut preview = oscillator.clone();
-                output[0] = preview.sample(frequency, rate)? * params[3];
+                output[0] = preview.sample(frequency, rate)? * level;
             }
         }
         (ProcessorCode::Wavetable(table), ProcessorState::Wavetable { phase }) => {
-            let frequency = pitch_hz * params[0] + params[1];
+            let frequency =
+                pitch_hz * params[slot::WAVETABLE_RATIO] + params[slot::WAVETABLE_FREQUENCY];
             validate_frequency(frequency)?;
-            output[0] = table.sample(*phase, params[4], frequency, rate)? * params[3];
+            output[0] = table.sample(*phase, params[slot::WAVETABLE_POSITION], frequency, rate)?
+                * params[slot::WAVETABLE_LEVEL];
             if commit {
                 *phase = (*phase + frequency / rate).rem_euclid(1.0);
             }
         }
         (ProcessorCode::Sample(node), ProcessorState::Sample { velocity, layers }) => {
-            let frequency = pitch_hz * params[0] + params[1];
+            let frequency = pitch_hz * params[slot::SAMPLE_RATIO] + params[slot::SAMPLE_FREQUENCY];
             validate_frequency(frequency)?;
             if frequency <= 0.0 {
                 return Err(RenderError::Nonfinite(format!(
@@ -2218,7 +2266,7 @@ fn process_graph_node(
                 }
             }
             for (output, sum) in output.iter_mut().zip(sums).take(node.channels) {
-                *output = sum * params[2];
+                *output = sum * params[slot::SAMPLE_LEVEL];
             }
             if commit {
                 if let Some(chosen) = chosen {
@@ -2231,10 +2279,12 @@ fn process_graph_node(
         }
         (ProcessorCode::Lfo, ProcessorState::Lfo(oscillator)) => {
             if commit {
-                output[0] = oscillator.sample(params[0], rate)? * params[2];
+                output[0] =
+                    oscillator.sample(params[slot::LFO_FREQUENCY], rate)? * params[slot::LFO_LEVEL];
             } else {
                 let mut preview = oscillator.clone();
-                output[0] = preview.sample(params[0], rate)? * params[2];
+                output[0] =
+                    preview.sample(params[slot::LFO_FREQUENCY], rate)? * params[slot::LFO_LEVEL];
             }
         }
         (ProcessorCode::Timbre, ProcessorState::Stateless) => output[0] = timbre,
@@ -2249,7 +2299,7 @@ fn process_graph_node(
         }
         (ProcessorCode::Gain(channels), ProcessorState::Stateless) => {
             for (output, input) in output.iter_mut().zip(audio_input).take(*channels) {
-                *output = input * params[0];
+                *output = input * params[slot::GAIN_LEVEL];
             }
         }
         (
@@ -2263,7 +2313,7 @@ fn process_graph_node(
                 .zip(audio_input)
                 .take(*channels)
             {
-                let lowpass = one_pole_step(input, previous, params[0], rate)?;
+                let lowpass = one_pole_step(input, previous, params[slot::ONEPOLE_CUTOFF], rate)?;
                 *output = if matches!(compiled.processor, ProcessorCode::HighPass(_)) {
                     input - lowpass
                 } else {
@@ -2276,14 +2326,15 @@ fn process_graph_node(
         }
         (ProcessorCode::Svf(channels, mode), ProcessorState::Svf(states)) => {
             // A shared graph renders with zero pitch, and its ratio is zero.
-            let cutoff = pitch_hz * params[1] + params[0];
-            let coefficients = SvfCoefficients::new(cutoff, params[2], rate).map_err(|_| {
-                RenderError::Nonfinite(format!(
+            let cutoff = pitch_hz * params[slot::SVF_RATIO] + params[slot::SVF_CUTOFF];
+            let coefficients =
+                SvfCoefficients::new(cutoff, params[slot::SVF_Q], rate).map_err(|_| {
+                    RenderError::Nonfinite(format!(
                     "state-variable filter {} cutoff {cutoff} Hz must be strictly within 0..{} Hz",
                     compiled.id,
                     rate / 2.0
                 ))
-            })?;
+                })?;
             let mut next = *states;
             for ((output, state), input) in output
                 .iter_mut()
@@ -2298,7 +2349,7 @@ fn process_graph_node(
             }
         }
         (ProcessorCode::Drive(channels), ProcessorState::Drive(states)) => {
-            if params[3] > 0.0 && params[0] == 0.0 {
+            if params[slot::DRIVE_REFERENCE] > 0.0 && params[slot::DRIVE_DRIVE] == 0.0 {
                 return Err(RenderError::Nonfinite(format!(
                     "drive node {} needs a positive drive when reference is set",
                     compiled.id
@@ -2311,8 +2362,13 @@ fn process_graph_node(
                 .zip(audio_input)
                 .take(*channels)
             {
-                let (value, after) =
-                    state.sample(input, params[0], params[1], params[2], params[3]);
+                let (value, after) = state.sample(
+                    input,
+                    params[slot::DRIVE_DRIVE],
+                    params[slot::DRIVE_BIAS],
+                    params[slot::DRIVE_LEVEL],
+                    params[slot::DRIVE_REFERENCE],
+                );
                 *output = value;
                 *state = after;
             }
@@ -2324,7 +2380,7 @@ fn process_graph_node(
             output[..*channels].copy_from_slice(&audio_input[..*channels]);
         }
         (ProcessorCode::Pan, ProcessorState::Stateless) => {
-            output = pan_sample(audio_input[0], params[0])?;
+            output = pan_sample(audio_input[0], params[slot::PAN])?;
         }
         (ProcessorCode::Balance, ProcessorState::Stateless) => {
             // cos(π/2) is not exactly zero in binary64; a full balance
@@ -2337,20 +2393,21 @@ fn process_graph_node(
                 }
             };
             output = [
-                audio_input[0] * lowered(params[0]),
-                audio_input[1] * lowered(-params[0]),
+                audio_input[0] * lowered(params[slot::BALANCE]),
+                audio_input[1] * lowered(-params[slot::BALANCE]),
             ];
         }
         (ProcessorCode::Width, ProcessorState::Stateless) => {
             let mid = (audio_input[0] + audio_input[1]) / 2.0;
             let side = (audio_input[0] - audio_input[1]) / 2.0;
-            output = [mid + params[0] * side, mid - params[0] * side];
+            let width = params[slot::WIDTH];
+            output = [mid + width * side, mid - width * side];
         }
         (ProcessorCode::Delay(channels, score, _), ProcessorState::Delay(line)) => {
             // The input is written after the rest of the graph has run; see
             // `GraphState::write_delays`.
             let _ = (audio_input, commit);
-            output = line.read(frame, rate, *channels, *score, params[0])?;
+            output = line.read(frame, rate, *channels, *score, params[slot::DELAY_TIME])?;
         }
         _ => {
             return Err(RenderError::RenderState(format!(
@@ -2382,37 +2439,33 @@ fn compile_graph(
         .collect();
     let mut nodes = Vec::with_capacity(graph.nodes.len());
     for node in &graph.nodes {
-        let names = slot_names(&node.processor);
+        let declaration = node.processor.declaration();
         let processor = compile_processor(&node.processor, tables, samples)?;
-        if names.len() > MAX_PARAMETER_SLOTS {
+        if declaration.params.len() > MAX_PARAMETER_SLOTS {
             return Err(RenderError::RenderState(format!(
                 "graph node {} has {} parameter slots, more than {MAX_PARAMETER_SLOTS}",
                 node.id,
-                names.len()
+                declaration.params.len()
             )));
         }
-        let mut base_params = Vec::with_capacity(names.len());
-        let mut specs = Vec::with_capacity(names.len());
-        for name in names {
-            let spec =
-                parameter_descriptor_for_stage(&node.processor, name, stage).ok_or_else(|| {
-                    RenderError::RenderState(format!(
-                        "graph node {} has no descriptor for {name}",
-                        node.id
-                    ))
-                })?;
-            let value = node.params.get(*name).map_or_else(
+        let mut base_params = Vec::with_capacity(declaration.params.len());
+        let mut specs = Vec::with_capacity(declaration.params.len());
+        for param in declaration.params {
+            let spec = param.spec(stage);
+            let value = node.params.get(param.name).map_or_else(
                 || rational_f64(&spec.default, "parameter default"),
                 |value| rational_f64(value, "graph parameter"),
             )?;
             base_params.push(value);
             specs.push(compile_bounds(
                 &spec,
-                format!("node {} parameter {name}", node.id),
+                format!("node {} parameter {}", node.id, param.name),
             )?);
         }
         nodes.push(CompiledNode {
             id: node.id.clone(),
+            declaration,
+            reads_input_later: node.processor.reads_input_later(),
             processor,
             base_params,
             specs,
@@ -2438,8 +2491,8 @@ fn compile_graph(
     modulations.sort_by(|left, right| left.id.as_bytes().cmp(right.id.as_bytes()));
     for modulation in modulations {
         let target = indices[modulation.to.node.as_str()];
-        let parameter = parameter_slot(&nodes[target].processor, &modulation.to.parameter)
-            .ok_or_else(|| {
+        let parameter =
+            parameter_slot(&nodes[target], &modulation.to.parameter).ok_or_else(|| {
                 RenderError::RenderState(format!(
                     "modulation {} targets a missing parameter",
                     modulation.id
@@ -2490,7 +2543,7 @@ fn compile_graph(
     let delays = order
         .iter()
         .copied()
-        .filter(|&index| matches!(nodes[index].processor, ProcessorCode::Delay(..)))
+        .filter(|&index| nodes[index].reads_input_later)
         .collect();
     Ok(CompiledGraph {
         order,
@@ -2506,49 +2559,6 @@ fn compile_graph(
         channels: graph.channels as usize,
         nodes,
     })
-}
-
-/// A `synth.bow/1` node's parameter slots, in order.
-const BOW_PARAMETERS: &[&str] = &[
-    "ratio", "dynamics", "position", "vibrato", "rate", "attack", "timing", "spread", "width",
-    "pan", "level",
-];
-
-/// The parameter slots of a node of `processor`, in the order its kernel
-/// reads them.
-pub(crate) fn slot_names(processor: &GraphProcessor) -> &'static [&'static str] {
-    const OSCILLATOR: &[&str] = &["ratio", "frequency", "phase", "level"];
-    match processor {
-        GraphProcessor::Sine
-        | GraphProcessor::Saw
-        | GraphProcessor::Square
-        | GraphProcessor::Triangle => OSCILLATOR,
-        GraphProcessor::Noise { .. } | GraphProcessor::Gain { .. } => &["level"],
-        GraphProcessor::Random { .. }
-        | GraphProcessor::Timbre
-        | GraphProcessor::Pressure
-        | GraphProcessor::Velocity
-        | GraphProcessor::Key
-        | GraphProcessor::Mix { .. } => &[],
-        GraphProcessor::Pluck { .. } => &[
-            "ratio", "decay", "damping", "level", "hardness", "position", "pickup",
-        ],
-        GraphProcessor::Modal { .. } => &[
-            "ratio", "stretch", "decay", "damping", "position", "detune", "level",
-        ],
-        GraphProcessor::Bow { .. } => BOW_PARAMETERS,
-        GraphProcessor::Wavetable { .. } => &["ratio", "frequency", "phase", "level", "position"],
-        GraphProcessor::Sample { .. } => &["ratio", "frequency", "level"],
-        GraphProcessor::Adsr { .. } => &["attack", "decay", "sustain", "release", "curve"],
-        GraphProcessor::Lfo => &["frequency", "phase", "level"],
-        GraphProcessor::OnePole { .. } | GraphProcessor::HighPass { .. } => &["cutoff"],
-        GraphProcessor::Svf { .. } => &["cutoff", "ratio", "q"],
-        GraphProcessor::Drive { .. } => &["drive", "bias", "level", "reference"],
-        GraphProcessor::Pan => &["pan"],
-        GraphProcessor::Balance => &["balance"],
-        GraphProcessor::Width => &["width"],
-        GraphProcessor::Delay { .. } => &["time", "feedback", "damping"],
-    }
 }
 
 fn compile_processor(
@@ -2624,36 +2634,11 @@ fn compile_processor(
     })
 }
 
-fn parameter_slot(processor: &ProcessorCode, name: &str) -> Option<usize> {
-    let names: &[&str] = match processor {
-        ProcessorCode::Oscillator(_) => &["ratio", "frequency", "phase", "level"],
-        ProcessorCode::Pluck(_) => &[
-            "ratio", "decay", "damping", "level", "hardness", "position", "pickup",
-        ],
-        ProcessorCode::Modal(..) => &[
-            "ratio", "stretch", "decay", "damping", "position", "detune", "level",
-        ],
-        ProcessorCode::Bow(..) => BOW_PARAMETERS,
-        ProcessorCode::Wavetable(_) => &["ratio", "frequency", "phase", "level", "position"],
-        ProcessorCode::Sample(_) => &["ratio", "frequency", "level"],
-        ProcessorCode::Adsr(_) => &["attack", "decay", "sustain", "release", "curve"],
-        ProcessorCode::Lfo => &["frequency", "phase", "level"],
-        ProcessorCode::Gain(_) | ProcessorCode::Noise(..) => &["level"],
-        ProcessorCode::OnePole(_) | ProcessorCode::HighPass(_) => &["cutoff"],
-        ProcessorCode::Svf(..) => &["cutoff", "ratio", "q"],
-        ProcessorCode::Drive(_) => &["drive", "bias", "level", "reference"],
-        ProcessorCode::Mix(_)
-        | ProcessorCode::Timbre
-        | ProcessorCode::Pressure
-        | ProcessorCode::Velocity
-        | ProcessorCode::Random(_)
-        | ProcessorCode::Key => &[],
-        ProcessorCode::Pan => &["pan"],
-        ProcessorCode::Balance => &["balance"],
-        ProcessorCode::Width => &["width"],
-        ProcessorCode::Delay(..) => &["time", "feedback", "damping"],
-    };
-    names.iter().position(|candidate| *candidate == name)
+fn parameter_slot(node: &CompiledNode, name: &str) -> Option<usize> {
+    node.declaration
+        .params
+        .iter()
+        .position(|param| param.name == name)
 }
 
 fn compile_source(source: &str, indices: &HashMap<&str, usize>) -> Result<Source> {
@@ -2731,12 +2716,11 @@ fn compile_controls(
                     "{kind} {id} control {name} targets a missing node"
                 ))
             })?;
-        let parameter =
-            parameter_slot(&node.processor, &control.target.parameter).ok_or_else(|| {
-                RenderError::RenderState(format!(
-                    "{kind} {id} control {name} targets a missing parameter"
-                ))
-            })?;
+        let parameter = parameter_slot(node, &control.target.parameter).ok_or_else(|| {
+            RenderError::RenderState(format!(
+                "{kind} {id} control {name} targets a missing parameter"
+            ))
+        })?;
         node.controls.push(ControlBinding {
             control: control_index,
             parameter,
@@ -3618,4 +3602,84 @@ node keys { instrument = &studio.electric_piano; }
             Err(RenderError::RenderState(_))
         ));
     }
+}
+
+/// Each kernel's parameter slots, by name, from the declarations.
+mod slot {
+    use crate::processor::{
+        ADSR, BALANCE as BALANCE_DECLARATION, BOW, DELAY_SCORE, DELAY_SECONDS, DRIVE, GAIN,
+        HIGHPASS, LFO, MODAL, NOISE, ONEPOLE, PAN as PAN_DECLARATION, PLUCK, SAMPLE, SINE, SVF,
+        WAVETABLE, WIDTH as WIDTH_DECLARATION,
+    };
+
+    // The fixed waveforms share their parameters.
+    pub(super) const OSCILLATOR_RATIO: usize = SINE.slot("ratio");
+    pub(super) const OSCILLATOR_FREQUENCY: usize = SINE.slot("frequency");
+    pub(super) const OSCILLATOR_PHASE: usize = SINE.slot("phase");
+    pub(super) const OSCILLATOR_LEVEL: usize = SINE.slot("level");
+    pub(super) const WAVETABLE_RATIO: usize = WAVETABLE.slot("ratio");
+    pub(super) const WAVETABLE_FREQUENCY: usize = WAVETABLE.slot("frequency");
+    pub(super) const WAVETABLE_PHASE: usize = WAVETABLE.slot("phase");
+    pub(super) const WAVETABLE_LEVEL: usize = WAVETABLE.slot("level");
+    pub(super) const WAVETABLE_POSITION: usize = WAVETABLE.slot("position");
+    pub(super) const SAMPLE_RATIO: usize = SAMPLE.slot("ratio");
+    pub(super) const SAMPLE_FREQUENCY: usize = SAMPLE.slot("frequency");
+    pub(super) const SAMPLE_LEVEL: usize = SAMPLE.slot("level");
+    pub(super) const NOISE_LEVEL: usize = NOISE.slot("level");
+    pub(super) const PLUCK_RATIO: usize = PLUCK.slot("ratio");
+    pub(super) const PLUCK_DECAY: usize = PLUCK.slot("decay");
+    pub(super) const PLUCK_DAMPING: usize = PLUCK.slot("damping");
+    pub(super) const PLUCK_LEVEL: usize = PLUCK.slot("level");
+    pub(super) const PLUCK_HARDNESS: usize = PLUCK.slot("hardness");
+    pub(super) const PLUCK_POSITION: usize = PLUCK.slot("position");
+    pub(super) const PLUCK_PICKUP: usize = PLUCK.slot("pickup");
+    pub(super) const MODAL_RATIO: usize = MODAL.slot("ratio");
+    pub(super) const MODAL_STRETCH: usize = MODAL.slot("stretch");
+    pub(super) const MODAL_DECAY: usize = MODAL.slot("decay");
+    pub(super) const MODAL_DAMPING: usize = MODAL.slot("damping");
+    pub(super) const MODAL_POSITION: usize = MODAL.slot("position");
+    pub(super) const MODAL_DETUNE: usize = MODAL.slot("detune");
+    pub(super) const MODAL_LEVEL: usize = MODAL.slot("level");
+    pub(super) const BOW_RATIO: usize = BOW.slot("ratio");
+    pub(super) const BOW_DYNAMICS: usize = BOW.slot("dynamics");
+    pub(super) const BOW_POSITION: usize = BOW.slot("position");
+    pub(super) const BOW_VIBRATO: usize = BOW.slot("vibrato");
+    pub(super) const BOW_RATE: usize = BOW.slot("rate");
+    pub(super) const BOW_ATTACK: usize = BOW.slot("attack");
+    pub(super) const BOW_TIMING: usize = BOW.slot("timing");
+    pub(super) const BOW_SPREAD: usize = BOW.slot("spread");
+    pub(super) const BOW_WIDTH: usize = BOW.slot("width");
+    pub(super) const BOW_PAN: usize = BOW.slot("pan");
+    pub(super) const BOW_LEVEL: usize = BOW.slot("level");
+    pub(super) const ADSR_ATTACK: usize = ADSR.slot("attack");
+    pub(super) const ADSR_DECAY: usize = ADSR.slot("decay");
+    pub(super) const ADSR_SUSTAIN: usize = ADSR.slot("sustain");
+    pub(super) const ADSR_RELEASE: usize = ADSR.slot("release");
+    pub(super) const ADSR_CURVE: usize = ADSR.slot("curve");
+    pub(super) const LFO_FREQUENCY: usize = LFO.slot("frequency");
+    pub(super) const LFO_PHASE: usize = LFO.slot("phase");
+    pub(super) const LFO_LEVEL: usize = LFO.slot("level");
+    pub(super) const GAIN_LEVEL: usize = GAIN.slot("level");
+    // A high-pass is the input less the one-pole low-pass of the same cutoff.
+    pub(super) const ONEPOLE_CUTOFF: usize = ONEPOLE.slot("cutoff");
+    const _: () = assert!(HIGHPASS.slot("cutoff") == ONEPOLE_CUTOFF);
+    pub(super) const SVF_CUTOFF: usize = SVF.slot("cutoff");
+    pub(super) const SVF_RATIO: usize = SVF.slot("ratio");
+    pub(super) const SVF_Q: usize = SVF.slot("q");
+    pub(super) const DRIVE_DRIVE: usize = DRIVE.slot("drive");
+    pub(super) const DRIVE_BIAS: usize = DRIVE.slot("bias");
+    pub(super) const DRIVE_LEVEL: usize = DRIVE.slot("level");
+    pub(super) const DRIVE_REFERENCE: usize = DRIVE.slot("reference");
+    pub(super) const PAN: usize = PAN_DECLARATION.slot("pan");
+    pub(super) const BALANCE: usize = BALANCE_DECLARATION.slot("balance");
+    pub(super) const WIDTH: usize = WIDTH_DECLARATION.slot("width");
+    // A delay line reads the same slots on either clock.
+    pub(super) const DELAY_TIME: usize = DELAY_SECONDS.slot("time");
+    pub(super) const DELAY_FEEDBACK: usize = DELAY_SECONDS.slot("feedback");
+    pub(super) const DELAY_DAMPING: usize = DELAY_SECONDS.slot("damping");
+    const _: () = assert!(
+        DELAY_SCORE.slot("time") == DELAY_TIME
+            && DELAY_SCORE.slot("feedback") == DELAY_FEEDBACK
+            && DELAY_SCORE.slot("damping") == DELAY_DAMPING
+    );
 }
