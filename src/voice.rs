@@ -1385,7 +1385,12 @@ impl GraphState {
         pitch_hz: f64,
     ) -> Result<()> {
         for (compiled, runtime) in graph.nodes.iter().zip(&mut self.nodes) {
-            if compiled.has_note_on_modulations || !plucked_fill_is_shaped(&runtime.params) {
+            // Only a pluck has a fill; another node's slots 4 and 5 are not
+            // `hardness` and `position`, and may not exist.
+            if !matches!(compiled.processor, ProcessorCode::Pluck(_))
+                || compiled.has_note_on_modulations
+                || !plucked_fill_is_shaped(&runtime.params)
+            {
                 continue;
             }
             if let ProcessorState::Pluck(pluck) = &mut runtime.state {

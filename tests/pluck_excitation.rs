@@ -132,6 +132,27 @@ fn hardness_position_and_pickup_change_the_sound() {
 }
 
 #[test]
+fn a_shaped_string_beside_nodes_with_fewer_slots_renders() {
+    // Only a pluck has a fill. The note-on once read slots 4 and 5 of every
+    // node beside a shaped string, and a sine or a gain has fewer.
+    let shaped = "hardness = 1/4; position = 1/7;";
+    let alone = render(&program(shaped, ""), 0.6, &[], 960).unwrap();
+    let beside = render(
+        &program(
+            shaped,
+            r#"node spare { type = "synth.sine/1"; params = { level = 0; }; }
+  node trim { type = "synth.gain/1"; config = { channels = 1; }; }
+  connect spare_trim { from = &spare:out; to = &trim:in; }"#,
+        ),
+        0.6,
+        &[],
+        960,
+    )
+    .unwrap();
+    assert_eq!(alone, beside);
+}
+
+#[test]
 fn a_control_sets_hardness_at_note_on() {
     let program = compile_bundle(&SourceBundle::new(
         "pluck.maac",

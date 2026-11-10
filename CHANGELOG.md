@@ -60,6 +60,12 @@ promise of compatibility beyond the documented interfaces.
   parameter, such as an envelope's `release`, no longer crashes the
   renderer. Those captures evaluated parameters in room for seven, and a
   bowed section has eleven.
+- A `synth.pluck/1` with a `hardness` or `position` of its own, and no
+  modulation at note-on, no longer crashes the renderer when its voice
+  also holds a node with fewer than five parameters, such as a gain. The
+  note-on read the string's `hardness` and `position` slots on every node
+  of the voice before checking that it was a string. The fault dates from
+  0.2.0.
 
 ## [0.5.0] — 2026-11-05
 
