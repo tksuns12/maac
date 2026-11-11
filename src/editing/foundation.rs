@@ -1583,3 +1583,6 @@ fn enumerate_insert_occurrences(
     }
     Some(())
 }
+
+#[cfg(test)]
+mod plan_agreement;
