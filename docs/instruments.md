@@ -396,7 +396,7 @@ topological ties and connection/modulation IDs for reductions.
 | --- | --- | --- |
 | `synth.sine/1`, `synth.saw/1`, `synth.square/1`, `synth.triangle/1` | `ratio` (1; −64…64), `frequency` (0 Hz; −24000…24000 Hz), `phase` (0; 0…1), `level` (1; 0…16) | Mono |
 | `synth.wavetable/1` | Oscillator parameters plus `position` (0; 0…1); required `config.table = &wavetable` | Mono |
-| `synth.sample/1` | `ratio`, `frequency`, and `level` as for oscillators (no `phase`); required `config.zones` and optional `config.channels` (1) (see [Samples](#samples)) | Mono, or stereo with `channels = 2` |
+| `synth.sample/1` | `ratio`, `frequency`, and `level` as for oscillators (no `phase`); required `config.zones`, optional `config.channels` (1) and `config.fade_shape` (`linear` or `equal_power`; `linear`) (see [Samples](#samples)) | Mono, or stereo with `channels = 2` |
 | `synth.noise/1` | `level` (1; 0…16); optional nonzero unsigned 32-bit `config.seed` (1831565813) and boolean `config.per_note` (false) | Mono |
 | `synth.random/1` | No inputs or parameters; optional nonzero unsigned 32-bit `config.seed` (1); voice-only | Mono per-note constant in −1…1 |
 | `synth.adsr/1` | `attack` (0 s), `decay` (0 s), `sustain` (1; 0…1), `release` (0 s); times 0…1800 s; `curve` (0; 0…16); optional `config.on_join` (`hold` or `restart`; `hold`), see [connected notes](#connected-notes) | Mono control signal |

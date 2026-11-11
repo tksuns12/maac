@@ -1,9 +1,10 @@
 //! What each `synth.*/1` processor is, declared once: its identity, its
 //! parameters in the order its kernel reads them, where it may be placed,
 //! its channels, when it reads its audio input, its work and memory, and the
-//! config N(A) writes for it. Lowering, validation, normalization, the
-//! work ceiling and the voice compiler read these declarations; only the
-//! kernels and their state are specific to each processor.
+//! keys of its config with their ranges and defaults. Lowering, validation,
+//! normalization, the work ceiling and the voice compiler read these
+//! declarations; only the kernels and their state are specific to each
+//! processor, with building it from the config lowering has read.
 //!
 //! A declaration is plain data. [`GraphProcessor::declaration`] is the one
 //! place that maps a processor to its declaration, so a new processor that
@@ -12,10 +13,12 @@
 
 use num_bigint::BigInt;
 
+use crate::bow::MAX_PLAYERS;
 use crate::graph::{
     bow_sample_work, modal_sample_work, DelayClock, GraphProcessor, GraphStage, GraphUnit as Unit,
     ParameterRate as Rate, ParameterSpec, DEFAULT_NOISE_SEED, MAX_DELAY_SECONDS,
 };
+use crate::modal::{MAX_MODES, MAX_STRINGS};
 use crate::plan::Rational;
 
 /// An exact rational written as two integers, so a declaration is a
@@ -191,7 +194,7 @@ pub(crate) enum Memory {
     DelayLine,
 }
 
-/// A config value N(A) writes when the source leaves it out.
+/// The value of a config key the source leaves out.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ConfigValue {
     Number(i64),
@@ -199,45 +202,98 @@ pub(crate) enum ConfigValue {
     Symbol(&'static str),
 }
 
-/// A config key N(A) writes with this value when the source leaves it out.
+/// What a config key holds.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct ConfigDefault {
+pub(crate) enum Holds {
+    /// A whole number from `min` to `max`.
+    Integer {
+        min: u32,
+        max: u32,
+    },
+    Boolean,
+    /// One of these symbols, each the name its plan form has too.
+    Symbol(&'static [&'static str]),
+    /// A length in seconds, which the processor's own check bounds.
+    Seconds,
+    /// A wavetable a library exports.
+    Table,
+    /// A sample player's zones.
+    Zones,
+}
+
+/// A key of a processor's `config` record.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ConfigKey {
     pub(crate) key: &'static str,
-    pub(crate) value: ConfigValue,
+    pub(crate) holds: Holds,
+    /// What a source that leaves the key out means, which N(A) writes. A
+    /// key without one is required.
+    pub(crate) default: Option<ConfigValue>,
     /// The language gained the key after the execution hash was defined, so
-    /// the hash leaves it out while it holds this value.
+    /// the hash leaves it out while it holds its default.
     pub(crate) late: bool,
 }
 
-const fn default(key: &'static str, value: ConfigValue) -> ConfigDefault {
-    ConfigDefault {
+const fn required(key: &'static str, holds: Holds) -> ConfigKey {
+    ConfigKey {
         key,
-        value,
+        holds,
+        default: None,
         late: false,
     }
 }
 
-const fn late(key: &'static str, value: ConfigValue) -> ConfigDefault {
-    ConfigDefault {
+const fn optional(key: &'static str, holds: Holds, default: ConfigValue) -> ConfigKey {
+    ConfigKey {
         key,
-        value,
+        holds,
+        default: Some(default),
+        late: false,
+    }
+}
+
+const fn late(key: &'static str, holds: Holds, default: ConfigValue) -> ConfigKey {
+    ConfigKey {
+        key,
+        holds,
+        default: Some(default),
         late: true,
     }
 }
 
-/// The `config` record N(A) writes for a node.
+/// A processor's `config` record: what a source may write in it, and what
+/// N(A) writes for it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum NormalConfig {
-    /// No record: the processor takes no config.
+pub(crate) enum Config {
+    /// The processor takes no config, and N(A) writes none.
     None,
-    /// A record with these defaults for keys the source leaves out. It is
-    /// written, and empty, for `synth.timbre/1`, `synth.pressure/1`,
-    /// `synth.velocity/1` and `synth.key/1` too, which take no config:
-    /// execution hashes and the locks that pin them depend on it.
-    Defaults(&'static [ConfigDefault]),
-    /// A sample player's defaults, which depend on its zones.
-    Sample,
+    /// The processor takes no config, yet N(A) writes an empty record for
+    /// it: execution hashes and the locks that pin them depend on it.
+    Empty,
+    /// A record of these keys, in alphabetical order. N(A) writes it, with
+    /// the default of each key the source leaves out.
+    Keys(&'static [ConfigKey]),
 }
+
+const CHANNELS: Holds = Holds::Integer { min: 1, max: 2 };
+const SEED: Holds = Holds::Integer {
+    min: 1,
+    max: u32::MAX,
+};
+
+/// The config of a processor whose only key is its channel count.
+const CHANNELS_ONLY: Config = Config::Keys(&[required("channels", CHANNELS)]);
+
+/// A delay line's config, on either clock.
+const DELAY_CONFIG: Config = Config::Keys(&[
+    required("channels", CHANNELS),
+    optional(
+        "clock",
+        Holds::Symbol(&["seconds", "score"]),
+        ConfigValue::Symbol("seconds"),
+    ),
+    required("max", Holds::Seconds),
+]);
 
 /// Everything the crate knows about one processor besides its kernel.
 #[derive(Debug, Eq, PartialEq)]
@@ -250,12 +306,24 @@ pub(crate) struct Declaration {
     pub(crate) input: Input,
     pub(crate) work: Work,
     pub(crate) memory: Memory,
-    pub(crate) config: NormalConfig,
+    pub(crate) config: Config,
 }
 
 impl Declaration {
     pub(crate) fn param(&self, name: &str) -> Option<&'static Param> {
         self.params.iter().find(|param| param.name == name)
+    }
+
+    /// The keys of its config record.
+    pub(crate) fn config_keys(&self) -> &'static [ConfigKey] {
+        match self.config {
+            Config::None | Config::Empty => &[],
+            Config::Keys(keys) => keys,
+        }
+    }
+
+    pub(crate) fn config_key(&self, name: &str) -> Option<&'static ConfigKey> {
+        self.config_keys().iter().find(|key| key.key == name)
     }
 
     /// The slot of the parameter `name`. In a constant, a name the
@@ -367,26 +435,40 @@ impl GraphProcessor {
         }
     }
 
-    /// The `channels` of the node's config, if it has one.
-    pub(crate) const fn configured_channels(&self) -> Option<u8> {
+    /// The whole numbers of the node's config, by key in alphabetical
+    /// order.
+    pub(crate) const fn config_integers(&self) -> [Option<(&'static str, u32)>; 3] {
         match self {
-            Self::Bow { channels, .. }
-            | Self::Sample { channels, .. }
+            Self::Noise { seed, .. } | Self::Pluck { seed } | Self::Random { seed } => {
+                [Some(("seed", *seed)), None, None]
+            }
+            Self::Modal { modes, strings } => [
+                Some(("modes", *modes as u32)),
+                Some(("strings", *strings as u32)),
+                None,
+            ],
+            Self::Bow {
+                players,
+                channels,
+                seed,
+                ..
+            } => [
+                Some(("channels", *channels as u32)),
+                Some(("players", *players as u32)),
+                Some(("seed", *seed)),
+            ],
+            Self::Sample { channels, .. }
             | Self::Gain { channels }
             | Self::OnePole { channels }
             | Self::HighPass { channels }
             | Self::Svf { channels, .. }
             | Self::Drive { channels }
             | Self::Mix { channels }
-            | Self::Delay { channels, .. } => Some(*channels),
+            | Self::Delay { channels, .. } => [Some(("channels", *channels as u32)), None, None],
             Self::Sine
             | Self::Saw
             | Self::Square
             | Self::Triangle
-            | Self::Noise { .. }
-            | Self::Pluck { .. }
-            | Self::Random { .. }
-            | Self::Modal { .. }
             | Self::Wavetable { .. }
             | Self::Adsr { .. }
             | Self::Timbre
@@ -396,8 +478,17 @@ impl GraphProcessor {
             | Self::Lfo
             | Self::Pan
             | Self::Balance
-            | Self::Width => None,
+            | Self::Width => [None; 3],
         }
+    }
+
+    /// The `channels` of the node's config, if it has one.
+    pub(crate) fn configured_channels(&self) -> Option<u8> {
+        self.config_integers()
+            .into_iter()
+            .flatten()
+            .find(|(key, _)| *key == "channels")
+            .map(|(_, channels)| channels as u8)
     }
 
     fn count(&self, channels: Channels) -> u8 {
@@ -502,7 +593,7 @@ pub(crate) const SINE: Declaration = Declaration {
     input: Input::None,
     work: Work::Units(1),
     memory: Memory::None,
-    config: NormalConfig::None,
+    config: Config::None,
 };
 
 pub(crate) const SAW: Declaration = Declaration {
@@ -513,7 +604,7 @@ pub(crate) const SAW: Declaration = Declaration {
     input: Input::None,
     work: Work::Units(1),
     memory: Memory::None,
-    config: NormalConfig::None,
+    config: Config::None,
 };
 
 pub(crate) const SQUARE: Declaration = Declaration {
@@ -524,7 +615,7 @@ pub(crate) const SQUARE: Declaration = Declaration {
     input: Input::None,
     work: Work::Units(1),
     memory: Memory::None,
-    config: NormalConfig::None,
+    config: Config::None,
 };
 
 pub(crate) const TRIANGLE: Declaration = Declaration {
@@ -535,7 +626,7 @@ pub(crate) const TRIANGLE: Declaration = Declaration {
     input: Input::None,
     work: Work::Units(1),
     memory: Memory::None,
-    config: NormalConfig::None,
+    config: Config::None,
 };
 
 pub(crate) const NOISE: Declaration = Declaration {
@@ -553,9 +644,9 @@ pub(crate) const NOISE: Declaration = Declaration {
     input: Input::None,
     work: Work::Units(1),
     memory: Memory::None,
-    config: NormalConfig::Defaults(&[
-        late("per_note", ConfigValue::Boolean(false)),
-        default("seed", ConfigValue::Number(DEFAULT_NOISE_SEED as i64)),
+    config: Config::Keys(&[
+        late("per_note", Holds::Boolean, ConfigValue::Boolean(false)),
+        optional("seed", SEED, ConfigValue::Number(DEFAULT_NOISE_SEED as i64)),
     ]),
 };
 
@@ -624,8 +715,9 @@ pub(crate) const PLUCK: Declaration = Declaration {
     input: Input::None,
     work: Work::Units(16),
     memory: Memory::PluckString,
-    config: NormalConfig::Defaults(&[default(
+    config: Config::Keys(&[optional(
         "seed",
+        SEED,
         ConfigValue::Number(DEFAULT_NOISE_SEED as i64),
     )]),
 };
@@ -638,7 +730,7 @@ pub(crate) const RANDOM: Declaration = Declaration {
     input: Input::None,
     work: Work::Units(1),
     memory: Memory::None,
-    config: NormalConfig::Defaults(&[default("seed", ConfigValue::Number(1))]),
+    config: Config::Keys(&[optional("seed", SEED, ConfigValue::Number(1))]),
 };
 
 pub(crate) const MODAL: Declaration = Declaration {
@@ -706,7 +798,23 @@ pub(crate) const MODAL: Declaration = Declaration {
     input: Input::One(Channels::One, Read::Now),
     work: Work::ModalBank,
     memory: Memory::None,
-    config: NormalConfig::Defaults(&[default("strings", ConfigValue::Number(1))]),
+    config: Config::Keys(&[
+        required(
+            "modes",
+            Holds::Integer {
+                min: 1,
+                max: MAX_MODES as u32,
+            },
+        ),
+        optional(
+            "strings",
+            Holds::Integer {
+                min: 1,
+                max: MAX_STRINGS as u32,
+            },
+            ConfigValue::Number(1),
+        ),
+    ]),
 };
 
 pub(crate) const BOW: Declaration = Declaration {
@@ -806,11 +914,22 @@ pub(crate) const BOW: Declaration = Declaration {
     input: Input::None,
     work: Work::BowSection,
     memory: Memory::BowStrings,
-    config: NormalConfig::Defaults(&[
-        default("body", ConfigValue::Symbol("violin")),
-        default("channels", ConfigValue::Number(1)),
-        default("players", ConfigValue::Number(1)),
-        default("seed", ConfigValue::Number(1)),
+    config: Config::Keys(&[
+        optional(
+            "body",
+            Holds::Symbol(&["violin", "viola", "cello", "bass", "none"]),
+            ConfigValue::Symbol("violin"),
+        ),
+        optional("channels", CHANNELS, ConfigValue::Number(1)),
+        optional(
+            "players",
+            Holds::Integer {
+                min: 1,
+                max: MAX_PLAYERS as u32,
+            },
+            ConfigValue::Number(1),
+        ),
+        optional("seed", SEED, ConfigValue::Number(1)),
     ]),
 };
 
@@ -863,7 +982,7 @@ pub(crate) const WAVETABLE: Declaration = Declaration {
     input: Input::None,
     work: Work::Units(1),
     memory: Memory::None,
-    config: NormalConfig::Defaults(&[]),
+    config: Config::Keys(&[required("table", Holds::Table)]),
 };
 
 pub(crate) const SAMPLE: Declaration = Declaration {
@@ -899,7 +1018,15 @@ pub(crate) const SAMPLE: Declaration = Declaration {
     input: Input::None,
     work: Work::Units(1),
     memory: Memory::None,
-    config: NormalConfig::Sample,
+    config: Config::Keys(&[
+        optional("channels", CHANNELS, ConfigValue::Number(1)),
+        optional(
+            "fade_shape",
+            Holds::Symbol(&["linear", "equal_power"]),
+            ConfigValue::Symbol("linear"),
+        ),
+        required("zones", Holds::Zones),
+    ]),
 };
 
 pub(crate) const ADSR: Declaration = Declaration {
@@ -951,7 +1078,11 @@ pub(crate) const ADSR: Declaration = Declaration {
     input: Input::None,
     work: Work::Units(1),
     memory: Memory::None,
-    config: NormalConfig::Defaults(&[late("on_join", ConfigValue::Symbol("hold"))]),
+    config: Config::Keys(&[late(
+        "on_join",
+        Holds::Symbol(&["hold", "restart"]),
+        ConfigValue::Symbol("hold"),
+    )]),
 };
 
 pub(crate) const TIMBRE: Declaration = Declaration {
@@ -962,7 +1093,7 @@ pub(crate) const TIMBRE: Declaration = Declaration {
     input: Input::None,
     work: Work::Units(1),
     memory: Memory::None,
-    config: NormalConfig::Defaults(&[]),
+    config: Config::Empty,
 };
 
 pub(crate) const PRESSURE: Declaration = Declaration {
@@ -973,7 +1104,7 @@ pub(crate) const PRESSURE: Declaration = Declaration {
     input: Input::None,
     work: Work::Units(1),
     memory: Memory::None,
-    config: NormalConfig::Defaults(&[]),
+    config: Config::Empty,
 };
 
 pub(crate) const VELOCITY: Declaration = Declaration {
@@ -984,7 +1115,7 @@ pub(crate) const VELOCITY: Declaration = Declaration {
     input: Input::None,
     work: Work::Units(1),
     memory: Memory::None,
-    config: NormalConfig::Defaults(&[]),
+    config: Config::Empty,
 };
 
 pub(crate) const KEY: Declaration = Declaration {
@@ -995,7 +1126,7 @@ pub(crate) const KEY: Declaration = Declaration {
     input: Input::None,
     work: Work::Units(1),
     memory: Memory::None,
-    config: NormalConfig::Defaults(&[]),
+    config: Config::Empty,
 };
 
 pub(crate) const LFO: Declaration = Declaration {
@@ -1032,7 +1163,7 @@ pub(crate) const LFO: Declaration = Declaration {
     input: Input::None,
     work: Work::Units(1),
     memory: Memory::None,
-    config: NormalConfig::None,
+    config: Config::None,
 };
 
 pub(crate) const GAIN: Declaration = Declaration {
@@ -1050,7 +1181,7 @@ pub(crate) const GAIN: Declaration = Declaration {
     input: Input::One(Channels::Config, Read::Now),
     work: Work::Units(1),
     memory: Memory::None,
-    config: NormalConfig::Defaults(&[]),
+    config: CHANNELS_ONLY,
 };
 
 pub(crate) const ONEPOLE: Declaration = Declaration {
@@ -1068,7 +1199,7 @@ pub(crate) const ONEPOLE: Declaration = Declaration {
     input: Input::One(Channels::Config, Read::Now),
     work: Work::Units(1),
     memory: Memory::None,
-    config: NormalConfig::Defaults(&[]),
+    config: CHANNELS_ONLY,
 };
 
 pub(crate) const HIGHPASS: Declaration = Declaration {
@@ -1086,7 +1217,7 @@ pub(crate) const HIGHPASS: Declaration = Declaration {
     input: Input::One(Channels::Config, Read::Now),
     work: Work::Units(1),
     memory: Memory::None,
-    config: NormalConfig::Defaults(&[]),
+    config: CHANNELS_ONLY,
 };
 
 pub(crate) const SVF: Declaration = Declaration {
@@ -1123,7 +1254,10 @@ pub(crate) const SVF: Declaration = Declaration {
     input: Input::One(Channels::Config, Read::Now),
     work: Work::Units(2),
     memory: Memory::None,
-    config: NormalConfig::Defaults(&[]),
+    config: Config::Keys(&[
+        required("channels", CHANNELS),
+        required("mode", Holds::Symbol(&["lowpass", "bandpass", "highpass"])),
+    ]),
 };
 
 pub(crate) const DRIVE: Declaration = Declaration {
@@ -1167,7 +1301,7 @@ pub(crate) const DRIVE: Declaration = Declaration {
     input: Input::One(Channels::Config, Read::Now),
     work: Work::Units(2),
     memory: Memory::None,
-    config: NormalConfig::Defaults(&[]),
+    config: CHANNELS_ONLY,
 };
 
 pub(crate) const MIX: Declaration = Declaration {
@@ -1178,7 +1312,7 @@ pub(crate) const MIX: Declaration = Declaration {
     input: Input::Many(Channels::Config, Read::Now),
     work: Work::Units(1),
     memory: Memory::None,
-    config: NormalConfig::Defaults(&[]),
+    config: CHANNELS_ONLY,
 };
 
 pub(crate) const PAN: Declaration = Declaration {
@@ -1196,7 +1330,7 @@ pub(crate) const PAN: Declaration = Declaration {
     input: Input::One(Channels::One, Read::Now),
     work: Work::Units(1),
     memory: Memory::None,
-    config: NormalConfig::None,
+    config: Config::None,
 };
 
 pub(crate) const BALANCE: Declaration = Declaration {
@@ -1214,7 +1348,7 @@ pub(crate) const BALANCE: Declaration = Declaration {
     input: Input::One(Channels::Two, Read::Now),
     work: Work::Units(1),
     memory: Memory::None,
-    config: NormalConfig::None,
+    config: Config::None,
 };
 
 pub(crate) const WIDTH: Declaration = Declaration {
@@ -1232,7 +1366,7 @@ pub(crate) const WIDTH: Declaration = Declaration {
     input: Input::One(Channels::Two, Read::Now),
     work: Work::Units(1),
     memory: Memory::None,
-    config: NormalConfig::None,
+    config: Config::None,
 };
 
 pub(crate) const DELAY_SECONDS: Declaration = Declaration {
@@ -1268,7 +1402,7 @@ pub(crate) const DELAY_SECONDS: Declaration = Declaration {
     input: Input::One(Channels::Config, Read::Later),
     work: Work::Units(1),
     memory: Memory::DelayLine,
-    config: NormalConfig::Defaults(&[default("clock", ConfigValue::Symbol("seconds"))]),
+    config: DELAY_CONFIG,
 };
 
 pub(crate) const DELAY_SCORE: Declaration = Declaration {
@@ -1304,5 +1438,5 @@ pub(crate) const DELAY_SCORE: Declaration = Declaration {
     input: Input::One(Channels::Config, Read::Later),
     work: Work::Units(2),
     memory: Memory::DelayLine,
-    config: NormalConfig::Defaults(&[default("clock", ConfigValue::Symbol("seconds"))]),
+    config: DELAY_CONFIG,
 };

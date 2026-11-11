@@ -19,6 +19,7 @@ use crate::kit_instrument::{
     KitControl, KitPiece, KitProgram, DEFAULT_PIECE_VOICES, MAX_PIECE_VOICES,
 };
 use crate::plan::{Connection, PlanError, PortRef, SourceSpan};
+use crate::processor::{declaration_of, ConfigValue, Declaration, Holds};
 use crate::sample_instrument::{InstrumentSample, SampleSource, SampleZone};
 use crate::syntax::{Document, Field, Object, Reference, Unit, Value, ValueKind};
 use crate::wavetable::Wavetable;
@@ -2263,295 +2264,45 @@ fn lower_graph_node(
     no_children(object, file)?;
     let identity = string_field(object, "type", file)?;
     let config = optional_record(object, "config", file)?;
+    let unknown = || {
+        object_error(
+            DiagnosticCode::UnknownKind,
+            file,
+            object,
+            format!("unknown graph processor `{identity}`"),
+        )
+    };
+    // The declaration says what the config may hold; only building the
+    // processor from it is specific to each.
+    let declaration = declaration_of(&identity).ok_or_else(unknown)?;
+    let config = NodeConfig::read(declaration, config, file, object)?;
     let processor = match identity.as_str() {
-        "synth.sine/1" => no_config(config, file, object, &identity, GraphProcessor::Sine)?,
-        "synth.saw/1" => no_config(config, file, object, &identity, GraphProcessor::Saw)?,
-        "synth.square/1" => no_config(config, file, object, &identity, GraphProcessor::Square)?,
-        "synth.triangle/1" => no_config(config, file, object, &identity, GraphProcessor::Triangle)?,
-        "synth.noise/1" if config.is_some_and(|config| config.contains_key("per_note")) => {
-            let config = config.expect("checked");
-            if let Some(name) = config
-                .keys()
-                .find(|name| !["seed", "per_note"].contains(&name.as_str()))
-            {
-                return Err(field_error(
-                    DiagnosticCode::UnknownField,
-                    file,
-                    object,
-                    &config[name],
-                    "processor `synth.noise/1` config fields are seed and per_note",
-                ));
-            }
-            let per_note = match &config["per_note"].value.kind {
-                ValueKind::Boolean(value) => *value,
-                _ => {
-                    return Err(field_error(
-                        DiagnosticCode::Unit,
-                        file,
-                        object,
-                        &config["per_note"],
-                        "per_note must be a boolean",
-                    ))
-                }
-            };
-            let seed = match config.get("seed") {
-                Some(field) => integer_value(&field.value, file, object, field, 1, u32::MAX)?,
-                None => crate::graph::DEFAULT_NOISE_SEED,
-            };
-            GraphProcessor::Noise { seed, per_note }
-        }
-        "synth.random/1" => {
-            let seed = match config {
-                None => 1,
-                Some(config) if config.is_empty() => 1,
-                Some(config) => {
-                    let config = exact_record(Some(config), &["seed"], file, object, &identity)?;
-                    integer_value(
-                        &config["seed"].value,
-                        file,
-                        object,
-                        &config["seed"],
-                        1,
-                        u32::MAX,
-                    )?
-                }
-            };
-            GraphProcessor::Random { seed }
-        }
-        "synth.noise/1" | "synth.pluck/1" => {
-            let seed = match config {
-                None => crate::graph::DEFAULT_NOISE_SEED,
-                Some(config) if config.is_empty() => crate::graph::DEFAULT_NOISE_SEED,
-                Some(config) => {
-                    let config = exact_record(Some(config), &["seed"], file, object, &identity)?;
-                    integer_value(
-                        &config["seed"].value,
-                        file,
-                        object,
-                        &config["seed"],
-                        1,
-                        u32::MAX,
-                    )?
-                }
-            };
-            if identity == "synth.pluck/1" {
-                GraphProcessor::Pluck { seed }
-            } else {
-                GraphProcessor::Noise {
-                    seed,
-                    per_note: false,
-                }
-            }
-        }
-        "synth.adsr/1" => {
-            let on_join = match config.filter(|config| !config.is_empty()) {
-                None => crate::graph::AdsrJoin::Hold,
-                Some(config) => {
-                    let config = exact_record(Some(config), &["on_join"], file, object, &identity)?;
-                    match config["on_join"].value.as_symbol() {
-                        Some("hold") => crate::graph::AdsrJoin::Hold,
-                        Some("restart") => crate::graph::AdsrJoin::Restart,
-                        _ => {
-                            return Err(field_error(
-                                DiagnosticCode::Range,
-                                file,
-                                object,
-                                &config["on_join"],
-                                "on_join must be hold or restart",
-                            ))
-                        }
-                    }
-                }
-            };
-            GraphProcessor::Adsr { on_join }
-        }
-        "synth.timbre/1" => no_config(config, file, object, &identity, GraphProcessor::Timbre)?,
-        "synth.pressure/1" => no_config(config, file, object, &identity, GraphProcessor::Pressure)?,
-        "synth.velocity/1" => no_config(config, file, object, &identity, GraphProcessor::Velocity)?,
-        "synth.key/1" => no_config(config, file, object, &identity, GraphProcessor::Key)?,
-        "synth.lfo/1" => no_config(config, file, object, &identity, GraphProcessor::Lfo)?,
-        "synth.pan/1" => no_config(config, file, object, &identity, GraphProcessor::Pan)?,
-        "synth.balance/1" => no_config(config, file, object, &identity, GraphProcessor::Balance)?,
-        "synth.width/1" => no_config(config, file, object, &identity, GraphProcessor::Width)?,
-        "synth.delay/1" => {
-            let config = config.ok_or_else(|| {
-                object_error(
-                    DiagnosticCode::UnknownField,
-                    file,
-                    object,
-                    "processor `synth.delay/1` requires config",
-                )
-            })?;
-            if let Some(name) = config
-                .keys()
-                .find(|name| !["channels", "clock", "max"].contains(&name.as_str()))
-            {
-                return Err(field_error(
-                    DiagnosticCode::UnknownField,
-                    file,
-                    object,
-                    &config[name],
-                    "processor `synth.delay/1` config fields are channels, clock and max",
-                ));
-            }
-            let channels_field = config.get("channels").ok_or_else(|| {
-                object_error(
-                    DiagnosticCode::UnknownField,
-                    file,
-                    object,
-                    "synth.delay/1 requires config.channels",
-                )
-            })?;
-            let channels =
-                integer_value(&channels_field.value, file, object, channels_field, 1, 2)? as u8;
-            let clock = match config.get("clock") {
-                None => crate::graph::DelayClock::Seconds,
-                Some(field) => match field.value.as_symbol() {
-                    Some("seconds") => crate::graph::DelayClock::Seconds,
-                    Some("score") => crate::graph::DelayClock::Score,
-                    _ => {
-                        return Err(field_error(
-                            DiagnosticCode::Range,
-                            file,
-                            object,
-                            field,
-                            "delay clock must be seconds or score",
-                        ))
-                    }
-                },
-            };
-            let max_field = config.get("max").ok_or_else(|| {
-                object_error(
-                    DiagnosticCode::Range,
-                    file,
-                    object,
-                    "synth.delay/1 requires config.max, its longest length in seconds",
-                )
-            })?;
-            let max = source_number(&max_field.value, GraphUnit::Seconds).map_err(|message| {
-                field_error(DiagnosticCode::Unit, file, object, max_field, message)
-            })?;
-            GraphProcessor::Delay {
-                channels,
-                clock,
-                max,
-            }
-        }
-        "synth.gain/1" => GraphProcessor::Gain {
-            channels: config_channels(config, file, object, &identity)?,
+        "synth.sine/1" => GraphProcessor::Sine,
+        "synth.saw/1" => GraphProcessor::Saw,
+        "synth.square/1" => GraphProcessor::Square,
+        "synth.triangle/1" => GraphProcessor::Triangle,
+        "synth.noise/1" => GraphProcessor::Noise {
+            seed: config.integer("seed"),
+            per_note: config.boolean("per_note"),
         },
-        "synth.onepole/1" => GraphProcessor::OnePole {
-            channels: config_channels(config, file, object, &identity)?,
+        "synth.pluck/1" => GraphProcessor::Pluck {
+            seed: config.integer("seed"),
         },
-        "synth.highpass/1" => GraphProcessor::HighPass {
-            channels: config_channels(config, file, object, &identity)?,
+        "synth.random/1" => GraphProcessor::Random {
+            seed: config.integer("seed"),
         },
-        "synth.svf/1" => {
-            let config = exact_record(config, &["channels", "mode"], file, object, &identity)?;
-            let channels = integer_value(
-                &config["channels"].value,
-                file,
-                object,
-                &config["channels"],
-                1,
-                2,
-            )? as u8;
-            let field = &config["mode"];
-            let mode = field
-                .value
-                .as_symbol()
-                .and_then(crate::synth::SvfMode::from_symbol)
-                .ok_or_else(|| {
-                    field_error(
-                        DiagnosticCode::Range,
-                        file,
-                        object,
-                        field,
-                        "mode must be lowpass, bandpass or highpass",
-                    )
-                })?;
-            GraphProcessor::Svf { channels, mode }
-        }
-        "synth.modal/1" => {
-            let fields: &[&str] = if config.is_some_and(|config| config.contains_key("strings")) {
-                &["modes", "strings"]
-            } else {
-                &["modes"]
-            };
-            let config = exact_record(config, fields, file, object, &identity)?;
-            let modes = integer_value(
-                &config["modes"].value,
-                file,
-                object,
-                &config["modes"],
-                1,
-                u32::from(crate::modal::MAX_MODES),
-            )? as u8;
-            let strings = match config.get("strings") {
-                Some(field) => integer_value(
-                    &field.value,
-                    file,
-                    object,
-                    field,
-                    1,
-                    u32::from(crate::modal::MAX_STRINGS),
-                )? as u8,
-                None => 1,
-            };
-            GraphProcessor::Modal { modes, strings }
-        }
-        "synth.drive/1" => GraphProcessor::Drive {
-            channels: config_channels(config, file, object, &identity)?,
+        "synth.modal/1" => GraphProcessor::Modal {
+            modes: config.count("modes"),
+            strings: config.count("strings"),
         },
-        "synth.bow/1" => {
-            // Every field is optional: one mono violin player by default.
-            let empty = BTreeMap::new();
-            let config = config.unwrap_or(&empty);
-            if let Some(name) = config
-                .keys()
-                .find(|name| !["players", "body", "channels", "seed"].contains(&name.as_str()))
-            {
-                return Err(field_error(
-                    DiagnosticCode::UnknownField,
-                    file,
-                    object,
-                    &config[name],
-                    "processor `synth.bow/1` config fields are players, body, channels and seed",
-                ));
-            }
-            let integer = |name: &str, max: u32, default: u32| match config.get(name) {
-                Some(field) => integer_value(&field.value, file, object, field, 1, max),
-                None => Ok(default),
-            };
-            let body = match config.get("body") {
-                Some(field) => field
-                    .value
-                    .as_symbol()
-                    .and_then(crate::bow::BowBody::parse)
-                    .ok_or_else(|| {
-                        field_error(
-                            DiagnosticCode::Range,
-                            file,
-                            object,
-                            field,
-                            "body must be violin, viola, cello, bass or none",
-                        )
-                    })?,
-                None => crate::bow::BowBody::Violin,
-            };
-            GraphProcessor::Bow {
-                players: integer("players", u32::from(crate::bow::MAX_PLAYERS), 1)? as u8,
-                body,
-                channels: integer("channels", 2, 1)? as u8,
-                seed: integer("seed", u32::MAX, 1)?,
-            }
-        }
-        "synth.mix/1" => GraphProcessor::Mix {
-            channels: config_channels(config, file, object, &identity)?,
+        "synth.bow/1" => GraphProcessor::Bow {
+            players: config.count("players"),
+            body: config.symbol("body"),
+            channels: config.count("channels"),
+            seed: config.integer("seed"),
         },
         "synth.wavetable/1" => {
-            let config = exact_record(config, &["table"], file, object, &identity)?;
-            let field = &config["table"];
+            let field = config.field("table");
             let key = resolve_export_key(bundle, file, expect_reference(field, file, object)?)?;
             let index = exports.tables.get(&key).ok_or_else(|| {
                 field_error(
@@ -2567,57 +2318,56 @@ fn lower_graph_node(
             }
         }
         "synth.sample/1" => {
-            // `zones` is required; `channels` and `fade_shape` are optional.
-            let mut expected = vec!["zones"];
-            if let Some(config) = config {
-                expected.extend(
-                    ["channels", "fade_shape"]
-                        .into_iter()
-                        .filter(|name| config.contains_key(*name)),
-                );
-            }
-            let config = exact_record(config, &expected, file, object, &identity)?;
-            let channels = match config.get("channels") {
-                None => 1,
-                Some(field) => integer_value(&field.value, file, object, field, 1, 2)? as u8,
-            };
-            let fade_shape = match config.get("fade_shape") {
-                None => crate::sample_instrument::SampleFadeShape::Linear,
-                Some(field) => match field.value.as_symbol() {
-                    Some("linear") => crate::sample_instrument::SampleFadeShape::Linear,
-                    Some("equal_power") => crate::sample_instrument::SampleFadeShape::EqualPower,
-                    _ => {
-                        return Err(field_error(
-                            DiagnosticCode::Range,
-                            file,
-                            object,
-                            field,
-                            "fade_shape must be linear or equal_power",
-                        ))
-                    }
-                },
-            };
+            let channels = config.count("channels");
             GraphProcessor::Sample {
                 channels,
                 zones: lower_sample_zones(
                     bundle,
                     file,
                     object,
-                    &config["zones"],
+                    config.field("zones"),
                     channels,
                     exports,
                 )?,
-                fade_shape,
+                fade_shape: config.symbol("fade_shape"),
             }
         }
-        _ => {
-            return Err(object_error(
-                DiagnosticCode::UnknownKind,
-                file,
-                object,
-                format!("unknown graph processor `{identity}`"),
-            ))
-        }
+        "synth.adsr/1" => GraphProcessor::Adsr {
+            on_join: config.symbol("on_join"),
+        },
+        "synth.timbre/1" => GraphProcessor::Timbre,
+        "synth.pressure/1" => GraphProcessor::Pressure,
+        "synth.velocity/1" => GraphProcessor::Velocity,
+        "synth.key/1" => GraphProcessor::Key,
+        "synth.lfo/1" => GraphProcessor::Lfo,
+        "synth.gain/1" => GraphProcessor::Gain {
+            channels: config.count("channels"),
+        },
+        "synth.onepole/1" => GraphProcessor::OnePole {
+            channels: config.count("channels"),
+        },
+        "synth.highpass/1" => GraphProcessor::HighPass {
+            channels: config.count("channels"),
+        },
+        "synth.svf/1" => GraphProcessor::Svf {
+            channels: config.count("channels"),
+            mode: config.symbol("mode"),
+        },
+        "synth.drive/1" => GraphProcessor::Drive {
+            channels: config.count("channels"),
+        },
+        "synth.mix/1" => GraphProcessor::Mix {
+            channels: config.count("channels"),
+        },
+        "synth.pan/1" => GraphProcessor::Pan,
+        "synth.balance/1" => GraphProcessor::Balance,
+        "synth.width/1" => GraphProcessor::Width,
+        "synth.delay/1" => GraphProcessor::Delay {
+            channels: config.count("channels"),
+            clock: config.symbol("clock"),
+            max: config.seconds("max"),
+        },
+        _ => return Err(unknown()),
     };
     let mut params = BTreeMap::new();
     if let Some(field) = object.field("params") {
@@ -2953,71 +2703,185 @@ fn validate_against_spec(
     }
 }
 
-fn config_channels(
-    config: Option<&BTreeMap<String, Field>>,
-    file: &str,
-    object: &Object,
-    identity: &str,
-) -> Result<u8, Diagnostics> {
-    let config = exact_record(config, &["channels"], file, object, identity)?;
-    Ok(integer_value(
-        &config["channels"].value,
-        file,
-        object,
-        &config["channels"],
-        1,
-        2,
-    )? as u8)
+/// What a node's config holds at one key.
+enum Held<'a> {
+    Integer(u32),
+    Boolean(bool),
+    Symbol(&'static str),
+    Seconds(Rational),
+    /// A key whose value the processor lowers itself.
+    Field(&'a Field),
 }
 
-fn exact_record<'a>(
-    config: Option<&'a BTreeMap<String, Field>>,
-    expected: &[&str],
-    file: &str,
-    object: &Object,
-    identity: &str,
-) -> Result<&'a BTreeMap<String, Field>, Diagnostics> {
-    let config = config.ok_or_else(|| {
-        object_error(
-            DiagnosticCode::UnknownField,
-            file,
-            object,
-            format!("processor `{identity}` requires config"),
-        )
-    })?;
-    let actual = config.keys().map(String::as_str).collect::<BTreeSet<_>>();
-    let expected_set = expected.iter().copied().collect::<BTreeSet<_>>();
-    if actual != expected_set {
-        Err(object_error(
-            DiagnosticCode::UnknownField,
-            file,
-            object,
-            format!(
-                "processor `{identity}` config fields must be exactly {}",
-                expected.join(", ")
-            ),
-        ))
-    } else {
-        Ok(config)
+/// A node's config as its declaration reads it. Every key the source wrote
+/// is one the declaration has, with a value of the kind and in the range
+/// declared, and a key the source left out holds its default.
+struct NodeConfig<'a> {
+    identity: &'static str,
+    held: BTreeMap<&'static str, Held<'a>>,
+}
+
+impl<'a> NodeConfig<'a> {
+    fn read(
+        declaration: &'static Declaration,
+        config: Option<&'a BTreeMap<String, Field>>,
+        file: &str,
+        object: &Object,
+    ) -> Result<Self, Diagnostics> {
+        let identity = declaration.identity;
+        let keys = declaration.config_keys();
+        if keys.is_empty() && config.is_some() {
+            return Err(object_error(
+                DiagnosticCode::UnknownField,
+                file,
+                object,
+                format!("processor `{identity}` does not accept config"),
+            ));
+        }
+        if config.is_none() && keys.iter().any(|key| key.default.is_none()) {
+            return Err(object_error(
+                DiagnosticCode::UnknownField,
+                file,
+                object,
+                format!("processor `{identity}` requires config"),
+            ));
+        }
+        if let Some((_, field)) = config
+            .into_iter()
+            .flatten()
+            .find(|(name, _)| declaration.config_key(name).is_none())
+        {
+            let names = keys.iter().map(|key| key.key).collect::<Vec<_>>();
+            return Err(field_error(
+                DiagnosticCode::UnknownField,
+                file,
+                object,
+                field,
+                match names.as_slice() {
+                    [name] => format!("processor `{identity}` has one config field, {name}"),
+                    _ => format!(
+                        "processor `{identity}` config fields are {}",
+                        listed(&names, "and")
+                    ),
+                },
+            ));
+        }
+        let mut held = BTreeMap::new();
+        for key in keys {
+            let name = key.key;
+            let value = match (config.and_then(|config| config.get(name)), key.default) {
+                (None, None) => {
+                    return Err(object_error(
+                        DiagnosticCode::UnknownField,
+                        file,
+                        object,
+                        format!("processor `{identity}` requires config.{name}"),
+                    ))
+                }
+                (None, Some(ConfigValue::Number(value))) => Held::Integer(
+                    u32::try_from(value).expect("a declared default is in its key's range"),
+                ),
+                (None, Some(ConfigValue::Boolean(value))) => Held::Boolean(value),
+                (None, Some(ConfigValue::Symbol(value))) => Held::Symbol(value),
+                (Some(field), _) => match key.holds {
+                    Holds::Integer { min, max } => {
+                        Held::Integer(integer_value(&field.value, file, object, field, min, max)?)
+                    }
+                    Holds::Boolean => match &field.value.kind {
+                        ValueKind::Boolean(value) => Held::Boolean(*value),
+                        _ => {
+                            return Err(field_error(
+                                DiagnosticCode::Unit,
+                                file,
+                                object,
+                                field,
+                                format!("{name} must be a boolean"),
+                            ))
+                        }
+                    },
+                    Holds::Symbol(symbols) => Held::Symbol(
+                        field
+                            .value
+                            .as_symbol()
+                            .and_then(|given| symbols.iter().find(|symbol| **symbol == given))
+                            .ok_or_else(|| {
+                                field_error(
+                                    DiagnosticCode::Range,
+                                    file,
+                                    object,
+                                    field,
+                                    format!("{name} must be {}", listed(symbols, "or")),
+                                )
+                            })?,
+                    ),
+                    Holds::Seconds => Held::Seconds(
+                        source_number(&field.value, GraphUnit::Seconds).map_err(|message| {
+                            field_error(DiagnosticCode::Unit, file, object, field, message)
+                        })?,
+                    ),
+                    Holds::Table | Holds::Zones => Held::Field(field),
+                },
+            };
+            held.insert(name, value);
+        }
+        Ok(Self { identity, held })
+    }
+
+    fn undeclared(&self, kind: &str, key: &str) -> ! {
+        unreachable!("{} declares no {kind} config `{key}`", self.identity)
+    }
+
+    fn integer(&self, key: &str) -> u32 {
+        match self.held.get(key) {
+            Some(Held::Integer(value)) => *value,
+            _ => self.undeclared("whole number", key),
+        }
+    }
+
+    /// A whole number whose declared range fits a byte.
+    fn count(&self, key: &str) -> u8 {
+        u8::try_from(self.integer(key))
+            .unwrap_or_else(|_| self.undeclared("whole number below 256", key))
+    }
+
+    fn boolean(&self, key: &str) -> bool {
+        match self.held.get(key) {
+            Some(Held::Boolean(value)) => *value,
+            _ => self.undeclared("boolean", key),
+        }
+    }
+
+    /// The value of a symbol key, by the name its plan form has.
+    fn symbol<T: serde::de::DeserializeOwned>(&self, key: &str) -> T {
+        use serde::de::value::{Error, StrDeserializer};
+        match self.held.get(key) {
+            Some(Held::Symbol(symbol)) => T::deserialize(StrDeserializer::<Error>::new(symbol))
+                .unwrap_or_else(|_| self.undeclared(symbol, key)),
+            _ => self.undeclared("symbol", key),
+        }
+    }
+
+    fn seconds(&self, key: &str) -> Rational {
+        match self.held.get(key) {
+            Some(Held::Seconds(value)) => value.clone(),
+            _ => self.undeclared("length", key),
+        }
+    }
+
+    fn field(&self, key: &str) -> &'a Field {
+        match self.held.get(key) {
+            Some(Held::Field(field)) => field,
+            _ => self.undeclared("own", key),
+        }
     }
 }
 
-fn no_config<T>(
-    config: Option<&BTreeMap<String, Field>>,
-    file: &str,
-    object: &Object,
-    identity: &str,
-    value: T,
-) -> Result<T, Diagnostics> {
-    if config.is_some() {
-        Err(object_error(
-            DiagnosticCode::UnknownField,
-            file,
-            object,
-            format!("processor `{identity}` does not accept config"),
-        ))
-    } else {
-        Ok(value)
+/// `a`, `a or b`, `a, b or c`.
+fn listed(names: &[&str], last: &str) -> String {
+    match names {
+        [] => String::new(),
+        [only] => (*only).to_string(),
+        [rest @ .., end] => format!("{} {last} {end}", rest.join(", ")),
     }
 }
 

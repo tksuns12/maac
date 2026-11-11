@@ -565,7 +565,8 @@ connect fx_mix {{ from = &fx:out; to = &mix:in; }}"#
         );
         codes(&source)
     };
-    assert!(bad("channels = 1;", "").contains(&DiagnosticCode::Range));
+    assert!(bad("channels = 1;", "").contains(&DiagnosticCode::UnknownField));
+    assert!(bad("max = 1s;", "").contains(&DiagnosticCode::UnknownField));
     assert!(bad("channels = 1; max = 61s;", "").contains(&DiagnosticCode::Range));
     assert!(bad("channels = 1; max = 1s; clock = beats;", "").contains(&DiagnosticCode::Range));
     assert!(bad("channels = 1; max = 1s; size = 2;", "").contains(&DiagnosticCode::UnknownField));

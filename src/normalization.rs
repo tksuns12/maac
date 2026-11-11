@@ -23,7 +23,7 @@ use crate::graph::{EffectProgram, GraphProgram, GraphStage, GraphUnit, Instrumen
 use crate::library::LibrarySet;
 use crate::music::{MeterMap, MeterPoint, Pitch};
 use crate::plan::Processor;
-use crate::processor::{declaration_of, ConfigDefault, ConfigValue, Declaration, NormalConfig};
+use crate::processor::{declaration_of, Config, ConfigValue, Declaration, Holds};
 use crate::syntax::Unit;
 
 /// Why a document, object or value has no N(A), with a MaaC diagnostic code
@@ -224,15 +224,15 @@ fn leave_out_late_defaults(kind: &str, fields: &mut Map<String, Value>) {
         }
         "voice" => remove_at(fields, "connected", &boolean(false)),
         "node" => {
-            let Some(NormalConfig::Defaults(defaults)) = fields
+            let Some(keys) = fields
                 .get("type")
                 .and_then(|value| value["v"].as_str())
                 .and_then(declaration_of)
-                .map(|declaration| declaration.config)
+                .map(Declaration::config_keys)
             else {
                 return;
             };
-            if !defaults.iter().any(|default| default.late) {
+            if !keys.iter().any(|key| key.late) {
                 return;
             }
             let Some(config) = fields
@@ -242,11 +242,13 @@ fn leave_out_late_defaults(kind: &str, fields: &mut Map<String, Value>) {
             else {
                 return;
             };
-            for default in defaults.iter().filter(|default| default.late) {
-                remove_at(config, default.key, &config_value(default.value));
+            for key in keys.iter().filter(|key| key.late) {
+                if let Some(default) = key.default {
+                    remove_at(config, key.key, &config_value(default));
+                }
             }
             // A config made only of late keys was not written before them.
-            if config.is_empty() && defaults.iter().all(|default| default.late) {
+            if config.is_empty() && keys.iter().all(|key| key.late) {
                 fields.remove("config");
             }
         }
@@ -844,14 +846,15 @@ pub(crate) fn expand_graph_config_defaults(
     declaration: &Declaration,
     config: &mut Map<String, Value>,
 ) {
-    match declaration.config {
-        NormalConfig::None => {}
-        NormalConfig::Defaults(defaults) => {
-            for ConfigDefault { key, value, .. } in defaults {
-                config.entry(*key).or_insert_with(|| config_value(*value));
-            }
+    for key in declaration.config_keys() {
+        if let Some(default) = key.default {
+            config
+                .entry(key.key)
+                .or_insert_with(|| config_value(default));
         }
-        NormalConfig::Sample => crate::sample_instrument::expand_config_defaults(config),
+        if key.holds == Holds::Zones {
+            crate::sample_instrument::expand_zone_defaults(config);
+        }
     }
 }
 
@@ -866,7 +869,7 @@ fn config_value(value: ConfigValue) -> Value {
 /// Whether N(A) writes a `config` record for a graph node with this
 /// declaration.
 pub(crate) fn writes_graph_config(declaration: &Declaration) -> bool {
-    declaration.config != NormalConfig::None
+    declaration.config != Config::None
 }
 
 /// The defaults of a production processor (`fx.*`), as lowered.

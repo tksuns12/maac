@@ -10,7 +10,7 @@ use crate::plan::{
 };
 use num_bigint::BigInt;
 
-use crate::processor::Memory;
+use crate::processor::{Holds, Memory};
 use num_traits::{Signed, ToPrimitive, Zero};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -1352,64 +1352,23 @@ fn validate_processor(
             format!("{} is allowed only in an effect", processor.identity()),
         ));
     }
-    // Every processor whose channels its config gives is mono or stereo.
-    if let Some(channels) = processor.configured_channels() {
-        validate_channels(channels, format!("{path}.channels"))?;
+    // Every whole number of its config is in the range its declaration
+    // gives the key.
+    let declaration = processor.declaration();
+    for (key, value) in processor.config_integers().into_iter().flatten() {
+        let Some(Holds::Integer { min, max }) = declaration.config_key(key).map(|key| key.holds)
+        else {
+            unreachable!("{} declares no whole number `{key}`", declaration.identity);
+        };
+        if !(min..=max).contains(&value) {
+            return Err(error(
+                "E_RANGE",
+                format!("{path}.{key}"),
+                format!("{key} must be from {min} to {max}"),
+            ));
+        }
     }
     match processor {
-        GraphProcessor::Pluck { seed: 0 } => {
-            return Err(error(
-                "E_RANGE",
-                format!("{path}.seed"),
-                "pluck seed must be nonzero",
-            ));
-        }
-        GraphProcessor::Noise { seed: 0, .. } => {
-            return Err(error(
-                "E_RANGE",
-                format!("{path}.seed"),
-                "noise seed must be nonzero",
-            ));
-        }
-        GraphProcessor::Random { seed: 0 } => {
-            return Err(error(
-                "E_RANGE",
-                format!("{path}.seed"),
-                "random seed must be nonzero",
-            ));
-        }
-        GraphProcessor::Bow { players, seed, .. } => {
-            if !(1..=crate::bow::MAX_PLAYERS).contains(players) {
-                return Err(error(
-                    "E_RANGE",
-                    format!("{path}.players"),
-                    "bowed section needs 1 to 16 players",
-                ));
-            }
-            if *seed == 0 {
-                return Err(error(
-                    "E_RANGE",
-                    format!("{path}.seed"),
-                    "bowed section seed must be nonzero",
-                ));
-            }
-        }
-        GraphProcessor::Modal { modes, strings } => {
-            if !(1..=crate::modal::MAX_MODES).contains(modes) {
-                return Err(error(
-                    "E_RANGE",
-                    format!("{path}.modes"),
-                    "modal bank needs 1 to 64 modes",
-                ));
-            }
-            if !(1..=crate::modal::MAX_STRINGS).contains(strings) {
-                return Err(error(
-                    "E_RANGE",
-                    format!("{path}.strings"),
-                    "modal bank needs 1 to 3 strings",
-                ));
-            }
-        }
         GraphProcessor::Wavetable { table } => validate_identifier(table, format!("{path}.table"))?,
         GraphProcessor::Sample {
             channels, zones, ..

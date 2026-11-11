@@ -323,6 +323,99 @@ fn every_declaration_is_in_the_snapshot() {
     }
 }
 
+#[test]
+fn the_whole_numbers_of_a_config_are_its_declared_keys() {
+    use crate::processor::Holds;
+    for wire in INSTANCES {
+        let processor: GraphProcessor = serde_json::from_str(wire).unwrap();
+        let held: Vec<&str> = processor
+            .config_integers()
+            .into_iter()
+            .flatten()
+            .map(|(key, _)| key)
+            .collect();
+        let declared: Vec<&str> = processor
+            .declaration()
+            .config_keys()
+            .iter()
+            .filter(|key| matches!(key.holds, Holds::Integer { .. }))
+            .map(|key| key.key)
+            .collect();
+        assert_eq!(held, declared, "{wire}");
+    }
+}
+
+#[test]
+fn a_config_key_is_a_field_of_the_plan_form() {
+    use crate::processor::{ConfigValue, Holds, ALL};
+    use serde_json::{json, Value};
+    for declaration in ALL {
+        let keys = declaration.config_keys();
+        assert!(
+            keys.windows(2).all(|pair| pair[0].key < pair[1].key),
+            "the config keys of {} are not in order",
+            declaration.identity
+        );
+        for key in keys {
+            // A default is a value the key may hold.
+            match (key.default, key.holds) {
+                (None, _) => {}
+                (Some(ConfigValue::Number(value)), Holds::Integer { min, max }) => {
+                    assert!((i64::from(min)..=i64::from(max)).contains(&value))
+                }
+                (Some(ConfigValue::Boolean(_)), Holds::Boolean) => {}
+                (Some(ConfigValue::Symbol(value)), Holds::Symbol(symbols)) => {
+                    assert!(symbols.contains(&value))
+                }
+                (default, holds) => panic!(
+                    "{} config.{}: {default:?} is no {holds:?}",
+                    declaration.identity, key.key
+                ),
+            }
+        }
+    }
+    for wire in INSTANCES {
+        let processor: GraphProcessor = serde_json::from_str(wire).unwrap();
+        let declaration = processor.declaration();
+        let Value::Object(fields) = serde_json::from_str::<Value>(wire).unwrap() else {
+            panic!("{wire}");
+        };
+        // Every field of the plan form but `kind` is a config key.
+        for field in fields.keys().filter(|field| *field != "kind") {
+            assert!(declaration.config_key(field).is_some(), "{wire}: {field}");
+        }
+        // The plan form reads each declared symbol by its own name, and
+        // no other.
+        for key in declaration.config_keys() {
+            let Holds::Symbol(symbols) = key.holds else {
+                continue;
+            };
+            for symbol in symbols.iter().chain(&["no_such_symbol"]) {
+                let mut fields = fields.clone();
+                fields.insert(key.key.to_string(), json!(symbol));
+                let read = serde_json::from_value::<GraphProcessor>(Value::Object(fields));
+                assert_eq!(
+                    read.is_ok(),
+                    *symbol != "no_such_symbol",
+                    "{} config.{} = {symbol}",
+                    declaration.identity,
+                    key.key
+                );
+                if let Ok(read) = read {
+                    let written = serde_json::to_value(&read).unwrap();
+                    let written = written.get(key.key).and_then(Value::as_str);
+                    assert!(
+                        written == Some(symbol) || Some(ConfigValue::Symbol(symbol)) == key.default,
+                        "{} config.{} = {symbol} is written as {written:?}",
+                        declaration.identity,
+                        key.key
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// Writes the snapshot to the path in `MAAC_PROCESSOR_FACTS`, for review.
 #[test]
 #[ignore]
@@ -408,8 +501,27 @@ fn the_processor_table_gives_each_parameter_its_declared_default() {
                     "{identity} {name}: the docs give {default}"
                 );
             }
-            // Every parameter it declares is named in its row.
+            // Every parameter and config key it declares is named in its
+            // row, and the row names no other config key.
             let names = ticked(params);
+            let config: Vec<&str> = names
+                .iter()
+                .filter_map(|name| name.strip_prefix("config."))
+                .map(|key| key.split(' ').next().unwrap())
+                .collect();
+            for key in declaration.config_keys() {
+                assert!(
+                    config.contains(&key.key),
+                    "the row of {identity} leaves out config.{}",
+                    key.key
+                );
+            }
+            for key in config {
+                assert!(
+                    declaration.config_key(key).is_some(),
+                    "the row of {identity} names config.{key}, which it does not declare"
+                );
+            }
             let oscillator = params.contains("Oscillator parameters");
             for param in declaration.params {
                 assert!(
@@ -430,21 +542,18 @@ fn the_processor_table_gives_each_parameter_its_declared_default() {
     }
 }
 
-/// A config key's default as the docs give it, against the one N(A) writes.
+/// A config key's default as the docs give it, against the declared one.
 /// For some keys the docs give a range, a choice or a form instead.
 fn check_config_default(declaration: &crate::processor::Declaration, key: &str, text: &str) {
-    use crate::processor::{ConfigValue, NormalConfig};
+    use crate::processor::ConfigValue;
     if text.contains(['…', '`']) {
         return;
     }
-    let NormalConfig::Defaults(defaults) = declaration.config else {
-        return;
-    };
     // A required key's parenthesis describes its form.
-    let Some(declared) = defaults.iter().find(|default| default.key == key) else {
+    let Some(declared) = declaration.config_key(key).and_then(|key| key.default) else {
         return;
     };
-    let declared = match declared.value {
+    let declared = match declared {
         ConfigValue::Number(value) => value.to_string(),
         ConfigValue::Boolean(value) => value.to_string(),
         ConfigValue::Symbol(value) => value.to_string(),

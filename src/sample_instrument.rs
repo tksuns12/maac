@@ -586,18 +586,14 @@ pub fn zone_gains(
         .collect()
 }
 
-/// Expand `synth.sample/1` config defaults in a normalized typed record:
-/// `channels = 1`, `fade_shape = linear` and, per zone, `velocity = [0, 1]`
-/// and zero `key_fade`/`velocity_fade`. Shared by the editing and execution
-/// views.
-pub(crate) fn expand_config_defaults(config: &mut serde_json::Map<String, serde_json::Value>) {
+/// Expand the defaults of each zone of a `synth.sample/1` config, a
+/// normalized typed record: `velocity = [0, 1]` and zero `key_fade` and
+/// `velocity_fade`. The declaration gives the defaults of its other keys.
+/// Shared by the editing and execution views.
+pub(crate) fn expand_zone_defaults(config: &mut serde_json::Map<String, serde_json::Value>) {
     use serde_json::json;
     let number = |n: i64| json!({"t": "number", "n": n.to_string(), "d": "1"});
     let pair = |low: i64, high: i64| json!({"t": "list", "items": [number(low), number(high)]});
-    config.entry("channels").or_insert_with(|| number(1));
-    config
-        .entry("fade_shape")
-        .or_insert_with(|| json!({"t": "symbol", "v": "linear"}));
     if let Some(items) = config
         .get_mut("zones")
         .and_then(|zones| zones.get_mut("items"))

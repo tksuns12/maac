@@ -46,6 +46,20 @@ promise of compatibility beyond the documented interfaces.
   it, where version 4 ran the loop through the project graph with one extra
   frame on each pass.
 
+### Changed
+
+- Diagnostics for a wrong `config` on a `synth.*/1` node are worded and
+  placed the same way for every processor. A key the processor does not
+  have is reported at that key, with the keys it has; before, most
+  processors reported it at the node, and `synth.modal/1` and
+  `synth.sample/1` left their optional keys out of the list. A required
+  key that is missing is named: `synth.svf/1` without a `mode` now says
+  `requires config.mode`. A `synth.delay/1` without a `max` is
+  `E_UNKNOWN_FIELD`, as every other missing key is; it was `E_RANGE`. No
+  other code changes, and the same documents are accepted and refused. In
+  a performance plan, a whole number of a node's config outside its range
+  is `E_RANGE` with one wording, such as `players must be from 1 to 16`.
+
 ### Fixed
 
 - A note or hit that a timing check rejects is named, as §23 requires (T9's
