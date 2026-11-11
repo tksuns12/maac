@@ -536,6 +536,144 @@ fn an_expectation_of_a_late_field_at_its_default_matches_its_omission() {
 }
 
 // ---------------------------------------------------------------------------
+// A groove, a vary, and a note that follows another.
+
+/// A swung and varied line whose second note follows its first.
+fn line(groove: &str, vary: &str, at: &str) -> String {
+    format!(
+        r#"maac 1;
+project p {{ score = [0q, 16q]; rate = 48000Hz; tempo = &clock; meter = &metre; output = &synth:out; }}
+tempo clock {{ points = [(0q, 120bpm, step)]; }}
+meter metre {{ points = [(0q, 4, 4)]; }}
+node synth {{ type = "core.sine/1"; params = {{ attack = 0s; release = 0s; level = 0.1; }}; }}
+groove lazy {{ grid = 1/2q; ratio = 2/3; {groove} }}
+vary loose {{ seed = 7; {vary} }}
+pattern line {{ length = 4q;
+  note a {{ at = 1/2q; dur = 1/2q; pitch = D4; }}
+  note b {{ at = {at}; dur = 1/2q; pitch = F4; }}
+}}
+track t {{ target = &synth:events; }}
+place main {{ pattern = &line; track = &t; at = 4q; groove = &lazy; vary = &loose; }}
+"#
+    )
+}
+
+/// The line with each default left out, and with each written out.
+const LEFT_OUT: [&str; 3] = ["", "", "after(a)"];
+const WRITTEN_OUT: [&str; 3] = ["delay = 0s;", "velocity = 0; timing = 0ms;", "after(a, 0q)"];
+
+fn line_of(fields: [&str; 3]) -> String {
+    line(fields[0], fields[1], fields[2])
+}
+
+/// The line with one of its three places written as `field`.
+fn line_with(place: usize, field: &str) -> String {
+    let mut fields = LEFT_OUT;
+    fields[place] = field;
+    line_of(fields)
+}
+
+#[test]
+fn a_groove_a_vary_and_a_rest_expand_their_defaults() {
+    let view = normalized_plain(&line_of(LEFT_OUT));
+    assert_eq!(view, normalized_plain(&line_of(WRITTEN_OUT)));
+    let objects = &view["objects"];
+    let zero_seconds = json!({"t":"quantity","n":"0","d":"1","u":"s"});
+    assert_eq!(objects["lazy"]["fields"]["delay"], zero_seconds);
+    assert_eq!(objects["loose"]["fields"]["timing"], zero_seconds);
+    assert_eq!(
+        objects["loose"]["fields"]["velocity"],
+        json!({"t":"number","n":"0","d":"1"})
+    );
+    assert_eq!(
+        objects["line"]["children"]["b"]["fields"]["at"]["args"][1],
+        json!({"t":"quantity","n":"0","d":"1","u":"q"})
+    );
+}
+
+#[test]
+fn the_execution_hash_leaves_out_a_delay_an_amount_and_a_rest_at_their_defaults() {
+    let execution = execution_view(&normalized_plain(&line_of(WRITTEN_OUT)));
+    let objects = &execution["objects"];
+    assert!(objects["lazy"]["fields"].get("delay").is_none());
+    assert!(objects["loose"]["fields"].get("velocity").is_none());
+    assert!(objects["loose"]["fields"].get("timing").is_none());
+    let at = &objects["line"]["children"]["b"]["fields"]["at"];
+    assert_eq!(at["args"].as_array().map(Vec::len), Some(1));
+
+    // A document that leaves them out has the hash it had before N(A)
+    // expanded them.
+    let left_out = hash(&line_of(LEFT_OUT));
+    assert_eq!(left_out, HASH_BEFORE);
+    assert_eq!(hash(&line_of(WRITTEN_OUT)), left_out);
+    for (place, field) in [
+        (0, "delay = 0ms;"),
+        (1, "velocity = 0;"),
+        (1, "timing = 0s;"),
+        (2, "after(a, 0q)"),
+    ] {
+        assert_eq!(
+            hash(&line_with(place, field)),
+            left_out,
+            "writing out {field} changes the execution hash"
+        );
+    }
+    for (place, field) in [
+        (0, "delay = 10ms;"),
+        (1, "velocity = 1/10;"),
+        (1, "timing = 5ms;"),
+        (2, "after(a, 1/2q)"),
+    ] {
+        assert_ne!(
+            hash(&line_with(place, field)),
+            left_out,
+            "{field} must change the execution hash"
+        );
+    }
+}
+
+/// The execution hash of `line_of(LEFT_OUT)` in 0.5.0.
+const HASH_BEFORE: &str = "sha256:f47f467a93295b99ac936cb776a4fa1bc074a8eeee4548e4e8a41c39674edbe2";
+
+#[test]
+fn an_expectation_of_a_delay_an_amount_or_a_rest_at_its_default_matches_its_omission() {
+    let source = line_of(LEFT_OUT);
+    let written = maac::parse(&line_of(WRITTEN_OUT))
+        .unwrap()
+        .to_syntax_json_value();
+    let rest = written["objects"]["line"]["children"]["b"]["fields"]["at"].clone();
+    assert_eq!(rest["fn"], "after");
+    let bundle = SourceBundle::new("main.maac", source.clone());
+    let context = BundleEditContext::new(&bundle).unwrap();
+    let zero_seconds = json!({"t":"quantity","n":"0","d":"1","u":"s"});
+    for (object, field, value) in [
+        (vec!["lazy"], "delay", zero_seconds.clone()),
+        (
+            vec!["loose"],
+            "velocity",
+            json!({"t":"number","n":"0","d":"1"}),
+        ),
+        (vec!["loose"], "timing", zero_seconds.clone()),
+        (vec!["line", "b"], "at", rest),
+    ] {
+        let mut document = AuthoredDocument::from_document(&maac::parse(&source).unwrap()).unwrap();
+        let transaction = Transaction::new(
+            document.revision().to_owned(),
+            vec![Operation::Set {
+                object: object.iter().map(|id| id.to_string()).collect(),
+                field: vec![field.to_owned()],
+                value: value.clone(),
+                expect: Some(value),
+                expect_absent: false,
+            }],
+        )
+        .unwrap();
+        apply_transaction(&mut document, &transaction, &context)
+            .unwrap_or_else(|e| panic!("{field}: {e:?}"));
+    }
+}
+
+// ---------------------------------------------------------------------------
 // The execution view and hash.
 
 #[test]

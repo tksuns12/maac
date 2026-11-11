@@ -62,6 +62,14 @@ promise of compatibility beyond the documented interfaces.
 
 ### Fixed
 
+- Writing one of four more defaults out no longer changes the execution
+  hash: `delay = 0s` on a `groove`, `velocity = 0` or `timing = 0s` on a
+  `vary`, and `after(id, 0q)` for `after(id)`. Each now hashes like leaving
+  it out, as §20.2 promises. N(A) expands them like any other default, so an
+  edit may expect them, and the execution hash leaves them out at their
+  defaults. A document that left them out keeps its hash; only a document
+  that wrote one of these defaults out gets a new one, the hash of the same
+  document without it.
 - A note or hit that a timing check rejects is named, as §23 requires (T9's
   F67). When a `vary`, an offset or a placement moved an event outside the
   score in a document with instruments, kits, audio or a tempo ramp, the

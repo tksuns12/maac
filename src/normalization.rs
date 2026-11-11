@@ -161,7 +161,7 @@ pub fn normalize_object(
 
 /// `value` written at `field` of the base object at `base_path`, normalized
 /// as that field's type: pitches lower to keys and units become canonical.
-/// Defaults are not expanded into it.
+/// The defaults of the object's other fields are not expanded into it.
 pub fn normalize_value(
     context: &NormalizationContext<'_>,
     base_path: &[String],
@@ -188,9 +188,11 @@ pub fn normalize_value(
 ///
 /// The fields added to the language after the execution hash was defined
 /// are left out at their defaults, so that earlier documents keep their
-/// hash: a note's or chord's `slur` and `slide`, a voice's `connected`, a
-/// `synth.noise/1` node's `config.per_note`, and a `synth.adsr/1` node's
-/// `config.on_join` with the config record it leaves empty.
+/// hash: a note's or chord's `slur` and `slide`, the `rest` of an
+/// `after(...)`, a groove's `delay`, a vary's `velocity` and `timing`, a
+/// voice's `connected`, a `synth.noise/1` node's `config.per_note`, and a
+/// `synth.adsr/1` node's `config.on_join` with the config record it leaves
+/// empty.
 pub fn execution_view(editing_view: &Value) -> Value {
     fn strip(objects: &mut Map<String, Value>) {
         for object in objects.values_mut() {
@@ -221,6 +223,22 @@ fn leave_out_late_defaults(kind: &str, fields: &mut Map<String, Value>) {
         "note" | "chord" => {
             remove_at(fields, "slur", &boolean(false));
             remove_at(fields, "slide", &quantity(0, 1, Unit::S));
+            // `after(id)` follows at once.
+            if let Some(args) = fields
+                .get_mut("at")
+                .filter(|at| at["t"] == "call" && at["fn"] == "after")
+                .and_then(|at| at.get_mut("args"))
+                .and_then(Value::as_array_mut)
+            {
+                if args.len() == 2 && args[1] == quantity(0, 1, Unit::Q) {
+                    args.pop();
+                }
+            }
+        }
+        "groove" => remove_at(fields, "delay", &quantity(0, 1, Unit::S)),
+        "vary" => {
+            remove_at(fields, "velocity", &number(0));
+            remove_at(fields, "timing", &quantity(0, 1, Unit::S));
         }
         "voice" => remove_at(fields, "connected", &boolean(false)),
         "node" => {
@@ -366,6 +384,19 @@ impl<'a> NormalizationContext<'a> {
                         .or_insert_with(|| quantity(1, 125, Unit::S));
                     fields.entry("tilt").or_insert_with(|| number(0));
                 }
+            }
+            // A groove sits on the beat.
+            "groove" => {
+                fields
+                    .entry("delay")
+                    .or_insert_with(|| quantity(0, 1, Unit::S));
+            }
+            // A vary moves nothing it does not name.
+            "vary" => {
+                fields.entry("velocity").or_insert_with(|| number(0));
+                fields
+                    .entry("timing")
+                    .or_insert_with(|| quantity(0, 1, Unit::S));
             }
             // A vibrato starts at once, at full depth, centered.
             "vibrato" => {
@@ -782,12 +813,16 @@ impl<'a> NormalizationContext<'a> {
                 Ok(json!({"t": tag, "items": items}))
             }
             Some("call") => {
-                let args = value["args"]
+                let mut args = value["args"]
                     .as_array()
                     .ok_or_else(|| error("E_SYNTAX", "call args must be an array"))?
                     .iter()
                     .map(|arg| self.value(arg, false, constructors))
                     .collect::<Result<Vec<_>>>()?;
+                // `after(id)` follows `id` with no rest.
+                if constructors && value["fn"] == "after" && args.len() == 1 {
+                    args.push(quantity(0, 1, Unit::Q));
+                }
                 Ok(json!({"t": "call", "fn": value["fn"].clone(), "args": args}))
             }
             _ => Ok(value.clone()),

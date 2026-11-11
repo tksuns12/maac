@@ -1289,13 +1289,14 @@ incorporates no hidden schema or normalization state.
 The **execution hash** is SHA-256 of canonical JSON bytes for the normalized
 execution graph **N(A)** after removing the optional `label` entry in an actual
 source object's `fields` map and excluding nonexecuting extension data
-identified by an understood explicit schema. It also leaves out five fields
-at their defaults, which the language gained after this hash was defined, so
+identified by an understood explicit schema. It also leaves out, at their
+defaults, the values the language gained after this hash was defined, so
 that earlier documents keep their hash: a `note`'s or `chord`'s `slur`
-(false) and `slide` (0 s), a `voice`'s `connected` (false), a `synth.noise/1`
-node's `config.per_note` (false), and a `synth.adsr/1` node's
-`config.on_join` (`hold`), with the `config` record that leaves empty.
-**N(A)** itself expands them like any other default. The hash uses the same
+(false) and `slide` (0 s), the `rest` of an `after(...)` (0 q), a `groove`'s
+`delay` (0 s), a `vary`'s `velocity` (0) and `timing` (0 s), a `voice`'s
+`connected` (false), a `synth.noise/1` node's `config.per_note` (false), and
+a `synth.adsr/1` node's `config.on_join` (`hold`), with the `config` record
+that leaves empty. **N(A)** itself expands them like any other default. The hash uses the same
 canonical JSON encoding defined above for **A**, with no extra prefix bytes.
 While traversing source objects and their actual children, this label exclusion preserves
 `label` fields nested in params, config, or other records (including
