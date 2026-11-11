@@ -1,6 +1,6 @@
-//! The fields a language object declares, written once for each kind that
-//! has a module beside this one: which fields it requires, and the default
-//! of each it may leave out.
+//! The fields a language object declares, written once for each kind, or
+//! part of a kind, that has a module beside this one: which fields it
+//! requires, and the default of each it may leave out.
 //!
 //! Semantic analysis checks an object's fields against the list, the
 //! kind's model takes its defaults from it, and semantic normalization
@@ -17,13 +17,21 @@ pub(crate) enum DefaultValue {
     Number(i64),
     /// A whole number of a unit.
     Quantity(i64, Unit),
+    /// A numerator over a denominator, of a unit.
+    Fraction(i64, i64, Unit),
 }
 
 impl DefaultValue {
     /// The exact value, in the default's own unit.
     pub(crate) fn rational(self) -> BigRational {
-        let (Self::Number(value) | Self::Quantity(value, _)) = self;
-        BigRational::from_integer(value.into())
+        match self {
+            Self::Number(value) | Self::Quantity(value, _) => {
+                BigRational::from_integer(value.into())
+            }
+            Self::Fraction(numerator, denominator, _) => {
+                BigRational::new(numerator.into(), denominator.into())
+            }
+        }
     }
 }
 
@@ -36,6 +44,12 @@ pub(crate) enum Presence {
     /// leaves the field out at its default, so that earlier documents keep
     /// theirs.
     Late(DefaultValue),
+    /// The field may be left out, and then says nothing.
+    Optional,
+    /// The field belongs beside the named field of its object. Left out
+    /// beside it, the field holds this value; without it, the field says
+    /// nothing.
+    Beside(&'static str, DefaultValue),
 }
 
 /// One field of a language object, beside `label`.
@@ -49,8 +63,18 @@ impl SourceField {
     /// The value the field holds when it is left out.
     pub(crate) const fn default(&self) -> Option<DefaultValue> {
         match self.presence {
-            Presence::Required => None,
+            Presence::Required | Presence::Optional => None,
+            Presence::Late(value) | Presence::Beside(_, value) => Some(value),
+        }
+    }
+
+    /// The value N(A) writes for the field in an object that leaves it out
+    /// (§20.2), where `written` tells which fields the object writes.
+    pub(crate) fn expanded(&self, written: impl Fn(&str) -> bool) -> Option<DefaultValue> {
+        match self.presence {
             Presence::Late(value) => Some(value),
+            Presence::Beside(owner, value) if written(owner) => Some(value),
+            _ => None,
         }
     }
 
@@ -77,6 +101,24 @@ pub(super) const fn late(name: &'static str, default: DefaultValue) -> SourceFie
     }
 }
 
+pub(super) const fn optional(name: &'static str) -> SourceField {
+    SourceField {
+        name,
+        presence: Presence::Optional,
+    }
+}
+
+pub(super) const fn beside(
+    name: &'static str,
+    owner: &'static str,
+    default: DefaultValue,
+) -> SourceField {
+    SourceField {
+        name,
+        presence: Presence::Beside(owner, default),
+    }
+}
+
 /// The value field `name` of `fields` holds when it is left out.
 pub(super) fn default_of(fields: &[SourceField], name: &str) -> BigRational {
     fields
@@ -89,7 +131,7 @@ pub(super) fn default_of(fields: &[SourceField], name: &str) -> BigRational {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{declared_fields, models_of, Models, DECLARED};
+    use super::super::{declared_fields, models_of, Models, DECLARED, PARTS};
     use super::*;
 
     /// A default as source text.
@@ -97,6 +139,9 @@ mod tests {
         match default {
             DefaultValue::Number(value) => value.to_string(),
             DefaultValue::Quantity(value, unit) => format!("{value}{}", unit.as_str()),
+            DefaultValue::Fraction(numerator, denominator, unit) => {
+                format!("{numerator}/{denominator}{}", unit.as_str())
+            }
         }
     }
 
@@ -120,16 +165,28 @@ mod tests {
 
     #[test]
     fn the_declared_fields_are_in_name_order_and_differ() {
-        for (kind, _) in BARE {
-            let names: Vec<&str> = declared_fields(kind)
-                .unwrap()
-                .iter()
-                .map(|field| field.name)
-                .collect();
+        for (kind, fields) in DECLARED.iter().chain(PARTS) {
+            let names: Vec<&str> = fields.iter().map(|field| field.name).collect();
             let mut sorted = names.clone();
             sorted.sort_unstable();
             sorted.dedup();
             assert_eq!(names, sorted, "{kind}");
+        }
+    }
+
+    /// A field that belongs beside another names a field of the same list.
+    #[test]
+    fn a_field_beside_another_names_a_declared_field() {
+        for (kind, fields) in DECLARED.iter().chain(PARTS) {
+            for field in *fields {
+                if let Presence::Beside(owner, _) = field.presence {
+                    assert!(
+                        fields.iter().any(|other| other.name == owner),
+                        "{kind}.{} beside {owner}",
+                        field.name
+                    );
+                }
+            }
         }
     }
 

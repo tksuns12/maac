@@ -24,7 +24,7 @@ use crate::library::LibrarySet;
 use crate::music::{MeterMap, MeterPoint, Pitch};
 use crate::plan::Processor;
 use crate::processor::{declaration_of, Config, ConfigValue, Declaration, Holds};
-use crate::semantic::{declared_fields, DefaultValue};
+use crate::semantic::{declared_fields, declared_part, DefaultValue};
 use crate::syntax::Unit;
 
 /// Why a document, object or value has no N(A), with a MaaC diagnostic code
@@ -357,8 +357,12 @@ impl<'a> NormalizationContext<'a> {
         }
         let id = path.last().map(String::as_str).unwrap_or_default();
         // A kind that declares its fields declares their defaults.
-        for declared in declared_fields(kind).into_iter().flatten() {
-            if let Some(default) = declared.default() {
+        for declared in declared_fields(kind)
+            .into_iter()
+            .flatten()
+            .chain(declared_part(kind))
+        {
+            if let Some(default) = declared.expanded(|name| fields.contains_key(name)) {
                 fields
                     .entry(declared.name)
                     .or_insert_with(|| default_value(default));
@@ -385,13 +389,6 @@ impl<'a> NormalizationContext<'a> {
                     ("slide", quantity(0, 1, Unit::S)),
                 ] {
                     fields.entry(name).or_insert(value);
-                }
-                // A strum strikes one string every 8 ms with no tilt.
-                if fields.contains_key("strum") {
-                    fields
-                        .entry("stagger")
-                        .or_insert_with(|| quantity(1, 125, Unit::S));
-                    fields.entry("tilt").or_insert_with(|| number(0));
                 }
             }
             // A vibrato starts at once, at full depth, centered.
@@ -894,6 +891,9 @@ fn default_value(default: DefaultValue) -> Value {
     match default {
         DefaultValue::Number(value) => number(value),
         DefaultValue::Quantity(value, unit) => quantity(value, 1, unit),
+        DefaultValue::Fraction(numerator, denominator, unit) => {
+            quantity(numerator, denominator, unit)
+        }
     }
 }
 

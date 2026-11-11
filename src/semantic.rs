@@ -9,10 +9,12 @@
 
 mod fields;
 mod groove;
+mod strum;
 mod vary;
 
 pub(crate) use fields::{DefaultValue, SourceField};
 pub(crate) use groove::Groove;
+pub(crate) use strum::Strum;
 pub(crate) use vary::Vary;
 
 use crate::plan_v7::{ControlClock, LfoConfig, LfoWave, ModulationV7, NodeV7, ProcessorV7};
@@ -31,6 +33,18 @@ pub(crate) fn declared_fields(kind: &str) -> Option<&'static [SourceField]> {
 /// Each object kind that declares its fields, with them.
 const DECLARED: &[(&str, &[SourceField])] = &[("groove", groove::FIELDS), ("vary", vary::FIELDS)];
 
+/// The fields of the object kind `kind` that a module declares, for a kind
+/// whose other fields are not declared yet.
+pub(crate) fn declared_part(kind: &str) -> &'static [SourceField] {
+    PARTS
+        .iter()
+        .find(|(declared, _)| *declared == kind)
+        .map_or(&[], |(_, fields)| *fields)
+}
+
+/// Each object kind with some of its fields declared, with those.
+const PARTS: &[(&str, &[SourceField])] = &[("chord", strum::FIELDS)];
+
 /// What semantic analysis read of the language objects that have a module
 /// of their own: each object's fields, checked, with its defaults filled
 /// in. The compiler lowers these and does not read the objects again.
@@ -40,6 +54,9 @@ pub(crate) struct Models {
     pub(crate) grooves: BTreeMap<String, Groove>,
     /// Each `vary`, by its ID.
     pub(crate) varies: BTreeMap<String, Vary>,
+    /// The strum of each strummed chord, by the chord's object path: its
+    /// pattern's ID and its own.
+    pub(crate) strums: BTreeMap<Vec<String>, Strum>,
 }
 
 /// The models of a document that is not checked as a whole, for a test of
@@ -53,6 +70,11 @@ pub(crate) fn models_of(document: &Document) -> Models {
         match object.kind.as_str() {
             "groove" => validator.validate_groove(object, &path),
             "vary" => validator.validate_vary(object, &path),
+            "pattern" => {
+                for chord in object.children.values().filter(|c| c.kind == "chord") {
+                    validator.validate_strum(chord, &child_path(&path, &chord.id));
+                }
+            }
             _ => {}
         }
     }
@@ -637,8 +659,9 @@ pub fn validate(document: &Document) -> Result<SourceGraph, Diagnostics> {
 }
 
 /// Validate reusable musical declarations without inventing a project clock,
-/// routing graph, or other caller-owned composition context.
-pub(crate) fn validate_musical_catalog(document: &Document) -> Result<(), Diagnostics> {
+/// routing graph, or other caller-owned composition context. Returns the
+/// models read of them.
+pub(crate) fn validate_musical_catalog(document: &Document) -> Result<Models, Diagnostics> {
     let instruments = BTreeMap::new();
     let mut validator = Validator::new(document, &instruments);
     validator.allow_ramps = true;
@@ -684,7 +707,7 @@ pub(crate) fn validate_musical_catalog(document: &Document) -> Result<(), Diagno
     if validator.diagnostics.has_errors() {
         Err(validator.diagnostics)
     } else {
-        Ok(())
+        Ok(validator.models)
     }
 }
 
@@ -2359,68 +2382,6 @@ impl<'a> Validator<'a> {
                 path.to_vec(),
                 vec!["shape".into()],
             );
-        }
-    }
-
-    /// A chord's `strum`, with the `stagger` and `tilt` that only a strum
-    /// may set; `tilt` needs a single velocity.
-    fn validate_strum(&mut self, object: &Object, path: &[String]) {
-        let strum = object.field("strum");
-        if let Some(field) = strum {
-            if !matches!(field.value.as_symbol(), Some("down" | "up")) {
-                self.push(
-                    DiagnosticCode::Range,
-                    "chord.strum must be `down` or `up`",
-                    Some(field.value.span),
-                    path.to_vec(),
-                    vec!["strum".into()],
-                );
-            }
-        }
-        for name in ["stagger", "tilt"] {
-            let Some(field) = object.field(name) else {
-                continue;
-            };
-            if strum.is_none() {
-                self.push(
-                    DiagnosticCode::Range,
-                    format!("chord.{name} requires `strum = down` or `strum = up`"),
-                    Some(field.value.span),
-                    path.to_vec(),
-                    vec![name.into()],
-                );
-            }
-            if name == "stagger" {
-                if let Some(stagger) =
-                    self.quantity_value(&field.value, &[Unit::S, Unit::Ms], path, name)
-                {
-                    if stagger < BigRational::zero() {
-                        self.push(
-                            DiagnosticCode::Range,
-                            "chord.stagger must be nonnegative",
-                            Some(field.value.span),
-                            path.to_vec(),
-                            vec![name.into()],
-                        );
-                    }
-                }
-            } else {
-                self.number_value(&field.value, path, name);
-                if matches!(
-                    object
-                        .field("velocity")
-                        .map(|velocity| &velocity.value.kind),
-                    Some(ValueKind::List(_))
-                ) {
-                    self.push(
-                        DiagnosticCode::Range,
-                        "chord.tilt requires a single velocity, not a list",
-                        Some(field.value.span),
-                        path.to_vec(),
-                        vec![name.into()],
-                    );
-                }
-            }
         }
     }
 

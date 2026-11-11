@@ -969,8 +969,8 @@ fn validate_musical_exports(document: &Document) -> Result<(), Diagnostics> {
     if !document.objects.values().any(is_musical_export) {
         return Ok(());
     }
-    crate::semantic::validate_musical_catalog(document)?;
-    crate::compiler::validate_musical_catalog(document)
+    let models = crate::semantic::validate_musical_catalog(document)?;
+    crate::compiler::validate_musical_catalog(document, models)
 }
 
 fn validate_documents(bundle: &ResolvedBundle) -> Result<Vec<LibraryMetadata>, Diagnostics> {

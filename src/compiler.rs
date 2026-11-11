@@ -38,7 +38,7 @@ use crate::plan_artifact::PlanArtifact;
 use crate::plan_v4::{NodeV4, PlanV4, ProcessorV4};
 use crate::plan_v5::{AudioClip, AudioFadeShape, NodeV5, PlanV5, ProcessorV5};
 use crate::plan_v6::{ClipEntry, NodeV6, PlanV6, ProcessorV6, WarpAnchor, WarpClip};
-use crate::semantic::{Groove, InstrumentNodeDescriptor, Models, Vary};
+use crate::semantic::{Groove, InstrumentNodeDescriptor, Models, Strum, Vary};
 use crate::syntax::{Document, Field, Object, Reference, Unit, Value, ValueKind};
 
 /// Maximum number of emitted note events in a resolved plan.
@@ -592,48 +592,36 @@ struct InsertDef {
     leaf: LeafDef,
 }
 
-/// A chord's strum (§8.2). A downstroke strikes the members in list order and
-/// an upstroke in reverse; each string is `stagger` later than the last, and
-/// the velocity changes by `tilt` from the first string struck to the last.
-#[derive(Clone, Debug)]
-struct Strum {
-    up: bool,
-    stagger: Rational,
-    tilt: Rational,
-}
-
-impl Strum {
-    /// Move member `k` of `n` to its place `i` in the stroke: `i * stagger`
-    /// later and `tilt * i / (n - 1)` louder.
-    fn strike(&self, leaf: &mut LeafDef, k: usize, n: usize, chord: &Object) -> CResult<()> {
-        let i = if self.up { n - 1 - k } else { k };
-        let place = Rational::from_integer(i.into());
-        leaf.onset_offset = checked_add(
-            &leaf.onset_offset,
-            &checked_mul(&self.stagger, &place, Some(chord.span))?,
+/// Move member `k` of the `n` a strummed chord plays to its place `i` in the
+/// stroke (§8.2): `i * stagger` later and `tilt * i / (n - 1)` louder.
+fn strike(strum: &Strum, leaf: &mut LeafDef, k: usize, n: usize, chord: &Object) -> CResult<()> {
+    let i = if strum.up { n - 1 - k } else { k };
+    let place = Rational::from_integer(i.into());
+    leaf.onset_offset = checked_add(
+        &leaf.onset_offset,
+        &checked_mul(&strum.stagger, &place, Some(chord.span))?,
+        Some(chord.span),
+    )?;
+    if n > 1 && !strum.tilt.is_zero() {
+        let share = place / Rational::from_integer((n - 1).into());
+        leaf.velocity = checked_add(
+            &leaf.velocity,
+            &checked_mul(&strum.tilt, &share, Some(chord.span))?,
             Some(chord.span),
         )?;
-        if n > 1 && !self.tilt.is_zero() {
-            let share = place / Rational::from_integer((n - 1).into());
-            leaf.velocity = checked_add(
-                &leaf.velocity,
-                &checked_mul(&self.tilt, &share, Some(chord.span))?,
-                Some(chord.span),
-            )?;
-            if leaf.velocity.is_negative() || leaf.velocity > Rational::one() {
-                return Err(path_diagnostic(
-                    DiagnosticCode::Range,
-                    format!(
-                        "chord velocity with tilt is {} at member {k}, outside [0,1]",
-                        leaf.velocity
-                    ),
-                    chord,
-                    chord.field("tilt"),
-                ));
-            }
+        if leaf.velocity.is_negative() || leaf.velocity > Rational::one() {
+            return Err(path_diagnostic(
+                DiagnosticCode::Range,
+                format!(
+                    "chord velocity with tilt is {} at member {k}, outside [0,1]",
+                    leaf.velocity
+                ),
+                chord,
+                chord.field("tilt"),
+            ));
         }
-        Ok(())
     }
+    Ok(())
 }
 
 #[derive(Clone, Debug)]
@@ -2527,10 +2515,11 @@ impl<'a> Compiler<'a> {
         })
     }
 
-    /// A chord leaf lowers to one note per pitch it plays: its own
-    /// `pitches`, or those of the voicing it names. A chord with neither
-    /// waits for a voicing from a use or placement, so it lowers later.
-    fn parse_chord(&self, object: &Object) -> CResult<Option<Vec<LeafDef>>> {
+    /// A chord leaf of pattern `pattern` lowers to one note per pitch it
+    /// plays: its own `pitches`, or those of the voicing it names. A chord
+    /// with neither waits for a voicing from a use or placement, so it
+    /// lowers later.
+    fn parse_chord(&self, pattern: &str, object: &Object) -> CResult<Option<Vec<LeafDef>>> {
         self.check_fields(
             object,
             &[
@@ -2566,14 +2555,17 @@ impl<'a> Compiler<'a> {
             (None, Some(field)) => self.voicing_pitches(object, field)?,
             (None, None) => return Ok(None),
         };
-        self.lower_chord(object, pitches_field, pitches).map(Some)
+        self.lower_chord(pattern, object, pitches_field, pitches)
+            .map(Some)
     }
 
-    /// Lower a chord without pitches with the voicing `supplied` to it, in a
-    /// pattern that starts at score position `origin` and is stretched by
-    /// `scale`. Its errors name what supplied the voicing.
+    /// Lower a chord of pattern `pattern` without pitches with the voicing
+    /// `supplied` to it, where the pattern starts at score position `origin`
+    /// and is stretched by `scale`. Its errors name what supplied the
+    /// voicing.
     fn lower_supplied_chord(
         &self,
+        pattern: &str,
         object: &Object,
         supplied: Option<&SuppliedVoicing>,
         origin: &Rational,
@@ -2622,7 +2614,7 @@ impl<'a> Compiler<'a> {
         let voicing = self.object(&voicing_id)?;
         let pitches_field = self.field(voicing, "pitches")?;
         let pitches = self.pitch_list(voicing, pitches_field)?;
-        self.lower_chord(object, pitches_field, pitches)
+        self.lower_chord(pattern, object, pitches_field, pitches)
             .map_err(|diagnostics| {
                 let mut named = Diagnostics::new();
                 for mut diagnostic in diagnostics.into_vec() {
@@ -2769,6 +2761,7 @@ impl<'a> Compiler<'a> {
     /// later and louder by its place in the stroke.
     fn lower_chord(
         &self,
+        pattern: &str,
         object: &Object,
         pitches_field: &Field,
         pitches: &[Value],
@@ -2780,7 +2773,7 @@ impl<'a> Compiler<'a> {
             "release_offset",
         ];
         let pitches = self.select_pitches(object, pitches)?;
-        let strum = self.parse_strum(object)?;
+        let strum = self.strum_of(pattern, object)?;
         for name in PER_NOTE {
             if let Some(field) = object.field(name) {
                 if matches!(&field.value.kind, ValueKind::List(items) if items.len() != pitches.len())
@@ -2826,82 +2819,31 @@ impl<'a> Compiler<'a> {
                 }
                 let mut leaf = self.parse_note(&note)?;
                 leaf.id = format!("{}.{member}", object.id);
-                if let Some(strum) = &strum {
-                    strum.strike(&mut leaf, member, pitches.len(), object)?;
+                if let Some(strum) = strum {
+                    strike(strum, &mut leaf, member, pitches.len(), object)?;
                 }
                 Ok(leaf)
             })
             .collect()
     }
 
-    /// A chord's `strum`, `stagger` and `tilt` (§8.2). `stagger` and `tilt`
-    /// belong to a strum, and `tilt` to a single velocity.
-    fn parse_strum(&self, object: &Object) -> CResult<Option<Strum>> {
-        let Some(strum_field) = object.field("strum") else {
-            if let Some(field) = object.field("stagger").or_else(|| object.field("tilt")) {
-                return Err(path_diagnostic(
-                    DiagnosticCode::Range,
-                    format!(
-                        "chord.{} requires `strum = down` or `strum = up`",
-                        field.name
-                    ),
-                    object,
-                    Some(field),
-                ));
-            }
-            return Ok(None);
-        };
-        let up = match self
-            .symbol_value(&strum_field.value, object, Some(strum_field))?
-            .as_str()
-        {
-            "down" => false,
-            "up" => true,
-            _ => {
-                return Err(path_diagnostic(
-                    DiagnosticCode::Range,
-                    "chord.strum must be `down` or `up`",
-                    object,
-                    Some(strum_field),
-                ))
-            }
-        };
-        let stagger = match object.field("stagger") {
-            Some(field) => {
-                let stagger = self.seconds_value(&field.value, object, Some(field))?;
-                if stagger.is_negative() {
-                    return Err(path_diagnostic(
-                        DiagnosticCode::Range,
-                        "chord.stagger must be nonnegative",
-                        object,
-                        Some(field),
-                    ));
-                }
-                stagger
-            }
-            // 8 ms per string.
-            None => Rational::new(1.into(), 125.into()),
-        };
-        let tilt = match object.field("tilt") {
-            Some(field) => {
-                if matches!(
-                    object
-                        .field("velocity")
-                        .map(|velocity| &velocity.value.kind),
-                    Some(ValueKind::List(_))
-                ) {
-                    return Err(path_diagnostic(
-                        DiagnosticCode::Range,
-                        "chord.tilt requires a single velocity, not a list",
-                        object,
-                        Some(field),
-                    ));
-                }
-                self.rational_value(&field.value, object, Some(field))?
-            }
-            None => Rational::zero(),
-        };
-        Ok(Some(Strum { up, stagger, tilt }))
+    /// The strum semantic analysis read of chord `object` of pattern
+    /// `pattern`, if the chord is strummed. A chord that writes a strum
+    /// that was not read is an error, and never plays unstrummed.
+    fn strum_of(&self, pattern: &str, object: &Object) -> CResult<Option<&Strum>> {
+        let strum = self
+            .models
+            .strums
+            .get([pattern.to_owned(), object.id.clone()].as_slice());
+        match (strum, object.field("strum")) {
+            (None, Some(field)) => Err(path_diagnostic(
+                DiagnosticCode::Range,
+                "chord.strum must be `down` or `up`",
+                object,
+                Some(field),
+            )),
+            (strum, _) => Ok(strum),
+        }
     }
 
     fn parse_hit(&self, object: &Object) -> CResult<LeafDef> {
@@ -3498,7 +3440,7 @@ impl<'a> Compiler<'a> {
             let mut children = Vec::new();
             for child in object.children.values() {
                 if child.kind == "chord" {
-                    let Some(members) = self.parse_chord(child)? else {
+                    let Some(members) = self.parse_chord(&object.id, child)? else {
                         let at_field = self.field(child, "at")?;
                         if self.q_value(&at_field.value, child, Some(at_field), false)? >= length {
                             return Err(path_diagnostic(
@@ -4998,6 +4940,7 @@ impl<'a> Compiler<'a> {
                 }
                 PatternChild::Chord(chord) => {
                     for member in self.lower_supplied_chord(
+                        pattern_id,
                         &chord,
                         state.voicing.as_ref(),
                         &state.origin,
@@ -7143,8 +7086,11 @@ fn value_span(value: &Rational, field: Option<&Field>) -> Span {
     })
 }
 
-pub(crate) fn validate_musical_catalog(document: &Document) -> CResult<()> {
+/// Lower the reusable musical declarations of a document that semantic
+/// analysis checked as a catalog, reading `models` of them.
+pub(crate) fn validate_musical_catalog(document: &Document, models: Models) -> CResult<()> {
     let mut compiler = Compiler::new(document);
+    compiler.models = models;
     compiler.allow_hits = true;
     compiler.allow_messages = true;
     compiler.allow_audio_leaves = true;

@@ -180,3 +180,108 @@ fn strum_defaults_normalize_away() {
     assert_ne!(identity("strum = down;"), identity("strum = up;"));
     assert_ne!(identity("strum = down;"), identity(""));
 }
+
+/// Every diagnostic of `chord a { ...fields }` in `bar`.
+fn mistakes(fields: &str) -> Vec<maac::Diagnostic> {
+    let text = source(
+        &format!("  chord a {{ at = 0q; dur = 1q; pitches = [C4, E4, G4]; {fields} }}"),
+        "",
+    );
+    compile_bundle_artifact(&SourceBundle::new("main.maac", text.as_str()))
+        .unwrap_err()
+        .into_vec()
+}
+
+/// Each wrong field is reported once, at that field of the chord.
+#[test]
+fn a_wrong_strum_is_reported_at_its_field() {
+    for (fields, code, message, field) in [
+        (
+            "strum = sideways;",
+            DiagnosticCode::Range,
+            "chord.strum must be `down` or `up`",
+            "strum",
+        ),
+        (
+            "stagger = 8ms;",
+            DiagnosticCode::Range,
+            "chord.stagger requires `strum = down` or `strum = up`",
+            "stagger",
+        ),
+        (
+            "tilt = -0.1;",
+            DiagnosticCode::Range,
+            "chord.tilt requires `strum = down` or `strum = up`",
+            "tilt",
+        ),
+        (
+            "strum = down; stagger = -1ms;",
+            DiagnosticCode::Range,
+            "chord.stagger must be nonnegative",
+            "stagger",
+        ),
+        (
+            "strum = down; stagger = 1q;",
+            DiagnosticCode::Unit,
+            "stagger requires s or ms",
+            "stagger",
+        ),
+        (
+            "strum = down; tilt = 1ct;",
+            DiagnosticCode::Unit,
+            "tilt requires a dimensionless number",
+            "tilt",
+        ),
+        (
+            "strum = down; velocity = [0.9, 0.8, 0.7]; tilt = -0.1;",
+            DiagnosticCode::Range,
+            "chord.tilt requires a single velocity, not a list",
+            "tilt",
+        ),
+    ] {
+        let diagnostics = mistakes(fields);
+        let [diagnostic] = diagnostics.as_slice() else {
+            panic!("{fields}: expected one diagnostic, got {diagnostics:#?}");
+        };
+        assert_eq!(diagnostic.code, code, "{fields}");
+        assert_eq!(diagnostic.message, message, "{fields}");
+        assert_eq!(diagnostic.object_path, ["bar", "a"], "{fields}");
+        assert_eq!(diagnostic.field_path, [field], "{fields}");
+    }
+}
+
+#[test]
+fn every_mistake_in_a_strum_is_reported_once() {
+    let fields: Vec<String> = mistakes("strum = sideways; stagger = -1ms; tilt = 1ct;")
+        .iter()
+        .map(|diagnostic| diagnostic.field_path[0].clone())
+        .collect();
+    assert_eq!(fields, ["strum", "stagger", "tilt"]);
+}
+
+/// A chord's ID is its own only within its pattern.
+#[test]
+fn chords_that_share_an_id_in_two_patterns_keep_their_own_strums() {
+    let text = source(
+        "  chord a { at = 0q; dur = 1q; pitches = [C4, E4, G4]; strum = down; stagger = 30ms; }",
+        "",
+    ) + r#"pattern other { length = 4q;
+  chord a { at = 0q; dur = 1q; pitches = [C4, E4, G4]; strum = up; velocity = 0.5; tilt = 0.25; }
+  chord b { at = 1q; dur = 1q; pitches = [C4, E4]; }
+}
+place second { pattern = &other; track = &t; at = 4q; }
+"#;
+    assert_eq!(
+        strikes(&events(&text)),
+        [
+            ("main/0/a.0".into(), "0/1".into(), "1/1".into()),
+            ("main/0/a.1".into(), "3/100".into(), "1/1".into()),
+            ("main/0/a.2".into(), "3/50".into(), "1/1".into()),
+            ("second/0/a.2".into(), "0/1".into(), "1/2".into()),
+            ("second/0/a.1".into(), "1/125".into(), "5/8".into()),
+            ("second/0/a.0".into(), "2/125".into(), "3/4".into()),
+            ("second/0/b.0".into(), "0/1".into(), "1/1".into()),
+            ("second/0/b.1".into(), "0/1".into(), "1/1".into()),
+        ]
+    );
+}
