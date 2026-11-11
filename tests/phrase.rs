@@ -406,3 +406,112 @@ pattern song {{ length = 16q;
         );
     }
 }
+
+/// Every diagnostic of `line` with `phrase` beside one note.
+fn mistakes(phrase: &str) -> Vec<maac::Diagnostic> {
+    let pattern = format!(
+        "pattern line {{ length = 8q; note a {{ at = 0q; dur = 1q; pitch = C4; }} {phrase} }}"
+    );
+    let extra = "curve held { clock = seconds; points = [(0s, 1/2, step)]; }\ncurve over { clock = score; points = [(0q, 3/2, step)]; }";
+    let text = source(extra, &pattern, TWICE);
+    compile_bundle_artifact(&SourceBundle::new("main.maac", text.as_str()))
+        .unwrap_err()
+        .into_vec()
+}
+
+/// Each mistake is reported once, at its field of the phrase.
+#[test]
+fn a_wrong_phrase_is_reported_at_its_field() {
+    for (fields, code, message, field) in [
+        (
+            "at = -1q; length = 8q; dynamics = &arc;",
+            DiagnosticCode::Range,
+            "phrase.at must be nonnegative",
+            Some("at"),
+        ),
+        (
+            "at = 0q; length = 0q; dynamics = &arc;",
+            DiagnosticCode::Range,
+            "phrase.length must be positive",
+            Some("length"),
+        ),
+        (
+            "at = 0q; length = 8q;",
+            DiagnosticCode::Range,
+            "phrase requires `dynamics`, `pressure` or `timbre`",
+            None,
+        ),
+        (
+            "at = 0q; length = 8q; pressure = &held;",
+            DiagnosticCode::Unit,
+            "phrase curves use the score clock",
+            Some("pressure"),
+        ),
+        (
+            "at = 0q; length = 8q; timbre = &over;",
+            DiagnosticCode::Range,
+            "phrase pressure and timbre values must be within 0..=1",
+            Some("timbre"),
+        ),
+        (
+            "length = 8q; dynamics = &arc;",
+            DiagnosticCode::Range,
+            "phrase requires field `at`",
+            Some("at"),
+        ),
+        (
+            "at = 0q; length = 8q; dynamics = &arc; swell = 1;",
+            DiagnosticCode::UnknownField,
+            "unknown field `swell` on phrase",
+            Some("swell"),
+        ),
+    ] {
+        let diagnostics = mistakes(&format!("phrase p {{ {fields} }}"));
+        let [diagnostic] = diagnostics.as_slice() else {
+            panic!("{fields}: expected one diagnostic, got {diagnostics:#?}");
+        };
+        assert_eq!(diagnostic.code, code, "{fields}");
+        assert_eq!(diagnostic.message, message, "{fields}");
+        assert_eq!(diagnostic.object_path, ["line", "p"], "{fields}");
+        let field_path: Vec<&str> = field.into_iter().collect();
+        assert_eq!(diagnostic.field_path, field_path, "{fields}");
+    }
+}
+
+#[test]
+fn every_mistake_in_a_phrase_is_reported_once() {
+    let fields: Vec<String> = mistakes(
+        "phrase p { at = -1q; length = 0q; dynamics = &over; pressure = &held; timbre = &over; }",
+    )
+    .iter()
+    .map(|diagnostic| diagnostic.field_path[0].clone())
+    .collect();
+    assert_eq!(fields, ["at", "length", "pressure", "timbre"]);
+}
+
+/// A phrase's ID is its own only within its pattern.
+#[test]
+fn phrases_that_share_an_id_in_two_patterns_keep_their_own_curves() {
+    let nested = format!(
+        r#"{LINE}
+pattern song {{ length = 16q;
+  use twice {{ pattern = &line; at = 0q; count = 2; }}
+  phrase p {{ at = 8q; length = 8q; timbre = &level; }}
+}}"#
+    );
+    let place = "place main { pattern = &song; track = &t; at = 0q; }";
+    let events = events(&source("", &nested, place));
+    // The line's own `p` gives every pass its breath and its dynamics.
+    assert_eq!(velocity(&events, "main/0/twice/0/a"), "2/5");
+    assert_eq!(velocity(&events, "main/0/twice/1/a"), "2/5");
+    assert_eq!(
+        expression(&events, "main/0/twice/1/a", "pressure"),
+        points(&[("0", "0", "linear"), ("2", "2/5", "step")])
+    );
+    // The song's `p` gives the second pass alone its timbre.
+    assert_eq!(
+        expression(&events, "main/0/twice/1/a", "timbre"),
+        points(&[("0", "1/4", "step"), ("2", "1/4", "step")])
+    );
+    assert!(event(&events, "main/0/twice/0/a")["kind"]["timbre_expression"].is_null());
+}

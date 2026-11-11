@@ -175,14 +175,24 @@ mod tests {
 
     /// One object of each kind that declares its fields, with only its
     /// required fields written.
-    const BARE: [(&str, &str); 3] = [
+    const BARE: [(&str, &str); 4] = [
         ("groove", "grid = 1/2q; ratio = 2/3;"),
+        ("phrase", "at = 0q; length = 4q; dynamics = &arc;"),
         ("vary", "seed = 7;"),
         ("vibrato", "rate = 5Hz; depth = 40ct;"),
     ];
 
     fn document(kind: &str, fields: &str) -> crate::syntax::Document {
-        crate::parse(&format!("maac 1; {kind} one {{ {fields} }}")).unwrap()
+        let object = format!("{kind} one {{ {fields} }}");
+        // A phrase is a child of a pattern.
+        let object = match kind {
+            "phrase" => format!("pattern bar {{ length = 4q; {object} }}"),
+            _ => object,
+        };
+        crate::parse(&format!(
+            "maac 1; curve arc {{ clock = score; points = [(0q, 1, step)]; }} {object}"
+        ))
+        .unwrap()
     }
 
     #[test]
@@ -225,7 +235,10 @@ mod tests {
         for (kind, bare) in BARE {
             let left_out = models_of(&document(kind, bare));
             assert_eq!(
-                left_out.grooves.len() + left_out.varies.len() + left_out.vibratos.len(),
+                left_out.grooves.len()
+                    + left_out.phrases.len()
+                    + left_out.varies.len()
+                    + left_out.vibratos.len(),
                 1,
                 "{kind} reads"
             );

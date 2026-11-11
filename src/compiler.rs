@@ -3158,34 +3158,29 @@ impl<'a> Compiler<'a> {
         })
     }
 
-    fn parse_phrase(&self, object: &Object) -> CResult<PhraseDef> {
-        self.check_fields(object, &["at", "length", "dynamics", "pressure", "timbre"])?;
-        let at_field = self.field(object, "at")?;
-        let length_field = self.field(object, "length")?;
-        let at = self.q_value(&at_field.value, object, Some(at_field), false)?;
-        let length = self.q_value(&length_field.value, object, Some(length_field), false)?;
-        if at.is_negative() || length <= Rational::zero() {
+    /// The phrase semantic analysis read of child `object` of pattern
+    /// `pattern`. A phrase that was not read is an error.
+    fn parse_phrase(&self, pattern: &str, object: &Object) -> CResult<PhraseDef> {
+        let Some(phrase) = self
+            .models
+            .phrases
+            .get([pattern.to_owned(), object.id.clone()].as_slice())
+        else {
             return Err(path_diagnostic(
                 DiagnosticCode::Range,
-                "phrase onset must be nonnegative and length positive",
+                format!("phrase `{}` could not be read", object.id),
                 object,
                 None,
             ));
-        }
-        let curve = |name: &str| {
-            object
-                .field(name)
-                .map(|field| self.one_reference(&field.value, object, Some(field)))
-                .transpose()
         };
         Ok(PhraseDef {
             id: object.id.clone(),
             span: object.span,
-            at,
-            length,
-            dynamics: curve("dynamics")?,
-            pressure: curve("pressure")?,
-            timbre: curve("timbre")?,
+            at: phrase.at.clone(),
+            length: phrase.length.clone(),
+            dynamics: phrase.dynamics.clone(),
+            pressure: phrase.pressure.clone(),
+            timbre: phrase.timbre.clone(),
         })
     }
 
@@ -3468,7 +3463,9 @@ impl<'a> Compiler<'a> {
                 let parsed = match child.kind.as_str() {
                     "note" => PatternChild::Leaf(Box::new(self.parse_note(child)?)),
                     "use" => PatternChild::Use(Box::new(self.parse_use(child)?)),
-                    "phrase" => PatternChild::Phrase(Box::new(self.parse_phrase(child)?)),
+                    "phrase" => {
+                        PatternChild::Phrase(Box::new(self.parse_phrase(&object.id, child)?))
+                    }
                     "hit" if self.allow_hits => {
                         PatternChild::Leaf(Box::new(self.parse_hit(child)?))
                     }

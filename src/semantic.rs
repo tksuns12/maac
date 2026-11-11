@@ -9,12 +9,14 @@
 
 mod fields;
 mod groove;
+mod phrase;
 mod strum;
 mod vary;
 mod vibrato;
 
 pub(crate) use fields::{DefaultValue, SourceField};
 pub(crate) use groove::Groove;
+pub(crate) use phrase::Phrase;
 pub(crate) use strum::Strum;
 pub(crate) use vary::Vary;
 pub(crate) use vibrato::{Cycle, Vibrato};
@@ -35,6 +37,7 @@ pub(crate) fn declared_fields(kind: &str) -> Option<&'static [SourceField]> {
 /// Each object kind that declares its fields, with them.
 const DECLARED: &[(&str, &[SourceField])] = &[
     ("groove", groove::FIELDS),
+    ("phrase", phrase::FIELDS),
     ("vary", vary::FIELDS),
     ("vibrato", vibrato::FIELDS),
 ];
@@ -65,6 +68,8 @@ pub(crate) struct Models {
     pub(crate) strums: BTreeMap<Vec<String>, Strum>,
     /// Each `vibrato`, by its ID.
     pub(crate) vibratos: BTreeMap<String, Vibrato>,
+    /// Each `phrase`, by its object path: its pattern's ID and its own.
+    pub(crate) phrases: BTreeMap<Vec<String>, Phrase>,
 }
 
 /// The models of a document that is not checked as a whole, for a test of
@@ -80,8 +85,13 @@ pub(crate) fn models_of(document: &Document) -> Models {
             "vary" => validator.validate_vary(object, &path),
             "vibrato" => validator.validate_vibrato(object, &path),
             "pattern" => {
-                for chord in object.children.values().filter(|c| c.kind == "chord") {
-                    validator.validate_strum(chord, &child_path(&path, &chord.id));
+                for child in object.children.values() {
+                    let path = child_path(&path, &child.id);
+                    match child.kind.as_str() {
+                        "chord" => validator.validate_strum(child, &path),
+                        "phrase" => validator.validate_phrase(child, &path),
+                        _ => {}
+                    }
                 }
             }
             _ => {}
@@ -2461,128 +2471,6 @@ impl<'a> Validator<'a> {
             );
         }
         self.reject_children(object, path);
-    }
-
-    /// A phrase (§9.3): a span of its pattern and the score-clock curves
-    /// that shape the events under it.
-    fn validate_phrase(&mut self, object: &Object, path: &[String]) {
-        const CURVES: [&str; 3] = ["dynamics", "pressure", "timbre"];
-        self.check_schema(
-            object,
-            path,
-            &["at", "length"],
-            &["at", "length", "dynamics", "pressure", "timbre", "label"],
-            &[],
-        );
-        self.reject_children(object, path);
-        if let Some(field) = object.field("at") {
-            if let Some(at) = self.quantity(field, &[Unit::Q], path, "at") {
-                if at < BigRational::zero() {
-                    self.push(
-                        DiagnosticCode::Range,
-                        "phrase.at must be nonnegative",
-                        Some(field.value.span),
-                        path.to_vec(),
-                        vec!["at".into()],
-                    );
-                }
-            }
-        }
-        if let Some(field) = object.field("length") {
-            if let Some(length) = self.quantity(field, &[Unit::Q], path, "length") {
-                if length <= BigRational::zero() {
-                    self.push(
-                        DiagnosticCode::Range,
-                        "phrase.length must be positive",
-                        Some(field.value.span),
-                        path.to_vec(),
-                        vec!["length".into()],
-                    );
-                }
-            }
-        }
-        if CURVES.iter().all(|name| object.field(name).is_none()) {
-            self.push(
-                DiagnosticCode::Range,
-                "phrase requires `dynamics`, `pressure` or `timbre`",
-                Some(object.span),
-                path.to_vec(),
-                Vec::new(),
-            );
-        }
-        for name in CURVES {
-            let Some(field) = object.field(name) else {
-                continue;
-            };
-            let Some(ReferenceTarget::Object { id, .. }) =
-                self.expect_object_ref(field, name, &["curve"], path)
-            else {
-                continue;
-            };
-            let Some(curve) = self.document.object(&id).cloned() else {
-                continue;
-            };
-            let at = |message: &str| (message.to_owned(), Some(field.value.span));
-            let mut problems = Vec::new();
-            if curve.field("clock").and_then(|f| f.value.as_symbol()) != Some("score") {
-                problems.push((
-                    DiagnosticCode::Unit,
-                    at("phrase curves use the score clock"),
-                ));
-            }
-            let points = curve.field("points").and_then(|f| match &f.value.kind {
-                ValueKind::List(points) => Some(points.clone()),
-                _ => None,
-            });
-            for point in points.iter().flatten() {
-                let ValueKind::Tuple(items) = &point.kind else {
-                    continue;
-                };
-                match items.get(1).map(|value| &value.kind) {
-                    Some(ValueKind::Number(value)) => {
-                        let inside = if name == "dynamics" {
-                            value >= &BigRational::zero()
-                        } else {
-                            value >= &BigRational::zero() && value <= &BigRational::one()
-                        };
-                        if !inside {
-                            problems.push((
-                                DiagnosticCode::Range,
-                                (
-                                    if name == "dynamics" {
-                                        "phrase dynamics values must be nonnegative"
-                                    } else {
-                                        "phrase pressure and timbre values must be within 0..=1"
-                                    }
-                                    .to_owned(),
-                                    Some(point.span),
-                                ),
-                            ));
-                        }
-                    }
-                    Some(_) => problems.push((
-                        DiagnosticCode::Unit,
-                        (
-                            "phrase curve values must be dimensionless".to_owned(),
-                            Some(point.span),
-                        ),
-                    )),
-                    None => {}
-                }
-                if items.get(2).and_then(Value::as_symbol) == Some("exponential") {
-                    problems.push((
-                        DiagnosticCode::Range,
-                        (
-                            "phrase curves use only step and linear segments".to_owned(),
-                            Some(point.span),
-                        ),
-                    ));
-                }
-            }
-            for (code, (message, span)) in problems {
-                self.push(code, message, span, path.to_vec(), vec![name.into()]);
-            }
-        }
     }
 
     fn validate_place(&mut self, object: &Object, path: &[String]) {
