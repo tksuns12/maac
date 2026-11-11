@@ -38,7 +38,7 @@ use crate::plan_artifact::PlanArtifact;
 use crate::plan_v4::{NodeV4, PlanV4, ProcessorV4};
 use crate::plan_v5::{AudioClip, AudioFadeShape, NodeV5, PlanV5, ProcessorV5};
 use crate::plan_v6::{ClipEntry, NodeV6, PlanV6, ProcessorV6, WarpAnchor, WarpClip};
-use crate::semantic::InstrumentNodeDescriptor;
+use crate::semantic::{Groove, InstrumentNodeDescriptor, Models, Vary};
 use crate::syntax::{Document, Field, Object, Reference, Unit, Value, ValueKind};
 
 /// Maximum number of emitted note events in a resolved plan.
@@ -636,48 +636,12 @@ impl Strum {
     }
 }
 
-/// A named swing map (§9.2): within each pair of `grid` steps, counted from
-/// the bar line, the first step takes `ratio` of the pair; then every onset
-/// and gate end is `delay` seconds later.
-#[derive(Clone, Debug)]
-struct GrooveDef {
-    grid: Rational,
-    ratio: Rational,
-    delay: Rational,
-}
-
-/// A declared departure from the score (§9.4): each event's velocity and
-/// timing move by a seeded draw from its address, within ±`velocity` and
-/// ±`timing` seconds.
-#[derive(Clone, Debug)]
-struct VaryDef {
-    seed: u32,
-    velocity: Rational,
-    timing: Rational,
-}
-
-impl VaryDef {
-    /// The offset for `field` of the event at `address`: `amount × (u1 + u2
-    /// − 1)`, where `u1` and `u2` are the top 53 bits of the first two
-    /// SplitMix64 outputs from the seed mixed with `address/field`, over
-    /// 2^53. Exact, triangular within ±`amount`.
-    fn offset(&self, address: &str, field: &str, amount: &Rational) -> Rational {
-        let mut rng = crate::seeded::Rng::new(crate::seeded::mix(
-            u64::from(self.seed),
-            format!("{address}/{field}").as_bytes(),
-        ));
-        let (u1, u2) = (rng.next() >> 11, rng.next() >> 11);
-        let scale = BigInt::from(1u64 << 53);
-        amount * Rational::new(BigInt::from(u1) + BigInt::from(u2) - &scale, scale)
-    }
-}
-
 #[derive(Clone, Debug)]
 struct PlaceDef {
     id: String,
     span: Span,
-    groove: Option<GrooveDef>,
-    vary: Option<VaryDef>,
+    groove: Option<Groove>,
+    vary: Option<Vary>,
     pattern: String,
     track: String,
     at: Rational,
@@ -974,6 +938,8 @@ struct Compiler<'a> {
     audio_clips: BTreeMap<String, crate::semantic::AudioClipSource>,
     /// Placement `out` widths from source validation (artifact path only).
     place_outputs: BTreeMap<String, u8>,
+    /// What semantic analysis read of the objects it models.
+    models: Models,
     pattern_clips: Vec<PatternClip>,
     allow_audio_leaves: bool,
     connections: Vec<Connection>,
@@ -1039,6 +1005,7 @@ impl<'a> Compiler<'a> {
             modulations: Vec::new(),
             audio_clips: BTreeMap::new(),
             place_outputs: BTreeMap::new(),
+            models: Models::default(),
             pattern_clips: Vec::new(),
             allow_audio_leaves: false,
             connections: Vec::new(),
@@ -1109,12 +1076,13 @@ impl<'a> Compiler<'a> {
         // cannot disappear during expansion.
         // Same-sample cycles are reported at their authored connect/modulate
         // here, before plan validation can only name the plan collection.
-        crate::semantic::validate_source_with_tempo_profile(
+        let graph = crate::semantic::validate_source_with_tempo_profile(
             self.document,
             &self.instrument_descriptors,
             self.allow_ramps,
-        )?
-        .validate_causality()?;
+        )?;
+        graph.validate_causality()?;
+        self.models = graph.models().clone();
         self.read_composition(limits)?;
         if self
             .plan_tempo
@@ -1215,6 +1183,7 @@ impl<'a> Compiler<'a> {
             self.document,
             &self.instrument_descriptors,
         )?;
+        self.models = graph.models().clone();
         self.control_nodes = graph.control_nodes().clone();
         self.modulations = graph.modulations().to_vec();
         self.audio_clips = graph.audio_clips().clone();
@@ -1303,6 +1272,10 @@ impl<'a> Compiler<'a> {
         }
         let mut project_count = 0usize;
         for object in self.document.objects.values() {
+            // Semantic analysis checked a kind that declares its fields.
+            if crate::semantic::declared_fields(&object.kind).is_some() {
+                continue;
+            }
             let allowed = match object.kind.as_str() {
                 "project" => {
                     project_count += 1;
@@ -1329,8 +1302,6 @@ impl<'a> Compiler<'a> {
                     "harmony",
                     "voicings",
                 ][..],
-                "groove" => &["grid", "ratio", "delay"][..],
-                "vary" => &["seed", "velocity", "timing"][..],
                 "voicing" => &["pitches"][..],
                 "harmony" => &["length", "chords"][..],
                 "voicings" => &["chords"][..],
@@ -3935,11 +3906,11 @@ impl<'a> Compiler<'a> {
             }
             let groove = object
                 .field("groove")
-                .map(|field| self.parse_groove_reference(object, field))
+                .map(|field| self.groove_reference(object, field))
                 .transpose()?;
             let vary = object
                 .field("vary")
-                .map(|field| self.parse_vary_reference(object, field))
+                .map(|field| self.vary_reference(object, field))
                 .transpose()?;
             self.places.push(PlaceDef {
                 id: object.id.clone(),
@@ -3962,117 +3933,37 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn parse_vary_reference(&self, place: &Object, field: &Field) -> CResult<VaryDef> {
+    /// The vary a placement names, as semantic analysis read it.
+    fn vary_reference(&self, place: &Object, field: &Field) -> CResult<Vary> {
         let id = self.one_reference(&field.value, place, Some(field))?;
-        let vary = self.object(&id)?;
-        if vary.kind != "vary" {
-            return Err(path_diagnostic(
+        self.models.varies.get(&id).cloned().ok_or_else(|| {
+            path_diagnostic(
                 DiagnosticCode::Reference,
                 "place.vary must reference a vary",
                 place,
                 Some(field),
-            ));
-        }
-        let seed_field = self.field(vary, "seed")?;
-        let seed = self.rational_value(&seed_field.value, vary, Some(seed_field))?;
-        let seed = seed
-            .is_integer()
-            .then(|| seed.to_integer().to_u32())
-            .flatten()
-            .filter(|seed| *seed != 0)
-            .ok_or_else(|| {
-                path_diagnostic(
-                    DiagnosticCode::Range,
-                    "vary.seed must be an integer from 1 to 4294967295",
-                    vary,
-                    Some(seed_field),
-                )
-            })?;
-        let velocity = vary
-            .field("velocity")
-            .map(|field| self.rational_value(&field.value, vary, Some(field)))
-            .transpose()?
-            .unwrap_or_else(Rational::zero);
-        if velocity.is_negative() || velocity > Rational::new(1.into(), 2.into()) {
-            return Err(path_diagnostic(
-                DiagnosticCode::Range,
-                "vary.velocity must be from 0 to 1/2",
-                vary,
-                vary.field("velocity"),
-            ));
-        }
-        let timing = vary
-            .field("timing")
-            .map(|field| self.seconds_value(&field.value, vary, Some(field)))
-            .transpose()?
-            .unwrap_or_else(Rational::zero);
-        if timing.is_negative() || timing > Rational::new(1.into(), 20.into()) {
-            return Err(path_diagnostic(
-                DiagnosticCode::Range,
-                "vary.timing must be from 0ms to 50ms",
-                vary,
-                vary.field("timing"),
-            ));
-        }
-        Ok(VaryDef {
-            seed,
-            velocity,
-            timing,
+            )
         })
     }
 
-    fn parse_groove_reference(&self, place: &Object, field: &Field) -> CResult<GrooveDef> {
+    /// The groove a placement names, as semantic analysis read it.
+    fn groove_reference(&self, place: &Object, field: &Field) -> CResult<Groove> {
         let id = self.one_reference(&field.value, place, Some(field))?;
-        let groove = self.object(&id)?;
-        if groove.kind != "groove" {
-            return Err(path_diagnostic(
+        self.models.grooves.get(&id).cloned().ok_or_else(|| {
+            path_diagnostic(
                 DiagnosticCode::Reference,
                 "place.groove must reference a groove",
                 place,
                 Some(field),
-            ));
-        }
-        let grid_field = self.field(groove, "grid")?;
-        let grid = self.q_value(&grid_field.value, groove, Some(grid_field), false)?;
-        if grid <= Rational::zero() {
-            return Err(path_diagnostic(
-                DiagnosticCode::Range,
-                "groove.grid must be positive",
-                groove,
-                Some(grid_field),
-            ));
-        }
-        let ratio_field = self.field(groove, "ratio")?;
-        let ratio = self.rational_value(&ratio_field.value, groove, Some(ratio_field))?;
-        if ratio < Rational::new(1.into(), 2.into()) || ratio > Rational::new(3.into(), 4.into()) {
-            return Err(path_diagnostic(
-                DiagnosticCode::Range,
-                "groove.ratio must be from 1/2 through 3/4",
-                groove,
-                Some(ratio_field),
-            ));
-        }
-        let delay = groove
-            .field("delay")
-            .map(|field| self.seconds_value(&field.value, groove, Some(field)))
-            .transpose()?
-            .unwrap_or_else(Rational::zero);
-        if delay.abs() > Rational::new(1.into(), 20.into()) {
-            return Err(path_diagnostic(
-                DiagnosticCode::Range,
-                "groove.delay must be from -50ms to 50ms",
-                groove,
-                groove.field("delay"),
-            ));
-        }
-        Ok(GrooveDef { grid, ratio, delay })
+            )
+        })
     }
 
     /// Move one placement's expanded events through its groove (§9.2): note
     /// onsets and gate ends, and hit and message onsets, then its delay.
     /// Audio leaves keep their positions; overrides and inserts apply
     /// afterwards, unswung.
-    fn apply_groove(&mut self, place: &PlaceDef, groove: &GrooveDef, first: usize) -> CResult<()> {
+    fn apply_groove(&mut self, place: &PlaceDef, groove: &Groove, first: usize) -> CResult<()> {
         let at = |meter: &MeterMap, position: &Rational| {
             groove_position(meter, groove, position).map_err(|message| {
                 let object = self
@@ -4120,7 +4011,7 @@ impl<'a> Compiler<'a> {
     /// its groove and before its overrides and inserts. A note's gate end
     /// that touches the onset of exactly one note of the same chord member
     /// index moves with that onset, so lines stay connected.
-    fn apply_vary(&mut self, vary: &VaryDef, first: usize) {
+    fn apply_vary(&mut self, vary: &Vary, first: usize) {
         let member = |address: &str| {
             address
                 .rsplit('/')
@@ -7903,7 +7794,7 @@ pub fn check_versioned_with_limits(
 /// The groove map (§9.2) of score position `t`. Within each pair of grid
 /// steps, counted from the start of `t`'s bar, the first step takes `ratio`
 /// of the pair. Bar lines and pair boundaries do not move.
-fn groove_position(meter: &MeterMap, groove: &GrooveDef, t: &Rational) -> Result<Rational, String> {
+fn groove_position(meter: &MeterMap, groove: &Groove, t: &Rational) -> Result<Rational, String> {
     let (start, length) = meter.bar_span(t).map_err(|error| error.to_string())?;
     let offset = t - &start;
     if offset.is_zero() {
@@ -7937,6 +7828,7 @@ mod hit_expansion_tests {
         ))
         .unwrap();
         let mut compiler = Compiler::new(&document);
+        compiler.models = crate::semantic::models_of(&document);
         compiler.allow_hits = true;
         compiler.score_end = Rational::from_integer(100.into());
         compiler.read_patterns()?;

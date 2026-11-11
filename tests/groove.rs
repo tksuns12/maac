@@ -241,3 +241,72 @@ fn malformed_grooves_are_rejected() {
         DiagnosticCode::Reference,
     );
 }
+
+/// Each wrong field is reported at that field, with the range it must keep.
+#[test]
+fn a_wrong_groove_is_reported_at_its_field() {
+    for (groove, code, message, field) in [
+        (
+            "grid = 1/2q; ratio = 4/5;",
+            DiagnosticCode::Range,
+            "groove.ratio must be from 1/2 through 3/4",
+            "ratio",
+        ),
+        (
+            "grid = 0q; ratio = 2/3;",
+            DiagnosticCode::Range,
+            "groove.grid must be positive",
+            "grid",
+        ),
+        (
+            "grid = 1/2q; ratio = 2/3; delay = 51ms;",
+            DiagnosticCode::Range,
+            "groove.delay must be from -50ms to 50ms",
+            "delay",
+        ),
+        (
+            "grid = 1/2q;",
+            DiagnosticCode::Range,
+            "groove requires field `ratio`",
+            "ratio",
+        ),
+        (
+            "grid = 1/2q; ratio = 2/3; swing = 1;",
+            DiagnosticCode::UnknownField,
+            "unknown field `swing` on groove",
+            "swing",
+        ),
+    ] {
+        let text = source("", EVEN, PLACE).replace(
+            "groove lazy { grid = 1/2q; ratio = 2/3; }",
+            &format!("groove lazy {{ {groove} }}"),
+        );
+        let diagnostics = compile_bundle_artifact(&SourceBundle::new("main.maac", text.as_str()))
+            .unwrap_err()
+            .into_vec();
+        let [diagnostic] = diagnostics.as_slice() else {
+            panic!("{groove}: expected one diagnostic, got {diagnostics:#?}");
+        };
+        assert_eq!(diagnostic.code, code, "{groove}");
+        assert_eq!(diagnostic.message, message, "{groove}");
+        assert_eq!(diagnostic.object_path, ["lazy"], "{groove}");
+        assert_eq!(diagnostic.field_path, [field], "{groove}");
+    }
+}
+
+/// A groove that no placement names is checked like one that is.
+#[test]
+fn every_mistake_in_a_groove_is_reported_once() {
+    let text = source("", EVEN, STRAIGHT).replace(
+        "groove lazy { grid = 1/2q; ratio = 2/3; }",
+        "groove lazy { grid = 0q; ratio = 1; delay = 1s; }",
+    );
+    let diagnostics = compile_bundle_artifact(&SourceBundle::new("main.maac", text.as_str()))
+        .unwrap_err()
+        .into_vec();
+    let fields: Vec<&str> = diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.field_path[0].as_str())
+        .collect();
+    assert_eq!(fields, ["delay", "grid", "ratio"], "{diagnostics:#?}");
+}

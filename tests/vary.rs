@@ -281,3 +281,55 @@ fn an_event_moved_out_of_the_score_is_named() {
         );
     }
 }
+
+/// Each wrong field is reported at that field, with the range it must keep.
+#[test]
+fn a_wrong_vary_is_reported_at_its_field() {
+    for (vary, code, message, field) in [
+        (
+            "seed = 0;",
+            DiagnosticCode::Range,
+            "vary.seed must be an integer from 1 to 4294967295",
+            "seed",
+        ),
+        (
+            "seed = 7; velocity = 3/5;",
+            DiagnosticCode::Range,
+            "vary.velocity must be from 0 to 1/2",
+            "velocity",
+        ),
+        (
+            "seed = 7; timing = 51ms;",
+            DiagnosticCode::Range,
+            "vary.timing must be from 0ms to 50ms",
+            "timing",
+        ),
+        (
+            "velocity = 1/10;",
+            DiagnosticCode::Range,
+            "vary requires field `seed`",
+            "seed",
+        ),
+        (
+            "seed = 7; pitch = 1;",
+            DiagnosticCode::UnknownField,
+            "unknown field `pitch` on vary",
+            "pitch",
+        ),
+    ] {
+        let text = source("", LINE, PLACE).replace(
+            "vary loose { seed = 7; velocity = 3/50; timing = 8ms; }",
+            &format!("vary loose {{ {vary} }}"),
+        );
+        let diagnostics = compile_bundle_artifact(&SourceBundle::new("main.maac", text.as_str()))
+            .unwrap_err()
+            .into_vec();
+        let [diagnostic] = diagnostics.as_slice() else {
+            panic!("{vary}: expected one diagnostic, got {diagnostics:#?}");
+        };
+        assert_eq!(diagnostic.code, code, "{vary}");
+        assert_eq!(diagnostic.message, message, "{vary}");
+        assert_eq!(diagnostic.object_path, ["loose"], "{vary}");
+        assert_eq!(diagnostic.field_path, [field], "{vary}");
+    }
+}

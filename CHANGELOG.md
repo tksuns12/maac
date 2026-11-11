@@ -59,6 +59,11 @@ promise of compatibility beyond the documented interfaces.
   other code changes, and the same documents are accepted and refused. In
   a performance plan, a whole number of a node's config outside its range
   is `E_RANGE` with one wording, such as `players must be from 1 to 16`.
+- A `groove`'s `ratio` and a `vary`'s `velocity` outside their ranges name
+  the range: `groove.ratio must be from 1/2 through 3/4` and
+  `vary.velocity must be from 0 to 1/2`, where each said only that the
+  field was `outside its valid range`. The code, `E_RANGE`, and the place
+  are the same.
 
 ### Fixed
 

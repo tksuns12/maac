@@ -7,9 +7,57 @@
 //! editing also checks same-sample causality before committing. Event expansion,
 //! sample scheduling, and DSP belong to later plan/renderer stages.
 
+mod fields;
+mod groove;
+mod vary;
+
+pub(crate) use fields::{DefaultValue, SourceField};
+pub(crate) use groove::Groove;
+pub(crate) use vary::Vary;
+
 use crate::plan_v7::{ControlClock, LfoConfig, LfoWave, ModulationV7, NodeV7, ProcessorV7};
 use num_integer::Integer;
 use std::collections::{BTreeMap, BTreeSet};
+
+/// The fields of the object kind `kind`, for each kind that declares them
+/// in a module of its own.
+pub(crate) fn declared_fields(kind: &str) -> Option<&'static [SourceField]> {
+    DECLARED
+        .iter()
+        .find(|(declared, _)| *declared == kind)
+        .map(|(_, fields)| *fields)
+}
+
+/// Each object kind that declares its fields, with them.
+const DECLARED: &[(&str, &[SourceField])] = &[("groove", groove::FIELDS), ("vary", vary::FIELDS)];
+
+/// What semantic analysis read of the language objects that have a module
+/// of their own: each object's fields, checked, with its defaults filled
+/// in. The compiler lowers these and does not read the objects again.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct Models {
+    /// Each `groove`, by its ID.
+    pub(crate) grooves: BTreeMap<String, Groove>,
+    /// Each `vary`, by its ID.
+    pub(crate) varies: BTreeMap<String, Vary>,
+}
+
+/// The models of a document that is not checked as a whole, for a test of
+/// one compiler stage.
+#[cfg(test)]
+pub(crate) fn models_of(document: &Document) -> Models {
+    let instruments = BTreeMap::new();
+    let mut validator = Validator::new(document, &instruments);
+    for object in document.objects.values() {
+        let path = [object.id.clone()];
+        match object.kind.as_str() {
+            "groove" => validator.validate_groove(object, &path),
+            "vary" => validator.validate_vary(object, &path),
+            _ => {}
+        }
+    }
+    validator.models
+}
 
 /// What writes a parameter from outside its node.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -236,9 +284,13 @@ pub struct SourceGraph {
     control_nodes: BTreeMap<String, NodeV7>,
     modulations: Vec<ModulationV7>,
     references: BTreeMap<String, ReferenceTarget>,
+    models: Models,
 }
 
 impl SourceGraph {
+    pub(crate) fn models(&self) -> &Models {
+        &self.models
+    }
     pub(crate) fn place_outputs(&self) -> &BTreeMap<String, u8> {
         &self.place_outputs
     }
@@ -575,6 +627,7 @@ fn validate_source_profile(
         control_nodes: validator.control_nodes,
         modulations: validator.modulations,
         references: validator.references,
+        models: validator.models,
     })
 }
 
@@ -658,6 +711,7 @@ struct Validator<'a> {
     control_nodes: BTreeMap<String, NodeV7>,
     modulations: Vec<ModulationV7>,
     references: BTreeMap<String, ReferenceTarget>,
+    models: Models,
     automation_writers: BTreeMap<String, Writer>,
     total_objects: usize,
     validated_gain_curves: BTreeSet<String>,
@@ -693,6 +747,7 @@ impl<'a> Validator<'a> {
             control_nodes: BTreeMap::new(),
             modulations: Vec::new(),
             references: BTreeMap::new(),
+            models: Models::default(),
             automation_writers: BTreeMap::new(),
             total_objects: 0,
             validated_gain_curves: BTreeSet::new(),
@@ -945,6 +1000,31 @@ impl<'a> Validator<'a> {
                 );
             }
         }
+    }
+
+    /// `check_schema` against the fields the object's kind declares.
+    fn check_declared(&mut self, object: &Object, path: &[String], fields: &[SourceField]) {
+        let required: Vec<&str> = fields
+            .iter()
+            .filter(|field| field.is_required())
+            .map(|field| field.name)
+            .collect();
+        let allowed: Vec<&str> = fields.iter().map(|field| field.name).collect();
+        self.check_schema(object, path, &required, &allowed, &[]);
+    }
+
+    /// Report `message` as `E_RANGE` at `field` unless its value is `valid`.
+    fn within(&mut self, valid: bool, message: &str, field: &Field, path: &[String]) -> bool {
+        if !valid {
+            self.push(
+                DiagnosticCode::Range,
+                message,
+                Some(field.value.span),
+                path.to_vec(),
+                vec![field.name.clone()],
+            );
+        }
+        valid
     }
 
     fn reject_children(&mut self, object: &Object, path: &[String]) {
@@ -2476,101 +2556,6 @@ impl<'a> Validator<'a> {
             );
         }
         self.reject_children(object, path);
-    }
-
-    /// A named swing map for placements (§9.2).
-    fn validate_groove(&mut self, object: &Object, path: &[String]) {
-        self.check_schema(
-            object,
-            path,
-            &["grid", "ratio"],
-            &["grid", "ratio", "delay", "label"],
-            &[],
-        );
-        if let Some(field) = object.field("delay") {
-            if let Some(delay) = self.quantity(field, &[Unit::S, Unit::Ms], path, "delay") {
-                let limit = BigRational::new(1.into(), 20.into());
-                if delay > limit || delay < -limit {
-                    self.push(
-                        DiagnosticCode::Range,
-                        "groove.delay must be from -50ms to 50ms",
-                        Some(field.value.span),
-                        path.to_vec(),
-                        vec!["delay".into()],
-                    );
-                }
-            }
-        }
-        if let Some(field) = object.field("grid") {
-            if let Some(grid) = self.quantity(field, &[Unit::Q], path, "grid") {
-                if grid <= BigRational::zero() {
-                    self.push(
-                        DiagnosticCode::Range,
-                        "groove.grid must be positive",
-                        Some(field.value.span),
-                        path.to_vec(),
-                        vec!["grid".into()],
-                    );
-                }
-            }
-        }
-        self.validate_unit_range_field(
-            object,
-            path,
-            "ratio",
-            BigRational::new(1.into(), 2.into()),
-            BigRational::new(3.into(), 4.into()),
-        );
-    }
-
-    /// A variation (§9.4): a seed, and how far velocity and timing may move.
-    fn validate_vary(&mut self, object: &Object, path: &[String]) {
-        self.check_schema(
-            object,
-            path,
-            &["seed"],
-            &["seed", "velocity", "timing", "label"],
-            &[],
-        );
-        if let Some(field) = object.field("seed") {
-            let valid = match &field.value.kind {
-                ValueKind::Number(seed) => {
-                    seed.is_integer()
-                        && *seed >= BigRational::one()
-                        && *seed <= BigRational::from_integer(BigInt::from(u32::MAX))
-                }
-                _ => false,
-            };
-            if !valid {
-                self.push(
-                    DiagnosticCode::Range,
-                    "vary.seed must be an integer from 1 to 4294967295",
-                    Some(field.value.span),
-                    path.to_vec(),
-                    vec!["seed".into()],
-                );
-            }
-        }
-        self.validate_unit_range_field(
-            object,
-            path,
-            "velocity",
-            BigRational::zero(),
-            BigRational::new(1.into(), 2.into()),
-        );
-        if let Some(field) = object.field("timing") {
-            if let Some(timing) = self.quantity(field, &[Unit::S, Unit::Ms], path, "timing") {
-                if timing < BigRational::zero() || timing > BigRational::new(1.into(), 20.into()) {
-                    self.push(
-                        DiagnosticCode::Range,
-                        "vary.timing must be from 0ms to 50ms",
-                        Some(field.value.span),
-                        path.to_vec(),
-                        vec!["timing".into()],
-                    );
-                }
-            }
-        }
     }
 
     /// A phrase (§9.3): a span of its pattern and the score-clock curves

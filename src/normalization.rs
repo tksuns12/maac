@@ -24,6 +24,7 @@ use crate::library::LibrarySet;
 use crate::music::{MeterMap, MeterPoint, Pitch};
 use crate::plan::Processor;
 use crate::processor::{declaration_of, Config, ConfigValue, Declaration, Holds};
+use crate::semantic::{declared_fields, DefaultValue};
 use crate::syntax::Unit;
 
 /// Why a document, object or value has no N(A), with a MaaC diagnostic code
@@ -219,6 +220,11 @@ fn leave_out_late_defaults(kind: &str, fields: &mut Map<String, Value>) {
             fields.remove(name);
         }
     }
+    for declared in declared_fields(kind).into_iter().flatten() {
+        if let (true, Some(default)) = (declared.is_late(), declared.default()) {
+            remove_at(fields, declared.name, &default_value(default));
+        }
+    }
     match kind {
         "note" | "chord" => {
             remove_at(fields, "slur", &boolean(false));
@@ -234,11 +240,6 @@ fn leave_out_late_defaults(kind: &str, fields: &mut Map<String, Value>) {
                     args.pop();
                 }
             }
-        }
-        "groove" => remove_at(fields, "delay", &quantity(0, 1, Unit::S)),
-        "vary" => {
-            remove_at(fields, "velocity", &number(0));
-            remove_at(fields, "timing", &quantity(0, 1, Unit::S));
         }
         "voice" => remove_at(fields, "connected", &boolean(false)),
         "node" => {
@@ -355,6 +356,14 @@ impl<'a> NormalizationContext<'a> {
             fields.insert(name.clone(), self.field(kind, name, field, constructors)?);
         }
         let id = path.last().map(String::as_str).unwrap_or_default();
+        // A kind that declares its fields declares their defaults.
+        for declared in declared_fields(kind).into_iter().flatten() {
+            if let Some(default) = declared.default() {
+                fields
+                    .entry(declared.name)
+                    .or_insert_with(|| default_value(default));
+            }
+        }
         match kind {
             "project" => {
                 fields
@@ -384,19 +393,6 @@ impl<'a> NormalizationContext<'a> {
                         .or_insert_with(|| quantity(1, 125, Unit::S));
                     fields.entry("tilt").or_insert_with(|| number(0));
                 }
-            }
-            // A groove sits on the beat.
-            "groove" => {
-                fields
-                    .entry("delay")
-                    .or_insert_with(|| quantity(0, 1, Unit::S));
-            }
-            // A vary moves nothing it does not name.
-            "vary" => {
-                fields.entry("velocity").or_insert_with(|| number(0));
-                fields
-                    .entry("timing")
-                    .or_insert_with(|| quantity(0, 1, Unit::S));
             }
             // A vibrato starts at once, at full depth, centered.
             "vibrato" => {
@@ -890,6 +886,14 @@ pub(crate) fn expand_graph_config_defaults(
         if key.holds == Holds::Zones {
             crate::sample_instrument::expand_zone_defaults(config);
         }
+    }
+}
+
+/// A declared default of a language object, as N(A) writes it.
+fn default_value(default: DefaultValue) -> Value {
+    match default {
+        DefaultValue::Number(value) => number(value),
+        DefaultValue::Quantity(value, unit) => quantity(value, 1, unit),
     }
 }
 
