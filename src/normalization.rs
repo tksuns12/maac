@@ -391,16 +391,6 @@ impl<'a> NormalizationContext<'a> {
                     fields.entry(name).or_insert(value);
                 }
             }
-            // A vibrato starts at once, at full depth, centered.
-            "vibrato" => {
-                fields
-                    .entry("delay")
-                    .or_insert_with(|| quantity(0, 1, Unit::S));
-                fields
-                    .entry("rise")
-                    .or_insert_with(|| quantity(0, 1, Unit::S));
-                fields.entry("shape").or_insert_with(|| symbol("centered"));
-            }
             "hit" => {
                 for (name, value) in [
                     ("velocity", number(1)),
@@ -894,6 +884,7 @@ fn default_value(default: DefaultValue) -> Value {
         DefaultValue::Fraction(numerator, denominator, unit) => {
             quantity(numerator, denominator, unit)
         }
+        DefaultValue::Symbol(value) => symbol(value),
     }
 }
 

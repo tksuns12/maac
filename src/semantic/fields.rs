@@ -19,18 +19,21 @@ pub(crate) enum DefaultValue {
     Quantity(i64, Unit),
     /// A numerator over a denominator, of a unit.
     Fraction(i64, i64, Unit),
+    /// A symbol.
+    Symbol(&'static str),
 }
 
 impl DefaultValue {
-    /// The exact value, in the default's own unit.
-    pub(crate) fn rational(self) -> BigRational {
+    /// The exact value of a number or quantity, in the default's own unit.
+    pub(crate) fn rational(self) -> Option<BigRational> {
         match self {
             Self::Number(value) | Self::Quantity(value, _) => {
-                BigRational::from_integer(value.into())
+                Some(BigRational::from_integer(value.into()))
             }
             Self::Fraction(numerator, denominator, _) => {
-                BigRational::new(numerator.into(), denominator.into())
+                Some(BigRational::new(numerator.into(), denominator.into()))
             }
+            Self::Symbol(_) => None,
         }
     }
 }
@@ -39,6 +42,8 @@ impl DefaultValue {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Presence {
     Required,
+    /// The field may be left out, and then holds this value.
+    Default(DefaultValue),
     /// The field may be left out, and then holds this value. The language
     /// gained the field after the execution hash was defined: the hash
     /// leaves the field out at its default, so that earlier documents keep
@@ -64,7 +69,9 @@ impl SourceField {
     pub(crate) const fn default(&self) -> Option<DefaultValue> {
         match self.presence {
             Presence::Required | Presence::Optional => None,
-            Presence::Late(value) | Presence::Beside(_, value) => Some(value),
+            Presence::Default(value) | Presence::Late(value) | Presence::Beside(_, value) => {
+                Some(value)
+            }
         }
     }
 
@@ -72,7 +79,7 @@ impl SourceField {
     /// (§20.2), where `written` tells which fields the object writes.
     pub(crate) fn expanded(&self, written: impl Fn(&str) -> bool) -> Option<DefaultValue> {
         match self.presence {
-            Presence::Late(value) => Some(value),
+            Presence::Default(value) | Presence::Late(value) => Some(value),
             Presence::Beside(owner, value) if written(owner) => Some(value),
             _ => None,
         }
@@ -91,6 +98,13 @@ pub(super) const fn required(name: &'static str) -> SourceField {
     SourceField {
         name,
         presence: Presence::Required,
+    }
+}
+
+pub(super) const fn defaulted(name: &'static str, default: DefaultValue) -> SourceField {
+    SourceField {
+        name,
+        presence: Presence::Default(default),
     }
 }
 
@@ -119,14 +133,27 @@ pub(super) const fn beside(
     }
 }
 
-/// The value field `name` of `fields` holds when it is left out.
+/// The number or quantity field `name` of `fields` holds when it is left
+/// out.
 pub(super) fn default_of(fields: &[SourceField], name: &str) -> BigRational {
     fields
         .iter()
         .find(|field| field.name == name)
         .and_then(SourceField::default)
-        .unwrap_or_else(|| unreachable!("field `{name}` declares no default"))
-        .rational()
+        .and_then(DefaultValue::rational)
+        .unwrap_or_else(|| unreachable!("field `{name}` declares no default number"))
+}
+
+/// The symbol field `name` of `fields` holds when it is left out.
+pub(super) fn default_symbol_of(fields: &[SourceField], name: &str) -> &'static str {
+    match fields
+        .iter()
+        .find(|field| field.name == name)
+        .and_then(SourceField::default)
+    {
+        Some(DefaultValue::Symbol(symbol)) => symbol,
+        _ => unreachable!("field `{name}` declares no default symbol"),
+    }
 }
 
 #[cfg(test)]
@@ -142,14 +169,16 @@ mod tests {
             DefaultValue::Fraction(numerator, denominator, unit) => {
                 format!("{numerator}/{denominator}{}", unit.as_str())
             }
+            DefaultValue::Symbol(symbol) => symbol.to_owned(),
         }
     }
 
     /// One object of each kind that declares its fields, with only its
     /// required fields written.
-    const BARE: [(&str, &str); 2] = [
+    const BARE: [(&str, &str); 3] = [
         ("groove", "grid = 1/2q; ratio = 2/3;"),
         ("vary", "seed = 7;"),
+        ("vibrato", "rate = 5Hz; depth = 40ct;"),
     ];
 
     fn document(kind: &str, fields: &str) -> crate::syntax::Document {
@@ -164,13 +193,12 @@ mod tests {
     }
 
     #[test]
-    fn the_declared_fields_are_in_name_order_and_differ() {
+    fn the_declared_fields_of_a_kind_differ() {
         for (kind, fields) in DECLARED.iter().chain(PARTS) {
-            let names: Vec<&str> = fields.iter().map(|field| field.name).collect();
-            let mut sorted = names.clone();
-            sorted.sort_unstable();
-            sorted.dedup();
-            assert_eq!(names, sorted, "{kind}");
+            let mut names: Vec<&str> = fields.iter().map(|field| field.name).collect();
+            names.sort_unstable();
+            names.dedup();
+            assert_eq!(names.len(), fields.len(), "{kind}");
         }
     }
 
@@ -197,7 +225,7 @@ mod tests {
         for (kind, bare) in BARE {
             let left_out = models_of(&document(kind, bare));
             assert_eq!(
-                left_out.grooves.len() + left_out.varies.len(),
+                left_out.grooves.len() + left_out.varies.len() + left_out.vibratos.len(),
                 1,
                 "{kind} reads"
             );

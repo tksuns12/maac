@@ -479,3 +479,97 @@ fn materializing_copies_the_vibrato_and_its_cycle() {
     };
     assert_eq!(performed(before), performed(after));
 }
+
+/// Every diagnostic of a source with `vibrato v { ...fields }`, which the
+/// note names.
+fn mistakes(fields: &str) -> Vec<maac::Diagnostic> {
+    let text = source(
+        &format!("curve open {{ clock = normalized; points = [(0, 0, linear), (1, 1, step)]; }}\nvibrato v {{ {fields} }}"),
+        "1q",
+        "vibrato = &v;",
+        "",
+    );
+    compile_bundle_artifact(&SourceBundle::new("main.maac", text.as_str()))
+        .unwrap_err()
+        .into_vec()
+}
+
+/// Each wrong field is reported once, at that field of the vibrato.
+#[test]
+fn a_wrong_vibrato_is_reported_at_its_field() {
+    for (fields, code, message, field) in [
+        (
+            "rate = 0Hz; depth = 40ct;",
+            DiagnosticCode::Range,
+            "vibrato.rate must be positive",
+            "rate",
+        ),
+        (
+            "rate = 5Hz; depth = -40ct;",
+            DiagnosticCode::Range,
+            "vibrato.depth must be positive",
+            "depth",
+        ),
+        (
+            "rate = 5Hz; depth = 40ct; delay = -1ms;",
+            DiagnosticCode::Range,
+            "vibrato.delay must be nonnegative",
+            "delay",
+        ),
+        (
+            "rate = 5Hz; depth = 40ct; rise = -1ms;",
+            DiagnosticCode::Range,
+            "vibrato.rise must be nonnegative",
+            "rise",
+        ),
+        (
+            "rate = 5Hz; depth = 40ct; shape = wobble;",
+            DiagnosticCode::Range,
+            "vibrato.shape must be up, down, centered or a cycle curve",
+            "shape",
+        ),
+        (
+            "rate = 5Hz; depth = 40ct; shape = &open;",
+            DiagnosticCode::Range,
+            "cycle curve `open` must end on the value it starts with",
+            "shape",
+        ),
+        (
+            "rate = 5ct; depth = 40ct;",
+            DiagnosticCode::Unit,
+            "rate requires Hz or kHz",
+            "rate",
+        ),
+        (
+            "depth = 40ct;",
+            DiagnosticCode::Range,
+            "vibrato requires field `rate`",
+            "rate",
+        ),
+        (
+            "rate = 5Hz; depth = 40ct; wobble = 1;",
+            DiagnosticCode::UnknownField,
+            "unknown field `wobble` on vibrato",
+            "wobble",
+        ),
+    ] {
+        let diagnostics = mistakes(fields);
+        let [diagnostic] = diagnostics.as_slice() else {
+            panic!("{fields}: expected one diagnostic, got {diagnostics:#?}");
+        };
+        assert_eq!(diagnostic.code, code, "{fields}");
+        assert_eq!(diagnostic.message, message, "{fields}");
+        assert_eq!(diagnostic.object_path, ["v"], "{fields}");
+        assert_eq!(diagnostic.field_path, [field], "{fields}");
+    }
+}
+
+#[test]
+fn every_mistake_in_a_vibrato_is_reported_once() {
+    let fields: Vec<String> =
+        mistakes("rate = 0Hz; depth = -1ct; delay = -1ms; rise = 1q; shape = wobble;")
+            .iter()
+            .map(|diagnostic| diagnostic.field_path[0].clone())
+            .collect();
+    assert_eq!(fields, ["rate", "depth", "delay", "rise", "shape"]);
+}

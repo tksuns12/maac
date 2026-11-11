@@ -38,7 +38,7 @@ use crate::plan_artifact::PlanArtifact;
 use crate::plan_v4::{NodeV4, PlanV4, ProcessorV4};
 use crate::plan_v5::{AudioClip, AudioFadeShape, NodeV5, PlanV5, ProcessorV5};
 use crate::plan_v6::{ClipEntry, NodeV6, PlanV6, ProcessorV6, WarpAnchor, WarpClip};
-use crate::semantic::{Groove, InstrumentNodeDescriptor, Models, Strum, Vary};
+use crate::semantic::{Cycle, Groove, InstrumentNodeDescriptor, Models, Strum, Vary};
 use crate::syntax::{Document, Field, Object, Reference, Unit, Value, ValueKind};
 
 /// Maximum number of emitted note events in a resolved plan.
@@ -762,28 +762,28 @@ struct VibratoDef {
 impl VibratoDef {
     /// The built-in cycles: triangles that rise from the pitch, fall from
     /// it, or swing half the depth either side.
-    fn builtin_cycle(shape: &str) -> Option<Vec<(Rational, Rational, Interpolation)>> {
+    fn builtin_cycle(cycle: &Cycle) -> Option<Vec<(Rational, Rational, Interpolation)>> {
         let r = |n: i64, d: i64| Rational::new(n.into(), d.into());
         let (linear, step) = (Interpolation::Linear, Interpolation::Step);
-        Some(match shape {
-            "up" => vec![
+        Some(match cycle {
+            Cycle::Up => vec![
                 (r(0, 1), r(0, 1), linear),
                 (r(1, 2), r(1, 1), linear),
                 (r(1, 1), r(0, 1), step),
             ],
-            "down" => vec![
+            Cycle::Down => vec![
                 (r(0, 1), r(0, 1), linear),
                 (r(1, 2), r(-1, 1), linear),
                 (r(1, 1), r(0, 1), step),
             ],
-            "centered" => vec![
+            Cycle::Centered => vec![
                 (r(0, 1), r(0, 1), linear),
                 (r(1, 4), r(1, 2), linear),
                 (r(1, 2), r(0, 1), linear),
                 (r(3, 4), r(-1, 2), linear),
                 (r(1, 1), r(0, 1), step),
             ],
-            _ => return None,
+            Cycle::Curve(_) => return None,
         })
     }
 
@@ -1293,7 +1293,6 @@ impl<'a> Compiler<'a> {
                 "voicing" => &["pitches"][..],
                 "harmony" => &["length", "chords"][..],
                 "voicings" => &["chords"][..],
-                "vibrato" => &["rate", "depth", "delay", "rise", "shape"][..],
                 "curve" => &["clock", "points"][..],
                 "automation" => &["target", "curve", "at"][..],
                 "node"
@@ -4259,6 +4258,8 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
+    /// Lower each vibrato semantic analysis read to the points of its
+    /// cycle. A vibrato that was not read is an error.
     fn read_vibratos(&mut self) -> CResult<()> {
         for object in self
             .document
@@ -4266,74 +4267,26 @@ impl<'a> Compiler<'a> {
             .values()
             .filter(|object| object.kind == "vibrato")
         {
-            let positive = |name: &str, unit: Unit| -> CResult<Rational> {
-                let field = self.field(object, name)?;
-                let value = self.quantity(&field.value, unit, object, Some(field))?;
-                if !value.is_positive() {
-                    return Err(path_diagnostic(
-                        DiagnosticCode::Range,
-                        format!("vibrato.{name} must be positive"),
-                        object,
-                        Some(field),
-                    ));
-                }
-                Ok(value)
-            };
-            let rate = positive("rate", Unit::Hz)?;
-            let depth = positive("depth", Unit::Ct)?;
-            let nonnegative = |name: &str| -> CResult<Rational> {
-                let Some(field) = object.field(name) else {
-                    return Ok(Rational::zero());
-                };
-                let value = self.seconds_value(&field.value, object, Some(field))?;
-                if value.is_negative() {
-                    return Err(path_diagnostic(
-                        DiagnosticCode::Range,
-                        format!("vibrato.{name} must be nonnegative"),
-                        object,
-                        Some(field),
-                    ));
-                }
-                Ok(value)
-            };
-            let delay = nonnegative("delay")?;
-            let rise = nonnegative("rise")?;
-            let cycle = match object.field("shape") {
-                None => VibratoDef::builtin_cycle("centered"),
-                Some(field) => match field.value.as_symbol() {
-                    Some(shape) => VibratoDef::builtin_cycle(shape),
-                    None => {
-                        let id = self.one_reference(&field.value, object, Some(field))?;
-                        self.curves
-                            .get(&id)
-                            .filter(|curve| {
-                                curve.clock == "normalized"
-                                    && curve.points.first().map(|p| &p.1)
-                                        == curve.points.last().map(|p| &p.1)
-                                    && curve
-                                        .points
-                                        .iter()
-                                        .all(|p| p.2 != Interpolation::Exponential)
-                            })
-                            .map(|curve| curve.points.clone())
-                    }
-                },
-            }
-            .ok_or_else(|| {
-                path_diagnostic(
+            let vibrato = self.models.vibratos.get(&object.id);
+            let cycle = vibrato.and_then(|vibrato| match &vibrato.cycle {
+                Cycle::Curve(curve) => self.curves.get(curve).map(|curve| curve.points.clone()),
+                built_in => VibratoDef::builtin_cycle(built_in),
+            });
+            let (Some(vibrato), Some(cycle)) = (vibrato, cycle) else {
+                return Err(path_diagnostic(
                     DiagnosticCode::Range,
-                    "vibrato.shape must be up, down, centered or a cycle curve",
+                    format!("vibrato `{}` could not be read", object.id),
                     object,
-                    object.field("shape"),
-                )
-            })?;
+                    None,
+                ));
+            };
             self.vibratos.insert(
                 object.id.clone(),
                 VibratoDef {
-                    rate,
-                    depth,
-                    delay,
-                    rise,
+                    rate: vibrato.rate.clone(),
+                    depth: vibrato.depth.clone(),
+                    delay: vibrato.delay.clone(),
+                    rise: vibrato.rise.clone(),
                     cycle,
                 },
             );

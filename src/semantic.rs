@@ -11,11 +11,13 @@ mod fields;
 mod groove;
 mod strum;
 mod vary;
+mod vibrato;
 
 pub(crate) use fields::{DefaultValue, SourceField};
 pub(crate) use groove::Groove;
 pub(crate) use strum::Strum;
 pub(crate) use vary::Vary;
+pub(crate) use vibrato::{Cycle, Vibrato};
 
 use crate::plan_v7::{ControlClock, LfoConfig, LfoWave, ModulationV7, NodeV7, ProcessorV7};
 use num_integer::Integer;
@@ -31,7 +33,11 @@ pub(crate) fn declared_fields(kind: &str) -> Option<&'static [SourceField]> {
 }
 
 /// Each object kind that declares its fields, with them.
-const DECLARED: &[(&str, &[SourceField])] = &[("groove", groove::FIELDS), ("vary", vary::FIELDS)];
+const DECLARED: &[(&str, &[SourceField])] = &[
+    ("groove", groove::FIELDS),
+    ("vary", vary::FIELDS),
+    ("vibrato", vibrato::FIELDS),
+];
 
 /// The fields of the object kind `kind` that a module declares, for a kind
 /// whose other fields are not declared yet.
@@ -57,6 +63,8 @@ pub(crate) struct Models {
     /// The strum of each strummed chord, by the chord's object path: its
     /// pattern's ID and its own.
     pub(crate) strums: BTreeMap<Vec<String>, Strum>,
+    /// Each `vibrato`, by its ID.
+    pub(crate) vibratos: BTreeMap<String, Vibrato>,
 }
 
 /// The models of a document that is not checked as a whole, for a test of
@@ -70,6 +78,7 @@ pub(crate) fn models_of(document: &Document) -> Models {
         match object.kind.as_str() {
             "groove" => validator.validate_groove(object, &path),
             "vary" => validator.validate_vary(object, &path),
+            "vibrato" => validator.validate_vibrato(object, &path),
             "pattern" => {
                 for chord in object.children.values().filter(|c| c.kind == "chord") {
                     validator.validate_strum(chord, &child_path(&path, &chord.id));
@@ -2258,79 +2267,12 @@ impl<'a> Validator<'a> {
         }
     }
 
-    /// A `vibrato` (§8.1): a positive rate and depth, a nonnegative delay and
-    /// rise, and the waveform of one cycle.
-    fn validate_vibrato(&mut self, object: &Object, path: &[String]) {
-        self.check_schema(
-            object,
-            path,
-            &["rate", "depth"],
-            &["rate", "depth", "delay", "rise", "shape", "label"],
-            &[],
-        );
-        for (name, units) in [
-            ("rate", &[Unit::Hz, Unit::KHz][..]),
-            ("depth", &[Unit::Ct][..]),
-        ] {
-            let Some(field) = object.field(name) else {
-                continue;
-            };
-            if self
-                .quantity(field, units, path, name)
-                .is_some_and(|value| value <= BigRational::zero())
-            {
-                self.push(
-                    DiagnosticCode::Range,
-                    format!("vibrato.{name} must be positive"),
-                    Some(field.value.span),
-                    path.to_vec(),
-                    vec![name.into()],
-                );
-            }
-        }
-        for name in ["delay", "rise"] {
-            let Some(field) = object.field(name) else {
-                continue;
-            };
-            if self
-                .quantity(field, &[Unit::S, Unit::Ms], path, name)
-                .is_some_and(|value| value < BigRational::zero())
-            {
-                self.push(
-                    DiagnosticCode::Range,
-                    format!("vibrato.{name} must be nonnegative"),
-                    Some(field.value.span),
-                    path.to_vec(),
-                    vec![name.into()],
-                );
-            }
-        }
-        if let Some(field) = object.field("shape") {
-            match field.value.as_symbol() {
-                Some("up" | "down" | "centered") => {}
-                Some(_) => self.push(
-                    DiagnosticCode::Range,
-                    "vibrato.shape must be up, down, centered or a cycle curve",
-                    Some(field.value.span),
-                    path.to_vec(),
-                    vec!["shape".into()],
-                ),
-                None => {
-                    if let Some(ReferenceTarget::Object { id, .. }) =
-                        self.expect_object_ref(field, "shape", &["curve"], path)
-                    {
-                        self.validate_cycle(&id, field, path);
-                    }
-                }
-            }
-        }
-    }
-
     /// A vibrato's cycle curve: normalized, dimensionless, `step` or `linear`,
-    /// and ending on the value it starts with so that cycles join.
-    fn validate_cycle(&mut self, id: &str, field: &Field, path: &[String]) {
+    /// and ending on the value it starts with so that cycles join. Returns
+    /// whether curve `id` is one.
+    fn validate_cycle(&mut self, id: &str, field: &Field, path: &[String]) -> bool {
         let Some(curve) = self.document.object(id) else {
-            return;
+            return false;
         };
         let clock = curve.field("clock").and_then(|f| f.value.as_symbol());
         let points: Vec<Value> = match curve.field("points").map(|f| &f.value.kind) {
@@ -2374,6 +2316,7 @@ impl<'a> Validator<'a> {
                 format!("cycle curve `{id}` must end on the value it starts with"),
             ));
         }
+        let cycle = problems.is_empty();
         for (code, message) in problems {
             self.push(
                 code,
@@ -2383,6 +2326,7 @@ impl<'a> Validator<'a> {
                 vec!["shape".into()],
             );
         }
+        cycle
     }
 
     /// The nonnegative onset and positive gate shared by notes and chords.
