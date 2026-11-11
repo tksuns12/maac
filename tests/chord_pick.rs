@@ -145,6 +145,31 @@ voicings strings { chords = [("G", &g), ("D", &d)]; }"#;
     );
 }
 
+/// A chord's ID is its own only within its pattern, and so is a use's.
+#[test]
+fn chords_and_uses_that_share_an_id_in_two_patterns_keep_their_own_fields() {
+    let patterns = r#"pattern low { length = 1q; chord c { at = 0q; dur = 1q; bottom = 1; } }
+pattern high { length = 1q; chord c { at = 0q; dur = 1q; top = 1; } }
+pattern first { length = 2q; use u { pattern = &low; at = 0q; voicing = &g; } use v { pattern = &high; at = 1q; voicing = &g; } }
+pattern second { length = 2q; use u { pattern = &low; at = 0q; voicing = &d; } use v { pattern = &high; at = 1q; } }"#;
+    let bar = r#"  use one { pattern = &first; at = 0q; }
+  use two { pattern = &second; at = 2q; }"#;
+    let pitches: Vec<(String, u32)> = played(&source(patterns, bar, "voicing = &g;"))
+        .into_iter()
+        .map(|(address, _, hz)| (address, hz))
+        .collect();
+    // G2 and G4 under `first`; D3 from `second`'s own `u`, and G4 from the
+    // placement where its `v` supplies nothing.
+    let expected = [
+        ("main/0/one/0/u/0/c.0", 98),
+        ("main/0/one/0/v/0/c.0", 392),
+        ("main/0/two/0/u/0/c.0", 147),
+        ("main/0/two/0/v/0/c.0", 392),
+    ]
+    .map(|(address, hz)| (address.to_owned(), hz));
+    assert_eq!(pitches, expected);
+}
+
 #[test]
 fn malformed_picks_are_rejected() {
     let chord = |fields: &str| {

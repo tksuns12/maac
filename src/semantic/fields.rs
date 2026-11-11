@@ -175,24 +175,44 @@ mod tests {
 
     /// One object of each kind that declares its fields, with only its
     /// required fields written.
-    const BARE: [(&str, &str); 4] = [
+    const BARE: [(&str, &str); 7] = [
         ("groove", "grid = 1/2q; ratio = 2/3;"),
+        ("harmony", r#"length = 4q; chords = [(0q, "G")];"#),
         ("phrase", "at = 0q; length = 4q; dynamics = &arc;"),
         ("vary", "seed = 7;"),
         ("vibrato", "rate = 5Hz; depth = 40ct;"),
+        ("voicing", "pitches = [G2, D3];"),
+        ("voicings", r#"chords = [("G", &open)];"#),
     ];
 
-    fn document(kind: &str, fields: &str) -> crate::syntax::Document {
+    /// The models of object `one` of kind `kind` with `fields`.
+    fn models(kind: &str, fields: &str) -> Models {
         let object = format!("{kind} one {{ {fields} }}");
         // A phrase is a child of a pattern.
         let object = match kind {
             "phrase" => format!("pattern bar {{ length = 4q; {object} }}"),
             _ => object,
         };
-        crate::parse(&format!(
-            "maac 1; curve arc {{ clock = score; points = [(0q, 1, step)]; }} {object}"
+        let document = crate::parse(&format!(
+            "maac 1; curve arc {{ clock = score; points = [(0q, 1, step)]; }} \
+             voicing open {{ pitches = [G2, D3]; }} {object}"
         ))
-        .unwrap()
+        .unwrap();
+        let mut models = models_of(&document);
+        // The voicing is there for a `voicings` to name.
+        models.voicings.remove("open");
+        models
+    }
+
+    /// How many models `models` holds.
+    fn count(models: &Models) -> usize {
+        models.grooves.len()
+            + models.harmonies.len()
+            + models.phrases.len()
+            + models.varies.len()
+            + models.vibratos.len()
+            + models.voicings.len()
+            + models.voicing_sets.len()
     }
 
     #[test]
@@ -233,26 +253,14 @@ mod tests {
     #[test]
     fn a_field_left_out_reads_as_its_declared_default() {
         for (kind, bare) in BARE {
-            let left_out = models_of(&document(kind, bare));
-            assert_eq!(
-                left_out.grooves.len()
-                    + left_out.phrases.len()
-                    + left_out.varies.len()
-                    + left_out.vibratos.len(),
-                1,
-                "{kind} reads"
-            );
+            let left_out = models(kind, bare);
+            assert_eq!(count(&left_out), 1, "{kind} reads");
             for field in declared_fields(kind).unwrap() {
                 let Some(default) = field.default() else {
                     continue;
                 };
                 let source = format!("{bare} {} = {};", field.name, written(default));
-                assert_eq!(
-                    models_of(&document(kind, &source)),
-                    left_out,
-                    "{kind}.{}",
-                    field.name
-                );
+                assert_eq!(models(kind, &source), left_out, "{kind}.{}", field.name);
             }
         }
     }
@@ -271,7 +279,7 @@ mod tests {
                     .collect();
                 assert_ne!(source, bare, "{kind}.{} is written in BARE", field.name);
                 assert_eq!(
-                    models_of(&document(kind, &source)),
+                    models(kind, &source),
                     Models::default(),
                     "{kind} without {}",
                     field.name

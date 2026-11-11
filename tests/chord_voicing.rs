@@ -135,6 +135,33 @@ fn malformed_voicings_are_rejected() {
     );
 }
 
+/// A wrong pitch in a voicing is reported at the voicing, whether a chord
+/// names the voicing, a placement supplies it, or nothing plays it.
+#[test]
+fn a_wrong_pitch_in_a_voicing_is_reported_at_the_voicing() {
+    let wrong = "voicing d { pitches = [D3, 1q, D4]; }";
+    for (chord, place) in [
+        ("voicing = &d;", ""),
+        ("", "voicing = &d;"),
+        ("voicing = &g;", ""),
+    ] {
+        let text = source(
+            &format!("  chord c {{ at = 0q; dur = 1q; {chord} }}"),
+            place,
+        )
+        .replace("voicing d { pitches = [D3, A3, D4, F#4]; }", wrong);
+        let diagnostics = compile_bundle_artifact(&SourceBundle::new("main.maac", text.as_str()))
+            .unwrap_err()
+            .into_vec();
+        let [diagnostic] = diagnostics.as_slice() else {
+            panic!("{chord} {place}: expected one diagnostic, got {diagnostics:#?}");
+        };
+        assert_eq!(diagnostic.code, DiagnosticCode::Unit, "{chord} {place}");
+        assert_eq!(diagnostic.object_path, ["d"], "{chord} {place}");
+        assert_eq!(diagnostic.field_path, ["pitches"], "{chord} {place}");
+    }
+}
+
 #[test]
 fn spelled_voicing_pitches_normalize_like_note_pitches() {
     let identity = |pitches: &str| {

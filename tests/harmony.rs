@@ -240,6 +240,246 @@ fn malformed_harmonies_and_supplies_are_rejected() {
     );
 }
 
+/// What is reported of a wrong `object`, `bad`: each diagnostic's code,
+/// message and field path.
+fn mistakes(object: &str, place: &str) -> Vec<(DiagnosticCode, String, Vec<String>)> {
+    compiled(&source(object, BAR, place))
+        .unwrap_err()
+        .into_iter()
+        .map(|diagnostic| {
+            assert_eq!(diagnostic.object_path, ["bad"], "{}", diagnostic.message);
+            (diagnostic.code, diagnostic.message, diagnostic.field_path)
+        })
+        .collect()
+}
+
+/// A mistake in a harmony is reported once, at the field or the entry of
+/// `chords` it is in.
+#[test]
+fn a_wrong_harmony_is_reported_where_it_is_wrong() {
+    use DiagnosticCode::{Range, Unit, UnknownField};
+    for (fields, code, message, at) in [
+        (
+            r#"chords = [(0q, "D")];"#,
+            Range,
+            "harmony requires field `length`",
+            &["length"][..],
+        ),
+        (
+            "length = 8q;",
+            Range,
+            "harmony requires field `chords`",
+            &["chords"],
+        ),
+        (
+            r#"length = 0q; chords = [(0q, "D")];"#,
+            Range,
+            "harmony.length must be positive",
+            &["length"],
+        ),
+        (
+            r#"length = 8s; chords = [(0q, "D")];"#,
+            Unit,
+            "length requires q",
+            &["length"],
+        ),
+        (
+            "length = 8q; chords = [];",
+            Range,
+            "chords must be a nonempty list of (position, \"name\") pairs",
+            &["chords"],
+        ),
+        (
+            r#"length = 8q; chords = (0q, "D");"#,
+            Unit,
+            "chords must be a nonempty list of (position, \"name\") pairs",
+            &["chords"],
+        ),
+        (
+            r#"length = 8q; chords = [(1q, "D")];"#,
+            Range,
+            "the first harmony position must be 0q",
+            &["chords", "0"],
+        ),
+        (
+            r#"length = 8q; chords = [(0q, "D"), (4q, "A"), (4q, "G")];"#,
+            Range,
+            "harmony positions must strictly increase",
+            &["chords", "2"],
+        ),
+        (
+            r#"length = 8q; chords = [(0q, "D"), (8q, "A")];"#,
+            Range,
+            "harmony positions must be under its length",
+            &["chords", "1"],
+        ),
+        (
+            r#"length = 8q; chords = [(0q, "D"), (4s, "A")];"#,
+            Unit,
+            "harmony position requires q",
+            &["chords", "1"],
+        ),
+        (
+            r#"length = 8q; chords = [(0q, "D"), (4q, "")];"#,
+            Range,
+            "a harmony chord name must be a nonempty string",
+            &["chords", "1"],
+        ),
+        (
+            r#"length = 8q; chords = [(0q, "D"), (4q, A)];"#,
+            Range,
+            "a harmony chord name must be a nonempty string",
+            &["chords", "1"],
+        ),
+        (
+            r#"length = 8q; chords = [(0q, "D"), (4q, 7)];"#,
+            Unit,
+            "a harmony chord name must be a nonempty string",
+            &["chords", "1"],
+        ),
+        (
+            r#"length = 8q; chords = [(0q, "D", step)];"#,
+            Range,
+            "harmony chords are (position, \"name\") pairs",
+            &["chords", "0"],
+        ),
+        (
+            r#"length = 8q; chords = [(0q, "D")]; key = C4;"#,
+            UnknownField,
+            "unknown field `key` on harmony",
+            &["key"],
+        ),
+    ] {
+        let at: Vec<String> = at.iter().map(|part| (*part).to_owned()).collect();
+        assert_eq!(
+            mistakes(
+                &format!("harmony bad {{ {fields} }}"),
+                "harmony = &bad; voicings = &low;"
+            ),
+            [(code, message.to_owned(), at)],
+            "{fields}"
+        );
+    }
+}
+
+/// A mistake in a part's voicings is reported once, at the field or the
+/// entry of `chords` it is in.
+#[test]
+fn wrong_voicings_are_reported_where_they_are_wrong() {
+    use DiagnosticCode::{Range, Reference, Unit, UnknownField};
+    for (fields, code, message, at) in [
+        (
+            "",
+            Range,
+            "voicings requires field `chords`",
+            &["chords"][..],
+        ),
+        (
+            "chords = [];",
+            Range,
+            "chords must be a nonempty list of (\"name\", &voicing) pairs",
+            &["chords"],
+        ),
+        (
+            "chords = &d;",
+            Unit,
+            "chords must be a nonempty list of (\"name\", &voicing) pairs",
+            &["chords"],
+        ),
+        (
+            r#"chords = [("D", &d), ("A", &a), ("D", &g)];"#,
+            Range,
+            "voicings name \"D\" twice",
+            &["chords", "2"],
+        ),
+        (
+            r#"chords = [("D", &d), ("", &a)];"#,
+            Range,
+            "a voicings chord name must be a nonempty string",
+            &["chords", "1"],
+        ),
+        (
+            r#"chords = [("D", &d), (7, &a)];"#,
+            Unit,
+            "a voicings chord name must be a nonempty string",
+            &["chords", "1"],
+        ),
+        (
+            r#"chords = [("D", &four)];"#,
+            Reference,
+            "each voicings entry must reference a voicing",
+            &["chords", "0"],
+        ),
+        (
+            r#"chords = [("D", &d), ("A", &nowhere)];"#,
+            Reference,
+            "each voicings entry must reference a voicing",
+            &["chords", "1"],
+        ),
+        (
+            r#"chords = [("D", &d), ("A", "a")];"#,
+            Reference,
+            "each voicings entry must reference a voicing",
+            &["chords", "1"],
+        ),
+        (
+            r#"chords = [("D", &d, &a)];"#,
+            Range,
+            "voicings chords are (\"name\", &voicing) pairs",
+            &["chords", "0"],
+        ),
+        (
+            r#"chords = [("D", &d), ("A", &a), ("Bm", &bm), ("G", &g)]; length = 4q;"#,
+            UnknownField,
+            "unknown field `length` on voicings",
+            &["length"],
+        ),
+    ] {
+        let at: Vec<String> = at.iter().map(|part| (*part).to_owned()).collect();
+        assert_eq!(
+            mistakes(
+                &format!("voicings bad {{ {fields} }}"),
+                "harmony = &four; voicings = &bad;"
+            ),
+            [(code, message.to_owned(), at)],
+            "{fields}"
+        );
+    }
+}
+
+/// One compile reports every mistake in a harmony, and those in a harmony
+/// that nothing supplies.
+#[test]
+fn every_mistake_in_a_harmony_is_reported() {
+    let object = r#"harmony bad { length = 0q; chords = [(1q, ""), (1q, "A"), (0q, "G", step)]; }"#;
+    for place in ["harmony = &bad; voicings = &low;", "voicing = &d;"] {
+        let found: Vec<(String, Vec<String>)> = mistakes(object, place)
+            .into_iter()
+            .map(|(_, message, at)| (message, at))
+            .collect();
+        let expected = [
+            ("harmony.length must be positive", &["length"][..]),
+            (
+                "a harmony chord name must be a nonempty string",
+                &["chords", "0"],
+            ),
+            ("the first harmony position must be 0q", &["chords", "0"]),
+            ("harmony positions must strictly increase", &["chords", "1"]),
+            (
+                "harmony chords are (position, \"name\") pairs",
+                &["chords", "2"],
+            ),
+        ]
+        .map(|(message, at)| {
+            (
+                message.to_owned(),
+                at.iter().map(|part| (*part).to_owned()).collect::<Vec<_>>(),
+            )
+        });
+        assert_eq!(found, expected, "{place}");
+    }
+}
+
 #[test]
 fn an_unmapped_chord_names_everything_involved() {
     let text = source(

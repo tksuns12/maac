@@ -38,7 +38,9 @@ use crate::plan_artifact::PlanArtifact;
 use crate::plan_v4::{NodeV4, PlanV4, ProcessorV4};
 use crate::plan_v5::{AudioClip, AudioFadeShape, NodeV5, PlanV5, ProcessorV5};
 use crate::plan_v6::{ClipEntry, NodeV6, PlanV6, ProcessorV6, WarpAnchor, WarpClip};
-use crate::semantic::{Cycle, Groove, InstrumentNodeDescriptor, Models, Strum, Vary};
+use crate::semantic::{
+    Cycle, Groove, InstrumentNodeDescriptor, Keep, Models, Played, Source, Strum, Supply, Vary,
+};
 use crate::syntax::{Document, Field, Object, Reference, Unit, Value, ValueKind};
 
 /// Maximum number of emitted note events in a resolved plan.
@@ -115,6 +117,17 @@ fn path_diagnostic(
     let mut diagnostics = Diagnostics::new();
     diagnostics.push(diagnostic);
     diagnostics
+}
+
+/// The error for `object` when semantic analysis kept no model of it. That
+/// analysis reports why and stops the compile, so this is not seen.
+fn unread(object: &Object) -> Diagnostics {
+    path_diagnostic(
+        DiagnosticCode::Range,
+        format!("{} `{}` could not be read", object.kind, object.id),
+        object,
+        None,
+    )
 }
 
 fn plan_error(error: crate::plan::PlanError) -> Diagnostics {
@@ -527,14 +540,6 @@ struct PhraseDef {
     timbre: Option<String>,
 }
 
-/// What a use or placement supplies to chords without pitches (§8.2): one
-/// voicing, or a harmony that the part's voicings voice.
-#[derive(Clone, Debug)]
-enum Supply {
-    Voicing(String),
-    Harmony { harmony: String, voicings: String },
-}
-
 /// What a chord without pitches plays, and what supplied it. A harmony's
 /// chord is the one at the chord's position in the supplier's pattern: its
 /// score position less `origin`, over `scale`.
@@ -544,14 +549,6 @@ struct SuppliedVoicing {
     by: String,
     origin: Rational,
     scale: Rational,
-}
-
-/// A harmony (§8.2): a chord name from each position, repeating every
-/// `length`.
-#[derive(Clone, Debug)]
-struct HarmonyDef {
-    length: Rational,
-    chords: Vec<(Rational, String)>,
 }
 
 #[derive(Clone, Debug)]
@@ -933,9 +930,6 @@ struct Compiler<'a> {
     connections: Vec<Connection>,
     curves: BTreeMap<String, CurveDef>,
     vibratos: BTreeMap<String, VibratoDef>,
-    harmonies: BTreeMap<String, HarmonyDef>,
-    /// Each part's voicings: chord name to voicing ID.
-    voicing_sets: BTreeMap<String, BTreeMap<String, String>>,
     automations: Vec<AutomationV3>,
     /// Each automation's source, by its plan ID.
     automation_sources: BTreeMap<String, AutomationSource>,
@@ -999,8 +993,6 @@ impl<'a> Compiler<'a> {
             connections: Vec::new(),
             curves: BTreeMap::new(),
             vibratos: BTreeMap::new(),
-            harmonies: BTreeMap::new(),
-            voicing_sets: BTreeMap::new(),
             automations: Vec::new(),
             automation_sources: BTreeMap::new(),
             allow_ramps: false,
@@ -1290,9 +1282,6 @@ impl<'a> Compiler<'a> {
                     "harmony",
                     "voicings",
                 ][..],
-                "voicing" => &["pitches"][..],
-                "harmony" => &["length", "chords"][..],
-                "voicings" => &["chords"][..],
                 "curve" => &["clock", "points"][..],
                 "automation" => &["target", "curve", "at"][..],
                 "node"
@@ -2541,21 +2530,23 @@ impl<'a> Compiler<'a> {
                 "slide",
             ],
         )?;
-        let (pitches_field, pitches) = match (object.field("pitches"), object.field("voicing")) {
-            (Some(_), Some(field)) => {
-                return Err(path_diagnostic(
-                    DiagnosticCode::Range,
-                    "a chord names its pitches with `pitches` or `voicing`, not both",
-                    object,
-                    Some(field),
-                ))
-            }
-            (Some(field), None) => (field, self.pitch_list(object, field)?),
-            (None, Some(field)) => self.voicing_pitches(object, field)?,
-            (None, None) => return Ok(None),
+        let played = self.played(pattern, object)?;
+        let (pitches_field, pitches) = match &played.source {
+            Source::Own => self.pitches_of(object)?,
+            Source::Voicing(id) => self.voicing_pitches(id)?,
+            Source::Supplied => return Ok(None),
         };
-        self.lower_chord(pattern, object, pitches_field, pitches)
+        self.lower_chord(pattern, object, played, pitches_field, pitches)
             .map(Some)
+    }
+
+    /// What semantic analysis read of the pitches that chord `object` of
+    /// pattern `pattern` plays.
+    fn played(&self, pattern: &str, object: &Object) -> CResult<&Played> {
+        self.models
+            .played
+            .get([pattern.to_owned(), object.id.clone()].as_slice())
+            .ok_or_else(|| unread(object))
     }
 
     /// Lower a chord of pattern `pattern` without pitches with the voicing
@@ -2585,8 +2576,11 @@ impl<'a> Compiler<'a> {
             Supply::Voicing(id) => (id.clone(), format!("voicing `{id}` from {}", supplied.by)),
             Supply::Harmony { harmony, voicings } => {
                 let name = self.harmony_chord_at(object, harmony, supplied, origin, scale)?;
-                let set = &self.voicing_sets[voicings];
-                let Some(id) = set.get(&name) else {
+                let set = match self.models.voicing_sets.get(voicings) {
+                    Some(voicings) => &voicings.chords,
+                    None => return Err(unread(self.object(voicings)?)),
+                };
+                let Some(id) = set.get(name) else {
                     let mapped: Vec<String> =
                         set.keys().map(|name| format!("\"{name}\"")).collect();
                     return Err(path_diagnostic(
@@ -2610,10 +2604,9 @@ impl<'a> Compiler<'a> {
                 )
             }
         };
-        let voicing = self.object(&voicing_id)?;
-        let pitches_field = self.field(voicing, "pitches")?;
-        let pitches = self.pitch_list(voicing, pitches_field)?;
-        self.lower_chord(pattern, object, pitches_field, pitches)
+        let played = self.played(pattern, object)?;
+        let (pitches_field, pitches) = self.voicing_pitches(&voicing_id)?;
+        self.lower_chord(pattern, object, played, pitches_field, pitches)
             .map_err(|diagnostics| {
                 let mut named = Diagnostics::new();
                 for mut diagnostic in diagnostics.into_vec() {
@@ -2634,7 +2627,7 @@ impl<'a> Compiler<'a> {
         supplied: &SuppliedVoicing,
         origin: &Rational,
         scale: &Rational,
-    ) -> CResult<String> {
+    ) -> CResult<&str> {
         let span = Some(object.span);
         let at_field = self.field(object, "at")?;
         let at = self.q_value(&at_field.value, object, Some(at_field), false)?;
@@ -2644,114 +2637,57 @@ impl<'a> Compiler<'a> {
             &supplied.scale,
             span,
         )?;
-        let def = &self.harmonies[harmony];
+        let Some(def) = self.models.harmonies.get(harmony) else {
+            return Err(unread(self.object(harmony)?));
+        };
         let cycles = checked_div(&position, &def.length, span)?.floor();
         let position = checked_sub(&position, &checked_mul(&cycles, &def.length, span)?, span)?;
-        Ok(def
-            .chords
-            .iter()
-            .rev()
-            .find(|(start, _)| start <= &position)
-            .map(|(_, name)| name.clone())
-            .expect("a harmony starts at 0q"))
+        Ok(def.chord_within(&position))
     }
 
-    /// `field`'s nonempty list of pitches.
-    fn pitch_list<'v>(&self, object: &Object, field: &'v Field) -> CResult<&'v [Value]> {
+    /// The `pitches` of `object`, a chord or a voicing that semantic
+    /// analysis read.
+    fn pitches_of<'v>(&self, object: &'v Object) -> CResult<(&'v Field, &'v [Value])> {
+        let field = self.field(object, "pitches")?;
         match &field.value.kind {
-            ValueKind::List(items) if !items.is_empty() => Ok(items),
-            _ => Err(path_diagnostic(
+            ValueKind::List(items) => Ok((field, items)),
+            _ => Err(unread(object)),
+        }
+    }
+
+    /// The pitches of the voicing with ID `id` (§8.2).
+    fn voicing_pitches(&self, id: &str) -> CResult<(&Field, &[Value])> {
+        let voicing = self.object(id)?;
+        if !self.models.voicings.contains_key(id) {
+            return Err(unread(voicing));
+        }
+        self.pitches_of(voicing)
+    }
+
+    /// The pitches chord `object` keeps of `pitches`. A `top`, `bottom` or
+    /// `pick` that reaches past a supplied voicing is found here.
+    fn select_pitches<'v>(
+        &self,
+        object: &Object,
+        keep: &Keep,
+        pitches: &'v [Value],
+    ) -> CResult<Vec<&'v Value>> {
+        keep.of(pitches).ok_or_else(|| {
+            let rule = match keep {
+                Keep::Pick(_) => "pick positions must be integers",
+                Keep::Top(_) => "top must be an integer",
+                _ => "bottom must be an integer",
+            };
+            path_diagnostic(
                 DiagnosticCode::Range,
-                format!("{}.pitches must be a nonempty list of pitches", object.kind),
+                format!(
+                    "chord.{rule} from 1 through {}, the number of pitches",
+                    pitches.len()
+                ),
                 object,
-                Some(field),
-            )),
-        }
-    }
-
-    /// The pitches of the voicing that `object`'s `field` names (§8.2).
-    fn voicing_pitches(&self, object: &Object, field: &Field) -> CResult<(&Field, &[Value])> {
-        let id = self.one_reference(&field.value, object, Some(field))?;
-        let voicing = self
-            .document
-            .object(&id)
-            .filter(|voicing| voicing.kind == "voicing")
-            .ok_or_else(|| {
-                path_diagnostic(
-                    DiagnosticCode::Reference,
-                    format!("{}.voicing must reference a voicing", object.kind),
-                    object,
-                    Some(field),
-                )
-            })?;
-        let pitches = self.field(voicing, "pitches")?;
-        Ok((pitches, self.pitch_list(voicing, pitches)?))
-    }
-
-    /// `top = n` keeps the last `n` pitches, `bottom = n` the first `n`, and
-    /// `pick` the pitches at its positions, counted from 1.
-    fn select_pitches<'v>(&self, object: &Object, pitches: &'v [Value]) -> CResult<Vec<&'v Value>> {
-        let selections: Vec<&Field> = ["top", "bottom", "pick"]
-            .into_iter()
-            .filter_map(|name| object.field(name))
-            .collect();
-        let field = match selections.as_slice() {
-            [] => return Ok(pitches.iter().collect()),
-            [field] => *field,
-            [_, field, ..] => {
-                return Err(path_diagnostic(
-                    DiagnosticCode::Range,
-                    "a chord takes at most one of `top`, `bottom` and `pick`",
-                    object,
-                    Some(field),
-                ))
-            }
-        };
-        let range =
-            |message: String| path_diagnostic(DiagnosticCode::Range, message, object, Some(field));
-        let position = |value: &Value, rule: &str| -> CResult<usize> {
-            let n = self.rational_value(value, object, Some(field))?;
-            n.is_integer()
-                .then(|| n.to_integer().to_usize())
-                .flatten()
-                .filter(|position| (1..=pitches.len()).contains(position))
-                .ok_or_else(|| {
-                    range(format!(
-                        "chord.{rule} from 1 through {}, the number of pitches",
-                        pitches.len()
-                    ))
-                })
-        };
-        match field.name.as_str() {
-            "top" => {
-                let count = position(&field.value, "top must be an integer")?;
-                Ok(pitches[pitches.len() - count..].iter().collect())
-            }
-            "bottom" => {
-                let count = position(&field.value, "bottom must be an integer")?;
-                Ok(pitches[..count].iter().collect())
-            }
-            _ => {
-                let values: Vec<&Value> = match &field.value.kind {
-                    ValueKind::List(items) => items.iter().collect(),
-                    _ => vec![&field.value],
-                };
-                if values.is_empty() {
-                    return Err(range("chord.pick must name at least one position".into()));
-                }
-                let mut picked = Vec::with_capacity(values.len());
-                let mut previous = 0;
-                for value in values {
-                    let position = position(value, "pick positions must be integers")?;
-                    if position <= previous {
-                        return Err(range("chord.pick positions must strictly increase".into()));
-                    }
-                    previous = position;
-                    picked.push(&pitches[position - 1]);
-                }
-                Ok(picked)
-            }
-        }
+                keep.field().and_then(|name| object.field(name)),
+            )
+        })
     }
 
     /// Member `k` keeps the chord's onset, gate, order and expressions, takes
@@ -2762,6 +2698,7 @@ impl<'a> Compiler<'a> {
         &self,
         pattern: &str,
         object: &Object,
+        played: &Played,
         pitches_field: &Field,
         pitches: &[Value],
     ) -> CResult<Vec<LeafDef>> {
@@ -2771,7 +2708,7 @@ impl<'a> Compiler<'a> {
             "onset_offset",
             "release_offset",
         ];
-        let pitches = self.select_pitches(object, pitches)?;
+        let pitches = self.select_pitches(object, &played.keep, pitches)?;
         let strum = self.strum_of(pattern, object)?;
         for name in PER_NOTE {
             if let Some(field) = object.field(name) {
@@ -3166,12 +3103,7 @@ impl<'a> Compiler<'a> {
             .phrases
             .get([pattern.to_owned(), object.id.clone()].as_slice())
         else {
-            return Err(path_diagnostic(
-                DiagnosticCode::Range,
-                format!("phrase `{}` could not be read", object.id),
-                object,
-                None,
-            ));
+            return Err(unread(object));
         };
         Ok(PhraseDef {
             id: object.id.clone(),
@@ -3184,7 +3116,8 @@ impl<'a> Compiler<'a> {
         })
     }
 
-    fn parse_use(&self, object: &Object) -> CResult<UseDef> {
+    /// A use, a child of pattern `parent`.
+    fn parse_use(&self, parent: &str, object: &Object) -> CResult<UseDef> {
         self.check_fields(
             object,
             &[
@@ -3264,146 +3197,26 @@ impl<'a> Compiler<'a> {
             stretch,
             transpose_cents: transpose,
             cut: boundary == "cut",
-            supply: self.supplied_voicing(object)?,
+            supply: self.supply_of(&[parent.to_owned(), object.id.clone()], object)?,
         })
     }
 
-    /// What a use or placement supplies to chords without pitches: a
-    /// `voicing`, or a `harmony` with the part's `voicings`.
-    fn supplied_voicing(&self, object: &Object) -> CResult<Option<Supply>> {
-        let reference = |name: &str, kind: &str, known: &dyn Fn(&str) -> bool| -> CResult<String> {
-            let field = self.field(object, name)?;
-            let id = self.one_reference(&field.value, object, Some(field))?;
-            if !known(&id) {
-                return Err(path_diagnostic(
-                    DiagnosticCode::Reference,
-                    format!("{}.{name} must reference a {kind}", object.kind),
-                    object,
-                    Some(field),
-                ));
-            }
-            Ok(id)
-        };
-        match (
-            object.field("voicing"),
-            object.field("harmony"),
-            object.field("voicings"),
-        ) {
-            (None, None, None) => Ok(None),
-            (Some(field), None, None) => {
-                self.voicing_pitches(object, field)?;
-                Ok(Some(Supply::Voicing(self.one_reference(
-                    &field.value,
-                    object,
-                    Some(field),
-                )?)))
-            }
-            (None, Some(_), Some(_)) => Ok(Some(Supply::Harmony {
-                harmony: reference("harmony", "harmony", &|id| self.harmonies.contains_key(id))?,
-                voicings: reference("voicings", "voicings", &|id| {
-                    self.voicing_sets.contains_key(id)
-                })?,
-            })),
-            _ => Err(path_diagnostic(
-                DiagnosticCode::Range,
-                format!(
-                    "{} supplies a `voicing`, or a `harmony` with `voicings`",
-                    object.kind
-                ),
-                object,
-                None,
-            )),
+    /// What semantic analysis read that `object`, the use or placement at
+    /// object path `path`, supplies to chords without pitches. One that
+    /// writes a supply that was not read is an error, and never supplies
+    /// nothing.
+    fn supply_of(&self, path: &[String], object: &Object) -> CResult<Option<Supply>> {
+        let supply = self.models.supplies.get(path);
+        let written = ["voicing", "harmony", "voicings"]
+            .iter()
+            .any(|name| object.field(name).is_some());
+        if supply.is_none() && written {
+            return Err(unread(object));
         }
-    }
-
-    /// Read every `harmony` and every part's `voicings` (§8.2).
-    fn read_harmonies(&mut self) -> CResult<()> {
-        for object in self.document.objects.values() {
-            match object.kind.as_str() {
-                "harmony" => {
-                    let field = self.field(object, "length")?;
-                    let length = self.q_value(&field.value, object, Some(field), false)?;
-                    if !length.is_positive() {
-                        return Err(path_diagnostic(
-                            DiagnosticCode::Range,
-                            "harmony.length must be positive",
-                            object,
-                            Some(field),
-                        ));
-                    }
-                    let field = self.field(object, "chords")?;
-                    let mut chords: Vec<(Rational, String)> = Vec::new();
-                    for item in self.list(&field.value, object, Some(field))? {
-                        let pair = self.tuple(item, object, Some(field), 2)?;
-                        let position = self.q_value(&pair[0], object, Some(field), false)?;
-                        let name = self.string_value(&pair[1], object, Some(field), "string")?;
-                        let in_order = match chords.last() {
-                            None => position.is_zero(),
-                            Some((previous, _)) => &position > previous,
-                        };
-                        if !in_order || position >= length || name.is_empty() {
-                            return Err(path_diagnostic(
-                                DiagnosticCode::Range,
-                                "harmony chords start at 0q, increase strictly, stay under the length and have names",
-                                object,
-                                Some(field),
-                            ));
-                        }
-                        chords.push((position, name));
-                    }
-                    if chords.is_empty() {
-                        return Err(path_diagnostic(
-                            DiagnosticCode::Range,
-                            "harmony.chords must be nonempty",
-                            object,
-                            Some(field),
-                        ));
-                    }
-                    self.harmonies
-                        .insert(object.id.clone(), HarmonyDef { length, chords });
-                }
-                "voicings" => {
-                    let field = self.field(object, "chords")?;
-                    let mut set = BTreeMap::new();
-                    for item in self.list(&field.value, object, Some(field))? {
-                        let pair = self.tuple(item, object, Some(field), 2)?;
-                        let name = self.string_value(&pair[0], object, Some(field), "string")?;
-                        let id = self.one_reference(&pair[1], object, Some(field))?;
-                        if self.document.object(&id).map(|o| o.kind.as_str()) != Some("voicing") {
-                            return Err(path_diagnostic(
-                                DiagnosticCode::Reference,
-                                "each voicings entry must reference a voicing",
-                                object,
-                                Some(field),
-                            ));
-                        }
-                        if name.is_empty() || set.insert(name, id).is_some() {
-                            return Err(path_diagnostic(
-                                DiagnosticCode::Range,
-                                "voicings names must be nonempty and distinct",
-                                object,
-                                Some(field),
-                            ));
-                        }
-                    }
-                    if set.is_empty() {
-                        return Err(path_diagnostic(
-                            DiagnosticCode::Range,
-                            "voicings.chords must be nonempty",
-                            object,
-                            Some(field),
-                        ));
-                    }
-                    self.voicing_sets.insert(object.id.clone(), set);
-                }
-                _ => {}
-            }
-        }
-        Ok(())
+        Ok(supply.cloned())
     }
 
     fn read_patterns(&mut self) -> CResult<()> {
-        self.read_harmonies()?;
         for object in self
             .document
             .objects
@@ -3462,7 +3275,7 @@ impl<'a> Compiler<'a> {
                 }
                 let parsed = match child.kind.as_str() {
                     "note" => PatternChild::Leaf(Box::new(self.parse_note(child)?)),
-                    "use" => PatternChild::Use(Box::new(self.parse_use(child)?)),
+                    "use" => PatternChild::Use(Box::new(self.parse_use(&object.id, child)?)),
                     "phrase" => {
                         PatternChild::Phrase(Box::new(self.parse_phrase(&object.id, child)?))
                     }
@@ -3862,7 +3675,7 @@ impl<'a> Compiler<'a> {
                 stretch,
                 transpose_cents: transpose,
                 cut: boundary == "cut",
-                supply: self.supplied_voicing(object)?,
+                supply: self.supply_of(std::slice::from_ref(&object.id), object)?,
                 overrides,
                 inserts,
                 automations,
@@ -4270,12 +4083,7 @@ impl<'a> Compiler<'a> {
                 built_in => VibratoDef::builtin_cycle(built_in),
             });
             let (Some(vibrato), Some(cycle)) = (vibrato, cycle) else {
-                return Err(path_diagnostic(
-                    DiagnosticCode::Range,
-                    format!("vibrato `{}` could not be read", object.id),
-                    object,
-                    None,
-                ));
+                return Err(unread(object));
             };
             self.vibratos.insert(
                 object.id.clone(),
@@ -4649,14 +4457,10 @@ impl<'a> Compiler<'a> {
 
     /// The number of pitches in the largest voicing.
     fn max_voicing_pitches(&self) -> u64 {
-        self.document
-            .objects
+        self.models
+            .voicings
             .values()
-            .filter(|object| object.kind == "voicing")
-            .filter_map(|voicing| match &voicing.field("pitches")?.value.kind {
-                ValueKind::List(items) => Some(items.len() as u64),
-                _ => None,
-            })
+            .map(|voicing| voicing.pitches as u64)
             .max()
             .unwrap_or(0)
     }
