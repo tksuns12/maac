@@ -13,6 +13,7 @@ mod harmony;
 mod occurrence;
 mod phrase;
 mod played;
+mod repeat;
 mod strum;
 mod supply;
 mod vary;
@@ -2114,6 +2115,7 @@ impl<'a> Validator<'a> {
             self.expect_object_ref(field, "pattern", &["pattern"], path);
         }
         self.validate_supply(object, path);
+        let mut at = None;
         if let Some(field) = object.field("at") {
             if let Some(value) = self.quantity(field, &[Unit::Q], path, "at") {
                 if value < BigRational::zero() {
@@ -2124,6 +2126,8 @@ impl<'a> Validator<'a> {
                         path.to_vec(),
                         vec!["at".into()],
                     );
+                } else {
+                    at = Some(value);
                 }
             }
         }
@@ -2131,6 +2135,7 @@ impl<'a> Validator<'a> {
         self.validate_positive_dimensionless_field(object, path, "stretch");
         self.validate_quantity_field(object, path, "transpose", &[Unit::Ct]);
         self.validate_enum_field(object, path, "boundary", &["spill", "cut"]);
+        self.validate_use_fits(object, path, at.as_ref());
         self.reject_children(object, path);
     }
 
@@ -2183,6 +2188,7 @@ impl<'a> Validator<'a> {
             self.expect_object_ref(field, "vary", &["vary"], path);
         }
         self.validate_supply(object, path);
+        let mut at = None;
         if let Some(field) = object.field("at") {
             if let Some(value) = self.position_q_value(&field.value, path, "at") {
                 let outside = self
@@ -2197,6 +2203,8 @@ impl<'a> Validator<'a> {
                         path.to_vec(),
                         vec!["at".into()],
                     );
+                } else {
+                    at = Some(value);
                 }
             }
         }
@@ -2204,6 +2212,7 @@ impl<'a> Validator<'a> {
         self.validate_positive_dimensionless_field(object, path, "stretch");
         self.validate_quantity_field(object, path, "transpose", &[Unit::Ct]);
         self.validate_enum_field(object, path, "boundary", &["spill", "cut"]);
+        self.validate_place_fits(object, path, at.as_ref());
         let children: Vec<Object> = object.children.values().cloned().collect();
         for child in &children {
             let child_path = child_path(path, &child.id);

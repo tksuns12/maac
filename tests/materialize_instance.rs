@@ -397,7 +397,7 @@ place play {pattern=&riff;track=&notes;at=0q;}
 fn repeated_empty_patterns_and_extra_wrapper_depth_are_bounded_before_copying() {
     for body in [
         "pattern empty {length=1q;} place play {pattern=&empty;track=&notes;at=0q;count=1000000000;}",
-        "pattern empty {length=1q;} pattern nested {length=1q;use u {pattern=&empty;at=0q;count=1024;}} place play {pattern=&nested;track=&notes;at=0q;}",
+        "pattern empty {length=1q;} pattern nested {length=1q;use u {pattern=&empty;at=0q;count=1024;stretch=1/1024;}} place play {pattern=&nested;track=&notes;at=0q;}",
     ] {
         let document = SourceDocument::parse(source(body)).unwrap();
         assert_eq!(FoundationEditContext.prepare_materialize_instance(document.authored(), "play", "copy").unwrap_err().code, "E_RESOURCE_LIMIT");
@@ -726,8 +726,10 @@ fn subtree_bytes_and_exact_rational_growth_fail_without_mutating_source() {
         "E_RESOURCE_LIMIT"
     );
     assert_eq!(document.authored(), &original);
-    let large_stretch = num_bigint::BigInt::from(1u8) << 4095usize;
-    let document = SourceDocument::parse(source(&format!("pattern riff {{length=2q;}} place play {{pattern=&riff;track=&notes;at=0q;stretch={large_stretch};}}"))).unwrap();
+    // The placement fits the score, and its stretched length needs more
+    // bits than an exact rational may have.
+    let large = num_bigint::BigInt::from(1u8) << 4095usize;
+    let document = SourceDocument::parse(source(&format!("pattern riff {{length=1/3q;}} place play {{pattern=&riff;track=&notes;at=0q;stretch=1/{large};}}"))).unwrap();
     assert_eq!(
         FoundationEditContext
             .prepare_materialize_instance(document.authored(), "play", "copy")
