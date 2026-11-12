@@ -807,9 +807,9 @@ impl InstrumentRuntime {
             }
             active.push(length);
             let mut rendered = length;
-            for offset in 0..length {
+            for (offset, expression) in self.expressions[..length].iter_mut().enumerate() {
                 match voice.expression_inputs(start + offset as u64, rate) {
-                    Ok(inputs) => self.expressions[offset] = inputs,
+                    Ok(inputs) => *expression = inputs,
                     Err(failure) => {
                         rendered = offset;
                         error = Some((offset, failure));

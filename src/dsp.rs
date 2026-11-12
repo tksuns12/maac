@@ -1841,8 +1841,9 @@ impl<'a> DspEngine<'a> {
                     .noise
                     .as_ref()
                     .ok_or_else(|| RenderError::RenderState("noise state missing".into()))?;
-                for channel in 0..usize::from(channels) {
-                    node.output[channel] = noise.sample(frame, channel as u32);
+                for (channel, output) in node.output[..usize::from(channels)].iter_mut().enumerate()
+                {
+                    *output = noise.sample(frame, channel as u32);
                 }
             }
             Processor::Matrix { .. } => unreachable!("matrix uses its prepared runtime"),
