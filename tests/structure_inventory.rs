@@ -137,6 +137,15 @@ fn every_nesting_combination_follows_the_inventory() {
             "x",
         );
         let source = format!("{}{source}", base());
+        // A hit is inserted where a kit plays it, beside no notes.
+        let source = if *child == "hit" {
+            source.replace(
+                "place host { pattern = &cell; track = &lead;",
+                "pattern rest { length = 1q; }\nplace host { pattern = &rest; track = &drums;",
+            )
+        } else {
+            source
+        };
         let permitted = ["note", "hit", "message", "audio"].contains(child);
         checked += 1;
         match (validate(&source), permitted) {

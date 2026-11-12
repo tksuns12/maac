@@ -7,6 +7,7 @@
 //! editing also checks same-sample causality before committing. Event expansion,
 //! sample scheduling, and DSP belong to later plan/renderer stages.
 
+mod destination;
 mod fields;
 mod groove;
 mod harmony;
@@ -24,6 +25,7 @@ mod vibrato;
 mod voicing;
 mod voicings;
 
+pub(crate) use destination::Receives;
 pub(crate) use fields::{DefaultValue, SourceField};
 pub(crate) use groove::Groove;
 pub(crate) use harmony::Harmony;
@@ -285,6 +287,8 @@ pub(crate) struct InstrumentNodeDescriptor {
     /// For an effect instance, the width of its summing `in`.
     pub input_channels: Option<u8>,
     pub controls: BTreeMap<String, ParameterSpec>,
+    /// What its event port plays; an effect has none.
+    pub receives: Option<Receives>,
 }
 
 /// Normalized processor metadata retained for compiler consumers.
@@ -2202,6 +2206,7 @@ impl<'a> Validator<'a> {
         self.validate_enum_field(object, path, "boundary", &["spill", "cut"]);
         self.validate_place_fits(object, path, at.as_ref());
         self.validate_place_target(object, path);
+        self.validate_place_destination(object, path);
         let children: Vec<Object> = object.children.values().cloned().collect();
         for child in &children {
             let child_path = child_path(path, &child.id);
@@ -7150,8 +7155,17 @@ mod kit_profile_tests {
         .is_ok());
         assert!(validate(&source("").replace("from = &kit:out", "from = &kit:events")).is_err());
         assert!(validate(&source("").replace("output = &mix:out", "output = &kit:out")).is_ok());
-        let input = source("").replace("place place { pattern = &pat; track = &t; at = 0q; }", r#"place place { pattern = &pat; track = &t; at = 0q; override o { event = "0/h"; set = { key = "other"; }; } }"#);
-        assert!(validate(&input).is_ok());
+        // An override may give a hit another key that the kit has (§11).
+        let rekeyed = |key: &str| {
+            source("").replace(
+                "place place { pattern = &pat; track = &t; at = 0q; }",
+                &format!(
+                    r#"place place {{ pattern = &pat; track = &t; at = 0q; override o {{ event = "0/h"; set = {{ key = "{key}"; }}; }} }}"#
+                ),
+            )
+        };
+        assert!(validate(&rekeyed("")).is_ok());
+        assert!(validate(&rekeyed("other")).is_err());
     }
     #[test]
     fn hit_schema_and_unsupported_objects_remain_strict() {

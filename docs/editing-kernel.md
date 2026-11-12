@@ -89,7 +89,22 @@ with the code and the message of a compile, at the object and the field:
   `key` on a hit alone, `protocol` and `bytes` on a message, `gain` and the
   fades on an audio leaf;
 - a placement that expands a note, a hit or a message, from its pattern or an
-  insert, is on a track with a `target` (§10).
+  insert, is on a track with a `target` (§10);
+- a placement's destination plays what the placement sends it: a kit plays
+  hits on its keys and no notes, another destination plays notes and no hits,
+  a pressure or a timbre expression needs an instrument whose voice has
+  `synth.pressure/1` or `synth.timbre/1`, and a `slur` or a `slide` one whose
+  voice plays connected notes (§8.3). The error names the placement and the
+  node.
+
+The last rule is checked for each leaf that a placement's pattern reaches
+through uses, and for each leaf it inserts. A leaf that an override of the
+placement may delete, or a hit that one may give another key, is not judged:
+which occurrence an override names shows only in an expansion. Three failures
+of a compile stay outside an edit for the same reason, or because they are a
+host's limit rather than the document's: a phrase's `pressure` or `timbre`
+over notes on a destination without it, a `slur` or a `slide` on a note that
+joins no note before it, and a `project.rate` other than 48 kHz.
 
 ## Original-source diagnostics
 

@@ -309,7 +309,9 @@ pub fn child_declaration(kind: &str, id: &str) -> String {
         "use" => "pattern = &cell; at = 0q;",
         "expression" => "kind = gain; curve = &expr_shape;",
         "override" => r#"event = "0/n"; delete = true;"#,
-        "insert" => "hit added_hit { at = 0q; key = \"k\"; }",
+        // A note: the placements here are on the synth's track, which plays
+        // no hits.
+        "insert" => "note added_note { at = 0q; dur = 1q; pitch = E4; }",
         _ => "",
     };
     format!("{kind} {id} {{ {body} }}")

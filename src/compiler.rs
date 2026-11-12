@@ -6781,6 +6781,7 @@ fn instance_descriptor(
         channels: instance.channels,
         input_channels: instance.effect_input,
         controls,
+        receives: libraries.instance_receives(instance),
     })
 }
 

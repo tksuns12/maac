@@ -507,6 +507,34 @@ impl LibrarySet {
         })
     }
 
+    /// What a resolved instance's event port plays: a kit hits on its
+    /// pieces' keys, and an instrument notes, with what its voice provides
+    /// for. An effect has no event port.
+    pub(crate) fn instance_receives(
+        &self,
+        instance: &ResolvedInstance,
+    ) -> Option<crate::semantic::Receives> {
+        use crate::semantic::Receives;
+        if instance.effect_input.is_some() {
+            None
+        } else if instance.kit {
+            let kit = self.kits.iter().find(|kit| kit.id == instance.program_id)?;
+            Some(Receives::Hits(
+                kit.pieces.iter().map(|piece| piece.key.clone()).collect(),
+            ))
+        } else {
+            let program = self
+                .programs
+                .iter()
+                .find(|program| program.id == instance.program_id)?;
+            Some(Receives::Notes {
+                pressure: program.supports_pressure(),
+                timbre: program.supports_timbre(),
+                connected: program.plays_connected(),
+            })
+        }
+    }
+
     /// The metadata of a resolved instance's public control.
     pub(crate) fn instance_control_spec(
         &self,
