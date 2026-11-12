@@ -14,7 +14,7 @@ use num_traits::{ToPrimitive, Zero};
 use serde_json::{Map, Value};
 
 use crate::diagnostic::Diagnostics;
-use crate::semantic::{origin, supplier, Models, Source, Supply, Unplayable};
+use crate::semantic::{origin, supplier, Models, Replaced, Source, Supply, Unplayable};
 use crate::syntax::Document;
 
 use crate::compiler::LOCAL_SOURCE;
@@ -1552,16 +1552,46 @@ fn validate_occurrence_targets(root: &Value, models: &Models) -> EditResult<()> 
                 )
                 .at(&[place_id.clone(), override_id.clone()], &["event".into()]));
             }
-            if resolve_occurrence(&reading, place_id, place, event).is_none() {
+            let Some(mappings) = resolve_occurrence(&reading, place_id, place, event) else {
                 return Err(EditError::new(
                     "E_INSTANCE_TARGET",
                     format!("override target `{event}` does not exist"),
                 )
                 .at(&[place_id.clone(), override_id.clone()], &["event".into()]));
+            };
+            if let Some((field, message)) = unreplaceable(&reading, &mappings, override_object) {
+                return Err(EditError::new(Replaced::REFUSED.as_str(), message).at(
+                    &[place_id.clone(), override_id.clone()],
+                    &["set".into(), field],
+                ));
             }
         }
     }
     Ok(())
+}
+
+/// The first field, in name order, that the `set` of `override_object`
+/// replaces and the kind of event it names does not take, with the reason.
+/// `mappings` are those of the occurrence it names.
+fn unreplaceable(
+    reading: &Reading<'_>,
+    mappings: &SourceMappings,
+    override_object: &Value,
+) -> Option<(String, String)> {
+    let (leaf, _) = mappings.last()?;
+    let [pattern, child] = leaf.as_slice() else {
+        return None;
+    };
+    let kind = reading.objects.get(pattern)?["children"].get(child)?["kind"].as_str()?;
+    let replaced = Replaced::of_leaf(kind)?;
+    let mut fields: Vec<&String> = override_object["fields"]["set"]["fields"]
+        .as_object()?
+        .keys()
+        .collect();
+    fields.sort();
+    fields
+        .into_iter()
+        .find_map(|field| Some((field.clone(), replaced.refusal(field)?)))
 }
 
 fn rewrite_occurrence_addresses(

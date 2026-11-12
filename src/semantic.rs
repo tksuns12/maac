@@ -11,11 +11,14 @@ mod fields;
 mod groove;
 mod harmony;
 mod occurrence;
+mod order;
 mod phrase;
 mod played;
 mod repeat;
+mod replace;
 mod strum;
 mod supply;
+mod track;
 mod vary;
 mod vibrato;
 mod voicing;
@@ -27,6 +30,7 @@ pub(crate) use harmony::Harmony;
 pub(crate) use occurrence::{origin, supplier, Unplayable};
 pub(crate) use phrase::Phrase;
 pub(crate) use played::{Misfit, Played, Source, PER_MEMBER};
+pub(crate) use replace::Replaced;
 pub(crate) use strum::Strum;
 pub(crate) use supply::Supply;
 pub(crate) use vary::Vary;
@@ -2051,9 +2055,7 @@ impl<'a> Validator<'a> {
 
     /// `order` and the expression children shared by notes and chords.
     fn validate_note_rest(&mut self, object: &Object, path: &[String]) {
-        if let Some(field) = object.field("order") {
-            self.integer(field, path, "order");
-        }
+        self.validate_order(object, path);
         let children: Vec<Object> = object.children.values().cloned().collect();
         let mut expression_kinds = std::collections::HashSet::new();
         for child in &children {
@@ -2139,20 +2141,6 @@ impl<'a> Validator<'a> {
         self.reject_children(object, path);
     }
 
-    fn validate_track(&mut self, object: &Object, path: &[String]) {
-        self.check_schema(object, path, &[], &["target", "label"], &[]);
-        if let Some(field) = object.field("target") {
-            self.expect_port_ref(
-                field,
-                "target",
-                Some(PortDirection::Input),
-                Some(PortKind::Events),
-                path,
-            );
-        }
-        self.reject_children(object, path);
-    }
-
     fn validate_place(&mut self, object: &Object, path: &[String]) {
         self.check_schema(
             object,
@@ -2213,6 +2201,7 @@ impl<'a> Validator<'a> {
         self.validate_quantity_field(object, path, "transpose", &[Unit::Ct]);
         self.validate_enum_field(object, path, "boundary", &["spill", "cut"]);
         self.validate_place_fits(object, path, at.as_ref());
+        self.validate_place_target(object, path);
         let children: Vec<Object> = object.children.values().cloned().collect();
         for child in &children {
             let child_path = child_path(path, &child.id);
@@ -2317,23 +2306,17 @@ impl<'a> Validator<'a> {
         // trailing `set` into the field path.
         let set_path = field_path(path, "set");
         for (name, replacement) in fields {
-            if !(matches!(
-                name.as_str(),
-                "at" | "dur"
-                    | "pitch"
-                    | "velocity"
-                    | "release_velocity"
-                    | "onset_offset"
-                    | "release_offset"
-                    | "order"
-                    | "label"
-            ) || (self.allow_kits && name == "key")
-                || (self.allow_messages && matches!(name.as_str(), "protocol" | "bytes"))
-                || (self.allow_audio
-                    && matches!(
-                        name.as_str(),
-                        "gain" | "fade_in" | "fade_out" | "fade_shape"
-                    )))
+            // Which kind the override names shows at its occurrence; here a
+            // field is one that some kind this source may hold takes.
+            let kinds = [
+                (true, Replaced::Note),
+                (self.allow_kits, Replaced::Hit),
+                (self.allow_messages, Replaced::Message),
+                (self.allow_audio, Replaced::Audio),
+            ];
+            if !kinds
+                .iter()
+                .any(|(held, kind)| *held && kind.refusal(name).is_none())
             {
                 self.push(
                     DiagnosticCode::UnknownField,
@@ -2441,14 +2424,7 @@ impl<'a> Validator<'a> {
                         vec!["set".into(), name.clone()],
                     );
                 }
-                "order" if !matches!(replacement.value.kind, ValueKind::Number(_)) => {
-                    self.push_type_value(
-                        &replacement.value,
-                        &field_path(&set_path, name),
-                        "integer order",
-                    );
-                }
-                "order" => {}
+                "order" => self.validate_set_order(&replacement.value, path),
                 "pitch" => self.validate_pitch_value(&replacement.value, &set_path),
                 "label" if !matches!(replacement.value.kind, ValueKind::String(_)) => {
                     self.push_type_value(
@@ -3771,9 +3747,7 @@ impl<'a> Validator<'a> {
             BigRational::one(),
         );
         self.validate_seconds(object, path, "onset_offset");
-        if let Some(field) = object.field("order") {
-            self.integer(field, path, "order");
-        }
+        self.validate_order(object, path);
     }
 
     fn validate_message_shape(&mut self, object: &Object, path: &[String]) {
@@ -3816,9 +3790,7 @@ impl<'a> Validator<'a> {
             }
         }
         self.validate_seconds(object, path, "onset_offset");
-        if let Some(field) = object.field("order") {
-            self.integer(field, path, "order");
-        }
+        self.validate_order(object, path);
     }
 
     /// A pitch expression may name a `vibrato`, alone or after a

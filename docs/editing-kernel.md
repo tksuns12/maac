@@ -78,6 +78,19 @@ the same document, at the chord. One transaction can change a voicing and the
 chords that play it together. The check visits a bounded number of occurrences;
 a document past that bound is past what the compiler expands.
 
+Both contexts also refuse a final candidate that breaks one of these rules,
+with the code and the message of a compile, at the object and the field:
+
+- the repetitions of a use end inside its parent pattern, and those of a
+  placement inside the score (§9, §10);
+- an event's `order`, on a leaf or in an override's `set`, is an integer that
+  fits 32 bits;
+- an override's `set` replaces only fields that the event it names takes (§11):
+  `key` on a hit alone, `protocol` and `bytes` on a message, `gain` and the
+  fades on an audio leaf;
+- a placement that expands a note, a hit or a message, from its pattern or an
+  insert, is on a track with a `target` (§10).
+
 ## Original-source diagnostics
 
 `EditError` has an optional original-source UTF-8 byte span. `SourceDocument`

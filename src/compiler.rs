@@ -39,8 +39,8 @@ use crate::plan_v4::{NodeV4, PlanV4, ProcessorV4};
 use crate::plan_v5::{AudioClip, AudioFadeShape, NodeV5, PlanV5, ProcessorV5};
 use crate::plan_v6::{ClipEntry, NodeV6, PlanV6, ProcessorV6, WarpAnchor, WarpClip};
 use crate::semantic::{
-    supplier, Cycle, Groove, InstrumentNodeDescriptor, Models, Played, Source, Strum, Supply,
-    Unplayable, Vary, PER_MEMBER,
+    supplier, Cycle, Groove, InstrumentNodeDescriptor, Models, Played, Replaced, Source, Strum,
+    Supply, Unplayable, Vary, PER_MEMBER,
 };
 use crate::syntax::{Document, Field, Object, Reference, Unit, Value, ValueKind};
 
@@ -4866,7 +4866,7 @@ impl<'a> Compiler<'a> {
                 deleted.insert(address.clone());
                 continue;
             }
-            self.apply_override(index, &override_def.set, place)?;
+            self.apply_override(index, override_def, place)?;
         }
         if !deleted.is_empty() {
             self.events
@@ -4909,54 +4909,28 @@ impl<'a> Compiler<'a> {
     fn apply_override(
         &mut self,
         index: usize,
-        set: &BTreeMap<String, Value>,
+        override_def: &OverrideDef,
         place: &PlaceDef,
     ) -> CResult<()> {
         let object = self
             .document
             .object(&place.id)
             .unwrap_or_else(|| self.document.objects.values().next().unwrap());
-        for (name, value) in set {
-            if matches!(self.events[index].kind, ExpandedKind::Message { .. })
-                && !matches!(
-                    name.as_str(),
-                    "at" | "protocol" | "bytes" | "onset_offset" | "order" | "label"
-                )
-            {
-                return Err(diagnostics(
-                    DiagnosticCode::UnknownField,
-                    format!("field `{name}` is not valid for a message override"),
-                    Some(value.span),
-                ));
-            }
-            let audio = matches!(self.events[index].kind, ExpandedKind::Audio(_));
-            if audio
-                != matches!(
-                    name.as_str(),
-                    "gain" | "fade_in" | "fade_out" | "fade_shape"
-                )
-                && !matches!(name.as_str(), "at" | "label")
-            {
-                return Err(diagnostics(
-                    DiagnosticCode::UnknownField,
-                    format!(
-                        "field `{name}` is not valid for {} override",
-                        if audio { "an audio" } else { "this" }
-                    ),
-                    Some(value.span),
-                ));
-            }
-            if matches!(self.events[index].kind, ExpandedKind::Hit { .. })
-                && !matches!(
-                    name.as_str(),
-                    "at" | "key" | "velocity" | "onset_offset" | "order" | "label"
-                )
-            {
-                return Err(diagnostics(
-                    DiagnosticCode::UnknownField,
-                    format!("field `{name}` is not valid for a hit override"),
-                    Some(value.span),
-                ));
+        for (name, value) in &override_def.set {
+            let replaced = match self.events[index].kind {
+                ExpandedKind::Note(_) => Replaced::Note,
+                ExpandedKind::Hit { .. } => Replaced::Hit,
+                ExpandedKind::Message { .. } => Replaced::Message,
+                ExpandedKind::Audio(_) => Replaced::Audio,
+            };
+            if let Some(message) = replaced.refusal(name) {
+                let mut diagnostics = Diagnostics::new();
+                diagnostics.push(
+                    Diagnostic::error(Replaced::REFUSED, message, Some(value.span))
+                        .object_path([place.id.clone(), override_def.id.clone()])
+                        .field_path(["set".to_owned(), name.clone()]),
+                );
+                return Err(diagnostics);
             }
             match name.as_str() {
                 "at" => {
@@ -4976,12 +4950,6 @@ impl<'a> Compiler<'a> {
                     } = &mut self.events[index].kind
                     {
                         *existing = protocol;
-                    } else {
-                        return Err(diagnostics(
-                            DiagnosticCode::UnknownField,
-                            "protocol is only valid for a message override",
-                            Some(value.span),
-                        ));
                     }
                 }
                 "bytes" => {
@@ -5002,24 +4970,12 @@ impl<'a> Compiler<'a> {
                     } = &mut self.events[index].kind
                     {
                         *existing = bytes;
-                    } else {
-                        return Err(diagnostics(
-                            DiagnosticCode::UnknownField,
-                            "bytes is only valid for a message override",
-                            Some(value.span),
-                        ));
                     }
                 }
                 "key" => {
                     let key = self.string_value(value, object, None, "key")?;
                     if let ExpandedKind::Hit { key: existing } = &mut self.events[index].kind {
                         *existing = key;
-                    } else {
-                        return Err(diagnostics(
-                            DiagnosticCode::UnknownField,
-                            "key is not valid for a note override",
-                            Some(value.span),
-                        ));
                     }
                 }
                 "pitch" => {
