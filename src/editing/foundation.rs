@@ -41,6 +41,8 @@ pub struct BundleEditContext {
         Option<std::collections::BTreeMap<String, std::sync::Arc<crate::disk_media::DiskAsset>>>,
     limits: crate::plan::PlanLimits,
     import_edit: Option<ImportEditMode>,
+    /// Whether an edit must leave a document that compiles under `limits`.
+    compiles: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -91,7 +93,30 @@ impl BundleEditContext {
             disk_assets: None,
             limits: crate::plan::PlanLimits::default(),
             import_edit: None,
+            compiles: false,
         })
+    }
+
+    /// Also refuse an edit that leaves a document which does not compile
+    /// under `limits`.
+    ///
+    /// Without this, an edit is refused for what the document says: its
+    /// references, types, ranges and the rules that hold wherever its
+    /// patterns are placed. Some failures of a compile show only once the
+    /// performance is expanded, or are a limit of the renderer: an onset
+    /// that an offset moves out of the score, a pitch out of range after a
+    /// transposition, a phrase's pressure on a destination without it, two
+    /// automations that overlap, a resource limit, a `project.rate` the
+    /// reference profile does not render. With this, the edit that would
+    /// leave one is refused with the compile's first error.
+    ///
+    /// The check compiles the whole candidate, so an edit costs about what
+    /// a compile does. It judges the candidate alone: an edit of a document
+    /// that does not compile applies when it leaves one that does.
+    pub fn checking_compile(mut self, limits: crate::plan::PlanLimits) -> Self {
+        self.limits = limits;
+        self.compiles = true;
+        self
     }
 
     /// Trusted archive editing context with the exact private native PCM
@@ -110,6 +135,7 @@ impl BundleEditContext {
             disk_assets: Some(assets.clone()),
             limits,
             import_edit: None,
+            compiles: false,
         })
     }
 
@@ -217,6 +243,7 @@ impl BundleEditContext {
             disk_assets: Some(assets.clone()),
             limits,
             import_edit: Some(ImportEditMode::Graph { imports, overrides }),
+            compiles: false,
         })
     }
 
@@ -528,7 +555,14 @@ impl EditContext for BundleEditContext {
     }
 
     fn validate_transition(&self, base: &Value, candidate: &Value) -> EditResult<()> {
-        reject_shifted_chord_members(base, candidate)
+        reject_shifted_chord_members(base, candidate)?;
+        // A disk-media context compiles every document it validates.
+        if self.compiles && self.disk_assets.is_none() {
+            let bundle = self.candidate_bundle(candidate)?;
+            crate::compiler::check_bundle_artifact_with_limits(&bundle, &self.limits)
+                .map_err(map_diagnostics)?;
+        }
+        Ok(())
     }
 
     fn refine_impact(

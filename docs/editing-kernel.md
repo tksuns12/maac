@@ -100,11 +100,35 @@ with the code and the message of a compile, at the object and the field:
 The last rule is checked for each leaf that a placement's pattern reaches
 through uses, and for each leaf it inserts. A leaf that an override of the
 placement may delete, or a hit that one may give another key, is not judged:
-which occurrence an override names shows only in an expansion. Three failures
-of a compile stay outside an edit for the same reason, or because they are a
-host's limit rather than the document's: a phrase's `pressure` or `timbre`
-over notes on a destination without it, a `slur` or a `slide` on a note that
-joins no note before it, and a `project.rate` other than 48 kHz.
+which occurrence an override names shows only in an expansion.
+
+### Checking that the candidate compiles
+
+Some failures of a compile stay outside these rules, because they show only
+once the performance is expanded or because they are a limit of the renderer
+rather than of the document:
+
+- an onset that an offset, a groove or a variation moves out of the score, a
+  gate that a release offset closes, and a pitch out of range after a
+  transposition;
+- a phrase's `pressure` or `timbre` over notes on a destination without it,
+  and a `slur` or a `slide` on a note that joins no note before it;
+- two automations of one parameter that overlap, and every resource limit;
+- a `project.rate` other than 48 kHz.
+
+An edit that leaves one applies, and the next compile fails. A host that wants
+every applied edit to compile asks for it:
+
+```rust
+let context = BundleEditContext::new(&bundle)?.checking_compile(limits);
+```
+
+The context then compiles the final candidate under `limits` and refuses the
+edit with the compile's first error. An edit costs about what a compile does.
+The check judges the candidate alone, so an edit of a document that does not
+compile applies when it leaves one that does. `FoundationEditContext` has no
+such check: it resolves no imports or assets, so it cannot compile. A
+disk-media context compiles every document it validates already.
 
 ## Original-source diagnostics
 

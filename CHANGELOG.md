@@ -45,9 +45,29 @@ promise of compatibility beyond the documented interfaces.
   parameter. Version 5 makes the tape echo one effect with the loop inside
   it, where version 4 ran the loop through the project graph with one extra
   frame on each pass.
+- `BundleEditContext::checking_compile(limits)`: an edit context that also
+  refuses an edit whose final document does not compile under `limits`, with
+  the compile's first error. It is for the failures that show only once a
+  performance is expanded, such as an onset moved out of the score, two
+  automations that overlap or a resource limit. An edit then costs about what
+  a compile does. See
+  [the editing kernel](docs/editing-kernel.md#checking-that-the-candidate-compiles).
 
 ### Changed
 
+- An edit is refused where only a compile was before, with the compile's
+  code and message at the same object and field, in both edit contexts: a
+  chord that does not play at an occurrence (§8.2); a use or a placement
+  whose repetitions overrun what holds it; an `order` that is not an integer
+  or does not fit 32 bits; an override `set` field that the event it names
+  does not take; a placement of notes on a track without a `target`; and a
+  placement whose destination does not play what it sends, such as notes on
+  a kit, a hit with a key the kit lacks, a pressure expression on a voice
+  without `synth.pressure/1` or a `slur` on a voice that plays no connected
+  notes. A compile reports each of these at its object, and all of them at
+  once. Some messages changed with this: a refused `set` field reads
+  ``override.set cannot replace `key` of a note``, and a destination's
+  refusal names the placement and the node.
 - Diagnostics for a wrong `config` on a `synth.*/1` node are worded and
   placed the same way for every processor. A key the processor does not
   have is reported at that key, with the keys it has; before, most
