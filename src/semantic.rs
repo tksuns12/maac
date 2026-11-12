@@ -10,6 +10,7 @@
 mod fields;
 mod groove;
 mod harmony;
+mod occurrence;
 mod phrase;
 mod played;
 mod strum;
@@ -22,8 +23,9 @@ mod voicings;
 pub(crate) use fields::{DefaultValue, SourceField};
 pub(crate) use groove::Groove;
 pub(crate) use harmony::Harmony;
+pub(crate) use occurrence::{origin, supplier, Unplayable};
 pub(crate) use phrase::Phrase;
-pub(crate) use played::{Keep, Played, Source};
+pub(crate) use played::{Misfit, Played, Source, PER_MEMBER};
 pub(crate) use strum::Strum;
 pub(crate) use supply::Supply;
 pub(crate) use vary::Vary;
@@ -1906,6 +1908,9 @@ impl<'a> Validator<'a> {
         self.validate_join_fields(object, path);
         self.validate_strum(object, path);
         let members = self.validate_played(object, path);
+        if let Some(members) = members {
+            self.validate_tilt(object, path, members);
+        }
         for name in [
             "velocity",
             "release_velocity",

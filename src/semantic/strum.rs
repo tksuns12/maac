@@ -5,10 +5,11 @@
 //! velocity changes by `tilt` from the first string struck to the last.
 
 use num_rational::BigRational;
-use num_traits::Signed;
+use num_traits::{One, Signed, Zero};
 
 use super::fields::{beside, default_of, optional, DefaultValue, SourceField};
 use super::Validator;
+use crate::diagnostic::DiagnosticCode;
 use crate::syntax::{Object, Unit, ValueKind};
 
 /// The fields of a chord that say how it is strummed.
@@ -27,6 +28,38 @@ pub(crate) struct Strum {
     pub(crate) stagger: BigRational,
     /// The change of velocity from the first string struck to the last.
     pub(crate) tilt: BigRational,
+    /// The velocity the tilt starts from: the chord's `velocity`, or 1 when
+    /// it writes none. `None` when it is not one number; the tilt is then 0.
+    pub(crate) velocity: Option<BigRational>,
+}
+
+impl Strum {
+    /// The first of a chord's `members` whose velocity the tilt takes
+    /// outside 0 to 1, counted from zero, with that velocity. Member `k` of
+    /// `n` is struck at place `i`, `k` going down and `n - 1 - k` going up,
+    /// and plays `velocity + tilt * i / (n - 1)`.
+    pub(crate) fn overshoot(&self, members: usize) -> Option<(usize, BigRational)> {
+        let velocity = self.velocity.as_ref()?;
+        if members < 2 || self.tilt.is_zero() {
+            return None;
+        }
+        let last = BigRational::from_integer((members - 1).into());
+        (0..members).find_map(|member| {
+            let place = if self.up {
+                members - 1 - member
+            } else {
+                member
+            };
+            let struck = velocity + &self.tilt * BigRational::from_integer(place.into()) / &last;
+            (struck.is_negative() || struck > BigRational::one()).then_some((member, struck))
+        })
+    }
+
+    /// What is reported of member `member` struck at `velocity`, outside 0
+    /// to 1.
+    pub(crate) fn overshoot_message(member: usize, velocity: &BigRational) -> String {
+        format!("chord velocity with tilt is {velocity} at member {member}, outside [0,1]")
+    }
 }
 
 impl Validator<'_> {
@@ -96,11 +129,43 @@ impl Validator<'_> {
                 tilt.filter(|_| strummed && single)
             }
         };
+        // The velocity is checked with the chord's other per-note fields.
+        let velocity = match object.field("velocity").map(|field| &field.value.kind) {
+            None => Some(BigRational::one()),
+            Some(ValueKind::Number(velocity)) => Some(velocity.clone()),
+            Some(_) => None,
+        };
         Some(Strum {
             up: up?,
             stagger: stagger?,
             tilt: tilt?,
+            velocity,
         })
+    }
+
+    /// A strummed chord of `members` keeps every velocity within 0 to 1.
+    /// The number of members is known here when the chord has its own
+    /// pitches, names a voicing or picks positions.
+    pub(super) fn validate_tilt(&mut self, object: &Object, path: &[String], members: usize) {
+        // A velocity outside 0 to 1 is reported as the velocity's own
+        // mistake.
+        let within =
+            |velocity: &BigRational| !velocity.is_negative() && velocity <= &BigRational::one();
+        let overshoot = self
+            .models
+            .strums
+            .get(path)
+            .filter(|strum| strum.velocity.as_ref().is_some_and(within))
+            .and_then(|strum| strum.overshoot(members));
+        if let (Some((member, velocity)), Some(field)) = (overshoot, object.field("tilt")) {
+            self.push(
+                DiagnosticCode::Range,
+                Strum::overshoot_message(member, &velocity),
+                Some(field.value.span),
+                path.to_vec(),
+                vec!["tilt".into()],
+            );
+        }
     }
 }
 
@@ -120,16 +185,63 @@ mod tests {
             .remove(["bar".to_owned(), "a".to_owned()].as_slice())
     }
 
+    fn ratio(numerator: i64, denominator: i64) -> BigRational {
+        BigRational::new(numerator.into(), denominator.into())
+    }
+
     #[test]
     fn a_strum_reads_its_stroke_its_stagger_and_its_tilt() {
         assert_eq!(
             strum("strum = up; stagger = 30ms; tilt = -1/10;"),
             Some(Strum {
                 up: true,
-                stagger: BigRational::new(3.into(), 100.into()),
-                tilt: BigRational::new((-1).into(), 10.into()),
+                stagger: ratio(3, 100),
+                tilt: ratio(-1, 10),
+                velocity: Some(ratio(1, 1)),
             })
         );
+    }
+
+    #[test]
+    fn a_strum_reads_the_velocity_its_tilt_starts_from() {
+        let velocity = |fields: &str| strum(fields).unwrap().velocity;
+        assert_eq!(velocity("strum = down; velocity = 3/5;"), Some(ratio(3, 5)));
+        assert_eq!(velocity("strum = down;"), Some(ratio(1, 1)));
+        assert_eq!(velocity("strum = down; velocity = [1/2, 1/2];"), None);
+    }
+
+    /// A downstroke gets louder or softer toward the last member, and an
+    /// upstroke toward the first.
+    #[test]
+    fn a_tilt_overshoots_at_the_first_member_it_takes_out_of_range() {
+        let strummed = |up: bool, velocity: BigRational, tilt: BigRational| Strum {
+            up,
+            stagger: ratio(0, 1),
+            tilt,
+            velocity: Some(velocity),
+        };
+        // 9/10 rising by 3/10 over four members: 9/10, 1, 11/10, 6/5.
+        let rising = strummed(false, ratio(9, 10), ratio(3, 10));
+        assert_eq!(rising.overshoot(4), Some((2, ratio(11, 10))));
+        // Going up, the last member is struck first: 6/5, 11/10, 1, 9/10.
+        assert_eq!(
+            strummed(true, ratio(9, 10), ratio(3, 10)).overshoot(4),
+            Some((0, ratio(6, 5)))
+        );
+        // Two members take the whole tilt at once.
+        assert_eq!(rising.overshoot(2), Some((1, ratio(6, 5))));
+        assert_eq!(
+            strummed(false, ratio(1, 10), ratio(-1, 5)).overshoot(3),
+            Some((2, ratio(-1, 10)))
+        );
+        // One member has no last string to tilt toward, and a tilt that
+        // ends on 0 or 1 fits.
+        assert_eq!(rising.overshoot(1), None);
+        assert_eq!(
+            strummed(false, ratio(9, 10), ratio(1, 10)).overshoot(6),
+            None
+        );
+        assert_eq!(strummed(true, ratio(1, 5), ratio(-1, 5)).overshoot(6), None);
     }
 
     #[test]

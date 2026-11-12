@@ -14,7 +14,7 @@ use num_traits::{ToPrimitive, Zero};
 use serde_json::{Map, Value};
 
 use crate::diagnostic::Diagnostics;
-use crate::semantic::{Models, Source, Supply};
+use crate::semantic::{origin, supplier, Models, Source, Supply, Unplayable};
 use crate::syntax::Document;
 
 use crate::compiler::LOCAL_SOURCE;
@@ -954,30 +954,51 @@ fn split_chord_member(segment: &str) -> Option<(&str, Option<usize>)> {
     }
 }
 
-/// What a use or placement supplies to the chords below it (§8.2): one
-/// voicing, or a harmony that a part's voicings voice. A harmony's `offset`
-/// and `scale` map the current pattern's positions to the supplier's, where
-/// its chords are looked up.
+/// What reaches the chords of a pattern from the nearest use or placement
+/// that supplies anything (§8.2), which `by` names. `offset` and `scale`
+/// map the pattern's positions to the supplier's, where a harmony's chords
+/// are looked up.
 #[derive(Clone, Debug)]
-pub(super) enum Supplied {
-    Voicing(String),
-    Harmony {
-        harmony: String,
-        voicings: String,
-        offset: BigRational,
-        scale: BigRational,
-    },
+pub(super) struct Supplied {
+    supply: Supply,
+    by: String,
+    offset: BigRational,
+    scale: BigRational,
 }
 
 impl Supplied {
     /// The objects a chord playing this supply depends on.
     fn dependencies(&self) -> Vec<String> {
-        match self {
-            Supplied::Voicing(id) => vec![id.clone()],
-            Supplied::Harmony {
-                harmony, voicings, ..
-            } => vec![harmony.clone(), voicings.clone()],
+        match &self.supply {
+            Supply::Voicing(id) => vec![id.clone()],
+            Supply::Harmony { harmony, voicings } => vec![harmony.clone(), voicings.clone()],
         }
+    }
+
+    /// Whether every repetition of a pattern under it plays the same: one
+    /// voicing does, and a harmony moves on with each.
+    fn is_one_voicing(&self) -> bool {
+        matches!(self.supply, Supply::Voicing(_))
+    }
+
+    /// What tells this from another supply to the same pattern. A harmony
+    /// repeats every length, so the pattern's place in one pass is what
+    /// counts.
+    fn key(&self, reading: &Reading<'_>) -> SuppliedKey {
+        let zero = BigRational::zero();
+        let (offset, scale) = match &self.supply {
+            Supply::Voicing(_) => (zero.clone(), zero),
+            Supply::Harmony { harmony, .. } => {
+                let offset = match reading.models.harmonies.get(harmony) {
+                    Some(harmony) => {
+                        &self.offset - (&self.offset / &harmony.length).floor() * &harmony.length
+                    }
+                    None => self.offset.clone(),
+                };
+                (offset, self.scale.clone())
+            }
+        };
+        (self.supply.clone(), self.by.clone(), offset, scale)
     }
 }
 
@@ -995,83 +1016,95 @@ pub(super) fn supplied_into(
 ) -> Option<Option<Supplied>> {
     let fields = &object["fields"];
     let repeated = length * BigRational::from_integer(repetition.into());
-    match reading.models.supplies.get(path) {
-        Some(Supply::Voicing(id)) => return Some(Some(Supplied::Voicing(id.clone()))),
-        Some(Supply::Harmony { harmony, voicings }) => {
-            return Some(Some(Supplied::Harmony {
-                harmony: harmony.clone(),
-                voicings: voicings.clone(),
-                offset: repeated,
-                scale: BigRational::from_integer(1.into()),
-            }))
-        }
-        // One that writes a supply that did not read never passes on the
-        // one from further out.
-        None => {
-            if ["voicing", "harmony", "voicings"]
-                .iter()
-                .any(|name| fields.get(name).is_some())
-            {
-                return None;
-            }
-        }
+    if let Some(supply) = reading.models.supplies.get(path) {
+        return Some(Some(Supplied {
+            supply: supply.clone(),
+            by: supplier(object["kind"].as_str()?, path.last()?),
+            offset: repeated,
+            scale: BigRational::from_integer(1.into()),
+        }));
     }
-    Some(match inherited {
-        None => None,
-        Some(Supplied::Voicing(id)) => Some(Supplied::Voicing(id.clone())),
-        Some(Supplied::Harmony {
-            harmony,
-            voicings,
-            offset,
-            scale,
-        }) => {
-            // A use moves its pattern by `at` and its repetitions, and
-            // stretches it.
-            let field = |name: &str, default: i64| match fields.get(name) {
-                None => Some(BigRational::from_integer(default.into())),
-                Some(value) => typed_rational(value).ok(),
-            };
-            let (at, stretch) = (field("at", 0)?, field("stretch", 1)?);
-            Some(Supplied::Harmony {
-                harmony: harmony.clone(),
-                voicings: voicings.clone(),
-                offset: offset + scale * (at + &stretch * repeated),
-                scale: scale * stretch,
-            })
-        }
-    })
+    // One that writes a supply that did not read never passes on the one
+    // from further out.
+    if ["voicing", "harmony", "voicings"]
+        .iter()
+        .any(|name| fields.get(name).is_some())
+    {
+        return None;
+    }
+    let Some(inherited) = inherited else {
+        return Some(None);
+    };
+    if inherited.is_one_voicing() {
+        return Some(Some(inherited.clone()));
+    }
+    // A use moves its pattern by `at` and its repetitions, and stretches
+    // it.
+    let field = |name: &str, default: i64| match fields.get(name) {
+        None => Some(BigRational::from_integer(default.into())),
+        Some(value) => typed_rational(value).ok(),
+    };
+    let (at, stretch) = (field("at", 0)?, field("stretch", 1)?);
+    Some(Some(Supplied {
+        supply: inherited.supply.clone(),
+        by: inherited.by.clone(),
+        offset: &inherited.offset + &inherited.scale * (at + &stretch * repeated),
+        scale: &inherited.scale * stretch,
+    }))
 }
 
-/// The ID of the voicing a chord at position `at` of its pattern plays
-/// under `supplied`: the voicing, or the part's voicing for the harmony's
-/// chord sounding there.
-fn supplied_voicing_id(
-    reading: &Reading<'_>,
-    supplied: &Supplied,
-    at: &BigRational,
-) -> Option<String> {
-    match supplied {
-        Supplied::Voicing(id) => Some(id.clone()),
-        Supplied::Harmony {
-            harmony,
-            voicings,
-            offset,
-            scale,
-        } => {
-            let name = reading
-                .models
-                .harmonies
-                .get(harmony)?
-                .chord_at(&(offset + scale * at));
-            reading
-                .models
-                .voicing_sets
-                .get(voicings)?
-                .chords
-                .get(name)
-                .cloned()
-        }
+/// The voicing a chord is given at one occurrence: its ID and, under a
+/// harmony, the name of the chord it voices.
+struct Given<'m> {
+    voicing: &'m str,
+    name: Option<&'m str>,
+}
+
+impl Given<'_> {
+    /// The words for where the voicing came from.
+    fn origin(&self, supplied: &Supplied) -> String {
+        origin(&supplied.supply, self.voicing, self.name, &supplied.by)
     }
+}
+
+/// The voicing that chord `chord` at position `at` of its pattern plays
+/// under `supplied`: the voicing, or the part's voicing for the harmony's
+/// chord sounding there. The error is why the chord plays nothing there.
+/// `None` is a harmony or voicings that did not read.
+fn given_voicing<'m>(
+    reading: &'m Reading<'_>,
+    chord: &str,
+    supplied: Option<&'m Supplied>,
+    at: &BigRational,
+) -> Option<Result<Given<'m>, Unplayable>> {
+    let Some(supplied) = supplied else {
+        return Some(Err(Unplayable::no_voicing(chord)));
+    };
+    Some(Ok(match &supplied.supply {
+        Supply::Voicing(id) => Given {
+            voicing: id,
+            name: None,
+        },
+        Supply::Harmony { harmony, voicings } => {
+            let position = &supplied.offset + &supplied.scale * at;
+            let name = reading.models.harmonies.get(harmony)?.chord_at(&position);
+            let set = reading.models.voicing_sets.get(voicings)?;
+            let Some(id) = set.chords.get(name) else {
+                return Some(Err(Unplayable::unmapped(
+                    chord,
+                    name,
+                    harmony,
+                    voicings,
+                    set,
+                    &supplied.by,
+                )));
+            };
+            Given {
+                voicing: id,
+                name: Some(name),
+            }
+        }
+    }))
 }
 
 /// A pattern child's onset in pattern-local q, following `at = after(id,
@@ -1116,7 +1149,8 @@ pub(super) fn chord_pitches<'a>(
         .played
         .get([pattern.to_owned(), chord.to_owned()].as_slice())?;
     let pattern = reading.objects.get(pattern)?;
-    let chord = pattern["children"].get(chord)?;
+    let chord_id = chord;
+    let chord = pattern["children"].get(chord_id)?;
     let of_voicing = |id: &str| -> Option<&'a Value> {
         reading.models.voicings.get(id)?;
         reading.objects.get(id)?["fields"].get("pitches")
@@ -1126,10 +1160,11 @@ pub(super) fn chord_pitches<'a>(
         Source::Voicing(id) => of_voicing(id)?,
         Source::Supplied => {
             let at = child_onset(pattern, chord)?.0;
-            of_voicing(&supplied_voicing_id(reading, supplied?, &at)?)?
+            let given = given_voicing(reading, chord_id, Some(supplied?), &at)?.ok()?;
+            of_voicing(given.voicing)?
         }
     };
-    played.keep.of(pitches["items"].as_array()?)
+    played.keep.of(pitches["items"].as_array()?).ok()
 }
 
 /// The occurrence a placement child names: an override's `event`, or the
@@ -1237,11 +1272,224 @@ fn reject_shifted_chord_members(base: &Value, candidate: &Value) -> EditResult<(
     Ok(())
 }
 
+/// How many chord occurrences and repetitions the check of chord
+/// occurrences visits at most. A document past it is past the notes the
+/// compiler expands.
+const MAX_OCCURRENCE_CHECK_STEPS: usize = 100_000;
+
+/// Every chord of `reading`'s tree plays wherever a placement puts it
+/// (§8.2): a chord without pitches has a voicing there, and its `top`,
+/// `bottom`, `pick`, per-member lists and tilt fit that voicing. The
+/// compiler refuses the same occurrences with the same code and words.
+/// What does not read is another check's to report.
+fn validate_chord_occurrences(reading: &Reading<'_>) -> EditResult<()> {
+    let mut walk = ChordWalk {
+        reading,
+        steps: MAX_OCCURRENCE_CHECK_STEPS,
+        waiting: BTreeMap::new(),
+        checked: BTreeSet::new(),
+    };
+    for (place_id, place) in reading.objects {
+        if place["kind"] != "place" {
+            continue;
+        }
+        let path = std::slice::from_ref(place_id);
+        if !walk.repetitions_play(path, place, None, 0)? {
+            break;
+        }
+    }
+    Ok(())
+}
+
+/// The pattern that `object`, a use or a placement, plays, with how many
+/// times and the pattern's length.
+fn used_pattern<'a>(
+    objects: &Map<String, Value>,
+    object: &'a Value,
+) -> Option<(&'a str, u64, BigRational)> {
+    let pattern = source_object_id(object["fields"].get("pattern")?)?;
+    let length = typed_rational(&objects.get(pattern)?["fields"]["length"]).ok()?;
+    Some((pattern, positive_count(object)?, length))
+}
+
+/// The walk of [`validate_chord_occurrences`]. Each of its methods returns
+/// whether the walk may go on: it stops when its `steps` run out.
+struct ChordWalk<'r, 'a> {
+    reading: &'r Reading<'a>,
+    steps: usize,
+    /// Whether each pattern seen holds a chord that waits for a supplied
+    /// voicing, itself or through its uses.
+    waiting: BTreeMap<String, bool>,
+    /// Each pattern already checked, with what was supplied to it. The
+    /// same pattern under the same supply plays the same again.
+    checked: BTreeSet<(String, Option<SuppliedKey>)>,
+}
+
+/// What tells one supply to a pattern from another: the supply, its
+/// supplier, and where the pattern sits in a harmony.
+type SuppliedKey = (Supply, String, BigRational, BigRational);
+
+impl ChordWalk<'_, '_> {
+    fn step(&mut self) -> bool {
+        self.steps = self.steps.saturating_sub(1);
+        self.steps > 0
+    }
+
+    /// Whether pattern `pattern_id`, or a pattern it uses, holds a chord
+    /// that plays a supplied voicing. Most patterns hold none, and the walk
+    /// passes them by.
+    fn waits(&mut self, pattern_id: &str, depth: usize) -> bool {
+        if let Some(waits) = self.waiting.get(pattern_id) {
+            return *waits;
+        }
+        let objects = self.reading.objects;
+        let children = objects
+            .get(pattern_id)
+            .and_then(|pattern| pattern["children"].as_object());
+        let waits = depth < 64
+            && children.is_some_and(|children| {
+                children.iter().any(|(child_id, child)| {
+                    let path = [pattern_id.to_owned(), child_id.clone()];
+                    match child["kind"].as_str() {
+                        Some("chord") => self
+                            .reading
+                            .models
+                            .played
+                            .get(path.as_slice())
+                            .is_some_and(|played| played.source == Source::Supplied),
+                        Some("use") => used_pattern(objects, child)
+                            .is_some_and(|(nested, _, _)| self.waits(nested, depth + 1)),
+                        _ => false,
+                    }
+                })
+            });
+        self.waiting.insert(pattern_id.to_owned(), waits);
+        waits
+    }
+
+    /// Check each repetition of the pattern that `object`, the use or
+    /// placement at `path`, plays, with `inherited` reaching it from
+    /// further out.
+    fn repetitions_play(
+        &mut self,
+        path: &[String],
+        object: &Value,
+        inherited: Option<&Supplied>,
+        depth: usize,
+    ) -> EditResult<bool> {
+        let Some((pattern, count, length)) = used_pattern(self.reading.objects, object) else {
+            return Ok(true);
+        };
+        if !self.waits(pattern, depth) {
+            return Ok(true);
+        }
+        let mut first = None;
+        for repetition in 0..count {
+            if !self.step() {
+                return Ok(false);
+            }
+            let Some(supplied) =
+                supplied_into(self.reading, path, object, inherited, repetition, &length)
+            else {
+                break;
+            };
+            // A harmony comes round again: from the repetition that sits
+            // where the first did, every one has been checked.
+            let key = supplied.as_ref().map(|supplied| supplied.key(self.reading));
+            if first.as_ref() == Some(&key) {
+                break;
+            }
+            if !self.pattern_plays(pattern, supplied.as_ref(), depth)? {
+                return Ok(false);
+            }
+            // One voicing, or none, plays the same in every repetition.
+            if supplied.as_ref().is_none_or(Supplied::is_one_voicing) {
+                break;
+            }
+            first.get_or_insert(key);
+        }
+        Ok(true)
+    }
+
+    /// Check the chords of pattern `pattern_id`, and of the patterns it
+    /// uses, under `supplied`.
+    fn pattern_plays(
+        &mut self,
+        pattern_id: &str,
+        supplied: Option<&Supplied>,
+        depth: usize,
+    ) -> EditResult<bool> {
+        let reading = self.reading;
+        let Some(pattern) = reading.objects.get(pattern_id) else {
+            return Ok(true);
+        };
+        let Some(children) = pattern["children"].as_object() else {
+            return Ok(true);
+        };
+        if depth >= 64 {
+            return Ok(false);
+        }
+        let key = supplied.map(|supplied| supplied.key(reading));
+        if !self.checked.insert((pattern_id.to_owned(), key)) {
+            return Ok(true);
+        }
+        for (child_id, child) in children {
+            if !matches!(child["kind"].as_str(), Some("chord" | "use")) {
+                continue;
+            }
+            let path = [pattern_id.to_owned(), child_id.clone()];
+            match child["kind"].as_str() {
+                Some("chord") => {
+                    let waits = reading
+                        .models
+                        .played
+                        .get(path.as_slice())
+                        .is_some_and(|played| played.source == Source::Supplied);
+                    let Some((at, _)) = child_onset(pattern, child).filter(|_| waits) else {
+                        continue;
+                    };
+                    if !self.step() {
+                        return Ok(false);
+                    }
+                    let refuse = |error: Unplayable| {
+                        let field: Vec<String> =
+                            error.field.into_iter().map(str::to_owned).collect();
+                        EditError::new(error.code.as_str(), error.message).at(&path, &field)
+                    };
+                    let Some(given) = given_voicing(reading, child_id, supplied, &at) else {
+                        continue;
+                    };
+                    let given = given.map_err(refuse)?;
+                    let Some(voicing) = reading.models.voicings.get(given.voicing) else {
+                        continue;
+                    };
+                    if let (Some(Err(error)), Some(supplied)) = (
+                        reading.models.members_given(&path, voicing.pitches),
+                        supplied,
+                    ) {
+                        return Err(refuse(error.under(&given.origin(supplied))));
+                    }
+                }
+                Some("use") => {
+                    let goes_on = self.repetitions_play(&path, child, supplied, depth + 1)?;
+                    if !goes_on {
+                        return Ok(false);
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(true)
+    }
+}
+
 /// Each override and automation of a placement in `root` names an
-/// occurrence that exists. `models` are those that checking `root` read.
+/// occurrence that exists, after each chord plays wherever it is placed.
+/// `models` are those that checking `root` read.
 fn validate_occurrence_targets(root: &Value, models: &Models) -> EditResult<()> {
     let reading = Reading::with(root, models)
         .ok_or_else(|| EditError::new("E_SYNTAX", "objects must be a dictionary"))?;
+    validate_chord_occurrences(&reading)?;
     for (place_id, place) in reading.objects {
         if place["kind"] != "place" {
             continue;
@@ -1618,8 +1866,10 @@ fn enumerate_pattern_occurrences(
                         let supplied = supplied?;
                         dependencies.extend(supplied.dependencies().into_iter().map(|id| vec![id]));
                         let at = child_onset(pattern, child)?.0;
-                        if let Some(id) = supplied_voicing_id(reading, supplied, &at) {
-                            dependencies.push(vec![id]);
+                        if let Some(Ok(given)) =
+                            given_voicing(reading, child_id, Some(supplied), &at)
+                        {
+                            dependencies.push(vec![given.voicing.to_owned()]);
                         }
                     }
                 }

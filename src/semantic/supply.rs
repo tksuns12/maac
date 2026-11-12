@@ -9,7 +9,7 @@ use crate::diagnostic::DiagnosticCode;
 use crate::syntax::Object;
 
 /// What a use or a placement supplies, as its fields declare it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Supply {
     /// The voicing with this ID.
     Voicing(String),

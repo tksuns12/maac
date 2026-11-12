@@ -69,6 +69,15 @@ This check does not expand a performance or render audio, so supported
 Document-only message editing remains available. The bounded regression evidence
 is recorded under [P3](reports/document-performance-evidence.md#p3-acceptance).
 
+Both contexts refuse a final candidate with a chord that does not play at one
+of its occurrences (§8.2): a chord without pitches that no use or placement
+supplies a voicing to, a harmony chord name that the supplied `voicings` do not
+map, or a `top`, `bottom`, `pick`, per-member list or tilt that does not fit
+the supplied voicing. The error has the code and the message the compiler gives
+the same document, at the chord. One transaction can change a voicing and the
+chords that play it together. The check visits a bounded number of occurrences;
+a document past that bound is past what the compiler expands.
+
 ## Original-source diagnostics
 
 `EditError` has an optional original-source UTF-8 byte span. `SourceDocument`
@@ -86,8 +95,9 @@ capabilities and resource limits:
 
 1. Complete source semantic validation, including references, types, required
    fields, temporal constraints, pattern cycles, the occurrences that
-   overrides and placement automations name, writer conflicts, graph
-   causality and applicable dependencies.
+   overrides and placement automations name, that each chord plays where a
+   use or a placement puts it (§8.2), writer conflicts, graph causality and
+   applicable dependencies.
 2. Fixed-base object normalization with specified defaults and **labels retained**.
 3. Fixed-base field normalization in the actual source type, meter, name and
    dependency context. Do not use audible equivalence or candidate context.

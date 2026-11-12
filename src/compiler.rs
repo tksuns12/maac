@@ -39,7 +39,8 @@ use crate::plan_v4::{NodeV4, PlanV4, ProcessorV4};
 use crate::plan_v5::{AudioClip, AudioFadeShape, NodeV5, PlanV5, ProcessorV5};
 use crate::plan_v6::{ClipEntry, NodeV6, PlanV6, ProcessorV6, WarpAnchor, WarpClip};
 use crate::semantic::{
-    Cycle, Groove, InstrumentNodeDescriptor, Keep, Models, Played, Source, Strum, Supply, Vary,
+    supplier, Cycle, Groove, InstrumentNodeDescriptor, Models, Played, Source, Strum, Supply,
+    Unplayable, Vary, PER_MEMBER,
 };
 use crate::syntax::{Document, Field, Object, Reference, Unit, Value, ValueKind};
 
@@ -117,6 +118,13 @@ fn path_diagnostic(
     let mut diagnostics = Diagnostics::new();
     diagnostics.push(diagnostic);
     diagnostics
+}
+
+/// Why chord `chord` does not play at an occurrence, as a diagnostic at the
+/// chord.
+fn unplayable(error: Unplayable, chord: &Object) -> Diagnostics {
+    let field = error.field.and_then(|name| chord.field(name));
+    path_diagnostic(error.code, error.message, chord, field)
 }
 
 /// The error for `object` when semantic analysis kept no model of it. That
@@ -609,10 +617,7 @@ fn strike(strum: &Strum, leaf: &mut LeafDef, k: usize, n: usize, chord: &Object)
         if leaf.velocity.is_negative() || leaf.velocity > Rational::one() {
             return Err(path_diagnostic(
                 DiagnosticCode::Range,
-                format!(
-                    "chord velocity with tilt is {} at member {k}, outside [0,1]",
-                    leaf.velocity
-                ),
+                Strum::overshoot_message(k, &leaf.velocity),
                 chord,
                 chord.field("tilt"),
             ));
@@ -2562,50 +2567,34 @@ impl<'a> Compiler<'a> {
         scale: &Rational,
     ) -> CResult<Vec<LeafDef>> {
         let Some(supplied) = supplied else {
-            return Err(path_diagnostic(
-                DiagnosticCode::Reference,
-                format!(
-                    "chord `{}` has no `pitches` or `voicing`, and no use or placement that reaches it names a voicing",
-                    object.id
-                ),
-                object,
-                None,
-            ));
+            return Err(unplayable(Unplayable::no_voicing(&object.id), object));
         };
-        let (voicing_id, origin_note) = match &supplied.supply {
-            Supply::Voicing(id) => (id.clone(), format!("voicing `{id}` from {}", supplied.by)),
+        let (voicing_id, name) = match &supplied.supply {
+            Supply::Voicing(id) => (id, None),
             Supply::Harmony { harmony, voicings } => {
                 let name = self.harmony_chord_at(object, harmony, supplied, origin, scale)?;
-                let set = match self.models.voicing_sets.get(voicings) {
-                    Some(voicings) => &voicings.chords,
-                    None => return Err(unread(self.object(voicings)?)),
+                let Some(set) = self.models.voicing_sets.get(voicings) else {
+                    return Err(unread(self.object(voicings)?));
                 };
-                let Some(id) = set.get(name) else {
-                    let mapped: Vec<String> =
-                        set.keys().map(|name| format!("\"{name}\"")).collect();
-                    return Err(path_diagnostic(
-                        DiagnosticCode::Reference,
-                        format!(
-                            "chord `{}` plays \"{name}\" from harmony `{harmony}`, which voicings `{voicings}` does not map; it maps {} (from {})",
-                            object.id,
-                            mapped.join(", "),
-                            supplied.by
+                let Some(id) = set.chords.get(name) else {
+                    return Err(unplayable(
+                        Unplayable::unmapped(
+                            &object.id,
+                            name,
+                            harmony,
+                            voicings,
+                            set,
+                            &supplied.by,
                         ),
                         object,
-                        None,
                     ));
                 };
-                (
-                    id.clone(),
-                    format!(
-                        "voicing `{id}` for \"{name}\" in harmony `{harmony}` from {}",
-                        supplied.by
-                    ),
-                )
+                (id, Some(name))
             }
         };
+        let origin_note = crate::semantic::origin(&supplied.supply, voicing_id, name, &supplied.by);
         let played = self.played(pattern, object)?;
-        let (pitches_field, pitches) = self.voicing_pitches(&voicing_id)?;
+        let (pitches_field, pitches) = self.voicing_pitches(voicing_id)?;
         self.lower_chord(pattern, object, played, pitches_field, pitches)
             .map_err(|diagnostics| {
                 let mut named = Diagnostics::new();
@@ -2664,32 +2653,6 @@ impl<'a> Compiler<'a> {
         self.pitches_of(voicing)
     }
 
-    /// The pitches chord `object` keeps of `pitches`. A `top`, `bottom` or
-    /// `pick` that reaches past a supplied voicing is found here.
-    fn select_pitches<'v>(
-        &self,
-        object: &Object,
-        keep: &Keep,
-        pitches: &'v [Value],
-    ) -> CResult<Vec<&'v Value>> {
-        keep.of(pitches).ok_or_else(|| {
-            let rule = match keep {
-                Keep::Pick(_) => "pick positions must be integers",
-                Keep::Top(_) => "top must be an integer",
-                _ => "bottom must be an integer",
-            };
-            path_diagnostic(
-                DiagnosticCode::Range,
-                format!(
-                    "chord.{rule} from 1 through {}, the number of pitches",
-                    pitches.len()
-                ),
-                object,
-                keep.field().and_then(|name| object.field(name)),
-            )
-        })
-    }
-
     /// Member `k` keeps the chord's onset, gate, order and expressions, takes
     /// entry `k` of the selected pitches and of each list-valued per-note
     /// field, and has the leaf ID `chord.k`. A strummed member is then struck
@@ -2702,30 +2665,12 @@ impl<'a> Compiler<'a> {
         pitches_field: &Field,
         pitches: &[Value],
     ) -> CResult<Vec<LeafDef>> {
-        const PER_NOTE: [&str; 4] = [
-            "velocity",
-            "release_velocity",
-            "onset_offset",
-            "release_offset",
-        ];
-        let pitches = self.select_pitches(object, &played.keep, pitches)?;
+        // A `top`, `bottom`, `pick` or per-member list that does not fit a
+        // supplied voicing is found here.
+        let pitches = played
+            .of(pitches)
+            .map_err(|misfit| unplayable(Unplayable::misfit(&misfit), object))?;
         let strum = self.strum_of(pattern, object)?;
-        for name in PER_NOTE {
-            if let Some(field) = object.field(name) {
-                if matches!(&field.value.kind, ValueKind::List(items) if items.len() != pitches.len())
-                {
-                    return Err(path_diagnostic(
-                        DiagnosticCode::Range,
-                        format!(
-                            "chord.{name} must have one entry per pitch played ({})",
-                            pitches.len()
-                        ),
-                        object,
-                        Some(field),
-                    ));
-                }
-            }
-        }
         pitches
             .iter()
             .enumerate()
@@ -2746,7 +2691,7 @@ impl<'a> Compiler<'a> {
                         value: (*pitch).clone(),
                     },
                 );
-                for name in PER_NOTE {
+                for name in PER_MEMBER {
                     if let Some(field) = note.fields.get_mut(name) {
                         if let ValueKind::List(items) = &field.value.kind {
                             field.value = items[member].clone();
@@ -4262,7 +4207,7 @@ impl<'a> Compiler<'a> {
                     transpose: place.transpose_cents.clone(),
                     voicing: place.supply.clone().map(|supply| SuppliedVoicing {
                         supply,
-                        by: format!("placement `{}`", place.id),
+                        by: supplier("place", &place.id),
                         origin: place.at.clone(),
                         scale: place.stretch.clone(),
                     }),
@@ -4733,7 +4678,7 @@ impl<'a> Compiler<'a> {
                     let child_voicing = match &use_def.supply {
                         Some(supply) => Some(SuppliedVoicing {
                             supply: supply.clone(),
-                            by: format!("use `{}`", use_def.id),
+                            by: supplier("use", &use_def.id),
                             origin: use_origin.clone(),
                             scale: child_scale.clone(),
                         }),

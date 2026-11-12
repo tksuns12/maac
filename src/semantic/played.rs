@@ -37,39 +37,106 @@ pub(crate) enum Keep {
 }
 
 impl Keep {
-    /// The field that says so, unless every pitch is kept.
-    pub(crate) fn field(&self) -> Option<&'static str> {
+    /// The pitches kept of `pitches`, in list order, unless this reaches
+    /// past them.
+    pub(crate) fn of<'p, T>(&self, pitches: &'p [T]) -> Result<Vec<&'p T>, Misfit> {
+        let past = |field| Misfit::Keep {
+            field,
+            pitches: pitches.len(),
+        };
         match self {
-            Keep::All => None,
-            Keep::Top(_) => Some("top"),
-            Keep::Bottom(_) => Some("bottom"),
-            Keep::Pick(_) => Some("pick"),
-        }
-    }
-
-    /// The pitches kept of `pitches`, in list order, or `None` if this
-    /// reaches past them.
-    pub(crate) fn of<'p, T>(&self, pitches: &'p [T]) -> Option<Vec<&'p T>> {
-        match self {
-            Keep::All => Some(pitches.iter().collect()),
+            Keep::All => Ok(pitches.iter().collect()),
             Keep::Top(count) => {
-                let first = pitches.len().checked_sub(*count)?;
-                Some(pitches[first..].iter().collect())
+                let first = pitches.len().checked_sub(*count).ok_or(past("top"))?;
+                Ok(pitches[first..].iter().collect())
             }
-            Keep::Bottom(count) => Some(pitches.get(..*count)?.iter().collect()),
+            Keep::Bottom(count) => Ok(pitches
+                .get(..*count)
+                .ok_or(past("bottom"))?
+                .iter()
+                .collect()),
             Keep::Pick(positions) => positions
                 .iter()
-                .map(|position| pitches.get(position - 1))
+                .map(|position| pitches.get(position - 1).ok_or(past("pick")))
                 .collect(),
         }
     }
 }
+
+/// The chord fields that hold one value for every member, or a list with
+/// one entry per played pitch.
+pub(crate) const PER_MEMBER: [&str; 4] = [
+    "velocity",
+    "release_velocity",
+    "onset_offset",
+    "release_offset",
+];
 
 /// The pitches a chord plays, as its fields declare them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Played {
     pub(crate) source: Source,
     pub(crate) keep: Keep,
+    /// Each per-member field the chord writes as a list, with the length
+    /// of the list.
+    pub(crate) lists: Vec<(&'static str, usize)>,
+}
+
+impl Played {
+    /// The pitches the chord plays of `pitches`, those of its source, in
+    /// list order, unless the chord does not fit them.
+    pub(crate) fn of<'p, T>(&self, pitches: &'p [T]) -> Result<Vec<&'p T>, Misfit> {
+        let played = self.keep.of(pitches)?;
+        match self
+            .lists
+            .iter()
+            .find(|(_, length)| *length != played.len())
+        {
+            Some((field, _)) => Err(Misfit::List {
+                field,
+                played: played.len(),
+            }),
+            None => Ok(played),
+        }
+    }
+}
+
+/// How a chord does not fit the pitches of its source. A chord with its
+/// own pitches or a named voicing is checked against them as it is read; a
+/// supplied voicing can differ at each occurrence.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Misfit {
+    /// `field`, a `top`, `bottom` or `pick`, reaches past the `pitches`
+    /// there are.
+    Keep { field: &'static str, pitches: usize },
+    /// The list in per-member `field` has another length than the `played`
+    /// pitches.
+    List { field: &'static str, played: usize },
+}
+
+impl Misfit {
+    /// The chord field that does not fit.
+    pub(crate) fn field(&self) -> &'static str {
+        match self {
+            Misfit::Keep { field, .. } | Misfit::List { field, .. } => field,
+        }
+    }
+
+    pub(crate) fn message(&self) -> String {
+        match self {
+            Misfit::Keep { field, pitches } => {
+                let rule = match *field {
+                    "pick" => "pick positions must be integers",
+                    "top" => "top must be an integer",
+                    _ => "bottom must be an integer",
+                };
+                format!("chord.{rule} from 1 through {pitches}, the number of pitches")
+            }
+            Misfit::List { field, played } => {
+                format!("chord.{field} must have one entry per pitch played ({played})")
+            }
+        }
+    }
 }
 
 impl Validator<'_> {
@@ -115,9 +182,21 @@ impl Validator<'_> {
             None => (None, None),
         };
         if let (true, Some(source), Some(keep)) = (self.reported() == reported, source, keep) {
-            self.models
-                .played
-                .insert(path.to_vec(), Played { source, keep });
+            let lists = PER_MEMBER
+                .into_iter()
+                .filter_map(|name| match &object.field(name)?.value.kind {
+                    ValueKind::List(items) => Some((name, items.len())),
+                    _ => None,
+                })
+                .collect();
+            self.models.played.insert(
+                path.to_vec(),
+                Played {
+                    source,
+                    keep,
+                    lists,
+                },
+            );
         }
         members
     }
@@ -279,7 +358,8 @@ mod tests {
                 played(fields),
                 Some(Played {
                     source,
-                    keep: Keep::All
+                    keep: Keep::All,
+                    lists: Vec::new(),
                 }),
                 "{fields}"
             );
@@ -298,7 +378,8 @@ mod tests {
                 played(fields),
                 Some(Played {
                     source: Source::Own,
-                    keep: Keep::Top(1)
+                    keep: Keep::Top(1),
+                    lists: Vec::new(),
                 }),
                 "{fields}"
             );
@@ -322,7 +403,8 @@ mod tests {
                     played(&format!("{source_fields}{fields}")),
                     Some(Played {
                         source,
-                        keep: keep.clone()
+                        keep: keep.clone(),
+                        lists: Vec::new(),
                     }),
                     "{source_fields}{fields}"
                 );
@@ -355,6 +437,44 @@ mod tests {
     }
 
     #[test]
+    fn a_chord_reads_its_lists_and_fits_them_to_the_pitches_it_plays() {
+        let chord = played(
+            "top = 2; velocity = [1/2, 1/4]; onset_offset = [0ms, 5ms]; release_velocity = 1/2;",
+        )
+        .unwrap();
+        assert_eq!(chord.lists, [("velocity", 2), ("onset_offset", 2)]);
+        let pitches = ["G2", "B2", "D3"];
+        assert_eq!(chord.of(&pitches), Ok(vec![&"B2", &"D3"]));
+        // One pitch is fewer than `top` keeps.
+        let misfit = chord.of(&pitches[..1]).unwrap_err();
+        assert_eq!(
+            misfit,
+            Misfit::Keep {
+                field: "top",
+                pitches: 1
+            }
+        );
+        assert_eq!(
+            misfit.message(),
+            "chord.top must be an integer from 1 through 1, the number of pitches"
+        );
+        // Every pitch played needs its entry.
+        let all = played("velocity = [1/2, 1/4];").unwrap();
+        let misfit = all.of(&pitches).unwrap_err();
+        assert_eq!(
+            misfit,
+            Misfit::List {
+                field: "velocity",
+                played: 3
+            }
+        );
+        assert_eq!(
+            misfit.message(),
+            "chord.velocity must have one entry per pitch played (3)"
+        );
+    }
+
+    #[test]
     fn kept_pitches_stay_in_list_order() {
         let pitches = ["G2", "B2", "D3", "G3"];
         for (keep, kept) in [
@@ -370,6 +490,7 @@ mod tests {
         ] {
             let found = keep
                 .of(&pitches)
+                .ok()
                 .map(|kept| kept.into_iter().copied().collect::<Vec<_>>());
             assert_eq!(found, kept, "{keep:?}");
         }
