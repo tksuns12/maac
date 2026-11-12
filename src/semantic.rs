@@ -98,9 +98,9 @@ pub(crate) struct Models {
     pub(crate) played: BTreeMap<Vec<String>, Played>,
 }
 
-/// The models of a document that is not checked as a whole, for a test of
-/// one compiler stage.
-#[cfg(test)]
+/// The models of a document that is not checked as a whole: editing reads
+/// them of a tree it walks, and a test of one compiler stage of its source.
+/// An object that does not read has no model.
 pub(crate) fn models_of(document: &Document) -> Models {
     let instruments = BTreeMap::new();
     let mut validator = Validator::new(document, &instruments);
@@ -791,6 +791,9 @@ struct Validator<'a> {
     modulations: Vec<ModulationV7>,
     references: BTreeMap<String, ReferenceTarget>,
     models: Models,
+    /// How many of `diagnostics` are about values that no model holds: the
+    /// pitches in a list of pitches.
+    outside_models: usize,
     automation_writers: BTreeMap<String, Writer>,
     total_objects: usize,
     validated_gain_curves: BTreeSet<String>,
@@ -827,6 +830,7 @@ impl<'a> Validator<'a> {
             modulations: Vec::new(),
             references: BTreeMap::new(),
             models: Models::default(),
+            outside_models: 0,
             automation_writers: BTreeMap::new(),
             total_objects: 0,
             validated_gain_curves: BTreeSet::new(),
@@ -1079,6 +1083,12 @@ impl<'a> Validator<'a> {
                 );
             }
         }
+    }
+
+    /// How many diagnostics so far are about what a model holds. A reader
+    /// keeps a model when this is the same before and after it reads.
+    fn reported(&self) -> usize {
+        self.diagnostics.len() - self.outside_models
     }
 
     /// `check_schema` against the fields the object's kind declares.

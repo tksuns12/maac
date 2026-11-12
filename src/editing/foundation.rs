@@ -5,15 +5,17 @@
 //! required extensions, local library/import syntax, native production nodes,
 //! and native message performance remain explicit E_CAPABILITY boundaries.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
 use num_bigint::BigInt;
 use num_rational::BigRational;
 use num_traits::{ToPrimitive, Zero};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value};
 
 use crate::diagnostic::Diagnostics;
-use crate::syntax::{Document, Unit};
+use crate::semantic::{Models, Source, Supply};
+use crate::syntax::Document;
 
 use crate::compiler::LOCAL_SOURCE;
 use crate::normalization::NormalizationContext;
@@ -468,22 +470,23 @@ impl EditContext for BundleEditContext {
         let descriptors =
             crate::compiler::instrument_descriptors_for_editing(&resolved, &libraries, &document)
                 .map_err(map_diagnostics)?;
-        crate::semantic::validate_source_document_profile(&document, &descriptors).map_err(
-            |diagnostics| {
+        let graph = crate::semantic::validate_source_document_profile(&document, &descriptors)
+            .map_err(|diagnostics| {
                 if self.source_path == self.bundle.entry {
                     map_local_diagnostics(diagnostics)
                 } else {
                     map_diagnostics(diagnostics)
                 }
+            })?;
+        validate_occurrence_targets(&document.to_syntax_json_value(), graph.models()).map_err(
+            |error| {
+                if self.source_path == self.bundle.entry {
+                    error
+                } else {
+                    error.without_source_mapping()
+                }
             },
-        )?;
-        validate_occurrence_targets(&document.to_syntax_json_value()).map_err(|error| {
-            if self.source_path == self.bundle.entry {
-                error
-            } else {
-                error.without_source_mapping()
-            }
-        })
+        )
     }
 
     fn normalize_object(
@@ -574,9 +577,9 @@ impl EditContext for FoundationEditContext {
             .map_err(|message| EditError::new("E_SYNTAX", message))?;
         reject_unsupported_capabilities(&document)?;
         let instruments = BTreeMap::new();
-        crate::semantic::validate_source_document_profile(&document, &instruments)
+        let graph = crate::semantic::validate_source_document_profile(&document, &instruments)
             .map_err(map_local_diagnostics)?;
-        validate_occurrence_targets(authored)
+        validate_occurrence_targets(authored, graph.models())
     }
 
     fn normalize_object(
@@ -759,22 +762,6 @@ fn typed_rational(value: &Value) -> EditResult<BigRational> {
     Ok(BigRational::new(numerator, denominator))
 }
 
-fn rational(value: &BigRational, unit: Option<Unit>) -> Value {
-    match unit {
-        Some(unit) => json!({
-            "t":"quantity",
-            "n":value.numer().to_string(),
-            "d":value.denom().to_string(),
-            "u":unit.as_str()
-        }),
-        None => json!({
-            "t":"number",
-            "n":value.numer().to_string(),
-            "d":value.denom().to_string()
-        }),
-    }
-}
-
 fn source_object_id(value: &Value) -> Option<&str> {
     if value["t"] != "ref" || !value["port"].is_null() {
         return None;
@@ -800,17 +787,61 @@ fn positive_count(object: &Value) -> Option<u64> {
 /// that names it.
 type SourceMappings = Vec<(Path, usize)>;
 
-fn resolve_occurrence(root: &Value, place: &Value, address: &str) -> Option<SourceMappings> {
-    resolve_occurrence_pitches(root, place, address).map(|(mappings, _)| mappings)
+/// A tree with the models that semantic analysis reads of its voicings and
+/// harmonies, of what its uses and placements supply, and of the pitches
+/// its chords play. A model is missing where the tree is wrong, and what
+/// depends on it then does not resolve.
+pub(super) struct Reading<'a> {
+    objects: &'a Map<String, Value>,
+    models: Cow<'a, Models>,
 }
 
-/// The source mappings of the occurrence at `address` and, for a chord
-/// member, the pitches its chord plays there.
-fn resolve_occurrence_pitches<'a>(
-    root: &'a Value,
+impl<'a> Reading<'a> {
+    /// Read `tree`. `None` is a tree that is not a document.
+    pub(super) fn of(tree: &'a Value) -> Option<Self> {
+        let document = crate::syntax::document_from_syntax_json_value(tree).ok()?;
+        Some(Self {
+            objects: tree["objects"].as_object()?,
+            models: Cow::Owned(crate::semantic::models_of(&document)),
+        })
+    }
+
+    /// `tree` with the `models` that checking it read.
+    fn with(tree: &'a Value, models: &'a Models) -> Option<Self> {
+        Some(Self {
+            objects: tree["objects"].as_object()?,
+            models: Cow::Borrowed(models),
+        })
+    }
+
+    /// Whether the use or placement at object path `path` supplies a
+    /// harmony.
+    pub(super) fn supplies_harmony(&self, path: &[String]) -> bool {
+        matches!(self.models.supplies.get(path), Some(Supply::Harmony { .. }))
+    }
+}
+
+/// The chord member an occurrence address ends at: member `index` of chord
+/// `chord` of pattern `pattern`.
+struct Member {
+    pattern: String,
+    chord: String,
+    index: usize,
+}
+
+/// Follow `address` from placement `place`, with ID `place_id`, down its
+/// uses to its leaf. `enter` is told of the placement and then of each use
+/// on the way: its object path, the object, the repetition the address
+/// names, and the length of its pattern. Returns the source mappings and,
+/// when the leaf is a chord member, that member, which is not checked
+/// against the pitches the chord plays.
+fn walk_occurrence(
+    objects: &Map<String, Value>,
+    place_id: &str,
     place: &Value,
     address: &str,
-) -> Option<(SourceMappings, Option<Vec<&'a Value>>)> {
+    mut enter: impl FnMut(&[String], &Value, u64, &BigRational) -> Option<()>,
+) -> Option<(SourceMappings, Option<Member>)> {
     let segments: Vec<_> = address.split('/').collect();
     if segments.len() < 2 || segments.iter().any(|segment| segment.is_empty()) {
         return None;
@@ -819,10 +850,9 @@ fn resolve_occurrence_pitches<'a>(
     if place_index >= positive_count(place)? {
         return None;
     }
-    let objects = root["objects"].as_object()?;
     let mut pattern_id = source_object_id(place["fields"].get("pattern")?)?.to_owned();
     let length = typed_rational(&objects.get(&pattern_id)?["fields"]["length"]).ok()?;
-    let mut supplied = supplied_into(place, None, place_index, &length)?;
+    enter(&[place_id.to_owned()], place, place_index, &length)?;
     let mut position = 1usize;
     let mut mappings = Vec::new();
 
@@ -834,15 +864,18 @@ fn resolve_occurrence_pitches<'a>(
         let (child_id, member) = split_chord_member(segments.get(position)?)?;
         let child = pattern["children"].get(child_id)?;
         let source_path = vec![pattern_id.clone(), child_id.to_owned()];
-        mappings.push((source_path, position));
+        mappings.push((source_path.clone(), position));
         match (child["kind"].as_str()?, member) {
             ("note" | "hit" | "message" | "audio", None) => {
                 return (position + 1 == segments.len()).then_some((mappings, None));
             }
-            ("chord", Some(member)) => {
-                let pitches = chord_pitches(objects, pattern, child, supplied.as_ref())?;
-                return (position + 1 == segments.len() && member < pitches.len())
-                    .then_some((mappings, Some(pitches)));
+            ("chord", Some(index)) => {
+                let member = Member {
+                    pattern: pattern_id,
+                    chord: child_id.to_owned(),
+                    index,
+                };
+                return (position + 1 == segments.len()).then_some((mappings, Some(member)));
             }
             ("use", None) => {
                 let repeat_position = position + 1;
@@ -852,12 +885,61 @@ fn resolve_occurrence_pitches<'a>(
                 }
                 pattern_id = source_object_id(child["fields"].get("pattern")?)?.to_owned();
                 let length = typed_rational(&objects.get(&pattern_id)?["fields"]["length"]).ok()?;
-                supplied = supplied_into(child, supplied.as_ref(), repeat, &length)?;
+                enter(&source_path, child, repeat, &length)?;
                 position += 2;
             }
             _ => return None,
         }
     }
+}
+
+/// The source mappings of the occurrence at `address`, read from the
+/// shape of `root` alone: a tree in the middle of a transaction may be
+/// wrong, and its occurrences keep their source objects all the same.
+fn occurrence_sources(
+    root: &Value,
+    place_id: &str,
+    place: &Value,
+    address: &str,
+) -> Option<SourceMappings> {
+    let objects = root["objects"].as_object()?;
+    walk_occurrence(objects, place_id, place, address, |_, _, _, _| Some(()))
+        .map(|(mappings, _)| mappings)
+}
+
+fn resolve_occurrence(
+    reading: &Reading<'_>,
+    place_id: &str,
+    place: &Value,
+    address: &str,
+) -> Option<SourceMappings> {
+    resolve_occurrence_pitches(reading, place_id, place, address).map(|(mappings, _)| mappings)
+}
+
+/// The source mappings of the occurrence at `address` and, for a chord
+/// member, the pitches its chord plays there.
+fn resolve_occurrence_pitches<'a>(
+    reading: &Reading<'a>,
+    place_id: &str,
+    place: &Value,
+    address: &str,
+) -> Option<(SourceMappings, Option<Vec<&'a Value>>)> {
+    let mut supplied = None;
+    let (mappings, member) = walk_occurrence(
+        reading.objects,
+        place_id,
+        place,
+        address,
+        |path, object, repetition, length| {
+            supplied = supplied_into(reading, path, object, supplied.as_ref(), repetition, length)?;
+            Some(())
+        },
+    )?;
+    let Some(member) = member else {
+        return Some((mappings, None));
+    };
+    let pitches = chord_pitches(reading, &member.pattern, &member.chord, supplied.as_ref())?;
+    (member.index < pitches.len()).then_some((mappings, Some(pitches)))
 }
 
 /// Split a leaf address segment into its leaf ID and, for a chord member,
@@ -899,11 +981,13 @@ impl Supplied {
     }
 }
 
-/// What reaches repetition `repetition` of the pattern under `object`, a
-/// use or placement whose pattern is `length` long: its own voicing or
-/// harmony, or else the one `inherited` from further out, moved into its
-/// pattern. `None` is a malformed field.
+/// What reaches repetition `repetition` of the pattern under `object`, the
+/// use or placement at object path `path` whose pattern is `length` long:
+/// what it supplies itself, or else what is `inherited` from further out,
+/// moved into its pattern. `None` is a supply or a field that did not read.
 pub(super) fn supplied_into(
+    reading: &Reading<'_>,
+    path: &[String],
     object: &Value,
     inherited: Option<&Supplied>,
     repetition: u64,
@@ -911,18 +995,26 @@ pub(super) fn supplied_into(
 ) -> Option<Option<Supplied>> {
     let fields = &object["fields"];
     let repeated = length * BigRational::from_integer(repetition.into());
-    if let Some(voicing) = fields.get("voicing") {
-        return Some(Some(Supplied::Voicing(
-            source_object_id(voicing)?.to_owned(),
-        )));
-    }
-    if let Some(harmony) = fields.get("harmony") {
-        return Some(Some(Supplied::Harmony {
-            harmony: source_object_id(harmony)?.to_owned(),
-            voicings: source_object_id(fields.get("voicings")?)?.to_owned(),
-            offset: repeated,
-            scale: BigRational::from_integer(1.into()),
-        }));
+    match reading.models.supplies.get(path) {
+        Some(Supply::Voicing(id)) => return Some(Some(Supplied::Voicing(id.clone()))),
+        Some(Supply::Harmony { harmony, voicings }) => {
+            return Some(Some(Supplied::Harmony {
+                harmony: harmony.clone(),
+                voicings: voicings.clone(),
+                offset: repeated,
+                scale: BigRational::from_integer(1.into()),
+            }))
+        }
+        // One that writes a supply that did not read never passes on the
+        // one from further out.
+        None => {
+            if ["voicing", "harmony", "voicings"]
+                .iter()
+                .any(|name| fields.get(name).is_some())
+            {
+                return None;
+            }
+        }
     }
     Some(match inherited {
         None => None,
@@ -950,43 +1042,36 @@ pub(super) fn supplied_into(
     })
 }
 
-/// The voicing a chord at position `at` of its pattern plays under
-/// `supplied`: the voicing, or the part's voicing for the harmony's chord
-/// sounding there.
+/// The ID of the voicing a chord at position `at` of its pattern plays
+/// under `supplied`: the voicing, or the part's voicing for the harmony's
+/// chord sounding there.
 fn supplied_voicing_id(
-    objects: &Map<String, Value>,
+    reading: &Reading<'_>,
     supplied: &Supplied,
-    at: &Value,
+    at: &BigRational,
 ) -> Option<String> {
-    let (harmony, voicings, offset, scale) = match supplied {
-        Supplied::Voicing(id) => return Some(id.clone()),
+    match supplied {
+        Supplied::Voicing(id) => Some(id.clone()),
         Supplied::Harmony {
             harmony,
             voicings,
             offset,
             scale,
-        } => (harmony, voicings, offset, scale),
-    };
-    let position = offset + scale * typed_rational(at).ok()?;
-    let fields = &objects.get(harmony)?["fields"];
-    let length = typed_rational(&fields["length"]).ok()?;
-    let position = &position - (&position / &length).floor() * &length;
-    let mut name = None;
-    for chord in fields["chords"]["items"].as_array()? {
-        let pair = chord["items"].as_array()?;
-        if typed_rational(pair.first()?).ok()? <= position {
-            name = pair.get(1)?["v"].as_str();
+        } => {
+            let name = reading
+                .models
+                .harmonies
+                .get(harmony)?
+                .chord_at(&(offset + scale * at));
+            reading
+                .models
+                .voicing_sets
+                .get(voicings)?
+                .chords
+                .get(name)
+                .cloned()
         }
     }
-    let name = name?;
-    objects.get(voicings)?["fields"]["chords"]["items"]
-        .as_array()?
-        .iter()
-        .find_map(|entry| {
-            let pair = entry["items"].as_array()?;
-            (pair.first()?["v"].as_str()? == name).then(|| source_object_id(pair.get(1)?))?
-        })
-        .map(str::to_owned)
 }
 
 /// A pattern child's onset in pattern-local q, following `at = after(id,
@@ -1017,54 +1102,34 @@ pub(super) fn child_onset(pattern: &Value, child: &Value) -> Option<(BigRational
     }
 }
 
-/// The pitches a chord of `pattern` plays (§8.2): its own `pitches`, those of
-/// the voicing it names, or else those `supplied` by its nearest use or
-/// placement, narrowed by `top`, `bottom` or `pick`.
+/// The pitches that chord `chord` of pattern `pattern` plays (§8.2): its own
+/// `pitches`, those of the voicing it names, or else those `supplied` by its
+/// nearest use or placement, narrowed by `top`, `bottom` or `pick`.
 pub(super) fn chord_pitches<'a>(
-    objects: &'a Map<String, Value>,
-    pattern: &Value,
-    chord: &'a Value,
+    reading: &Reading<'a>,
+    pattern: &str,
+    chord: &str,
     supplied: Option<&Supplied>,
 ) -> Option<Vec<&'a Value>> {
-    let fields = &chord["fields"];
-    let pitches = match (fields.get("pitches"), fields.get("voicing")) {
-        (Some(pitches), _) => pitches,
-        (None, Some(voicing)) => &objects.get(source_object_id(voicing)?)?["fields"]["pitches"],
-        (None, None) => {
-            let at = rational(&child_onset(pattern, chord)?.0, Some(Unit::Q));
-            let id = supplied_voicing_id(objects, supplied?, &at)?;
-            &objects.get(&id)?["fields"]["pitches"]
+    let played = reading
+        .models
+        .played
+        .get([pattern.to_owned(), chord.to_owned()].as_slice())?;
+    let pattern = reading.objects.get(pattern)?;
+    let chord = pattern["children"].get(chord)?;
+    let of_voicing = |id: &str| -> Option<&'a Value> {
+        reading.models.voicings.get(id)?;
+        reading.objects.get(id)?["fields"].get("pitches")
+    };
+    let pitches = match &played.source {
+        Source::Own => chord["fields"].get("pitches")?,
+        Source::Voicing(id) => of_voicing(id)?,
+        Source::Supplied => {
+            let at = child_onset(pattern, chord)?.0;
+            of_voicing(&supplied_voicing_id(reading, supplied?, &at)?)?
         }
     };
-    let pitches = pitches["items"].as_array()?.as_slice();
-    let position = |value: &Value| -> Option<usize> {
-        let position = typed_rational(value).ok()?;
-        if !position.is_integer() {
-            return None;
-        }
-        let position = position.to_integer().to_usize()?;
-        (1..=pitches.len()).contains(&position).then_some(position)
-    };
-    match (fields.get("top"), fields.get("bottom"), fields.get("pick")) {
-        (None, None, None) => Some(pitches.iter().collect()),
-        (Some(top), None, None) => Some(pitches[pitches.len() - position(top)?..].iter().collect()),
-        (None, Some(bottom), None) => Some(pitches[..position(bottom)?].iter().collect()),
-        (None, None, Some(pick)) => {
-            let positions = match pick["items"].as_array() {
-                Some(items) => items.iter().map(position).collect::<Option<Vec<_>>>()?,
-                None => vec![position(pick)?],
-            };
-            (!positions.is_empty() && positions.windows(2).all(|pair| pair[0] < pair[1])).then(
-                || {
-                    positions
-                        .iter()
-                        .map(|position| &pitches[position - 1])
-                        .collect()
-                },
-            )
-        }
-        _ => None,
-    }
+    played.keep.of(pitches["items"].as_array()?)
 }
 
 /// The occurrence a placement child names: an override's `event`, or the
@@ -1098,6 +1163,22 @@ fn reject_shifted_chord_members(base: &Value, candidate: &Value) -> EditResult<(
     ) else {
         return Ok(());
     };
+    // An occurrence resolves through placements, patterns, voicings and
+    // harmonies. With all of those as they were, no member moved.
+    fn resolved_through(objects: &Map<String, Value>) -> impl Iterator<Item = (&String, &Value)> {
+        objects.iter().filter(|(_, object)| {
+            matches!(
+                object["kind"].as_str(),
+                Some("place" | "pattern" | "voicing" | "harmony" | "voicings")
+            )
+        })
+    }
+    if resolved_through(base_objects).eq(resolved_through(candidate_objects)) {
+        return Ok(());
+    }
+    // Both trees are read once, when the first target that could shift is
+    // found.
+    let mut readings = None;
     for (place_id, place) in candidate_objects {
         if place["kind"] != "place" {
             continue;
@@ -1121,10 +1202,16 @@ fn reject_shifted_chord_members(base: &Value, candidate: &Value) -> EditResult<(
             if !existed {
                 continue;
             }
+            if readings.is_none() {
+                readings = Reading::of(base).zip(Reading::of(candidate));
+            }
+            let Some((before, after)) = &readings else {
+                return Ok(());
+            };
             // A target that no longer exists is reported as dangling.
             let (Some((mappings, Some(old))), Some((_, Some(new)))) = (
-                resolve_occurrence_pitches(base, base_place, event),
-                resolve_occurrence_pitches(candidate, place, event),
+                resolve_occurrence_pitches(before, place_id, base_place, event),
+                resolve_occurrence_pitches(after, place_id, place, event),
             ) else {
                 continue;
             };
@@ -1150,11 +1237,12 @@ fn reject_shifted_chord_members(base: &Value, candidate: &Value) -> EditResult<(
     Ok(())
 }
 
-fn validate_occurrence_targets(root: &Value) -> EditResult<()> {
-    let objects = root["objects"]
-        .as_object()
+/// Each override and automation of a placement in `root` names an
+/// occurrence that exists. `models` are those that checking `root` read.
+fn validate_occurrence_targets(root: &Value, models: &Models) -> EditResult<()> {
+    let reading = Reading::with(root, models)
         .ok_or_else(|| EditError::new("E_SYNTAX", "objects must be a dictionary"))?;
-    for (place_id, place) in objects {
+    for (place_id, place) in reading.objects {
         if place["kind"] != "place" {
             continue;
         }
@@ -1190,7 +1278,9 @@ fn validate_occurrence_targets(root: &Value) -> EditResult<()> {
                     format!("automation event `{event}` is deleted by override `{by}`"),
                 )));
             }
-            if resolve_occurrence(root, place, event).is_none() && !names_insert(place, event) {
+            if resolve_occurrence(&reading, place_id, place, event).is_none()
+                && !names_insert(place, event)
+            {
                 return Err(at(EditError::new(
                     "E_INSTANCE_TARGET",
                     format!("automation event `{event}` does not exist"),
@@ -1214,7 +1304,7 @@ fn validate_occurrence_targets(root: &Value) -> EditResult<()> {
                 )
                 .at(&[place_id.clone(), override_id.clone()], &["event".into()]));
             }
-            if resolve_occurrence(root, place, event).is_none() {
+            if resolve_occurrence(&reading, place_id, place, event).is_none() {
                 return Err(EditError::new(
                     "E_INSTANCE_TARGET",
                     format!("override target `{event}` does not exist"),
@@ -1257,7 +1347,7 @@ fn rewrite_occurrence_addresses(
             let Some(event) = named_occurrence(before_override) else {
                 continue;
             };
-            let Some(mappings) = resolve_occurrence(before, before_place, event) else {
+            let Some(mappings) = occurrence_sources(before, place_id, before_place, event) else {
                 continue;
             };
             let Some((_, segment_index)) = mappings
@@ -1437,7 +1527,8 @@ fn kind_is_place(tree: &Value, id: &str) -> bool {
 }
 
 fn enumerate_event_occurrences(tree: &Value) -> Option<Vec<EventOccurrence>> {
-    let objects = tree["objects"].as_object()?;
+    let reading = Reading::of(tree)?;
+    let objects = reading.objects;
     let mut out = Vec::new();
     for (place_id, place) in objects {
         if place["kind"] != "place" {
@@ -1449,9 +1540,16 @@ fn enumerate_event_occurrences(tree: &Value) -> Option<Vec<EventOccurrence>> {
         for repetition in 0..count {
             let mut address = vec![place_id.clone(), repetition.to_string()];
             let dependencies = vec![vec![place_id.clone()]];
-            let supplied = supplied_into(place, None, repetition, &length)?;
+            let supplied = supplied_into(
+                &reading,
+                std::slice::from_ref(place_id),
+                place,
+                None,
+                repetition,
+                &length,
+            )?;
             enumerate_pattern_occurrences(
-                objects,
+                &reading,
                 pattern,
                 supplied.as_ref(),
                 &mut address,
@@ -1466,7 +1564,7 @@ fn enumerate_event_occurrences(tree: &Value) -> Option<Vec<EventOccurrence>> {
 }
 
 fn enumerate_pattern_occurrences(
-    objects: &Map<String, Value>,
+    reading: &Reading<'_>,
     pattern_id: &str,
     supplied: Option<&Supplied>,
     address: &mut Vec<String>,
@@ -1477,6 +1575,7 @@ fn enumerate_pattern_occurrences(
     if depth >= 64 {
         return None;
     }
+    let objects = reading.objects;
     let pattern = objects.get(pattern_id)?;
     if pattern["kind"] != "pattern" {
         return None;
@@ -1508,18 +1607,23 @@ fn enumerate_pattern_occurrences(
                 address.pop();
             }
             "chord" => {
-                let fields = &child["fields"];
-                if let Some(voicing) = fields.get("voicing") {
-                    dependencies.push(vec![source_object_id(voicing)?.to_owned()]);
-                } else if fields.get("pitches").is_none() {
-                    let supplied = supplied?;
-                    dependencies.extend(supplied.dependencies().into_iter().map(|id| vec![id]));
-                    let at = rational(&child_onset(pattern, child)?.0, Some(Unit::Q));
-                    if let Some(id) = supplied_voicing_id(objects, supplied, &at) {
-                        dependencies.push(vec![id]);
+                let played = reading
+                    .models
+                    .played
+                    .get([pattern_id.to_owned(), child_id.clone()].as_slice())?;
+                match &played.source {
+                    Source::Own => {}
+                    Source::Voicing(id) => dependencies.push(vec![id.clone()]),
+                    Source::Supplied => {
+                        let supplied = supplied?;
+                        dependencies.extend(supplied.dependencies().into_iter().map(|id| vec![id]));
+                        let at = child_onset(pattern, child)?.0;
+                        if let Some(id) = supplied_voicing_id(reading, supplied, &at) {
+                            dependencies.push(vec![id]);
+                        }
                     }
                 }
-                for member in 0..chord_pitches(objects, pattern, child, supplied)?.len() {
+                for member in 0..chord_pitches(reading, pattern_id, child_id, supplied)?.len() {
                     address.push(format!("{child_id}.{member}"));
                     out.push(EventOccurrence {
                         address: address.join("/"),
@@ -1533,11 +1637,18 @@ fn enumerate_pattern_occurrences(
                 let count = positive_count(child)?;
                 let length = typed_rational(&objects.get(nested)?["fields"]["length"]).ok()?;
                 for repetition in 0..count {
-                    let nested_supplied = supplied_into(child, supplied, repetition, &length)?;
+                    let nested_supplied = supplied_into(
+                        reading,
+                        &[pattern_id.to_owned(), child_id.clone()],
+                        child,
+                        supplied,
+                        repetition,
+                        &length,
+                    )?;
                     address.push(child_id.clone());
                     address.push(repetition.to_string());
                     enumerate_pattern_occurrences(
-                        objects,
+                        reading,
                         nested,
                         nested_supplied.as_ref(),
                         address,

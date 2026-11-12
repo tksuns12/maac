@@ -7,7 +7,9 @@ use std::collections::BTreeMap;
 
 use serde_json::Value;
 
-use super::{enumerate_event_occurrences, names_insert, object_at, resolve_occurrence_pitches};
+use super::{
+    enumerate_event_occurrences, names_insert, object_at, resolve_occurrence_pitches, Reading,
+};
 use crate::bundle::SourceBundle;
 use crate::editing::AuthoredDocument;
 
@@ -83,12 +85,13 @@ fn agree(body: &str) -> usize {
 
     // What the plan plays for each pitch a note writes, and what editing
     // says each chord member plays.
+    let reading = Reading::of(tree).expect("editing reads the document");
     let mut written: BTreeMap<String, String> = BTreeMap::new();
     let mut members = Vec::new();
     for (address, hertz) in &compiled {
         let (place_id, rest) = address.split_once('/').unwrap();
         let place = &tree["objects"][place_id];
-        match resolve_occurrence_pitches(tree, place, rest) {
+        match resolve_occurrence_pitches(&reading, place_id, place, rest) {
             Some((_, Some(pitches))) => {
                 let (_, member) = address.rsplit_once('.').unwrap();
                 let pitch = pitches[member.parse::<usize>().unwrap()];

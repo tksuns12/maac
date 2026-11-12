@@ -77,7 +77,7 @@ impl Validator<'_> {
     /// `object` and keep what it plays under its path. Returns the number of
     /// members, when the fields alone give it.
     pub(super) fn validate_played(&mut self, object: &Object, path: &[String]) -> Option<usize> {
-        let reported = self.diagnostics.len();
+        let reported = self.reported();
         // The source, and how many pitches it has when that is known here.
         let (source, pitches) = match (object.field("pitches"), object.field("voicing")) {
             (Some(field), voicing) => {
@@ -114,8 +114,7 @@ impl Validator<'_> {
             Some((keep, members)) => (Some(keep), members),
             None => (None, None),
         };
-        if let (true, Some(source), Some(keep)) = (self.diagnostics.len() == reported, source, keep)
-        {
+        if let (true, Some(source), Some(keep)) = (self.reported() == reported, source, keep) {
             self.models
                 .played
                 .insert(path.to_vec(), Played { source, keep });
@@ -287,6 +286,25 @@ mod tests {
         }
     }
 
+    /// Editing counts the members of a chord in a tree whose imported
+    /// tunings are not resolved.
+    #[test]
+    fn a_wrong_pitch_does_not_hide_what_a_chord_plays() {
+        for fields in [
+            "pitches = [C4, 1q]; top = 1;",
+            "pitches = [degree(1, &elsewhere.just), C4]; top = 1;",
+        ] {
+            assert_eq!(
+                played(fields),
+                Some(Played {
+                    source: Source::Own,
+                    keep: Keep::Top(1)
+                }),
+                "{fields}"
+            );
+        }
+    }
+
     #[test]
     fn a_chord_reads_which_pitches_it_keeps() {
         for (fields, keep) in [
@@ -321,7 +339,6 @@ mod tests {
         for fields in [
             "pitches = [C4]; voicing = &g;",
             "pitches = [];",
-            "pitches = [C4, 1q];",
             "voicing = &nowhere;",
             "voicing = &bar;",
             "voicing = &g; top = 5;",

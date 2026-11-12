@@ -2,7 +2,8 @@
 //!
 //! A chord names a voicing, or a use or a placement supplies one to the
 //! chords under it. Each pitch is written in any form a note's `pitch`
-//! takes, and lowers like one.
+//! takes, and lowers like one. The model holds how many pitches there are,
+//! not the pitches.
 
 use super::fields::{required, SourceField};
 use super::Validator;
@@ -27,26 +28,29 @@ impl Validator<'_> {
     }
 
     fn read_voicing(&mut self, object: &Object, path: &[String]) -> Option<Voicing> {
-        let reported = self.diagnostics.len();
+        let reported = self.reported();
         self.check_declared(object, path, FIELDS);
         let pitches = object
             .field("pitches")
             .and_then(|field| self.validate_pitch_list(field, path));
         self.reject_children(object, path);
-        (self.diagnostics.len() == reported)
+        (self.reported() == reported)
             .then_some(pitches)
             .flatten()
             .map(|pitches| Voicing { pitches })
     }
 
     /// A nonempty list of pitches, as a chord or voicing `pitches`; returns
-    /// its length.
+    /// its length. Each pitch is checked like a note's `pitch`, and no model
+    /// holds it: a wrong pitch does not hide how many there are.
     pub(super) fn validate_pitch_list(&mut self, field: &Field, path: &[String]) -> Option<usize> {
         match &field.value.kind {
             ValueKind::List(items) if !items.is_empty() => {
+                let before = self.diagnostics.len();
                 for item in items {
                     self.validate_pitch_value_at(item, path, "pitches");
                 }
+                self.outside_models += self.diagnostics.len() - before;
                 Some(items.len())
             }
             _ => {
@@ -82,12 +86,24 @@ mod tests {
         );
     }
 
+    /// Editing counts the members of a chord in a tree whose imported
+    /// tunings are not resolved.
+    #[test]
+    fn a_wrong_pitch_does_not_hide_how_many_there_are() {
+        for pitches in ["[C4, 1q]", "[degree(1, &elsewhere.just), C4]"] {
+            assert_eq!(
+                voicing(&format!("pitches = {pitches};")),
+                Some(Voicing { pitches: 2 }),
+                "{pitches}"
+            );
+        }
+    }
+
     #[test]
     fn a_voicing_with_a_wrong_field_has_no_model() {
         for fields in [
             "pitches = [];",
             "pitches = C4;",
-            "pitches = [C4, 1q];",
             "pitches = [C4]; top = 1;",
             "pitches = [C4]; note n { at = 0q; dur = 1q; pitch = C4; }",
         ] {

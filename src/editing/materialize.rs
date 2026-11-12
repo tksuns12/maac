@@ -170,6 +170,8 @@ fn invocation_bound(
 
 struct Builder<'a> {
     catalog: &'a Value,
+    /// `catalog` with the models read of it.
+    reading: super::foundation::Reading<'a>,
     source_paths: &'a BTreeMap<String, Path>,
     placement: &'a str,
     reserved: BTreeSet<String>,
@@ -373,12 +375,13 @@ impl Builder<'_> {
                     old_path.push(child_id.clone());
                     // Each chord member is its own occurrence, `chord.k`.
                     let leaves = if kind == "chord" {
-                        let objects = self.catalog["objects"].as_object().ok_or_else(|| {
-                            EditError::new("E_SYNTAX", "objects must be a dictionary")
-                        })?;
-                        let members =
-                            super::foundation::chord_pitches(objects, &source, child, supplied)
-                                .map_or(0, |pitches| pitches.len());
+                        let members = super::foundation::chord_pitches(
+                            &self.reading,
+                            source_id,
+                            child_id,
+                            supplied,
+                        )
+                        .map_or(0, |pitches| pitches.len());
                         (0..members).map(|k| format!("{child_id}.{k}")).collect()
                     } else {
                         vec![child_id.clone()]
@@ -400,7 +403,8 @@ impl Builder<'_> {
                     let at = scalar(child, "at", 0)?;
                     let repetitions = count(child)?;
                     // Each copy would start the harmony again at 0q.
-                    if child["fields"].get("harmony").is_some() && repetitions > 1 {
+                    let use_path = [source_id.to_owned(), child_id.clone()];
+                    if self.reading.supplies_harmony(&use_path) && repetitions > 1 {
                         return Err(EditError::new(
                             "E_CAPABILITY",
                             "materializing a use that repeats a harmony is not supported",
@@ -408,6 +412,8 @@ impl Builder<'_> {
                     }
                     for repetition in 0..repetitions {
                         let nested_supplied = super::foundation::supplied_into(
+                            &self.reading,
+                            &use_path,
                             child,
                             supplied,
                             repetition as u64,
@@ -553,7 +559,10 @@ pub(super) fn prepare(
             "materializing a placement with a `vary` is not supported",
         ));
     }
-    if place["fields"].get("harmony").is_some() && stretch != BigRational::one() {
+    let reading = super::foundation::Reading::of(catalog)
+        .ok_or_else(|| EditError::new("E_SYNTAX", "objects must be a dictionary"))?;
+    let place_path = [placement_id.to_owned()];
+    if reading.supplies_harmony(&place_path) && stretch != BigRational::one() {
         return Err(EditError::new(
             "E_CAPABILITY",
             "materializing a stretched placement that supplies a harmony is not supported",
@@ -569,6 +578,7 @@ pub(super) fn prepare(
     reserved.insert(new_pattern_id.into());
     let mut builder = Builder {
         catalog,
+        reading,
         source_paths,
         placement: placement_id,
         reserved,
@@ -581,13 +591,20 @@ pub(super) fn prepare(
     let mut wrapper_children = Map::new();
     for repetition in 0..repetitions {
         let use_id = format!("_repeat{repetition}");
-        let supplied = super::foundation::supplied_into(place, None, repetition as u64, &length)
-            .ok_or_else(|| {
-                EditError::new(
-                    "E_REFERENCE",
-                    "place.voicing, place.harmony or place.voicings is malformed",
-                )
-            })?;
+        let supplied = super::foundation::supplied_into(
+            &builder.reading,
+            &place_path,
+            place,
+            None,
+            repetition as u64,
+            &length,
+        )
+        .ok_or_else(|| {
+            EditError::new(
+                "E_REFERENCE",
+                "place.voicing, place.harmony or place.voicings is malformed",
+            )
+        })?;
         let copied_id = builder.copy_pattern(
             &source_id,
             supplied.as_ref(),

@@ -29,7 +29,7 @@ impl Validator<'_> {
     }
 
     fn read_voicings(&mut self, object: &Object, path: &[String]) -> Option<Voicings> {
-        let reported = self.diagnostics.len();
+        let reported = self.reported();
         self.check_declared(object, path, FIELDS);
         let field = object.field("chords")?;
         let items = match &field.value.kind {
@@ -106,7 +106,7 @@ impl Validator<'_> {
                 chords.insert(name.to_owned(), voicing.clone());
             }
         }
-        (self.diagnostics.len() == reported).then_some(Voicings { chords })
+        (self.reported() == reported).then_some(Voicings { chords })
     }
 }
 

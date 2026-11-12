@@ -25,6 +25,13 @@ pub(crate) struct Harmony {
 }
 
 impl Harmony {
+    /// The name of the chord sounding at `position`, from 0q on. The harmony
+    /// repeats every `length`.
+    pub(crate) fn chord_at(&self, position: &BigRational) -> &str {
+        let passes = (position / &self.length).floor();
+        self.chord_within(&(position - passes * &self.length))
+    }
+
     /// The name of the chord sounding at `position` of one pass, from 0q
     /// and under `length`: the last entry at or before it.
     pub(crate) fn chord_within(&self, position: &BigRational) -> &str {
@@ -65,7 +72,7 @@ impl Validator<'_> {
     }
 
     fn read_harmony(&mut self, object: &Object, path: &[String]) -> Option<Harmony> {
-        let reported = self.diagnostics.len();
+        let reported = self.reported();
         self.check_declared(object, path, FIELDS);
         let length = object.field("length").and_then(|field| {
             let length = self.quantity(field, &[Unit::Q], path, "length")?;
@@ -150,7 +157,7 @@ impl Validator<'_> {
             }
             previous = Some(position);
         }
-        (self.diagnostics.len() == reported)
+        (self.reported() == reported)
             .then_some(length)
             .flatten()
             .map(|length| Harmony { length, chords })
@@ -196,6 +203,21 @@ mod tests {
             (q(31, 4), "A"),
         ] {
             assert_eq!(harmony.chord_within(&position), name, "at {position}q");
+        }
+    }
+
+    #[test]
+    fn a_harmony_repeats_every_length() {
+        let harmony = harmony(r#"length = 8q; chords = [(0q, "G"), (3q, "D")];"#).unwrap();
+        for (position, name) in [
+            (q(5, 2), "G"),
+            (q(8, 1), "G"),
+            (q(21, 2), "G"),
+            (q(11, 1), "D"),
+            (q(47, 2), "D"),
+            (q(800, 1), "G"),
+        ] {
+            assert_eq!(harmony.chord_at(&position), name, "at {position}q");
         }
     }
 

@@ -578,6 +578,68 @@ fn harmony_edits_never_silently_retarget_a_member_override() {
 }
 
 /// Events without the fields materialization renames.
+/// A transaction may leave a harmony wrong between two of its operations.
+/// A chord renamed there still takes the overrides that name its members
+/// with it.
+#[test]
+fn a_rename_takes_its_overrides_along_while_the_harmony_is_wrong() {
+    let text = source(
+        "",
+        BAR,
+        r#"count = 4; harmony = &four; voicings = &low;
+  override soft { event = "1/one.1"; set = { velocity = 0.1; }; }"#,
+    );
+    let length = |q: i64| json!({"t":"quantity","n":q.to_string(),"d":"1","u":"q"});
+    let harmony = |field: &str, value: Value| Operation::Set {
+        object: vec!["four".into()],
+        field: vec![field.into()],
+        value,
+        expect: None,
+        expect_absent: false,
+    };
+    let rename = || Operation::RenameId {
+        object: vec!["bar".into(), "one".into()],
+        new_id: "first".into(),
+    };
+    for (what, wrong, repair) in [
+        // No length to repeat after.
+        (
+            "length 0q",
+            harmony("length", length(0)),
+            harmony("length", length(16)),
+        ),
+        // Chords past the length.
+        (
+            "length 6q",
+            harmony("length", length(6)),
+            harmony("length", length(16)),
+        ),
+        (
+            "an unknown field",
+            harmony("key", length(1)),
+            Operation::Unset {
+                object: vec!["four".into()],
+                field: vec!["key".into()],
+                expect: None,
+            },
+        ),
+    ] {
+        let mut document = AuthoredDocument::from_document(&parse(&text).unwrap()).unwrap();
+        let transaction = Transaction::new(
+            document.revision().to_owned(),
+            vec![wrong, rename(), repair],
+        )
+        .unwrap();
+        apply_transaction(&mut document, &transaction, &FoundationEditContext)
+            .unwrap_or_else(|error| panic!("{what}: {} {}", error.code, error.message));
+        assert_eq!(
+            document.tree()["objects"]["main"]["children"]["soft"]["fields"]["event"]["v"],
+            "1/first.1",
+            "{what}"
+        );
+    }
+}
+
 fn performance(source: &str) -> Vec<Value> {
     compiled(source)
         .unwrap()

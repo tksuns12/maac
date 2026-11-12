@@ -29,7 +29,7 @@ impl Validator<'_> {
     }
 
     fn read_supply(&mut self, object: &Object, path: &[String]) -> Option<Supply> {
-        let reported = self.diagnostics.len();
+        let reported = self.reported();
         let [voicing, harmony, voicings] = ["voicing", "harmony", "voicings"].map(|name| {
             let field = object.field(name)?;
             match self.expect_object_ref(field, name, &[name], path)? {
@@ -62,7 +62,7 @@ impl Validator<'_> {
                 vec![field.name.clone()],
             );
         }
-        if self.diagnostics.len() != reported {
+        if self.reported() != reported {
             return None;
         }
         match (voicing, harmony, voicings) {
