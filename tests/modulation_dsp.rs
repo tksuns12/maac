@@ -1,33 +1,119 @@
-use maac::{dsp::DspEngine, PlanArtifact};
+use maac::compiler::compile_bundle_artifact;
+use maac::{dsp::DspEngine, PlanArtifact, SourceBundle};
 use serde_json::{json, Value};
-fn fixture() -> Value {
-    let bytes: Vec<u8> = [1f32; 16].iter().flat_map(|x| x.to_le_bytes()).collect();
-    json!({"version":7,"output":{"score_start_q":"0/1","score_end_q":"1/6000","tail_seconds":"1/6000","sample_rate_hz":48000,"channels":1,"total_frames":16,"output":{"node":"gain","port":"out"}},"tempo":{"points":[{"q":"0/1","bpm":"60/1","shape":"step"}]},"nodes":[{"id":"clip","processor":{"kind":"warp_rate","clip":{"asset":"sample","channels":1,"at_q":"0/1","source_start_frame":0,"source_end_frame":16,"warp":[{"q":"0/1","source_frame":0},{"q":"1/3000","source_frame":16}],"gain":"1/1","fade_in_seconds":"0/1","fade_out_seconds":"0/1","fade_shape":"linear","source":{"object":"clip","path":["clip"]},"start_frame":0,"end_frame":16}}},{"id":"gain","processor":{"kind":"core","processor":{"kind":"gain","channels":1}},"params":{"gain":"1/1"}},{"id":"motion","processor":{"kind":"lfo","config":{"clock":"seconds","period":"1/6000","phase":"0/1","wave":"sine"}}}],"audio_assets":[{"id":"sample","format":"pcm_f32le_interleaved/1","rate_hz":48000,"channels":1,"frames":16,"hash":maac::bundle::sha256_digest(&bytes),"bytes":bytes}],"connections":[{"id":"audio","from":{"node":"clip","port":"out"},"to":{"node":"gain","port":"in"}}],"modulations":[{"id":"m","from":{"node":"motion","port":"out"},"target":{"node":"gain","port":"gain"},"amount":"1/2"}]})
+
+/// Sixteen frames at 48 kHz and 60 bpm, eight of score and eight of tail: an
+/// audio clip of ones through node `gain`, whose parameter a control node
+/// moves.
+struct Scene {
+    /// The points of the tempo map.
+    tempo: String,
+    /// Fields of the project besides its score, tail, rate, tempo, meter and
+    /// output.
+    project: String,
+    /// The declaration of node `gain`, which the clip feeds and the project
+    /// renders.
+    gain: String,
+    /// The control nodes and the modulations.
+    controls: String,
+    /// Further declarations.
+    more: String,
 }
-fn artifact(v: &Value) -> PlanArtifact {
-    PlanArtifact::from_json(&serde_json::to_vec(v).unwrap()).unwrap()
+
+const UNIT_GAIN: &str =
+    r#"node gain { type = "core.gain/1"; config = { channels = 1; }; params = { gain = 1; }; }"#;
+
+/// An LFO `motion` of eight frames a cycle, which moves the gain by a half.
+fn lfo(period: &str, wave: &str) -> String {
+    format!(
+        "node motion {{ type = \"core.lfo/1\"; config = {{ period = {period}; phase = 0; wave = {wave}; }}; }}\n{}",
+        modulation("m", "motion", "gain", "gain", "1/2")
+    )
 }
-fn render(v: &Value) -> Result<Vec<f64>, maac::dsp::RenderError> {
-    let p = artifact(v);
+
+fn constant(id: &str, value: &str) -> String {
+    format!("node {id} {{ type = \"core.constant/1\"; params = {{ value = {value}; }}; }}")
+}
+
+fn modulation(id: &str, from: &str, target: &str, parameter: &str, amount: &str) -> String {
+    format!(
+        "modulate {id} {{ from = &{from}:out; target = &{target}.params.{parameter}; amount = {amount}; }}"
+    )
+}
+
+fn fixture() -> Scene {
+    Scene {
+        tempo: "(0q, 60bpm, step)".to_owned(),
+        project: String::new(),
+        gain: UNIT_GAIN.to_owned(),
+        controls: lfo("1/6000s", "sine"),
+        more: String::new(),
+    }
+}
+
+/// The scene with a constant `one` in place of the LFO, and `modulations`.
+fn with_one(modulations: &[String]) -> Scene {
+    Scene {
+        controls: format!("{}\n{}", constant("one", "1"), modulations.join("\n")),
+        ..fixture()
+    }
+}
+
+impl Scene {
+    /// The compiled plan, as it loads from its JSON.
+    fn artifact(&self) -> PlanArtifact {
+        let Self {
+            tempo,
+            project,
+            gain,
+            controls,
+            more,
+        } = self;
+        let bytes: Vec<u8> = [1f32; 16].iter().flat_map(|x| x.to_le_bytes()).collect();
+        let hash = maac::bundle::sha256_digest(&bytes);
+        let source = format!(
+            r#"maac 1;
+project p {{ score = [0q, 1/6000q]; tail = 1/6000s; rate = 48000Hz; tempo = &clock; meter = &metre; output = &gain:out; {project} }}
+tempo clock {{ points = [{tempo}]; }}
+meter metre {{ points = [(0q, 4, 4)]; }}
+asset sample {{ kind = audio; path = "sample.pcm"; hash = "{hash}"; format = "pcm_f32le_interleaved/1"; rate = 48000Hz; channels = 1; frames = 16; }}
+audio clip {{ asset = &sample; at = 0q; source = [0frame, 16frame]; mode = warp_rate; warp = [(0q, 0frame), (1/3000q, 16frame)]; }}
+{gain}
+connect audio {{ from = &clip:out; to = &gain:in; }}
+{controls}
+{more}
+"#
+        );
+        let mut bundle = SourceBundle::new("main.maac", source.as_str());
+        bundle.assets.insert("sample.pcm".into(), bytes);
+        let compiled = compile_bundle_artifact(&bundle)
+            .unwrap_or_else(|diagnostics| panic!("{diagnostics:?}\n{source}"));
+        PlanArtifact::from_json(&compiled.to_json().unwrap()).unwrap()
+    }
+}
+
+fn render(p: &PlanArtifact) -> Result<Vec<f64>, maac::dsp::RenderError> {
     let mut out = vec![];
-    maac::render_artifact(&p, |frame| {
+    maac::render_artifact(p, |frame| {
         out.extend_from_slice(frame);
         Ok(())
     })?;
     Ok(out)
 }
+
+/// The plan with `change` made to its JSON.
+fn changed(p: &PlanArtifact, change: impl FnOnce(&mut Value)) -> Result<PlanArtifact, String> {
+    let mut v: Value = serde_json::from_slice(&p.to_json().unwrap()).unwrap();
+    change(&mut v);
+    PlanArtifact::from_json(&serde_json::to_vec(&v).unwrap()).map_err(|error| format!("{error:?}"))
+}
+
 #[test]
 fn retained_lfo_modulates_gain_analytically() {
-    let out = render(&fixture()).unwrap();
+    let out = render(&fixture().artifact()).unwrap();
     for (n, e) in [(0, 1.), (2, 1.5), (4, 1.), (6, 0.5), (8, 1.)] {
         assert!((out[n] - e).abs() < 1e-12);
     }
-}
-fn constant(id: &str, value: &str) -> Value {
-    json!({"id":id,"processor":{"kind":"constant"},"params":{"value":value}})
-}
-fn modulation(id: &str, from: &str, target: &str, parameter: &str, amount: &str) -> Value {
-    json!({"id":id,"from":{"node":from,"port":"out"},"target":{"node":target,"port":parameter},"amount":amount})
 }
 #[test]
 fn all_waves_and_both_tail_clocks() {
@@ -37,11 +123,12 @@ fn all_waves_and_both_tail_clocks() {
         ("saw", [-1., -0.5, 0., 0.5]),
         ("square", [1., 1., -1., -1.]),
     ] {
-        for clock in ["score", "seconds"] {
-            let mut v = fixture();
-            v["nodes"][2]["processor"]["config"]["wave"] = json!(wave);
-            v["nodes"][2]["processor"]["config"]["clock"] = json!(clock);
-            let out = render(&v).unwrap();
+        for (clock, period) in [("score", "1/6000q"), ("seconds", "1/6000s")] {
+            let scene = Scene {
+                controls: lfo(period, wave),
+                ..fixture()
+            };
+            let out = render(&scene.artifact()).unwrap();
             for n in (0..16).step_by(2) {
                 let f = if clock == "score" && n >= 8 {
                     expected[0]
@@ -58,18 +145,21 @@ fn all_waves_and_both_tail_clocks() {
 }
 #[test]
 fn automated_constant_feedforward_order_and_reset_have_no_drift() {
-    let mut v = fixture();
-    v["nodes"][2] = constant("later", "1/1");
-    v["nodes"]
-        .as_array_mut()
-        .unwrap()
-        .push(json!({"id":"earlier","processor":{"kind":"constant"}}));
-    v["modulations"] = json!([
-        modulation("z", "later", "gain", "gain", "1/1"),
-        modulation("a", "earlier", "later", "value", "2/1")
-    ]);
-    v["automation"] = json!([{"id":"lane","target":{"node":"earlier","port":"value"},"clock":"score","at":{"kind":"score","q":"1/24000"},"points":[{"position":"0/1","value":"1/1","shape":"step"},{"position":"1/4000","value":"3/1","shape":"step"}]}]);
-    let p = artifact(&v);
+    let scene = Scene {
+        controls: [
+            constant("later", "1"),
+            "node earlier { type = \"core.constant/1\"; }".to_owned(),
+            modulation("z", "later", "gain", "gain", "1"),
+            modulation("a", "earlier", "later", "value", "2"),
+            "curve lane_curve { clock = score; points = [(0q, 1, step), (1/4000q, 3, step)]; }"
+                .to_owned(),
+            "automation lane { target = &earlier.params.value; curve = &lane_curve; at = 1/24000q; }"
+                .to_owned(),
+        ]
+        .join("\n"),
+        ..fixture()
+    };
+    let p = scene.artifact();
     let mut engine = DspEngine::new_artifact(&p).unwrap();
     let mut first = vec![];
     engine
@@ -91,37 +181,43 @@ fn automated_constant_feedforward_order_and_reset_have_no_drift() {
 }
 #[test]
 fn signed_sums_follow_modulation_ids_and_only_final_range_policy() {
-    let mut v = fixture();
-    v["nodes"][2] = constant("one", "1/1");
-    v["nodes"][1]["params"]["gain"] = json!("0/1");
-    v["modulations"] = json!([
-        modulation("c", "one", "gain", "gain", "1/1"),
-        modulation("b", "one", "gain", "gain", "-10000000000000000/1"),
-        modulation("a", "one", "gain", "gain", "10000000000000000/1")
-    ]);
-    assert_eq!(render(&v).unwrap(), vec![1.; 16]);
-    v["nodes"].as_array_mut().unwrap().reverse();
-    v["modulations"].as_array_mut().unwrap().reverse();
-    assert_eq!(render(&v).unwrap(), vec![1.; 16]);
-    let mut v = fixture();
-    v["nodes"][2] = constant("one", "1/1");
-    v["nodes"][1]["processor"]["processor"] = json!({"kind":"pan"});
-    v["nodes"][1]["params"] = json!({"pan":"2/1"});
-    v["output"]["channels"] = json!(2);
-    v["modulations"] = json!([modulation("a", "one", "gain", "pan", "-2/1")]);
-    let out = render(&v).unwrap();
+    let scene = Scene {
+        gain: UNIT_GAIN.replace("gain = 1;", "gain = 0;"),
+        ..with_one(&[
+            modulation("c", "one", "gain", "gain", "1"),
+            modulation("b", "one", "gain", "gain", "-10000000000000000"),
+            modulation("a", "one", "gain", "gain", "10000000000000000"),
+        ])
+    };
+    let p = scene.artifact();
+    assert_eq!(render(&p).unwrap(), vec![1.; 16]);
+    // The compiler lists nodes and modulations by ID. A plan may list them
+    // in any order, so list them in reverse.
+    let reversed = changed(&p, |v| {
+        v["nodes"].as_array_mut().unwrap().reverse();
+        let modulations = v["modulations"].as_array_mut().unwrap();
+        assert_eq!(modulations.len(), 3);
+        modulations.reverse();
+    })
+    .unwrap();
+    assert_eq!(render(&reversed).unwrap(), vec![1.; 16]);
+    let scene = Scene {
+        gain: r#"node gain { type = "core.pan/1"; params = { pan = 2; }; }"#.to_owned(),
+        ..with_one(&[modulation("a", "one", "gain", "pan", "-2")])
+    };
+    let out = render(&scene.artifact()).unwrap();
     for sample in out {
         assert!((sample - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-12);
     }
 }
 #[test]
 fn filter_modulation_matches_independent_recurrence() {
-    let mut v = fixture();
-    v["nodes"][2] = constant("one", "1/1");
-    v["nodes"][1]["processor"]["processor"] = json!({"kind":"one_pole","channels":1});
-    v["nodes"][1]["params"] = json!({"cutoff":"1000/1"});
-    v["modulations"] = json!([modulation("m", "one", "gain", "cutoff", "1000/1")]);
-    let out = render(&v).unwrap();
+    let scene = Scene {
+        gain: r#"node gain { type = "core.onepole/1"; config = { channels = 1; }; params = { cutoff = 1000Hz; }; }"#
+            .to_owned(),
+        ..with_one(&[modulation("m", "one", "gain", "cutoff", "1000Hz")])
+    };
+    let out = render(&scene.artifact()).unwrap();
     let coefficient = (-std::f64::consts::TAU * 2000. / 48000.).exp();
     for (n, y) in out.iter().enumerate() {
         assert!((*y - (1. - coefficient.powi(n as i32 + 1))).abs() < 1e-12);
@@ -130,30 +226,28 @@ fn filter_modulation_matches_independent_recurrence() {
 #[test]
 fn disconnected_nonfinite_product_sum_and_final_range_fail_before_callback() {
     for kind in ["product", "sum", "range"] {
-        let mut v = fixture();
-        v["nodes"][2] = constant("one", "1/1");
-        let huge = format!("1{}/1", "0".repeat(308));
-        if kind == "range" {
-            v["modulations"] = json!([modulation("m", "one", "gain", "gain", "-2/1")]);
+        let huge = format!("1{}", "0".repeat(308));
+        let scene = if kind == "range" {
+            with_one(&[modulation("m", "one", "gain", "gain", "-2")])
         } else {
-            v["nodes"].as_array_mut().unwrap().push(constant(
-                "unused",
-                if kind == "sum" { &huge } else { "0/1" },
-            ));
-            v["nodes"][2]["params"]["value"] = json!(if kind == "product" {
-                huge.clone()
+            // A constant nothing reads, moved past what binary64 holds: by a
+            // huge source times two, or by a huge base plus a huge amount.
+            let (one, unused, amount) = if kind == "product" {
+                (huge.as_str(), "0", "2")
             } else {
-                "1/1".into()
-            });
-            v["modulations"] = json!([modulation(
-                "m",
-                "one",
-                "unused",
-                "value",
-                if kind == "product" { "2/1" } else { &huge }
-            )]);
-        }
-        let p = artifact(&v);
+                ("1", huge.as_str(), huge.as_str())
+            };
+            Scene {
+                controls: [
+                    constant("one", one),
+                    constant("unused", unused),
+                    modulation("m", "one", "unused", "value", amount),
+                ]
+                .join("\n"),
+                ..fixture()
+            }
+        };
+        let p = scene.artifact();
         let mut calls = 0;
         let e = maac::render_artifact(&p, |_| {
             calls += 1;
@@ -173,8 +267,7 @@ fn disconnected_nonfinite_product_sum_and_final_range_fail_before_callback() {
 }
 #[test]
 fn control_capture_and_output_are_rejected_before_callbacks() {
-    let mut v = fixture();
-    let p = artifact(&v);
+    let p = fixture().artifact();
     let mut engine = DspEngine::new_artifact(&p).unwrap();
     let mut calls = 0;
     let e = engine
@@ -188,102 +281,54 @@ fn control_capture_and_output_are_rejected_before_callbacks() {
         .unwrap_err();
     assert_eq!(e.code(), "E_PORT_TYPE");
     assert_eq!(calls, 0);
-    v["output"]["output"] = json!({"node":"motion","port":"out"});
-    assert!(PlanArtifact::from_json(&serde_json::to_vec(&v).unwrap()).is_err());
+    // A plan that renders a control output does not load.
+    assert!(changed(&p, |v| {
+        v["output"]["output"] = json!({"node":"motion","port":"out"});
+    })
+    .is_err());
 }
-fn note(id: &str, on: u64, off: u64) -> Value {
-    json!({"address":id,"source":{"object":id,"path":[id]},"target":{"node":"instrument","port":"events"},"kind":{"kind":"note","pitch_hz":480.,"velocity":"1/1"},"score_on_q":rational(on,48000),"score_off_q":rational(off,48000),"onset_offset_seconds":"0/1","release_offset_seconds":"0/1","release_velocity":0.5,"on_frame":on,"off_frame":off})
+
+/// A node `instrument` with one voice: a sine at a quarter turn of phase
+/// under an envelope that opens and closes at once, with a control for its
+/// level.
+const INSTRUMENT: &str = r#"instrument plain {
+ channels = 1;
+ voice voice {
+  channels = 1; amplitude = &amp; output = &osc:out;
+  node amp { type = "synth.adsr/1"; params = { attack = 0s; decay = 0s; sustain = 1; release = 0s; }; }
+  node osc { type = "synth.sine/1"; params = { phase = 1/4; }; }
+ }
+ control level { target = &voice.osc.params.level; default = 1; }
 }
-fn add_instrument(v: &mut Value) {
-    use maac::graph::{
-        Control, ControlTarget, GraphNode, GraphProcessor, GraphProgram, GraphStage,
-        InstrumentProgram, ProgramSource,
-    };
-    use std::collections::BTreeMap;
-    let r = |s: &str| maac::parse_rational(s).unwrap();
-    let program = InstrumentProgram {
-        id: "plain".into(),
-        voice: GraphProgram {
-            channels: 1,
-            nodes: vec![
-                GraphNode {
-                    id: "amp".into(),
-                    processor: GraphProcessor::ADSR,
-                    params: BTreeMap::from([
-                        ("attack".into(), r("0/1")),
-                        ("decay".into(), r("0/1")),
-                        ("sustain".into(), r("1/1")),
-                        ("release".into(), r("0/1")),
-                    ]),
-                },
-                GraphNode {
-                    id: "osc".into(),
-                    processor: GraphProcessor::Sine,
-                    params: BTreeMap::from([("phase".into(), r("1/4"))]),
-                },
-            ],
-            connections: vec![],
-            modulations: vec![],
-            output: maac::plan::PortRef::new("osc", "out").unwrap(),
-            amplitude: Some("amp".into()),
-            connected: false,
-        },
-        shared: None,
-        controls: BTreeMap::from([(
-            "level".into(),
-            Control {
-                target: ControlTarget {
-                    graph: GraphStage::Voice,
-                    node: "osc".into(),
-                    parameter: "level".into(),
-                },
-                default: r("1/1"),
-            },
-        )]),
-        source: ProgramSource {
-            file: "retained.maac".into(),
-            object: "plain".into(),
-            span: None,
-        },
-    };
-    let resources = maac::instrument_plan::InstrumentResources {
-        entry_source: "retained.maac".into(),
-        kits: Vec::new(),
-        effects: Vec::new(),
-        programs: vec![program],
-        wavetables: vec![],
-        wavetable_sources: vec![],
-        samples: Vec::new(),
-        sample_sources: Vec::new(),
-        source_files: vec![maac::bundle::SourceIdentity {
-            path: "retained.maac".into(),
-            hash: maac::bundle::sha256_digest(b"manual retained fixture"),
-        }],
-        dependencies: vec![],
-        libraries: vec![],
-    };
-    v["instruments"] = serde_json::to_value(resources).unwrap();
-    v["nodes"].as_array_mut().unwrap().push(json!({"id":"instrument","processor":{"kind":"core","processor":{"kind":"instrument","program":"plain","channels":1,"voices":1}}}));
-}
+node instrument { instrument = &plain; config = { voices = 1; }; }"#;
+
 #[test]
 fn retained_mixed_processors_capture_and_instrument_modulation_reset() {
-    let mut v = fixture();
-    v["nodes"][2] = constant("one", "1/1");
-    add_instrument(&mut v);
-    v["nodes"].as_array_mut().unwrap().push(json!({"id":"kit","processor":{"kind":"kit","channels":1,"voices":1,"samples":[{"key":"key","asset":"sample"}]}}));
-    v["nodes"].as_array_mut().unwrap().push(json!({"id":"rate","processor":{"kind":"audio","clip":{"asset":"sample","channels":1,"at":{"kind":"seconds","seconds":"0/1"},"source_start_frame":0,"source_end_frame":16,"speed":"1/1","reverse":false,"gain":"1/1","fade_in_seconds":"0/1","fade_out_seconds":"0/1","fade_shape":"linear","source":{"object":"rate","path":["rate"]},"start_frame":0,"end_frame":16}}}));
-    v["nodes"].as_array_mut().unwrap().push(json!({"id":"eq","processor":{"kind":"core","processor":{"kind":"fx.eq/1","channels":1,"mode":"low_pass"}}}));
-    v["connections"].as_array_mut().unwrap().push(
-        json!({"id":"fx","from":{"node":"rate","port":"out"},"to":{"node":"eq","port":"in"}}),
-    );
-    v["events"] = json!([note("n1",0,4),note("n2",4,8),{"address":"hit","source":{"object":"hit","path":["hit"]},"target":{"node":"kit","port":"events"},"kind":{"kind":"hit","key":"key","velocity":"1/1"},"score_on_q":"0/1","onset_offset_seconds":"0/1","release_offset_seconds":"0/1","release_velocity":0.0,"on_frame":0}]);
-    v["modulations"] = json!([
-        modulation("m1", "one", "instrument", "level", "-1/2"),
-        modulation("m2", "one", "kit", "level", "-1/2"),
-        modulation("m3", "one", "eq", "frequency", "100/1")
-    ]);
-    let encoded = artifact(&v).to_json().unwrap();
-    let p = PlanArtifact::from_json(&encoded).unwrap();
+    let scene = Scene {
+        project: "requires = [\"maac.production/1\"];".to_owned(),
+        more: format!(
+            r#"{INSTRUMENT}
+node kit {{ type = "core.kit/1"; config = {{ channels = 1; voices = 1; samples = [{{ key = "key"; asset = &sample; }}]; }}; }}
+audio rate {{ asset = &sample; at = 0s; source = [0frame, 16frame]; mode = rate; }}
+node eq {{ type = "fx.eq/1"; config = {{ channels = 1; mode = low_pass; }}; }}
+connect fx {{ from = &rate:out; to = &eq:in; }}
+track notes {{ target = &instrument:events; }}
+track hits {{ target = &kit:events; }}
+pattern played {{ length = 1/6000q;
+ note n1 {{ at = 0q; dur = 4/48000q; pitch = 480Hz; velocity = 1; }}
+ note n2 {{ at = 4/48000q; dur = 4/48000q; pitch = 480Hz; velocity = 1; }}
+}}
+pattern struck {{ length = 1/6000q; hit hit {{ at = 0q; key = "key"; velocity = 1; }} }}
+place play {{ pattern = &played; track = &notes; at = 0q; }}
+place strike {{ pattern = &struck; track = &hits; at = 0q; }}"#
+        ),
+        ..with_one(&[
+            modulation("m1", "one", "instrument", "level", "-1/2"),
+            modulation("m2", "one", "kit", "level", "-1/2"),
+            modulation("m3", "one", "eq", "frequency", "100Hz"),
+        ])
+    };
+    let p = scene.artifact();
     let mut engine = DspEngine::new_artifact(&p).unwrap();
     let ports: Vec<_> = ["instrument", "kit", "rate", "clip", "eq"]
         .iter()
@@ -323,11 +368,11 @@ fn retained_mixed_processors_capture_and_instrument_modulation_reset() {
 }
 #[test]
 fn invalid_instrument_final_control_fails_even_without_voices() {
-    let mut v = fixture();
-    v["nodes"][2] = constant("one", "1/1");
-    add_instrument(&mut v);
-    v["modulations"] = json!([modulation("m", "one", "instrument", "level", "-2/1")]);
-    let p = artifact(&v);
+    let scene = Scene {
+        more: INSTRUMENT.to_owned(),
+        ..with_one(&[modulation("m", "one", "instrument", "level", "-2")])
+    };
+    let p = scene.artifact();
     let mut calls = 0;
     assert_eq!(
         maac::render_artifact(&p, |_| {
@@ -341,19 +386,14 @@ fn invalid_instrument_final_control_fails_even_without_voices() {
     assert_eq!(calls, 0);
 }
 
-fn rational(n: u64, d: u64) -> String {
-    let r = maac::Rational::new(n.into(), d.into());
-    format!("{}/{}", r.numer(), r.denom())
-}
 #[test]
 fn retained_score_ramp_modulation_matches_analytical_clock() {
-    let mut v = fixture();
-    v["tempo"]["points"] = json!([{"q":"0/1","bpm":"60/1","shape":"linear"},{"q":"1/6000","bpm":"120/1","shape":"step"}]);
-    v["output"]["total_frames"] = json!(14);
-    v["nodes"][0]["processor"]["clip"]["end_frame"] = json!(10);
-    v["nodes"][2]["processor"]["config"]["clock"] = json!("score");
-    v["nodes"][2]["processor"]["config"]["wave"] = json!("saw");
-    let out = render(&v).unwrap();
+    let scene = Scene {
+        tempo: "(0q, 60bpm, linear), (1/6000q, 120bpm, step)".to_owned(),
+        controls: lfo("1/6000q", "saw"),
+        ..fixture()
+    };
+    let out = render(&scene.artifact()).unwrap();
     for (n, sample) in out.iter().enumerate().take(6) {
         let f = (n as f64 / 8.).exp_m1();
         assert!((*sample - (0.5 + f)).abs() < 1e-12);

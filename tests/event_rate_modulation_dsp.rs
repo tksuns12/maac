@@ -1,101 +1,48 @@
 use maac::dsp::{DspEngine, RenderError};
-use maac::graph::{
-    Control, ControlTarget, GraphNode, GraphProcessor, GraphProgram, GraphStage, InstrumentProgram,
-    ProgramSource,
-};
-use maac::instrument_plan::InstrumentResources;
-use maac::{bundle::sha256_digest, PlanArtifact, Rational};
-use serde_json::{json, Value};
-use std::collections::BTreeMap;
+use maac::PlanArtifact;
+use serde_json::Value;
 
-const RATE: u64 = 48_000;
+#[path = "support/frames.rs"]
+mod frames;
+use frames::FrameProject;
 
-fn rational_frame(frame: u64) -> String {
-    let value = Rational::new(frame.into(), RATE.into());
-    format!("{}/{}", value.numer(), value.denom())
+/// A `core.constant/1` named `id`.
+fn constant(id: &str, value: &str) -> String {
+    format!("node {id} {{ type = \"core.constant/1\"; params = {{ value = {value}; }}; }}")
 }
 
-fn note(address: &str, on: u64, off: u64, target: &str, pitch_hz: f64) -> Value {
-    json!({
-        "address": address,
-        "source": {"object": address, "path": [address]},
-        "target": {"node": target, "port": "events"},
-        "kind": {"kind": "note", "pitch_hz": pitch_hz, "velocity": "1/1"},
-        "score_on_q": rational_frame(on),
-        "score_off_q": rational_frame(off),
-        "onset_offset_seconds": "0/1",
-        "release_offset_seconds": "0/1",
-        "release_velocity": 0.5,
-        "on_frame": on,
-        "off_frame": off
-    })
+fn modulation(id: &str, from: &str, target: &str, parameter: &str, amount: &str) -> String {
+    format!(
+        "modulate {id} {{ from = &{from}:out; target = &{target}.params.{parameter}; amount = {amount}; }}"
+    )
 }
 
-fn constant(id: &str, value: &str) -> Value {
-    json!({
-        "id": id,
-        "processor": {"kind": "constant"},
-        "params": {"value": value}
-    })
+/// An automation `id` of `target` from the score start, stepping to each
+/// value at its frame.
+fn score_automation(id: &str, target: &str, points: &[(u64, &str)]) -> String {
+    let points: Vec<String> = points
+        .iter()
+        .map(|(frame, value)| format!("({frame}/24000q, {value}, step)"))
+        .collect();
+    format!(
+        "curve {id}_curve {{ clock = score; points = [{}]; }}\n\
+         automation {id} {{ target = &{target}; curve = &{id}_curve; at = 0q; }}",
+        points.join(", ")
+    )
 }
 
-fn modulation(id: &str, from: &str, target: &str, parameter: &str, amount: &str) -> Value {
-    json!({
-        "id": id,
-        "from": {"node": from, "port": "out"},
-        "target": {"node": target, "port": parameter},
-        "amount": amount
-    })
+/// A `core.sine/1` with no attack or release, at full level.
+fn core_fixture(total_frames: u64, voices: u32) -> FrameProject {
+    FrameProject::sine(
+        total_frames,
+        0,
+        voices,
+        "attack = 0s; release = 0s; level = 1;",
+    )
 }
 
-fn score_automation(id: &str, node: &str, points: &[(u64, &str)]) -> Value {
-    json!({
-        "id": id,
-        "target": {"node": node, "port": "value"},
-        "clock": "score",
-        "at": {"kind": "score", "q": "0/1"},
-        "points": points
-            .iter()
-            .map(|(frame, value)| {
-                json!({"position": rational_frame(*frame), "value": *value, "shape": "step"})
-            })
-            .collect::<Vec<_>>()
-    })
-}
-
-fn core_fixture(total_frames: u64, voices: u32) -> Value {
-    json!({
-        "version": 7,
-        "output": {
-            "score_start_q": "0/1",
-            "score_end_q": rational_frame(total_frames),
-            "tail_seconds": "0/1",
-            "sample_rate_hz": RATE,
-            "channels": 1,
-            "total_frames": total_frames,
-            "output": {"node": "sine", "port": "out"}
-        },
-        "tempo": {"points": [{"q": "0/1", "bpm": "60/1", "shape": "step"}]},
-        "events": [],
-        "nodes": [{
-            "id": "sine",
-            "processor": {"kind": "core", "processor": {"kind": "sine", "voices": voices}},
-            "params": {"attack": "0/1", "release": "0/1", "level": "1/1"}
-        }],
-        "audio_assets": [],
-        "connections": [],
-        "modulations": [],
-        "automation": []
-    })
-}
-
-fn artifact(value: &Value) -> PlanArtifact {
-    PlanArtifact::from_json(&serde_json::to_vec(value).unwrap()).unwrap()
-}
-
-fn render(value: &Value) -> Result<Vec<f64>, RenderError> {
-    let plan = artifact(value);
-    let mut engine = DspEngine::new_artifact(&plan)?;
+fn render(plan: &PlanArtifact) -> Result<Vec<f64>, RenderError> {
+    let mut engine = DspEngine::new_artifact(plan)?;
     let mut samples = Vec::new();
     engine.render(|frame| {
         samples.push(frame[0]);
@@ -113,29 +60,25 @@ fn assert_close(actual: f64, expected: f64) {
 
 #[test]
 fn core_sine_attack_modulation_is_captured_at_note_on() {
-    let mut value = core_fixture(5, 2);
-    value["nodes"]
-        .as_array_mut()
-        .unwrap()
-        .push(constant("attack_source", "1/1"));
-    value["automation"] = json!([score_automation(
-        "attack_lane",
-        "attack_source",
-        &[(0, "1/1"), (2, "0/1")],
-    )]);
-    value["modulations"] = json!([modulation(
-        "attack_mod",
-        "attack_source",
-        "sine",
-        "attack",
-        "1/12000",
-    )]);
-    value["events"] = json!([
-        note("first", 0, 5, "sine", 12_000.0),
-        note("second", 2, 5, "sine", 12_000.0)
-    ]);
+    let plan = core_fixture(5, 2)
+        .with(&constant("attack_source", "1"))
+        .with(&score_automation(
+            "attack_lane",
+            "attack_source.params.value",
+            &[(0, "1"), (2, "0")],
+        ))
+        .with(&modulation(
+            "attack_mod",
+            "attack_source",
+            "sine",
+            "attack",
+            "1/12000s",
+        ))
+        .note("first", 0, 5, "12000Hz", "")
+        .note("second", 2, 5, "12000Hz", "")
+        .artifact();
 
-    let samples = render(&value).unwrap();
+    let samples = render(&plan).unwrap();
     assert_eq!(samples.len(), 5);
     // The first note captures a four-frame attack. The source changes to zero
     // at frame two, so the second note starts with an immediate attack while
@@ -148,7 +91,6 @@ fn core_sine_attack_modulation_is_captured_at_note_on() {
     assert_close(samples[3], 0.25);
     assert_close(samples[4], 0.0);
 
-    let plan = artifact(&value);
     let mut engine = DspEngine::new_artifact(&plan).unwrap();
     let mut first = Vec::new();
     engine
@@ -169,26 +111,24 @@ fn core_sine_attack_modulation_is_captured_at_note_on() {
 
 #[test]
 fn core_sine_release_modulation_is_captured_at_note_off() {
-    let mut value = core_fixture(6, 1);
-    value["nodes"]
-        .as_array_mut()
-        .unwrap()
-        .push(constant("release_source", "1/1"));
-    value["automation"] = json!([score_automation(
-        "release_lane",
-        "release_source",
-        &[(0, "1/1"), (2, "2/1"), (3, "0/1")],
-    )]);
-    value["modulations"] = json!([modulation(
-        "release_mod",
-        "release_source",
-        "sine",
-        "release",
-        "1/48000",
-    )]);
-    value["events"] = json!([note("released", 0, 2, "sine", 12_000.0)]);
+    let plan = core_fixture(6, 1)
+        .with(&constant("release_source", "1"))
+        .with(&score_automation(
+            "release_lane",
+            "release_source.params.value",
+            &[(0, "1"), (2, "2"), (3, "0")],
+        ))
+        .with(&modulation(
+            "release_mod",
+            "release_source",
+            "sine",
+            "release",
+            "1/48000s",
+        ))
+        .note("released", 0, 2, "12000Hz", "")
+        .artifact();
 
-    let samples = render(&value).unwrap();
+    let samples = render(&plan).unwrap();
     assert_eq!(samples.len(), 6);
     // The source is one frame at onset, two frames at note-off, and zero
     // afterward. Release must retain the two-frame value captured at off.
@@ -202,57 +142,68 @@ fn core_sine_release_modulation_is_captured_at_note_off() {
 
 #[test]
 fn event_rate_baseline_and_signed_modulations_are_id_ordered() {
-    let mut value = core_fixture(4, 1);
-    value["nodes"]
-        .as_array_mut()
-        .unwrap()
-        .push(constant("source", "1/1"));
-    value["automation"] = json!([{
-        "id": "attack_baseline",
-        "target": {"node": "sine", "port": "attack"},
-        "clock": "score",
-        "at": {"kind": "score", "q": "0/1"},
-        "points": [{"position": "0/1", "value": "1/48000", "shape": "step"}]
-    }]);
     // The sorted reduction is baseline + huge + (-huge) + two frames. If the
     // declaration order were used, the final small contribution would be
     // swallowed by the large intermediate value and the attack would be zero.
-    value["modulations"] = json!([
-        modulation("c_small", "source", "sine", "attack", "1/24000"),
-        modulation("b_negative", "source", "sine", "attack", "-1099511627776/1"),
-        modulation("a_positive", "source", "sine", "attack", "1099511627776/1")
-    ]);
-    value["events"] = json!([note("n", 0, 4, "sine", 12_000.0)]);
+    let plan = core_fixture(4, 1)
+        .with(&constant("source", "1"))
+        .with(&score_automation(
+            "attack_baseline",
+            "sine.params.attack",
+            &[(0, "1/48000s")],
+        ))
+        .with(&modulation(
+            "c_small", "source", "sine", "attack", "1/24000s",
+        ))
+        .with(&modulation(
+            "b_negative",
+            "source",
+            "sine",
+            "attack",
+            "-1099511627776s",
+        ))
+        .with(&modulation(
+            "a_positive",
+            "source",
+            "sine",
+            "attack",
+            "1099511627776s",
+        ))
+        .note("n", 0, 4, "12000Hz", "")
+        .artifact();
 
-    let expected = render(&value).unwrap();
+    let expected = render(&plan).unwrap();
     assert_close(expected[1], 0.5);
 
-    value["modulations"].as_array_mut().unwrap().reverse();
-    assert_eq!(render(&value).unwrap(), expected);
+    // The compiler lists modulations by ID. A plan may list them in any
+    // order, so list them in reverse.
+    let mut json: Value = serde_json::from_slice(&plan.to_json().unwrap()).unwrap();
+    let modulations = json["modulations"].as_array_mut().unwrap();
+    assert_eq!(modulations.len(), 3);
+    modulations.reverse();
+    let reversed = PlanArtifact::from_json(&serde_json::to_vec(&json).unwrap()).unwrap();
+    assert_eq!(render(&reversed).unwrap(), expected);
 }
 
 #[test]
 fn invalid_event_rate_values_fail_during_render_and_before_callbacks() {
-    let mut range = core_fixture(4, 1);
-    range["nodes"]
-        .as_array_mut()
-        .unwrap()
-        .push(constant("source", "1/1"));
-    range["automation"] = json!([score_automation(
-        "bad_lane",
-        "source",
-        &[(0, "0/1"), (2, "-1/1")],
-    )]);
-    range["modulations"] = json!([modulation(
-        "bad_attack",
-        "source",
-        "sine",
-        "attack",
-        "1/48000",
-    )]);
-    range["events"] = json!([note("n", 0, 4, "sine", 12_000.0)]);
-    let plan = artifact(&range);
-    let mut engine = DspEngine::new_artifact(&plan).unwrap();
+    let range = core_fixture(4, 1)
+        .with(&constant("source", "1"))
+        .with(&score_automation(
+            "bad_lane",
+            "source.params.value",
+            &[(0, "0"), (2, "-1")],
+        ))
+        .with(&modulation(
+            "bad_attack",
+            "source",
+            "sine",
+            "attack",
+            "1/48000s",
+        ))
+        .note("n", 0, 4, "12000Hz", "")
+        .artifact();
+    let mut engine = DspEngine::new_artifact(&range).unwrap();
     let mut callbacks = 0;
     let error = engine
         .render(|_| {
@@ -263,15 +214,12 @@ fn invalid_event_rate_values_fail_during_render_and_before_callbacks() {
     assert_eq!(error.code(), "E_RANGE");
     assert_eq!(callbacks, 2);
 
-    let huge = format!("1{}/1", "0".repeat(308));
-    let mut nonfinite = core_fixture(1, 1);
-    nonfinite["nodes"]
-        .as_array_mut()
-        .unwrap()
-        .push(constant("source", &huge));
-    nonfinite["modulations"] = json!([modulation("overflow", "source", "sine", "attack", "2/1",)]);
-    let plan = artifact(&nonfinite);
-    let mut engine = DspEngine::new_artifact(&plan).unwrap();
+    let huge = format!("1{}", "0".repeat(308));
+    let nonfinite = core_fixture(1, 1)
+        .with(&constant("source", &huge))
+        .with(&modulation("overflow", "source", "sine", "attack", "2s"))
+        .artifact();
+    let mut engine = DspEngine::new_artifact(&nonfinite).unwrap();
     let mut callbacks = 0;
     let error = engine
         .render(|_| {
@@ -283,133 +231,48 @@ fn invalid_event_rate_values_fail_during_render_and_before_callbacks() {
     assert_eq!(callbacks, 0);
 }
 
-fn instrument_resources() -> InstrumentResources {
-    let rational = |value: &str| maac::parse_rational(value).unwrap();
-    let voice = GraphProgram {
-        channels: 1,
-        nodes: vec![
-            GraphNode {
-                id: "amp".into(),
-                processor: GraphProcessor::ADSR,
-                params: BTreeMap::from([
-                    ("attack".into(), rational("0/1")),
-                    ("decay".into(), rational("0/1")),
-                    ("sustain".into(), rational("1/1")),
-                    ("release".into(), rational("0/1")),
-                ]),
-            },
-            GraphNode {
-                id: "osc".into(),
-                processor: GraphProcessor::Sine,
-                params: BTreeMap::from([("phase".into(), rational("0/1"))]),
-            },
-        ],
-        connections: Vec::new(),
-        modulations: Vec::new(),
-        output: maac::plan::PortRef::new("osc", "out").unwrap(),
-        amplitude: Some("amp".into()),
-        connected: false,
-    };
-    let controls = BTreeMap::from([
-        (
-            "attack".into(),
-            Control {
-                target: ControlTarget {
-                    graph: GraphStage::Voice,
-                    node: "amp".into(),
-                    parameter: "attack".into(),
-                },
-                default: rational("0/1"),
-            },
-        ),
-        (
-            "release".into(),
-            Control {
-                target: ControlTarget {
-                    graph: GraphStage::Voice,
-                    node: "amp".into(),
-                    parameter: "release".into(),
-                },
-                default: rational("0/1"),
-            },
-        ),
-        (
-            "phase".into(),
-            Control {
-                target: ControlTarget {
-                    graph: GraphStage::Voice,
-                    node: "osc".into(),
-                    parameter: "phase".into(),
-                },
-                default: rational("0/1"),
-            },
-        ),
-    ]);
-    let source = b"event-rate modulation instrument fixture";
-    InstrumentResources {
-        entry_source: "fixture.maac".into(),
-        kits: Vec::new(),
-        effects: Vec::new(),
-        programs: vec![InstrumentProgram {
-            id: "program".into(),
-            voice,
-            shared: None,
-            controls,
-            source: ProgramSource {
-                file: "fixture.maac".into(),
-                object: "program".into(),
-                span: None,
-            },
-        }],
-        wavetables: Vec::new(),
-        wavetable_sources: Vec::new(),
-        samples: Vec::new(),
-        sample_sources: Vec::new(),
-        source_files: vec![maac::bundle::SourceIdentity {
-            path: "fixture.maac".into(),
-            hash: sha256_digest(source),
-        }],
-        dependencies: Vec::new(),
-        libraries: Vec::new(),
-    }
-}
-
-fn instrument_fixture(total_frames: u64, voices: u32) -> Value {
-    let mut value = core_fixture(total_frames, voices);
-    value["output"]["output"] = json!({"node": "instrument", "port": "out"});
-    value["nodes"] = json!([{
-        "id": "instrument",
-        "processor": {"kind": "core", "processor": {
-            "kind": "instrument", "program": "program", "voices": voices, "channels": 1
-        }},
-        "params": {"attack": "0/1", "release": "0/1", "phase": "0/1"}
-    }]);
-    value["instruments"] = serde_json::to_value(instrument_resources()).unwrap();
-    value
+/// A node `instrument` whose voice is a sine `osc` under an envelope `amp`
+/// that opens and closes at once, with a control for the attack, the release
+/// and the phase.
+fn instrument_fixture(total_frames: u64, voices: u32) -> FrameProject {
+    FrameProject::instrument(
+        total_frames,
+        voices,
+        "program",
+        r#"instrument program {
+ channels = 1;
+ voice voice {
+  channels = 1; amplitude = &amp; output = &osc:out;
+  node amp { type = "synth.adsr/1"; params = { attack = 0s; decay = 0s; sustain = 1; release = 0s; }; }
+  node osc { type = "synth.sine/1"; params = { phase = 0; }; }
+ }
+ control attack { target = &voice.amp.params.attack; default = 0s; }
+ control release { target = &voice.amp.params.release; default = 0s; }
+ control phase { target = &voice.osc.params.phase; default = 0; }
+}"#,
+    )
 }
 
 #[test]
 fn instrument_public_release_modulation_is_captured_at_note_off() {
-    let mut value = instrument_fixture(6, 1);
-    value["nodes"]
-        .as_array_mut()
-        .unwrap()
-        .push(constant("release_source", "0/1"));
-    value["automation"] = json!([score_automation(
-        "release_lane",
-        "release_source",
-        &[(0, "0/1"), (2, "1/1"), (3, "0/1")],
-    )]);
-    value["modulations"] = json!([modulation(
-        "release",
-        "release_source",
-        "instrument",
-        "release",
-        "1/24000",
-    )]);
-    value["events"] = json!([note("released", 0, 2, "instrument", 12_000.0)]);
+    let plan = instrument_fixture(6, 1)
+        .with(&constant("release_source", "0"))
+        .with(&score_automation(
+            "release_lane",
+            "release_source.params.value",
+            &[(0, "0"), (2, "1"), (3, "0")],
+        ))
+        .with(&modulation(
+            "release",
+            "release_source",
+            "instrument",
+            "release",
+            "1/24000s",
+        ))
+        .note("released", 0, 2, "12000Hz", "")
+        .artifact();
 
-    let samples = render(&value).unwrap();
+    let samples = render(&plan).unwrap();
     assert_eq!(samples.len(), 6);
     assert_close(samples[0], 0.0);
     assert_close(samples[1], 1.0);
@@ -421,56 +284,66 @@ fn instrument_public_release_modulation_is_captured_at_note_off() {
 
 #[test]
 fn instrument_public_event_rates_capture_per_voice_and_release_controls_capacity() {
-    let mut value = instrument_fixture(5, 2);
-    value["nodes"]
-        .as_array_mut()
-        .unwrap()
-        .push(constant("attack_source", "1/1"));
-    value["nodes"]
-        .as_array_mut()
-        .unwrap()
-        .push(constant("phase_source", "0/1"));
-    value["automation"] = json!([
-        score_automation("attack_lane", "attack_source", &[(0, "1/1"), (2, "0/1")]),
-        score_automation("phase_lane", "phase_source", &[(0, "0/1"), (2, "1/4")])
-    ]);
-    value["modulations"] = json!([
-        modulation("attack", "attack_source", "instrument", "attack", "1/12000"),
-        modulation("phase", "phase_source", "instrument", "phase", "1/1")
-    ]);
-    value["events"] = json!([
-        note("first", 0, 5, "instrument", 12_000.0),
-        note("second", 2, 5, "instrument", 12_000.0)
-    ]);
-    let samples = render(&value).unwrap();
+    let plan = instrument_fixture(5, 2)
+        .with(&constant("attack_source", "1"))
+        .with(&constant("phase_source", "0"))
+        .with(&score_automation(
+            "attack_lane",
+            "attack_source.params.value",
+            &[(0, "1"), (2, "0")],
+        ))
+        .with(&score_automation(
+            "phase_lane",
+            "phase_source.params.value",
+            &[(0, "0"), (2, "1/4")],
+        ))
+        .with(&modulation(
+            "attack",
+            "attack_source",
+            "instrument",
+            "attack",
+            "1/12000s",
+        ))
+        .with(&modulation(
+            "phase",
+            "phase_source",
+            "instrument",
+            "phase",
+            "1",
+        ))
+        .note("first", 0, 5, "12000Hz", "")
+        .note("second", 2, 5, "12000Hz", "")
+        .artifact();
+    let samples = render(&plan).unwrap();
     assert_close(samples[0], 0.0);
     assert_close(samples[1], 0.25);
     assert_close(samples[2], 1.0);
     assert_close(samples[3], -0.75);
     assert_close(samples[4], -1.0);
 
-    let mut capacity = instrument_fixture(4, 1);
-    capacity["nodes"]
-        .as_array_mut()
-        .unwrap()
-        .push(constant("release_source", "0/1"));
-    capacity["automation"] = json!([score_automation(
-        "release_lane",
-        "release_source",
-        &[(0, "0/1"), (2, "1/48000")],
-    )]);
-    capacity["modulations"] = json!([modulation(
-        "release",
-        "release_source",
-        "instrument",
-        "release",
-        "1/1",
-    )]);
-    capacity["events"] = json!([
-        note("old", 0, 2, "instrument", 12_000.0),
-        note("new", 2, 4, "instrument", 12_000.0)
-    ]);
-    let plan = artifact(&capacity);
+    // Two notes back to back on one voice: a release that the source turns
+    // on at the first note's end keeps its voice, and one it leaves at zero
+    // frees it.
+    let capacity = |release_at_off: &str| {
+        instrument_fixture(4, 1)
+            .with(&constant("release_source", "0"))
+            .with(&score_automation(
+                "release_lane",
+                "release_source.params.value",
+                &[(0, "0"), (2, release_at_off)],
+            ))
+            .with(&modulation(
+                "release",
+                "release_source",
+                "instrument",
+                "release",
+                "1s",
+            ))
+            .note("old", 0, 2, "12000Hz", "")
+            .note("new", 2, 4, "12000Hz", "")
+            .artifact()
+    };
+    let plan = capacity("1/48000");
     let mut engine = DspEngine::new_artifact(&plan).unwrap();
     let mut callbacks = 0;
     let error = engine
@@ -482,10 +355,5 @@ fn instrument_public_event_rates_capture_per_voice_and_release_controls_capacity
     assert_eq!(error.code(), "E_VOICE_LIMIT");
     assert_eq!(callbacks, 2);
 
-    capacity["automation"] = json!([score_automation(
-        "release_lane",
-        "release_source",
-        &[(0, "0/1"), (2, "0/1")],
-    )]);
-    assert_eq!(render(&capacity).unwrap().len(), 4);
+    assert_eq!(render(&capacity("0")).unwrap().len(), 4);
 }

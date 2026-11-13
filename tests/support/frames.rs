@@ -6,8 +6,9 @@
 #![allow(dead_code)]
 
 use maac::bundle::SourceBundle;
-use maac::compiler::compile_bundle;
+use maac::compiler::{compile_bundle, compile_bundle_artifact};
 use maac::plan::Plan;
+use maac::PlanArtifact;
 
 /// The source of the project. Notes are written at frames; everything else
 /// is MaaC text.
@@ -143,6 +144,14 @@ place play {{ pattern = &phrase; track = &notes; at = {start_q}q; {place} }}
     pub fn plan(&self) -> Plan {
         let source = self.source();
         compile_bundle(&SourceBundle::new("main.maac", source.as_str()))
+            .unwrap_or_else(|diagnostics| panic!("{diagnostics:?}\n{source}"))
+    }
+
+    /// The compiled plan artifact, which also holds what a `Plan` cannot:
+    /// control nodes, modulations, audio and kits.
+    pub fn artifact(&self) -> PlanArtifact {
+        let source = self.source();
+        compile_bundle_artifact(&SourceBundle::new("main.maac", source.as_str()))
             .unwrap_or_else(|diagnostics| panic!("{diagnostics:?}\n{source}"))
     }
 }
