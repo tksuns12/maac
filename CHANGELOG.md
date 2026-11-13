@@ -50,7 +50,8 @@ promise of compatibility beyond the documented interfaces.
   the compile's first error. It is for the failures that show only once a
   performance is expanded, such as an onset moved out of the score, two
   automations that overlap or a resource limit. An edit then costs about what
-  a compile does. See
+  a compile does. `maac patch --check-compile [--profile default|song]` asks
+  for it from the CLI, and writes nothing when it refuses. See
   [the editing kernel](docs/editing-kernel.md#checking-that-the-candidate-compiles).
 
 ### Changed

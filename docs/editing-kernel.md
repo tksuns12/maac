@@ -130,6 +130,17 @@ compile applies when it leaves one that does. `FoundationEditContext` has no
 such check: it resolves no imports or assets, so it cannot compile. A
 disk-media context compiles every document it validates already.
 
+From the CLI, `--check-compile` asks `maac patch` for the same check:
+
+```bash
+maac patch SOURCE EDIT.json --check-compile [--profile default|song] -o EDITED.maac
+```
+
+A refused patch writes nothing. `--profile` chooses the limits the candidate
+is compiled under, as it does for `maac check`; a refusal for execution work
+that `song` would allow names that option. With `--disk-media` the flag is
+accepted and adds nothing.
+
 ## Original-source diagnostics
 
 `EditError` has an optional original-source UTF-8 byte span. `SourceDocument`

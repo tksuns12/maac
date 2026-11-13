@@ -15,7 +15,7 @@ language.
 | `maac instruments [NAME]` | List the built-in catalog, or show one instrument with controls, musical guidance and runnable usage |
 | `maac instruments [NAME] --library ID` | Select an exact built-in version for catalog listing or named detail |
 | `maac instruments --libraries` | List embedded library identities, reserved source paths and hashes |
-| `maac patch SOURCE PATCH.json -o OUTPUT [--project-root ROOT] [--force]` | Apply one Protocol 2 transaction with source-preserving projection; structured results include the new revision, inverse patch, impact, and diagnostics |
+| `maac patch SOURCE PATCH.json -o OUTPUT [--project-root ROOT] [--force] [--check-compile [--profile default\|song]]` | Apply one Protocol 2 transaction with source-preserving projection; structured results include the new revision, inverse patch, impact, and diagnostics. With `--check-compile`, a patch that leaves a document which does not compile under the profile is refused with the compile's first error |
 | `maac materialize-instance INPUT PLACEMENT --pattern NEW_ID -o OUTPUT [--project-root ROOT] [--force]` | Give one placement private pattern occurrences; return the edit, inverse, and complete original-to-new event/source mapping |
 | `maac query-events INPUT --start-q Q --end-q Q [--plan] [--project-root ROOT] [--profile default\|song]` | Return complete resolved events intersecting an exact half-open score window; `--plan` treats input as retained JSON |
 | `maac hash FILE` | Print the `sha256:` pin for the file's exact bytes without writing a file |

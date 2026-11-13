@@ -1870,12 +1870,8 @@ fn execute_impl(
             force,
             project_root,
         } => {
-            let (resolved_input, root) = resolve_source_input(Some(input), project_root.as_deref());
-            let bundle = load_source_bundle(&resolved_input, root.as_deref())?;
-            let context =
-                crate::editing::BundleEditContext::new(&bundle).map_err(CliError::from_edit)?;
             let (result, applied) =
-                apply_source_patch(input, patch, output, *force, &bundle, &context)?;
+                apply_bundle_source_patch(input, patch, output, *force, project_root, None)?;
             counts.edit = Some(applied);
             Ok(result)
         }
@@ -3044,6 +3040,71 @@ fn apply_source_patch(
     Ok((result, applied))
 }
 
+/// Apply a patch to the entry source of the bundle at `input`. With
+/// `compiles`, the edit must also leave a document that compiles under those
+/// limits.
+fn apply_bundle_source_patch(
+    input: &Path,
+    patch: &Path,
+    output: &Path,
+    force: bool,
+    project_root: &Option<PathBuf>,
+    compiles: Option<PlanLimits>,
+) -> Result<(CommandResult, crate::editing::AppliedTransaction), CliError> {
+    let (resolved_input, root) = resolve_source_input(Some(input), project_root.as_deref());
+    let bundle = load_source_bundle(&resolved_input, root.as_deref())?;
+    let context = crate::editing::BundleEditContext::new(&bundle).map_err(CliError::from_edit)?;
+    let context = match compiles {
+        Some(limits) => context.checking_compile(limits),
+        None => context,
+    };
+    apply_source_patch(input, patch, output, force, &bundle, &context)
+}
+
+/// `maac patch --check-compile`: the patch applies only if it leaves a
+/// document that compiles under `profile`.
+fn execute_checked_patch(
+    command: &Command,
+    profile: ProfileArg,
+) -> Result<ArtifactCommandResult, CliError> {
+    let Command::Patch {
+        input,
+        patch,
+        output,
+        force,
+        project_root,
+    } = command
+    else {
+        return Err(CliError::new(
+            "E_USAGE",
+            "--check-compile is supported only by the patch command",
+        ));
+    };
+    let (base, edit) = apply_bundle_source_patch(
+        input,
+        patch,
+        output,
+        *force,
+        project_root,
+        Some(profile.limits()),
+    )?;
+    Ok(ArtifactCommandResult {
+        base,
+        hits: 0,
+        audio_clips: 0,
+        start_frame: None,
+        end_frame: None,
+        edit: Some(edit),
+        materialization: None,
+        windowed_query: None,
+        analysis: None,
+        archive_patch: None,
+        archive_import_patch: None,
+        archive_group_patch: None,
+        archive_graph_patch: None,
+    })
+}
+
 fn apply_disk_media_source_patch(
     input: &Path,
     patch: &Path,
@@ -3765,6 +3826,7 @@ struct ProcessOptions {
     range: Option<FrameRange>,
     disk_media: bool,
     disk_media_profile: Option<ProfileArg>,
+    check_compile: bool,
 }
 
 /// Add process-only flags without changing the public Command enum used by
@@ -3819,9 +3881,18 @@ fn parse_cli_with_process_options(
                 .long("profile")
                 .value_name("PROFILE")
                 .value_parser(clap::value_parser!(ProfileArg))
-                .help("execution-work profile for disk-media processing"),
+                .help("execution-work profile for disk-media processing or --check-compile"),
         );
     }
+    let patch = command
+        .find_subcommand_mut("patch")
+        .expect("patch command is declared");
+    *patch = patch.clone().arg(
+        Arg::new("check-compile")
+            .long("check-compile")
+            .action(ArgAction::SetTrue)
+            .help("refuse a patch that leaves a document which does not compile"),
+    );
     let matches = command
         .try_get_matches_from(args)
         .map_err(ParsedArgsError::Clap)?;
@@ -3863,6 +3934,9 @@ fn parse_cli_with_process_options(
                 .and_then(|subcommand| subcommand.get_one::<ProfileArg>("disk-media-profile"))
                 .copied()
         });
+    let check_compile = matches
+        .subcommand_matches("patch")
+        .is_some_and(|patch| patch.get_flag("check-compile"));
     let cli = Cli::from_arg_matches(&matches).map_err(ParsedArgsError::Clap)?;
     Ok((
         cli,
@@ -3870,6 +3944,7 @@ fn parse_cli_with_process_options(
             range,
             disk_media,
             disk_media_profile,
+            check_compile,
         },
     ))
 }
@@ -3914,16 +3989,21 @@ where
         }
     };
     let json = cli.json;
-    let result = if options.disk_media_profile.is_some() && !options.disk_media {
+    // The profile a patch compiles its candidate under: a disk-media patch
+    // always compiles it, any other only with --check-compile.
+    let patch_profile = options.disk_media_profile.unwrap_or(ProfileArg::Default);
+    let result = if options.disk_media_profile.is_some()
+        && !options.disk_media
+        && !options.check_compile
+    {
         Err(CliError::new(
             "E_USAGE",
-            "--profile on patch, import-wav, or verify-import requires --disk-media",
+            "--profile on patch requires --disk-media or --check-compile; on import-wav or verify-import it requires --disk-media",
         ))
     } else if options.disk_media {
-        execute_disk_media(
-            &cli.command,
-            options.disk_media_profile.unwrap_or(ProfileArg::Default),
-        )
+        execute_disk_media(&cli.command, patch_profile)
+    } else if options.check_compile {
+        execute_checked_patch(&cli.command, patch_profile)
     } else {
         execute_artifact_with_range(&cli.command, options.range)
     };
@@ -3944,7 +4024,9 @@ where
             }
         }
         Err(error) => {
-            let hint = profile_hint(&error, selected_profile(&cli.command));
+            let profile = selected_profile(&cli.command)
+                .or_else(|| options.check_compile.then_some(patch_profile));
+            let hint = profile_hint(&error, profile);
             if json {
                 let error = HintedError {
                     error: &error,

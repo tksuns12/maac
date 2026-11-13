@@ -286,3 +286,46 @@ fn a_default_refusal_names_the_song_profile_when_song_would_allow_it() {
         }
     }
 }
+
+/// `patch --check-compile` compiles what the patch leaves under its profile:
+/// the default refuses this source's work and names `song`, which allows it.
+#[test]
+fn a_checked_patch_compiles_under_its_profile() {
+    use maac::editing::{Operation, SourceDocument, Transaction};
+    let temp = tempdir().unwrap();
+    let root = temp.path();
+    let source = high_work_source();
+    fs::write(root.join("main.maac"), &source).unwrap();
+    let transaction = Transaction::new(
+        SourceDocument::parse(source.as_str())
+            .unwrap()
+            .revision()
+            .to_owned(),
+        vec![Operation::Set {
+            object: vec!["play".into()],
+            field: vec!["label".into()],
+            value: serde_json::json!({"t":"string","v":"dense"}),
+            expect: None,
+            expect_absent: false,
+        }],
+    )
+    .unwrap();
+    fs::write(root.join("edit.json"), transaction.to_json().unwrap()).unwrap();
+    let patch = ["patch", "main.maac", "edit.json", "-o", "out.maac"];
+
+    let output = invoke(root, &[&patch[..], &["--check-compile"]].concat());
+    assert!(!output.status.success());
+    let error = value(&output);
+    assert_eq!(error["code"], "E_RESOURCE_LIMIT");
+    assert_eq!(
+        error["hint"],
+        "--profile song allows up to 100000000000 units"
+    );
+    assert!(!root.join("out.maac").exists());
+
+    success(
+        root,
+        &[&patch[..], &["--check-compile", "--profile", "song"]].concat(),
+    );
+    assert!(root.join("out.maac").exists());
+}
