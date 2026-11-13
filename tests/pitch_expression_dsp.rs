@@ -1,97 +1,17 @@
 use maac::dsp::{render, DspEngine};
-use maac::plan::*;
-use std::collections::BTreeMap;
-fn r(numerator: i64, denominator: i64) -> Rational {
-    maac::parse_rational(&format!("{numerator}/{denominator}")).unwrap()
-}
+use maac::plan::{EventKind, Plan};
 
-fn rs(value: &str) -> Rational {
-    maac::parse_rational(value).unwrap()
-}
+#[path = "support/sine.rs"]
+mod sine;
+use sine::SineProject;
 
-fn node(id: &str, processor: Processor, params: &[(&str, Rational)]) -> Node {
-    let mut value = Node::new(id, processor).unwrap();
-    value.params = params
-        .iter()
-        .map(|(name, parameter)| ((*name).to_owned(), parameter.clone()))
-        .collect::<BTreeMap<_, _>>();
-    value
-}
+/// The sine of the fixture: at full level at once, and a release of four
+/// frames.
+const RELEASED: &str = "attack = 0s; release = 4/48000s; level = 1;";
 
-fn event(
-    address: &str,
-    target: &str,
-    on_frame: u64,
-    off_frame: u64,
-    pitch_hz: f64,
-    velocity: Rational,
-) -> ResolvedEvent {
-    let on_q = r(on_frame as i64, 24_000);
-    let off_q = r(off_frame as i64, 24_000);
-    ResolvedEvent {
-        address: address.into(),
-        source: SourceMapping {
-            object: address.into(),
-            path: vec![address.into()],
-            span: None,
-        },
-        target: EventTarget::new(target, "events").unwrap(),
-        kind: EventKind::Note {
-            timbre_expression: None,
-            pressure_expression: None,
-            pitch_hz,
-            velocity,
-            pitch_expression: None,
-            gain_expression: None,
-        },
-        score_on_q: on_q,
-        score_off_q: Some(off_q),
-        onset_offset_seconds: r(0, 1),
-        release_offset_seconds: r(0, 1),
-        on_seconds: r(on_frame as i64, 48_000),
-        off_seconds: Some(r(off_frame as i64, 48_000)),
-        release_velocity: 0.5,
-        on_frame,
-        off_frame: Some(off_frame),
-        order: 0,
-        join: None,
-    }
-}
-
-fn sine_plan(
-    frames: u64,
-    tail_frames: u64,
-    voices: u32,
-    params: &[(&str, Rational)],
-    events: Vec<ResolvedEvent>,
-) -> Plan {
-    Plan {
-        version: 1,
-        output: OutputSettings {
-            score_start_q: r(0, 1),
-            score_end_q: r(frames as i64, 24_000),
-            tail_seconds: r(tail_frames as i64, 48_000),
-            sample_rate_hz: 48_000,
-            channels: 1,
-            total_frames: frames + tail_frames,
-            output: PortRef::new("sine", "out").unwrap(),
-        },
-        tempo: TempoMap {
-            points: vec![TempoPoint {
-                q: r(0, 1),
-                bpm: r(120, 1),
-                shape: Interpolation::Step,
-            }],
-        },
-        events,
-        nodes: vec![node("sine", Processor::sine(voices), params)],
-        connections: Vec::new(),
-        automation: Vec::new(),
-        regions: Vec::new(),
-        source_mappings: Vec::new(),
-        instruments: None,
-        production: None,
-    }
+/// The field that gives a note the pitch curve `id`.
+fn bent(id: &str) -> String {
+    format!("expression bend {{ kind = pitch; curve = &{id}; }}")
 }
 
 fn collect(plan: &Plan) -> Vec<f64> {
@@ -103,62 +23,39 @@ fn collect(plan: &Plan) -> Vec<f64> {
     .unwrap();
     out
 }
-fn expression(
-    clock: PitchExpressionClock,
-    end: Rational,
-    start: i64,
-    finish: i64,
-    shape: Interpolation,
-) -> PitchExpression {
-    PitchExpression {
-        clock,
-        points: vec![
-            PitchExpressionPoint {
-                position: r(0, 1),
-                cents: r(start, 1),
-                shape,
-            },
-            PitchExpressionPoint {
-                position: end,
-                cents: r(finish, 1),
-                shape: Interpolation::Step,
-            },
-        ],
-    }
-}
-fn fixture(expr: Option<PitchExpression>) -> Plan {
-    let mut note = event("n", "sine", 0, 8, 3000.0, r(1, 1));
-    if let EventKind::Note {
-        pitch_expression, ..
-    } = &mut note.kind
-    {
-        *pitch_expression = expr;
-    }
-    sine_plan(
-        8,
-        4,
-        4,
-        &[
-            ("attack", r(0, 1)),
-            ("release", r(4, 48000)),
-            ("level", r(1, 1)),
-        ],
-        vec![note],
+
+/// A pitch curve `id` on `clock` from `start` cents at its origin to
+/// `finish` cents at `end`. `end` is written with the clock's unit: `1`,
+/// `8/48000s`, `8/24000q`.
+fn curve(id: &str, clock: &str, end: &str, start: i64, finish: i64, shape: &str) -> String {
+    let origin = match clock {
+        "normalized" => "0",
+        "seconds" => "0s",
+        "score" => "0q",
+        _ => unreachable!("an expression clock"),
+    };
+    format!(
+        "curve {id} {{ clock = {clock}; points = [({origin}, {start}ct, {shape}), ({end}, {finish}ct, step)]; }}"
     )
+}
+
+/// Note `n`: eight frames at 3000 Hz and four frames of tail, with the pitch
+/// curve `bend` if one is given.
+fn fixture(bend: Option<String>) -> SineProject {
+    let project = SineProject::new(8, 4, 4, RELEASED);
+    match bend {
+        Some(curve) => project
+            .note("n", 0, 8, "3000Hz", &bent("bend"))
+            .with(&curve),
+        None => project.note("n", 0, 8, "3000Hz", ""),
+    }
 }
 #[test]
 fn constant_octave_matches_double_frequency_exactly() {
-    let bent = fixture(Some(expression(
-        PitchExpressionClock::Normalized,
-        r(1, 1),
-        1200,
-        1200,
-        Interpolation::Step,
-    )));
-    let mut plain = fixture(None);
-    if let EventKind::Note { pitch_hz, .. } = &mut plain.events[0].kind {
-        *pitch_hz *= 2.0;
-    }
+    let bent = fixture(Some(curve("bend", "normalized", "1", 1200, 1200, "step"))).plan();
+    let plain = SineProject::new(8, 4, 4, RELEASED)
+        .note("n", 0, 8, "6000Hz", "")
+        .plan();
     assert_eq!(collect(&bent), collect(&plain));
 }
 
@@ -191,16 +88,16 @@ fn close(actual: &[f64], expected: &[f64]) {
 #[test]
 fn all_clocks_step_and_linear_follow_reference_recurrence_and_hold_release() {
     for (clock, end) in [
-        (PitchExpressionClock::Normalized, r(1, 1)),
-        (PitchExpressionClock::Seconds, r(8, 48000)),
-        (PitchExpressionClock::Score, r(8, 24000)),
+        ("normalized", "1"),
+        ("seconds", "8/48000s"),
+        ("score", "8/24000q"),
     ] {
-        for shape in [Interpolation::Step, Interpolation::Linear] {
-            let plan = fixture(Some(expression(clock, end.clone(), 0, 1200, shape)));
+        for shape in ["step", "linear"] {
+            let plan = fixture(Some(curve("bend", clock, end, 0, 1200, shape))).plan();
             close(
                 &collect(&plan),
                 &expected(0, 8, 12, 3000.0, |n| {
-                    if shape == Interpolation::Linear {
+                    if shape == "linear" {
                         n as f64 * 150.0
                     } else if n == 8 {
                         1200.0
@@ -215,17 +112,11 @@ fn all_clocks_step_and_linear_follow_reference_recurrence_and_hold_release() {
 #[test]
 fn step_knots_use_exact_right_continuity_even_when_binary64_coordinates_coincide() {
     for (position, first_bent) in [
-        (r(4, 48000), 4),
-        (rs("400000000000000000001/4800000000000000000000000"), 5),
-        (rs("399999999999999999999/4800000000000000000000000"), 4),
+        ("4/48000s", 4),
+        ("400000000000000000001/4800000000000000000000000s", 5),
+        ("399999999999999999999/4800000000000000000000000s", 4),
     ] {
-        let plan = fixture(Some(expression(
-            PitchExpressionClock::Seconds,
-            position,
-            0,
-            1200,
-            Interpolation::Step,
-        )));
+        let plan = fixture(Some(curve("bend", "seconds", position, 0, 1200, "step"))).plan();
         close(
             &collect(&plan),
             &expected(
@@ -240,33 +131,23 @@ fn step_knots_use_exact_right_continuity_even_when_binary64_coordinates_coincide
 }
 #[test]
 fn fractional_offsets_use_ceiled_scheduled_gate_and_overlaps_keep_independent_phase() {
-    let mut plan = fixture(Some(expression(
-        PitchExpressionClock::Normalized,
-        r(1, 1),
-        0,
-        1200,
-        Interpolation::Linear,
-    )));
-    let note = &mut plan.events[0];
-    note.onset_offset_seconds = r(1, 96000);
-    note.release_offset_seconds = r(-1, 96000);
-    note.on_seconds = r(1, 96000);
-    note.off_seconds = Some(r(15, 96000));
-    note.on_frame = 1;
-    let mut other = event("a", "sine", 2, 6, 1500.0, r(1, 1));
-    if let EventKind::Note {
-        pitch_expression, ..
-    } = &mut other.kind
-    {
-        *pitch_expression = Some(expression(
-            PitchExpressionClock::Normalized,
-            r(1, 1),
-            -1200,
-            -1200,
-            Interpolation::Step,
-        ));
-    }
-    plan.events.push(other);
+    // Note `n` starts half a frame late and ends half a frame early, so its
+    // gate is frames 1 to 8; note `a` overlaps it.
+    let plan = SineProject::new(8, 4, 4, RELEASED)
+        .note(
+            "n",
+            0,
+            8,
+            "3000Hz",
+            &format!(
+                "onset_offset = 1/96000s; release_offset = -1/96000s; {}",
+                bent("rise")
+            ),
+        )
+        .note("a", 2, 6, "1500Hz", &bent("down"))
+        .with(&curve("rise", "normalized", "1", 0, 1200, "linear"))
+        .with(&curve("down", "normalized", "1", -1200, -1200, "step"))
+        .plan();
     let a = expected(1, 8, 12, 3000.0, |n| n as f64 / 7.0 * 1200.0);
     let b = expected(2, 6, 12, 1500.0, |_| -1200.0);
     close(
@@ -276,40 +157,22 @@ fn fractional_offsets_use_ceiled_scheduled_gate_and_overlaps_keep_independent_ph
 }
 #[test]
 fn score_clock_is_affine_across_tempo_change() {
-    let mut plan = fixture(Some(expression(
-        PitchExpressionClock::Score,
-        r(6, 24000),
-        0,
-        1200,
-        Interpolation::Linear,
-    )));
-    plan.tempo.points.push(TempoPoint {
-        q: r(2, 24000),
-        bpm: r(60, 1),
-        shape: Interpolation::Step,
-    });
-    plan.output.score_end_q = r(6, 24000);
-    plan.output.total_frames = 14;
-    plan.events[0].score_off_q = Some(r(6, 24000));
-    plan.events[0].off_seconds = Some(r(10, 48000));
-    plan.events[0].off_frame = Some(10);
+    // Six score frames: two at 120 bpm, then four at 60 bpm, which last
+    // eight frames. The gate is ten frames.
+    let mut project = SineProject::new(6, 4, 4, RELEASED)
+        .note("n", 0, 6, "3000Hz", &bent("bend"))
+        .with(&curve("bend", "score", "6/24000q", 0, 1200, "linear"));
+    project.tempo = "(0q, 120bpm, step), (2/24000q, 60bpm, step)".to_owned();
     close(
-        &collect(&plan),
+        &collect(&project.plan()),
         &expected(0, 10, 14, 3000.0, |n| n as f64 * 120.0),
     );
 }
 #[test]
 fn source_free_roundtrip_and_engine_reset_match_and_legacy_pcm_is_exact() {
     for expressed in [false, true] {
-        let plan = fixture(expressed.then(|| {
-            expression(
-                PitchExpressionClock::Normalized,
-                r(1, 1),
-                0,
-                1200,
-                Interpolation::Linear,
-            )
-        }));
+        let plan =
+            fixture(expressed.then(|| curve("bend", "normalized", "1", 0, 1200, "linear"))).plan();
         let bytes = serde_json::to_vec(&plan).unwrap();
         if !expressed {
             assert!(!String::from_utf8(bytes.clone())
@@ -336,13 +199,19 @@ fn source_free_roundtrip_and_engine_reset_match_and_legacy_pcm_is_exact() {
 #[test]
 fn invalid_bent_frequency_is_rejected_before_output() {
     for cents in [3600, -2000000] {
-        let plan = fixture(Some(expression(
-            PitchExpressionClock::Normalized,
-            r(1, 1),
-            cents,
-            cents,
-            Interpolation::Step,
-        )));
+        // The compiler refuses a curve that bends this far, so the plan is a
+        // compiled one whose cents are changed afterwards.
+        let mut plan = fixture(Some(curve("bend", "normalized", "1", 0, 0, "step"))).plan();
+        let EventKind::Note {
+            pitch_expression: Some(expression),
+            ..
+        } = &mut plan.events[0].kind
+        else {
+            panic!("the note has a pitch expression");
+        };
+        for point in &mut expression.points {
+            point.cents = maac::parse_rational(&cents.to_string()).unwrap();
+        }
         let mut called = false;
         assert!(render(&plan, |_| {
             called = true;

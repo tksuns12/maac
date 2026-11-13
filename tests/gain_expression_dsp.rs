@@ -1,98 +1,13 @@
 use maac::dsp::{render, DspEngine};
-use maac::plan::*;
-use std::collections::BTreeMap;
-fn r(numerator: i64, denominator: i64) -> Rational {
-    maac::parse_rational(&format!("{numerator}/{denominator}")).unwrap()
-}
+use maac::plan::Plan;
 
-fn rs(value: &str) -> Rational {
-    maac::parse_rational(value).unwrap()
-}
+#[path = "support/sine.rs"]
+mod sine;
+use sine::SineProject;
 
-fn node(id: &str, processor: Processor, params: &[(&str, Rational)]) -> Node {
-    let mut value = Node::new(id, processor).unwrap();
-    value.params = params
-        .iter()
-        .map(|(name, parameter)| ((*name).to_owned(), parameter.clone()))
-        .collect::<BTreeMap<_, _>>();
-    value
-}
-
-fn event(
-    address: &str,
-    target: &str,
-    on_frame: u64,
-    off_frame: u64,
-    pitch_hz: f64,
-    velocity: Rational,
-) -> ResolvedEvent {
-    let on_q = r(on_frame as i64, 24_000);
-    let off_q = r(off_frame as i64, 24_000);
-    ResolvedEvent {
-        address: address.into(),
-        source: SourceMapping {
-            object: address.into(),
-            path: vec![address.into()],
-            span: None,
-        },
-        target: EventTarget::new(target, "events").unwrap(),
-        kind: EventKind::Note {
-            timbre_expression: None,
-            pressure_expression: None,
-            pitch_hz,
-            velocity,
-            pitch_expression: None,
-            gain_expression: None,
-        },
-        score_on_q: on_q,
-        score_off_q: Some(off_q),
-        onset_offset_seconds: r(0, 1),
-        release_offset_seconds: r(0, 1),
-        on_seconds: r(on_frame as i64, 48_000),
-        off_seconds: Some(r(off_frame as i64, 48_000)),
-        release_velocity: 0.5,
-        on_frame,
-        off_frame: Some(off_frame),
-        order: 0,
-        join: None,
-    }
-}
-
-fn sine_plan(
-    frames: u64,
-    tail_frames: u64,
-    voices: u32,
-    params: &[(&str, Rational)],
-    events: Vec<ResolvedEvent>,
-) -> Plan {
-    Plan {
-        version: 1,
-        output: OutputSettings {
-            score_start_q: r(0, 1),
-            score_end_q: r(frames as i64, 24_000),
-            tail_seconds: r(tail_frames as i64, 48_000),
-            sample_rate_hz: 48_000,
-            channels: 1,
-            total_frames: frames + tail_frames,
-            output: PortRef::new("sine", "out").unwrap(),
-        },
-        tempo: TempoMap {
-            points: vec![TempoPoint {
-                q: r(0, 1),
-                bpm: r(120, 1),
-                shape: Interpolation::Step,
-            }],
-        },
-        events,
-        nodes: vec![node("sine", Processor::sine(voices), params)],
-        connections: Vec::new(),
-        automation: Vec::new(),
-        regions: Vec::new(),
-        source_mappings: Vec::new(),
-        instruments: None,
-        production: None,
-    }
-}
+/// The sine of the fixture: at full level at once, and a release of four
+/// frames.
+const RELEASED: &str = "attack = 0s; release = 4/48000s; level = 1;";
 
 fn collect(plan: &Plan) -> Vec<f64> {
     let mut out = vec![];
@@ -103,54 +18,43 @@ fn collect(plan: &Plan) -> Vec<f64> {
     .unwrap();
     out
 }
-fn expression(
-    clock: ExpressionClock,
-    end: Rational,
-    start: Rational,
-    finish: Rational,
-    shape: Interpolation,
-) -> GainExpression {
-    GainExpression {
-        clock,
-        points: vec![
-            GainExpressionPoint {
-                position: r(0, 1),
-                gain: start,
-                shape,
-            },
-            GainExpressionPoint {
-                position: end,
-                gain: finish,
-                shape: Interpolation::Step,
-            },
-        ],
-    }
-}
-fn set_gain(note: &mut ResolvedEvent, curve: GainExpression) {
-    if let EventKind::Note {
-        gain_expression, ..
-    } = &mut note.kind
-    {
-        *gain_expression = Some(curve);
-    }
-}
-fn fixture(curve: Option<GainExpression>) -> Plan {
-    let mut note = event("n", "sine", 0, 8, 3000.0, r(1, 1));
-    if let Some(curve) = curve {
-        set_gain(&mut note, curve);
-    }
-    sine_plan(
-        8,
-        4,
-        4,
-        &[
-            ("attack", r(0, 1)),
-            ("release", r(4, 48000)),
-            ("level", r(1, 1)),
-        ],
-        vec![note],
+
+/// A curve `id` on `clock` from `start` at its origin to `finish` at `end`.
+/// `end` is written with the clock's unit: `1`, `8/48000s`, `8/24000q`.
+fn curve(id: &str, clock: &str, end: &str, start: &str, finish: &str, shape: &str) -> String {
+    let origin = match clock {
+        "normalized" => "0",
+        "seconds" => "0s",
+        "score" => "0q",
+        _ => unreachable!("an expression clock"),
+    };
+    format!(
+        "curve {id} {{ clock = {clock}; points = [({origin}, {start}, {shape}), ({end}, {finish}, step)]; }}"
     )
 }
+
+/// The field that gives a note the gain curve `id`.
+fn gained(id: &str) -> String {
+    format!("expression gain {{ kind = gain; curve = &{id}; }}")
+}
+
+/// Note `n`: eight frames at 3000 Hz with `fields`, and four frames of tail.
+fn scene(params: &str, fields: &str, curves: &str) -> Plan {
+    SineProject::new(8, 4, 4, params)
+        .note("n", 0, 8, "3000Hz", fields)
+        .with(curves)
+        .plan()
+}
+
+/// The scene with the released sine, and with the gain curve `gain` if one
+/// is given.
+fn fixture(gain: Option<String>) -> Plan {
+    match gain {
+        Some(curve) => scene(RELEASED, &gained("gain"), &curve),
+        None => scene(RELEASED, "", ""),
+    }
+}
+
 fn close(actual: &[f64], expected: &[f64]) {
     assert_eq!(actual.len(), expected.len());
     for (n, (a, b)) in actual.iter().zip(expected).enumerate() {
@@ -164,37 +68,28 @@ fn close(actual: &[f64], expected: &[f64]) {
 fn all_clocks_and_shapes_match_analytic_gain_and_hold_gate_end_through_release() {
     let plain = collect(&fixture(None));
     for (clock, end) in [
-        (ExpressionClock::Normalized, r(1, 1)),
-        (ExpressionClock::Seconds, r(8, 48000)),
-        (ExpressionClock::Score, r(8, 24000)),
+        ("normalized", "1"),
+        ("seconds", "8/48000s"),
+        ("score", "8/24000q"),
     ] {
-        for shape in [
-            Interpolation::Step,
-            Interpolation::Linear,
-            Interpolation::Exponential,
-        ] {
-            let plan = fixture(Some(expression(
-                clock,
-                end.clone(),
-                r(1, 4),
-                r(1, 1),
-                shape,
-            )));
+        for shape in ["step", "linear", "exponential"] {
+            let plan = fixture(Some(curve("gain", clock, end, "1/4", "1", shape)));
             let expected: Vec<_> = plain
                 .iter()
                 .enumerate()
                 .map(|(n, sample)| {
                     let t = n.min(8) as f64 / 8.0;
                     let gain = match shape {
-                        Interpolation::Step => {
+                        "step" => {
                             if n < 8 {
                                 0.25
                             } else {
                                 1.0
                             }
                         }
-                        Interpolation::Linear => 0.25 + 0.75 * t,
-                        Interpolation::Exponential => 0.25 * 4.0_f64.powf(t),
+                        "linear" => 0.25 + 0.75 * t,
+                        "exponential" => 0.25 * 4.0_f64.powf(t),
+                        _ => unreachable!(),
                     };
                     sample * gain
                 })
@@ -207,17 +102,11 @@ fn all_clocks_and_shapes_match_analytic_gain_and_hold_gate_end_through_release()
 fn exact_step_knots_and_zero_gain_preserve_phase() {
     let plain = collect(&fixture(None));
     for (position, first) in [
-        (r(4, 48000), 4),
-        (rs("400000000000000000001/4800000000000000000000000"), 5),
-        (rs("399999999999999999999/4800000000000000000000000"), 4),
+        ("4/48000s", 4),
+        ("400000000000000000001/4800000000000000000000000s", 5),
+        ("399999999999999999999/4800000000000000000000000s", 4),
     ] {
-        let plan = fixture(Some(expression(
-            ExpressionClock::Seconds,
-            position,
-            r(0, 1),
-            r(1, 1),
-            Interpolation::Step,
-        )));
+        let plan = fixture(Some(curve("gain", "seconds", position, "0", "1", "step")));
         let mut expected = plain.clone();
         expected[..first].fill(0.0);
         assert_eq!(collect(&plan), expected);
@@ -226,51 +115,25 @@ fn exact_step_knots_and_zero_gain_preserve_phase() {
 #[test]
 fn gain_one_preserves_legacy_and_pitch_pcm_exactly_and_roundtrip_resets() {
     for pitched in [false, true] {
-        let mut plain = fixture(None);
-        if pitched {
-            if let EventKind::Note {
-                pitch_expression, ..
-            } = &mut plain.events[0].kind
-            {
-                *pitch_expression = Some(PitchExpression {
-                    clock: ExpressionClock::Seconds,
-                    points: vec![
-                        PitchExpressionPoint {
-                            position: r(0, 1),
-                            cents: r(0, 1),
-                            shape: Interpolation::Linear,
-                        },
-                        PitchExpressionPoint {
-                            position: r(8, 48000),
-                            cents: r(1200, 1),
-                            shape: Interpolation::Step,
-                        },
-                    ],
-                });
-            }
-        }
-        let mut gained = plain.clone();
-        set_gain(
-            &mut gained.events[0],
-            expression(
-                ExpressionClock::Score,
-                r(8, 24000),
-                r(1, 1),
-                r(1, 1),
-                Interpolation::Step,
-            ),
-        );
+        let (bend, bend_curve) = if pitched {
+            (
+                "expression bend { kind = pitch; curve = &bend; }",
+                "curve bend { clock = seconds; points = [(0s, 0ct, linear), (8/48000s, 1200ct, step)]; }",
+            )
+        } else {
+            ("", "")
+        };
+        let with_gain = |gain: String| {
+            scene(
+                RELEASED,
+                &format!("{bend} {}", gained("gain")),
+                &format!("{bend_curve}\n{gain}"),
+            )
+        };
+        let plain = scene(RELEASED, bend, bend_curve);
+        let gained = with_gain(curve("gain", "score", "8/24000q", "1", "1", "step"));
         assert_eq!(collect(&gained), collect(&plain));
-        set_gain(
-            &mut gained.events[0],
-            expression(
-                ExpressionClock::Normalized,
-                r(1, 1),
-                r(0, 1),
-                r(2, 1),
-                Interpolation::Linear,
-            ),
-        );
+        let gained = with_gain(curve("gain", "normalized", "1", "0", "2", "linear"));
         let expected: Vec<_> = collect(&plain)
             .iter()
             .enumerate()
@@ -293,15 +156,12 @@ fn gain_one_preserves_legacy_and_pitch_pcm_exactly_and_roundtrip_resets() {
 }
 #[test]
 fn fractional_offsets_and_overlapping_voices_use_independent_gain_clocks() {
-    let mut first = fixture(None);
-    let note = &mut first.events[0];
-    note.onset_offset_seconds = r(1, 96000);
-    note.release_offset_seconds = r(-1, 96000);
-    note.on_seconds = r(1, 96000);
-    note.off_seconds = Some(r(15, 96000));
-    note.on_frame = 1;
-    let mut second = fixture(None);
-    second.events[0] = event("a", "sine", 2, 6, 1500.0, r(1, 1));
+    // Note `n` starts half a frame late and ends half a frame early, so its
+    // gate is frames 1 to 8; note `a` overlaps it.
+    const OFFSETS: &str = "onset_offset = 1/96000s; release_offset = -1/96000s;";
+    let project = || SineProject::new(8, 4, 4, RELEASED);
+    let first = project().note("n", 0, 8, "3000Hz", OFFSETS).plan();
+    let second = project().note("a", 2, 6, "1500Hz", "").plan();
     let expected: Vec<_> = collect(&first)
         .iter()
         .enumerate()
@@ -311,44 +171,28 @@ fn fractional_offsets_and_overlapping_voices_use_independent_gain_clocks() {
                 + b * (0.25 + 0.75 * n.saturating_sub(2).min(4) as f64 / 4.0)
         })
         .collect();
-    set_gain(
-        &mut first.events[0],
-        expression(
-            ExpressionClock::Score,
-            r(8, 24000),
-            r(0, 1),
-            r(1, 1),
-            Interpolation::Linear,
-        ),
-    );
-    set_gain(
-        &mut second.events[0],
-        expression(
-            ExpressionClock::Seconds,
-            r(4, 48000),
-            r(1, 4),
-            r(1, 1),
-            Interpolation::Linear,
-        ),
-    );
-    first.events.push(second.events.remove(0));
-    close(&collect(&first), &expected);
+    let both = project()
+        .note(
+            "n",
+            0,
+            8,
+            "3000Hz",
+            &format!("{OFFSETS} {}", gained("rise")),
+        )
+        .note("a", 2, 6, "1500Hz", &gained("swell"))
+        .with(&curve("rise", "score", "8/24000q", "0", "1", "linear"))
+        .with(&curve("swell", "seconds", "4/48000s", "1/4", "1", "linear"))
+        .plan();
+    close(&collect(&both), &expected);
 }
 #[test]
 fn zero_gain_consumes_capacity_through_release_and_reclaims_at_envelope_zero() {
     for (on, overflow) in [(2, true), (9, true), (12, false)] {
-        let mut plan = fixture(Some(expression(
-            ExpressionClock::Normalized,
-            r(1, 1),
-            r(0, 1),
-            r(0, 1),
-            Interpolation::Step,
-        )));
-        plan.nodes[0].processor = Processor::sine(1);
-        plan.output.score_end_q = r(16, 24000);
-        plan.output.total_frames = 20;
-        plan.events
-            .push(event("other", "sine", on, 16, 3000.0, r(1, 1)));
+        let plan = SineProject::new(16, 4, 1, RELEASED)
+            .note("n", 0, 8, "3000Hz", &gained("gain"))
+            .note("other", on, 16, "3000Hz", "")
+            .with(&curve("gain", "normalized", "1", "0", "0", "step"))
+            .plan();
         let result = render(&plan, |_| Ok(()));
         if overflow {
             assert!(matches!(
@@ -363,30 +207,23 @@ fn zero_gain_consumes_capacity_through_release_and_reclaims_at_envelope_zero() {
 #[test]
 fn gain_above_one_is_not_clamped_and_nonfinite_product_fails() {
     let plain = collect(&fixture(None));
-    let gained = fixture(Some(expression(
-        ExpressionClock::Normalized,
-        r(1, 1),
-        r(4, 1),
-        r(4, 1),
-        Interpolation::Step,
-    )));
+    let gained_plan = fixture(Some(curve("gain", "normalized", "1", "4", "4", "step")));
     assert_eq!(
-        collect(&gained),
+        collect(&gained_plan),
         plain.iter().map(|s| s * 4.0).collect::<Vec<_>>()
     );
     let mut sink = std::io::Cursor::new(Vec::<u8>::new());
     assert!(matches!(
-        maac::export::write_wav(&mut sink, &gained, maac::export::WavFormat::Pcm16),
+        maac::export::write_wav(&mut sink, &gained_plan, maac::export::WavFormat::Pcm16),
         Err(maac::export::ExportError::Pcm16Overload { .. })
     ));
-    let mut huge = fixture(Some(expression(
-        ExpressionClock::Normalized,
-        r(1, 1),
-        Rational::from_integer(num_bigint::BigInt::from(10).pow(308)),
-        Rational::from_integer(num_bigint::BigInt::from(10).pow(308)),
-        Interpolation::Step,
-    )));
-    huge.nodes[0].params.insert("level".into(), r(4, 1));
+    // A gain of 10^308 on a level of 4 is past what binary64 holds.
+    let huge_gain = format!("1{}", "0".repeat(308));
+    let huge = scene(
+        "attack = 0s; release = 4/48000s; level = 4;",
+        &gained("gain"),
+        &curve("gain", "normalized", "1", &huge_gain, &huge_gain, "step"),
+    );
     assert!(matches!(
         render(&huge, |_| Ok(())),
         Err(maac::dsp::RenderError::Nonfinite(_))
@@ -394,14 +231,15 @@ fn gain_above_one_is_not_clamped_and_nonfinite_product_fails() {
 }
 #[test]
 fn extreme_exponential_ratio_renders_finite_interior_gain() {
-    let curve = expression(
-        ExpressionClock::Normalized,
-        r(1, 1),
-        Rational::new(1.into(), num_bigint::BigInt::from(10).pow(400)),
-        Rational::from_integer(num_bigint::BigInt::from(10).pow(300)),
-        Interpolation::Exponential,
-    );
-    let plan = fixture(Some(curve));
+    // From 10^-400 to 10^300.
+    let plan = fixture(Some(curve(
+        "gain",
+        "normalized",
+        "1",
+        &format!("1/1{}", "0".repeat(400)),
+        &format!("1{}", "0".repeat(300)),
+        "exponential",
+    )));
     let plain = collect(&fixture(None));
     let samples = collect(&plan);
     for n in 1..8 {
@@ -413,18 +251,11 @@ fn extreme_exponential_ratio_renders_finite_interior_gain() {
 }
 #[test]
 fn attack_release_and_velocity_multiply_in_specified_order() {
-    let mut plan = fixture(Some(expression(
-        ExpressionClock::Normalized,
-        r(1, 1),
-        r(1, 3),
-        r(2, 3),
-        Interpolation::Linear,
-    )));
-    plan.nodes[0].params.insert("attack".into(), r(12, 48000));
-    plan.nodes[0].params.insert("level".into(), r(3, 7));
-    if let EventKind::Note { velocity, .. } = &mut plan.events[0].kind {
-        *velocity = r(2, 5);
-    }
+    let plan = scene(
+        "attack = 12/48000s; release = 4/48000s; level = 3/7;",
+        &format!("velocity = 2/5; {}", gained("gain")),
+        &curve("gain", "normalized", "1", "1/3", "2/3", "linear"),
+    );
     let mut phase: f64 = 0.0;
     let expected: Vec<_> = (0..12)
         .map(|n| {

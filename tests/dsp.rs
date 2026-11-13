@@ -1,118 +1,21 @@
-use std::collections::BTreeMap;
-
 use maac::dsp::{one_pole_step, pan_sample, render, sum_samples, RenderError};
-use maac::plan::{
-    Automation, AutomationClock, AutomationPoint, Connection, EventKind, EventTarget,
-    Interpolation, Node, OutputSettings, Plan, PortRef, Processor, Rational, ResolvedEvent,
-    SourceMapping, TempoMap, TempoPoint,
-};
+use maac::plan::Plan;
 
-fn r(numerator: i64, denominator: i64) -> Rational {
-    maac::parse_rational(&format!("{numerator}/{denominator}")).unwrap()
-}
+#[path = "support/sine.rs"]
+mod sine;
+use sine::SineProject;
 
-fn rs(value: &str) -> Rational {
-    maac::parse_rational(value).unwrap()
-}
+/// A sine that is at full level the moment a note starts and silent the
+/// moment it ends.
+const GATED: &str = "attack = 0s; release = 0s; level = 1;";
 
-fn node(id: &str, processor: Processor, params: &[(&str, Rational)]) -> Node {
-    let mut value = Node::new(id, processor).unwrap();
-    value.params = params
-        .iter()
-        .map(|(name, parameter)| ((*name).to_owned(), parameter.clone()))
-        .collect::<BTreeMap<_, _>>();
-    value
-}
-
-fn event(
-    address: &str,
-    target: &str,
-    on_frame: u64,
-    off_frame: u64,
-    pitch_hz: f64,
-    velocity: Rational,
-) -> ResolvedEvent {
-    let on_q = r(on_frame as i64, 24_000);
-    let off_q = r(off_frame as i64, 24_000);
-    ResolvedEvent {
-        address: address.into(),
-        source: SourceMapping {
-            object: address.into(),
-            path: vec![address.into()],
-            span: None,
-        },
-        target: EventTarget::new(target, "events").unwrap(),
-        kind: EventKind::Note {
-            timbre_expression: None,
-            pressure_expression: None,
-            pitch_hz,
-            velocity,
-            pitch_expression: None,
-            gain_expression: None,
-        },
-        score_on_q: on_q,
-        score_off_q: Some(off_q),
-        onset_offset_seconds: r(0, 1),
-        release_offset_seconds: r(0, 1),
-        on_seconds: r(on_frame as i64, 48_000),
-        off_seconds: Some(r(off_frame as i64, 48_000)),
-        release_velocity: 0.5,
-        on_frame,
-        off_frame: Some(off_frame),
-        order: 0,
-        join: None,
-    }
-}
-
-fn sine_plan(
-    frames: u64,
-    tail_frames: u64,
-    voices: u32,
-    params: &[(&str, Rational)],
-    events: Vec<ResolvedEvent>,
-) -> Plan {
-    Plan {
-        version: 1,
-        output: OutputSettings {
-            score_start_q: r(0, 1),
-            score_end_q: r(frames as i64, 24_000),
-            tail_seconds: r(tail_frames as i64, 48_000),
-            sample_rate_hz: 48_000,
-            channels: 1,
-            total_frames: frames + tail_frames,
-            output: PortRef::new("sine", "out").unwrap(),
-        },
-        tempo: TempoMap {
-            points: vec![TempoPoint {
-                q: r(0, 1),
-                bpm: r(120, 1),
-                shape: Interpolation::Step,
-            }],
-        },
-        events,
-        nodes: vec![node("sine", Processor::sine(voices), params)],
-        connections: Vec::new(),
-        automation: Vec::new(),
-        regions: Vec::new(),
-        source_mappings: Vec::new(),
-        instruments: None,
-        production: None,
-    }
-}
-
-fn route_through_pan(plan: &mut Plan, pan: Rational) {
-    plan.nodes
-        .push(node("pan", Processor::pan(), &[("pan", pan)]));
-    plan.connections.push(
-        Connection::new(
-            "sine_to_pan",
-            PortRef::new("sine", "out").unwrap(),
-            PortRef::new("pan", "in").unwrap(),
-        )
-        .unwrap(),
-    );
-    plan.output.channels = 2;
-    plan.output.output = PortRef::new("pan", "out").unwrap();
+/// An automation `id` of `target`, at `at`, along a curve of `points` on
+/// `clock`.
+fn automation(id: &str, target: &str, clock: &str, at: &str, points: &str) -> String {
+    format!(
+        "curve {id}_curve {{ clock = {clock}; points = [{points}]; }}\n\
+         automation {id} {{ target = &{target}; curve = &{id}_curve; at = {at}; }}"
+    )
 }
 
 fn collect(plan: &Plan) -> maac::dsp::Result<Vec<Vec<f64>>> {
@@ -124,6 +27,10 @@ fn collect(plan: &Plan) -> maac::dsp::Result<Vec<Vec<f64>>> {
     Ok(frames)
 }
 
+/// Three matrices of one sine, summed: a large value, a small one and the
+/// large one negated, so the sum depends on the order it adds them in. The
+/// plan lists its fan-in connections in `connection_order` and, when asked,
+/// its nodes in reverse.
 fn cancellation_plan(
     channels: u8,
     connection_order: [usize; 3],
@@ -133,77 +40,65 @@ fn cancellation_plan(
     const LARGE: i64 = 18_014_398_509_481_984;
     const PRODUCER_IDS: [&str; 3] = ["a_large", "m_small", "z_negative"];
 
-    let mut plan = sine_plan(
-        2,
-        0,
-        1,
-        &[
-            ("attack", r(0, 1)),
-            ("release", r(0, 1)),
-            ("level", r(1, 1)),
-        ],
-        vec![event("n", "sine", 0, 2, 12_000.0, r(1, 1))],
-    );
     let coefficients = match channels {
         1 => [
-            vec![vec![r(LARGE, 1)]],
-            vec![vec![r(1, 1)]],
-            vec![vec![r(-LARGE, 1)]],
+            format!("[[{LARGE}]]"),
+            "[[1]]".to_owned(),
+            format!("[[-{LARGE}]]"),
         ],
         2 => [
-            vec![vec![r(LARGE, 1)], vec![r(-LARGE, 1)]],
-            vec![vec![r(1, 1)], vec![r(-1, 1)]],
-            vec![vec![r(-LARGE, 1)], vec![r(LARGE, 1)]],
+            format!("[[{LARGE}], [-{LARGE}]]"),
+            "[[1], [-1]]".to_owned(),
+            format!("[[-{LARGE}], [{LARGE}]]"),
         ],
         _ => unreachable!("the fixture only covers mono and stereo"),
     };
-    for (producer_id, coefficients) in PRODUCER_IDS.iter().zip(coefficients) {
-        plan.nodes.push(node(
-            producer_id,
-            Processor::matrix(1, channels, coefficients),
-            &[],
+    let mut project = SineProject::new(2, 0, 1, GATED)
+        .note("n", 0, 2, "12000Hz", "")
+        .with(&format!(
+            "node sum {{ type = \"core.sum/1\"; config = {{ channels = {channels}; }}; }}"
         ));
-        plan.connections.push(
-            Connection::new(
-                format!("source_to_{producer_id}"),
-                PortRef::new("sine", "out").unwrap(),
-                PortRef::new(*producer_id, "in").unwrap(),
-            )
-            .unwrap(),
-        );
+    project.output = "sum".to_owned();
+    for ((producer_id, coefficients), fan_in_id) in
+        PRODUCER_IDS.iter().zip(coefficients).zip(fan_in_ids)
+    {
+        project = project.with(&format!(
+            "node {producer_id} {{ type = \"core.matrix/1\"; config = {{ inputs = 1; outputs = {channels}; coefficients = {coefficients}; }}; }}\n\
+             connect source_to_{producer_id} {{ from = &sine:out; to = &{producer_id}:in; }}\n\
+             connect {fan_in_id} {{ from = &{producer_id}:out; to = &sum:in; }}"
+        ));
     }
-    plan.nodes.push(node("sum", Processor::sum(channels), &[]));
-    for producer_index in connection_order {
-        plan.connections.push(
-            Connection::new(
-                fan_in_ids[producer_index],
-                PortRef::new(PRODUCER_IDS[producer_index], "out").unwrap(),
-                PortRef::new("sum", "in").unwrap(),
-            )
-            .unwrap(),
-        );
-    }
+    let mut plan = project.plan();
+
+    // The compiler lists nodes and connections by ID. A plan may list them
+    // in any order, so put them in the order this case asks for.
+    let position = |ids: &[String], id: &str| ids.iter().position(|other| other == id).unwrap();
+    let mut node_ids = vec!["sine".to_owned()];
+    node_ids.extend(PRODUCER_IDS.map(str::to_owned));
+    node_ids.push("sum".to_owned());
     if reverse_node_declarations {
-        plan.nodes.reverse();
+        node_ids.reverse();
     }
-    plan.output.channels = channels;
-    plan.output.output = PortRef::new("sum", "out").unwrap();
+    plan.nodes.sort_by_key(|node| position(&node_ids, &node.id));
+    let mut connection_ids: Vec<String> = PRODUCER_IDS
+        .iter()
+        .map(|producer_id| format!("source_to_{producer_id}"))
+        .collect();
+    connection_ids.extend(
+        connection_order
+            .iter()
+            .map(|producer_index| fan_in_ids[*producer_index].to_owned()),
+    );
+    plan.connections
+        .sort_by_key(|connection| position(&connection_ids, &connection.id));
     plan
 }
 
 #[test]
 fn sine_starts_at_zero_and_matches_binary64_phase_and_level() {
-    let plan = sine_plan(
-        4,
-        0,
-        4,
-        &[
-            ("attack", r(0, 1)),
-            ("release", r(0, 1)),
-            ("level", r(1, 1)),
-        ],
-        vec![event("n", "sine", 0, 4, 12_000.0, r(1, 1))],
-    );
+    let plan = SineProject::new(4, 0, 4, GATED)
+        .note("n", 0, 4, "12000Hz", "")
+        .plan();
     let frames = collect(&plan).unwrap();
     println!("sine {frames:?}");
     assert_eq!(frames.len(), 4);
@@ -300,47 +195,17 @@ fn renderer_sums_fan_in_by_connection_id_across_declaration_orders() {
 #[test]
 fn seconds_automation_knots_take_effect_at_the_first_sample_on_or_after_them() {
     let frames = 3;
-    let mut plan = sine_plan(
-        frames,
-        0,
-        4,
-        &[
-            ("attack", r(0, 1)),
-            ("release", r(0, 1)),
-            ("level", r(1, 1)),
-        ],
-        vec![event("n", "sine", 0, frames, 12_000.0, r(1, 1))],
-    );
-    plan.nodes
-        .push(node("pan", Processor::pan(), &[("pan", r(-1, 1))]));
-    plan.connections.push(
-        Connection::new(
-            "sine_to_pan",
-            PortRef::new("sine", "out").unwrap(),
-            PortRef::new("pan", "in").unwrap(),
-        )
-        .unwrap(),
-    );
-    plan.output.channels = 2;
-    plan.output.output = PortRef::new("pan", "out").unwrap();
-    plan.automation.push(Automation {
-        id: "pan_step".into(),
-        target: PortRef::new("pan", "pan").unwrap(),
-        clock: AutomationClock::Seconds,
-        at: r(0, 1),
-        points: vec![
-            AutomationPoint {
-                position: r(0, 1),
-                value: r(-1, 1),
-                shape: Interpolation::Step,
-            },
-            AutomationPoint {
-                position: r(1, 48_000),
-                value: r(1, 1),
-                shape: Interpolation::Step,
-            },
-        ],
-    });
+    let plan = SineProject::new(frames, 0, 4, GATED)
+        .note("n", 0, frames, "12000Hz", "")
+        .through_pan("-1")
+        .with(&automation(
+            "pan_step",
+            "pan.params.pan",
+            "seconds",
+            "0s",
+            "(0s, -1, step), (1/48000s, 1, step)",
+        ))
+        .plan();
     let output = collect(&plan).unwrap();
     println!("pan {output:?}");
     assert!(output[0].iter().all(|sample| sample.abs() < 1e-15));
@@ -350,68 +215,30 @@ fn seconds_automation_knots_take_effect_at_the_first_sample_on_or_after_them() {
 
 #[test]
 fn attack_and_release_parameters_are_captured_at_their_events() {
-    let mut attack_plan = sine_plan(
-        3,
-        0,
-        4,
-        &[
-            ("attack", r(1, 48_000)),
-            ("release", r(0, 1)),
-            ("level", r(1, 1)),
-        ],
-        vec![event("n", "sine", 0, 3, 12_000.0, r(1, 1))],
-    );
-    attack_plan.automation.push(Automation {
-        id: "attack_later".into(),
-        target: PortRef::new("sine", "attack").unwrap(),
-        clock: AutomationClock::Seconds,
-        at: r(0, 1),
-        points: vec![
-            AutomationPoint {
-                position: r(0, 1),
-                value: r(1, 48_000),
-                shape: Interpolation::Step,
-            },
-            AutomationPoint {
-                position: r(1, 48_000),
-                value: r(1, 1),
-                shape: Interpolation::Step,
-            },
-        ],
-    });
+    let attack_plan = SineProject::new(3, 0, 4, "attack = 1/48000s; release = 0s; level = 1;")
+        .note("n", 0, 3, "12000Hz", "")
+        .with(&automation(
+            "attack_later",
+            "sine.params.attack",
+            "seconds",
+            "0s",
+            "(0s, 1/48000s, step), (1/48000s, 1s, step)",
+        ))
+        .plan();
     let attack_output = collect(&attack_plan).unwrap();
     println!("attack {attack_output:?}");
     assert!((attack_output[1][0] - 1.0).abs() < 1e-14);
 
-    let mut release_plan = sine_plan(
-        2,
-        2,
-        4,
-        &[
-            ("attack", r(0, 1)),
-            ("release", r(1, 48_000)),
-            ("level", r(1, 1)),
-        ],
-        vec![event("n", "sine", 0, 2, 6_000.0, r(1, 1))],
-    );
-    release_plan.automation.push(Automation {
-        id: "release_later".into(),
-        target: PortRef::new("sine", "release").unwrap(),
-        clock: AutomationClock::Seconds,
-        at: r(0, 1),
-        points: vec![
-            AutomationPoint {
-                position: r(0, 1),
-                value: r(1, 48_000),
-                shape: Interpolation::Step,
-            },
-            AutomationPoint {
-                position: r(3, 48_000),
-                value: r(1, 1),
-                shape: Interpolation::Step,
-            },
-        ],
-    });
+    let release_plan = SineProject::new(2, 2, 4, "attack = 0s; release = 1/48000s; level = 1;")
+        .note("n", 0, 2, "6000Hz", "")
+        .with(&automation(
+            "release_later",
+            "sine.params.release",
+            "seconds",
+            "0s",
+            "(0s, 1/48000s, step), (3/48000s, 1s, step)",
+        ))
+        .plan();
     let release_output = collect(&release_plan).unwrap();
     assert!((release_output[2][0] - 1.0).abs() < 1e-14);
     assert!(release_output[3][0].abs() < 1e-14);
@@ -419,35 +246,16 @@ fn attack_and_release_parameters_are_captured_at_their_events() {
 
 #[test]
 fn release_parameter_is_captured_at_note_off() {
-    let mut plan = sine_plan(
-        4,
-        0,
-        1,
-        &[
-            ("attack", r(0, 1)),
-            ("release", r(0, 1)),
-            ("level", r(1, 1)),
-        ],
-        vec![event("n", "sine", 0, 1, 6_000.0, r(1, 1))],
-    );
-    plan.automation.push(Automation {
-        id: "release_at_off".into(),
-        target: PortRef::new("sine", "release").unwrap(),
-        clock: AutomationClock::Seconds,
-        at: r(0, 1),
-        points: vec![
-            AutomationPoint {
-                position: r(0, 1),
-                value: r(0, 1),
-                shape: Interpolation::Step,
-            },
-            AutomationPoint {
-                position: r(1, 48_000),
-                value: r(2, 48_000),
-                shape: Interpolation::Step,
-            },
-        ],
-    });
+    let plan = SineProject::new(4, 0, 1, GATED)
+        .note("n", 0, 1, "6000Hz", "")
+        .with(&automation(
+            "release_at_off",
+            "sine.params.release",
+            "seconds",
+            "0s",
+            "(0s, 0s, step), (1/48000s, 2/48000s, step)",
+        ))
+        .plan();
     let output = collect(&plan).unwrap();
     assert!((output[2][0] - 0.5).abs() < 1e-14);
     assert!(output[3][0].abs() < 1e-14);
@@ -455,37 +263,19 @@ fn release_parameter_is_captured_at_note_off() {
 
 #[test]
 fn released_voice_reaching_zero_is_reclaimed_before_same_frame_note_on() {
-    let plan = sine_plan(
-        6,
-        0,
-        1,
-        &[
-            ("attack", r(0, 1)),
-            ("release", r(3, 48_000)),
-            ("level", r(1, 1)),
-        ],
-        vec![
-            event("a", "sine", 0, 1, 440.0, r(1, 1)),
-            event("b", "sine", 4, 5, 660.0, r(1, 1)),
-        ],
-    );
+    let plan = SineProject::new(6, 0, 1, "attack = 0s; release = 3/48000s; level = 1;")
+        .note("a", 0, 1, "440Hz", "")
+        .note("b", 4, 5, "660Hz", "")
+        .plan();
     assert_eq!(collect(&plan).unwrap().len(), 6);
 }
 
 #[test]
 fn pan_raw_parameter_is_clamped_by_the_reference_processor() {
-    let mut plan = sine_plan(
-        2,
-        0,
-        1,
-        &[
-            ("attack", r(0, 1)),
-            ("release", r(0, 1)),
-            ("level", r(1, 1)),
-        ],
-        vec![event("n", "sine", 0, 2, 12_000.0, r(1, 1))],
-    );
-    route_through_pan(&mut plan, r(2, 1));
+    let plan = SineProject::new(2, 0, 1, GATED)
+        .note("n", 0, 2, "12000Hz", "")
+        .through_pan("2")
+        .plan();
     let output = collect(&plan).unwrap();
     assert!(output[1][0].abs() < 1e-14);
     assert!((output[1][1] - 1.0).abs() < 1e-14);
@@ -493,29 +283,17 @@ fn pan_raw_parameter_is_clamped_by_the_reference_processor() {
 
 #[test]
 fn automation_uses_authored_parameter_as_its_pre_anchor_base() {
-    let mut plan = sine_plan(
-        3,
-        0,
-        1,
-        &[
-            ("attack", r(0, 1)),
-            ("release", r(0, 1)),
-            ("level", r(1, 1)),
-        ],
-        vec![event("n", "sine", 0, 3, 12_000.0, r(1, 1))],
-    );
-    route_through_pan(&mut plan, r(-1, 2));
-    plan.automation.push(Automation {
-        id: "pan_after_start".into(),
-        target: PortRef::new("pan", "pan").unwrap(),
-        clock: AutomationClock::Seconds,
-        at: r(2, 48_000),
-        points: vec![AutomationPoint {
-            position: r(0, 1),
-            value: r(1, 1),
-            shape: Interpolation::Step,
-        }],
-    });
+    let plan = SineProject::new(3, 0, 1, GATED)
+        .note("n", 0, 3, "12000Hz", "")
+        .through_pan("-1/2")
+        .with(&automation(
+            "pan_after_start",
+            "pan.params.pan",
+            "seconds",
+            "2/48000s",
+            "(0s, 1, step)",
+        ))
+        .plan();
     let output = collect(&plan).unwrap();
     let expected = pan_sample(1.0, -0.5).unwrap();
     assert!((output[1][0] - expected[0]).abs() < 1e-14);
@@ -524,39 +302,20 @@ fn automation_uses_authored_parameter_as_its_pre_anchor_base() {
 
 #[test]
 fn seconds_automation_anchor_is_absolute_but_frames_are_reset_relative() {
-    let mut plan = sine_plan(
-        3,
-        0,
-        1,
-        &[
-            ("attack", r(0, 1)),
-            ("release", r(0, 1)),
-            ("level", r(1, 1)),
-        ],
-        vec![event("n", "sine", 0, 3, 12_000.0, r(1, 1))],
-    );
-    let score_start = r(1, 1);
-    let score_end = score_start.clone() + r(3, 24_000);
-    let mut shifted = event("n", "sine", 0, 3, 12_000.0, r(1, 1));
-    shifted.score_on_q = score_start.clone();
-    shifted.score_off_q = Some(score_end.clone());
-    shifted.on_seconds = r(1, 2);
-    shifted.off_seconds = Some(r(1, 2) + r(3, 48_000));
-    plan.events = vec![shifted];
-    plan.output.score_start_q = score_start;
-    plan.output.score_end_q = score_end;
-    route_through_pan(&mut plan, r(-1, 1));
-    plan.automation.push(Automation {
-        id: "absolute_seconds".into(),
-        target: PortRef::new("pan", "pan").unwrap(),
-        clock: AutomationClock::Seconds,
-        at: r(1, 2) + r(1, 48_000),
-        points: vec![AutomationPoint {
-            position: r(0, 1),
-            value: r(1, 1),
-            shape: Interpolation::Step,
-        }],
-    });
+    // The score starts at 1q, which is 1/2s; the automation is one frame
+    // after that.
+    let plan = SineProject::new(3, 0, 1, GATED)
+        .starting_at("1")
+        .note("n", 0, 3, "12000Hz", "")
+        .through_pan("-1")
+        .with(&automation(
+            "absolute_seconds",
+            "pan.params.pan",
+            "seconds",
+            "24001/48000s",
+            "(0s, 1, step)",
+        ))
+        .plan();
     let output = collect(&plan).unwrap();
     assert!(output[1][0].abs() < 1e-14);
     assert!((output[1][1] - 1.0).abs() < 1e-14);
@@ -564,42 +323,20 @@ fn seconds_automation_anchor_is_absolute_but_frames_are_reset_relative() {
 
 #[test]
 fn huge_absolute_score_origin_keeps_local_timing_exact() {
-    let mut plan = sine_plan(
-        96_000,
-        0,
-        1,
-        &[
-            ("attack", r(0, 1)),
-            ("release", r(0, 1)),
-            ("level", r(1, 1)),
-        ],
-        vec![event("n", "sine", 0, 96_000, 12_000.0, r(1, 1))],
-    );
-    let score_start = rs("100000000000000000000/1");
-    let score_end = score_start.clone() + r(4, 1);
-    let origin = plan.tempo.seconds_at(&score_start).unwrap();
-    let mut shifted = event("n", "sine", 0, 96_000, 12_000.0, r(1, 1));
-    shifted.score_on_q = score_start.clone();
-    shifted.score_off_q = Some(score_end.clone());
-    shifted.on_seconds = origin.clone();
-    shifted.off_seconds = Some(origin.clone() + r(2, 1));
-    shifted.on_frame = 0;
-    shifted.off_frame = Some(96_000);
-    plan.events = vec![shifted];
-    plan.output.score_start_q = score_start;
-    plan.output.score_end_q = score_end;
-    route_through_pan(&mut plan, r(-1, 1));
-    plan.automation.push(Automation {
-        id: "local_seconds".into(),
-        target: PortRef::new("pan", "pan").unwrap(),
-        clock: AutomationClock::Seconds,
-        at: origin + r(1, 48_000),
-        points: vec![AutomationPoint {
-            position: r(0, 1),
-            value: r(1, 1),
-            shape: Interpolation::Step,
-        }],
-    });
+    // The score starts at 10^20 q, which is 5 * 10^19 s; the automation is
+    // one frame after that.
+    let plan = SineProject::new(96_000, 0, 1, GATED)
+        .starting_at("100000000000000000000")
+        .note("n", 0, 96_000, "12000Hz", "")
+        .through_pan("-1")
+        .with(&automation(
+            "local_seconds",
+            "pan.params.pan",
+            "seconds",
+            "2400000000000000000000001/48000s",
+            "(0s, 1, step)",
+        ))
+        .plan();
     let output = collect(&plan).unwrap();
     assert!(output[1][0].abs() < 1e-14);
     assert!((output[1][1] - 1.0).abs() < 1e-14);
@@ -607,41 +344,21 @@ fn huge_absolute_score_origin_keeps_local_timing_exact() {
 
 #[test]
 fn score_and_seconds_automation_freeze_at_the_exact_score_end_value() {
-    for clock in [AutomationClock::Score, AutomationClock::Seconds] {
-        let mut plan = sine_plan(
-            2,
-            2,
-            1,
-            &[
-                ("attack", r(0, 1)),
-                ("release", r(3, 48_000)),
-                ("level", r(1, 1)),
-            ],
-            vec![event("n", "sine", 0, 2, 3_000.0, r(1, 1))],
-        );
-        route_through_pan(&mut plan, r(0, 1));
-        let (at, end_position) = match clock {
-            AutomationClock::Score => (r(0, 1), r(4, 24_000)),
-            AutomationClock::Seconds => (r(0, 1), r(4, 48_000)),
-        };
-        plan.automation.push(Automation {
-            id: format!("freeze_{clock:?}"),
-            target: PortRef::new("pan", "pan").unwrap(),
-            clock,
-            at,
-            points: vec![
-                AutomationPoint {
-                    position: r(0, 1),
-                    value: r(0, 1),
-                    shape: Interpolation::Linear,
-                },
-                AutomationPoint {
-                    position: end_position,
-                    value: r(1, 1),
-                    shape: Interpolation::Step,
-                },
-            ],
-        });
+    for (clock, at, points) in [
+        ("score", "0q", "(0q, 0, linear), (4/24000q, 1, step)"),
+        ("seconds", "0s", "(0s, 0, linear), (4/48000s, 1, step)"),
+    ] {
+        let plan = SineProject::new(2, 2, 1, "attack = 0s; release = 3/48000s; level = 1;")
+            .note("n", 0, 2, "3000Hz", "")
+            .through_pan("0")
+            .with(&automation(
+                &format!("freeze_{clock}"),
+                "pan.params.pan",
+                clock,
+                at,
+                points,
+            ))
+            .plan();
         let output = collect(&plan).unwrap();
         let first_tail_ratio = output[2][1] / output[2][0];
         let second_tail_ratio = output[3][1] / output[3][0];
@@ -651,20 +368,10 @@ fn score_and_seconds_automation_freeze_at_the_exact_score_end_value() {
 
 #[test]
 fn release_tails_count_toward_voice_capacity_and_overflow_is_explicit() {
-    let plan = sine_plan(
-        4,
-        0,
-        1,
-        &[
-            ("attack", r(0, 1)),
-            ("release", r(3, 48_000)),
-            ("level", r(1, 1)),
-        ],
-        vec![
-            event("a", "sine", 0, 1, 440.0, r(1, 1)),
-            event("b", "sine", 2, 3, 660.0, r(1, 1)),
-        ],
-    );
+    let plan = SineProject::new(4, 0, 1, "attack = 0s; release = 3/48000s; level = 1;")
+        .note("a", 0, 1, "440Hz", "")
+        .note("b", 2, 3, "660Hz", "")
+        .plan();
     let error = collect(&plan).unwrap_err();
     assert!(matches!(error, RenderError::VoiceLimit { .. }));
     assert_eq!(error.code(), "E_VOICE_LIMIT");
@@ -672,17 +379,9 @@ fn release_tails_count_toward_voice_capacity_and_overflow_is_explicit() {
 
 #[test]
 fn renderer_validates_the_plan_before_producing_frames() {
-    let mut plan = sine_plan(
-        2,
-        0,
-        1,
-        &[
-            ("attack", r(0, 1)),
-            ("release", r(0, 1)),
-            ("level", r(1, 1)),
-        ],
-        vec![event("n", "sine", 0, 2, 440.0, r(1, 1))],
-    );
+    let mut plan = SineProject::new(2, 0, 1, GATED)
+        .note("n", 0, 2, "440Hz", "")
+        .plan();
     plan.output.total_frames = 1;
     let mut called = false;
     let error = render(&plan, |_| {
