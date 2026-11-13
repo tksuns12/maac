@@ -3,7 +3,6 @@ use std::collections::BTreeMap;
 use maac::bundle::{DependencyIdentity, SourceIdentity};
 use maac::graph::{
     Control, ControlTarget, GraphNode, GraphProcessor, GraphProgram, GraphStage, InstrumentProgram,
-    ProgramSource,
 };
 use maac::instrument_plan::InstrumentResources;
 use maac::library::{LibraryMetadata, WavetableSource};
@@ -14,6 +13,9 @@ use maac::plan::{
 };
 use maac::wavetable::Wavetable;
 use maac::Rational;
+
+#[path = "support/literals.rs"]
+mod literals;
 
 fn r(n: i64, d: i64) -> Rational {
     maac::parse_rational(&format!("{n}/{d}")).unwrap()
@@ -29,20 +31,6 @@ fn graph_node(id: &str, processor: GraphProcessor) -> GraphNode {
 
 fn program() -> InstrumentProgram {
     InstrumentProgram {
-        id: "program_0".into(),
-        voice: GraphProgram {
-            channels: 1,
-            nodes: vec![
-                graph_node("amp", GraphProcessor::ADSR),
-                graph_node("osc", GraphProcessor::Sine),
-            ],
-            connections: Vec::new(),
-            modulations: Vec::new(),
-            output: PortRef::new("osc", "out").unwrap(),
-            amplitude: Some("amp".into()),
-            connected: false,
-        },
-        shared: None,
         controls: BTreeMap::from([(
             "release".into(),
             Control {
@@ -54,24 +42,12 @@ fn program() -> InstrumentProgram {
                 default: r(1, 10),
             },
         )]),
-        source: ProgramSource {
-            file: "lib/studio.maac".into(),
-            object: "bell".into(),
-            span: None,
-        },
+        ..literals::sine_program("program_0", "lib/studio.maac", "bell")
     }
 }
 
 fn resources() -> InstrumentResources {
     InstrumentResources {
-        entry_source: "score.maac".into(),
-        kits: Vec::new(),
-        effects: Vec::new(),
-        programs: vec![program()],
-        wavetables: Vec::new(),
-        wavetable_sources: Vec::new(),
-        samples: Vec::new(),
-        sample_sources: Vec::new(),
         source_files: vec![
             SourceIdentity {
                 path: "score.maac".into(),
@@ -95,6 +71,7 @@ fn resources() -> InstrumentResources {
             creator: Some("Example".into()),
             license: None,
         }],
+        ..literals::resources(vec![program()])
     }
 }
 

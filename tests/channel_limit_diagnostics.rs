@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
-use maac::bundle::{sha256_digest, SourceIdentity};
-use maac::graph::{GraphNode, GraphProcessor, GraphProgram, InstrumentProgram, ProgramSource};
+use maac::bundle::sha256_digest;
+use maac::graph::{GraphNode, GraphProcessor, GraphProgram, InstrumentProgram};
 use maac::instrument_plan::InstrumentResources;
 use maac::plan::{
     Connection, EqMode, Interpolation, Node, OutputSettings, Plan, PlanError, PlanLimits, PortRef,
@@ -10,6 +10,9 @@ use maac::plan::{
 use maac::{DiagnosticCode, PlanArtifact, Rational, VersionedPlan};
 use num_traits::Zero;
 use serde_json::{json, Value};
+
+#[path = "support/literals.rs"]
+mod literals;
 
 fn limits(max_channels: u8) -> PlanLimits {
     PlanLimits {
@@ -403,51 +406,10 @@ fn instrument_resources(channels: u8) -> InstrumentResources {
         amplitude: None,
         connected: false,
     });
-    InstrumentResources {
-        entry_source: "score.maac".into(),
-        kits: Vec::new(),
-        effects: Vec::new(),
-        programs: vec![InstrumentProgram {
-            id: "program".into(),
-            voice: GraphProgram {
-                channels: 1,
-                nodes: vec![
-                    GraphNode {
-                        id: "amp".into(),
-                        processor: GraphProcessor::ADSR,
-                        params: BTreeMap::new(),
-                    },
-                    GraphNode {
-                        id: "osc".into(),
-                        processor: GraphProcessor::Sine,
-                        params: BTreeMap::new(),
-                    },
-                ],
-                connections: Vec::new(),
-                modulations: Vec::new(),
-                output: PortRef::new("osc", "out").unwrap(),
-                amplitude: Some("amp".into()),
-                connected: false,
-            },
-            shared,
-            controls: BTreeMap::new(),
-            source: ProgramSource {
-                file: "score.maac".into(),
-                object: "program".into(),
-                span: None,
-            },
-        }],
-        wavetables: Vec::new(),
-        wavetable_sources: Vec::new(),
-        samples: Vec::new(),
-        sample_sources: Vec::new(),
-        source_files: vec![SourceIdentity {
-            path: "score.maac".into(),
-            hash: format!("sha256:{}", "1".repeat(64)),
-        }],
-        dependencies: Vec::new(),
-        libraries: Vec::new(),
-    }
+    literals::resources(vec![InstrumentProgram {
+        shared,
+        ..literals::sine_program("program", "score.maac", "program")
+    }])
 }
 
 fn instrument_plan(channels: u8) -> Plan {

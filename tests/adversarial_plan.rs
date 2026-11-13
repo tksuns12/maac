@@ -1,86 +1,15 @@
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use maac::plan::{
-    Automation, AutomationClock, AutomationPoint, Connection, EventKind, EventTarget,
-    Interpolation, Node, OutputSettings, Plan, PortRef, Processor, Rational, Region, ResolvedEvent,
-    SourceMapping, TempoMap, TempoPoint,
+    Automation, AutomationClock, AutomationPoint, Connection, Interpolation, Node, Plan, PortRef,
+    Processor, Rational, SourceMapping, TempoPoint,
 };
 use num_bigint::BigInt;
 use serde_json::Value;
 
-fn rat(numerator: i64, denominator: i64) -> Rational {
-    maac::parse_rational(&format!("{numerator}/{denominator}")).expect("test rational")
-}
-
-fn base_plan() -> Plan {
-    Plan {
-        version: 1,
-        output: OutputSettings {
-            score_start_q: rat(0, 1),
-            score_end_q: rat(4, 1),
-            tail_seconds: rat(0, 1),
-            sample_rate_hz: 48_000,
-            channels: 1,
-            total_frames: 96_000,
-            output: PortRef::new("sum", "out").unwrap(),
-        },
-        tempo: TempoMap {
-            points: vec![TempoPoint {
-                q: rat(0, 1),
-                bpm: rat(120, 1),
-                shape: Interpolation::Step,
-            }],
-        },
-        events: vec![ResolvedEvent {
-            address: "main/0/n1".into(),
-            source: SourceMapping {
-                object: "n1".into(),
-                path: vec!["main".into(), "n1".into()],
-                span: None,
-            },
-            target: EventTarget::new("sine", "events").unwrap(),
-            kind: EventKind::Note {
-                timbre_expression: None,
-                pressure_expression: None,
-                pitch_expression: None,
-                gain_expression: None,
-                pitch_hz: 440.0,
-                velocity: rat(1, 1),
-            },
-            score_on_q: rat(0, 1),
-            score_off_q: Some(rat(1, 1)),
-            onset_offset_seconds: rat(0, 1),
-            release_offset_seconds: rat(0, 1),
-            on_seconds: rat(0, 1),
-            off_seconds: Some(rat(1, 2)),
-            release_velocity: 0.0,
-            on_frame: 0,
-            off_frame: Some(24_000),
-            order: 0,
-            join: None,
-        }],
-        nodes: vec![
-            Node::new("sine", Processor::sine(16)).unwrap(),
-            Node::new("sum", Processor::sum(1)).unwrap(),
-        ],
-        connections: vec![Connection::new(
-            "sine_to_sum",
-            PortRef::new("sine", "out").unwrap(),
-            PortRef::new("sum", "in").unwrap(),
-        )
-        .unwrap()],
-        automation: Vec::new(),
-        regions: vec![Region {
-            id: "whole".into(),
-            start_q: rat(0, 1),
-            end_q: rat(4, 1),
-            label: None,
-        }],
-        source_mappings: Vec::new(),
-        instruments: None,
-        production: None,
-    }
-}
+#[path = "support/literals.rs"]
+mod literals;
+use literals::{base_plan, rat};
 
 fn json_of(plan: &Plan) -> Vec<u8> {
     plan.to_json().expect("base plan must serialize")

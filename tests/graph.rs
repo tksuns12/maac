@@ -3,10 +3,14 @@ use std::collections::BTreeMap;
 use maac::graph::{
     parameter_descriptor, parameter_descriptor_for_stage, topological_order, validate_graph,
     Control, ControlTarget, GraphNode, GraphProcessor, GraphProgram, GraphStage, GraphUnit,
-    InstrumentProgram, Modulation, ParameterRate, ParameterTarget, ProgramSource, MAX_GRAPH_EDGES,
+    InstrumentProgram, Modulation, ParameterRate, ParameterTarget, MAX_GRAPH_EDGES,
     MAX_GRAPH_NODES, MAX_INSTRUMENT_CONTROLS,
 };
 use maac::plan::{Connection, PortRef, Rational};
+
+#[path = "support/literals.rs"]
+mod literals;
+use literals::sine_voice;
 
 fn rat(numerator: i64, denominator: i64) -> Rational {
     Rational::new(numerator.into(), denominator.into())
@@ -28,33 +32,8 @@ fn connection(id: &str, from: (&str, &str), to: (&str, &str)) -> Connection {
     Connection::new(id, port(from.0, from.1), port(to.0, to.1)).unwrap()
 }
 
-fn voice_graph() -> GraphProgram {
-    GraphProgram {
-        channels: 1,
-        nodes: vec![
-            node("amp", GraphProcessor::ADSR),
-            node("osc", GraphProcessor::Sine),
-        ],
-        connections: vec![],
-        modulations: vec![],
-        output: port("osc", "out"),
-        amplitude: Some("amp".into()),
-        connected: false,
-    }
-}
-
 fn instrument() -> InstrumentProgram {
-    InstrumentProgram {
-        id: "lead".into(),
-        voice: voice_graph(),
-        shared: None,
-        controls: BTreeMap::new(),
-        source: ProgramSource {
-            file: "sounds/lead.maac".into(),
-            object: "lead".into(),
-            span: None,
-        },
-    }
+    literals::sine_program("lead", "sounds/lead.maac", "lead")
 }
 
 #[test]
@@ -219,7 +198,7 @@ fn validates_voice_shared_io_controls_and_channels() {
 
 #[test]
 fn rejects_invalid_references_ports_cardinality_and_output_channels() {
-    let mut graph = voice_graph();
+    let mut graph = sine_voice();
     graph.connections.push(connection(
         "missing_gain",
         ("osc", "out"),
@@ -230,7 +209,7 @@ fn rejects_invalid_references_ports_cardinality_and_output_channels() {
         "E_REFERENCE"
     );
 
-    let mut graph = voice_graph();
+    let mut graph = sine_voice();
     graph
         .nodes
         .push(node("gain", GraphProcessor::Gain { channels: 2 }));
@@ -242,7 +221,7 @@ fn rejects_invalid_references_ports_cardinality_and_output_channels() {
         "E_PORT_TYPE"
     );
 
-    let mut graph = voice_graph();
+    let mut graph = sine_voice();
     graph
         .nodes
         .push(node("gain", GraphProcessor::Gain { channels: 1 }));
@@ -252,7 +231,7 @@ fn rejects_invalid_references_ports_cardinality_and_output_channels() {
         "E_PORT_TYPE"
     );
 
-    let mut graph = voice_graph();
+    let mut graph = sine_voice();
     graph.output = port("osc", "in");
     assert_eq!(
         validate_graph(&graph, true, None).unwrap_err().code,
@@ -262,7 +241,7 @@ fn rejects_invalid_references_ports_cardinality_and_output_channels() {
 
 #[test]
 fn validates_every_node_and_rejects_mixed_audio_modulation_cycles() {
-    let mut graph = voice_graph();
+    let mut graph = sine_voice();
     let mut unused = node("unused", GraphProcessor::Gain { channels: 1 });
     unused.params.insert("bogus".into(), rat(1, 1));
     graph.nodes.push(unused);
@@ -271,7 +250,7 @@ fn validates_every_node_and_rejects_mixed_audio_modulation_cycles() {
         "E_RANGE"
     );
 
-    let mut graph = voice_graph();
+    let mut graph = sine_voice();
     graph
         .nodes
         .push(node("gain", GraphProcessor::Gain { channels: 1 }));
@@ -295,7 +274,7 @@ fn validates_every_node_and_rejects_mixed_audio_modulation_cycles() {
 
 #[test]
 fn modulation_rejects_out_of_range_depths_for_sample_targets() {
-    let mut graph = voice_graph();
+    let mut graph = sine_voice();
     graph.modulations.push(Modulation {
         id: "frequency_mod".into(),
         from: port("amp", "out"),
@@ -313,7 +292,7 @@ fn modulation_rejects_out_of_range_depths_for_sample_targets() {
 
 #[test]
 fn voice_adsr_and_phase_event_rate_modulations_allow_signed_depths_only() {
-    let mut graph = voice_graph();
+    let mut graph = sine_voice();
     graph.nodes.extend([
         node("saw", GraphProcessor::Saw),
         node("square", GraphProcessor::Square),
@@ -508,7 +487,7 @@ fn shared_graph_restrictions_and_reserved_input_are_enforced() {
         "E_CAPABILITY"
     );
 
-    let mut voice = voice_graph();
+    let mut voice = sine_voice();
     voice
         .connections
         .push(connection("reserved", ("input", "out"), ("osc", "in")));
@@ -550,7 +529,7 @@ fn shared_graph_restrictions_and_reserved_input_are_enforced() {
 
 #[test]
 fn local_resource_limits_fail_before_deep_graph_validation() {
-    let mut graph = voice_graph();
+    let mut graph = sine_voice();
     graph.nodes = (0..=MAX_GRAPH_NODES)
         .map(|index| node(&format!("n{index}"), GraphProcessor::Sine))
         .collect();
@@ -560,7 +539,7 @@ fn local_resource_limits_fail_before_deep_graph_validation() {
         "E_RESOURCE_LIMIT"
     );
 
-    let mut graph = voice_graph();
+    let mut graph = sine_voice();
     graph.connections = (0..=MAX_GRAPH_EDGES)
         .map(|index| connection(&format!("c{index}"), ("missing", "out"), ("missing", "in")))
         .collect();
