@@ -1,9 +1,9 @@
 use maac::dsp::{render, DspEngine};
 use maac::plan::{EventKind, Plan};
 
-#[path = "support/sine.rs"]
-mod sine;
-use sine::SineProject;
+#[path = "support/frames.rs"]
+mod frames;
+use frames::FrameProject;
 
 /// The sine of the fixture: at full level at once, and a release of four
 /// frames.
@@ -41,8 +41,8 @@ fn curve(id: &str, clock: &str, end: &str, start: i64, finish: i64, shape: &str)
 
 /// Note `n`: eight frames at 3000 Hz and four frames of tail, with the pitch
 /// curve `bend` if one is given.
-fn fixture(bend: Option<String>) -> SineProject {
-    let project = SineProject::new(8, 4, 4, RELEASED);
+fn fixture(bend: Option<String>) -> FrameProject {
+    let project = FrameProject::sine(8, 4, 4, RELEASED);
     match bend {
         Some(curve) => project
             .note("n", 0, 8, "3000Hz", &bent("bend"))
@@ -53,7 +53,7 @@ fn fixture(bend: Option<String>) -> SineProject {
 #[test]
 fn constant_octave_matches_double_frequency_exactly() {
     let bent = fixture(Some(curve("bend", "normalized", "1", 1200, 1200, "step"))).plan();
-    let plain = SineProject::new(8, 4, 4, RELEASED)
+    let plain = FrameProject::sine(8, 4, 4, RELEASED)
         .note("n", 0, 8, "6000Hz", "")
         .plan();
     assert_eq!(collect(&bent), collect(&plain));
@@ -133,7 +133,7 @@ fn step_knots_use_exact_right_continuity_even_when_binary64_coordinates_coincide
 fn fractional_offsets_use_ceiled_scheduled_gate_and_overlaps_keep_independent_phase() {
     // Note `n` starts half a frame late and ends half a frame early, so its
     // gate is frames 1 to 8; note `a` overlaps it.
-    let plan = SineProject::new(8, 4, 4, RELEASED)
+    let plan = FrameProject::sine(8, 4, 4, RELEASED)
         .note(
             "n",
             0,
@@ -159,7 +159,7 @@ fn fractional_offsets_use_ceiled_scheduled_gate_and_overlaps_keep_independent_ph
 fn score_clock_is_affine_across_tempo_change() {
     // Six score frames: two at 120 bpm, then four at 60 bpm, which last
     // eight frames. The gate is ten frames.
-    let mut project = SineProject::new(6, 4, 4, RELEASED)
+    let mut project = FrameProject::sine(6, 4, 4, RELEASED)
         .note("n", 0, 6, "3000Hz", &bent("bend"))
         .with(&curve("bend", "score", "6/24000q", 0, 1200, "linear"));
     project.tempo = "(0q, 120bpm, step), (2/24000q, 60bpm, step)".to_owned();

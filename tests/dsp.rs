@@ -1,9 +1,9 @@
 use maac::dsp::{one_pole_step, pan_sample, render, sum_samples, RenderError};
 use maac::plan::Plan;
 
-#[path = "support/sine.rs"]
-mod sine;
-use sine::SineProject;
+#[path = "support/frames.rs"]
+mod frames;
+use frames::FrameProject;
 
 /// A sine that is at full level the moment a note starts and silent the
 /// moment it ends.
@@ -53,7 +53,7 @@ fn cancellation_plan(
         ],
         _ => unreachable!("the fixture only covers mono and stereo"),
     };
-    let mut project = SineProject::new(2, 0, 1, GATED)
+    let mut project = FrameProject::sine(2, 0, 1, GATED)
         .note("n", 0, 2, "12000Hz", "")
         .with(&format!(
             "node sum {{ type = \"core.sum/1\"; config = {{ channels = {channels}; }}; }}"
@@ -96,7 +96,7 @@ fn cancellation_plan(
 
 #[test]
 fn sine_starts_at_zero_and_matches_binary64_phase_and_level() {
-    let plan = SineProject::new(4, 0, 4, GATED)
+    let plan = FrameProject::sine(4, 0, 4, GATED)
         .note("n", 0, 4, "12000Hz", "")
         .plan();
     let frames = collect(&plan).unwrap();
@@ -195,7 +195,7 @@ fn renderer_sums_fan_in_by_connection_id_across_declaration_orders() {
 #[test]
 fn seconds_automation_knots_take_effect_at_the_first_sample_on_or_after_them() {
     let frames = 3;
-    let plan = SineProject::new(frames, 0, 4, GATED)
+    let plan = FrameProject::sine(frames, 0, 4, GATED)
         .note("n", 0, frames, "12000Hz", "")
         .through_pan("-1")
         .with(&automation(
@@ -215,7 +215,7 @@ fn seconds_automation_knots_take_effect_at_the_first_sample_on_or_after_them() {
 
 #[test]
 fn attack_and_release_parameters_are_captured_at_their_events() {
-    let attack_plan = SineProject::new(3, 0, 4, "attack = 1/48000s; release = 0s; level = 1;")
+    let attack_plan = FrameProject::sine(3, 0, 4, "attack = 1/48000s; release = 0s; level = 1;")
         .note("n", 0, 3, "12000Hz", "")
         .with(&automation(
             "attack_later",
@@ -229,7 +229,7 @@ fn attack_and_release_parameters_are_captured_at_their_events() {
     println!("attack {attack_output:?}");
     assert!((attack_output[1][0] - 1.0).abs() < 1e-14);
 
-    let release_plan = SineProject::new(2, 2, 4, "attack = 0s; release = 1/48000s; level = 1;")
+    let release_plan = FrameProject::sine(2, 2, 4, "attack = 0s; release = 1/48000s; level = 1;")
         .note("n", 0, 2, "6000Hz", "")
         .with(&automation(
             "release_later",
@@ -246,7 +246,7 @@ fn attack_and_release_parameters_are_captured_at_their_events() {
 
 #[test]
 fn release_parameter_is_captured_at_note_off() {
-    let plan = SineProject::new(4, 0, 1, GATED)
+    let plan = FrameProject::sine(4, 0, 1, GATED)
         .note("n", 0, 1, "6000Hz", "")
         .with(&automation(
             "release_at_off",
@@ -263,7 +263,7 @@ fn release_parameter_is_captured_at_note_off() {
 
 #[test]
 fn released_voice_reaching_zero_is_reclaimed_before_same_frame_note_on() {
-    let plan = SineProject::new(6, 0, 1, "attack = 0s; release = 3/48000s; level = 1;")
+    let plan = FrameProject::sine(6, 0, 1, "attack = 0s; release = 3/48000s; level = 1;")
         .note("a", 0, 1, "440Hz", "")
         .note("b", 4, 5, "660Hz", "")
         .plan();
@@ -272,7 +272,7 @@ fn released_voice_reaching_zero_is_reclaimed_before_same_frame_note_on() {
 
 #[test]
 fn pan_raw_parameter_is_clamped_by_the_reference_processor() {
-    let plan = SineProject::new(2, 0, 1, GATED)
+    let plan = FrameProject::sine(2, 0, 1, GATED)
         .note("n", 0, 2, "12000Hz", "")
         .through_pan("2")
         .plan();
@@ -283,7 +283,7 @@ fn pan_raw_parameter_is_clamped_by_the_reference_processor() {
 
 #[test]
 fn automation_uses_authored_parameter_as_its_pre_anchor_base() {
-    let plan = SineProject::new(3, 0, 1, GATED)
+    let plan = FrameProject::sine(3, 0, 1, GATED)
         .note("n", 0, 3, "12000Hz", "")
         .through_pan("-1/2")
         .with(&automation(
@@ -304,7 +304,7 @@ fn automation_uses_authored_parameter_as_its_pre_anchor_base() {
 fn seconds_automation_anchor_is_absolute_but_frames_are_reset_relative() {
     // The score starts at 1q, which is 1/2s; the automation is one frame
     // after that.
-    let plan = SineProject::new(3, 0, 1, GATED)
+    let plan = FrameProject::sine(3, 0, 1, GATED)
         .starting_at("1")
         .note("n", 0, 3, "12000Hz", "")
         .through_pan("-1")
@@ -325,7 +325,7 @@ fn seconds_automation_anchor_is_absolute_but_frames_are_reset_relative() {
 fn huge_absolute_score_origin_keeps_local_timing_exact() {
     // The score starts at 10^20 q, which is 5 * 10^19 s; the automation is
     // one frame after that.
-    let plan = SineProject::new(96_000, 0, 1, GATED)
+    let plan = FrameProject::sine(96_000, 0, 1, GATED)
         .starting_at("100000000000000000000")
         .note("n", 0, 96_000, "12000Hz", "")
         .through_pan("-1")
@@ -348,7 +348,7 @@ fn score_and_seconds_automation_freeze_at_the_exact_score_end_value() {
         ("score", "0q", "(0q, 0, linear), (4/24000q, 1, step)"),
         ("seconds", "0s", "(0s, 0, linear), (4/48000s, 1, step)"),
     ] {
-        let plan = SineProject::new(2, 2, 1, "attack = 0s; release = 3/48000s; level = 1;")
+        let plan = FrameProject::sine(2, 2, 1, "attack = 0s; release = 3/48000s; level = 1;")
             .note("n", 0, 2, "3000Hz", "")
             .through_pan("0")
             .with(&automation(
@@ -368,7 +368,7 @@ fn score_and_seconds_automation_freeze_at_the_exact_score_end_value() {
 
 #[test]
 fn release_tails_count_toward_voice_capacity_and_overflow_is_explicit() {
-    let plan = SineProject::new(4, 0, 1, "attack = 0s; release = 3/48000s; level = 1;")
+    let plan = FrameProject::sine(4, 0, 1, "attack = 0s; release = 3/48000s; level = 1;")
         .note("a", 0, 1, "440Hz", "")
         .note("b", 2, 3, "660Hz", "")
         .plan();
@@ -379,7 +379,7 @@ fn release_tails_count_toward_voice_capacity_and_overflow_is_explicit() {
 
 #[test]
 fn renderer_validates_the_plan_before_producing_frames() {
-    let mut plan = SineProject::new(2, 0, 1, GATED)
+    let mut plan = FrameProject::sine(2, 0, 1, GATED)
         .note("n", 0, 2, "440Hz", "")
         .plan();
     plan.output.total_frames = 1;

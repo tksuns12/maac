@@ -1,9 +1,9 @@
 use maac::dsp::{render, DspEngine};
 use maac::plan::Plan;
 
-#[path = "support/sine.rs"]
-mod sine;
-use sine::SineProject;
+#[path = "support/frames.rs"]
+mod frames;
+use frames::FrameProject;
 
 /// The sine of the fixture: at full level at once, and a release of four
 /// frames.
@@ -40,7 +40,7 @@ fn gained(id: &str) -> String {
 
 /// Note `n`: eight frames at 3000 Hz with `fields`, and four frames of tail.
 fn scene(params: &str, fields: &str, curves: &str) -> Plan {
-    SineProject::new(8, 4, 4, params)
+    FrameProject::sine(8, 4, 4, params)
         .note("n", 0, 8, "3000Hz", fields)
         .with(curves)
         .plan()
@@ -159,7 +159,7 @@ fn fractional_offsets_and_overlapping_voices_use_independent_gain_clocks() {
     // Note `n` starts half a frame late and ends half a frame early, so its
     // gate is frames 1 to 8; note `a` overlaps it.
     const OFFSETS: &str = "onset_offset = 1/96000s; release_offset = -1/96000s;";
-    let project = || SineProject::new(8, 4, 4, RELEASED);
+    let project = || FrameProject::sine(8, 4, 4, RELEASED);
     let first = project().note("n", 0, 8, "3000Hz", OFFSETS).plan();
     let second = project().note("a", 2, 6, "1500Hz", "").plan();
     let expected: Vec<_> = collect(&first)
@@ -188,7 +188,7 @@ fn fractional_offsets_and_overlapping_voices_use_independent_gain_clocks() {
 #[test]
 fn zero_gain_consumes_capacity_through_release_and_reclaims_at_envelope_zero() {
     for (on, overflow) in [(2, true), (9, true), (12, false)] {
-        let plan = SineProject::new(16, 4, 1, RELEASED)
+        let plan = FrameProject::sine(16, 4, 1, RELEASED)
             .note("n", 0, 8, "3000Hz", &gained("gain"))
             .note("other", on, 16, "3000Hz", "")
             .with(&curve("gain", "normalized", "1", "0", "0", "step"))
