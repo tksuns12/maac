@@ -1,7 +1,5 @@
-use maac::bundle::SourceBundle;
 use maac::dsp::DspEngine;
 use maac::graph::{GraphProcessor, InstrumentProgram};
-use maac::library::LibrarySet;
 use maac::plan::Plan;
 use maac::voice::{CompiledInstrument, InstrumentRuntime};
 use maac::wavetable::{TableBank, Wavetable};
@@ -11,6 +9,9 @@ use std::sync::Arc;
 #[path = "support/frames.rs"]
 mod frames;
 use frames::FrameProject;
+
+#[path = "support/programs.rs"]
+mod programs;
 
 const RATE: f64 = 48_000.0;
 
@@ -72,17 +73,7 @@ impl Instrument {
 
     /// The program the library resolves the instrument to.
     fn program(&self) -> InstrumentProgram {
-        let source = format!(
-            "maac 1;\nlibrary studio {{ version = \"1.0.0\"; }}\n{}",
-            self.source()
-        );
-        let bundle = SourceBundle::new("main.maac", source.as_str())
-            .resolve()
-            .unwrap_or_else(|diagnostics| panic!("{diagnostics:?}\n{source}"));
-        LibrarySet::resolve(&bundle)
-            .unwrap_or_else(|diagnostics| panic!("{diagnostics:?}\n{source}"))
-            .programs
-            .remove(0)
+        programs::program(&self.source())
     }
 
     /// A project of `frames` frames whose node `instrument` plays the

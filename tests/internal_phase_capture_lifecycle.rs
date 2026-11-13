@@ -1,103 +1,29 @@
-use maac::graph::{
-    GraphNode, GraphProcessor, GraphProgram, InstrumentProgram, Modulation, ParameterTarget,
-    ProgramSource,
-};
-use maac::plan::{PortRef, Rational};
+use maac::graph::InstrumentProgram;
 use maac::voice::{CompiledInstrument, InstrumentRuntime};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+#[path = "support/programs.rs"]
+mod programs;
+
 const RATE: f64 = 48_000.0;
 
-fn r(numerator: i64, denominator: i64) -> Rational {
-    Rational::new(numerator.into(), denominator.into())
-}
-
-fn node(
-    id: &str,
-    processor: GraphProcessor,
-    values: impl IntoIterator<Item = (&'static str, Rational)>,
-) -> GraphNode {
-    GraphNode {
-        id: id.into(),
-        processor,
-        params: values
-            .into_iter()
-            .map(|(name, value)| (name.into(), value))
-            .collect(),
-    }
-}
-
-fn port(node: &str) -> PortRef {
-    PortRef::new(node, "out").unwrap()
-}
-
-fn modulation(id: &str, from: &str, target: &str, parameter: &str, depth: Rational) -> Modulation {
-    Modulation {
-        id: id.into(),
-        from: port(from),
-        to: ParameterTarget {
-            node: target.into(),
-            parameter: parameter.into(),
-        },
-        depth,
-    }
-}
-
+/// A sine `target` whose phase takes a quarter turn from `onset_source` at
+/// note-on, and whose own output sets the release of `amp` at note-off.
 fn program() -> InstrumentProgram {
-    InstrumentProgram {
-        id: "phase_lifecycle".into(),
-        voice: GraphProgram {
-            channels: 1,
-            nodes: vec![
-                node(
-                    "amp",
-                    GraphProcessor::ADSR,
-                    [
-                        ("attack", r(0, 1)),
-                        ("decay", r(0, 1)),
-                        ("sustain", r(1, 1)),
-                        ("release", r(0, 1)),
-                    ],
-                ),
-                node(
-                    "onset_source",
-                    GraphProcessor::Sine,
-                    [
-                        ("ratio", r(0, 1)),
-                        ("frequency", r(12_000, 1)),
-                        ("phase", r(1, 4)),
-                        ("level", r(1, 1)),
-                    ],
-                ),
-                node(
-                    "target",
-                    GraphProcessor::Sine,
-                    [
-                        ("ratio", r(0, 1)),
-                        ("frequency", r(3_000, 1)),
-                        ("phase", r(0, 1)),
-                        ("level", r(1, 1)),
-                    ],
-                ),
-            ],
-            connections: Vec::new(),
-            modulations: vec![
-                modulation("on_phase", "onset_source", "target", "phase", r(1, 4)),
-                modulation("off_release", "target", "amp", "release", r(1, 12_000)),
-            ],
-            output: port("target"),
-            amplitude: Some("amp".into()),
-            connected: false,
-        },
-        shared: None,
-        controls: BTreeMap::new(),
-        source: ProgramSource {
-            file: "internal-phase-lifecycle.maac".into(),
-            object: "phase_lifecycle".into(),
-            span: None,
-        },
-    }
+    programs::program(
+        r#"instrument phase_lifecycle {
+ channels = 1;
+ voice voice {
+  channels = 1; amplitude = &amp; output = &target:out;
+  node amp { type = "synth.adsr/1"; params = { attack = 0s; decay = 0s; sustain = 1; release = 0s; }; }
+  node onset_source { type = "synth.sine/1"; params = { ratio = 0; frequency = 12000Hz; phase = 1/4; level = 1; }; }
+  node target { type = "synth.sine/1"; params = { ratio = 0; frequency = 3000Hz; phase = 0; level = 1; }; }
+  modulate on_phase { from = &onset_source:out; to = &target.params.phase; depth = 1/4; }
+  modulate off_release { from = &target:out; to = &amp.params.release; depth = 1/12000s; }
+ }
+}"#,
+    )
 }
 
 fn lifecycle(runtime: &mut InstrumentRuntime) -> Vec<f64> {

@@ -1,64 +1,56 @@
 use maac::bundle::SourceBundle;
 use maac::compiler::compile_bundle_artifact;
 use maac::dsp::Result;
-use maac::graph::{
-    GraphNode, GraphProcessor, GraphProgram, InstrumentProgram, Modulation, ParameterTarget,
-    ProgramSource,
-};
-use maac::plan::{Connection, PortRef, Rational};
+use maac::graph::{GraphProcessor, InstrumentProgram};
 use maac::voice::{CompiledInstrument, InstrumentRuntime};
 use maac::wavetable::{TableBank, Wavetable};
 use maac::PlanArtifact;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+#[path = "support/programs.rs"]
+mod programs;
+
 const RATE: f64 = 48_000.0;
 
-fn r(numerator: i64, denominator: i64) -> Rational {
-    Rational::new(numerator.into(), denominator.into())
+/// An envelope `id` that is a gate.
+fn gate(id: &str) -> String {
+    format!(
+        "node {id} {{ type = \"synth.adsr/1\"; params = {{ attack = 0s; decay = 0s; sustain = 1; release = 0s; }}; }}\n"
+    )
 }
 
-fn params<I, S>(values: I) -> BTreeMap<String, Rational>
-where
-    I: IntoIterator<Item = (S, Rational)>,
-    S: Into<String>,
-{
-    values
-        .into_iter()
-        .map(|(name, value)| (name.into(), value))
-        .collect()
+/// A modulation of `parameter` of the envelope `amp`.
+fn modulation(id: &str, from: &str, parameter: &str, depth: &str) -> String {
+    format!(
+        "modulate {id} {{ from = &{from}:out; to = &amp.params.{parameter}; depth = {depth}; }}\n"
+    )
 }
 
-fn node<I, S>(id: &str, processor: GraphProcessor, values: I) -> GraphNode
-where
-    I: IntoIterator<Item = (S, Rational)>,
-    S: Into<String>,
-{
-    GraphNode {
-        id: id.into(),
-        processor,
-        params: params(values),
-    }
+/// The two edges of depth zero from `source`: one read at note-on, one at
+/// note-off.
+fn zero_edges() -> String {
+    modulation("on_zero", "source", "attack", "0s")
+        + &modulation("off_zero", "source", "release", "0s")
 }
 
-fn port(node: &str) -> PortRef {
-    PortRef::new(node, "out").unwrap()
+/// The params of a sine at `frequency` Hz, whatever the note, and `phase`.
+fn fixed_sine(frequency: i64, phase: &str) -> String {
+    format!("params = {{ ratio = 0; frequency = {frequency}Hz; phase = {phase}; level = 1; }};")
 }
 
-fn connection(id: &str, from: &str, to: &str) -> Connection {
-    Connection::new(id, port(from), PortRef::new(to, "in").unwrap()).unwrap()
-}
-
-fn modulation(id: &str, from: &str, parameter: &str, depth: Rational) -> Modulation {
-    Modulation {
-        id: id.into(),
-        from: port(from),
-        to: ParameterTarget {
-            node: "amp".into(),
-            parameter: parameter.into(),
-        },
-        depth,
-    }
+/// A one-channel instrument whose voice holds `children` and renders the
+/// node `output` under the envelope `amplitude`.
+fn voice_program(amplitude: &str, output: &str, children: &str) -> InstrumentProgram {
+    programs::program(&format!(
+        r#"instrument edge_source {{
+ channels = 1;
+ voice voice {{
+  channels = 1; amplitude = &{amplitude}; output = &{output}:out;
+  {children}
+ }}
+}}"#
+    ))
 }
 
 fn make_runtime(program: &InstrumentProgram, capacity: u32) -> Result<InstrumentRuntime> {
@@ -74,49 +66,22 @@ fn make_runtime_with_tables(
     InstrumentRuntime::new(Arc::new(compiled), capacity, RATE, &BTreeMap::new())
 }
 
-fn source_program(
-    processor: GraphProcessor,
-    source_params: BTreeMap<String, Rational>,
-    edges: bool,
-) -> InstrumentProgram {
-    let mut modulations = Vec::new();
-    if edges {
-        modulations.push(modulation("on_zero", "source", "attack", r(0, 1)));
-        modulations.push(modulation("off_zero", "source", "release", r(0, 1)));
-    }
-    InstrumentProgram {
-        id: "edge_source".into(),
-        voice: GraphProgram {
-            channels: 1,
-            nodes: vec![
-                node(
-                    "amp",
-                    GraphProcessor::ADSR,
-                    [
-                        ("attack", r(0, 1)),
-                        ("decay", r(0, 1)),
-                        ("sustain", r(1, 1)),
-                        ("release", r(0, 1)),
-                    ],
-                ),
-                node("source", processor, source_params.into_iter()),
-            ],
-            connections: Vec::new(),
-            modulations,
-            output: port("source"),
-            amplitude: Some("amp".into()),
-            connected: false,
-        },
-        shared: None,
-        controls: BTreeMap::new(),
-        source: ProgramSource {
-            file: "internal-event.maac".into(),
-            object: "edge_source".into(),
-            span: None,
-        },
-    }
+/// A gated voice that renders `source`, a node of type `kind` with `fields`,
+/// and holds `modulations`.
+fn source_program(kind: &str, fields: &str, modulations: &str) -> InstrumentProgram {
+    voice_program(
+        "amp",
+        "source",
+        &format!(
+            "{}node source {{ type = \"{kind}\"; {fields} }}\n{modulations}",
+            gate("amp")
+        ),
+    )
 }
 
+/// `source_program` with a wavetable oscillator for `source`. The bank of its
+/// table is built here, not read from an asset, so the oscillator of a
+/// resolved program is pointed at it.
 fn wavetable_fixture(edges: bool) -> (InstrumentProgram, BTreeMap<String, Arc<TableBank>>) {
     let table = Wavetable {
         id: "cycle".into(),
@@ -125,19 +90,24 @@ fn wavetable_fixture(edges: bool) -> (InstrumentProgram, BTreeMap<String, Arc<Ta
     };
     let bank = Arc::new(TableBank::new(&table).unwrap());
     let tables = [("cycle".into(), bank)].into_iter().collect();
-    let program = source_program(
-        GraphProcessor::Wavetable {
-            table: "cycle".into(),
-        },
-        params([
-            ("ratio", r(1, 1)),
-            ("frequency", r(6_000, 1)),
-            ("phase", r(0, 1)),
-            ("level", r(1, 1)),
-            ("position", r(0, 1)),
-        ]),
-        edges,
+    let modulations = if edges { zero_edges() } else { String::new() };
+    let mut program = source_program(
+        "synth.sine/1",
+        "params = { ratio = 1; frequency = 6000Hz; phase = 0; level = 1; };",
+        &modulations,
     );
+    let source = program
+        .voice
+        .nodes
+        .iter_mut()
+        .find(|node| node.id == "source")
+        .unwrap();
+    source.processor = GraphProcessor::Wavetable {
+        table: "cycle".into(),
+    };
+    source
+        .params
+        .insert("position".into(), maac::parse_rational("0").unwrap());
     (program, tables)
 }
 
@@ -229,59 +199,18 @@ place play { pattern = &phrase; track = &notes; at = 0q; }
 
 #[test]
 fn note_off_captures_filter_pre_state_then_advances_filter_once() {
-    let program = InstrumentProgram {
-        id: "filter_capture".into(),
-        voice: GraphProgram {
-            channels: 1,
-            nodes: vec![
-                node(
-                    "driver",
-                    GraphProcessor::ADSR,
-                    [
-                        ("attack", r(0, 1)),
-                        ("decay", r(0, 1)),
-                        ("sustain", r(1, 1)),
-                        ("release", r(0, 1)),
-                    ],
-                ),
-                node(
-                    "filter",
-                    GraphProcessor::OnePole { channels: 1 },
-                    [("cutoff", r(12_000, 1))],
-                ),
-                node(
-                    "amp",
-                    GraphProcessor::ADSR,
-                    [
-                        ("attack", r(0, 1)),
-                        ("decay", r(0, 1)),
-                        ("sustain", r(1, 1)),
-                        ("release", r(0, 1)),
-                    ],
-                ),
-            ],
-            connections: vec![connection("driver_filter", "driver", "filter")],
-            modulations: vec![Modulation {
-                id: "filter_release".into(),
-                from: port("filter"),
-                to: ParameterTarget {
-                    node: "amp".into(),
-                    parameter: "release".into(),
-                },
-                depth: r(1, 1000),
-            }],
-            output: port("filter"),
-            amplitude: Some("amp".into()),
-            connected: false,
-        },
-        shared: None,
-        controls: BTreeMap::new(),
-        source: ProgramSource {
-            file: "internal-event.maac".into(),
-            object: "filter_capture".into(),
-            span: None,
-        },
-    };
+    let program = voice_program(
+        "amp",
+        "filter",
+        &[
+            gate("driver"),
+            "node filter { type = \"synth.onepole/1\"; config = { channels = 1; }; params = { cutoff = 12000Hz; }; }\n".to_owned(),
+            gate("amp"),
+            "connect driver_filter { from = &driver:out; to = &filter:in; }\n".to_owned(),
+            "modulate filter_release { from = &filter:out; to = &amp.params.release; depth = 1/1000s; }\n".to_owned(),
+        ]
+        .concat(),
+    );
     let mut runtime = make_runtime(&program, 1).unwrap();
     runtime.note_on("voice", 440.0, 1.0, 0).unwrap();
     const OFF: u64 = 3;
@@ -318,64 +247,21 @@ fn note_off_captures_filter_pre_state_then_advances_filter_once() {
 
 #[test]
 fn note_off_reduces_all_adsr_releases_from_the_same_pre_release_snapshot() {
-    let program = InstrumentProgram {
-        id: "cross_adsr".into(),
-        voice: GraphProgram {
-            channels: 1,
-            nodes: vec![
-                node(
-                    "a",
-                    GraphProcessor::ADSR,
-                    [
-                        ("attack", r(0, 1)),
-                        ("decay", r(0, 1)),
-                        ("sustain", r(1, 1)),
-                        ("release", r(0, 1)),
-                    ],
-                ),
-                node(
-                    "b",
-                    GraphProcessor::ADSR,
-                    [
-                        ("attack", r(0, 1)),
-                        ("decay", r(0, 1)),
-                        ("sustain", r(1, 1)),
-                        ("release", r(0, 1)),
-                    ],
-                ),
-                node(
-                    "source",
-                    GraphProcessor::Sine,
-                    [
-                        ("ratio", r(0, 1)),
-                        ("frequency", r(0, 1)),
-                        ("phase", r(1, 4)),
-                        ("level", r(1, 1)),
-                    ],
-                ),
-            ],
-            connections: Vec::new(),
-            modulations: vec![Modulation {
-                id: "a_to_b_release".into(),
-                from: port("a"),
-                to: ParameterTarget {
-                    node: "b".into(),
-                    parameter: "release".into(),
-                },
-                depth: r(1, 1000),
-            }],
-            output: port("source"),
-            amplitude: Some("b".into()),
-            connected: false,
-        },
-        shared: None,
-        controls: BTreeMap::new(),
-        source: ProgramSource {
-            file: "internal-event.maac".into(),
-            object: "cross_adsr".into(),
-            span: None,
-        },
-    };
+    let program = voice_program(
+        "b",
+        "source",
+        &[
+            gate("a"),
+            gate("b"),
+            format!(
+                "node source {{ type = \"synth.sine/1\"; {} }}\n",
+                fixed_sine(0, "1/4")
+            ),
+            "modulate a_to_b_release { from = &a:out; to = &b.params.release; depth = 1/1000s; }\n"
+                .to_owned(),
+        ]
+        .concat(),
+    );
     let mut runtime = make_runtime(&program, 1).unwrap();
     runtime.note_on("voice", 440.0, 1.0, 0).unwrap();
     assert_eq!(runtime.render(0).unwrap(), &[1.0]);
@@ -395,34 +281,21 @@ fn note_off_reduces_all_adsr_releases_from_the_same_pre_release_snapshot() {
 fn zero_depth_edges_preserve_stateful_source_audio_and_reset_repeat() {
     let sources = [
         (
-            GraphProcessor::Sine,
-            params([
-                ("ratio", r(1, 1)),
-                ("frequency", r(440, 1)),
-                ("phase", r(1, 4)),
-                ("level", r(1, 1)),
-            ]),
+            "synth.sine/1",
+            "params = { ratio = 1; frequency = 440Hz; phase = 1/4; level = 1; };",
         ),
         (
-            GraphProcessor::Noise {
-                seed: 1,
-                per_note: false,
-            },
-            params([("level", r(1, 1))]),
+            "synth.noise/1",
+            "config = { seed = 1; per_note = false; }; params = { level = 1; };",
         ),
         (
-            GraphProcessor::Pluck { seed: 1 },
-            params([
-                ("ratio", r(1, 1)),
-                ("decay", r(3, 1)),
-                ("damping", r(1, 2)),
-                ("level", r(1, 1)),
-            ]),
+            "synth.pluck/1",
+            "config = { seed = 1; }; params = { ratio = 1; decay = 3s; damping = 1/2; level = 1; };",
         ),
     ];
-    for (processor, source_params) in sources {
-        let edged = source_program(processor.clone(), source_params.clone(), true);
-        let baseline = source_program(processor.clone(), source_params, false);
+    for (kind, fields) in sources {
+        let edged = source_program(kind, fields, &zero_edges());
+        let baseline = source_program(kind, fields, "");
         let with_edges = lifecycle(&edged, 2, 7).unwrap();
         let without_edges = lifecycle(&baseline, 2, 7).unwrap();
         assert_eq!(
@@ -434,8 +307,7 @@ fn zero_depth_edges_preserve_stateful_source_audio_and_reset_repeat() {
                 .iter()
                 .map(|sample| sample.to_bits())
                 .collect::<Vec<_>>(),
-            "zero-depth source changed audio for {}",
-            processor.identity()
+            "zero-depth source changed audio for {kind}"
         );
 
         let mut repeated = make_runtime(&edged, 1).unwrap();
@@ -467,8 +339,7 @@ fn zero_depth_edges_preserve_stateful_source_audio_and_reset_repeat() {
                 .iter()
                 .map(|sample| sample.to_bits())
                 .collect::<Vec<_>>(),
-            "reset did not repeat {} source",
-            processor.identity()
+            "reset did not repeat {kind} source"
         );
     }
 }
@@ -522,31 +393,24 @@ fn zero_depth_wavetable_edges_preserve_phase_and_reset_repeat() {
     );
 }
 
+/// A 12 kHz sine `source` at `phase` whose output sets the attack and the
+/// release of `amp`.
 fn event_validation_program(
-    phase: Rational,
-    attack_depth: Rational,
-    release_depth: Rational,
+    phase: &str,
+    attack_depth: &str,
+    release_depth: &str,
 ) -> InstrumentProgram {
-    let mut program = source_program(
-        GraphProcessor::Sine,
-        params([
-            ("ratio", r(0, 1)),
-            ("frequency", r(12_000, 1)),
-            ("phase", phase),
-            ("level", r(1, 1)),
-        ]),
-        false,
-    );
-    program.voice.modulations = vec![
-        modulation("attack", "source", "attack", attack_depth),
-        modulation("release", "source", "release", release_depth),
-    ];
-    program
+    source_program(
+        "synth.sine/1",
+        &fixed_sine(12_000, phase),
+        &(modulation("attack", "source", "attack", attack_depth)
+            + &modulation("release", "source", "release", release_depth)),
+    )
 }
 
 #[test]
 fn event_sums_are_checked_at_edges_while_between_edge_changes_are_held() {
-    let valid_between = event_validation_program(r(1, 4), r(1, 48_000), r(0, 1));
+    let valid_between = event_validation_program("1/4", "1/48000s", "0s");
     let mut runtime = make_runtime(&valid_between, 1).unwrap();
     runtime.note_on("voice", 440.0, 1.0, 0).unwrap();
     // The source is +1 at onset, then reaches -1 at frame 2. Attack remains
@@ -556,14 +420,14 @@ fn event_sums_are_checked_at_edges_while_between_edge_changes_are_held() {
         runtime.render(frame).unwrap();
     }
 
-    let invalid_on = event_validation_program(r(3, 4), r(1, 48_000), r(0, 1));
+    let invalid_on = event_validation_program("3/4", "1/48000s", "0s");
     let mut invalid_on_runtime = make_runtime(&invalid_on, 1).unwrap();
     let error = invalid_on_runtime
         .note_on("voice", 440.0, 1.0, 0)
         .unwrap_err();
     assert_eq!(error.code(), "E_RANGE");
 
-    let invalid_off = event_validation_program(r(1, 4), r(0, 1), r(1, 48_000));
+    let invalid_off = event_validation_program("1/4", "0s", "1/48000s");
     let mut runtime = make_runtime(&invalid_off, 1).unwrap();
     runtime.note_on("voice", 440.0, 1.0, 0).unwrap();
     runtime.render(0).unwrap();
@@ -573,38 +437,30 @@ fn event_sums_are_checked_at_edges_while_between_edge_changes_are_held() {
 
 #[test]
 fn zero_depth_does_not_skip_source_parameter_validation() {
-    let mut invalid = source_program(
-        GraphProcessor::Sine,
-        params([
-            ("ratio", r(0, 1)),
-            ("frequency", r(0, 1)),
-            ("phase", r(2, 1)),
-            ("level", r(1, 1)),
-        ]),
-        true,
-    );
-    invalid.voice.modulations[0].depth = r(0, 1);
-    invalid.voice.modulations[1].depth = r(0, 1);
+    // The library refuses a phase of two in source, so it is set on a
+    // resolved program.
+    let mut invalid = source_program("synth.sine/1", &fixed_sine(0, "0"), &zero_edges());
+    let source = invalid
+        .voice
+        .nodes
+        .iter_mut()
+        .find(|node| node.id == "source")
+        .unwrap();
+    source
+        .params
+        .insert("phase".into(), maac::parse_rational("2").unwrap());
     let error = CompiledInstrument::compile(&invalid, &BTreeMap::new()).unwrap_err();
     assert_eq!(error.code(), "E_RANGE");
 }
 
 #[test]
 fn zero_release_reuses_capacity_before_nonzero_release_tail() {
+    let held = fixed_sine(0, "1/4");
     let zero = source_program(
-        GraphProcessor::Sine,
-        params([
-            ("ratio", r(0, 1)),
-            ("frequency", r(0, 1)),
-            ("phase", r(1, 4)),
-            ("level", r(1, 1)),
-        ]),
-        false,
+        "synth.sine/1",
+        &held,
+        &modulation("release_zero", "source", "release", "0s"),
     );
-    let mut zero = zero;
-    zero.voice
-        .modulations
-        .push(modulation("release_zero", "source", "release", r(0, 1)));
     let mut runtime = make_runtime(&zero, 1).unwrap();
     runtime.note_on("old", 440.0, 1.0, 0).unwrap();
     runtime.render(0).unwrap();
@@ -612,8 +468,11 @@ fn zero_release_reuses_capacity_before_nonzero_release_tail() {
     runtime.prune_finished(1).unwrap();
     runtime.note_on("new", 440.0, 1.0, 1).unwrap();
 
-    let mut tail = zero;
-    tail.voice.modulations[0].depth = r(1, 48_000);
+    let tail = source_program(
+        "synth.sine/1",
+        &held,
+        &modulation("release_zero", "source", "release", "1/48000s"),
+    );
     let mut runtime = make_runtime(&tail, 1).unwrap();
     runtime.note_on("old", 440.0, 1.0, 0).unwrap();
     runtime.render(0).unwrap();

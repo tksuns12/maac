@@ -1,86 +1,101 @@
 use maac::bundle::SourceBundle;
 use maac::compiler::compile_bundle_artifact;
 use maac::dsp::{DspEngine, Result};
-use maac::graph::{
-    Control, ControlTarget, GraphNode, GraphProcessor, GraphProgram, GraphStage, InstrumentProgram,
-    Modulation, ParameterTarget, ProgramSource,
-};
-use maac::plan::{PortRef, Rational};
+use maac::graph::{GraphProcessor, InstrumentProgram};
 use maac::voice::{CompiledInstrument, InstrumentRuntime};
 use maac::wavetable::{TableBank, Wavetable};
 use maac::PlanArtifact;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+#[path = "support/programs.rs"]
+mod programs;
+
 const RATE: f64 = 48_000.0;
 
-fn r(numerator: i64, denominator: i64) -> Rational {
-    Rational::new(numerator.into(), denominator.into())
-}
+/// The params of an envelope that is a gate.
+const GATE: &str = "attack = 0s; decay = 0s; sustain = 1; release = 0s;";
 
-fn params<I, S>(values: I) -> BTreeMap<String, Rational>
-where
-    I: IntoIterator<Item = (S, Rational)>,
-    S: Into<String>,
-{
-    values
-        .into_iter()
-        .map(|(name, value)| (name.into(), value))
-        .collect()
-}
+/// A sine `mod` held at one.
+const CONSTANT_SOURCE: &str = r#"node mod { type = "synth.sine/1"; params = { ratio = 0; frequency = 0Hz; phase = 1/4; level = 1; }; }"#;
 
-fn node<I, S>(id: &str, processor: GraphProcessor, values: I) -> GraphNode
-where
-    I: IntoIterator<Item = (S, Rational)>,
-    S: Into<String>,
-{
-    GraphNode {
-        id: id.into(),
-        processor,
-        params: params(values),
-    }
-}
+const OSCILLATORS: [&str; 4] = [
+    "synth.sine/1",
+    "synth.saw/1",
+    "synth.square/1",
+    "synth.triangle/1",
+];
 
-fn port(node: &str) -> PortRef {
-    PortRef::new(node, "out").unwrap()
-}
-
-fn modulation(id: &str, from: &str, target: &str, parameter: &str, depth: Rational) -> Modulation {
-    Modulation {
-        id: id.into(),
-        from: port(from),
-        to: ParameterTarget {
-            node: target.into(),
-            parameter: parameter.into(),
-        },
-        depth,
-    }
-}
-
-fn amp_node() -> GraphNode {
-    node(
-        "amp",
-        GraphProcessor::ADSR,
-        [
-            ("attack", r(0, 1)),
-            ("decay", r(0, 1)),
-            ("sustain", r(1, 1)),
-            ("release", r(0, 1)),
-        ],
+fn modulation(id: &str, from: &str, target: &str, parameter: &str, depth: &str) -> String {
+    format!(
+        "modulate {id} {{ from = &{from}:out; to = &{target}.params.{parameter}; depth = {depth}; }}\n"
     )
 }
 
-fn constant_source() -> GraphNode {
-    node(
-        "mod",
-        GraphProcessor::Sine,
-        [
-            ("ratio", r(0, 1)),
-            ("frequency", r(0, 1)),
-            ("phase", r(1, 4)),
-            ("level", r(1, 1)),
-        ],
+fn sine(id: &str, frequency: i64, phase: &str) -> String {
+    format!(
+        "node {id} {{ type = \"synth.sine/1\"; params = {{ {} }}; }}\n",
+        oscillator_params(frequency, phase)
     )
+}
+
+/// A one-channel instrument whose voice holds `children` and renders the
+/// node `output` under the envelope `amp`, which has the params `amp`.
+fn voice_program(amp: &str, output: &str, children: &str, controls: &str) -> InstrumentProgram {
+    programs::program(&format!(
+        r#"instrument phase_voice {{
+ channels = 1;
+ voice voice {{
+  channels = 1; amplitude = &amp; output = &{output}:out;
+  node amp {{ type = "synth.adsr/1"; params = {{ {amp} }}; }}
+  {children}
+ }}
+ {controls}
+}}"#
+    ))
+}
+
+/// A gated voice that renders `target`, a node of type `kind` with `params`.
+/// The held source `mod` stands beside it when a modulation reads it.
+fn phase_program(kind: &str, params: &str, modulations: &str, controls: &str) -> InstrumentProgram {
+    let source = if modulations.contains("&mod:out") {
+        CONSTANT_SOURCE
+    } else {
+        ""
+    };
+    voice_program(
+        GATE,
+        "target",
+        &format!(
+            "node target {{ type = \"{kind}\"; params = {{ {params} }}; }}\n{source}\n{modulations}"
+        ),
+        controls,
+    )
+}
+
+/// `phase_program` with a wavetable oscillator at 6 kHz for `target`. The
+/// bank of its table is built by the test, not read from an asset, so the
+/// oscillator of a resolved program is pointed at it.
+fn wavetable_program(table: &str, phase: &str, modulations: &str) -> InstrumentProgram {
+    let mut program = phase_program(
+        "synth.sine/1",
+        &oscillator_params(6_000, phase),
+        modulations,
+        "",
+    );
+    let target = program
+        .voice
+        .nodes
+        .iter_mut()
+        .find(|node| node.id == "target")
+        .unwrap();
+    target.processor = GraphProcessor::Wavetable {
+        table: table.to_owned(),
+    };
+    target
+        .params
+        .insert("position".into(), maac::parse_rational("0").unwrap());
+    program
 }
 
 fn make_runtime(
@@ -104,53 +119,12 @@ fn render_frames(
         .collect()
 }
 
-fn phase_program(
-    processor: GraphProcessor,
-    target_params: BTreeMap<String, Rational>,
-    modulations: Vec<Modulation>,
-    controls: BTreeMap<String, Control>,
-) -> InstrumentProgram {
-    let mut nodes = vec![amp_node()];
-    nodes.push(node("target", processor, target_params));
-    if modulations.iter().any(|edge| edge.from.node == "mod") {
-        nodes.push(constant_source());
-    }
-    InstrumentProgram {
-        id: "phase_voice".into(),
-        voice: GraphProgram {
-            channels: 1,
-            nodes,
-            connections: Vec::new(),
-            modulations,
-            output: port("target"),
-            amplitude: Some("amp".into()),
-            connected: false,
-        },
-        shared: None,
-        controls,
-        source: ProgramSource {
-            file: "internal-phase.maac".into(),
-            object: "phase_voice".into(),
-            span: None,
-        },
-    }
+fn oscillator_params(frequency: i64, phase: &str) -> String {
+    format!("ratio = 0; frequency = {frequency}Hz; phase = {phase}; level = 1;")
 }
 
-fn oscillator_params(frequency: i64, phase: i64) -> BTreeMap<String, Rational> {
-    params([
-        ("ratio", r(0, 1)),
-        ("frequency", r(frequency, 1)),
-        ("phase", r(phase, 1)),
-        ("level", r(1, 1)),
-    ])
-}
-
-fn lfo_params(frequency: i64, phase: i64) -> BTreeMap<String, Rational> {
-    params([
-        ("frequency", r(frequency, 1)),
-        ("phase", r(phase, 1)),
-        ("level", r(1, 1)),
-    ])
+fn lfo_params(frequency: i64, phase: &str) -> String {
+    format!("frequency = {frequency}Hz; phase = {phase}; level = 1;")
 }
 
 fn wavetable_fixture() -> (Wavetable, BTreeMap<String, Arc<TableBank>>) {
@@ -164,34 +138,28 @@ fn wavetable_fixture() -> (Wavetable, BTreeMap<String, Arc<TableBank>>) {
     (table, tables)
 }
 
-fn wavetable_params(frequency: i64, phase: i64) -> BTreeMap<String, Rational> {
-    params([
-        ("ratio", r(0, 1)),
-        ("frequency", r(frequency, 1)),
-        ("phase", r(phase, 1)),
-        ("level", r(1, 1)),
-        ("position", r(0, 1)),
-    ])
+/// The params of each native source of a phase, at `phase`.
+fn native_sources(phase: &str) -> Vec<(&'static str, String)> {
+    OSCILLATORS
+        .into_iter()
+        .map(|kind| (kind, oscillator_params(6_000, phase)))
+        .chain([("synth.lfo/1", lfo_params(100, phase))])
+        .collect()
 }
 
 #[test]
 fn voice_phase_capture_matches_static_references_for_all_native_sources() {
-    let edges = vec![
-        modulation("z_small", "mod", "target", "phase", r(1, 4)),
-        modulation("m_positive", "mod", "target", "phase", r(128, 1)),
-        modulation("a_negative", "mod", "target", "phase", r(-128, 1)),
-    ];
-    for (processor, params) in [
-        (GraphProcessor::Sine, oscillator_params(6_000, 0)),
-        (GraphProcessor::Saw, oscillator_params(6_000, 0)),
-        (GraphProcessor::Square, oscillator_params(6_000, 0)),
-        (GraphProcessor::Triangle, oscillator_params(6_000, 0)),
-        (GraphProcessor::Lfo, lfo_params(100, 0)),
-    ] {
-        let mut static_params = params.clone();
-        static_params.insert("phase".into(), r(1, 4));
-        let captured = phase_program(processor.clone(), params, edges.clone(), BTreeMap::new());
-        let static_reference = phase_program(processor, static_params, Vec::new(), BTreeMap::new());
+    let edges = [
+        modulation("z_small", "mod", "target", "phase", "1/4"),
+        modulation("m_positive", "mod", "target", "phase", "128"),
+        modulation("a_negative", "mod", "target", "phase", "-128"),
+    ]
+    .concat();
+    for ((kind, params), (_, static_params)) in
+        native_sources("0").into_iter().zip(native_sources("1/4"))
+    {
+        let captured = phase_program(kind, &params, &edges, "");
+        let static_reference = phase_program(kind, &static_params, "", "");
         let captured_bits = render_frames(&captured, &BTreeMap::new(), 8)
             .unwrap()
             .into_iter()
@@ -206,22 +174,8 @@ fn voice_phase_capture_matches_static_references_for_all_native_sources() {
     }
 
     let (table, tables) = wavetable_fixture();
-    let captured = phase_program(
-        GraphProcessor::Wavetable {
-            table: table.id.clone(),
-        },
-        wavetable_params(6_000, 0),
-        edges.clone(),
-        BTreeMap::new(),
-    );
-    let mut static_params = wavetable_params(6_000, 0);
-    static_params.insert("phase".into(), r(1, 4));
-    let static_reference = phase_program(
-        GraphProcessor::Wavetable { table: table.id },
-        static_params,
-        Vec::new(),
-        BTreeMap::new(),
-    );
+    let captured = wavetable_program(&table.id, "0", &edges);
+    let static_reference = wavetable_program(&table.id, "1/4", "");
     assert_eq!(
         render_frames(&captured, &tables, 8)
             .unwrap()
@@ -301,43 +255,18 @@ place play { pattern = &phrase; track = &notes; at = 0q; }
 
 #[test]
 fn phase_endpoints_zero_and_one_capture_the_same_voice_state() {
-    let targets = [
-        (
-            GraphProcessor::Sine,
-            oscillator_params(6_000, 0),
-            BTreeMap::new(),
-        ),
-        (
-            GraphProcessor::Saw,
-            oscillator_params(6_000, 0),
-            BTreeMap::new(),
-        ),
-        (
-            GraphProcessor::Square,
-            oscillator_params(6_000, 0),
-            BTreeMap::new(),
-        ),
-        (
-            GraphProcessor::Triangle,
-            oscillator_params(6_000, 0),
-            BTreeMap::new(),
-        ),
-        (GraphProcessor::Lfo, lfo_params(100, 0), BTreeMap::new()),
-    ];
-    for (processor, zero_params, controls) in targets {
-        let mut one_params = zero_params.clone();
-        one_params.insert("phase".into(), r(0, 1));
+    for (kind, params) in native_sources("0") {
         let zero = phase_program(
-            processor.clone(),
-            zero_params,
-            vec![modulation("phase_zero", "mod", "target", "phase", r(0, 1))],
-            controls.clone(),
+            kind,
+            &params,
+            &modulation("phase_zero", "mod", "target", "phase", "0"),
+            "",
         );
         let one = phase_program(
-            processor,
-            one_params,
-            vec![modulation("phase_one", "mod", "target", "phase", r(1, 1))],
-            controls,
+            kind,
+            &params,
+            &modulation("phase_one", "mod", "target", "phase", "1"),
+            "",
         );
         assert_eq!(
             render_frames(&zero, &BTreeMap::new(), 5)
@@ -354,19 +283,15 @@ fn phase_endpoints_zero_and_one_capture_the_same_voice_state() {
     }
 
     let (table, tables) = wavetable_fixture();
-    let zero = phase_program(
-        GraphProcessor::Wavetable {
-            table: table.id.clone(),
-        },
-        wavetable_params(6_000, 0),
-        vec![modulation("phase_zero", "mod", "target", "phase", r(0, 1))],
-        BTreeMap::new(),
+    let zero = wavetable_program(
+        &table.id,
+        "0",
+        &modulation("phase_zero", "mod", "target", "phase", "0"),
     );
-    let one = phase_program(
-        GraphProcessor::Wavetable { table: table.id },
-        wavetable_params(6_000, 0),
-        vec![modulation("phase_one", "mod", "target", "phase", r(1, 1))],
-        BTreeMap::new(),
+    let one = wavetable_program(
+        &table.id,
+        "0",
+        &modulation("phase_one", "mod", "target", "phase", "1"),
     );
     assert_eq!(
         render_frames(&zero, &tables, 5)
@@ -384,24 +309,11 @@ fn phase_endpoints_zero_and_one_capture_the_same_voice_state() {
 
 #[test]
 fn lfo_phase_public_control_is_captured_once_and_reset_replays() {
-    let controls = [(
-        "phase_bias".into(),
-        Control {
-            target: ControlTarget {
-                graph: GraphStage::Voice,
-                node: "target".into(),
-                parameter: "phase".into(),
-            },
-            default: r(1, 4),
-        },
-    )]
-    .into_iter()
-    .collect();
     let program = phase_program(
-        GraphProcessor::Lfo,
-        lfo_params(0, 0),
-        vec![modulation("phase_edge", "mod", "target", "phase", r(0, 1))],
-        controls,
+        "synth.lfo/1",
+        &lfo_params(0, "0"),
+        &modulation("phase_edge", "mod", "target", "phase", "0"),
+        "control phase_bias { target = &voice.target.params.phase; default = 1/4; }",
     );
     let mut runtime = make_runtime(&program, 1, &BTreeMap::new()).unwrap();
     runtime.note_on("voice", 440.0, 1.0, 0).unwrap();
@@ -417,12 +329,12 @@ fn lfo_phase_public_control_is_captured_once_and_reset_replays() {
 
 #[test]
 fn invalid_phase_is_rejected_at_note_on_with_range_error() {
-    for depth in [r(2, 1), r(-1, 1)] {
+    for depth in ["2", "-1"] {
         let program = phase_program(
-            GraphProcessor::Sine,
-            oscillator_params(0, 0),
-            vec![modulation("invalid_phase", "mod", "target", "phase", depth)],
-            BTreeMap::new(),
+            "synth.sine/1",
+            &oscillator_params(0, "0"),
+            &modulation("invalid_phase", "mod", "target", "phase", depth),
+            "",
         );
         let mut runtime = make_runtime(&program, 1, &BTreeMap::new()).unwrap();
         let error = runtime
@@ -434,43 +346,18 @@ fn invalid_phase_is_rejected_at_note_on_with_range_error() {
 
 #[test]
 fn note_off_preview_does_not_recapture_or_reset_voice_phase() {
-    let mut amp = amp_node();
-    amp.params.insert("release".into(), r(1, 1_000));
-    let program = InstrumentProgram {
-        id: "phase_off".into(),
-        voice: GraphProgram {
-            channels: 1,
-            nodes: vec![
-                amp,
-                node("target", GraphProcessor::Sine, oscillator_params(0, 0)),
-                node(
-                    "source",
-                    GraphProcessor::Sine,
-                    [
-                        ("ratio", r(0, 1)),
-                        ("frequency", r(12_000, 1)),
-                        ("phase", r(1, 4)),
-                        ("level", r(1, 1)),
-                    ],
-                ),
-            ],
-            connections: Vec::new(),
-            modulations: vec![
-                modulation("on_phase", "source", "target", "phase", r(1, 4)),
-                modulation("off_release", "source", "amp", "release", r(0, 1)),
-            ],
-            output: port("target"),
-            amplitude: Some("amp".into()),
-            connected: false,
-        },
-        shared: None,
-        controls: BTreeMap::new(),
-        source: ProgramSource {
-            file: "internal-phase.maac".into(),
-            object: "phase_off".into(),
-            span: None,
-        },
-    };
+    let program = voice_program(
+        "attack = 0s; decay = 0s; sustain = 1; release = 1/1000s;",
+        "target",
+        &[
+            sine("target", 0, "0"),
+            sine("source", 12_000, "1/4"),
+            modulation("on_phase", "source", "target", "phase", "1/4"),
+            modulation("off_release", "source", "amp", "release", "0s"),
+        ]
+        .concat(),
+        "",
+    );
     let mut runtime = make_runtime(&program, 1, &BTreeMap::new()).unwrap();
     runtime.note_on("voice", 440.0, 1.0, 0).unwrap();
     assert_eq!(runtime.render(0).unwrap(), &[1.0]);
@@ -481,43 +368,20 @@ fn note_off_preview_does_not_recapture_or_reset_voice_phase() {
 
 #[test]
 fn chained_phase_and_adsr_onset_captures_have_no_lag_or_double_advance() {
-    let program = InstrumentProgram {
-        id: "phase_chain".into(),
-        voice: GraphProgram {
-            channels: 1,
-            nodes: vec![
-                amp_node(),
-                node(
-                    "source",
-                    GraphProcessor::Sine,
-                    [
-                        ("ratio", r(0, 1)),
-                        ("frequency", r(0, 1)),
-                        ("phase", r(1, 4)),
-                        ("level", r(1, 1)),
-                    ],
-                ),
-                node("phase_a", GraphProcessor::Sine, oscillator_params(0, 0)),
-                node("phase_b", GraphProcessor::Sine, oscillator_params(0, 0)),
-            ],
-            connections: Vec::new(),
-            modulations: vec![
-                modulation("source_to_a", "source", "phase_a", "phase", r(1, 4)),
-                modulation("a_to_b", "phase_a", "phase_b", "phase", r(1, 4)),
-                modulation("b_to_attack", "phase_b", "amp", "attack", r(1, 48_000)),
-            ],
-            output: port("phase_b"),
-            amplitude: Some("amp".into()),
-            connected: false,
-        },
-        shared: None,
-        controls: BTreeMap::new(),
-        source: ProgramSource {
-            file: "internal-phase.maac".into(),
-            object: "phase_chain".into(),
-            span: None,
-        },
-    };
+    let program = voice_program(
+        GATE,
+        "phase_b",
+        &[
+            sine("source", 0, "1/4"),
+            sine("phase_a", 0, "0"),
+            sine("phase_b", 0, "0"),
+            modulation("source_to_a", "source", "phase_a", "phase", "1/4"),
+            modulation("a_to_b", "phase_a", "phase_b", "phase", "1/4"),
+            modulation("b_to_attack", "phase_b", "amp", "attack", "1/48000s"),
+        ]
+        .concat(),
+        "",
+    );
     let mut runtime = make_runtime(&program, 1, &BTreeMap::new()).unwrap();
     runtime.note_on("voice", 440.0, 1.0, 0).unwrap();
     assert_eq!(runtime.render(0).unwrap(), &[0.0]);

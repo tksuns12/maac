@@ -1,127 +1,54 @@
-use maac::graph::{
-    Control, ControlTarget, GraphNode, GraphProcessor, GraphProgram, GraphStage, InstrumentProgram,
-    Modulation, ParameterTarget, ProgramSource,
-};
-use maac::plan::{PortRef, Rational};
+use maac::graph::InstrumentProgram;
 use maac::voice::{CompiledInstrument, InstrumentRuntime};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+#[path = "support/programs.rs"]
+mod programs;
+
 const RATE: f64 = 48_000.0;
 
-fn r(numerator: i64, denominator: i64) -> Rational {
-    Rational::new(numerator.into(), denominator.into())
-}
+/// A control `phase_bias` for the phase of the shared LFO `target`.
+const PHASE_BIAS: &str = "control phase_bias { target = &bus.target.params.phase; default = 1/4; }";
 
-fn node(
-    id: &str,
-    processor: GraphProcessor,
-    params: impl IntoIterator<Item = (&'static str, Rational)>,
-) -> GraphNode {
-    GraphNode {
-        id: id.into(),
-        processor,
-        params: params
-            .into_iter()
-            .map(|(name, value)| (name.into(), value))
-            .collect(),
-    }
-}
-
-fn port(node: &str) -> PortRef {
-    PortRef::new(node, "out").unwrap()
-}
-
-fn modulation(id: &str, from: &str, target: &str, depth: Rational) -> Modulation {
-    Modulation {
-        id: id.into(),
-        from: port(from),
-        to: ParameterTarget {
-            node: target.into(),
-            parameter: "phase".into(),
-        },
-        depth,
-    }
-}
-
-fn voice_graph() -> GraphProgram {
-    GraphProgram {
-        channels: 1,
-        nodes: vec![
-            node(
-                "amp",
-                GraphProcessor::ADSR,
-                [
-                    ("attack", r(0, 1)),
-                    ("decay", r(0, 1)),
-                    ("sustain", r(1, 1)),
-                    ("release", r(0, 1)),
-                ],
-            ),
-            node(
-                "voice",
-                GraphProcessor::Sine,
-                [
-                    ("ratio", r(0, 1)),
-                    ("frequency", r(0, 1)),
-                    ("phase", r(1, 4)),
-                    ("level", r(1, 1)),
-                ],
-            ),
-        ],
-        connections: Vec::new(),
-        modulations: Vec::new(),
-        output: port("voice"),
-        amplitude: Some("amp".into()),
-        connected: false,
-    }
-}
-
+/// An instrument whose shared graph renders the 100 Hz LFO `target` at
+/// `target_phase`. With `source_phase`, a held LFO `source` stands beside it
+/// at that phase; with `modulation_from`, that node's output moves the phase
+/// of `target` by `modulation_depth`.
 fn reset_lfo_program(
-    target_phase: Rational,
-    source_phase: Option<Rational>,
+    target_phase: &str,
+    source_phase: Option<&str>,
     modulation_from: Option<&str>,
-    modulation_depth: Rational,
-    controls: BTreeMap<String, Control>,
+    modulation_depth: &str,
+    controls: &str,
 ) -> InstrumentProgram {
-    let mut nodes = vec![node(
-        "target",
-        GraphProcessor::Lfo,
-        [
-            ("frequency", r(100, 1)),
-            ("phase", target_phase),
-            ("level", r(1, 1)),
-        ],
-    )];
-    if let Some(phase) = source_phase {
-        nodes.push(node(
-            "source",
-            GraphProcessor::Lfo,
-            [("frequency", r(0, 1)), ("phase", phase), ("level", r(1, 1))],
-        ));
-    }
-    let modulations = modulation_from
-        .map(|from| vec![modulation("reset_phase", from, "target", modulation_depth)])
-        .unwrap_or_default();
-    InstrumentProgram {
-        id: "reset_phase_voice".into(),
-        voice: voice_graph(),
-        shared: Some(GraphProgram {
-            channels: 1,
-            nodes,
-            connections: Vec::new(),
-            modulations,
-            output: port("target"),
-            amplitude: None,
-            connected: false,
-        }),
-        controls,
-        source: ProgramSource {
-            file: "internal-reset-phase.maac".into(),
-            object: "reset_phase_voice".into(),
-            span: None,
-        },
-    }
+    let source = source_phase.map_or_else(String::new, |phase| {
+        format!(
+            r#"node source {{ type = "synth.lfo/1"; params = {{ frequency = 0Hz; phase = {phase}; level = 1; }}; }}"#
+        )
+    });
+    let modulation = modulation_from.map_or_else(String::new, |from| {
+        format!(
+            "modulate reset_phase {{ from = &{from}:out; to = &target.params.phase; depth = {modulation_depth}; }}"
+        )
+    });
+    programs::program(&format!(
+        r#"instrument reset_phase_voice {{
+ channels = 1;
+ voice note {{
+  channels = 1; amplitude = &amp; output = &voice:out;
+  node amp {{ type = "synth.adsr/1"; params = {{ attack = 0s; decay = 0s; sustain = 1; release = 0s; }}; }}
+  node voice {{ type = "synth.sine/1"; params = {{ ratio = 0; frequency = 0Hz; phase = 1/4; level = 1; }}; }}
+ }}
+ shared bus {{
+  channels = 1; output = &target:out;
+  node target {{ type = "synth.lfo/1"; params = {{ frequency = 100Hz; phase = {target_phase}; level = 1; }}; }}
+  {source}
+  {modulation}
+ }}
+ {controls}
+}}"#
+    ))
 }
 
 fn runtime(program: &InstrumentProgram, controls: &BTreeMap<String, f64>) -> InstrumentRuntime {
@@ -148,14 +75,8 @@ fn render_input_sequence(runtime: &mut InstrumentRuntime, frames: usize) -> Vec<
 
 #[test]
 fn shared_lfo_reset_phase_capture_matches_static_reference_and_replays() {
-    let captured = reset_lfo_program(
-        r(0, 1),
-        Some(r(1, 4)),
-        Some("source"),
-        r(1, 4),
-        BTreeMap::new(),
-    );
-    let static_reference = reset_lfo_program(r(1, 4), None, None, r(0, 1), BTreeMap::new());
+    let captured = reset_lfo_program("0", Some("1/4"), Some("source"), "1/4", "");
+    let static_reference = reset_lfo_program("1/4", None, None, "0", "");
     let mut actual = runtime(&captured, &BTreeMap::new());
     let mut expected = runtime(&static_reference, &BTreeMap::new());
     let first = render(&mut actual, 8);
@@ -164,15 +85,9 @@ fn shared_lfo_reset_phase_capture_matches_static_reference_and_replays() {
     actual.reset(&BTreeMap::new()).unwrap();
     assert_eq!(bits(first), bits(render(&mut actual, 8)));
 
-    for (target_phase, reference_phase) in [(r(0, 1), r(0, 1)), (r(1, 1), r(0, 1))] {
-        let endpoint = reset_lfo_program(
-            target_phase,
-            Some(r(1, 4)),
-            Some("source"),
-            r(0, 1),
-            BTreeMap::new(),
-        );
-        let reference = reset_lfo_program(reference_phase, None, None, r(0, 1), BTreeMap::new());
+    for (target_phase, reference_phase) in [("0", "0"), ("1", "0")] {
+        let endpoint = reset_lfo_program(target_phase, Some("1/4"), Some("source"), "0", "");
+        let reference = reset_lfo_program(reference_phase, None, None, "0", "");
         assert_eq!(
             bits(render(&mut runtime(&endpoint, &BTreeMap::new()), 8)),
             bits(render(&mut runtime(&reference, &BTreeMap::new()), 8))
@@ -182,24 +97,11 @@ fn shared_lfo_reset_phase_capture_matches_static_reference_and_replays() {
 
 #[test]
 fn shared_input_phase_captures_silence_before_notes_and_ignores_voice_samples() {
-    let controls = [(
-        "phase_bias".into(),
-        Control {
-            target: ControlTarget {
-                graph: GraphStage::Shared,
-                node: "target".into(),
-                parameter: "phase".into(),
-            },
-            default: r(1, 4),
-        },
-    )]
-    .into_iter()
-    .collect::<BTreeMap<_, _>>();
     let instance_controls = [("phase_bias".into(), 3.0 / 4.0)]
         .into_iter()
         .collect::<BTreeMap<_, _>>();
-    let captured = reset_lfo_program(r(0, 1), None, Some("input"), r(1, 4), controls.clone());
-    let static_reference = reset_lfo_program(r(0, 1), None, None, r(0, 1), controls);
+    let captured = reset_lfo_program("0", None, Some("input"), "1/4", PHASE_BIAS);
+    let static_reference = reset_lfo_program("0", None, None, "0", PHASE_BIAS);
     let mut actual = runtime(&captured, &instance_controls);
     let mut expected = runtime(&static_reference, &instance_controls);
     let first = render_input_sequence(&mut actual, 8);

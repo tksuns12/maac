@@ -1,12 +1,11 @@
-use maac::graph::{
-    GraphNode, GraphProcessor, GraphProgram, InstrumentProgram, Modulation, ParameterTarget,
-    ProgramSource,
-};
-use maac::plan::PortRef;
+use maac::graph::InstrumentProgram;
 use maac::synth::{Oscillator, Waveform};
 use maac::voice::{CompiledInstrument, InstrumentRuntime};
 use std::collections::BTreeMap;
 use std::sync::Arc;
+
+#[path = "support/programs.rs"]
+mod programs;
 
 const RATE: f64 = 48_000.0;
 const FRAMES: usize = 48_000;
@@ -175,56 +174,20 @@ fn render_instrument_fm(
     Ok(output)
 }
 
+/// A carrier sine whose frequency a modulator sine moves by `depth_hz`.
 fn fm_program(carrier_hz: i64, modulator_hz: i64, depth_hz: i64) -> InstrumentProgram {
-    let oscillator = |id: &str, frequency: i64| GraphNode {
-        id: id.into(),
-        processor: GraphProcessor::Sine,
-        params: [
-            ("ratio".into(), rational(0)),
-            ("frequency".into(), rational(frequency)),
-        ]
-        .into_iter()
-        .collect(),
-    };
-    InstrumentProgram {
-        id: "fm_fixture".into(),
-        voice: GraphProgram {
-            channels: 1,
-            nodes: vec![
-                GraphNode {
-                    id: "amp".into(),
-                    processor: GraphProcessor::ADSR,
-                    params: BTreeMap::new(),
-                },
-                oscillator("carrier", carrier_hz),
-                oscillator("modulator", modulator_hz),
-            ],
-            connections: Vec::new(),
-            modulations: vec![Modulation {
-                id: "frequency_modulation".into(),
-                from: PortRef::new("modulator", "out").unwrap(),
-                to: ParameterTarget {
-                    node: "carrier".into(),
-                    parameter: "frequency".into(),
-                },
-                depth: rational(depth_hz),
-            }],
-            output: PortRef::new("carrier", "out").unwrap(),
-            amplitude: Some("amp".into()),
-            connected: false,
-        },
-        shared: None,
-        controls: BTreeMap::new(),
-        source: ProgramSource {
-            file: "tests/fm_spectral.rs".into(),
-            object: "fm_fixture".into(),
-            span: None,
-        },
-    }
-}
-
-fn rational(value: i64) -> maac::Rational {
-    maac::parse_rational(&value.to_string()).unwrap()
+    programs::program(&format!(
+        r#"instrument fm_fixture {{
+ channels = 1;
+ voice voice {{
+  channels = 1; amplitude = &amp; output = &carrier:out;
+  node amp {{ type = "synth.adsr/1"; }}
+  node carrier {{ type = "synth.sine/1"; params = {{ ratio = 0; frequency = {carrier_hz}Hz; }}; }}
+  node modulator {{ type = "synth.sine/1"; params = {{ ratio = 0; frequency = {modulator_hz}Hz; }}; }}
+  modulate frequency_modulation {{ from = &modulator:out; to = &carrier.params.frequency; depth = {depth_hz}Hz; }}
+ }}
+}}"#
+    ))
 }
 
 fn discrete_modulation_index(depth_hz: f64, modulator_hz: f64) -> f64 {
