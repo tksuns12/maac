@@ -16,7 +16,7 @@ use std::collections::BTreeSet;
 
 use super::{child_path, ref_object_id, ProcessorKind, Validator};
 use crate::diagnostic::DiagnosticCode;
-use crate::plan_v4::ProcessorV4;
+use crate::plan_v7::ProcessorV7;
 use crate::syntax::{Object, ValueKind};
 
 /// What the node behind an event port plays.
@@ -145,7 +145,7 @@ impl Validator<'_> {
             return instance.receives.clone();
         }
         if let Some(kit) = self.kit_nodes.get(node) {
-            let ProcessorV4::Kit { samples, .. } = &kit.processor else {
+            let ProcessorV7::Kit { samples, .. } = &kit.processor else {
                 return None;
             };
             return Some(Receives::Hits(

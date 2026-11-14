@@ -158,7 +158,7 @@ use crate::diagnostic::{Diagnostic, DiagnosticCode, Diagnostics, Span};
 use crate::graph::{GraphUnit, ParameterRate, ParameterSpec};
 use crate::music::{MeterMap, MeterPoint, MusicErrorCode};
 use crate::plan::{EqMode, Processor};
-use crate::plan_v4::{KitSampleRef, NodeV4, ProcessorV4};
+use crate::plan_v4::KitSampleRef;
 use crate::syntax::{Document, Field, Object, Reference, Unit, Value, ValueKind};
 
 /// Hard source-graph limits for the foundation compiler.
@@ -362,7 +362,7 @@ pub struct SourceGraph {
     document: Document,
     project_id: String,
     nodes: BTreeMap<String, NodeDescriptor>,
-    kit_nodes: BTreeMap<String, NodeV4>,
+    kit_nodes: BTreeMap<String, NodeV7>,
     audio_sources: BTreeMap<String, CoreAudioSource>,
     audio_clips: BTreeMap<String, AudioClipSource>,
     /// Placements whose patterns contain audio leaves: their `out` width.
@@ -389,7 +389,7 @@ impl SourceGraph {
     pub(crate) fn audio_clips(&self) -> &BTreeMap<String, AudioClipSource> {
         &self.audio_clips
     }
-    pub(crate) fn kit_nodes(&self) -> &BTreeMap<String, NodeV4> {
+    pub(crate) fn kit_nodes(&self) -> &BTreeMap<String, NodeV7> {
         &self.kit_nodes
     }
     pub(crate) fn audio_sources(&self) -> &BTreeMap<String, CoreAudioSource> {
@@ -794,7 +794,7 @@ struct Validator<'a> {
     project_meter: Option<MeterMap>,
     project_rate_hz: Option<BigRational>,
     nodes: BTreeMap<String, NodeDescriptor>,
-    kit_nodes: BTreeMap<String, NodeV4>,
+    kit_nodes: BTreeMap<String, NodeV7>,
     audio_sources: BTreeMap<String, CoreAudioSource>,
     audio_clips: BTreeMap<String, AudioClipSource>,
     place_outputs: BTreeMap<String, u8>,
@@ -2991,7 +2991,7 @@ impl<'a> Validator<'a> {
             }]);
         }
         let node = self.kit_nodes.get(id)?;
-        let ProcessorV4::Kit { channels, .. } = &node.processor else {
+        let ProcessorV7::Kit { channels, .. } = &node.processor else {
             return None;
         };
         Some(vec![
@@ -3301,9 +3301,9 @@ impl<'a> Validator<'a> {
         if let (Some(channels), Some(voices)) = (channels, voices) {
             self.kit_nodes.insert(
                 object.id.clone(),
-                NodeV4 {
+                NodeV7 {
                     id: object.id.clone(),
-                    processor: ProcessorV4::Kit {
+                    processor: ProcessorV7::Kit {
                         channels: channels as u8,
                         voices: voices as u32,
                         samples,
@@ -7066,7 +7066,7 @@ mod kit_profile_tests {
             let kit = &graph.kit_nodes()["kit"];
             assert_eq!(kit.params["level"], BigRational::one());
             assert!(
-                matches!(&kit.processor, ProcessorV4::Kit { voices: 64, samples, .. } if samples.len() == 1 && samples[0].key.is_empty())
+                matches!(&kit.processor, ProcessorV7::Kit { voices: 64, samples, .. } if samples.len() == 1 && samples[0].key.is_empty())
             );
             assert!(matches!(
                 graph.resolve_text("&kit:out"),

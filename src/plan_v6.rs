@@ -187,30 +187,6 @@ pub(crate) struct WarpAnchor {
     pub source_frame: u64,
 }
 
-impl From<NodeV5> for NodeV6 {
-    fn from(node: NodeV5) -> Self {
-        let processor = match node.processor {
-            ProcessorV5::Core { processor } => ProcessorV6::Core { processor },
-            ProcessorV5::Kit {
-                channels,
-                voices,
-                samples,
-            } => ProcessorV6::Kit {
-                channels,
-                voices,
-                samples,
-            },
-            ProcessorV5::Audio { clip } => ProcessorV6::Audio { clip },
-            ProcessorV5::Clips { channels, clips } => ProcessorV6::Clips { channels, clips },
-        };
-        Self {
-            id: node.id,
-            processor,
-            params: node.params,
-        }
-    }
-}
-
 impl TryFrom<NodeV6> for NodeV5 {
     type Error = crate::plan::PlanError;
 
@@ -597,9 +573,12 @@ mod tests {
         v["nodes"][3]["processor"]["clip"]["gain"] = json!("-1/1");
         assert!(decode(&v).is_ok());
         for node in fixture()["nodes"].as_array().unwrap().iter().take(3) {
-            let old: NodeV5 = serde_json::from_value(node.clone()).unwrap();
-            let bytes = serde_json::to_vec(&old).unwrap();
-            assert_eq!(serde_json::to_vec(&NodeV6::from(old)).unwrap(), bytes);
+            let new: NodeV6 = serde_json::from_value(node.clone()).unwrap();
+            let bytes = serde_json::to_vec(&new).unwrap();
+            assert_eq!(
+                serde_json::to_vec(&NodeV5::try_from(new).unwrap()).unwrap(),
+                bytes
+            );
         }
     }
 

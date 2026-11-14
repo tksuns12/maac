@@ -35,9 +35,8 @@ use crate::plan::{
     SourceSpan, TempoMap, TempoPoint, TimbreExpression, TimbreExpressionPoint,
 };
 use crate::plan_artifact::PlanArtifact;
-use crate::plan_v4::{NodeV4, ProcessorV4};
-use crate::plan_v5::{AudioClip, AudioFadeShape, NodeV5, ProcessorV5};
-use crate::plan_v6::{ClipEntry, NodeV6, ProcessorV6, WarpAnchor, WarpClip};
+use crate::plan_v5::{AudioClip, AudioFadeShape};
+use crate::plan_v6::{ClipEntry, WarpAnchor, WarpClip};
 use crate::semantic::{
     supplier, Cycle, Groove, InstrumentNodeDescriptor, Models, Played, Replaced, Source, Strum,
     Supply, Unplayable, Vary, PER_MEMBER,
@@ -919,7 +918,7 @@ struct Compiler<'a> {
     track_ids: BTreeSet<String>,
     places: Vec<PlaceDef>,
     nodes: Vec<Node>,
-    kit_nodes: BTreeMap<String, NodeV4>,
+    kit_nodes: BTreeMap<String, NodeV7>,
     audio_assets: Vec<AudioAsset>,
     /// Plan audio assets for asset-backed `sample` declarations.
     sample_assets: Vec<AudioAsset>,
@@ -4273,17 +4272,17 @@ impl<'a> Compiler<'a> {
 
     /// Lower expanded pattern audio to one clip-set node per placement, whose
     /// members are ordinary rate or warp clips at their final score positions.
-    fn lower_pattern_clips(&self) -> CResult<Vec<NodeV6>> {
+    fn lower_pattern_clips(&self) -> CResult<Vec<NodeV7>> {
         // A placement whose occurrences were all deleted keeps a silent output.
-        let mut nodes: Vec<NodeV6> = self
+        let mut nodes: Vec<NodeV7> = self
             .places
             .iter()
             .filter_map(|place| {
                 let channels = *self.place_outputs.get(&place.id)?;
-                Some(NodeV6 {
+                Some(NodeV7 {
                     id: place.id.clone(),
                     params: BTreeMap::new(),
-                    processor: ProcessorV6::Clips {
+                    processor: ProcessorV7::Clips {
                         channels,
                         clips: Vec::new(),
                     },
@@ -4352,7 +4351,7 @@ impl<'a> Compiler<'a> {
                 .iter_mut()
                 .find(|node| node.id == clip.place)
                 .expect("every collected clip has a placement output");
-            if let ProcessorV6::Clips { clips, .. } = &mut node.processor {
+            if let ProcessorV7::Clips { clips, .. } = &mut node.processor {
                 clips.push(entry);
             }
         }
@@ -5753,7 +5752,7 @@ impl<'a> Compiler<'a> {
         Ok(plan)
     }
 
-    fn lower_audio_clips(&self) -> CResult<Vec<NodeV5>> {
+    fn lower_audio_clips(&self) -> CResult<Vec<NodeV7>> {
         self.audio_clips
             .values()
             .filter(|source| {
@@ -5843,10 +5842,10 @@ impl<'a> Compiler<'a> {
                     .field("track")
                     .map(|field| self.one_reference(&field.value, object, Some(field)))
                     .transpose()?;
-                Ok(NodeV5 {
+                Ok(NodeV7 {
                     id: object.id.clone(),
                     params: BTreeMap::new(),
-                    processor: ProcessorV5::Audio {
+                    processor: ProcessorV7::Audio {
                         clip: Box::new(AudioClip {
                             asset,
                             channels: source.channels,
@@ -5877,7 +5876,7 @@ impl<'a> Compiler<'a> {
             .collect()
     }
 
-    fn lower_warp_clips(&self) -> CResult<Vec<NodeV6>> {
+    fn lower_warp_clips(&self) -> CResult<Vec<NodeV7>> {
         self.audio_clips
             .values()
             .filter(|source| {
@@ -5982,10 +5981,10 @@ impl<'a> Compiler<'a> {
                         Some(source_field),
                     ));
                 };
-                Ok(NodeV6 {
+                Ok(NodeV7 {
                     id: object.id.clone(),
                     params: BTreeMap::new(),
-                    processor: ProcessorV6::WarpRate {
+                    processor: ProcessorV7::WarpRate {
                         clip: Box::new(WarpClip {
                             asset: self.one_reference(&asset.value, object, Some(asset))?,
                             channels: source.channels,
@@ -6047,22 +6046,10 @@ impl<'a> Compiler<'a> {
                 params: node.params.clone(),
             })
             .collect();
-        nodes.extend(
-            self.kit_nodes
-                .values()
-                .cloned()
-                .map(NodeV5::from)
-                .map(NodeV6::from)
-                .map(NodeV7::from),
-        );
-        nodes.extend(
-            self.lower_audio_clips()?
-                .into_iter()
-                .map(NodeV6::from)
-                .map(NodeV7::from),
-        );
-        nodes.extend(self.lower_warp_clips()?.into_iter().map(NodeV7::from));
-        nodes.extend(self.lower_pattern_clips()?.into_iter().map(NodeV7::from));
+        nodes.extend(self.kit_nodes.values().cloned());
+        nodes.extend(self.lower_audio_clips()?);
+        nodes.extend(self.lower_warp_clips()?);
+        nodes.extend(self.lower_pattern_clips()?);
         nodes.extend(self.control_nodes.values().cloned());
         nodes.sort_by(|a, b| a.id.cmp(&b.id));
         let mut plan = PlanV7 {
@@ -6388,7 +6375,7 @@ impl<'a> Compiler<'a> {
             return Ok(clip.channels);
         }
         if let Some(node) = self.kit_nodes.get(&self.output.node) {
-            if let ProcessorV4::Kit { channels, .. } = node.processor {
+            if let ProcessorV7::Kit { channels, .. } = node.processor {
                 return Ok(channels);
             }
         }

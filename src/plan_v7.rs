@@ -156,31 +156,6 @@ pub(crate) enum ProcessorV7 {
 
 use crate::plan_v6::{ClipEntry, WarpClip};
 
-impl From<NodeV6> for NodeV7 {
-    fn from(node: NodeV6) -> Self {
-        let processor = match node.processor {
-            ProcessorV6::Core { processor } => ProcessorV7::Core { processor },
-            ProcessorV6::Kit {
-                channels,
-                voices,
-                samples,
-            } => ProcessorV7::Kit {
-                channels,
-                voices,
-                samples,
-            },
-            ProcessorV6::Audio { clip } => ProcessorV7::Audio { clip },
-            ProcessorV6::WarpRate { clip } => ProcessorV7::WarpRate { clip },
-            ProcessorV6::Clips { channels, clips } => ProcessorV7::Clips { channels, clips },
-        };
-        Self {
-            id: node.id,
-            processor,
-            params: node.params,
-        }
-    }
-}
-
 impl TryFrom<NodeV7> for NodeV6 {
     type Error = crate::plan::PlanError;
 

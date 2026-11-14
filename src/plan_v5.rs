@@ -170,28 +170,6 @@ pub(crate) enum AudioFadeShape {
     EqualPower,
 }
 
-impl From<NodeV4> for NodeV5 {
-    fn from(node: NodeV4) -> Self {
-        let processor = match node.processor {
-            ProcessorV4::Core { processor } => ProcessorV5::Core { processor },
-            ProcessorV4::Kit {
-                channels,
-                voices,
-                samples,
-            } => ProcessorV5::Kit {
-                channels,
-                voices,
-                samples,
-            },
-        };
-        Self {
-            id: node.id,
-            processor,
-            params: node.params,
-        }
-    }
-}
-
 impl TryFrom<NodeV5> for NodeV4 {
     type Error = crate::plan::PlanError;
 
@@ -632,10 +610,10 @@ mod tests {
         value["nodes"][2]["processor"]["clip"]["end_frame"] = json!(0);
         assert!(decode(&value).is_ok());
         for node in fixture()["nodes"].as_array().unwrap().iter().take(2) {
-            let old: crate::plan_v4::NodeV4 = serde_json::from_value(node.clone()).unwrap();
-            let before = serde_json::to_value(&old).unwrap();
-            let new = NodeV5::from(old);
-            assert_eq!(serde_json::to_value(new).unwrap(), before);
+            let new: NodeV5 = serde_json::from_value(node.clone()).unwrap();
+            let before = serde_json::to_value(&new).unwrap();
+            let old = NodeV4::try_from(new).unwrap();
+            assert_eq!(serde_json::to_value(old).unwrap(), before);
         }
     }
 
