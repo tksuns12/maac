@@ -35,9 +35,9 @@ use crate::plan::{
     SourceSpan, TempoMap, TempoPoint, TimbreExpression, TimbreExpressionPoint,
 };
 use crate::plan_artifact::PlanArtifact;
-use crate::plan_v4::{NodeV4, PlanV4, ProcessorV4};
-use crate::plan_v5::{AudioClip, AudioFadeShape, NodeV5, PlanV5, ProcessorV5};
-use crate::plan_v6::{ClipEntry, NodeV6, PlanV6, ProcessorV6, WarpAnchor, WarpClip};
+use crate::plan_v4::{NodeV4, ProcessorV4};
+use crate::plan_v5::{AudioClip, AudioFadeShape, NodeV5, ProcessorV5};
+use crate::plan_v6::{ClipEntry, NodeV6, ProcessorV6, WarpAnchor, WarpClip};
 use crate::semantic::{
     supplier, Cycle, Groove, InstrumentNodeDescriptor, Models, Played, Replaced, Source, Strum,
     Supply, Unplayable, Vary, PER_MEMBER,
@@ -1214,19 +1214,17 @@ impl<'a> Compiler<'a> {
             self.audio_assets.push(asset);
         }
         self.read_composition(limits)?;
-        if has_controls {
-            self.finish_v7(limits, production, original)
-                .map(PlanArtifact::from_v7)
+        // The earliest version that says everything the document uses.
+        let version = if has_controls {
+            7
         } else if has_warp {
-            self.finish_v6(limits, production, original)
-                .map(PlanArtifact::from_v6)
+            6
         } else if has_audio {
-            self.finish_v5(limits, production, original)
-                .map(PlanArtifact::from_v5)
+            5
         } else {
-            self.finish_v4(limits, production, original)
-                .map(PlanArtifact::from_v4)
-        }
+            4
+        };
+        self.finish_artifact(limits, production, original, version)
     }
 
     fn optional<'b>(&self, object: &'b Object, name: &str) -> Option<&'b Value> {
@@ -6026,19 +6024,24 @@ impl<'a> Compiler<'a> {
             .collect()
     }
 
-    fn finish_v7(
+    /// The artifact of the document, written as `version`: 4 to 7, the
+    /// earliest that says everything the document uses. The plan is built,
+    /// checked and scheduled in the version 7 shape whatever `version` is, and
+    /// lowered to it at the end.
+    fn finish_artifact(
         &self,
         limits: &PlanLimits,
         mut production: Option<crate::production_data::ProductionSettings>,
         original: &Document,
-    ) -> CResult<PlanV7> {
+        version: u32,
+    ) -> CResult<PlanArtifact> {
         let used = self.check_point_budget(limits)?;
-        let mut nodes: Vec<NodeV6> = self
+        let mut nodes: Vec<NodeV7> = self
             .nodes
             .iter()
-            .map(|node| NodeV6 {
+            .map(|node| NodeV7 {
                 id: node.id.clone(),
-                processor: ProcessorV6::Core {
+                processor: ProcessorV7::Core {
                     processor: node.processor.clone(),
                 },
                 params: node.params.clone(),
@@ -6049,13 +6052,17 @@ impl<'a> Compiler<'a> {
                 .values()
                 .cloned()
                 .map(NodeV5::from)
-                .map(NodeV6::from),
+                .map(NodeV6::from)
+                .map(NodeV7::from),
         );
-        nodes.extend(self.lower_audio_clips()?.into_iter().map(NodeV6::from));
-        nodes.extend(self.lower_warp_clips()?);
-        nodes.extend(self.lower_pattern_clips()?);
-        nodes.sort_by(|a, b| a.id.cmp(&b.id));
-        let mut nodes: Vec<NodeV7> = nodes.into_iter().map(NodeV7::from).collect();
+        nodes.extend(
+            self.lower_audio_clips()?
+                .into_iter()
+                .map(NodeV6::from)
+                .map(NodeV7::from),
+        );
+        nodes.extend(self.lower_warp_clips()?.into_iter().map(NodeV7::from));
+        nodes.extend(self.lower_pattern_clips()?.into_iter().map(NodeV7::from));
         nodes.extend(self.control_nodes.values().cloned());
         nodes.sort_by(|a, b| a.id.cmp(&b.id));
         let mut plan = PlanV7 {
@@ -6109,6 +6116,13 @@ impl<'a> Compiler<'a> {
             .map_err(plan_error)?;
         Self::schedule_score_events(&mut plan.output, &mut plan.events, &timing, &limits)?;
         self.assign_joins(&mut plan.events)?;
+        // A version 5 plan schedules its clip sets before its clips and a
+        // later one after them. The clips do not depend on each other, so the
+        // order shows only in which of two failures is reported.
+        let clip_sets_first = version == 5;
+        if clip_sets_first {
+            Self::schedule_clip_sets(&mut plan, &timing)?;
+        }
         for node in &mut plan.nodes {
             if let ProcessorV7::Audio { clip } = &mut node.processor {
                 let asset = plan
@@ -6142,347 +6156,28 @@ impl<'a> Compiler<'a> {
                         .map_err(plan_error)?;
             }
         }
+        if !clip_sets_first {
+            Self::schedule_clip_sets(&mut plan, &timing)?;
+        }
+        plan.view()
+            .validate_performance_with_timing(&limits, &timing)
+            .map_err(plan_error_in!(self, plan))?;
+        let artifact = PlanArtifact::lowered(plan, version).map_err(plan_error)?;
+        // Bound the encoded artifact without constructing another timing context or retaining JSON.
+        artifact
+            .check_encoded_size(limits.max_json_bytes)
+            .map_err(|error| diagnostics(DiagnosticCode::ResourceLimit, error.to_string(), None))?;
+        Ok(artifact)
+    }
+
+    /// Schedule the occurrences of every clip set of `plan`.
+    fn schedule_clip_sets(plan: &mut PlanV7, timing: &TimingContext) -> CResult<()> {
         for node in &mut plan.nodes {
             if let ProcessorV7::Clips { clips, .. } = &mut node.processor {
-                Self::schedule_clip_entries(clips, &plan.audio_assets, &timing, &plan.output)?;
+                Self::schedule_clip_entries(clips, &plan.audio_assets, timing, &plan.output)?;
             }
         }
-        plan.view()
-            .validate_performance_with_timing(&limits, &timing)
-            .map_err(plan_error_in!(self, plan))?;
-        struct ByteBudget(usize);
-        impl std::io::Write for ByteBudget {
-            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-                self.0 = self
-                    .0
-                    .checked_sub(bytes.len())
-                    .ok_or_else(|| std::io::Error::other("artifact JSON exceeds byte limit"))?;
-                Ok(bytes.len())
-            }
-            fn flush(&mut self) -> std::io::Result<()> {
-                Ok(())
-            }
-        }
-        serde_json::to_writer(ByteBudget(limits.max_json_bytes), &plan)
-            .map_err(|error| diagnostics(DiagnosticCode::ResourceLimit, error.to_string(), None))?;
-        Ok(plan)
-    }
-
-    fn finish_v6(
-        &self,
-        limits: &PlanLimits,
-        mut production: Option<crate::production_data::ProductionSettings>,
-        original: &Document,
-    ) -> CResult<PlanV6> {
-        let used = self.check_point_budget(limits)?;
-        let mut nodes: Vec<NodeV6> = self
-            .nodes
-            .iter()
-            .map(|node| NodeV6 {
-                id: node.id.clone(),
-                processor: ProcessorV6::Core {
-                    processor: node.processor.clone(),
-                },
-                params: node.params.clone(),
-            })
-            .collect();
-        nodes.extend(
-            self.kit_nodes
-                .values()
-                .cloned()
-                .map(NodeV5::from)
-                .map(NodeV6::from),
-        );
-        nodes.extend(self.lower_audio_clips()?.into_iter().map(NodeV6::from));
-        nodes.extend(self.lower_warp_clips()?);
-        nodes.extend(self.lower_pattern_clips()?);
-        nodes.sort_by(|a, b| a.id.cmp(&b.id));
-        let mut plan = PlanV6 {
-            version: 6,
-            output: OutputSettings {
-                score_start_q: self.score_start.clone(),
-                score_end_q: self.score_end.clone(),
-                tail_seconds: self.tail_seconds.clone(),
-                sample_rate_hz: self.sample_rate,
-                channels: self.output_channels()?,
-                total_frames: 0,
-                output: self.output.clone(),
-            },
-            tempo: self.plan_tempo.clone(),
-            events: self.lower_score_events(limits, used)?,
-            nodes,
-            audio_assets: self.audio_assets.clone(),
-            connections: self.connections.clone(),
-            automation: self.automations.clone(),
-            regions: self.regions.clone(),
-            source_mappings: Vec::new(),
-            instruments: self.instrument_resources.clone(),
-            production: None,
-        };
-        if let Some(settings) = &mut production {
-            settings.execution_identity = Some(settled_identity(&self.execution_identity)?);
-        }
-        plan.production = production;
-        if let Some(settings) = &plan.production {
-            settings.check_compiled(&plan.view(), original, limits)?;
-        }
-        let limits = limits.bounded();
-        plan.view()
-            .preflight_timing(&limits)
-            .map_err(plan_error_in!(self, plan))?;
-        let timing = TimingContext::new_with_limits(&plan.tempo, &plan.output, &limits)
-            .map_err(plan_error)?;
-        Self::schedule_score_events(&mut plan.output, &mut plan.events, &timing, &limits)?;
-        self.assign_joins(&mut plan.events)?;
-        for node in &mut plan.nodes {
-            if let ProcessorV6::Audio { clip } = &mut node.processor {
-                let asset = plan
-                    .audio_assets
-                    .iter()
-                    .find(|asset| asset.id == clip.asset)
-                    .ok_or_else(|| {
-                        diagnostics(DiagnosticCode::Reference, "clip asset does not exist", None)
-                    })?;
-                (clip.start_frame, clip.end_frame) = crate::audio_clip::schedule_clip(
-                    clip,
-                    &timing,
-                    &plan.output,
-                    asset.rate_hz,
-                    asset.frames,
-                )
-                .map_err(plan_error)?;
-            }
-        }
-        for node in &mut plan.nodes {
-            if let ProcessorV6::WarpRate { clip } = &mut node.processor {
-                let asset = plan
-                    .audio_assets
-                    .iter()
-                    .find(|asset| asset.id == clip.asset)
-                    .ok_or_else(|| {
-                        diagnostics(DiagnosticCode::Reference, "clip asset does not exist", None)
-                    })?;
-                (clip.start_frame, clip.end_frame) =
-                    crate::warp_clip::schedule_clip(clip, &timing, &plan.output, asset.frames)
-                        .map_err(plan_error)?;
-            }
-        }
-        for node in &mut plan.nodes {
-            if let ProcessorV6::Clips { clips, .. } = &mut node.processor {
-                Self::schedule_clip_entries(clips, &plan.audio_assets, &timing, &plan.output)?;
-            }
-        }
-        plan.view()
-            .validate_performance_with_timing(&limits, &timing)
-            .map_err(plan_error_in!(self, plan))?;
-        struct ByteBudget(usize);
-        impl std::io::Write for ByteBudget {
-            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-                self.0 = self
-                    .0
-                    .checked_sub(bytes.len())
-                    .ok_or_else(|| std::io::Error::other("artifact JSON exceeds byte limit"))?;
-                Ok(bytes.len())
-            }
-            fn flush(&mut self) -> std::io::Result<()> {
-                Ok(())
-            }
-        }
-        serde_json::to_writer(ByteBudget(limits.max_json_bytes), &plan)
-            .map_err(|error| diagnostics(DiagnosticCode::ResourceLimit, error.to_string(), None))?;
-        Ok(plan)
-    }
-
-    fn finish_v5(
-        &self,
-        limits: &PlanLimits,
-        mut production: Option<crate::production_data::ProductionSettings>,
-        original: &Document,
-    ) -> CResult<PlanV5> {
-        let used = self.check_point_budget(limits)?;
-        let mut nodes: Vec<NodeV5> = self
-            .nodes
-            .iter()
-            .map(|node| NodeV5 {
-                id: node.id.clone(),
-                processor: ProcessorV5::Core {
-                    processor: node.processor.clone(),
-                },
-                params: node.params.clone(),
-            })
-            .collect();
-        nodes.extend(self.kit_nodes.values().cloned().map(NodeV5::from));
-        nodes.extend(self.lower_audio_clips()?);
-        for node in self.lower_pattern_clips()? {
-            let ProcessorV6::Clips { channels, clips } = node.processor else {
-                unreachable!("pattern audio lowers to clip sets")
-            };
-            nodes.push(NodeV5 {
-                id: node.id,
-                params: node.params,
-                processor: ProcessorV5::Clips { channels, clips },
-            });
-        }
-        nodes.sort_by(|a, b| a.id.cmp(&b.id));
-        let mut plan = PlanV5 {
-            version: 5,
-            output: OutputSettings {
-                score_start_q: self.score_start.clone(),
-                score_end_q: self.score_end.clone(),
-                tail_seconds: self.tail_seconds.clone(),
-                sample_rate_hz: self.sample_rate,
-                channels: self.output_channels()?,
-                total_frames: 0,
-                output: self.output.clone(),
-            },
-            tempo: self.plan_tempo.clone(),
-            events: self.lower_score_events(limits, used)?,
-            nodes,
-            audio_assets: self.audio_assets.clone(),
-            connections: self.connections.clone(),
-            automation: self.automations.clone(),
-            regions: self.regions.clone(),
-            source_mappings: Vec::new(),
-            instruments: self.instrument_resources.clone(),
-            production: None,
-        };
-        if let Some(settings) = &mut production {
-            settings.execution_identity = Some(settled_identity(&self.execution_identity)?);
-        }
-        plan.production = production;
-        if let Some(settings) = &plan.production {
-            settings.check_compiled(&plan.view(), original, limits)?;
-        }
-        let limits = limits.bounded();
-        plan.view()
-            .preflight_timing(&limits)
-            .map_err(plan_error_in!(self, plan))?;
-        let timing = TimingContext::new_with_limits(&plan.tempo, &plan.output, &limits)
-            .map_err(plan_error)?;
-        Self::schedule_score_events(&mut plan.output, &mut plan.events, &timing, &limits)?;
-        self.assign_joins(&mut plan.events)?;
-        for node in &mut plan.nodes {
-            if let ProcessorV5::Clips { clips, .. } = &mut node.processor {
-                Self::schedule_clip_entries(clips, &plan.audio_assets, &timing, &plan.output)?;
-            }
-        }
-        for node in &mut plan.nodes {
-            if let ProcessorV5::Audio { clip } = &mut node.processor {
-                let asset = plan
-                    .audio_assets
-                    .iter()
-                    .find(|asset| asset.id == clip.asset)
-                    .ok_or_else(|| {
-                        diagnostics(DiagnosticCode::Reference, "clip asset does not exist", None)
-                    })?;
-                (clip.start_frame, clip.end_frame) = crate::audio_clip::schedule_clip(
-                    clip,
-                    &timing,
-                    &plan.output,
-                    asset.rate_hz,
-                    asset.frames,
-                )
-                .map_err(plan_error)?;
-            }
-        }
-        plan.view()
-            .validate_performance_with_timing(&limits, &timing)
-            .map_err(plan_error_in!(self, plan))?;
-        struct ByteBudget(usize);
-        impl std::io::Write for ByteBudget {
-            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-                self.0 = self
-                    .0
-                    .checked_sub(bytes.len())
-                    .ok_or_else(|| std::io::Error::other("artifact JSON exceeds byte limit"))?;
-                Ok(bytes.len())
-            }
-            fn flush(&mut self) -> std::io::Result<()> {
-                Ok(())
-            }
-        }
-        serde_json::to_writer(ByteBudget(limits.max_json_bytes), &plan)
-            .map_err(|error| diagnostics(DiagnosticCode::ResourceLimit, error.to_string(), None))?;
-        Ok(plan)
-    }
-
-    fn finish_v4(
-        &self,
-        limits: &PlanLimits,
-        mut production: Option<crate::production_data::ProductionSettings>,
-        original: &Document,
-    ) -> CResult<PlanV4> {
-        let used = self.check_point_budget(limits)?;
-        let mut nodes: Vec<NodeV4> = self
-            .nodes
-            .iter()
-            .map(|node| NodeV4 {
-                id: node.id.clone(),
-                processor: ProcessorV4::Core {
-                    processor: node.processor.clone(),
-                },
-                params: node.params.clone(),
-            })
-            .collect();
-        nodes.extend(self.kit_nodes.values().cloned());
-        nodes.sort_by(|a, b| a.id.cmp(&b.id));
-        let mut plan = PlanV4 {
-            version: 4,
-            output: OutputSettings {
-                score_start_q: self.score_start.clone(),
-                score_end_q: self.score_end.clone(),
-                tail_seconds: self.tail_seconds.clone(),
-                sample_rate_hz: self.sample_rate,
-                channels: self.output_channels()?,
-                total_frames: 0,
-                output: self.output.clone(),
-            },
-            tempo: self.plan_tempo.clone(),
-            events: self.lower_score_events(limits, used)?,
-            nodes,
-            audio_assets: self.audio_assets.clone(),
-            connections: self.connections.clone(),
-            automation: self.automations.clone(),
-            regions: self.regions.clone(),
-            source_mappings: Vec::new(),
-            instruments: self.instrument_resources.clone(),
-            production: None,
-        };
-        if let Some(settings) = &mut production {
-            settings.execution_identity = Some(settled_identity(&self.execution_identity)?);
-        }
-        plan.production = production;
-        if let Some(settings) = &plan.production {
-            settings.check_compiled(&plan.view(), original, limits)?;
-        }
-        let limits = limits.bounded();
-        plan.view()
-            .preflight_timing(&limits)
-            .map_err(plan_error_in!(self, plan))?;
-        let timing = TimingContext::new_with_limits(&plan.tempo, &plan.output, &limits)
-            .map_err(plan_error)?;
-        Self::schedule_score_events(&mut plan.output, &mut plan.events, &timing, &limits)?;
-        self.assign_joins(&mut plan.events)?;
-        plan.view()
-            .validate_performance_with_timing(&limits, &timing)
-            .map_err(plan_error_in!(self, plan))?;
-        // Bound the encoded artifact without constructing another timing context or retaining JSON.
-        struct ByteBudget(usize);
-        impl std::io::Write for ByteBudget {
-            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-                self.0 = self
-                    .0
-                    .checked_sub(bytes.len())
-                    .ok_or_else(|| std::io::Error::other("artifact JSON exceeds byte limit"))?;
-                Ok(bytes.len())
-            }
-            fn flush(&mut self) -> std::io::Result<()> {
-                Ok(())
-            }
-        }
-        serde_json::to_writer(ByteBudget(limits.max_json_bytes), &plan)
-            .map_err(|error| diagnostics(DiagnosticCode::ResourceLimit, error.to_string(), None))?;
-        Ok(plan)
+        Ok(())
     }
 
     fn finish_plan(&self, limits: &PlanLimits) -> CResult<Plan> {

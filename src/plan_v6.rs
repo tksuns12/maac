@@ -78,6 +78,29 @@ impl PlanV6 {
     pub(crate) fn decode_wire(bytes: &[u8]) -> Result<Self, serde_json::Error> {
         serde_json::from_slice(bytes)
     }
+
+    /// This plan in the version 5 shape. Version 5 cannot say a warp clip,
+    /// so a plan that holds one is refused.
+    pub(crate) fn into_v5(self) -> Result<crate::plan_v5::PlanV5, crate::plan::PlanError> {
+        Ok(crate::plan_v5::PlanV5 {
+            version: 5,
+            output: self.output,
+            tempo: self.tempo,
+            events: self.events,
+            nodes: self
+                .nodes
+                .into_iter()
+                .map(NodeV5::try_from)
+                .collect::<Result<_, _>>()?,
+            audio_assets: self.audio_assets,
+            connections: self.connections,
+            automation: self.automation,
+            regions: self.regions,
+            source_mappings: self.source_mappings,
+            instruments: self.instruments,
+            production: self.production,
+        })
+    }
 }
 fn version_six<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u32, D::Error> {
     let version = u32::deserialize(deserializer)?;
@@ -185,6 +208,50 @@ impl From<NodeV5> for NodeV6 {
             processor,
             params: node.params,
         }
+    }
+}
+
+impl TryFrom<NodeV6> for NodeV5 {
+    type Error = crate::plan::PlanError;
+
+    fn try_from(node: NodeV6) -> Result<Self, Self::Error> {
+        let warp = |path: String| {
+            crate::plan::err(
+                "E_VERSION",
+                path,
+                "warp clips require plan version 6 or later",
+            )
+        };
+        let processor = match node.processor {
+            ProcessorV6::Core { processor } => ProcessorV5::Core { processor },
+            ProcessorV6::Kit {
+                channels,
+                voices,
+                samples,
+            } => ProcessorV5::Kit {
+                channels,
+                voices,
+                samples,
+            },
+            ProcessorV6::Audio { clip } => ProcessorV5::Audio { clip },
+            ProcessorV6::WarpRate { .. } => {
+                return Err(warp(format!("nodes.{}.processor", node.id)));
+            }
+            ProcessorV6::Clips { channels, clips } => {
+                if clips
+                    .iter()
+                    .any(|clip| matches!(clip, ClipEntry::WarpRate { .. }))
+                {
+                    return Err(warp(format!("nodes.{}.processor.clips", node.id)));
+                }
+                ProcessorV5::Clips { channels, clips }
+            }
+        };
+        Ok(Self {
+            id: node.id,
+            processor,
+            params: node.params,
+        })
     }
 }
 
@@ -534,5 +601,46 @@ mod tests {
             let bytes = serde_json::to_vec(&old).unwrap();
             assert_eq!(serde_json::to_vec(&NodeV6::from(old)).unwrap(), bytes);
         }
+    }
+
+    #[test]
+    fn lowering_to_version_5_refuses_warp_clips() {
+        let plan = decode(&fixture()).unwrap();
+        let error = plan.clone().into_v5().unwrap_err();
+        assert_eq!(
+            (error.code.as_str(), error.path.as_str()),
+            ("E_VERSION", "nodes.warp.processor")
+        );
+
+        // A warp occurrence in a clip set is refused as well.
+        let mut set = plan.clone();
+        let ProcessorV6::WarpRate { clip } = set.nodes.pop().unwrap().processor else {
+            unreachable!("the fixture ends with its warp clip")
+        };
+        set.nodes.push(NodeV6 {
+            id: "set".into(),
+            processor: ProcessorV6::Clips {
+                channels: 1,
+                clips: vec![ClipEntry::WarpRate { clip }],
+            },
+            params: BTreeMap::new(),
+        });
+        let error = set.into_v5().unwrap_err();
+        assert_eq!(
+            (error.code.as_str(), error.path.as_str()),
+            ("E_VERSION", "nodes.set.processor.clips")
+        );
+
+        // What version 5 can say is written as before, but for the version.
+        let mut plain = plan;
+        plain.nodes.pop();
+        let expected =
+            serde_json::to_string(&plain)
+                .unwrap()
+                .replacen("\"version\":6", "\"version\":5", 1);
+        assert_eq!(
+            serde_json::to_string(&plain.into_v5().unwrap()).unwrap(),
+            expected
+        );
     }
 }

@@ -397,6 +397,58 @@ impl PlanArtifact {
             inner: ArtifactVersion::V4(plan),
         }
     }
+
+    /// The artifact that writes `plan` as `version`, one of 4 to 7. The
+    /// compiler builds such a plan in the version 7 shape whatever version
+    /// it writes, and this is the one place that lowers it. A plan that
+    /// holds what `version` cannot say is refused. Like `from_v4`, the caller
+    /// has validated the plan.
+    pub(crate) fn lowered(plan: crate::plan_v7::PlanV7, version: u32) -> Result<Self, PlanError> {
+        Ok(match version {
+            7 => Self::from_v7(plan),
+            6 => Self::from_v6(plan.into_v6()?),
+            5 => Self::from_v5(plan.into_v6()?.into_v5()?),
+            4 => Self::from_v4(plan.into_v6()?.into_v5()?.into_v4()?),
+            _ => {
+                return Err(err(
+                    "E_VERSION",
+                    "version",
+                    "unsupported performance-plan version",
+                ))
+            }
+        })
+    }
+
+    /// Encode the artifact against an allowance of `max_bytes`, without
+    /// retaining the JSON. An artifact over the allowance is an error.
+    pub(crate) fn check_encoded_size(&self, max_bytes: usize) -> Result<(), serde_json::Error> {
+        struct ByteBudget(usize);
+        impl std::io::Write for ByteBudget {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0 = self
+                    .0
+                    .checked_sub(bytes.len())
+                    .ok_or_else(|| std::io::Error::other("artifact JSON exceeds byte limit"))?;
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let budget = ByteBudget(max_bytes);
+        match &self.inner {
+            ArtifactVersion::Existing(VersionedPlan::Legacy(plan)) => {
+                serde_json::to_writer(budget, plan)
+            }
+            ArtifactVersion::Existing(VersionedPlan::V3(plan)) => {
+                serde_json::to_writer(budget, plan)
+            }
+            ArtifactVersion::V4(plan) => serde_json::to_writer(budget, plan),
+            ArtifactVersion::V5(plan) => serde_json::to_writer(budget, plan),
+            ArtifactVersion::V6(plan) => serde_json::to_writer(budget, plan),
+            ArtifactVersion::V7(plan) => serde_json::to_writer(budget, plan),
+        }
+    }
 }
 impl From<VersionedPlan> for PlanArtifact {
     fn from(plan: VersionedPlan) -> Self {

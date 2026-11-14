@@ -79,6 +79,36 @@ impl PlanV7 {
     pub(crate) fn decode_wire(bytes: &[u8]) -> Result<Self, serde_json::Error> {
         serde_json::from_slice(bytes)
     }
+
+    /// This plan in the version 6 shape. Version 6 cannot say a control node
+    /// or a modulation, so a plan that holds one is refused.
+    pub(crate) fn into_v6(self) -> Result<crate::plan_v6::PlanV6, crate::plan::PlanError> {
+        if !self.modulations.is_empty() {
+            return Err(crate::plan::err(
+                "E_VERSION",
+                "modulations",
+                "modulations require plan version 7 or later",
+            ));
+        }
+        Ok(crate::plan_v6::PlanV6 {
+            version: 6,
+            output: self.output,
+            tempo: self.tempo,
+            events: self.events,
+            nodes: self
+                .nodes
+                .into_iter()
+                .map(NodeV6::try_from)
+                .collect::<Result<_, _>>()?,
+            audio_assets: self.audio_assets,
+            connections: self.connections,
+            automation: self.automation,
+            regions: self.regions,
+            source_mappings: self.source_mappings,
+            instruments: self.instruments,
+            production: self.production,
+        })
+    }
 }
 fn version_seven<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u32, D::Error> {
     let version = u32::deserialize(deserializer)?;
@@ -148,6 +178,40 @@ impl From<NodeV6> for NodeV7 {
             processor,
             params: node.params,
         }
+    }
+}
+
+impl TryFrom<NodeV7> for NodeV6 {
+    type Error = crate::plan::PlanError;
+
+    fn try_from(node: NodeV7) -> Result<Self, Self::Error> {
+        let processor = match node.processor {
+            ProcessorV7::Lfo { .. } | ProcessorV7::Constant {} => {
+                return Err(crate::plan::err(
+                    "E_VERSION",
+                    format!("nodes.{}.processor", node.id),
+                    "control nodes require plan version 7 or later",
+                ));
+            }
+            ProcessorV7::Core { processor } => ProcessorV6::Core { processor },
+            ProcessorV7::Kit {
+                channels,
+                voices,
+                samples,
+            } => ProcessorV6::Kit {
+                channels,
+                voices,
+                samples,
+            },
+            ProcessorV7::Audio { clip } => ProcessorV6::Audio { clip },
+            ProcessorV7::WarpRate { clip } => ProcessorV6::WarpRate { clip },
+            ProcessorV7::Clips { channels, clips } => ProcessorV6::Clips { channels, clips },
+        };
+        Ok(Self {
+            id: node.id,
+            processor,
+            params: node.params,
+        })
     }
 }
 
@@ -413,5 +477,49 @@ mod tests {
         let mut v = fixture();
         v["modulations"][0]["amount"] = json!(format!("{}/1", num_bigint::BigInt::from(1) << 2000));
         assert_eq!(load(&v).unwrap_err().code, "E_NONFINITE");
+    }
+
+    #[test]
+    fn lowering_to_version_6_refuses_controls_and_modulations() {
+        let plan = PlanV7::decode_wire(&serde_json::to_vec(&fixture()).unwrap()).unwrap();
+        let error = plan.clone().into_v6().unwrap_err();
+        assert_eq!(
+            (error.code.as_str(), error.path.as_str()),
+            ("E_VERSION", "modulations")
+        );
+
+        let mut unmodulated = plan;
+        unmodulated.modulations.clear();
+        let error = unmodulated.clone().into_v6().unwrap_err();
+        assert_eq!(
+            (error.code.as_str(), error.path.as_str()),
+            ("E_VERSION", "nodes.motion.processor")
+        );
+
+        // What version 6 can say is written as before, but for the version
+        // and the modulations.
+        let mut plain = unmodulated;
+        plain.nodes.retain(|node| node.id == "sound");
+        let expected = serde_json::to_string(&plain)
+            .unwrap()
+            .replacen("\"version\":7", "\"version\":6", 1)
+            .replacen("\"modulations\":[],", "", 1);
+        assert_eq!(
+            serde_json::to_string(&plain.into_v6().unwrap()).unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn an_artifact_lowers_a_plan_to_the_version_it_writes() {
+        let mut plan = PlanV7::decode_wire(&serde_json::to_vec(&fixture()).unwrap()).unwrap();
+        plan.modulations.clear();
+        plan.nodes.retain(|node| node.id == "sound");
+        for version in 4..=7 {
+            let artifact = crate::PlanArtifact::lowered(plan.clone(), version).unwrap();
+            assert_eq!(artifact.version(), version);
+        }
+        let error = crate::PlanArtifact::lowered(plan, 3).unwrap_err();
+        assert_eq!(error.code, "E_VERSION");
     }
 }

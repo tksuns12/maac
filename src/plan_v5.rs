@@ -76,6 +76,29 @@ impl PlanV5 {
     pub(crate) fn decode_wire(bytes: &[u8]) -> Result<Self, serde_json::Error> {
         serde_json::from_slice(bytes)
     }
+
+    /// This plan in the version 4 shape. Version 4 cannot say an audio clip,
+    /// so a plan that holds one is refused.
+    pub(crate) fn into_v4(self) -> Result<crate::plan_v4::PlanV4, crate::plan::PlanError> {
+        Ok(crate::plan_v4::PlanV4 {
+            version: 4,
+            output: self.output,
+            tempo: self.tempo,
+            events: self.events,
+            nodes: self
+                .nodes
+                .into_iter()
+                .map(NodeV4::try_from)
+                .collect::<Result<_, _>>()?,
+            audio_assets: self.audio_assets,
+            connections: self.connections,
+            automation: self.automation,
+            regions: self.regions,
+            source_mappings: self.source_mappings,
+            instruments: self.instruments,
+            production: self.production,
+        })
+    }
 }
 fn version_five<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u32, D::Error> {
     let version = u32::deserialize(deserializer)?;
@@ -166,6 +189,37 @@ impl From<NodeV4> for NodeV5 {
             processor,
             params: node.params,
         }
+    }
+}
+
+impl TryFrom<NodeV5> for NodeV4 {
+    type Error = crate::plan::PlanError;
+
+    fn try_from(node: NodeV5) -> Result<Self, Self::Error> {
+        let processor = match node.processor {
+            ProcessorV5::Core { processor } => ProcessorV4::Core { processor },
+            ProcessorV5::Kit {
+                channels,
+                voices,
+                samples,
+            } => ProcessorV4::Kit {
+                channels,
+                voices,
+                samples,
+            },
+            ProcessorV5::Audio { .. } | ProcessorV5::Clips { .. } => {
+                return Err(crate::plan::err(
+                    "E_VERSION",
+                    format!("nodes.{}.processor", node.id),
+                    "audio clips require plan version 5 or later",
+                ));
+            }
+        };
+        Ok(Self {
+            id: node.id,
+            processor,
+            params: node.params,
+        })
     }
 }
 
@@ -583,5 +637,27 @@ mod tests {
             let new = NodeV5::from(old);
             assert_eq!(serde_json::to_value(new).unwrap(), before);
         }
+    }
+
+    #[test]
+    fn lowering_to_version_4_refuses_audio_clips() {
+        let plan = decode(&fixture()).unwrap();
+        let error = plan.clone().into_v4().unwrap_err();
+        assert_eq!(
+            (error.code.as_str(), error.path.as_str()),
+            ("E_VERSION", "nodes.clip.processor")
+        );
+
+        // What version 4 can say is written as before, but for the version.
+        let mut plain = plan;
+        plain.nodes.pop();
+        let expected =
+            serde_json::to_string(&plain)
+                .unwrap()
+                .replacen("\"version\":5", "\"version\":4", 1);
+        assert_eq!(
+            serde_json::to_string(&plain.into_v4().unwrap()).unwrap(),
+            expected
+        );
     }
 }
