@@ -82,10 +82,9 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install stable Rust
-        run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
+      # rust-toolchain.toml names the version and its components.
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install
 
       - name: Build the release binary
         run: cargo build --release --locked

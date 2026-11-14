@@ -123,7 +123,8 @@ quarantines a binary downloaded with a web browser; run
 `xattr -d com.apple.quarantine maac` once to allow it.
 
 **From source,** on any platform with a current stable
-[Rust toolchain](https://rustup.rs). Windows and Intel Macs are untested.
+[Rust toolchain](https://rustup.rs); with rustup, the build uses the version in
+`rust-toolchain.toml`. Windows and Intel Macs are untested.
 
 ```sh
 git clone https://github.com/tksuns12/maac.git

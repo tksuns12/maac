@@ -23,6 +23,15 @@ updates:
       - dependency-name: num-bigint
         versions: [">= 0.5"]
 
+  # The Rust version in rust-toolchain.toml.
+  - package-ecosystem: rust-toolchain
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: build
+
   # The workflows pin each action to a commit; Dependabot updates the pin and
   # its version comment together.
   - package-ecosystem: github-actions

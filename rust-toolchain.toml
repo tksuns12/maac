@@ -1,0 +1,8 @@
+# The Rust version of every build: CI, the release workflow and a checkout
+# built with rustup. Dependabot proposes each new stable version as its own
+# pull request, so a new compiler or Clippy arrives alone, not inside another
+# change.
+[toolchain]
+channel = "1.100.0"
+profile = "minimal"
+components = ["rustfmt", "clippy"]

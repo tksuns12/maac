@@ -45,9 +45,10 @@ material or include it in repository or remote changes.
 
 ## Development setup
 
-Use a current stable Rust toolchain and Python 3.10 or newer for the development
-checks. CI runs every check with Python 3.12 and stable Rust on macOS, and
-Clippy, the tests and the release build on Linux. From the repository
+Use the Rust version in `rust-toolchain.toml`, which rustup selects in this
+repository, and Python 3.10 or newer for the development checks. CI runs every
+check with Python 3.12 and that Rust version on macOS, and Clippy, the tests
+and the release build on Linux. From the repository
 root, create an isolated Python environment, install the checker dependencies,
 fetch the locked Cargo dependencies, and run the same checks used by CI:
 
