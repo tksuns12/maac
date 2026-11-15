@@ -35,23 +35,37 @@ from MaaC's synthesis nodes:
   (2:08):
   [listen](docs/assets/audio/homeward.m4a) ·
   [source](examples/homeward/homeward.maac)
+
+  https://github.com/user-attachments/assets/abe40905-cf90-43e2-8d28-ccce06af1043
+
 - **"Afterlight"**, a 126 bpm progressive-house track with a supersaw lead
   and chords, a plucked arpeggio, a saw bass, piano, drums and a riser,
   pumping to the kick (2:44):
   [listen](docs/assets/audio/afterlight.m4a) ·
   [source](examples/afterlight/afterlight.maac)
+
+  https://github.com/user-attachments/assets/9bc65d39-c3e9-4384-81bf-3af6a79a7636
+
 - **"Lantern Street"**, a 100 bpm pop song with piano, strummed acoustic
   guitar, an electric-guitar melody, bass, drums and pad (2:09):
   [listen](docs/assets/audio/lantern-street.m4a) ·
   [source](examples/lantern/lantern.maac)
+
+  https://github.com/user-attachments/assets/431b6c29-5ece-442a-a056-a11e0050cdbe
+
 - **"Morning Ferry"**, a 72 bpm rock ballad with electric guitars, picked
   acoustic guitar, bass, drums and pad (2:17):
   [listen](docs/assets/audio/morning-ferry.m4a) ·
   [source](examples/ferry/ferry.maac)
+
+  https://github.com/user-attachments/assets/8e2f0317-84f8-40d0-852b-5cfa182f3827
+
 - **"Late Window"**, a 90 bpm lo-fi hip-hop track with electric piano,
   nylon guitar, bass, drums and pad (1:18):
   [listen](docs/assets/audio/late-window.m4a) ·
   [source](examples/lofi/lofi.maac)
+
+  https://github.com/user-attachments/assets/0ff10c58-6695-4d53-a81c-c97c4fbe98b4
 
 `maac analyze --images` draws what it measures. The spectrogram of "Morning
 Ferry"'s master, with its six sections marked:
