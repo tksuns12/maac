@@ -1,11 +1,27 @@
-# MaaC (Music as a Code)
-
-[![CI](https://github.com/tksuns12/maac/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/tksuns12/maac/actions/workflows/ci.yml)
-[![License: Apache 2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Version 0.6.0, experimental](https://img.shields.io/badge/version-0.6.0%20experimental-orange.svg)](CHANGELOG.md)
-[![Written in Rust](https://img.shields.io/badge/written%20in-Rust-b7410e.svg)](https://www.rust-lang.org)
+<div align="center">
 
 <img src="docs/assets/maac-logo.png" alt="MaaC logo: a musical note between angle brackets followed by the MaaC wordmark" width="480">
+
+# MaaC (Music as a Code)
+
+**Write music as text. Render it to audio.**<br>
+The same source always renders to the same bytes, offline, with no samples to download.
+
+[![CI](https://github.com/tksuns12/maac/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/tksuns12/maac/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/tksuns12/maac?label=release&color=orange)](https://github.com/tksuns12/maac/releases/latest)
+[![Status: experimental](https://img.shields.io/badge/status-experimental-orange.svg)](CHANGELOG.md)
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Platforms: macOS and Linux](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey.svg)](#install)
+[![Written in Rust](https://img.shields.io/badge/written%20in-Rust-b7410e.svg?logo=rust&logoColor=white)](https://www.rust-lang.org)
+
+[![Commits per month](https://img.shields.io/github/commit-activity/m/tksuns12/maac?label=commits)](https://github.com/tksuns12/maac/commits/main)
+[![Documentation](https://img.shields.io/badge/docs-guides%20and%20reference-blue.svg)](docs/README.md)
+[![For people and AI models](https://img.shields.io/badge/for-people%20and%20AI%20models-8250df.svg)](docs/ai-producer-guide.md)
+[![Discussions](https://img.shields.io/badge/discussions-ask%20or%20share-2ea44f.svg?logo=github)](https://github.com/tksuns12/maac/discussions)
+
+[Listen](#listen) · [What a score looks like](#what-a-score-looks-like) · [Install](#install) · [Quick start](#quick-start) · [Documentation](#documentation)
+
+</div>
 
 MaaC is a text language for music, and a Rust command-line tool that turns it
 into audio. You write a score, its instruments and its mix as plain `.maac`
