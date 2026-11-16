@@ -920,11 +920,24 @@ impl CliError {
             return Self::from_render(render_error.clone());
         }
         let code = error.code().to_owned();
-        let path = match &error {
-            ExportError::OutputExists { path } => Some(path.display().to_string()),
-            _ => None,
+        // `CliError` prints the code and the path itself, so the message
+        // carries neither: `ExportError`'s own text starts with the code and,
+        // for an existing output, ends with the path.
+        let (message, path) = match &error {
+            ExportError::OutputExists { path } => (
+                "destination already exists".to_owned(),
+                Some(path.display().to_string()),
+            ),
+            _ => {
+                let text = error.to_string();
+                let message = text
+                    .strip_prefix(&format!("{code}: "))
+                    .unwrap_or(&text)
+                    .to_owned();
+                (message, None)
+            }
         };
-        let mut result = Self::new(code, error.to_string());
+        let mut result = Self::new(code, message);
         result.path = path;
         result
     }
@@ -4216,5 +4229,31 @@ mod disk_media_patch_snapshot_tests {
         );
         let edited_revision = edited_document.revision().to_owned();
         assert_eq!(result.digest.as_deref(), Some(edited_revision.as_str()));
+    }
+}
+
+#[cfg(test)]
+mod export_error_display_tests {
+    use super::*;
+
+    #[test]
+    fn an_existing_output_names_the_code_and_the_path_once() {
+        let error = CliError::from_export(ExportError::OutputExists {
+            path: "hello.wav".into(),
+        });
+        assert_eq!(
+            error.to_string(),
+            "E_OUTPUT_EXISTS: destination already exists at hello.wav"
+        );
+    }
+
+    #[test]
+    fn other_export_errors_name_the_code_once() {
+        let error = CliError::from_export(ExportError::InvalidFormat("bad".into()));
+        assert_eq!(error.to_string(), "E_FORMAT: bad");
+        let error = CliError::from_export(ExportError::Io {
+            message: "disk full".into(),
+        });
+        assert_eq!(error.to_string(), "E_IO: disk full");
     }
 }
