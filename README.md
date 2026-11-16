@@ -5,7 +5,7 @@
 # MaaC (Music as a Code)
 
 **Write music as text. Render it to audio.**<br>
-The same source always renders to the same bytes, offline, with no samples to download.
+The same source renders to the same bytes on the same machine and build, offline, with no samples to download.
 
 [![CI](https://github.com/tksuns12/maac/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/tksuns12/maac/actions/workflows/ci.yml)
 [![Latest release](https://img.shields.io/github/v/release/tksuns12/maac?label=release&color=orange)](https://github.com/tksuns12/maac/releases/latest)
@@ -26,8 +26,9 @@ The same source always renders to the same bytes, offline, with no samples to do
 MaaC is a text language for music, and a Rust command-line tool that turns it
 into audio. You write a score, its instruments and its mix as plain `.maac`
 source. `maac` checks it, compiles it to an inspectable performance plan and
-renders a WAV file. The same source always renders to the same bytes, offline,
-with no samples to download.
+renders a WAV file. On the same machine and build, the same source always renders
+to the same bytes, offline, with no samples to download. Across platforms the
+audio matches to within floating-point rounding, not bit for bit.
 
 It is built to be written by people and by AI models alike. `maac analyze`
 reports what a render sounds like in numbers: loudness per section, peaks,
@@ -138,7 +139,8 @@ and nodes connect into a mix.
 **Prebuilt binary.** Download the archive for your platform from the
 [latest release](https://github.com/tksuns12/maac/releases/latest): macOS on
 Apple silicon (`aarch64-apple-darwin`) or Linux on x86_64 or arm64
-(`x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`). Each archive holds
+(`x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`). The Linux binaries
+need glibc 2.35 or newer (Ubuntu 22.04, Debian 12). Each archive holds
 `maac` and the examples, and has a `.sha256` checksum beside it. On a Mac:
 
 ```sh
