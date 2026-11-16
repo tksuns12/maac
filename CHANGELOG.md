@@ -7,11 +7,13 @@ promise of compatibility beyond the documented interfaces.
 
 ### Fixed
 
-- An export error now prints its code, and the path of an existing output,
-  once. `maac build` onto an existing file said
-  `E_OUTPUT_EXISTS: E_OUTPUT_EXISTS: destination already exists: hello.wav at
-  hello.wav`; it now says `E_OUTPUT_EXISTS: destination already exists at
-  hello.wav`.
+- An error from `build`, `render` or another export now prints its code, and
+  the path of an existing output, once. `maac build` onto an existing file
+  said `E_OUTPUT_EXISTS: E_OUTPUT_EXISTS: destination already exists:
+  hello.wav at hello.wav`; it now says `E_OUTPUT_EXISTS: destination already
+  exists at hello.wav`. In `--json` output the `message` field no longer
+  starts with the code, and for an existing output no longer holds the path,
+  which stays in `path`.
 
 ## [0.6.0] — 2026-11-15
 

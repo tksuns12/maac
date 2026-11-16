@@ -897,7 +897,8 @@ impl CliError {
             return Self::from_plan(plan_error.clone());
         }
         let code = error.code().to_owned();
-        Self::new(code, error.to_string())
+        let message = without_leading_code(&code, &error.to_string());
+        Self::new(code, message)
     }
 
     pub fn from_edit(error: crate::editing::EditError) -> Self {
@@ -928,19 +929,22 @@ impl CliError {
                 "destination already exists".to_owned(),
                 Some(path.display().to_string()),
             ),
-            _ => {
-                let text = error.to_string();
-                let message = text
-                    .strip_prefix(&format!("{code}: "))
-                    .unwrap_or(&text)
-                    .to_owned();
-                (message, None)
-            }
+            _ => (without_leading_code(&code, &error.to_string()), None),
         };
         let mut result = Self::new(code, message);
         result.path = path;
         result
     }
+}
+
+/// `text` without the error code its own `Display` starts with, whether it
+/// reads `CODE: detail` or `CODE at node: detail`. `CliError` prints the code
+/// itself, so a message that kept it would show the code twice.
+fn without_leading_code(code: &str, text: &str) -> String {
+    text.strip_prefix(code)
+        .and_then(|rest| rest.strip_prefix(": ").or_else(|| rest.strip_prefix(' ')))
+        .unwrap_or(text)
+        .to_owned()
 }
 
 impl fmt::Display for CliError {
@@ -4255,5 +4259,31 @@ mod export_error_display_tests {
             message: "disk full".into(),
         });
         assert_eq!(error.to_string(), "E_IO: disk full");
+    }
+
+    #[test]
+    fn render_errors_name_the_code_once() {
+        let render = |error| CliError::from_export(ExportError::Render(error)).to_string();
+        assert_eq!(
+            render(RenderError::Nonfinite(
+                "matrix produced a nonfinite product".into()
+            )),
+            "E_NONFINITE: matrix produced a nonfinite product"
+        );
+        assert_eq!(
+            render(RenderError::RenderState("bad state".into())),
+            "E_RENDER_STATE: bad state"
+        );
+        assert_eq!(
+            render(RenderError::Callback("stopped".into())),
+            "E_RENDER_CALLBACK: stopped"
+        );
+        assert_eq!(
+            render(RenderError::VoiceLimit {
+                node: "piano".into(),
+                address: "n1".into(),
+            }),
+            "E_VOICE_LIMIT: at piano: voice capacity exceeded for n1"
+        );
     }
 }
