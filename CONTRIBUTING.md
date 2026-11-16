@@ -11,7 +11,7 @@ follows the [code of conduct](CODE_OF_CONDUCT.md).
   the same result. Use the bug report form in
   [issues](https://github.com/tksuns12/maac/issues/new/choose).
 - **Listen.** The built-in instruments were tuned by measurement, and so far
-  only one listener has approved them by ear; the std/basic ones not at all.
+  only one listener has approved them by ear.
   Tell us which ones sound wrong, dated or unconvincing, with the instrument
   sound form.
 - **Write music.** A composition that pushes the language, or one that
