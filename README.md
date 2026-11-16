@@ -154,6 +154,15 @@ Move `maac` to a directory on your `PATH` to run it from anywhere. macOS
 quarantines a binary downloaded with a web browser; run
 `xattr -d com.apple.quarantine maac` once to allow it.
 
+**From crates.io,** with a current stable [Rust toolchain](https://rustup.rs):
+
+```sh
+cargo install maac --locked
+```
+
+This installs only `maac`. To follow the quick start you need the `examples`
+folder, which is in the repository and in each release archive.
+
 **From source,** on any platform with a current stable
 [Rust toolchain](https://rustup.rs); with rustup, the build uses the version in
 `rust-toolchain.toml`. Windows and Intel Macs are untested.
