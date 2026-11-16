@@ -5,7 +5,8 @@
 # MaaC (Music as a Code)
 
 **Write music as text. Render it to audio.**<br>
-The same source renders to the same bytes on the same machine and build, offline, with no samples to download.
+Every sound is synthesized from code, with no recordings or sound libraries to download.<br>
+On the same machine and build, the same source renders to the same bytes, offline.
 
 [![CI](https://github.com/tksuns12/maac/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/tksuns12/maac/actions/workflows/ci.yml)
 [![Latest release](https://img.shields.io/github/v/release/tksuns12/maac?label=release&color=orange)](https://github.com/tksuns12/maac/releases/latest)
@@ -26,9 +27,10 @@ The same source renders to the same bytes on the same machine and build, offline
 MaaC is a text language for music, and a Rust command-line tool that turns it
 into audio. You write a score, its instruments and its mix as plain `.maac`
 source. `maac` checks it, compiles it to an inspectable performance plan and
-renders a WAV file. On the same machine and build, the same source always renders
-to the same bytes, offline, with no samples to download. Across platforms the
-audio matches to within floating-point rounding, not bit for bit.
+renders a WAV file. Every sound is synthesized from code, with no recordings or
+sound libraries to download. On the same machine and build, the same source
+always renders to the same bytes, offline. Across platforms the audio matches to
+within floating-point rounding, not bit for bit.
 
 It is built to be written by people and by AI models alike. `maac analyze`
 reports what a render sounds like in numbers: loudness per section, peaks,
