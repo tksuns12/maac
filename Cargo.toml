@@ -9,6 +9,10 @@ readme = "README.md"
 keywords = ["music", "audio", "dsl", "synthesizer", "composition"]
 categories = ["multimedia::audio", "command-line-utilities"]
 default-run = "maac"
+# The song renders in docs/assets/audio are 15 MB of the 19 MB package, and
+# crates.io rejects uploads over 10 MB. They stay in the repository and the
+# README links to them there.
+exclude = ["docs/assets/audio/"]
 
 [lib]
 name = "maac"
