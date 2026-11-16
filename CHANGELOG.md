@@ -5,6 +5,14 @@ promise of compatibility beyond the documented interfaces.
 
 ## [Unreleased]
 
+### Fixed
+
+- An export error now prints its code, and the path of an existing output,
+  once. `maac build` onto an existing file said
+  `E_OUTPUT_EXISTS: E_OUTPUT_EXISTS: destination already exists: hello.wav at
+  hello.wav`; it now says `E_OUTPUT_EXISTS: destination already exists at
+  hello.wav`.
+
 ## [0.6.0] — 2026-11-15
 
 The sixth experimental release. Effects can feed back, and desk moves
