@@ -5,6 +5,21 @@ promise of compatibility beyond the documented interfaces.
 
 ## [Unreleased]
 
+## [0.6.1] — 2026-11-16
+
+A small release after the first public smoke test of the 0.6.0 binaries.
+`maac` is also published on crates.io from this version.
+
+### Changed
+
+- The crate on crates.io leaves out the five song renders in
+  `docs/assets/audio/`, which are 15 MB of the package and put it over the
+  upload limit. They stay in the repository, and the README links to them
+  there.
+- The README says the Linux binaries need glibc 2.35 or newer, and that the
+  same source renders to the same bytes on the same machine and build, not
+  across platforms; the audio matches to within floating-point rounding.
+
 ### Fixed
 
 - An error from `build`, `render` or another export now prints its code, and

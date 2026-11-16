@@ -35,7 +35,7 @@ reports what a render sounds like in numbers: loudness per section, peaks,
 octave bands, buried or mistuned notes. A producer who cannot listen can
 still check a mix.
 
-**Status:** experimental, version 0.6.0. Tested on macOS and Linux, with
+**Status:** experimental, version 0.6.1. Tested on macOS and Linux, with
 prebuilt binaries for both. The [changelog](CHANGELOG.md) records what has
 changed.
 
@@ -144,9 +144,9 @@ need glibc 2.35 or newer (Ubuntu 22.04, Debian 12). Each archive holds
 `maac` and the examples, and has a `.sha256` checksum beside it. On a Mac:
 
 ```sh
-curl -LO https://github.com/tksuns12/maac/releases/download/v0.6.0/maac-v0.6.0-aarch64-apple-darwin.tar.gz
-tar -xzf maac-v0.6.0-aarch64-apple-darwin.tar.gz
-cd maac-v0.6.0-aarch64-apple-darwin
+curl -LO https://github.com/tksuns12/maac/releases/download/v0.6.1/maac-v0.6.1-aarch64-apple-darwin.tar.gz
+tar -xzf maac-v0.6.1-aarch64-apple-darwin.tar.gz
+cd maac-v0.6.1-aarch64-apple-darwin
 ./maac --version
 ```
 
