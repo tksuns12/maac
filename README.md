@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/assets/maac-logo.png" alt="MaaC logo: a musical note between angle brackets followed by the MaaC wordmark" width="480">
+<img src="docs/assets/maac-banner.jpg" alt="MaaC: write music as text, render it to audio. A score in code turns into a glowing audio waveform." width="800">
 
 # MaaC (Music as a Code)
 
