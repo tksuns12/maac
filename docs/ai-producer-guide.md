@@ -240,6 +240,11 @@ maac analyze main.maac --window region:b --preroll 4 --json   # quick, approxima
 
 ## 4. Mix and master
 
+- **Required capability.** `fx.compressor/1`, `fx.eq/1`, `fx.reverb/1` and
+  `fx.limiter/1` are native production processors. The `project` must list
+  `requires = ["maac.production/1"];`, or `maac check` fails with
+  `E_CAPABILITY: native production processors require maac.production/1 at
+  <node>.type`. The message does not say where to add it.
 - **Routing.** Use `send` buses into `fx.reverb/1` with `mix = 1`, plus a
   return gain.
 - **Pumping.** Key an `fx.compressor/1` from the kick:
@@ -325,6 +330,29 @@ maac deliver main.maac --delivery release --output-dir out --profile song
 
 The manifest's `check_status` must be `pass`. Give the listener the WAV and
 ask for a verdict.
+
+To get one source alone as a WAV, to check a melody's pitches or to give the
+listener one part, add a `stem` target to the delivery. Each delivery has one
+`master` and any number of stems; a stem is exactly the output port it names,
+and `maac deliver` writes `<delivery>.<target>.wav` beside the manifest:
+
+```maac
+extension deliveries {
+  namespace = "maac.production/1"; schema = &schema; render_affecting = true;
+  data = { deliveries = { solo = {
+    rate = 48000Hz; resampler = "maac.src.kaiser/1";
+    targets = {
+      master = { role = master; output = &master:out; encoding = wav_pcm24le; dither = { type = none; }; };
+      lead_stem = { role = stem; output = &lead:out; encoding = wav_pcm24le; dither = { type = none; }; };
+    };
+  }; }; };
+}
+```
+
+`maac deliver main.maac --delivery solo --output-dir out --profile song` then
+writes `out/solo.master.wav` and `out/solo.lead_stem.wav`. An AI model that
+needed the melody alone once copied it into a second source file instead; a
+copy does not prove that the song plays the same notes.
 
 ## 6. Pitfalls from the trial
 

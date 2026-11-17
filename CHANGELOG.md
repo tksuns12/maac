@@ -14,6 +14,10 @@ promise of compatibility beyond the documented interfaces.
   on a chord, so use `vary` without `timing` there; and a line of single notes
   on the std/studio `electric_guitar` measured 6 to 12 LU under the level
   scale's reference, so a lead needs a higher `level`.
+- The guide also says that `fx.eq/1`, `fx.compressor/1`, `fx.reverb/1` and
+  `fx.limiter/1` need `requires = ["maac.production/1"];` in the project, and
+  shows how to write one source alone to a WAV with a `stem` target in a
+  delivery.
 
 ## [0.6.1] — 2026-11-16
 
