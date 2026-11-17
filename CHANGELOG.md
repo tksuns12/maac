@@ -5,6 +5,16 @@ promise of compatibility beyond the documented interfaces.
 
 ## [Unreleased]
 
+### Changed
+
+- The AI producer guide now says three things an AI model got stuck on in a
+  trial: `maac build`, `compile` and `render` keep an existing output unless
+  `--force` is given; a `vary` with `timing` can move a note at the start of
+  the score before it and fail `maac check` with `E_INTERVAL`, for most seeds
+  on a chord, so use `vary` without `timing` there; and a line of single notes
+  on the std/studio `electric_guitar` measured 6 to 12 LU under the level
+  scale's reference, so a lead needs a higher `level`.
+
 ## [0.6.1] — 2026-11-16
 
 A small release after the first public smoke test of the 0.6.0 binaries.

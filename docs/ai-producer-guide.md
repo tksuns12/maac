@@ -163,7 +163,13 @@ listen before you call a track finished.
   amount, and each repetition differently; the same seed always gives the
   same performance. Write the accents you mean as velocities and let the
   variation scatter around them. In T7 velocities set by rule were heard as
-  "too uniform". Change `seed` for another take.
+  "too uniform". Change `seed` for another take. With `timing`, a note at the
+  very start of the score can move to before it, and `maac check` then fails
+  with `E_INTERVAL` ("resolved onset lies outside score interval"). Each note
+  of a chord gets its own draw of plus or minus `timing`, so for a chord at the
+  start most seeds fail (17 of 20 in a test, with `timing` at 20 ms and at
+  2 ms alike): changing the seed or the amount does not help. Give the
+  placement that starts the score a `vary` with `velocity` and no `timing`.
 - Shape each phrase of a melody with a `phrase`, not a curve per note. Its
   `dynamics` curve multiplies the velocities written under it, and its
   `pressure` curve is one breath that every note reads in turn:
@@ -180,8 +186,18 @@ listen before you call a track finished.
   velocity 0.7 at −20 LUFS, so its instruments start balanced against each
   other. std/basic and std/acoustic use other scales: in the trial, the nylon
   guitar needed `level = 0.7` to match a std/basic electric piano at `0.11`.
+  A line of single notes sits lower than the reference phrases, which are
+  mostly chords. In tests with the std/studio `electric_guitar` at its
+  defaults, eighth-note lines at velocity 0.7 measured 6 to 8 LU under the
+  −20 LUFS reference, and a two-bar melody at velocities 0.5 to 0.62
+  measured 12 LU under. Raise a lead's `level` (the default is 53/50 and the
+  maximum 16; `level = 4` brought that melody to −20 LUFS), name it with
+  `--lead` and let `lead_under` confirm the balance.
 - Run `maac check` after each edit. Diagnostics name the object and field at
   fault; fix that field.
+- Render with `maac build main.maac --profile song -o out.wav`. `build`,
+  `compile` and `render` keep an existing output and fail with
+  `E_OUTPUT_EXISTS`; pass `--force` to replace it.
 
 ## 3. Listen through measurements
 
