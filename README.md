@@ -24,6 +24,11 @@ On the same machine and build, the same source renders to the same bytes, offlin
 
 </div>
 
+https://github.com/user-attachments/assets/5267df8e-7702-46f0-a5bd-edf78ea8b474
+
+A 50-second tour: a song written as text, rendered, edited and measured. The
+terminal output is redrawn from real `maac` 0.6.1 runs.
+
 MaaC is a text language for music, and a Rust command-line tool that turns it
 into audio. You write a score, its instruments and its mix as plain `.maac`
 source. `maac` checks it, compiles it to an inspectable performance plan and
