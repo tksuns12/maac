@@ -255,6 +255,19 @@ The [feature tour](docs/features.md) walks through each with a runnable
 example, and the [capability matrix](docs/capabilities.md) gives exact
 limits.
 
+## How MaaC relates to other tools
+
+MaaC is not the first language that turns text into audio.
+[Csound](https://csound.com) renders text scores and instruments too. It has a
+far larger instrument library, real-time and MIDI support and a long-standing
+community, so if you need a mature sound engine, use it. MaaC aims at a
+different layer: a score-first language with chords, patterns, sections,
+tempo and time as exact fractions, built-in synthesized instruments, and
+`maac analyze`, a report per section and per note for a producer, or an AI
+model, that cannot listen. Csound can measure loudness too (its `lufs`
+opcode). We did not find a per-note report like `maac analyze` in Csound, but
+we have not compared the two systematically. MaaC renders offline only.
+
 ## Documentation
 
 The [documentation index](docs/README.md) lists every guide by topic.
