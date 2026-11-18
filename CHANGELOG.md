@@ -5,8 +5,17 @@ promise of compatibility beyond the documented interfaces.
 
 ## [Unreleased]
 
+## [0.6.2] — 2026-11-18
+
+MaaC is no longer maintained. This last release has no new features. After a
+comparison with Csound, the maintainer concluded that Csound already covers
+this ground well and stopped development; the repository is archived after
+this release and stays available under Apache-2.0.
+
 ### Changed
 
+- The description on crates.io and the README say that the project is
+  unmaintained.
 - The AI producer guide now says three things an AI model got stuck on in a
   trial: `maac build`, `compile` and `render` keep an existing output unless
   `--force` is given; a `vary` with `timing` can move a note at the start of
