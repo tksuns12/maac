@@ -16,6 +16,10 @@ this release and stays available under Apache-2.0.
 
 - The description on crates.io and the README say that the project is
   unmaintained.
+- The `E_CAPABILITY` message for the native production processors now says
+  what to add: `hint: add requires = ["maac.production/1"]; to the project`.
+  Thanks to hffgzktbcc-blip for this fix, the project's first outside
+  contribution (#61).
 - The AI producer guide now says three things an AI model got stuck on in a
   trial: `maac build`, `compile` and `render` keep an existing output unless
   `--force` is given; a `vary` with `timing` can move a note at the start of
