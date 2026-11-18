@@ -1,3 +1,10 @@
+> **MaaC is no longer maintained.** I stopped developing it on 2026-11-18.
+> [Csound](https://csound.com) already covers writing music as text and
+> rendering it offline well, with a far larger instrument library, real-time
+> and MIDI support and a long-standing community, so if you want to write
+> music as code, start there. This repository stays available under
+> Apache-2.0 and will be archived. The last release is 0.6.2.
+
 <div align="center">
 
 <img src="docs/assets/maac-banner.jpg" alt="MaaC: write music as text, render it to audio. A score in code turns into a glowing audio waveform." width="800">
@@ -10,7 +17,7 @@ On the same machine and build, the same source renders to the same bytes, offlin
 
 [![CI](https://github.com/tksuns12/maac/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/tksuns12/maac/actions/workflows/ci.yml)
 [![Latest release](https://img.shields.io/github/v/release/tksuns12/maac?label=release&color=orange)](https://github.com/tksuns12/maac/releases/latest)
-[![Status: experimental](https://img.shields.io/badge/status-experimental-orange.svg)](CHANGELOG.md)
+[![Status: unmaintained](https://img.shields.io/badge/status-unmaintained-red.svg)](CHANGELOG.md)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Platforms: macOS and Linux](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey.svg)](#install)
 [![Written in Rust](https://img.shields.io/badge/written%20in-Rust-b7410e.svg?logo=rust&logoColor=white)](https://www.rust-lang.org)
@@ -42,7 +49,7 @@ reports what a render sounds like in numbers: loudness per section, peaks,
 octave bands, buried or mistuned notes. A producer who cannot listen can
 still check a mix.
 
-**Status:** experimental, version 0.6.1. Tested on macOS and Linux, with
+**Status:** no longer maintained; the last version is 0.6.2. Tested on macOS and Linux, with
 prebuilt binaries for both. The [changelog](CHANGELOG.md) records what has
 changed.
 
@@ -151,9 +158,9 @@ need glibc 2.35 or newer (Ubuntu 22.04, Debian 12). Each archive holds
 `maac` and the examples, and has a `.sha256` checksum beside it. On a Mac:
 
 ```sh
-curl -LO https://github.com/tksuns12/maac/releases/download/v0.6.1/maac-v0.6.1-aarch64-apple-darwin.tar.gz
-tar -xzf maac-v0.6.1-aarch64-apple-darwin.tar.gz
-cd maac-v0.6.1-aarch64-apple-darwin
+curl -LO https://github.com/tksuns12/maac/releases/download/v0.6.2/maac-v0.6.2-aarch64-apple-darwin.tar.gz
+tar -xzf maac-v0.6.2-aarch64-apple-darwin.tar.gz
+cd maac-v0.6.2-aarch64-apple-darwin
 ./maac --version
 ```
 
