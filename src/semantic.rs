@@ -2827,7 +2827,7 @@ impl<'a> Validator<'a> {
             if !required {
                 self.push(
                     DiagnosticCode::Capability,
-                    "native production processors require maac.production/1",
+                    "native production processors require maac.production/1; hint: add requires = [\"maac.production/1\"]; to the project",
                     Some(type_field.value.span),
                     path.to_vec(),
                     vec!["type".into()],

@@ -243,8 +243,8 @@ maac analyze main.maac --window region:b --preroll 4 --json   # quick, approxima
 - **Required capability.** `fx.compressor/1`, `fx.eq/1`, `fx.reverb/1` and
   `fx.limiter/1` are native production processors. The `project` must list
   `requires = ["maac.production/1"];`, or `maac check` fails with
-  `E_CAPABILITY: native production processors require maac.production/1 at
-  <node>.type`. The message does not say where to add it.
+  `E_CAPABILITY: native production processors require maac.production/1; hint:
+  add requires = ["maac.production/1"]; to the project at <node>.type`.
 - **Routing.** Use `send` buses into `fx.reverb/1` with `mix = 1`, plus a
   return gain.
 - **Pumping.** Key an `fx.compressor/1` from the kick:

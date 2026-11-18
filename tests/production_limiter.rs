@@ -196,14 +196,17 @@ fn configuration_and_parameters_are_validated() {
     assert_eq!(code(limiter("channels = 3;", "")), DiagnosticCode::Range);
     let without_capability = source(TONE, &limiter("channels = 1;", ""))
         .replace(r#" requires = ["maac.production/1"];"#, "");
-    assert_eq!(
-        compile_bundle_artifact(&SourceBundle::new("main.maac", without_capability))
-            .unwrap_err()
-            .iter()
-            .next()
-            .unwrap()
-            .code,
-        DiagnosticCode::Capability
+    let diagnostics =
+        compile_bundle_artifact(&SourceBundle::new("main.maac", without_capability)).unwrap_err();
+    let first = diagnostics.iter().next().unwrap();
+    assert_eq!(first.code, DiagnosticCode::Capability);
+    // A model that reads only the error can fix the project.
+    assert!(
+        first
+            .message
+            .contains(r#"add requires = ["maac.production/1"]; to the project"#),
+        "{}",
+        first.message
     );
 }
 
