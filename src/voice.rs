@@ -4454,6 +4454,7 @@ node keys {{ instrument = &studio.{name}; }}
         );
     }
 
+    #[cfg(feature = "jit")]
     fn bits_of(frames: &[Vec<f64>]) -> Vec<Vec<u64>> {
         frames
             .iter()
