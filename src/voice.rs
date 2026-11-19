@@ -42,6 +42,7 @@ pub struct InstrumentRuntime {
     capacity: usize,
     rate: f64,
     controls: Vec<f64>,
+    controls_generation: u64,
     voices: Vec<VoiceState>,
     shared: Option<GraphState>,
     shared_reset: Option<GraphState>,
@@ -59,6 +60,10 @@ pub struct InstrumentRuntime {
     voice_frames: Vec<[f64; 2]>,
     /// Per-frame pitch, timbre and pressure of the voice being rendered.
     expressions: Vec<(f64, f64, f64)>,
+    /// Reusable per-block scratch buffers for `fill`.
+    active_scratch: Vec<usize>,
+    voice_errors_scratch: Vec<Option<(usize, RenderError)>>,
+    sums_scratch: Vec<[f64; 2]>,
 }
 
 /// The most frames an instrument renders ahead at once.
@@ -223,9 +228,9 @@ struct VoiceState {
 #[derive(Clone, Debug)]
 struct GraphState {
     nodes: Vec<RuntimeNode>,
-    /// The controls that the parameters of nodes without sample-rate
-    /// modulation were last computed from; `None` before the first sample.
-    settled_controls: Option<Vec<f64>>,
+    /// The `controls_generation` that the parameters of nodes without
+    /// sample-rate modulation were last computed from; `None` before the first sample.
+    settled_generation: Option<u64>,
 }
 
 #[derive(Clone, Debug)]
@@ -401,6 +406,7 @@ impl InstrumentRuntime {
             capacity: capacity as usize,
             rate,
             controls: resolved,
+            controls_generation: 1,
             voices,
             shared_reset: shared.clone(),
             shared,
@@ -412,6 +418,9 @@ impl InstrumentRuntime {
             scratch: Vec::new(),
             voice_frames: Vec::new(),
             expressions: Vec::new(),
+            active_scratch: Vec::new(),
+            voice_errors_scratch: Vec::new(),
+            sums_scratch: Vec::new(),
         })
     }
 
@@ -437,30 +446,23 @@ impl InstrumentRuntime {
 
     /// Replace the instance's public control cache for the current frame.
     pub fn update_controls(&mut self, controls: &BTreeMap<String, f64>) -> Result<()> {
-        if self.buffered_start + self.buffered.len() as u64 > self.next_frame {
-            let before = self.controls.clone();
-            update_resolved_controls(
-                &self.program.id,
-                &self.program.controls,
-                &self.program.control_indices,
-                controls,
-                &mut self.controls,
-            )?;
-            if before != self.controls {
-                return Err(RenderError::RenderState(format!(
-                    "instrument {} controls changed inside a block rendered ahead",
-                    self.program.id
-                )));
-            }
-            return Ok(());
-        }
-        update_resolved_controls(
+        let changed = update_resolved_controls(
             &self.program.id,
             &self.program.controls,
             &self.program.control_indices,
             controls,
             &mut self.controls,
-        )
+        )?;
+        if changed {
+            self.controls_generation += 1;
+            if self.buffered_start + self.buffered.len() as u64 > self.next_frame {
+                return Err(RenderError::RenderState(format!(
+                    "instrument {} controls changed inside a block rendered ahead",
+                    self.program.id
+                )));
+            }
+        }
+        Ok(())
     }
 
     pub fn note_on(
@@ -783,9 +785,8 @@ impl InstrumentRuntime {
         }
 
         // Each voice: frames before its retirement, and its first error.
-        let mut active = Vec::with_capacity(self.voices.len());
-        let mut voice_errors: Vec<Option<(usize, RenderError)>> =
-            Vec::with_capacity(self.voices.len());
+        self.active_scratch.clear();
+        self.voice_errors_scratch.clear();
         for (index, voice) in self.voices.iter_mut().enumerate() {
             let mut length = frames;
             let mut error = None;
@@ -805,7 +806,7 @@ impl InstrumentRuntime {
                     }
                 }
             }
-            active.push(length);
+            self.active_scratch.push(length);
             let mut rendered = length;
             for (offset, expression) in self.expressions[..length].iter_mut().enumerate() {
                 match voice.expression_inputs(start + offset as u64, rate) {
@@ -820,6 +821,7 @@ impl InstrumentRuntime {
             let (graph_frames, graph_error) = voice.graph.render_block(
                 graph,
                 &self.controls,
+                self.controls_generation,
                 start,
                 rendered,
                 rate,
@@ -834,32 +836,32 @@ impl InstrumentRuntime {
             let output = graph.output * stride;
             self.voice_frames[index * stride..index * stride + graph_frames]
                 .copy_from_slice(&self.scratch[output..output + graph_frames]);
-            voice_errors.push(error);
+            self.voice_errors_scratch.push(error);
         }
 
         // Combine the voices frame by frame, in voice order.
         let voice_channels = graph.channels;
-        let mut sums = vec![[0.0; 2]; frames];
+        self.sums_scratch.resize(frames, [0.0; 2]);
         let mut limit = frames;
         let mut error = None;
-        'frames: for (offset, sum) in sums.iter_mut().enumerate() {
+        'frames: for (offset, sum) in self.sums_scratch[..frames].iter_mut().enumerate() {
             let frame = start + offset as u64;
             let mut voice_sum = [0.0; 2];
             for (index, voice) in self.voices.iter().enumerate() {
-                if offset >= active[index] {
-                    if let Some((at, _)) = &voice_errors[index] {
+                if offset >= self.active_scratch[index] {
+                    if let Some((at, _)) = &self.voice_errors_scratch[index] {
                         if *at == offset {
                             limit = offset;
-                            error = voice_errors[index].take().map(|(_, failure)| failure);
+                            error = self.voice_errors_scratch[index].take().map(|(_, failure)| failure);
                             break 'frames;
                         }
                     }
                     continue;
                 }
-                if let Some((at, _)) = &voice_errors[index] {
+                if let Some((at, _)) = &self.voice_errors_scratch[index] {
                     if *at == offset {
                         limit = offset;
-                        error = voice_errors[index].take().map(|(_, failure)| failure);
+                        error = self.voice_errors_scratch[index].take().map(|(_, failure)| failure);
                         break 'frames;
                     }
                 }
@@ -874,8 +876,8 @@ impl InstrumentRuntime {
                 };
                 let gain = voice.gain_expression.as_ref().map(|expression| {
                     expression
-                        .curve
-                        .gain_at(&expression.coordinate_at(voice.on_frame, frame))
+                        .eval_at(voice.on_frame, frame)
+                        .expect("validated gain expression")
                 });
                 if gain.is_some_and(|value| !value.is_finite() || value < 0.0) {
                     limit = offset;
@@ -914,11 +916,12 @@ impl InstrumentRuntime {
             let (shared_frames, shared_error) = shared.render_block(
                 compiled,
                 &self.controls,
+                self.controls_generation,
                 start,
                 limit,
                 rate,
                 &self.expressions[..limit],
-                Some(&sums[..limit]),
+                Some(&self.sums_scratch[..limit]),
                 &mut self.scratch,
                 stride,
             );
@@ -930,7 +933,7 @@ impl InstrumentRuntime {
             self.buffered
                 .extend_from_slice(&self.scratch[output..output + limit]);
         } else {
-            self.buffered.extend_from_slice(&sums[..limit]);
+            self.buffered.extend_from_slice(&self.sums_scratch[..limit]);
         }
         self.buffered_error = error;
 
@@ -938,7 +941,7 @@ impl InstrumentRuntime {
         if self.buffered_error.is_none() {
             let mut index = 0;
             self.voices.retain(|_| {
-                let keep = active[index] == frames;
+                let keep = self.active_scratch[index] == frames;
                 index += 1;
                 keep
             });
@@ -961,6 +964,7 @@ impl InstrumentRuntime {
         let shared_reset = shared.clone();
 
         self.controls = resolved;
+        self.controls_generation += 1;
         self.voices.clear();
         self.output = [0.0; 2];
         self.shared = shared;
@@ -1035,6 +1039,7 @@ pub struct EffectRuntime {
     program: Arc<CompiledEffect>,
     rate: f64,
     controls: Vec<f64>,
+    controls_generation: u64,
     state: GraphState,
     reset: GraphState,
     /// Node outputs of the frame being processed, one per node.
@@ -1066,6 +1071,7 @@ impl EffectRuntime {
             reset: state.clone(),
             state,
             controls: resolved,
+            controls_generation: 1,
             rate,
             program,
         })
@@ -1073,13 +1079,17 @@ impl EffectRuntime {
 
     /// Replace the instance's public control values for the current frame.
     pub fn update_controls(&mut self, controls: &BTreeMap<String, f64>) -> Result<()> {
-        update_resolved_controls(
+        let changed = update_resolved_controls(
             &self.program.id,
             &self.program.controls,
             &self.program.control_indices,
             controls,
             &mut self.controls,
-        )
+        )?;
+        if changed {
+            self.controls_generation += 1;
+        }
+        Ok(())
     }
 
     /// Process one frame of the audio at `in`. Channels beyond the input's
@@ -1093,6 +1103,7 @@ impl EffectRuntime {
         let (rendered, error) = self.state.render_block(
             &program.graph,
             &self.controls,
+            self.controls_generation,
             frame,
             1,
             self.rate,
@@ -1171,13 +1182,9 @@ impl VoiceState {
 
     fn expression_inputs(&self, frame: u64, rate: f64) -> Result<(f64, f64, f64)> {
         let pitch_hz = if let Some(expression) = &self.pitch_expression {
-            let cents = expression
-                .curve
-                .cents_at(&expression.coordinate_at(self.on_frame, frame))
-                .to_f64()
-                .ok_or_else(|| {
-                    RenderError::Nonfinite("pitch expression cents cannot be represented".into())
-                })?;
+            let cents = expression.eval_at(self.on_frame, frame).ok_or_else(|| {
+                RenderError::Nonfinite("pitch expression cents cannot be represented".into())
+            })?;
             let frequency = self.base_pitch_at(frame) * 2.0_f64.powf(cents / 1200.0);
             if !frequency.is_finite() || frequency <= 0.0 || frequency >= rate / 2.0 {
                 return Err(RenderError::RenderState(format!(
@@ -1191,8 +1198,8 @@ impl VoiceState {
         };
         let timbre = self.timbre_expression.as_ref().map_or(0.0, |expression| {
             expression
-                .curve
-                .value_at(&expression.coordinate_at(self.on_frame, frame))
+                .eval_at(self.on_frame, frame)
+                .expect("validated timbre expression")
         });
         if !timbre.is_finite() || !(0.0..=1.0).contains(&timbre) {
             return Err(RenderError::Nonfinite(format!(
@@ -1202,8 +1209,8 @@ impl VoiceState {
         }
         let pressure = self.pressure_expression.as_ref().map_or(0.0, |expression| {
             expression
-                .curve
-                .value_at(&expression.coordinate_at(self.on_frame, frame))
+                .eval_at(self.on_frame, frame)
+                .expect("validated pressure expression")
         });
         if !pressure.is_finite() || !(0.0..=1.0).contains(&pressure) {
             return Err(RenderError::Nonfinite(format!(
@@ -1310,7 +1317,7 @@ impl GraphState {
         }
         Ok(Self {
             nodes,
-            settled_controls: None,
+            settled_generation: None,
         })
     }
 
@@ -1739,6 +1746,7 @@ impl GraphState {
         &mut self,
         graph: &CompiledGraph,
         controls: &[f64],
+        controls_generation: u64,
         start: u64,
         frames: usize,
         rate: f64,
@@ -1749,7 +1757,7 @@ impl GraphState {
     ) -> (usize, Option<RenderError>) {
         // A node without sample-rate modulation computes the same parameters
         // until a control changes, so it keeps the values it already checked.
-        let settled = self.settled_controls.as_deref() == Some(controls);
+        let settled = self.settled_generation == Some(controls_generation);
         let input_at = |offset: usize| input.map_or([0.0; 2], |input| input[offset]);
         if !graph.delays.is_empty() && frames > 1 {
             // A line may feed back to its own input one frame later, so a
@@ -1890,10 +1898,7 @@ impl GraphState {
             }
         }
         if !settled && error.is_none() && frames > 0 {
-            match &mut self.settled_controls {
-                Some(previous) => previous.clone_from_slice(controls),
-                None => self.settled_controls = Some(controls.to_vec()),
-            }
+            self.settled_generation = Some(controls_generation);
         }
         (limit, error)
     }
@@ -2762,29 +2767,39 @@ fn update_resolved_controls(
     indices: &BTreeMap<String, usize>,
     supplied: &BTreeMap<String, f64>,
     resolved: &mut [f64],
-) -> Result<()> {
-    for name in supplied.keys() {
-        if !indices.contains_key(name) {
-            return Err(RenderError::RenderState(format!(
-                "{id} has no public control {name}"
-            )));
+) -> Result<bool> {
+    if !supplied.is_empty() {
+        for name in supplied.keys() {
+            if !indices.contains_key(name) {
+                return Err(RenderError::RenderState(format!(
+                    "{id} has no public control {name}"
+                )));
+            }
+        }
+        for control in controls {
+            let value = supplied
+                .get(&control.name)
+                .copied()
+                .unwrap_or(control.default);
+            validate_value(value, &control.bounds)?;
         }
     }
-    for control in controls {
-        let value = supplied
-            .get(&control.name)
-            .copied()
-            .unwrap_or(control.default);
-        validate_value(value, &control.bounds)?;
-    }
+    let mut changed = false;
     for (index, control) in controls.iter().enumerate() {
-        let value = supplied
-            .get(&control.name)
-            .copied()
-            .unwrap_or(control.default);
-        resolved[index] = value;
+        let value = if supplied.is_empty() {
+            control.default
+        } else {
+            supplied
+                .get(&control.name)
+                .copied()
+                .unwrap_or(control.default)
+        };
+        if resolved[index] != value {
+            resolved[index] = value;
+            changed = true;
+        }
     }
-    Ok(())
+    Ok(changed)
 }
 
 fn validate_params(node: &CompiledNode, params: &[f64]) -> Result<()> {

@@ -2860,8 +2860,8 @@ impl NodeState {
             let envelope = voice.envelope(frame, rate);
             let gain = if let Some(expression) = &voice.gain_expression {
                 let gain = expression
-                    .curve
-                    .gain_at(&expression.coordinate_at(voice.on_frame, frame));
+                    .eval_at(voice.on_frame, frame)
+                    .expect("validated gain expression");
                 if !gain.is_finite() || gain < 0.0 {
                     return Err(RenderError::Nonfinite(format!(
                         "gain expression at {} produced an invalid value",
@@ -2881,16 +2881,9 @@ impl NodeState {
             }
             sum += value;
             let pitch_hz = if let Some(expression) = &voice.pitch_expression {
-                let coordinate = expression.coordinate_at(voice.on_frame, frame);
-                let cents = expression
-                    .curve
-                    .cents_at(&coordinate)
-                    .to_f64()
-                    .ok_or_else(|| {
-                        RenderError::Nonfinite(
-                            "pitch expression cents cannot be represented".into(),
-                        )
-                    })?;
+                let cents = expression.eval_at(voice.on_frame, frame).ok_or_else(|| {
+                    RenderError::Nonfinite("pitch expression cents cannot be represented".into())
+                })?;
                 let frequency = voice.pitch_hz * 2.0_f64.powf(cents / 1200.0);
                 if !frequency.is_finite() || frequency <= 0.0 || frequency >= rate / 2.0 {
                     return Err(RenderError::RenderState(format!(
@@ -3131,41 +3124,41 @@ impl EventRuntime {
             data: EventData::Note {
                 pitch_hz: *pitch_hz,
                 velocity,
-                timbre_expression: timbre_expression.as_ref().map(|curve| ExpressionRuntime {
-                    coordinate_per_frame: curve.clock.coordinate_for_view(
-                        event,
-                        event.on_frame + 1,
-                        rate,
-                    ),
-                    gate: event.off_frame.expect("validated note off") - event.on_frame,
-                    curve: Arc::new(curve.clone()),
+                timbre_expression: timbre_expression.as_ref().map(|curve| {
+                    ExpressionRuntime::new(
+                        Arc::new(curve.clone()),
+                        curve
+                            .clock
+                            .coordinate_for_view(event, event.on_frame + 1, rate),
+                        event.off_frame.expect("validated note off") - event.on_frame,
+                    )
                 }),
-                pressure_expression: pressure_expression.as_ref().map(|curve| ExpressionRuntime {
-                    coordinate_per_frame: curve.clock.coordinate_for_view(
-                        event,
-                        event.on_frame + 1,
-                        rate,
-                    ),
-                    gate: event.off_frame.expect("validated note off") - event.on_frame,
-                    curve: Arc::new(curve.clone()),
+                pressure_expression: pressure_expression.as_ref().map(|curve| {
+                    ExpressionRuntime::new(
+                        Arc::new(curve.clone()),
+                        curve
+                            .clock
+                            .coordinate_for_view(event, event.on_frame + 1, rate),
+                        event.off_frame.expect("validated note off") - event.on_frame,
+                    )
                 }),
-                gain_expression: gain_expression.as_ref().map(|curve| ExpressionRuntime {
-                    coordinate_per_frame: curve.clock.coordinate_for_view(
-                        event,
-                        event.on_frame + 1,
-                        rate,
-                    ),
-                    gate: event.off_frame.expect("validated note off") - event.on_frame,
-                    curve: Arc::new(curve.clone()),
+                gain_expression: gain_expression.as_ref().map(|curve| {
+                    ExpressionRuntime::new(
+                        Arc::new(curve.clone()),
+                        curve
+                            .clock
+                            .coordinate_for_view(event, event.on_frame + 1, rate),
+                        event.off_frame.expect("validated note off") - event.on_frame,
+                    )
                 }),
-                pitch_expression: pitch_expression.as_ref().map(|curve| ExpressionRuntime {
-                    coordinate_per_frame: curve.clock.coordinate_for_view(
-                        event,
-                        event.on_frame + 1,
-                        rate,
-                    ),
-                    gate: event.off_frame.expect("validated note off") - event.on_frame,
-                    curve: Arc::new(curve.clone()),
+                pitch_expression: pitch_expression.as_ref().map(|curve| {
+                    ExpressionRuntime::new(
+                        Arc::new(curve.clone()),
+                        curve
+                            .clock
+                            .coordinate_for_view(event, event.on_frame + 1, rate),
+                        event.off_frame.expect("validated note off") - event.on_frame,
+                    )
                 }),
             },
             on_frame: event.on_frame,
