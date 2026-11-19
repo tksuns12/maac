@@ -142,7 +142,9 @@ impl<T: ExpressionCurve> ExpressionRuntime<T> {
                 let num = base_num + slope_num * (delta as i128);
                 Some(ratio_i128_to_f64(num, *denom))
             }
-            FastSegment::Fallback => self.curve.eval_rational(&self.coordinate_at(on_frame, frame)),
+            FastSegment::Fallback => self
+                .curve
+                .eval_rational(&self.coordinate_at(on_frame, frame)),
         }
     }
 }

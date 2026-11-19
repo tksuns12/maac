@@ -59,7 +59,7 @@ pub struct InstrumentRuntime {
     /// Each voice's output for the block being rendered.
     voice_frames: Vec<[f64; 2]>,
     /// Per-frame pitch, timbre and pressure of the voice being rendered.
-    expressions: Vec<(f64, f64, f64)>,
+    expressions: Vec<[f64; 3]>,
     /// Reusable per-block scratch buffers for `fill`.
     active_scratch: Vec<usize>,
     voice_errors_scratch: Vec<Option<(usize, RenderError)>>,
@@ -85,6 +85,8 @@ struct CompiledGraph {
     output: usize,
     amplitude: Option<usize>,
     channels: usize,
+    #[cfg(feature = "jit")]
+    jit: Option<Arc<crate::jit::JitCompiledGraph>>,
 }
 
 #[derive(Debug)]
@@ -311,6 +313,14 @@ impl CompiledInstrument {
             Some(&mut voice),
             shared.as_mut(),
         )?;
+
+        #[cfg(feature = "jit")]
+        {
+            voice.jit = jit_bridge::compile_graph(&voice);
+            if let Some(shared_graph) = shared.as_mut() {
+                shared_graph.jit = jit_bridge::compile_graph(shared_graph);
+            }
+        }
 
         Ok(Self {
             id: program.id.clone(),
@@ -781,7 +791,7 @@ impl InstrumentRuntime {
                 .resize(self.voices.len() * stride, [0.0; 2]);
         }
         if self.expressions.len() < stride {
-            self.expressions.resize(stride, (0.0, 0.0, 0.0));
+            self.expressions.resize(stride, [0.0, 0.0, 0.0]);
         }
 
         // Each voice: frames before its retirement, and its first error.
@@ -810,7 +820,9 @@ impl InstrumentRuntime {
             let mut rendered = length;
             for (offset, expression) in self.expressions[..length].iter_mut().enumerate() {
                 match voice.expression_inputs(start + offset as u64, rate) {
-                    Ok(inputs) => *expression = inputs,
+                    Ok((pitch_hz, timbre, pressure)) => {
+                        *expression = [pitch_hz, timbre, pressure];
+                    }
                     Err(failure) => {
                         rendered = offset;
                         error = Some((offset, failure));
@@ -852,7 +864,9 @@ impl InstrumentRuntime {
                     if let Some((at, _)) = &self.voice_errors_scratch[index] {
                         if *at == offset {
                             limit = offset;
-                            error = self.voice_errors_scratch[index].take().map(|(_, failure)| failure);
+                            error = self.voice_errors_scratch[index]
+                                .take()
+                                .map(|(_, failure)| failure);
                             break 'frames;
                         }
                     }
@@ -861,7 +875,9 @@ impl InstrumentRuntime {
                 if let Some((at, _)) = &self.voice_errors_scratch[index] {
                     if *at == offset {
                         limit = offset;
-                        error = self.voice_errors_scratch[index].take().map(|(_, failure)| failure);
+                        error = self.voice_errors_scratch[index]
+                            .take()
+                            .map(|(_, failure)| failure);
                         break 'frames;
                     }
                 }
@@ -911,7 +927,7 @@ impl InstrumentRuntime {
         self.buffered_start = start;
         if let (Some(compiled), Some(shared)) = (program.shared.as_ref(), self.shared.as_mut()) {
             for expression in &mut self.expressions[..limit] {
-                *expression = (0.0, 0.0, 0.0);
+                *expression = [0.0, 0.0, 0.0];
             }
             let (shared_frames, shared_error) = shared.render_block(
                 compiled,
@@ -1107,7 +1123,7 @@ impl EffectRuntime {
             frame,
             1,
             self.rate,
-            &[(0.0, 0.0, 0.0)],
+            &[[0.0, 0.0, 0.0]],
             Some(&[input]),
             &mut self.scratch,
             1,
@@ -1750,7 +1766,7 @@ impl GraphState {
         start: u64,
         frames: usize,
         rate: f64,
-        expressions: &[(f64, f64, f64)],
+        expressions: &[[f64; 3]],
         input: Option<&[[f64; 2]]>,
         scratch: &mut [[f64; 2]],
         stride: usize,
@@ -1768,6 +1784,28 @@ impl GraphState {
                     "a graph with a delay line renders one frame at a time".into(),
                 )),
             );
+        }
+        #[cfg(feature = "jit")]
+        if let Some(jit) = graph.jit.as_ref() {
+            if graph.delays.is_empty() {
+                let (limit, error) = jit_bridge::execute_block(
+                    jit,
+                    graph,
+                    &mut self.nodes,
+                    controls,
+                    settled,
+                    start,
+                    frames,
+                    rate,
+                    expressions,
+                    input,
+                    &mut scratch[graph.output * stride..graph.output * stride + frames],
+                );
+                if !settled && error.is_none() && frames > 0 {
+                    self.settled_generation = Some(controls_generation);
+                }
+                return (limit, error);
+            }
         }
         let mut limit = frames;
         let mut error = None;
@@ -1838,7 +1876,7 @@ impl GraphState {
                         }
                     }
                 }
-                let (pitch_hz, timbre, pressure) = expressions[offset];
+                let [pitch_hz, timbre, pressure] = expressions[offset];
                 let runtime = &mut self.nodes[node_index];
                 match process_graph_node(
                     compiled,
@@ -2562,6 +2600,8 @@ fn compile_graph(
         output: indices[graph.output.node.as_str()],
         amplitude: graph.amplitude.as_ref().map(|node| indices[node.as_str()]),
         channels: graph.channels as usize,
+        #[cfg(feature = "jit")]
+        jit: None,
         nodes,
     })
 }
@@ -2876,6 +2916,759 @@ fn pluck_resource_error(message: &str) -> RenderError {
         message: message.into(),
         span: None,
     })
+}
+
+#[cfg(feature = "jit")]
+mod jit_bridge {
+    use super::*;
+    use crate::jit::{
+        compile_graph_jit, JitBlockContext, JitBoundSpec, JitCompiledGraph, JitControlBinding,
+        JitErrorCallbacks, JitExpressionInput, JitGraphSpec, JitModSpec, JitNodeKind, JitNodeSpec,
+        JitSource,
+    };
+    use std::ffi::c_void;
+
+    fn map_source(source: &Source) -> JitSource {
+        match source {
+            Source::Input => JitSource::Input,
+            Source::Node(index) => JitSource::Node(*index),
+        }
+    }
+
+    fn node_kind(code: &ProcessorCode) -> JitNodeKind {
+        match code {
+            ProcessorCode::Mix(channels) => JitNodeKind::Mix {
+                channels: *channels,
+            },
+            ProcessorCode::Gain(channels) => JitNodeKind::Gain {
+                channels: *channels,
+            },
+            ProcessorCode::Width => JitNodeKind::Width,
+            ProcessorCode::Timbre => JitNodeKind::Timbre,
+            ProcessorCode::Pressure => JitNodeKind::Pressure,
+            ProcessorCode::Key => JitNodeKind::Key,
+            ProcessorCode::Noise(..) => JitNodeKind::Noise,
+            ProcessorCode::Velocity | ProcessorCode::Random(_) => JitNodeKind::VelocityOrRandom,
+            ProcessorCode::OnePole(channels) => JitNodeKind::OnePole {
+                channels: *channels,
+                highpass: false,
+            },
+            ProcessorCode::HighPass(channels) => JitNodeKind::OnePole {
+                channels: *channels,
+                highpass: true,
+            },
+            ProcessorCode::Svf(channels, mode) => JitNodeKind::Svf {
+                channels: *channels,
+                mode: match mode {
+                    SvfMode::Lowpass => 0,
+                    SvfMode::Bandpass => 1,
+                    SvfMode::Highpass => 2,
+                },
+                slot_cutoff: slot::SVF_CUTOFF,
+                slot_ratio: slot::SVF_RATIO,
+                slot_q: slot::SVF_Q,
+            },
+            ProcessorCode::Pan => JitNodeKind::Pan,
+            ProcessorCode::Balance => JitNodeKind::Balance,
+            _ => JitNodeKind::Helper,
+        }
+    }
+
+    fn inline_words_for(kind: JitNodeKind) -> usize {
+        match kind {
+            JitNodeKind::Noise => 1,
+            JitNodeKind::VelocityOrRandom => 4,
+            JitNodeKind::OnePole { .. } => 4,
+            JitNodeKind::Svf { .. } => 10,
+            _ => 0,
+        }
+    }
+
+    fn eval_fn_for(code: &ProcessorCode) -> usize {
+        match code {
+            ProcessorCode::Pluck(_) => jit_eval_pluck as *const () as usize,
+            ProcessorCode::Bow(..) => jit_eval_bow as *const () as usize,
+            ProcessorCode::Modal(..) => jit_eval_modal as *const () as usize,
+            ProcessorCode::Oscillator(_) => jit_eval_oscillator as *const () as usize,
+            ProcessorCode::Wavetable(_) => jit_eval_wavetable as *const () as usize,
+            ProcessorCode::Sample(_) => jit_eval_sample as *const () as usize,
+            ProcessorCode::Adsr(_) => jit_eval_adsr as *const () as usize,
+            ProcessorCode::Lfo => jit_eval_lfo as *const () as usize,
+            ProcessorCode::Drive(_) => jit_eval_drive as *const () as usize,
+            _ => jit_eval_fallback as *const () as usize,
+        }
+    }
+
+    pub(super) fn compile_graph(graph: &CompiledGraph) -> Option<Arc<JitCompiledGraph>> {
+        if !graph.delays.is_empty() || graph.nodes.len() > MAX_GRAPH_NODES {
+            return None;
+        }
+        let mut inline_state_words = 0usize;
+        let nodes = graph
+            .nodes
+            .iter()
+            .map(|node| {
+                let kind = node_kind(&node.processor);
+                let inline_state_offset = inline_state_words;
+                inline_state_words += inline_words_for(kind);
+                let incoming = node.incoming.iter().map(map_source).collect();
+                let mod_sources = node
+                    .modulations
+                    .iter()
+                    .filter(|m| m.rate == ParameterRate::Sample)
+                    .map(|m| map_source(&m.source))
+                    .collect();
+                let sample_controls = node
+                    .controls
+                    .iter()
+                    .filter(|c| c.rate == ParameterRate::Sample)
+                    .map(|c| JitControlBinding {
+                        parameter: c.parameter,
+                        control: c.control,
+                    })
+                    .collect();
+                let sample_mods = node
+                    .modulations
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, m)| m.rate == ParameterRate::Sample)
+                    .map(|(mod_index, m)| JitModSpec {
+                        mod_index,
+                        parameter: m.parameter,
+                        source: map_source(&m.source),
+                        depth: m.depth,
+                    })
+                    .collect();
+                let bounds = node
+                    .specs
+                    .iter()
+                    .enumerate()
+                    .map(|(parameter, b)| JitBoundSpec {
+                        parameter,
+                        min: b.min,
+                        max: b.max,
+                        min_open: b.min_open,
+                        max_open: b.max_open,
+                    })
+                    .collect();
+                JitNodeSpec {
+                    kind,
+                    has_sample_modulations: node.has_sample_modulations,
+                    reads_input_later: node.reads_input_later,
+                    incoming,
+                    mod_sources,
+                    base_params: node.base_params.clone(),
+                    sample_controls,
+                    sample_mods,
+                    bounds,
+                    inline_state_offset,
+                    eval_fn: eval_fn_for(&node.processor),
+                    setup_static_fn: jit_setup_static_node as *const () as usize,
+                }
+            })
+            .collect();
+        let spec = JitGraphSpec {
+            order: graph.order.clone(),
+            nodes,
+            output_node: graph.output,
+            inline_state_words,
+        };
+        let errors = JitErrorCallbacks {
+            nonfinite_incoming: jit_nonfinite_incoming,
+            nonfinite_output: jit_nonfinite_output,
+            mod_product_nonfinite: jit_mod_product_nonfinite,
+            mod_sum_nonfinite: jit_mod_sum_nonfinite,
+            param_out_of_range: jit_param_out_of_range,
+            onepole_invalid: jit_onepole_invalid,
+            svf_cutoff_invalid: jit_svf_cutoff_invalid,
+            svf_q_invalid: jit_svf_q_invalid,
+        };
+        compile_graph_jit(&spec, errors)
+    }
+
+    fn pack_inline_state(graph: &CompiledGraph, nodes: &[RuntimeNode], buf: &mut [u64]) {
+        let mut off = 0usize;
+        for (comp, rt) in graph.nodes.iter().zip(nodes.iter()) {
+            match (&comp.processor, &rt.state) {
+                (ProcessorCode::Noise(..), ProcessorState::Noise(s)) => {
+                    buf[off] = u64::from(*s);
+                    off += 1;
+                }
+                (
+                    ProcessorCode::Velocity | ProcessorCode::Random(_),
+                    ProcessorState::Velocity(v, glide) | ProcessorState::Random(v, glide),
+                ) => {
+                    buf[off] = v.to_bits();
+                    if let Some((from, start)) = glide {
+                        buf[off + 1] = 1;
+                        buf[off + 2] = from.to_bits();
+                        buf[off + 3] = *start;
+                    } else {
+                        buf[off + 1] = 0;
+                    }
+                    off += 4;
+                }
+                (
+                    ProcessorCode::OnePole(_) | ProcessorCode::HighPass(_),
+                    ProcessorState::OnePole(prev),
+                ) => {
+                    buf[off] = prev[0].to_bits();
+                    buf[off + 1] = prev[1].to_bits();
+                    buf[off + 2] = 0; // uncached cutoff
+                    buf[off + 3] = 0;
+                    off += 4;
+                }
+                (ProcessorCode::Svf(..), ProcessorState::Svf(states)) => {
+                    buf[off] = states[0][0].to_bits();
+                    buf[off + 1] = states[0][1].to_bits();
+                    buf[off + 2] = states[1][0].to_bits();
+                    buf[off + 3] = states[1][1].to_bits();
+                    buf[off + 4] = 0; // uncached cutoff
+                    buf[off + 5] = 0; // uncached q
+                    off += 10;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn unpack_inline_state(graph: &CompiledGraph, nodes: &mut [RuntimeNode], buf: &[u64]) {
+        let mut off = 0usize;
+        for (comp, rt) in graph.nodes.iter().zip(nodes.iter_mut()) {
+            match (&comp.processor, &mut rt.state) {
+                (ProcessorCode::Noise(..), ProcessorState::Noise(s)) => {
+                    *s = buf[off] as u32;
+                    off += 1;
+                }
+                (
+                    ProcessorCode::Velocity | ProcessorCode::Random(_),
+                    ProcessorState::Velocity(..) | ProcessorState::Random(..),
+                ) => {
+                    off += 4;
+                }
+                (
+                    ProcessorCode::OnePole(_) | ProcessorCode::HighPass(_),
+                    ProcessorState::OnePole(prev),
+                ) => {
+                    prev[0] = f64::from_bits(buf[off]);
+                    prev[1] = f64::from_bits(buf[off + 1]);
+                    off += 4;
+                }
+                (ProcessorCode::Svf(..), ProcessorState::Svf(states)) => {
+                    states[0][0] = f64::from_bits(buf[off]);
+                    states[0][1] = f64::from_bits(buf[off + 1]);
+                    states[1][0] = f64::from_bits(buf[off + 2]);
+                    states[1][1] = f64::from_bits(buf[off + 3]);
+                    off += 10;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn execute_block(
+        jit: &JitCompiledGraph,
+        graph: &CompiledGraph,
+        nodes: &mut [RuntimeNode],
+        controls: &[f64],
+        settled: bool,
+        start: u64,
+        frames: usize,
+        rate: f64,
+        expressions: &[[f64; 3]],
+        input: Option<&[[f64; 2]]>,
+        output: &mut [[f64; 2]],
+    ) -> (usize, Option<RenderError>) {
+        let mut stack_inline = [0u64; 256];
+        let mut heap_inline = Vec::new();
+        let inline_buf = if jit.inline_state_words <= stack_inline.len() {
+            &mut stack_inline[..jit.inline_state_words]
+        } else {
+            heap_inline.resize(jit.inline_state_words, 0);
+            &mut heap_inline[..]
+        };
+        pack_inline_state(graph, nodes, inline_buf);
+
+        let mut runtime_ptrs = [std::ptr::null_mut::<c_void>(); MAX_GRAPH_NODES];
+        let mut params_ptrs = [std::ptr::null_mut::<f64>(); MAX_GRAPH_NODES];
+        let mut compiled_ptrs = [std::ptr::null::<c_void>(); MAX_GRAPH_NODES];
+        for (i, (rt, comp)) in nodes.iter_mut().zip(graph.nodes.iter()).enumerate() {
+            params_ptrs[i] = rt.params.as_mut_ptr();
+            runtime_ptrs[i] = (rt as *mut RuntimeNode).cast::<c_void>();
+            compiled_ptrs[i] = (comp as *const CompiledNode).cast::<c_void>();
+        }
+        let mut error_out: Option<RenderError> = None;
+        let mut ctx = JitBlockContext {
+            runtime_nodes_ptr: runtime_ptrs.as_ptr(),
+            runtime_params_ptr: params_ptrs.as_ptr(),
+            inline_state_ptr: inline_buf.as_mut_ptr(),
+            compiled_nodes_ptr: compiled_ptrs.as_ptr(),
+            controls_ptr: controls.as_ptr(),
+            controls_len: controls.len(),
+            expressions_ptr: expressions.as_ptr().cast::<JitExpressionInput>(),
+            input_ptr: input.map_or(std::ptr::null(), |s| s.as_ptr()),
+            output_ptr: output.as_mut_ptr(),
+            error_out: (&mut error_out as *mut Option<RenderError>).cast::<c_void>(),
+            start_frame: start,
+            frames,
+            rate,
+            settled: u8::from(settled),
+        };
+        let completed = unsafe { jit.call(&mut ctx) };
+        unpack_inline_state(graph, nodes, inline_buf);
+        (completed, error_out)
+    }
+
+    unsafe extern "C" fn jit_nonfinite_incoming(
+        _compiled_node: *const c_void,
+        error_out: *mut c_void,
+    ) {
+        let slot = unsafe { &mut *error_out.cast::<Option<RenderError>>() };
+        *slot = Some(RenderError::Nonfinite(
+            "instrument graph input sum is nonfinite".into(),
+        ));
+    }
+
+    unsafe extern "C" fn jit_nonfinite_output(
+        compiled_node: *const c_void,
+        error_out: *mut c_void,
+    ) {
+        let compiled = unsafe { &*compiled_node.cast::<CompiledNode>() };
+        let slot = unsafe { &mut *error_out.cast::<Option<RenderError>>() };
+        *slot = Some(RenderError::Nonfinite(format!(
+            "instrument graph node {} produced a nonfinite sample",
+            compiled.id
+        )));
+    }
+
+    unsafe extern "C" fn jit_mod_product_nonfinite(
+        compiled_node: *const c_void,
+        index: usize,
+        _value: f64,
+        error_out: *mut c_void,
+    ) {
+        let compiled = unsafe { &*compiled_node.cast::<CompiledNode>() };
+        let slot = unsafe { &mut *error_out.cast::<Option<RenderError>>() };
+        *slot = Some(RenderError::Nonfinite(format!(
+            "modulation {} product is nonfinite",
+            compiled.modulations[index].id
+        )));
+    }
+
+    unsafe extern "C" fn jit_mod_sum_nonfinite(
+        compiled_node: *const c_void,
+        index: usize,
+        _value: f64,
+        error_out: *mut c_void,
+    ) {
+        let compiled = unsafe { &*compiled_node.cast::<CompiledNode>() };
+        let slot = unsafe { &mut *error_out.cast::<Option<RenderError>>() };
+        *slot = Some(RenderError::Nonfinite(format!(
+            "modulation {} sum is nonfinite",
+            compiled.modulations[index].id
+        )));
+    }
+
+    unsafe extern "C" fn jit_param_out_of_range(
+        compiled_node: *const c_void,
+        index: usize,
+        value: f64,
+        error_out: *mut c_void,
+    ) {
+        let compiled = unsafe { &*compiled_node.cast::<CompiledNode>() };
+        let slot = unsafe { &mut *error_out.cast::<Option<RenderError>>() };
+        *slot = Some(RenderError::Nonfinite(format!(
+            "{} value {value} is outside its finite range",
+            compiled.specs[index].context
+        )));
+    }
+
+    unsafe extern "C" fn jit_onepole_invalid(
+        _compiled_node: *const c_void,
+        error_out: *mut c_void,
+    ) {
+        let slot = unsafe { &mut *error_out.cast::<Option<RenderError>>() };
+        *slot = Some(RenderError::Nonfinite(
+            "one-pole input, state, or parameter is invalid".into(),
+        ));
+    }
+
+    unsafe extern "C" fn jit_svf_cutoff_invalid(
+        compiled_node: *const c_void,
+        cutoff: f64,
+        rate: f64,
+        error_out: *mut c_void,
+    ) {
+        let compiled = unsafe { &*compiled_node.cast::<CompiledNode>() };
+        let slot = unsafe { &mut *error_out.cast::<Option<RenderError>>() };
+        *slot = Some(RenderError::Nonfinite(format!(
+            "state-variable filter {} cutoff {cutoff} Hz must be strictly within 0..{} Hz",
+            compiled.id,
+            rate / 2.0
+        )));
+    }
+
+    unsafe extern "C" fn jit_svf_q_invalid(
+        _compiled_node: *const c_void,
+        q: f64,
+        _rate: f64,
+        error_out: *mut c_void,
+    ) {
+        let slot = unsafe { &mut *error_out.cast::<Option<RenderError>>() };
+        *slot = Some(RenderError::Nonfinite(format!(
+            "state-variable filter q {q} must be finite and positive"
+        )));
+    }
+
+    #[inline(always)]
+    unsafe fn write_result(
+        compiled: &CompiledNode,
+        res: Result<[f64; 2]>,
+        out_l: *mut f64,
+        out_r: *mut f64,
+        error_out: *mut c_void,
+    ) -> u8 {
+        match res {
+            Ok(output) => {
+                if !output[0].is_finite() || !output[1].is_finite() {
+                    let slot = unsafe { &mut *error_out.cast::<Option<RenderError>>() };
+                    *slot = Some(RenderError::Nonfinite(format!(
+                        "instrument graph node {} produced a nonfinite sample",
+                        compiled.id
+                    )));
+                    return 1;
+                }
+                unsafe {
+                    *out_l = output[0];
+                    *out_r = output[1];
+                }
+                0
+            }
+            Err(failure) => {
+                let slot = unsafe { &mut *error_out.cast::<Option<RenderError>>() };
+                *slot = Some(failure);
+                1
+            }
+        }
+    }
+
+    unsafe extern "C" fn jit_setup_static_node(
+        compiled_node: *const c_void,
+        runtime_node: *mut c_void,
+        controls_ptr: *const f64,
+        controls_len: usize,
+        error_out: *mut c_void,
+    ) -> u8 {
+        let compiled = unsafe { &*compiled_node.cast::<CompiledNode>() };
+        let runtime = unsafe { &mut *runtime_node.cast::<RuntimeNode>() };
+        let controls = if controls_len == 0 || controls_ptr.is_null() {
+            &[][..]
+        } else {
+            unsafe { std::slice::from_raw_parts(controls_ptr, controls_len) }
+        };
+        runtime.params.clone_from_slice(&compiled.base_params);
+        apply_controls(
+            compiled,
+            controls,
+            ParameterRate::Sample,
+            &mut runtime.params,
+        );
+        if let Err(failure) = validate_params(compiled, &runtime.params) {
+            let slot = unsafe { &mut *error_out.cast::<Option<RenderError>>() };
+            *slot = Some(failure);
+            1
+        } else {
+            0
+        }
+    }
+
+    macro_rules! def_eval_fn {
+        ($name:ident, |$compiled:ident, $runtime:ident, $frame:ident, $rate:ident, $pitch:ident, $timbre:ident, $pressure:ident, $in_l:ident, $in_r:ident| $body:block) => {
+            unsafe extern "C" fn $name(
+                compiled_node: *const c_void,
+                runtime_node: *mut c_void,
+                $frame: u64,
+                $rate: f64,
+                $pitch: f64,
+                $timbre: f64,
+                $pressure: f64,
+                $in_l: f64,
+                $in_r: f64,
+                out_l: *mut f64,
+                out_r: *mut f64,
+                error_out: *mut c_void,
+            ) -> u8 {
+                let $compiled = unsafe { &*compiled_node.cast::<CompiledNode>() };
+                let $runtime = unsafe { &mut *runtime_node.cast::<RuntimeNode>() };
+                #[allow(unused_mut)]
+                let mut eval_inner = || -> Result<[f64; 2]> { $body };
+                let res = eval_inner();
+                unsafe { write_result($compiled, res, out_l, out_r, error_out) }
+            }
+        };
+    }
+
+    def_eval_fn!(
+        jit_eval_oscillator,
+        |compiled, runtime, _frame, rate, pitch_hz, _timbre, _pressure, _in_l, _in_r| {
+            if let ProcessorState::Oscillator(osc) = &mut runtime.state {
+                let frequency = pitch_hz * runtime.params[slot::OSCILLATOR_RATIO]
+                    + runtime.params[slot::OSCILLATOR_FREQUENCY];
+                validate_frequency(frequency)?;
+                Ok([
+                    osc.sample(frequency, rate)? * runtime.params[slot::OSCILLATOR_LEVEL],
+                    0.0,
+                ])
+            } else {
+                Err(RenderError::RenderState(format!(
+                    "instrument graph node {} has mismatched compiled state",
+                    compiled.id
+                )))
+            }
+        }
+    );
+
+    def_eval_fn!(jit_eval_lfo, |compiled,
+                                runtime,
+                                _frame,
+                                rate,
+                                _pitch,
+                                _timbre,
+                                _pressure,
+                                _in_l,
+                                _in_r| {
+        if let ProcessorState::Lfo(osc) = &mut runtime.state {
+            Ok([
+                osc.sample(runtime.params[slot::LFO_FREQUENCY], rate)?
+                    * runtime.params[slot::LFO_LEVEL],
+                0.0,
+            ])
+        } else {
+            Err(RenderError::RenderState(format!(
+                "instrument graph node {} has mismatched compiled state",
+                compiled.id
+            )))
+        }
+    });
+
+    def_eval_fn!(jit_eval_adsr, |compiled,
+                                 runtime,
+                                 frame,
+                                 rate,
+                                 _pitch,
+                                 _timbre,
+                                 _pressure,
+                                 _in_l,
+                                 _in_r| {
+        if let ProcessorState::Adsr(env) = &runtime.state {
+            Ok([env.value(frame, rate)?, 0.0])
+        } else {
+            Err(RenderError::RenderState(format!(
+                "instrument graph node {} has mismatched compiled state",
+                compiled.id
+            )))
+        }
+    });
+
+    def_eval_fn!(jit_eval_drive, |compiled,
+                                  runtime,
+                                  _frame,
+                                  _rate,
+                                  _pitch,
+                                  _timbre,
+                                  _pressure,
+                                  in_l,
+                                  in_r| {
+        if let (ProcessorCode::Drive(channels), ProcessorState::Drive(states)) =
+            (&compiled.processor, &mut runtime.state)
+        {
+            if runtime.params[slot::DRIVE_REFERENCE] > 0.0
+                && runtime.params[slot::DRIVE_DRIVE] == 0.0
+            {
+                return Err(RenderError::Nonfinite(format!(
+                    "drive node {} needs a positive drive when reference is set",
+                    compiled.id
+                )));
+            }
+            let mut out = [0.0; 2];
+            let audio_input = [in_l, in_r];
+            for ch in 0..*channels {
+                let (value, after) = states[ch].sample(
+                    audio_input[ch],
+                    runtime.params[slot::DRIVE_DRIVE],
+                    runtime.params[slot::DRIVE_BIAS],
+                    runtime.params[slot::DRIVE_LEVEL],
+                    runtime.params[slot::DRIVE_REFERENCE],
+                );
+                out[ch] = value;
+                states[ch] = after;
+            }
+            Ok(out)
+        } else {
+            Err(RenderError::RenderState(format!(
+                "instrument graph node {} has mismatched compiled state",
+                compiled.id
+            )))
+        }
+    });
+
+    def_eval_fn!(
+        jit_eval_wavetable,
+        |compiled, runtime, _frame, rate, pitch_hz, _timbre, _pressure, _in_l, _in_r| {
+            if let (ProcessorCode::Wavetable(table), ProcessorState::Wavetable { phase }) =
+                (&compiled.processor, &mut runtime.state)
+            {
+                let frequency = pitch_hz * runtime.params[slot::WAVETABLE_RATIO]
+                    + runtime.params[slot::WAVETABLE_FREQUENCY];
+                validate_frequency(frequency)?;
+                let out = table.sample(
+                    *phase,
+                    runtime.params[slot::WAVETABLE_POSITION],
+                    frequency,
+                    rate,
+                )? * runtime.params[slot::WAVETABLE_LEVEL];
+                *phase = (*phase + frequency / rate).rem_euclid(1.0);
+                Ok([out, 0.0])
+            } else {
+                Err(RenderError::RenderState(format!(
+                    "instrument graph node {} has mismatched compiled state",
+                    compiled.id
+                )))
+            }
+        }
+    );
+
+    def_eval_fn!(jit_eval_pluck, |compiled,
+                                  runtime,
+                                  _frame,
+                                  _rate,
+                                  pitch_hz,
+                                  _timbre,
+                                  _pressure,
+                                  _in_l,
+                                  _in_r| {
+        if let ProcessorState::Pluck(pluck) = &mut runtime.state {
+            Ok([
+                pluck.sample(
+                    pitch_hz * runtime.params[slot::PLUCK_RATIO],
+                    runtime.params[slot::PLUCK_DECAY],
+                    runtime.params[slot::PLUCK_DAMPING],
+                    runtime.params[slot::PLUCK_LEVEL],
+                    runtime.params[slot::PLUCK_PICKUP],
+                )?,
+                0.0,
+            ])
+        } else {
+            Err(RenderError::RenderState(format!(
+                "instrument graph node {} has mismatched compiled state",
+                compiled.id
+            )))
+        }
+    });
+
+    def_eval_fn!(jit_eval_modal, |compiled,
+                                  runtime,
+                                  _frame,
+                                  _rate,
+                                  pitch_hz,
+                                  _timbre,
+                                  _pressure,
+                                  in_l,
+                                  _in_r| {
+        if let ProcessorState::Modal(bank) = &mut runtime.state {
+            let shape = crate::modal::ModalShape {
+                frequency_hz: pitch_hz * runtime.params[slot::MODAL_RATIO],
+                stretch: runtime.params[slot::MODAL_STRETCH],
+                decay: runtime.params[slot::MODAL_DECAY],
+                damping: runtime.params[slot::MODAL_DAMPING],
+                position: runtime.params[slot::MODAL_POSITION],
+                detune_cents: runtime.params[slot::MODAL_DETUNE],
+            };
+            Ok([
+                bank.sample(&shape, runtime.params[slot::MODAL_LEVEL], in_l)?,
+                0.0,
+            ])
+        } else {
+            Err(RenderError::RenderState(format!(
+                "instrument graph node {} has mismatched compiled state",
+                compiled.id
+            )))
+        }
+    });
+
+    def_eval_fn!(jit_eval_bow, |compiled,
+                                runtime,
+                                frame,
+                                _rate,
+                                pitch_hz,
+                                _timbre,
+                                _pressure,
+                                _in_l,
+                                _in_r| {
+        if let ProcessorState::Bow(bow) = &mut runtime.state {
+            let params = crate::bow::BowParams {
+                ratio: runtime.params[slot::BOW_RATIO],
+                dynamics: runtime.params[slot::BOW_DYNAMICS],
+                position: runtime.params[slot::BOW_POSITION],
+                vibrato: runtime.params[slot::BOW_VIBRATO],
+                rate: runtime.params[slot::BOW_RATE],
+                attack: runtime.params[slot::BOW_ATTACK],
+                timing: runtime.params[slot::BOW_TIMING],
+                spread: runtime.params[slot::BOW_SPREAD],
+                width: runtime.params[slot::BOW_WIDTH],
+                pan: runtime.params[slot::BOW_PAN],
+                level: runtime.params[slot::BOW_LEVEL],
+            };
+            bow.sample(frame, &params, pitch_hz)
+        } else {
+            Err(RenderError::RenderState(format!(
+                "instrument graph node {} has mismatched compiled state",
+                compiled.id
+            )))
+        }
+    });
+
+    def_eval_fn!(jit_eval_sample, |compiled,
+                                   runtime,
+                                   _frame,
+                                   rate,
+                                   pitch_hz,
+                                   _timbre,
+                                   _pressure,
+                                   _in_l,
+                                   _in_r| {
+        process_graph_node(
+            compiled,
+            &mut runtime.state,
+            &runtime.params,
+            0,
+            rate,
+            pitch_hz,
+            0.0,
+            0.0,
+            [0.0, 0.0],
+            true,
+        )
+    });
+
+    def_eval_fn!(
+        jit_eval_fallback,
+        |compiled, runtime, frame, rate, pitch_hz, timbre, pressure, in_l, in_r| {
+            process_graph_node(
+                compiled,
+                &mut runtime.state,
+                &runtime.params,
+                frame,
+                rate,
+                pitch_hz,
+                timbre,
+                pressure,
+                [in_l, in_r],
+                true,
+            )
+        }
+    );
 }
 
 #[cfg(test)]

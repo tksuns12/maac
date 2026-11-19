@@ -26,6 +26,8 @@ pub mod generic_render;
 pub mod graph;
 pub mod instrument_plan;
 pub mod interchange;
+#[cfg(feature = "jit")]
+pub(crate) mod jit;
 mod kit;
 pub mod kit_instrument;
 pub mod library;
