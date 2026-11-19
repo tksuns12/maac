@@ -2,7 +2,7 @@
 name = "maac"
 version = "0.6.2"
 edition = "2021"
-description = "[Unmaintained] MaaC (Music as a Code) parser, compiler, and renderer"
+description = "MaaC (Music as a Code) parser, compiler, and renderer"
 license = "Apache-2.0"
 repository = "https://github.com/tksuns12/maac"
 readme = "README.md"

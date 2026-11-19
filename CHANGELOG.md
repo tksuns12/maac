@@ -5,6 +5,11 @@ promise of compatibility beyond the documented interfaces.
 
 ## [Unreleased]
 
+### Changed
+
+- Development resumed on 2026-11-19; removed the unmaintained notice from the
+  README and `Cargo.toml`.
+
 ## [0.6.2] — 2026-11-18
 
 MaaC is no longer maintained. This last release has no new features. After a
