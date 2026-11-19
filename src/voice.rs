@@ -4423,9 +4423,19 @@ node keys {{ instrument = &studio.{name}; }}
             let interpreter = program(&source, name);
             JIT_DISABLED.with(|flag| flag.set(false));
             assert!(interpreter.voice.jit.is_none());
-            if jit.voice.jit.is_some() {
-                compiled_with_jit += 1;
+            // A graph that stops compiling falls back silently, so require it.
+            // Graphs with delay lines are never compiled and would be listed here.
+            assert!(
+                jit.voice.jit.is_some(),
+                "{name}: voice graph not JIT-compiled"
+            );
+            if let Some(shared) = &jit.shared {
+                assert!(
+                    shared.jit.is_some(),
+                    "{name}: shared graph not JIT-compiled"
+                );
             }
+            compiled_with_jit += 1;
             for ahead in [false, true] {
                 let (expected, expected_error, _) = play(&interpreter, 12_000, ahead);
                 let (actual, actual_error, _) = play(&jit, 12_000, ahead);
@@ -4442,6 +4452,59 @@ node keys {{ instrument = &studio.{name}; }}
             compiled_with_jit > 0,
             "no studio instrument was JIT-compiled"
         );
+    }
+
+    fn bits_of(frames: &[Vec<f64>]) -> Vec<Vec<u64>> {
+        frames
+            .iter()
+            .map(|frame| frame.iter().map(|x| x.to_bits()).collect())
+            .collect()
+    }
+
+    /// Inline node kinds that no studio patch reaches: Random, Timbre,
+    /// Pressure, Balance and Width, each driving a sample-rate parameter.
+    #[cfg(feature = "jit")]
+    #[test]
+    fn jit_matches_the_interpreter_on_the_remaining_inline_nodes() {
+        let source = r#"maac 1;
+project p { score = [0q, 1q]; rate = 48000Hz; tempo = &clock; meter = &metre; output = &sound:out; }
+tempo clock { points = [(0q, 120bpm, step)]; }
+meter metre { points = [(0q, 4, 4)]; }
+instrument wide { channels = 2;
+  voice v { channels = 2; amplitude = &amp; output = &spread:out;
+    node amp { type = "synth.adsr/1"; params = { sustain = 1; release = 50ms; }; }
+    node osc { type = "synth.saw/1"; }
+    node dice { type = "synth.random/1"; }
+    node bright { type = "synth.timbre/1"; }
+    node press { type = "synth.pressure/1"; }
+    node place { type = "synth.pan/1"; }
+    node lean { type = "synth.balance/1"; }
+    node spread { type = "synth.width/1"; }
+    connect osc_place { from = &osc:out; to = &place:in; }
+    connect place_lean { from = &place:out; to = &lean:in; }
+    connect lean_spread { from = &lean:out; to = &spread:in; }
+    modulate m1 { from = &dice:out; to = &lean.params.balance; depth = 0.5; }
+    modulate m2 { from = &bright:out; to = &spread.params.width; depth = 1; }
+    modulate m3 { from = &press:out; to = &place.params.pan; depth = 0.5; }
+  }
+}
+node sound { instrument = &wide; }
+"#;
+        let jit = program(source, "wide");
+        JIT_DISABLED.with(|flag| flag.set(true));
+        let interpreter = program(source, "wide");
+        JIT_DISABLED.with(|flag| flag.set(false));
+        assert!(
+            jit.voice.jit.is_some(),
+            "the wide graph was not JIT-compiled"
+        );
+        for ahead in [false, true] {
+            let (expected, expected_error, _) = play(&interpreter, 12_000, ahead);
+            let (actual, actual_error, _) = play(&jit, 12_000, ahead);
+            assert!(expected_error.is_none(), "{expected_error:?}");
+            assert_eq!(expected_error, actual_error);
+            assert_eq!(bits_of(&expected), bits_of(&actual), "ahead={ahead}");
+        }
     }
 
     #[cfg(feature = "jit")]
@@ -4475,7 +4538,7 @@ node sound { instrument = &swept; }
         let (actual, actual_error, _) = play(&jit, 20_000, false);
         assert!(expected_error.is_some());
         assert_eq!(expected_error, actual_error);
-        assert_eq!(expected, actual);
+        assert_eq!(bits_of(&expected), bits_of(&actual));
     }
 
     #[test]
