@@ -3854,6 +3854,14 @@ pub fn one_pole_step(
     Ok(output)
 }
 
+/// Cosine and sine of a pan angle. The interpreter and the JIT both call this
+/// one function, never inlined, so the compiler cannot fuse the two calls into
+/// a single `sincos` in only one of them and change the last bit.
+#[inline(never)]
+pub(crate) fn pan_gains(theta: f64) -> [f64; 2] {
+    [theta.cos(), theta.sin()]
+}
+
 /// One sample of the equal-power mono-to-stereo pan reference processor.
 pub fn pan_sample(input: f64, pan: f64) -> Result<[f64; 2]> {
     if !input.is_finite() || !pan.is_finite() {
@@ -3863,7 +3871,8 @@ pub fn pan_sample(input: f64, pan: f64) -> Result<[f64; 2]> {
     }
     let clamped = pan.clamp(-1.0, 1.0);
     let theta = (clamped + 1.0) * std::f64::consts::PI / 4.0;
-    let output = [input * theta.cos(), input * theta.sin()];
+    let [cos, sin] = pan_gains(theta);
+    let output = [input * cos, input * sin];
     if output.iter().any(|sample| !sample.is_finite()) {
         return Err(RenderError::Nonfinite("pan output is nonfinite".into()));
     }

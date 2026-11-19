@@ -315,7 +315,7 @@ impl CompiledInstrument {
         )?;
 
         #[cfg(feature = "jit")]
-        {
+        if !jit_disabled_for_test() {
             voice.jit = jit_bridge::compile_graph(&voice);
             if let Some(shared_graph) = shared.as_mut() {
                 shared_graph.jit = jit_bridge::compile_graph(shared_graph);
@@ -4388,6 +4388,96 @@ node sound { instrument = &swept; }
         assert_eq!(frame_by_frame, ahead);
     }
 
+    /// The JIT kernel must reproduce the interpreter bit for bit, including the
+    /// frame and message of the first error.
+    #[cfg(feature = "jit")]
+    #[test]
+    fn jit_output_is_bit_identical_to_the_interpreter() {
+        let builtin = |name: &str| {
+            format!(
+                r#"maac 1;
+project p {{ score = [0q, 1q]; rate = 48000Hz; tempo = &clock; meter = &metre; output = &keys:out; }}
+tempo clock {{ points = [(0q, 120bpm, step)]; }}
+meter metre {{ points = [(0q, 4, 4)]; }}
+import studio {{ builtin = "std/studio/1.2.0"; }}
+node keys {{ instrument = &studio.{name}; }}
+"#
+            )
+        };
+        let mut compiled_with_jit = 0;
+        for name in [
+            "electric_piano",
+            "piano",
+            "bass",
+            "pad",
+            "electric_guitar",
+            "kick",
+            "snare",
+            "closed_hat",
+            "open_hat",
+            "crash",
+        ] {
+            let source = builtin(name);
+            let jit = program(&source, name);
+            JIT_DISABLED.with(|flag| flag.set(true));
+            let interpreter = program(&source, name);
+            JIT_DISABLED.with(|flag| flag.set(false));
+            assert!(interpreter.voice.jit.is_none());
+            if jit.voice.jit.is_some() {
+                compiled_with_jit += 1;
+            }
+            for ahead in [false, true] {
+                let (expected, expected_error, _) = play(&interpreter, 12_000, ahead);
+                let (actual, actual_error, _) = play(&jit, 12_000, ahead);
+                assert_eq!(expected_error, actual_error, "{name} ahead={ahead}");
+                assert_eq!(expected.len(), actual.len(), "{name} ahead={ahead}");
+                for (frame, (e, a)) in expected.iter().zip(&actual).enumerate() {
+                    let bits = |f: &Vec<f64>| f.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+                    assert_eq!(bits(e), bits(a), "{name} ahead={ahead} frame {frame}");
+                }
+            }
+        }
+        // A graph that stops compiling falls back silently and loses the speed.
+        assert!(
+            compiled_with_jit > 0,
+            "no studio instrument was JIT-compiled"
+        );
+    }
+
+    #[cfg(feature = "jit")]
+    #[test]
+    fn jit_reports_the_interpreters_first_error() {
+        let source = r#"maac 1;
+project p { score = [0q, 1q]; rate = 48000Hz; tempo = &clock; meter = &metre; output = &sound:out; }
+tempo clock { points = [(0q, 120bpm, step)]; }
+meter metre { points = [(0q, 4, 4)]; }
+instrument swept { channels = 1;
+  voice v { channels = 1; amplitude = &amp; output = &tone:out;
+    node amp { type = "synth.adsr/1"; params = { sustain = 1; release = 50ms; }; }
+    node osc { type = "synth.saw/1"; }
+    node sweep { type = "synth.lfo/1"; params = { frequency = 3Hz; }; }
+    node tone { type = "synth.svf/1"; config = { channels = 1; mode = lowpass; }; params = { cutoff = 1000Hz; }; }
+    connect osc_tone { from = &osc:out; to = &tone:in; }
+    modulate swing { from = &sweep:out; to = &tone.params.cutoff; depth = -2000Hz; }
+  }
+}
+node sound { instrument = &swept; }
+"#;
+        let jit = program(source, "swept");
+        JIT_DISABLED.with(|flag| flag.set(true));
+        let interpreter = program(source, "swept");
+        JIT_DISABLED.with(|flag| flag.set(false));
+        assert!(
+            jit.voice.jit.is_some(),
+            "the sweep graph was not JIT-compiled"
+        );
+        let (expected, expected_error, _) = play(&interpreter, 20_000, false);
+        let (actual, actual_error, _) = play(&jit, 20_000, false);
+        assert!(expected_error.is_some());
+        assert_eq!(expected_error, actual_error);
+        assert_eq!(expected, actual);
+    }
+
     #[test]
     fn a_change_inside_a_block_rendered_ahead_is_refused() {
         let source = r#"maac 1;
@@ -4409,6 +4499,24 @@ node keys { instrument = &studio.electric_piano; }
             runtime.note_off("a", 10),
             Err(RenderError::RenderState(_))
         ));
+    }
+}
+
+#[cfg(all(feature = "jit", test))]
+thread_local! {
+    /// Lets a test compile the same instrument for the interpreter alone.
+    static JIT_DISABLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(feature = "jit")]
+fn jit_disabled_for_test() -> bool {
+    #[cfg(test)]
+    {
+        JIT_DISABLED.with(std::cell::Cell::get)
+    }
+    #[cfg(not(test))]
+    {
+        false
     }
 }
 

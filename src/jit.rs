@@ -172,8 +172,9 @@ unsafe extern "C" fn jit_math_tan(x: f64) -> f64 {
 }
 unsafe extern "C" fn jit_math_sincos(x: f64, out_cos: *mut f64, out_sin: *mut f64) {
     unsafe {
-        *out_cos = x.cos();
-        *out_sin = x.sin();
+        let [cos, sin] = crate::dsp::pan_gains(x);
+        *out_cos = cos;
+        *out_sin = sin;
     }
 }
 unsafe extern "C" fn jit_math_cos(x: f64) -> f64 {
