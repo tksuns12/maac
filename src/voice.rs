@@ -4294,6 +4294,63 @@ mod block_tests {
         frames: u64,
         ahead: bool,
     ) -> (Vec<Vec<f64>>, Option<(u64, RenderError)>, usize) {
+        play_with(compiled, frames, ahead, false)
+    }
+
+    /// As `play`; `expressive` gives every note a timbre and a pressure ramp
+    /// from 0 to 1 over 4800 frames, which `play` leaves at zero.
+    fn play_with(
+        compiled: &Arc<CompiledInstrument>,
+        frames: u64,
+        ahead: bool,
+        expressive: bool,
+    ) -> (Vec<Vec<f64>>, Option<(u64, RenderError)>, usize) {
+        use crate::plan::{
+            ExpressionClock, Interpolation, PressureExpressionPoint, TimbreExpressionPoint,
+        };
+        let ramp = |a: i64, b: i64| -> Vec<(crate::Rational, crate::Rational, Interpolation)> {
+            vec![
+                (
+                    crate::Rational::from_integer(0.into()),
+                    crate::Rational::from_integer(a.into()),
+                    Interpolation::Linear,
+                ),
+                (
+                    crate::Rational::from_integer(1.into()),
+                    crate::Rational::from_integer(b.into()),
+                    Interpolation::Step,
+                ),
+            ]
+        };
+        let expressions = |gate: u64| {
+            let timbre = TimbreExpression {
+                clock: ExpressionClock::Normalized,
+                points: ramp(0, 1)
+                    .into_iter()
+                    .map(|(position, value, shape)| TimbreExpressionPoint {
+                        position,
+                        value,
+                        shape,
+                    })
+                    .collect(),
+            };
+            let pressure = PressureExpression {
+                clock: ExpressionClock::Normalized,
+                points: ramp(1, 0)
+                    .into_iter()
+                    .map(|(position, value, shape)| PressureExpressionPoint {
+                        position,
+                        value,
+                        shape,
+                    })
+                    .collect(),
+            };
+            let per_frame = crate::Rational::new(1.into(), 4800.into());
+            (
+                ExpressionRuntime::new(Arc::new(timbre), per_frame.clone(), gate),
+                ExpressionRuntime::new(Arc::new(pressure), per_frame, gate),
+            )
+        };
         let ons = [
             (0, "a", 220.0, 0.9),
             (100, "b", 330.0, 0.4),
@@ -4313,7 +4370,24 @@ mod block_tests {
             runtime.prune_finished(frame).unwrap();
             for (at, address, pitch, velocity) in ons {
                 if at == frame {
-                    runtime.note_on(address, pitch, velocity, frame).unwrap();
+                    if expressive {
+                        let (timbre, pressure) = expressions(4800);
+                        runtime
+                            .note_on_with_expressions(
+                                address,
+                                pitch,
+                                velocity,
+                                frame,
+                                None,
+                                None,
+                                Some(timbre),
+                                Some(pressure),
+                                None,
+                            )
+                            .unwrap();
+                    } else {
+                        runtime.note_on(address, pitch, velocity, frame).unwrap();
+                    }
                 }
             }
             let horizon = if ahead {
@@ -4416,6 +4490,9 @@ node keys {{ instrument = &studio.{name}; }}
             "closed_hat",
             "open_hat",
             "crash",
+            "clap",
+            "low_tom",
+            "high_tom",
         ] {
             let source = builtin(name);
             let jit = program(&source, name);
@@ -4439,6 +4516,7 @@ node keys {{ instrument = &studio.{name}; }}
             for ahead in [false, true] {
                 let (expected, expected_error, _) = play(&interpreter, 12_000, ahead);
                 let (actual, actual_error, _) = play(&jit, 12_000, ahead);
+                assert!(expected_error.is_none(), "{name}: {expected_error:?}");
                 assert_eq!(expected_error, actual_error, "{name} ahead={ahead}");
                 assert_eq!(expected.len(), actual.len(), "{name} ahead={ahead}");
                 for (frame, (e, a)) in expected.iter().zip(&actual).enumerate() {
@@ -4447,11 +4525,7 @@ node keys {{ instrument = &studio.{name}; }}
                 }
             }
         }
-        // A graph that stops compiling falls back silently and loses the speed.
-        assert!(
-            compiled_with_jit > 0,
-            "no studio instrument was JIT-compiled"
-        );
+        assert_eq!(compiled_with_jit, 13);
     }
 
     #[cfg(feature = "jit")]
@@ -4500,8 +4574,8 @@ node sound { instrument = &wide; }
             "the wide graph was not JIT-compiled"
         );
         for ahead in [false, true] {
-            let (expected, expected_error, _) = play(&interpreter, 12_000, ahead);
-            let (actual, actual_error, _) = play(&jit, 12_000, ahead);
+            let (expected, expected_error, _) = play_with(&interpreter, 12_000, ahead, true);
+            let (actual, actual_error, _) = play_with(&jit, 12_000, ahead, true);
             assert!(expected_error.is_none(), "{expected_error:?}");
             assert_eq!(expected_error, actual_error);
             assert_eq!(bits_of(&expected), bits_of(&actual), "ahead={ahead}");
