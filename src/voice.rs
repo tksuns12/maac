@@ -4582,6 +4582,240 @@ node sound { instrument = &wide; }
         }
     }
 
+    /// Splitmix64, so the fuzz below is the same on every run and platform.
+    #[cfg(feature = "jit")]
+    struct Rng(u64);
+
+    #[cfg(feature = "jit")]
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z ^ (z >> 31)
+        }
+
+        fn unit(&mut self) -> f64 {
+            (self.next() >> 11) as f64 / (1u64 << 53) as f64
+        }
+
+        fn below(&mut self, n: usize) -> usize {
+            (self.next() % n as u64) as usize
+        }
+    }
+
+    /// A value for a control, biased to the edges the kernels branch on:
+    /// both bounds, just inside them, zero of either sign, the smallest
+    /// subnormal and the default. Only values the control accepts are returned.
+    #[cfg(feature = "jit")]
+    fn extreme_control(control: &CompiledControl, rng: &mut Rng) -> f64 {
+        let bounds = &control.bounds;
+        let span = bounds.max - bounds.min;
+        let candidates = [
+            control.default,
+            bounds.min,
+            bounds.max,
+            next_up(bounds.min),
+            next_down(bounds.max),
+            0.0,
+            -0.0,
+            f64::from_bits(1),
+            -f64::from_bits(1),
+            f64::MIN_POSITIVE / 2.0,
+            bounds.min + span * rng.unit(),
+            bounds.min + span * rng.unit() * 1e-9,
+        ];
+        let value = candidates[rng.below(candidates.len())];
+        if validate_value(value, bounds).is_ok() {
+            value
+        } else {
+            control.default
+        }
+    }
+
+    #[cfg(feature = "jit")]
+    fn next_up(x: f64) -> f64 {
+        if x.is_finite() {
+            f64::from_bits(if x >= 0.0 {
+                x.to_bits() + 1
+            } else {
+                x.to_bits() - 1
+            })
+        } else {
+            x
+        }
+    }
+
+    #[cfg(feature = "jit")]
+    fn next_down(x: f64) -> f64 {
+        -next_up(-x)
+    }
+
+    /// Plays notes at extreme pitches and velocities under extreme controls,
+    /// switching controls at note boundaries. Returns every frame or the first
+    /// error with its frame.
+    #[cfg(feature = "jit")]
+    fn play_fuzz(
+        compiled: &Arc<CompiledInstrument>,
+        seed: u64,
+        frames: u64,
+        ahead: bool,
+    ) -> (Vec<Vec<f64>>, Option<(u64, RenderError)>) {
+        let mut rng = Rng(seed);
+        let pitches = [
+            1e-300,
+            f64::MIN_POSITIVE,
+            0.5,
+            27.5,
+            220.0,
+            4186.0,
+            11_999.0,
+            23_999.9,
+            24_000.0,
+            30_000.0,
+        ];
+        let velocities = [0.0, -0.0, f64::from_bits(1), 0.5, 1.0];
+        // Event frames, sorted and distinct, so blocks end where they do.
+        let mut at: Vec<u64> = (0..6).map(|_| rng.next() % (frames / 2)).collect();
+        at.sort_unstable();
+        at.dedup();
+        struct Event {
+            frame: u64,
+            address: String,
+            on: Option<(f64, f64)>,
+            controls: BTreeMap<String, f64>,
+        }
+        let mut events = Vec::new();
+        for (i, &frame) in at.iter().enumerate() {
+            let controls = compiled
+                .controls
+                .iter()
+                .map(|control| (control.name.clone(), extreme_control(control, &mut rng)))
+                .collect();
+            events.push(Event {
+                frame,
+                address: format!("n{i}"),
+                on: Some((
+                    pitches[rng.below(pitches.len())],
+                    velocities[rng.below(velocities.len())],
+                )),
+                controls,
+            });
+            events.push(Event {
+                frame: frame + 1 + rng.next() % (frames / 3),
+                address: format!("n{i}"),
+                on: None,
+                controls: BTreeMap::new(),
+            });
+        }
+        events.sort_by_key(|event| (event.frame, event.on.is_none()));
+        let event_frames: Vec<u64> = {
+            let mut frames: Vec<u64> = events.iter().map(|event| event.frame).collect();
+            frames.dedup();
+            frames
+        };
+        let mut runtime =
+            InstrumentRuntime::new(Arc::clone(compiled), 8, 48000.0, &BTreeMap::new()).unwrap();
+        let mut rendered = Vec::new();
+        for frame in 0..frames {
+            for event in events.iter().filter(|event| event.frame == frame) {
+                let outcome = match event.on {
+                    None => runtime.note_off(&event.address, frame),
+                    Some((pitch, velocity)) => {
+                        let controls = runtime.update_controls(&event.controls);
+                        controls.and_then(|()| {
+                            runtime.note_on(event.address.clone(), pitch, velocity, frame)
+                        })
+                    }
+                };
+                if let Err(error) = outcome {
+                    return (rendered, Some((frame, error)));
+                }
+            }
+            if let Err(error) = runtime.prune_finished(frame) {
+                return (rendered, Some((frame, error)));
+            }
+            let horizon = if ahead {
+                event_frames
+                    .iter()
+                    .copied()
+                    .find(|&event| event > frame)
+                    .unwrap_or(frames)
+            } else {
+                frame + 1
+            };
+            match runtime.render_until(frame, horizon) {
+                Ok(output) => rendered.push(output.to_vec()),
+                Err(error) => return (rendered, Some((frame, error))),
+            }
+        }
+        (rendered, None)
+    }
+
+    /// Seeded fuzz of extreme pitches, velocities and control values: the JIT
+    /// must match the interpreter on every bit and on the first error.
+    #[cfg(feature = "jit")]
+    #[test]
+    fn jit_matches_the_interpreter_on_extreme_inputs() {
+        let studio = |name: &str| {
+            format!(
+                r#"maac 1;
+project p {{ score = [0q, 1q]; rate = 48000Hz; tempo = &clock; meter = &metre; output = &keys:out; }}
+tempo clock {{ points = [(0q, 120bpm, step)]; }}
+meter metre {{ points = [(0q, 4, 4)]; }}
+import studio {{ builtin = "std/studio/1.2.0"; }}
+node keys {{ instrument = &studio.{name}; }}
+"#
+            )
+        };
+        let mut errors = 0;
+        let mut runs = 0;
+        for name in [
+            "electric_piano",
+            "piano",
+            "bass",
+            "pad",
+            "electric_guitar",
+            "kick",
+            "snare",
+            "closed_hat",
+            "open_hat",
+            "crash",
+            "clap",
+            "low_tom",
+            "high_tom",
+        ] {
+            let source = studio(name);
+            let jit = program(&source, name);
+            JIT_DISABLED.with(|flag| flag.set(true));
+            let interpreter = program(&source, name);
+            JIT_DISABLED.with(|flag| flag.set(false));
+            for seed in 0..10u64 {
+                for ahead in [false, true] {
+                    let (expected, expected_error) = play_fuzz(&interpreter, seed, 9_000, ahead);
+                    let (actual, actual_error) = play_fuzz(&jit, seed, 9_000, ahead);
+                    runs += 1;
+                    errors += usize::from(expected_error.is_some());
+                    assert_eq!(
+                        expected_error, actual_error,
+                        "{name} seed {seed} ahead={ahead}"
+                    );
+                    assert_eq!(
+                        bits_of(&expected),
+                        bits_of(&actual),
+                        "{name} seed {seed} ahead={ahead}"
+                    );
+                }
+            }
+        }
+        // Both outcomes must be exercised, or the fuzz proves little.
+        assert!(
+            errors > 0 && errors < runs,
+            "{errors} of {runs} runs failed"
+        );
+    }
+
     #[cfg(feature = "jit")]
     #[test]
     fn jit_reports_the_interpreters_first_error() {
