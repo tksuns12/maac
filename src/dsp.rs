@@ -1580,13 +1580,24 @@ impl<'a> DspEngine<'a> {
         // Instruments render first: their processor carries strings, and
         // cloning it every frame allocated. An instrument whose parameters
         // cannot change renders ahead until its next event.
-        let horizon = if self.fixed_parameters[node_index] {
+        // A node with no modulation or control also renders ahead while its
+        // automations hold still, to the first frame where one may change.
+        let horizon = if self.incoming_modulations[node_index].is_empty()
+            && self.nodes[node_index].control.is_none()
+        {
             let frames = &self.event_frames[node_index];
-            frames
+            let mut horizon = frames
                 .get(frames.partition_point(|&event| event <= frame))
                 .copied()
                 .unwrap_or(self.plan.output.total_frames)
-                .min(self.plan.output.total_frames)
+                .min(self.plan.output.total_frames);
+            for lane in self.nodes[node_index].automations.values() {
+                if horizon <= frame + 1 {
+                    break;
+                }
+                horizon = horizon.min(lane.lane.stable_until(frame, self.tempo.score_end_frame));
+            }
+            horizon.max(frame + 1)
         } else {
             frame + 1
         };
@@ -3483,6 +3494,32 @@ impl AutomationLanes {
         Self { lanes, tail_value }
     }
 
+    /// The first frame after `frame` at which the value may differ from its
+    /// value at `frame`; `frame + 1` when that is not known to be later.
+    fn stable_until(&self, frame: u64, end: u64) -> u64 {
+        if let [lane] = self.lanes.as_slice() {
+            return lane.stable_until(frame, end);
+        }
+        if frame >= end {
+            return u64::MAX;
+        }
+        let frame_i64 = i64::try_from(frame).unwrap_or(i64::MAX);
+        match self
+            .lanes
+            .iter()
+            .rposition(|lane| lane.knot_frames[0] <= frame_i64)
+        {
+            Some(index) => {
+                let own = self.lanes[index].stable_until(frame, end);
+                match self.lanes.get(index + 1) {
+                    Some(next) => own.min(next.knot_frames[0].max(0) as u64),
+                    None => own,
+                }
+            }
+            None => (self.lanes[0].knot_frames[0].max(0) as u64).min(end),
+        }
+    }
+
     fn value_at(&self, frame: u64, tempo: &TempoRuntime) -> Result<f64> {
         if let [lane] = self.lanes.as_slice() {
             return lane.value_at(frame, tempo);
@@ -3527,6 +3564,31 @@ struct AutomationPointRuntime {
 }
 
 impl AutomationRuntime {
+    /// The first frame after `frame` at which this lane's value may differ
+    /// from its value at `frame`. Only spans whose value cannot move are
+    /// reported (before the first knot, a step segment, after the last knot);
+    /// inside a ramp the answer is `frame + 1`. It mirrors `value_at`.
+    fn stable_until(&self, frame: u64, end: u64) -> u64 {
+        if frame >= end {
+            return u64::MAX;
+        }
+        let frame_i64 = i64::try_from(frame).unwrap_or(i64::MAX);
+        let Some(mut index) = self.knot_frames.iter().rposition(|knot| *knot <= frame_i64) else {
+            return (self.knot_frames[0].max(0) as u64).min(end);
+        };
+        if index >= self.points.len() {
+            index = self.points.len() - 1;
+        }
+        if index + 1 >= self.points.len() {
+            return end;
+        }
+        if self.points[index].shape == Interpolation::Step {
+            (self.knot_frames[index + 1].max(0) as u64).min(end)
+        } else {
+            frame + 1
+        }
+    }
+
     fn value_at(&self, frame: u64, tempo: &TempoRuntime) -> Result<f64> {
         // Both score- and seconds-clock automation stop advancing when the
         // score reaches its physical end. Evaluate the lane at that exact end
@@ -4629,5 +4691,84 @@ place play {{ pattern=&phrase;track=&notes;at=0q; }}
                 .unwrap_err();
             assert_eq!(error.code(), "E_RENDER_STATE");
         }
+    }
+}
+
+#[cfg(test)]
+mod stable_until_tests {
+    use super::*;
+
+    fn lane(knots: &[(i64, f64, Interpolation)]) -> AutomationRuntime {
+        AutomationRuntime {
+            clock: AutomationClock::Seconds,
+            at: 0.0,
+            at_exact: None,
+            points: knots
+                .iter()
+                .map(|&(frame, value, shape)| AutomationPointRuntime {
+                    position: frame as f64,
+                    value,
+                    shape,
+                })
+                .collect(),
+            point_positions_exact: Vec::new(),
+            knot_frames: knots.iter().map(|knot| knot.0).collect(),
+            base: 0.5,
+            tail_value: 0.0,
+            starts_by_end: true,
+        }
+    }
+
+    const END: u64 = 1000;
+
+    #[test]
+    fn holds_before_the_first_knot_and_in_step_segments() {
+        use Interpolation::{Linear, Step};
+        let lane = lane(&[(100, 1.0, Step), (300, 2.0, Linear), (400, 3.0, Step)]);
+        assert_eq!(lane.stable_until(0, END), 100);
+        assert_eq!(lane.stable_until(99, END), 100);
+        assert_eq!(lane.stable_until(100, END), 300);
+        assert_eq!(lane.stable_until(299, END), 300);
+    }
+
+    #[test]
+    fn a_ramp_never_looks_ahead() {
+        use Interpolation::{Exponential, Linear, Step};
+        let lane = lane(&[
+            (100, 1.0, Linear),
+            (300, 2.0, Exponential),
+            (400, 3.0, Step),
+        ]);
+        assert_eq!(lane.stable_until(100, END), 101);
+        assert_eq!(lane.stable_until(250, END), 251);
+        assert_eq!(lane.stable_until(300, END), 301);
+    }
+
+    #[test]
+    fn the_last_value_holds_to_the_end_and_the_tail_forever() {
+        use Interpolation::Step;
+        let lane = lane(&[(100, 1.0, Step), (400, 3.0, Step)]);
+        assert_eq!(lane.stable_until(400, END), END);
+        assert_eq!(lane.stable_until(999, END), END);
+        assert_eq!(lane.stable_until(END, END), u64::MAX);
+    }
+
+    #[test]
+    fn a_step_segment_stops_at_the_end_of_the_score() {
+        use Interpolation::Step;
+        let lane = lane(&[(100, 1.0, Step), (5000, 3.0, Step)]);
+        assert_eq!(lane.stable_until(100, END), END);
+    }
+
+    #[test]
+    fn several_lanes_stop_where_the_next_one_starts() {
+        use Interpolation::Step;
+        let first = lane(&[(100, 1.0, Step), (200, 2.0, Step)]);
+        let second = lane(&[(500, 4.0, Step), (600, 5.0, Step)]);
+        let lanes = AutomationLanes::new(vec![first, second]);
+        assert_eq!(lanes.stable_until(0, END), 100);
+        assert_eq!(lanes.stable_until(200, END), 500);
+        assert_eq!(lanes.stable_until(500, END), 600);
+        assert_eq!(lanes.stable_until(600, END), END);
     }
 }
