@@ -36,6 +36,11 @@ jobs:
       - name: Run tests and doctests
         run: cargo test --locked --offline
 
+      - name: Clippy and tests with the jit feature
+        run: |
+          cargo clippy --all-targets --features jit --locked --offline -- -D warnings
+          cargo test --features jit --locked --offline
+
       - name: Build release artifact
         run: cargo build --release --locked --offline
 

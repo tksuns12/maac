@@ -1,7 +1,7 @@
 //! Cranelift-backed JIT compiler for `CompiledGraph` block execution.
 //!
 //! Preserves bit-identical `binary64` semantics with the Rust interpreter:
-//! - FMA contraction is disabled (`enable_fma = false` where supported).
+//! - No fused multiply-add is emitted (Cranelift only does so for explicit `fma`).
 //! - Transcendentals and complex processors call Rust `extern "C"` helpers.
 //! - Frame 0 is peeled so non-modulated parameter validation runs in exact
 //!   topological order matching the interpreter's first-error precedence.
@@ -239,8 +239,8 @@ pub fn compile_graph_jit(
 ) -> Option<Arc<JitCompiledGraph>> {
     let mut flag_builder = settings::builder();
     let _ = flag_builder.set("opt_level", "speed");
-    // Preserve strict IEEE-754 rounding without FMA contraction.
-    let _ = flag_builder.set("enable_fma", "false");
+    // Cranelift only emits fused multiply-add for an explicit `fma`
+    // instruction, which this generator never uses, so rounding stays strict.
     let _ = flag_builder.set("is_pic", "false");
 
     let isa_builder = cranelift_native::builder().ok()?;
@@ -796,14 +796,19 @@ pub fn compile_graph_jit(
                     }
                     JitNodeKind::Noise => {
                         let level = load_param(fb, 0); // slot::NOISE_LEVEL == 0
-                        let st = fb.ins().load(I32, mem, inline_state_ptr, state_byte_off);
+                                                       // The state word is a u64 holding a u32; load all 8 bytes so the
+                                                       // result does not depend on host endianness.
+                        let st64 = fb.ins().load(I64, mem, inline_state_ptr, state_byte_off);
+                        let st = fb.ins().ireduce(I32, st64);
                         let s13 = fb.ins().ishl_imm_u(st, 13);
                         let st1 = fb.ins().bxor(st, s13);
                         let s17 = fb.ins().ushr_imm_u(st1, 17);
                         let st2 = fb.ins().bxor(st1, s17);
                         let s5 = fb.ins().ishl_imm_u(st2, 5);
                         let next = fb.ins().bxor(st2, s5);
-                        fb.ins().store(mem, next, inline_state_ptr, state_byte_off);
+                        let next64 = fb.ins().uextend(I64, next);
+                        fb.ins()
+                            .store(mem, next64, inline_state_ptr, state_byte_off);
                         let next_f64 = fb.ins().fcvt_from_uint(F64, next);
                         let scale = fb.ins().f64const(2147483648.0);
                         let div = fb.ins().fdiv(next_f64, scale);

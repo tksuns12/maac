@@ -5,6 +5,11 @@ promise of compatibility beyond the documented interfaces.
 
 ## [Unreleased]
 
+### Added
+
+- Optional `jit` cargo feature (off by default): a Cranelift renderer for
+  instrument graphs that produces output bit-identical to the interpreter.
+
 ### Changed
 
 - Development resumed on 2026-11-19; removed the unmaintained notice from the
