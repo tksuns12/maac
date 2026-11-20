@@ -11,10 +11,15 @@ promise of compatibility beyond the documented interfaces.
   preview of an excerpt that renders only `[N - K, M)` from reset state.
   `DspEngine::render_span` and `FrameRange::with_preroll` expose it to library
   callers.
-- `DspEngine::render_with_checkpoints`, `DspEngine::restore` and `Checkpoint`:
-  keep the engine's state at chosen frames of a render and continue the render
-  from one, with output bit-identical to the uninterrupted render. A first step
-  toward fast exact re-renders after an edit; not yet used by the CLI.
+- `DspEngine::render_with_checkpoints`, `DspEngine::restore_from` and
+  `Checkpoint`: keep the engine's state at chosen frames of a render and
+  continue the render from one, with output bit-identical to the uninterrupted
+  render.
+- `CheckpointSet`, `Reuse` and `Resumed`: after an edit to notes, hits or
+  automation lanes, `CheckpointSet::reuse_for` reports the earliest frame the
+  edit can change, and `resume` renders from the last checkpoint before it,
+  bit-identical to a full render of the edited plan. Any other kind of edit
+  reports `Reuse::Full` with the reason. Not yet used by the CLI.
 - Optional `jit` cargo feature (off by default): a Cranelift renderer for
   instrument graphs that produces output bit-identical to the interpreter.
 
