@@ -188,6 +188,10 @@ pub struct DspEngine<'a> {
     /// Whether a fixed node's parameters have been evaluated, validated and
     /// applied since the last reset.
     parameters_settled: Vec<bool>,
+    /// For a node with no modulation and no control: the first frame at which
+    /// its automations may change a parameter. Until then re-evaluating,
+    /// validating and applying its parameters would repeat the last frame.
+    parameters_valid_until: Vec<u64>,
     /// Each node's frames with a note, hit or release, ascending.
     event_frames: Vec<Vec<u64>>,
 }
@@ -632,6 +636,7 @@ impl<'a> DspEngine<'a> {
             })
             .collect();
         let parameters_settled = vec![false; nodes.len()];
+        let parameters_valid_until = vec![0; nodes.len()];
         let mut event_frames = vec![Vec::new(); nodes.len()];
         for (frame, indices) in on_events.iter().chain(off_events.iter()) {
             for &index in indices {
@@ -663,6 +668,7 @@ impl<'a> DspEngine<'a> {
             frame: vec![0.0; channels],
             fixed_parameters,
             parameters_settled,
+            parameters_valid_until,
             event_frames,
         })
     }
@@ -1160,6 +1166,7 @@ impl<'a> DspEngine<'a> {
             node.reset();
         }
         self.parameters_settled.fill(false);
+        self.parameters_valid_until.fill(0);
         self.frame.fill(0.0);
     }
 
@@ -1205,6 +1212,9 @@ impl<'a> DspEngine<'a> {
             if self.fixed_parameters[index] && self.parameters_settled[index] {
                 continue;
             }
+            if frame < self.parameters_valid_until[index] {
+                continue;
+            }
             // Only automated parameters differ from the base values, so they
             // are the only ones written.
             for (name, lane) in &node.automations {
@@ -1233,6 +1243,16 @@ impl<'a> DspEngine<'a> {
                 effect.update_controls(&node.current_params)?;
             }
             self.parameters_settled[index] = true;
+            self.parameters_valid_until[index] =
+                if self.incoming_modulations[index].is_empty() && node.control.is_none() {
+                    node.automations
+                        .values()
+                        .map(|lane| lane.lane.stable_until(frame, self.tempo.score_end_frame))
+                        .min()
+                        .unwrap_or(u64::MAX)
+                } else {
+                    0
+                };
         }
         Ok(())
     }
@@ -1241,7 +1261,9 @@ impl<'a> DspEngine<'a> {
     /// then apply audio targets before the existing note-off/note-on sequence.
     fn evaluate_modulated_parameters(&mut self, frame: u64) -> Result<()> {
         for (index, node) in self.nodes.iter_mut().enumerate() {
-            if self.fixed_parameters[index] && self.parameters_settled[index] {
+            if (self.fixed_parameters[index] && self.parameters_settled[index])
+                || frame < self.parameters_valid_until[index]
+            {
                 continue;
             }
             for (name, value) in &node.base_params {
@@ -1279,6 +1301,7 @@ impl<'a> DspEngine<'a> {
         for index in 0..self.nodes.len() {
             if self.nodes[index].control.is_some()
                 || (self.fixed_parameters[index] && self.parameters_settled[index])
+                || frame < self.parameters_valid_until[index]
             {
                 continue;
             }
@@ -1315,6 +1338,16 @@ impl<'a> DspEngine<'a> {
                     )
                 })?;
             }
+            self.parameters_valid_until[index] = if self.incoming_modulations[index].is_empty() {
+                self.nodes[index]
+                    .automations
+                    .values()
+                    .map(|lane| lane.lane.stable_until(frame, self.tempo.score_end_frame))
+                    .min()
+                    .unwrap_or(u64::MAX)
+            } else {
+                0
+            };
         }
         Ok(())
     }
