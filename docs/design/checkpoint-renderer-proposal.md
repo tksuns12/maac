@@ -162,12 +162,22 @@ clone**: it also copies the immutable tables (events, connections, node
 parameters), so the numbers below are an upper bound for the "mutable state
 only" snapshot in section 1.
 
-Correctness: on every self-contained example in `examples/` and on the five
-songs, with checkpoints every 4 s (offset by 37 frames so they fall inside
-render blocks), taking checkpoints does not change the render, and resuming
-from the first, a middle and the last checkpoint reproduces every f64 bit of
-the uninterrupted render. A control test shows a cold engine at the same frame
-does not (the check can fail). Tests: `tests/checkpoint_resume.rs`.
+Correctness: on every example in `examples/` that renders on its own (the
+asset-backed ones and the subdirectories included, loaded through the real
+bundle loader; only `showcase`, whose plan exceeds the song byte limit, and the
+`sounds` libraries are left out) and on the five songs, taking checkpoints does
+not change the render, and resuming from a checkpoint reproduces every f64 bit
+of the uninterrupted render. Spacings: a fifth of the song (odd, so off the
+block size) for examples up to 20 s, 1009 and 4801 frames on `hello` and
+`core-delay`, and 4 s plus 37 frames for the longer examples and the songs
+(those run in the ignored test). The songs pass on the interpreter and on the
+jit build. A control test shows a cold engine at the same frame does not match.
+Tests: `tests/checkpoint_resume.rs`.
+
+Because the snapshot is a derived deep clone, these tests pass whatever
+section 1 lists: they do **not** verify the inventory of mutable state. That
+check belongs to Phase B, when state is copied into a new engine instead of
+cloned.
 
 Cost (`tests/checkpoint_cost.rs`, spacing 4 s):
 
@@ -179,13 +189,25 @@ Cost (`tests/checkpoint_cost.rs`, spacing 4 s):
 | Ferry | 34 | 1.7 / 1.8 MB | 57 MB | 0.43 ms |
 | Lofi | 19 | 1.1 / 1.2 MB | 21 MB | 0.21 ms |
 
-A freshly built engine is already 0.8 to 3.6 MB of that, so the state that
-actually changes is under about 2 MB per checkpoint and the exit condition
-("4 s spacing is unaffordable") is not met by a wide margin. Taking a
+A freshly built engine is already 0.8 to 3.6 MB of that. Part of it is the
+immutable tables and part is mutable buffers allocated at construction
+(reverb and delay history), so the size of a mutable-only snapshot is not
+measured; it is somewhere between a few hundred KB and the numbers above. At
+these sizes the exit condition ("4 s spacing is unaffordable") is not met by a
+wide margin even for the whole-engine clone. Taking a
 checkpoint costs under a millisecond; the horizon cap changed no output bit.
+A `Checkpoint<'a>` holds a `DspEngine<'a>` and so borrows the plan, which
+section 1 said it would not; Phase B's `session.update(new_plan)` has to
+copy mutable state into an engine of the new plan, not reuse the clone.
+
+Misuse is refused rather than approximated: a restored engine takes no
+checkpoints, serves one render from its checkpoint frame, refuses any other
+span without losing its state, stays refused if that render fails part-way
+(until `reset` or `restore`), and spacing under 32 frames is rejected.
+
 Not measured: render time with versus without the cap (the render times in
 that run include the cap and checkpoints but were not compared with a plain
-run on a quiet machine), and the five-song run on the jit build.
+run on a quiet machine), and the cost table on the jit build.
 
 ## Alternatives considered
 

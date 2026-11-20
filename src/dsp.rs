@@ -218,13 +218,22 @@ impl Checkpoint<'_> {
     }
 }
 
+/// Marks a restored engine whose resumed render has started: its state is no
+/// longer a checkpoint's.
+const RESUME_SPENT: u64 = u64::MAX;
+
+/// The closest two checkpoints may be. Each one copies the engine, so a spacing
+/// of a few frames would spend the render copying.
+const MIN_CHECKPOINT_SPACING: u64 = 32;
+
 type NodeReplacementFill<'a> = dyn FnMut(usize, u64, &mut [f64]) -> Result<()> + 'a;
 
 /// The frames a render produces, `start .. end`. A span from frame 0 renders
 /// exactly as the full plan does, up to `end`. A span that starts later is a
 /// preview: the engine starts from reset state at `start`, restarts there any
 /// note still sounding, and drops earlier hits, so its frames only
-/// approximate a full render's.
+/// approximate a full render's. (An engine made by [`DspEngine::restore`] is
+/// the exception: it continues the exact render from its checkpoint frame.)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RenderSpan {
     pub start: u64,
@@ -711,7 +720,8 @@ impl<'a> DspEngine<'a> {
 
     /// Render the plan's output over `span` only, like [`Self::render`]: a
     /// span from frame 0 gives exactly the full render's frames up to its end,
-    /// and a later start is a preview (see [`RenderSpan`]).
+    /// and a later start is a preview (see [`RenderSpan`]), except on an engine
+    /// from [`Self::restore`], whose first render continues the exact render.
     pub fn render_span<F>(&mut self, span: RenderSpan, mut callback: F) -> Result<()>
     where
         F: FnMut(&[f64]) -> Result<()>,
@@ -1080,7 +1090,7 @@ impl<'a> DspEngine<'a> {
             outputs.push(samples);
         }
         let mut reductions = vec![0.0; taps.len()];
-        let resume_frame = self.resume_frame.take();
+        let resume_frame = self.resume_frame;
         if resume_frame.is_none() {
             self.reset();
         }
@@ -1107,8 +1117,16 @@ impl<'a> DspEngine<'a> {
         }
         if resume_frame.is_some_and(|frame| frame != span.start) {
             return Err(RenderError::RenderState(
-                "a restored engine must continue at its checkpoint frame".into(),
+                "a restored engine renders once, from its checkpoint frame; \
+                 restore it again or reset it"
+                    .into(),
             ));
+        }
+        // From here the restored state is being consumed. If the render stops
+        // early the engine is left half-way, so it stays refused until it is
+        // reset or restored again, rather than silently rendering a preview.
+        if resume_frame.is_some() {
+            self.resume_frame = Some(RESUME_SPENT);
         }
         // A resumed render continues the exact render; only a preview that
         // starts cold restarts the notes sounding at its first frame.
@@ -1240,6 +1258,9 @@ impl<'a> DspEngine<'a> {
             }
             callback(&outputs, &reductions)?;
         }
+        if self.resume_frame == Some(RESUME_SPENT) {
+            self.resume_frame = None;
+        }
         Ok(())
     }
 
@@ -1252,10 +1273,10 @@ impl<'a> DspEngine<'a> {
     where
         F: FnMut(&[f64]) -> Result<()>,
     {
-        if every == 0 {
-            return Err(RenderError::RenderState(
-                "checkpoint spacing must be at least one frame".into(),
-            ));
+        if every < MIN_CHECKPOINT_SPACING {
+            return Err(RenderError::RenderState(format!(
+                "checkpoint spacing must be at least {MIN_CHECKPOINT_SPACING} frames"
+            )));
         }
         self.checkpoint_every = every;
         self.checkpoints.clear();
@@ -1267,9 +1288,14 @@ impl<'a> DspEngine<'a> {
     }
 
     /// An engine that continues the render from `checkpoint`: call
-    /// [`Self::render_span`] from `checkpoint.frame()`.
+    /// [`Self::render_span`] with a span that starts at `checkpoint.frame()`.
+    /// The frames equal the uninterrupted render's, bit for bit. The restored
+    /// state serves one render: if that render fails, or the engine is reset,
+    /// restore it again. A span that starts elsewhere is refused. The engine
+    /// takes no checkpoints of its own.
     pub fn restore(checkpoint: &Checkpoint<'a>) -> Self {
         let mut engine = (*checkpoint.engine).clone();
+        engine.checkpoint_every = 0;
         engine.resume_frame = Some(checkpoint.frame);
         engine
     }
@@ -1309,6 +1335,7 @@ impl<'a> DspEngine<'a> {
         self.parameters_settled.fill(false);
         self.parameters_valid_until.fill(0);
         self.frame.fill(0.0);
+        self.resume_frame = None;
     }
 
     fn read_delays(&mut self) {
