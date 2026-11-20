@@ -236,7 +236,10 @@ maac analyze main.maac --window region:b --preroll 4 --json   # quick, approxima
 - **Excerpts for the listener.** To compare one change, compile each variant
   with `maac compile --profile song` and render the same section of each with
   `maac render --start-frame N --end-frame M`; a short clip per variant is
-  quicker to judge than a whole track.
+  quicker to judge than a whole track. An exact excerpt still executes the
+  whole plan, so for quick listening add `--preroll-frames` (about two
+  seconds or more than the longest reverb tail); it renders only the clip and
+  is approximate.
 
 ## 4. Mix and master
 

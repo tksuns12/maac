@@ -48,3 +48,37 @@ signatures.
 This contract covers offline WAV excerpts only. It does not add source/build
 cropping, retained-plan schema fields, seek checkpoints, realtime playback, or
 new language syntax.
+
+## Previews: `--preroll-frames`
+
+An exact excerpt still executes the whole plan, so a two-second excerpt of a
+song takes as long as the song. For listening while editing, add
+`--preroll-frames K`:
+
+```text
+maac render PLAN -o WAV --start-frame N --end-frame M --preroll-frames K
+```
+
+`--preroll-frames` needs `--start-frame`. The engine starts at frame
+`max(0, N - K)` from reset state, restarts any note still sounding there with
+a fresh envelope, drops earlier hits, starts effects empty, and stops at `M`.
+The result is **a preview, not a slice of the full render**: it differs
+wherever the missing history was still audible, and it skips the validation
+of frames before `N - K` and from `M` on. When `N - K <= 0` the preview starts
+at frame 0 and equals the exact excerpt.
+
+How much preroll is enough depends on the plan's longest effect tails and
+sustained notes. On "Afterlight" (a two-second window in the middle of the
+song, Apple M1, release build with the `jit` feature):
+
+| Preroll | Render time | Difference from the exact excerpt |
+| --- | ---: | --- |
+| none (exact) | 41 s | 0 |
+| 1 s | 0.7 s | -16 dB (audible) |
+| 2 s | 0.9 s | -73 dB |
+| 4 s | 2.3 s | -110 dB |
+| 8 s | 5.2 s | bit-identical in 99% of samples |
+
+The library exposes the same as `DspEngine::render_span` and
+`FrameRange::with_preroll`.
+

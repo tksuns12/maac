@@ -9,7 +9,7 @@ language.
 | --- | --- |
 | `maac check [INPUT] [--project-root ROOT] [--profile default\|song]` | Resolve and budget-check a composition, or validate every library export |
 | `maac compile [INPUT] -o PLAN [--project-root ROOT] [--profile default\|song]` | Resolve a composition bundle and write an independently loadable versioned JSON plan |
-| `maac render PLAN -o WAV [--start-frame N --end-frame M] [--profile default\|song]` | Validate an explicit plan file under the caller's profile, then render it; an optional pair exports a reset-origin half-open frame excerpt |
+| `maac render PLAN -o WAV [--start-frame N --end-frame M [--preroll-frames K]] [--profile default\|song]` | Validate an explicit plan file under the caller's profile, then render it; an optional pair exports a reset-origin half-open frame excerpt; `--preroll-frames` renders a fast approximate preview of it instead |
 | `maac build [INPUT] -o WAV [--project-root ROOT] [--profile default\|song]` | Resolve, compile and render a composition bundle through the same selected limits |
 | `maac deliver INPUT --delivery ID --output-dir DIR [--target ID] [--profile default\|song]` | Render selected named targets from source or retained JSON, analyze final WAVs, and publish a manifest |
 | `maac instruments [NAME]` | List the built-in catalog, or show one instrument with controls, musical guidance and runnable usage |
@@ -59,7 +59,10 @@ tail, with `0 <= N <= M <= plan.output.total_frames`; an empty interval is a
 valid zero-frame WAV. The full plan is still validated and executed through
 its complete end, so stateful effects and diagnostics retain their preceding
 and trailing context. Only the selected frames are written. See the
-[reset-correct range contract](render-range.md).
+[reset-correct range contract](render-range.md). `--preroll-frames K` (with
+`--start-frame`) renders only `[N - K, M)` from reset state: a fast preview
+that approximates the excerpt; see
+[previews](render-range.md#previews---preroll-frames).
 
 Optional/directory entry and execution-profile forms above implement the
 [project-entrypoint extension](project-entrypoint.md); see its

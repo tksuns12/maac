@@ -684,6 +684,19 @@ impl<'a> DspEngine<'a> {
         })
     }
 
+    /// Render the plan's output over `span` only, like [`Self::render`]: a
+    /// span from frame 0 gives exactly the full render's frames up to its end,
+    /// and a later start is a preview (see [`RenderSpan`]).
+    pub fn render_span<F>(&mut self, span: RenderSpan, mut callback: F) -> Result<()>
+    where
+        F: FnMut(&[f64]) -> Result<()>,
+    {
+        let output = self.plan.output.output.clone();
+        self.render_ports_inner(&[output], &[], false, None, Some(span), |outputs, _| {
+            callback(&outputs[0])
+        })
+    }
+
     /// Capture selected ports from one complete graph execution. Buffers are reused each frame.
     pub fn render_ports<F>(&mut self, ports: &[PortRef], mut callback: F) -> Result<()>
     where

@@ -411,3 +411,118 @@ fn render_help_documents_the_paired_range_flags() {
     assert!(stdout.contains("--start-frame"));
     assert!(stdout.contains("--end-frame"));
 }
+
+fn compile_delay_plan(directory: &Path) -> PathBuf {
+    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/core-delay.maac");
+    let plan = directory.join("delay.json");
+    let compile = run(&[
+        Path::new("--json"),
+        Path::new("compile"),
+        source.as_path(),
+        Path::new("-o"),
+        plan.as_path(),
+    ]);
+    assert!(compile.status.success(), "compile failed: {:?}", compile);
+    plan
+}
+
+#[test]
+fn a_preview_that_reaches_back_to_frame_zero_is_exact() {
+    let directory = tempdir().unwrap();
+    let plan = compile_delay_plan(directory.path());
+    render_plan(directory.path(), &plan, "full.wav", &[]);
+    let args = [
+        Path::new("--start-frame"),
+        Path::new("2400"),
+        Path::new("--end-frame"),
+        Path::new("7200"),
+        Path::new("--preroll-frames"),
+        Path::new("5000"),
+    ];
+    let preview = render_plan(directory.path(), &plan, "preview.wav", &args);
+    assert_eq!(preview["frames"], 4_800);
+    let full = float_sample_bits(&directory.path().join("full.wav"));
+    let preview = float_sample_bits(&directory.path().join("preview.wav"));
+    assert_eq!(preview, full[2_400..7_200]);
+}
+
+#[test]
+fn a_short_preview_renders_the_requested_frames_from_reset_state() {
+    let directory = tempdir().unwrap();
+    let plan = compile_delay_plan(directory.path());
+    let args = [
+        Path::new("--start-frame"),
+        Path::new("20000"),
+        Path::new("--end-frame"),
+        Path::new("24800"),
+        Path::new("--preroll-frames"),
+        Path::new("100"),
+    ];
+    let preview = render_plan(directory.path(), &plan, "preview.wav", &args);
+    assert_eq!(preview["frames"], 4_800);
+    assert_eq!(preview["start_frame"], 20_000);
+    let samples = float_samples(&directory.path().join("preview.wav"));
+    assert!(!samples.is_empty() && samples.len().is_multiple_of(4_800));
+    assert!(samples.iter().all(|sample| sample.is_finite()));
+}
+
+#[test]
+fn a_preview_does_not_render_the_frames_after_it() {
+    // The plan overloads PCM16 shortly after frame 0. An exact excerpt of
+    // frame 0 still reports that (see the range test above); a preview of the
+    // same frame stops at its end and does not.
+    let directory = tempdir().unwrap();
+    let source = directory.path().join("overload.maac");
+    fs::write(&source, OVERLOAD_SOURCE).unwrap();
+    let plan = directory.path().join("overload.json");
+    let compile = run(&[
+        Path::new("--json"),
+        Path::new("compile"),
+        source.as_path(),
+        Path::new("-o"),
+        plan.as_path(),
+    ]);
+    assert!(compile.status.success(), "compile failed: {:?}", compile);
+    let render = |extra: &[&Path]| {
+        let mut args = vec![
+            Path::new("--json"),
+            Path::new("render"),
+            plan.as_path(),
+            Path::new("-o"),
+            Path::new("out.wav"),
+            Path::new("--force"),
+            Path::new("--format"),
+            Path::new("pcm16"),
+            Path::new("--start-frame"),
+            Path::new("0"),
+            Path::new("--end-frame"),
+            Path::new("1"),
+        ];
+        args.extend_from_slice(extra);
+        let mut command = Command::new(env!("CARGO_BIN_EXE_maac"));
+        command.current_dir(directory.path());
+        for argument in args {
+            command.arg(argument);
+        }
+        command.output().unwrap()
+    };
+    assert!(!render(&[]).status.success());
+    let preview = render(&[Path::new("--preroll-frames"), Path::new("1")]);
+    assert!(preview.status.success(), "preview failed: {preview:?}");
+}
+
+#[test]
+fn a_preroll_needs_a_start_frame() {
+    let directory = tempdir().unwrap();
+    let plan = compile_delay_plan(directory.path());
+    let result = run(&[
+        Path::new("--json"),
+        Path::new("render"),
+        plan.as_path(),
+        Path::new("-o"),
+        directory.path().join("x.wav").as_path(),
+        Path::new("--preroll-frames"),
+        Path::new("100"),
+    ]);
+    assert!(!result.status.success());
+}

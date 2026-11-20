@@ -7,6 +7,10 @@ promise of compatibility beyond the documented interfaces.
 
 ### Added
 
+- `maac render --preroll-frames K` (with `--start-frame`): a fast, approximate
+  preview of an excerpt that renders only `[N - K, M)` from reset state.
+  `DspEngine::render_span` and `FrameRange::with_preroll` expose it to library
+  callers.
 - Optional `jit` cargo feature (off by default): a Cranelift renderer for
   instrument graphs that produces output bit-identical to the interpreter.
 

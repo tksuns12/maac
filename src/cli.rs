@@ -3870,6 +3870,17 @@ fn parse_cli_with_process_options(
                 .value_name("M")
                 .value_parser(clap::value_parser!(u64))
                 .help("exclusive reset-origin engine frame at which an excerpt ends"),
+        )
+        .arg(
+            Arg::new("preroll-frames")
+                .long("preroll-frames")
+                .value_name("K")
+                .value_parser(clap::value_parser!(u64))
+                .requires("start-frame")
+                .help(
+                    "preview an excerpt: start rendering K frames before --start-frame \
+                     from reset state; fast but only approximates the full render",
+                ),
         );
     for name in [
         "check",
@@ -3919,7 +3930,14 @@ fn parse_cli_with_process_options(
             render.get_one::<u64>("end-frame"),
         ) {
             (None, None) => None,
-            (Some(start), Some(end)) => Some(FrameRange::new(*start, *end)),
+            (Some(start), Some(end)) => Some(
+                FrameRange::new(*start, *end).with_preroll(
+                    render
+                        .get_one::<u64>("preroll-frames")
+                        .copied()
+                        .unwrap_or(0),
+                ),
+            ),
             _ => {
                 return Err(ParsedArgsError::Usage(CliError::new(
                     "E_USAGE",

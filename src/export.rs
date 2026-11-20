@@ -85,6 +85,12 @@ pub struct WavStats {
 pub struct FrameRange {
     pub start_frame: u64,
     pub end_frame: u64,
+    /// Frames before `start_frame` from which a preview begins. Zero renders
+    /// from frame 0, so the excerpt is exactly the full render's frames; a
+    /// positive value starts from reset state that many frames earlier,
+    /// which is fast but only approximates the full render (see
+    /// [`crate::dsp::RenderSpan`]).
+    pub preroll_frames: u64,
 }
 
 impl FrameRange {
@@ -92,6 +98,24 @@ impl FrameRange {
         Self {
             start_frame,
             end_frame,
+            preroll_frames: 0,
+        }
+    }
+
+    /// The same range as a preview that starts `preroll_frames` early.
+    pub const fn with_preroll(self, preroll_frames: u64) -> Self {
+        Self {
+            preroll_frames,
+            ..self
+        }
+    }
+
+    /// The first frame the engine renders for this range.
+    fn render_start(&self) -> u64 {
+        if self.preroll_frames == 0 {
+            0
+        } else {
+            self.start_frame.saturating_sub(self.preroll_frames)
         }
     }
 }
@@ -301,8 +325,21 @@ fn write_wav_for_view<W: Write + Seek>(
     // writer boundary transactional for callers that supply their own sink,
     // and shares the timing allowance across validation and runtime setup.
     let mut engine = dsp::DspEngine::new_for_view(plan, limits).map_err(ExportError::Render)?;
-    write_wav_with_renderer(sink, plan.output, format, range, |callback| {
-        engine.render(callback)
+    // An exact excerpt is a slice of a full render that must itself be valid,
+    // so it renders the whole plan. A preview only needs its own frames.
+    let span = dsp::RenderSpan {
+        start: range.render_start(),
+        end: if range.preroll_frames == 0 {
+            plan.output.total_frames
+        } else {
+            range.end_frame
+        },
+    };
+    write_wav_with_renderer(sink, plan.output, format, range, span.start, |callback| {
+        if span.start >= span.end {
+            return Ok(());
+        }
+        engine.render_span(span, callback)
     })
 }
 
@@ -311,6 +348,7 @@ fn write_wav_with_renderer<W, R>(
     output: &OutputSettings,
     format: WavFormat,
     range: FrameRange,
+    first_frame: u64,
     render: R,
 ) -> Result<WavStats, ExportError>
 where
@@ -323,6 +361,7 @@ where
         output.channels,
         format,
         range,
+        first_frame,
         render,
     )
 }
@@ -333,6 +372,7 @@ fn write_wav_with_renderer_shape<W, R>(
     channels: u8,
     format: WavFormat,
     range: FrameRange,
+    first_frame: u64,
     render: R,
 ) -> Result<WavStats, ExportError>
 where
@@ -353,7 +393,7 @@ where
     // `finalize` flushes this buffer before it returns.
     let mut writer = WavWriter::new(BufWriter::new(sink), spec).map_err(ExportError::from_hound)?;
     let mut frames = 0u64;
-    let mut render_frame = 0u64;
+    let mut render_frame = first_frame;
     let mut write_error: Option<ExportError> = None;
     let render_result = render(&mut |frame| {
         if frame.len() != usize::from(channels) {
@@ -532,7 +572,7 @@ pub(crate) fn render_wav_to_path_disk_media(
 ) -> Result<WavStats, ExportError> {
     publish_wav_with(path.as_ref(), force, |file| {
         let range = FrameRange::new(0, plan.output().total_frames);
-        write_wav_with_renderer(file, plan.output(), format, range, |callback| {
+        write_wav_with_renderer(file, plan.output(), format, range, 0, |callback| {
             plan.render(callback)
         })
     })
@@ -555,6 +595,7 @@ pub(crate) fn render_wav_callback_to_path(
             channels,
             WavFormat::Float32,
             range,
+            0,
             render,
         )?;
         file.seek(SeekFrom::Start(0)).map_err(ExportError::from)?;
