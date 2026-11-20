@@ -211,6 +211,66 @@ Not measured: render time with versus without the cap (the render times in
 that run include the cap and checkpoints but were not compared with a plain
 run on a quiet machine), and the cost table on the jit build.
 
+## Phase B results (measured 2026-11-20)
+
+Built: a `Checkpoint` now owns only node state and borrows no plan;
+`DspEngine::restore_from` copies it into an engine built for any plan whose
+graph matches, and `CheckpointSet` (`src/dsp/checkpoint.rs`) decides which
+checkpoint an edit leaves valid. Phase A's clone tests could not check the
+inventory of mutable state; restoring into a freshly compiled second engine
+does, and passes on every example and song (nothing outside the nodes is
+mutated by a render).
+
+What an edit may keep (anything else renders from frame 0 and names what
+changed):
+
+- A note or hit that differs (found by node and address, compared on what the
+  engine schedules) bounds at its own on frame. For an instrument that reads
+  connected lines (a bowed section) the bound is also the on frame of the head
+  of the note's line, in both plans, because the head reads the whole line when
+  it starts; for any other instrument a joined note's effect on the note
+  before it happens at the joined note's own on frame.
+- An automation lane that differs bounds at the knot before the first one that
+  differs, or at the lane's start when its curve, anchor or base value differ,
+  or a lane is added or removed. A change in the value held after the score
+  ends counts only from the score's end.
+- Not compared: source spans, source hashes and execution identities (they
+  change with every edit of the text and a render never reads them), regions.
+
+Evidence (`tests/checkpoint_edit.rs`; every resumed tail equals a fresh render
+bit for bit, with a checkpoint exactly at the bound and on a 4801-frame grid):
+generated songs with a bowed line (joins, slides, slurs), polyphonic notes, a
+reverb, a delay loop and two automation lanes (some starting late), edited at
+random in fifteen ways. The default run is 26 accepted edits; the ignored
+sweep over 30 songs is 372 accepted edits, 312 resumed partway, 0 full renders
+and bit-exact on the interpreter, and the default run also passes on the jit
+build. A checkpoint placed one frame to 97 frames after the bound gave wrong
+frames or an error for 320 of 360 note edits, so the fuzz can see a bound that
+is too late. An independent review (outside the repo) resumed 41 edits on
+plans with modulation, kits with choke groups, non-bowed connected voices,
+expressions and several lanes on one parameter, from the bound and from
+earlier checkpoints, on both builds: no unsound bound.
+
+Two things the first version got wrong and the generated songs hid, now
+covered by tests that fail without the fix: provenance in the production
+settings and in instrument source spans made every edit to a real song a full
+render.
+
+Latency (release, interpreter, Afterlight, 164 s, 4 s checkpoints, edits to
+note velocities around 43 to 46 s): compile 0.09 s, diff and restore 0.03 to
+0.04 s each, rendering from the checkpoint to two seconds after the edit 1.4 to
+2.1 s, so about 1.5 to 2.3 s to hear an edit, against 12 s to render the same
+frames from frame 0. Measured on the jit build earlier: 1.1 to 2.3 s, with
+0.13 s each for the diff and restore (building the jit engine). Only edits
+near 43 to 46 s were measured.
+
+Not covered: edits that combine several changes beyond what the fuzz does
+(one at a time), asset-backed legacy kits, sample instruments, effect
+programs, tempo ramps with score-clock lanes; the diff builds a second engine
+(0.03 to 0.13 s) that `resume` then builds again, which Phase C can share.
+Slack that remains: a note edit bounds at the note's on frame even when the
+change is inaudible until later.
+
 ## Alternatives considered
 
 - **Preview only (done, PR #66).** Fast and good enough to audition when the
