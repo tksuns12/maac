@@ -4990,3 +4990,46 @@ mod stable_until_tests {
         assert_eq!(lanes.stable_until(600, END), END);
     }
 }
+
+#[cfg(test)]
+mod checkpoint_tests {
+    use super::*;
+
+    fn plan() -> Plan {
+        let source = r#"maac 1;
+project p { score=[0q,1/50q]; rate=48000Hz; tempo=&t; meter=&m; output=&s:out; tail=0s; requires=["maac.production/1"]; }
+tempo t { points=[(0q,120bpm,step)]; }
+meter m { points=[(0q,4,4)]; }
+node a { type="core.sine/1"; params={attack=0s;release=0s;level=0.2;}; }
+node s { type="core.sum/1"; config={channels=1;}; }
+connect c { from=&a:out; to=&s:in; }
+pattern phrase { length=1/50q; note n {at=0q;dur=1/50q;pitch=A4;velocity=1;} }
+track notes { target=&a:events; }
+place play { pattern=&phrase;track=&notes;at=0q; }
+"#;
+        crate::compile(&crate::parse(source).unwrap()).unwrap()
+    }
+
+    /// A restored engine must not lay down checkpoints of its own while it
+    /// resumes: nothing could reach them, and they would pile up.
+    #[test]
+    fn a_resumed_render_takes_no_checkpoints() {
+        let plan = plan();
+        let mut engine = DspEngine::new(&plan).unwrap();
+        let checkpoints = engine.render_with_checkpoints(64, |_| Ok(())).unwrap();
+        assert!(checkpoints.len() >= 2, "plan too short for the test");
+        let total = plan.output.total_frames;
+        let mut restored = DspEngine::restore(&checkpoints[0]);
+        assert_eq!(restored.checkpoint_every, 0);
+        restored
+            .render_span(
+                RenderSpan {
+                    start: checkpoints[0].frame(),
+                    end: total,
+                },
+                |_| Ok(()),
+            )
+            .unwrap();
+        assert!(restored.checkpoints.is_empty());
+    }
+}

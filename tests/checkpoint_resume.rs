@@ -245,7 +245,7 @@ fn tail_of(engine: &mut DspEngine<'_>, start: u64, end: u64) -> maac::dsp::Resul
 }
 
 #[test]
-fn a_restored_engine_keeps_no_checkpoints_and_renders_the_same_twice() {
+fn a_restored_engine_is_an_ordinary_engine_after_its_one_render() {
     let plan = example("effects");
     let total = plan.output().total_frames;
     let (plain, checkpoints) = render_checkpointed(&plan, (total / 5) | 1);
@@ -254,15 +254,9 @@ fn a_restored_engine_keeps_no_checkpoints_and_renders_the_same_twice() {
     let mut restored = DspEngine::restore(checkpoint);
     let tail = tail_of(&mut restored, checkpoint.frame(), total).unwrap();
     assert_eq!(bits(&plain[from..]), bits(&tail));
-    // After its one render it is an ordinary engine: a full render is exact
-    // and takes no checkpoints (none are reachable from a restored engine).
+    // After its one render it is an ordinary engine: a full render is exact.
     let full = tail_of(&mut restored, 0, total).unwrap();
     assert_eq!(bits(&plain), bits(&full));
-    assert!(restored
-        .render_with_checkpoints(48_000, |_| Ok(()))
-        .unwrap()
-        .iter()
-        .all(|taken| taken.frame() % 48_000 == 0));
 }
 
 #[test]

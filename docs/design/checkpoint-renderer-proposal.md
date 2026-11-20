@@ -170,8 +170,7 @@ not change the render, and resuming from a checkpoint reproduces every f64 bit
 of the uninterrupted render. Spacings: a fifth of the song (odd, so off the
 block size) for examples up to 20 s, 1009 and 4801 frames on `hello` and
 `core-delay`, and 4 s plus 37 frames for the longer examples and the songs
-(those run in the ignored test). The songs pass on the interpreter and on the
-jit build. A control test shows a cold engine at the same frame does not match.
+(those run in the ignored test). A control test shows a cold engine at the same frame does not match.
 Tests: `tests/checkpoint_resume.rs`.
 
 Because the snapshot is a derived deep clone, these tests pass whatever
@@ -199,6 +198,9 @@ checkpoint costs under a millisecond; the horizon cap changed no output bit.
 A `Checkpoint<'a>` holds a `DspEngine<'a>` and so borrows the plan, which
 section 1 said it would not; Phase B's `session.update(new_plan)` has to
 copy mutable state into an engine of the new plan, not reuse the clone.
+
+A restored engine lays down no checkpoints while it resumes, so the section 5
+session ("takes checkpoints as it goes") needs that added in Phase B or C.
 
 Misuse is refused rather than approximated: a restored engine takes no
 checkpoints, serves one render from its checkpoint frame, refuses any other
