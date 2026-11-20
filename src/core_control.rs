@@ -167,7 +167,7 @@ fn fractions(
     })
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct PreparedSpan {
     start: u64,
     end: u64,
@@ -259,7 +259,7 @@ fn end_cycle(config: &LfoConfig, output: &OutputSettings) -> Result<Rational, Pl
     };
     bounded(&config.phase + bounded(distance / &config.period)?)
 }
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct PreparedLfo {
     wave: LfoWave,
     frames: u64,

@@ -11,7 +11,7 @@ const ENGINE_RATE: u128 = 48_000;
 
 pub(crate) type KitSample = crate::audio_buffer::AudioBuffer;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Voice {
     sample: Arc<KitSample>,
     onset: u64,
@@ -36,7 +36,7 @@ impl Voice {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct KitRuntime {
     channels: u8,
     capacity: usize,

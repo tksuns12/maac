@@ -256,7 +256,7 @@ pub fn gate_frames(gate_seconds: &Rational, rate: u32) -> u64 {
     frames.ceil().to_integer().to_u64().unwrap_or(u64::MAX)
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct PieceRuntime {
     key: String,
     runtime: InstrumentRuntime,
@@ -271,7 +271,7 @@ struct PieceRuntime {
 }
 
 /// One kit instance: a polyphonic instrument runtime per piece.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct KitInstrumentRuntime {
     pieces: Vec<PieceRuntime>,
     channels: usize,
@@ -416,6 +416,12 @@ impl KitInstrumentRuntime {
         }
         self.output = sum;
         Ok(&self.output[..self.channels])
+    }
+
+    pub(crate) fn has_frames_ahead(&self, frame: u64) -> bool {
+        self.pieces
+            .iter()
+            .any(|piece| piece.runtime.has_frames_ahead(frame))
     }
 
     pub(crate) fn reset_state(&mut self) {

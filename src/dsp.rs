@@ -162,6 +162,7 @@ where
 }
 
 /// Resettable sample based renderer for one immutable performance plan.
+#[derive(Clone)]
 pub struct DspEngine<'a> {
     plan: PlanView<'a>,
     limits: PlanLimits,
@@ -194,6 +195,27 @@ pub struct DspEngine<'a> {
     parameters_valid_until: Vec<u64>,
     /// Each node's frames with a note, hit or release, ascending.
     event_frames: Vec<Vec<u64>>,
+    /// Block horizons stop at every multiple of this frame count, so an
+    /// instrument holds nothing rendered ahead there; 0 means no checkpoints.
+    checkpoint_every: u64,
+    checkpoints: Vec<Checkpoint<'a>>,
+    /// Set on an engine restored from a checkpoint: the frame it continues at.
+    resume_frame: Option<u64>,
+}
+
+/// The engine's state just before `frame` is rendered, on the plan it was
+/// taken from. Resuming from it renders the same frames the uninterrupted
+/// render does.
+#[derive(Clone)]
+pub struct Checkpoint<'a> {
+    frame: u64,
+    engine: Box<DspEngine<'a>>,
+}
+
+impl Checkpoint<'_> {
+    pub fn frame(&self) -> u64 {
+        self.frame
+    }
 }
 
 type NodeReplacementFill<'a> = dyn FnMut(usize, u64, &mut [f64]) -> Result<()> + 'a;
@@ -670,6 +692,9 @@ impl<'a> DspEngine<'a> {
             parameters_settled,
             parameters_valid_until,
             event_frames,
+            checkpoint_every: 0,
+            checkpoints: Vec::new(),
+            resume_frame: None,
         })
     }
 
@@ -1055,7 +1080,10 @@ impl<'a> DspEngine<'a> {
             outputs.push(samples);
         }
         let mut reductions = vec![0.0; taps.len()];
-        self.reset();
+        let resume_frame = self.resume_frame.take();
+        if resume_frame.is_none() {
+            self.reset();
+        }
         let output_node = *self
             .node_indices
             .get(&self.plan.output.output.node)
@@ -1077,9 +1105,17 @@ impl<'a> DspEngine<'a> {
                 span: None,
             }));
         }
+        if resume_frame.is_some_and(|frame| frame != span.start) {
+            return Err(RenderError::RenderState(
+                "a restored engine must continue at its checkpoint frame".into(),
+            ));
+        }
+        // A resumed render continues the exact render; only a preview that
+        // starts cold restarts the notes sounding at its first frame.
+        let preview = span.start > 0 && resume_frame.is_none();
         // A preview restarts, at its first frame, every note that sounds
         // through it, in the order the score would have started them.
-        let mut carried: Vec<usize> = if span.start > 0 {
+        let mut carried: Vec<usize> = if preview {
             self.events
                 .iter()
                 .enumerate()
@@ -1097,7 +1133,7 @@ impl<'a> DspEngine<'a> {
         // never sounding, so it gets no note-off, and a note that joins one
         // must start its own voice.
         let carried_set: std::collections::HashSet<usize> = carried.iter().copied().collect();
-        let unstarted: std::collections::HashSet<(usize, String)> = if span.start > 0 {
+        let unstarted: std::collections::HashSet<(usize, String)> = if preview {
             self.events
                 .iter()
                 .enumerate()
@@ -1121,6 +1157,12 @@ impl<'a> DspEngine<'a> {
         });
 
         for frame_index in span.start..span.end {
+            if self.checkpoint_every != 0
+                && frame_index > span.start
+                && frame_index % self.checkpoint_every == 0
+            {
+                self.take_checkpoint(frame_index)?;
+            }
             self.read_delays();
             self.evaluate_parameters(frame_index)?;
 
@@ -1130,7 +1172,8 @@ impl<'a> DspEngine<'a> {
             if let Some(events) = self.off_events.get(&frame_index).cloned() {
                 for event_index in events {
                     let event = &self.events[event_index];
-                    if event.on_frame < span.start && !carried_set.contains(&event_index) {
+                    if preview && event.on_frame < span.start && !carried_set.contains(&event_index)
+                    {
                         continue;
                     }
                     self.release_event(event_index, frame_index)?;
@@ -1197,6 +1240,64 @@ impl<'a> DspEngine<'a> {
             }
             callback(&outputs, &reductions)?;
         }
+        Ok(())
+    }
+
+    /// Render the whole plan, keeping a checkpoint every `every` frames.
+    pub fn render_with_checkpoints<F>(
+        &mut self,
+        every: u64,
+        callback: F,
+    ) -> Result<Vec<Checkpoint<'a>>>
+    where
+        F: FnMut(&[f64]) -> Result<()>,
+    {
+        if every == 0 {
+            return Err(RenderError::RenderState(
+                "checkpoint spacing must be at least one frame".into(),
+            ));
+        }
+        self.checkpoint_every = every;
+        self.checkpoints.clear();
+        let end = self.plan.output.total_frames;
+        let result = self.render_span(RenderSpan { start: 0, end }, callback);
+        self.checkpoint_every = 0;
+        let checkpoints = std::mem::take(&mut self.checkpoints);
+        result.map(|()| checkpoints)
+    }
+
+    /// An engine that continues the render from `checkpoint`: call
+    /// [`Self::render_span`] from `checkpoint.frame()`.
+    pub fn restore(checkpoint: &Checkpoint<'a>) -> Self {
+        let mut engine = (*checkpoint.engine).clone();
+        engine.resume_frame = Some(checkpoint.frame);
+        engine
+    }
+
+    fn take_checkpoint(&mut self, frame: u64) -> Result<()> {
+        for node in &self.nodes {
+            let ahead = node
+                .instrument
+                .as_ref()
+                .is_some_and(|runtime| runtime.has_frames_ahead(frame))
+                || node
+                    .kit_instrument
+                    .as_ref()
+                    .is_some_and(|runtime| runtime.has_frames_ahead(frame));
+            if ahead {
+                return Err(RenderError::RenderState(format!(
+                    "node {} holds frames rendered ahead at checkpoint frame {frame}",
+                    node.id
+                )));
+            }
+        }
+        let held = std::mem::take(&mut self.checkpoints);
+        let snapshot = self.clone();
+        self.checkpoints = held;
+        self.checkpoints.push(Checkpoint {
+            frame,
+            engine: Box::new(snapshot),
+        });
         Ok(())
     }
 
@@ -1678,6 +1779,12 @@ impl<'a> DspEngine<'a> {
                     break;
                 }
                 horizon = horizon.min(lane.lane.stable_until(frame, self.tempo.score_end_frame));
+            }
+            if let Some(next) = frame
+                .checked_div(self.checkpoint_every)
+                .map(|slot| (slot + 1) * self.checkpoint_every)
+            {
+                horizon = horizon.min(next);
             }
             horizon.max(frame + 1)
         } else {
@@ -2348,11 +2455,12 @@ enum RuntimeProcessor {
     Audio,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum ControlRuntime {
     Lfo(crate::core_control::PreparedLfo),
     Constant,
 }
+#[derive(Clone)]
 struct ModulationRuntime {
     id: String,
     from: usize,
@@ -2404,7 +2512,7 @@ impl MatrixRuntime {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct DelayRuntime {
     channels: usize,
     frames: usize,
@@ -2498,14 +2606,14 @@ impl NoiseRuntime {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct NodeState {
     id: String,
     processor: RuntimeProcessor,
     control: Option<ControlRuntime>,
     control_value: f64,
     kit: Option<KitRuntime>,
-    audio: Option<TransportRuntime>,
+    audio: Option<Arc<TransportRuntime>>,
     base_params: BTreeMap<String, f64>,
     current_params: BTreeMap<String, f64>,
     automations: BTreeMap<String, AutomationBinding>,
@@ -2730,7 +2838,7 @@ impl NodeState {
             control: None,
             control_value: 0.,
             kit: None,
-            audio: Some(audio),
+            audio: Some(Arc::new(audio)),
             base_params: BTreeMap::new(),
             current_params: BTreeMap::new(),
             automations: BTreeMap::new(),
@@ -3338,6 +3446,7 @@ fn stable_topological_order(
     Ok(order)
 }
 
+#[derive(Clone)]
 struct TempoRuntime {
     /// Absolute `T(score_start)` retained exactly. Seconds-clock automation
     /// anchors are authored in this global coordinate, while frame numbers

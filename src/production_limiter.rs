@@ -32,7 +32,7 @@ struct Detection {
     required: f64,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct Limiter {
     channels: usize,
     lookahead: u64,

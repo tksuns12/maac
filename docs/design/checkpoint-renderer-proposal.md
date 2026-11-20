@@ -150,6 +150,43 @@ keep them; saving them to disk is possible but not proposed.
 - **C. Session.** Spacing and eviction policy, a background pre-render,
   streaming blocks for playback, GUI hooks, latency measured.
 
+## Phase A results (measured 2026-11-20, release build, Apple silicon)
+
+What was built: `DspEngine` and every runtime type under it derive `Clone`;
+audio clip transports sit behind an `Arc` (they are stateless, so a snapshot
+shares them); block horizons stop at checkpoint multiples; a checkpoint refuses
+to be taken if any instrument still holds frames rendered ahead;
+`render_with_checkpoints(every, cb)`, `DspEngine::restore(&checkpoint)`, then
+`render_span` from the checkpoint frame. This first snapshot is a **whole-engine
+clone**: it also copies the immutable tables (events, connections, node
+parameters), so the numbers below are an upper bound for the "mutable state
+only" snapshot in section 1.
+
+Correctness: on every self-contained example in `examples/` and on the five
+songs, with checkpoints every 4 s (offset by 37 frames so they fall inside
+render blocks), taking checkpoints does not change the render, and resuming
+from the first, a middle and the last checkpoint reproduces every f64 bit of
+the uninterrupted render. A control test shows a cold engine at the same frame
+does not (the check can fail). Tests: `tests/checkpoint_resume.rs`.
+
+Cost (`tests/checkpoint_cost.rs`, spacing 4 s):
+
+| Song | checkpoints | per checkpoint, mean / max | all checkpoints | slowest clone |
+| --- | --- | --- | --- | --- |
+| Homeward | 31 | 3.4 / 5.0 MB | 106 MB | 0.73 ms |
+| Afterlight | 40 | 3.9 / 4.0 MB | 157 MB | 0.87 ms |
+| Lantern | 32 | 3.1 / 3.2 MB | 97 MB | 0.57 ms |
+| Ferry | 34 | 1.7 / 1.8 MB | 57 MB | 0.43 ms |
+| Lofi | 19 | 1.1 / 1.2 MB | 21 MB | 0.21 ms |
+
+A freshly built engine is already 0.8 to 3.6 MB of that, so the state that
+actually changes is under about 2 MB per checkpoint and the exit condition
+("4 s spacing is unaffordable") is not met by a wide margin. Taking a
+checkpoint costs under a millisecond; the horizon cap changed no output bit.
+Not measured: render time with versus without the cap (the render times in
+that run include the cap and checkpoints but were not compared with a plain
+run on a quiet machine), and the five-song run on the jit build.
+
 ## Alternatives considered
 
 - **Preview only (done, PR #66).** Fast and good enough to audition when the

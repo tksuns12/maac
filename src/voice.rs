@@ -36,7 +36,7 @@ pub struct CompiledInstrument {
 }
 
 /// Mutable polyphonic state for one instrument node.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct InstrumentRuntime {
     program: Arc<CompiledInstrument>,
     capacity: usize,
@@ -207,7 +207,7 @@ struct CompiledBounds {
     context: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct VoiceState {
     address: String,
     pitch_hz: f64,
@@ -445,6 +445,11 @@ impl InstrumentRuntime {
             )));
         }
         Ok(())
+    }
+
+    /// Whether frames from `frame` on were rendered already.
+    pub(crate) fn has_frames_ahead(&self, frame: u64) -> bool {
+        self.buffered_start + self.buffered.len() as u64 > frame
     }
 
     fn clear_ahead(&mut self) {
@@ -1072,7 +1077,7 @@ impl CompiledEffect {
 
 /// Mutable state for one effect node: its graph's state from the reset
 /// origin, and its public control values.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct EffectRuntime {
     program: Arc<CompiledEffect>,
     rate: f64,
