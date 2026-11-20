@@ -10,7 +10,9 @@ use maac::dsp::{CheckpointSet, DspEngine, RenderSpan, Reuse};
 use maac::plan::PlanLimits;
 use maac::{PlanArtifact, SourceBundle};
 
-const PITCHES: [&str; 10] = ["C4", "D4", "E4", "F4", "G4", "A4", "B4", "C5", "D5", "E5"];
+const PITCHES: [&str; 12] = [
+    "C4", "D4", "E4", "F#4", "G4", "A4", "Bb4", "C5", "D5", "Eb5", "F5", "G5",
+];
 /// Eighth notes in the pattern: 8q.
 const LENGTH: i32 = 16;
 /// An eighth note at 120 bpm and 48 kHz.
@@ -55,17 +57,25 @@ struct Knot {
 struct Song {
     notes: Vec<Note>,
     next_name: usize,
-    /// The fader level, in dB.
+    /// The fader level, in dB, and where its lane starts, in eighths.
     fader: Vec<Knot>,
-    /// The reverb mix, in tenths.
+    fader_at: i32,
+    /// The reverb mix, in tenths, and where its lane starts.
     room: Vec<Knot>,
+    room_at: i32,
 }
 
 fn eighths(count: i32) -> String {
     format!("{count}/2q")
 }
 
-fn lane_text(name: &str, target: &str, knots: &[Knot], unit: impl Fn(i32) -> String) -> String {
+fn lane_text(
+    name: &str,
+    target: &str,
+    knots: &[Knot],
+    start: i32,
+    unit: impl Fn(i32) -> String,
+) -> String {
     if knots.is_empty() {
         return String::new();
     }
@@ -84,8 +94,9 @@ fn lane_text(name: &str, target: &str, knots: &[Knot], unit: impl Fn(i32) -> Str
         })
         .collect();
     format!(
-        "curve {name}_curve {{ clock = score; points = [{}]; }}\nautomation {name} {{ target = &{target}; curve = &{name}_curve; at = 0q; }}\n",
-        points.join(", ")
+        "curve {name}_curve {{ clock = score; points = [{}]; }}\nautomation {name} {{ target = &{target}; curve = &{name}_curve; at = {}; }}\n",
+        points.join(", "),
+        eighths(start)
     )
 }
 
@@ -136,22 +147,6 @@ fn source(song: &Song) -> String {
 project p {{ score = [0q, 8q]; rate = 48000Hz; tail = 1s; tempo = &clock; meter = &metre; output = &fader:out; requires = ["maac.production/1"]; }}
 tempo clock {{ points = [(0q, 120bpm, step)]; }}
 meter metre {{ points = [(0q, 4, 4)]; }}
-instrument bowed {{
- channels = 1;
- voice v {{
-  channels = 1; amplitude = &amp; output = &section:out;
-  node amp {{ type = "synth.adsr/1"; params = {{ sustain = 1; release = 400ms; }}; }}
-  node section {{ type = "synth.bow/1"; config = {{ players = 2; }}; params = {{ level = 1/10; }}; }}
- }}
-}}
-instrument tone {{
- channels = 1;
- voice v {{
-  channels = 1; amplitude = &amp; output = &osc:out;
-  node amp {{ type = "synth.adsr/1"; params = {{ release = 400ms; }}; }}
-  node osc {{ type = "synth.sine/1"; params = {{ level = 1/10; }}; }}
- }}
-}}
 node strings {{ instrument = &bowed; config = {{ voices = 4; }}; }}
 node winds {{ instrument = &tone; config = {{ voices = 6; }}; }}
 node room {{ type = "fx.reverb/1"; config = {{ channels = 1; }}; params = {{ mix = 3/10; }}; }}
@@ -168,13 +163,38 @@ connect echo_return {{ from = &feedback:out; to = &mix:in; }}
 connect mix_fader {{ from = &mix:out; to = &fader:in; }}
 track strings_line {{ target = &strings:events; }}
 track winds_line {{ target = &winds:events; }}
-{patterns}{}{}"#,
-        lane_text("ride", "fader.params.level", &song.fader, |v| format!(
-            "{v}dB"
-        )),
-        lane_text("swell", "room.params.mix", &song.room, |v| format!(
-            "{v}/10"
-        )),
+{patterns}{}{}
+instrument bowed {{
+ channels = 1;
+ voice v {{
+  channels = 1; amplitude = &amp; output = &section:out;
+  node amp {{ type = "synth.adsr/1"; params = {{ sustain = 1; release = 400ms; }}; }}
+  node section {{ type = "synth.bow/1"; config = {{ players = 2; }}; params = {{ level = 1/10; }}; }}
+ }}
+}}
+instrument tone {{
+ channels = 1;
+ voice v {{
+  channels = 1; amplitude = &amp; output = &osc:out;
+  node amp {{ type = "synth.adsr/1"; params = {{ release = 400ms; }}; }}
+  node osc {{ type = "synth.sine/1"; params = {{ level = 1/10; }}; }}
+ }}
+}}
+"#,
+        lane_text(
+            "ride",
+            "fader.params.level",
+            &song.fader,
+            song.fader_at,
+            |v| format!("{v}dB")
+        ),
+        lane_text(
+            "swell",
+            "room.params.mix",
+            &song.room,
+            song.room_at,
+            |v| format!("{v}/10")
+        ),
     )
 }
 
@@ -223,7 +243,9 @@ fn base_song(seed: u64) -> Song {
                 linear: true,
             },
         ],
+        fader_at: 0,
         room: Vec::new(),
+        room_at: 0,
     };
     // A bowed line whose notes often touch, so that they join.
     let mut cursor = 0;
@@ -245,7 +267,7 @@ fn edit(song: &Song, rng: &mut Rng, choice: u64) -> (Song, &'static str) {
     let mut next = song.clone();
     let count = next.notes.len();
     let pick = rng.below(count.max(1) as u64) as usize;
-    match choice % 14 {
+    match choice % 15 {
         0 if count > 0 => {
             let note = &mut next.notes[pick];
             note.at = rng.range(0, LENGTH - note.dur);
@@ -283,24 +305,27 @@ fn edit(song: &Song, rng: &mut Rng, choice: u64) -> (Song, &'static str) {
             }
             (next, "slide")
         }
-        8..=13 => {
+        8..=14 => {
             let room = rng.below(3) == 0;
-            let (lane, low, high) = if room {
-                (&mut next.room, 0, 10)
+            let (lane, start, low, high) = if room {
+                (&mut next.room, &mut next.room_at, 0, 10)
             } else {
-                (&mut next.fader, -24, 0)
+                (&mut next.fader, &mut next.fader_at, -24, 0)
             };
-            let kind = match choice % 14 - 8 {
+            let kind = match choice % 15 - 8 {
                 _ if lane.is_empty() => "lane-add",
                 0 => "knot-value",
                 1 => "knot-move",
                 2 => "knot-add",
                 3 => "knot-remove",
                 4 => "knot-shape",
+                5 => "lane-start",
                 _ => "lane-remove",
             };
             match kind {
+                "lane-start" => *start = rng.range(0, 4),
                 "lane-add" => {
+                    *start = rng.range(0, 3);
                     *lane = vec![
                         Knot {
                             at: rng.range(0, 4),
@@ -404,6 +429,8 @@ struct Tally {
     rejected: usize,
     unchanged: usize,
     full: usize,
+    /// Partial results whose bound is frame 0: a full render.
+    from_zero: usize,
     partial: usize,
     resumed_late: usize,
     caught_late: usize,
@@ -451,6 +478,7 @@ fn fuzz(seed: u64, edits: usize, tally: &mut Tally) {
             Reuse::Full(_) => tally.full += 1,
             Reuse::From(bound) => {
                 tally.partial += 1;
+                tally.from_zero += usize::from(bound == 0);
                 // With a checkpoint exactly at the bound, and just after it.
                 let total = plan.output().total_frames;
                 let late = [bound + 1, bound + 97].map(|frame| frame.min(total - 1));
@@ -496,16 +524,17 @@ fn fuzz(seed: u64, edits: usize, tally: &mut Tally) {
 #[test]
 fn an_edited_song_resumes_exactly_from_the_reported_bound() {
     let mut tally = Tally::default();
-    // Fourteen consecutive edits cover every kind once.
+    // Fifteen consecutive edits cover every kind once.
     for seed in [1, 20] {
-        fuzz(seed, 14, &mut tally);
+        fuzz(seed, 15, &mut tally);
     }
     eprintln!(
-        "accepted {} rejected {} unchanged {} full {} partial {}; late bounds caught {}/{} (note edits {}/{}); kinds {:?}",
+        "accepted {} rejected {} unchanged {} full {} from-zero {} partial {}; late bounds caught {}/{} (note edits {}/{}); kinds {:?}",
         tally.accepted,
         tally.rejected,
         tally.unchanged,
         tally.full,
+        tally.from_zero,
         tally.partial,
         tally.caught_late,
         tally.resumed_late,
@@ -516,10 +545,15 @@ fn an_edited_song_resumes_exactly_from_the_reported_bound() {
     assert!(tally.accepted >= 18, "{}", tally.accepted);
     assert!(tally.partial >= 10, "{}", tally.partial);
     // A diff that always says "frame 0" would pass every exactness check.
+    // An edit near the start of the song really is a full render, so some
+    // zeros are right; a diff that always said frame 0 would fail this.
     assert!(
-        tally.full * 4 <= tally.accepted,
-        "too many full renders: {}",
-        tally.full
+        tally.full * 4 <= tally.accepted && tally.from_zero * 2 <= tally.partial,
+        "too many full renders: {} full, {} from frame 0 of {} partial, {} accepted",
+        tally.full,
+        tally.from_zero,
+        tally.partial,
+        tally.accepted
     );
     // The fuzz must be able to see a bound that is too late.
     assert!(tally.note_edits_late >= 8, "{}", tally.note_edits_late);
@@ -570,7 +604,7 @@ fn an_edited_song_resumes_exactly_over_many_seeds() {
     let (low, high) = range.split_once("..").expect("a..b");
     let mut tally = Tally::default();
     for seed in low.parse::<u64>().unwrap()..high.parse::<u64>().unwrap() {
-        fuzz(seed, 14, &mut tally);
+        fuzz(seed, 15, &mut tally);
     }
     eprintln!(
         "accepted {} rejected {} unchanged {} full {} partial {}; late caught {}/{}; note edits {}/{}; kinds {:?}",
@@ -647,4 +681,38 @@ fn compile_text(text: &str) -> Result<PlanArtifact, String> {
         &limits(),
     )
     .map_err(|error| format!("{error:?}"))
+}
+
+/// Editing the last knot of a lane (a fade-out) changes the value held after
+/// the score ends, but a render can differ only from the knot before it.
+#[test]
+fn a_change_to_the_last_knot_reports_the_knot_before_it() {
+    let base = base_song(7);
+    let plan = compile(&base).unwrap();
+    let grid = CheckpointSet::without_checkpoints(&plan, &limits()).unwrap();
+    let mut edited = base.clone();
+    // The base lane has knots at 0, 6 (a step) and 12 eighths.
+    edited.fader[2].value -= 3;
+    let new_plan = compile(&edited).unwrap();
+    assert_eq!(
+        grid.reuse_for(&new_plan).unwrap(),
+        Reuse::From(6 * EIGHTH),
+        "the segment before the last knot is a step, so the knot at 6 bounds it"
+    );
+}
+
+/// Editing text before an instrument moves the instrument's source span; that
+/// is not a change to the instrument.
+#[test]
+fn a_note_edit_that_changes_the_text_length_before_an_instrument_is_not_a_full_render() {
+    let base = base_song(7);
+    let plan = compile(&base).unwrap();
+    let grid = CheckpointSet::without_checkpoints(&plan, &limits()).unwrap();
+    let mut edited = base.clone();
+    let note = edited.notes.iter_mut().find(|n| !n.strings).unwrap();
+    // "A4" and "Bb4" differ in length.
+    note.pitch = if PITCHES[note.pitch].len() == 2 { 6 } else { 0 };
+    assert_ne!(source(&base).len(), source(&edited).len());
+    let new_plan = compile(&edited).unwrap();
+    assert!(matches!(grid.reuse_for(&new_plan).unwrap(), Reuse::From(_)));
 }

@@ -268,7 +268,7 @@ type NodeReplacementFill<'a> = dyn FnMut(usize, u64, &mut [f64]) -> Result<()> +
 /// exactly as the full plan does, up to `end`. A span that starts later is a
 /// preview: the engine starts from reset state at `start`, restarts there any
 /// note still sounding, and drops earlier hits, so its frames only
-/// approximate a full render's. (An engine made by [`DspEngine::restore`] is
+/// approximate a full render's. (An engine made by [`DspEngine::restore_from`] is
 /// the exception: it continues the exact render from its checkpoint frame.)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RenderSpan {
@@ -1343,7 +1343,7 @@ impl<'a> DspEngine<'a> {
     /// [`Self::render_span`] with a span that starts at `checkpoint.frame()`.
     /// The engine must be built for the plan the checkpoint was taken from, or
     /// for an edit of it that changes nothing before that frame (the caller
-    /// decides that; see the plan comparison in `crate::checkpoint_diff`). The frames then equal
+    /// decides that; see [`CheckpointSet`]). The frames then equal
     /// what a fresh render of this engine's plan produces, bit for bit. The
     /// restored state serves one render: if that render fails, or the engine
     /// is reset, restore it again. A span that starts elsewhere is refused. The

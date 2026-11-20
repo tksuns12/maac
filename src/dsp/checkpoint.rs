@@ -28,9 +28,11 @@ pub enum Reuse {
 struct Schedule {
     events: Vec<EventRuntime>,
     lanes: BTreeMap<(String, String), AutomationLanes>,
-    /// A reset-rate modulation target is set up once, from the automation at
-    /// frame 0, so an automation edit under one cannot reuse state.
-    reset_modulated: bool,
+    /// Whether each node's instrument reads the whole connected line a note
+    /// belongs to when the note starts (a bowed section does).
+    reads_lines: Vec<bool>,
+    /// From this frame on, a lane holds its tail value.
+    score_end: u64,
 }
 
 impl Schedule {
@@ -44,10 +46,16 @@ impl Schedule {
         Self {
             events: engine.events.clone(),
             lanes,
-            reset_modulated: engine
-                .modulations
+            reads_lines: engine
+                .nodes
                 .iter()
-                .any(|edge| edge.rate == ParameterRate::Reset),
+                .map(|node| {
+                    node.instrument
+                        .as_ref()
+                        .is_some_and(|instrument| instrument.plays_lines())
+                })
+                .collect(),
+            score_end: engine.tempo.score_end_frame,
         }
     }
 }
@@ -183,21 +191,16 @@ impl CheckpointSet {
         let earliest = std::cell::Cell::new(None::<u64>);
         let mut note =
             |frame: u64| earliest.set(Some(earliest.get().map_or(frame, |e| e.min(frame))));
-        events_differ(&self.schedule.events, &new.events, &mut note);
-        let before = earliest.get();
-        lanes_differ(&self.schedule.lanes, &new_lanes(new), &mut note);
-        if earliest.get() != before && (self.schedule.reset_modulated || reset_modulated(new)) {
-            return Reuse::Full("automation under a reset-rate modulation");
-        }
+        let reads_lines = &self.schedule.reads_lines;
+        events_differ(&self.schedule.events, &new.events, reads_lines, &mut note);
+        lanes_differ(
+            &self.schedule.lanes,
+            &new_lanes(new),
+            self.schedule.score_end,
+            &mut note,
+        );
         earliest.get().map_or(Reuse::Unchanged, Reuse::From)
     }
-}
-
-fn reset_modulated(engine: &DspEngine<'_>) -> bool {
-    engine
-        .modulations
-        .iter()
-        .any(|edge| edge.rate == ParameterRate::Reset)
 }
 
 fn new_lanes(engine: &DspEngine<'_>) -> BTreeMap<(String, String), AutomationLanes> {
@@ -230,6 +233,19 @@ fn other_difference(old: &PlanView<'_>, new: &PlanView<'_>) -> Option<&'static s
     }
 }
 
+/// Whether two lists of programs are equal once `strip` has removed what
+/// says where in the source each came from: a byte span moves with every edit
+/// of the text before it.
+fn same_ignoring_spans<T: Clone + PartialEq>(old: &[T], new: &[T], strip: impl Fn(&mut T)) -> bool {
+    old.len() == new.len()
+        && old.iter().zip(new).all(|(a, b)| {
+            let (mut a, mut b) = (a.clone(), b.clone());
+            strip(&mut a);
+            strip(&mut b);
+            a == b
+        })
+}
+
 /// Whether two instrument resources render alike. Which source files they were
 /// compiled from, and their hashes, are provenance: they change with every edit
 /// of the text and are not read by a render.
@@ -240,11 +256,14 @@ fn same_instruments(
     match (old, new) {
         (None, None) => true,
         (Some(a), Some(b)) => {
-            a.programs == b.programs
-                && a.wavetables == b.wavetables
+            same_ignoring_spans(&a.programs, &b.programs, |program| {
+                program.source.span = None;
+            }) && a.wavetables == b.wavetables
                 && a.samples == b.samples
-                && a.kits == b.kits
-                && a.effects == b.effects
+                && same_ignoring_spans(&a.kits, &b.kits, |kit| kit.source.span = None)
+                && same_ignoring_spans(&a.effects, &b.effects, |effect| {
+                    effect.source.span = None;
+                })
         }
         _ => false,
     }
@@ -296,10 +315,17 @@ fn line_heads(events: &[EventRuntime]) -> Vec<usize> {
 }
 
 /// Report, through `note`, the on frame of every note or hit that differs
-/// between the two schedules, and of the head of its connected line: a line's
-/// first note reads the whole line when it starts, and a note that another
-/// continues gives up its release.
-fn events_differ(old: &[EventRuntime], new: &[EventRuntime], note: &mut impl FnMut(u64)) {
+/// between the two schedules. On an instrument that plays lines (a bowed
+/// section) also the on frame of the head of its connected line, whose first
+/// note reads the whole line when it starts. On any other instrument a joined
+/// note's effect on the note before it (which gives up its release) happens at
+/// the joined note's own on frame.
+fn events_differ(
+    old: &[EventRuntime],
+    new: &[EventRuntime],
+    reads_lines: &[bool],
+    note: &mut impl FnMut(u64),
+) {
     let old_heads = line_heads(old);
     let new_heads = line_heads(new);
     let key = |event: &EventRuntime| (event.node, event.address.clone());
@@ -319,16 +345,22 @@ fn events_differ(old: &[EventRuntime], new: &[EventRuntime], note: &mut impl FnM
             continue;
         }
         note(event.on_frame);
-        note(old[old_heads[index]].on_frame);
+        if reads_lines[event.node] {
+            note(old[old_heads[index]].on_frame);
+        }
         if let Some(other) = counterpart {
             note(new[other].on_frame);
-            note(new[new_heads[other]].on_frame);
+            if reads_lines[new[other].node] {
+                note(new[new_heads[other]].on_frame);
+            }
         }
     }
     for (index, event) in new.iter().enumerate() {
         if !old_by.contains_key(&key(event)) {
             note(event.on_frame);
-            note(new[new_heads[index]].on_frame);
+            if reads_lines[event.node] {
+                note(new[new_heads[index]].on_frame);
+            }
         }
     }
 }
@@ -338,13 +370,14 @@ fn events_differ(old: &[EventRuntime], new: &[EventRuntime], note: &mut impl FnM
 fn lanes_differ(
     old: &BTreeMap<(String, String), AutomationLanes>,
     new: &BTreeMap<(String, String), AutomationLanes>,
+    score_end: u64,
     note: &mut impl FnMut(u64),
 ) {
     for key in old.keys().chain(new.keys()) {
         let (old_lanes, new_lanes) = (old.get(key), new.get(key));
         match (old_lanes, new_lanes) {
             (Some(a), Some(b)) if a == b => {}
-            (Some(a), Some(b)) => lane_lists_differ(&a.lanes, &b.lanes, note),
+            (Some(a), Some(b)) => lane_lists_differ(&a.lanes, &b.lanes, score_end, note),
             (Some(only), None) | (None, Some(only)) => note(start_of(&only.lanes[0])),
             (None, None) => {}
         }
@@ -358,6 +391,7 @@ fn start_of(lane: &AutomationRuntime) -> u64 {
 fn lane_lists_differ(
     old: &[AutomationRuntime],
     new: &[AutomationRuntime],
+    score_end: u64,
     note: &mut impl FnMut(u64),
 ) {
     let shared = old.iter().zip(new).take_while(|(a, b)| a == b).count();
@@ -370,7 +404,7 @@ fn lane_lists_differ(
     }
     for (a, b) in old[shared..].iter().zip(&new[shared..]) {
         if a != b {
-            note(lane_differs_from(a, b));
+            note(lane_differs_from(a, b, score_end));
         }
     }
 }
@@ -378,17 +412,16 @@ fn lane_lists_differ(
 /// Where two lanes in the same slot first may differ. When only knots differ,
 /// the segment before the first differing knot interpolates toward it, so the
 /// value may differ from the knot before.
-fn lane_differs_from(a: &AutomationRuntime, b: &AutomationRuntime) -> u64 {
-    let same_frame = a.clock == b.clock
-        && a.at == b.at
-        && a.at_exact == b.at_exact
-        && a.base == b.base
-        && a.tail_value == b.tail_value
-        && a.starts_by_end == b.starts_by_end;
+fn lane_differs_from(a: &AutomationRuntime, b: &AutomationRuntime, score_end: u64) -> u64 {
+    let same_curve =
+        a.clock == b.clock && a.at == b.at && a.at_exact == b.at_exact && a.base == b.base;
     let start = start_of(a).min(start_of(b));
-    if !same_frame {
+    if !same_curve {
         return start;
     }
+    // The value held from the score's end on is the lane's tail; it can differ
+    // only from there.
+    let tail_differs = a.tail_value != b.tail_value || a.starts_by_end != b.starts_by_end;
     let same_knot = |index: usize| {
         a.points.get(index) == b.points.get(index)
             && a.knot_frames.get(index) == b.knot_frames.get(index)
@@ -400,8 +433,20 @@ fn lane_differs_from(a: &AutomationRuntime, b: &AutomationRuntime) -> u64 {
         .max(b.points.len())
         .max(a.knot_frames.len())
         .max(b.knot_frames.len());
-    match (0..longest).find(|&index| !same_knot(index)) {
-        Some(0) | None => start,
-        Some(first) => a.knot_frames[first - 1].max(0) as u64,
+    let knots = match (0..longest).find(|&index| !same_knot(index)) {
+        Some(0) => Some(start),
+        Some(first) => Some(
+            a.knot_frames
+                .get(first - 1)
+                .map_or(start, |frame| (*frame).max(0) as u64),
+        ),
+        None => None,
+    };
+    match (knots, tail_differs) {
+        (Some(frame), true) => frame.min(score_end),
+        (Some(frame), false) => frame,
+        (None, true) => score_end,
+        // Unequal lanes that no knot or tail explains: be safe.
+        (None, false) => start,
     }
 }
