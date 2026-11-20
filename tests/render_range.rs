@@ -447,9 +447,10 @@ fn a_preview_that_reaches_back_to_frame_zero_is_exact() {
 }
 
 #[test]
-fn a_short_preview_renders_the_requested_frames_from_reset_state() {
+fn a_short_preview_starts_early_from_reset_state_and_says_it_is_approximate() {
     let directory = tempdir().unwrap();
     let plan = compile_delay_plan(directory.path());
+    render_plan(directory.path(), &plan, "full.wav", &[]);
     let args = [
         Path::new("--start-frame"),
         Path::new("20000"),
@@ -461,9 +462,60 @@ fn a_short_preview_renders_the_requested_frames_from_reset_state() {
     let preview = render_plan(directory.path(), &plan, "preview.wav", &args);
     assert_eq!(preview["frames"], 4_800);
     assert_eq!(preview["start_frame"], 20_000);
-    let samples = float_samples(&directory.path().join("preview.wav"));
-    assert!(!samples.is_empty() && samples.len().is_multiple_of(4_800));
-    assert!(samples.iter().all(|sample| sample.is_finite()));
+    assert_eq!(preview["approximate"], true);
+    assert_eq!(preview["render_start_frame"], 19_900);
+    let exact = render_plan(
+        directory.path(),
+        &plan,
+        "exact.wav",
+        &[
+            Path::new("--start-frame"),
+            Path::new("20000"),
+            Path::new("--end-frame"),
+            Path::new("24800"),
+        ],
+    );
+    assert!(exact.get("approximate").is_none());
+    assert!(exact.get("render_start_frame").is_none());
+    let preview = float_sample_bits(&directory.path().join("preview.wav"));
+    let exact = float_sample_bits(&directory.path().join("exact.wav"));
+    assert_eq!(preview.len(), exact.len());
+    // The delay's earlier history is missing from the preview.
+    assert_ne!(preview, exact);
+    assert!(float_samples(&directory.path().join("preview.wav"))
+        .iter()
+        .all(|sample| sample.is_finite()));
+}
+
+#[test]
+fn a_previews_warm_up_frames_cannot_overload_pcm16() {
+    // The note overloads PCM16 from frame 1 to its end at 12000. The preview
+    // restarts it at 11900, so its warm-up overloads, but nothing it writes
+    // does; the exact excerpt fails because the plan itself overloads.
+    let directory = tempdir().unwrap();
+    let source = directory.path().join("overload.maac");
+    fs::write(&source, OVERLOAD_SOURCE).unwrap();
+    let plan = directory.path().join("overload.json");
+    let compile = run(&[
+        Path::new("--json"),
+        Path::new("compile"),
+        source.as_path(),
+        Path::new("-o"),
+        plan.as_path(),
+    ]);
+    assert!(compile.status.success(), "compile failed: {:?}", compile);
+    let render = |extra: &[&str]| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_maac"));
+        command.current_dir(directory.path());
+        command.args(["--json", "render"]).arg(&plan);
+        command.args(["-o", "out.wav", "--force", "--format", "pcm16"]);
+        command.args(["--start-frame", "12000", "--end-frame", "12100"]);
+        command.args(extra);
+        command.output().unwrap()
+    };
+    assert!(!render(&[]).status.success());
+    let preview = render(&["--preroll-frames", "100"]);
+    assert!(preview.status.success(), "preview failed: {preview:?}");
 }
 
 #[test]

@@ -257,6 +257,31 @@ fn a_render_range_that_starts_inside_a_line_plays_the_rest_of_it() {
 }
 
 #[test]
+fn a_preview_may_start_where_a_joined_note_begins_or_a_line_ends() {
+    let plan = compile(LINE, 8).unwrap();
+    let ports = [PortRef {
+        node: "mix".into(),
+        port: "out".into(),
+    }];
+    // `b` begins at 48000, where `a` ends; `c` ends at 120000.
+    for (start, end) in [(48_000, 60_000), (120_000, 130_000)] {
+        let mut frames = 0;
+        render_ports_artifact_span_with_limits(
+            &plan,
+            &PlanLimits::song(),
+            &ports,
+            RenderSpan { start, end },
+            |_| {
+                frames += 1;
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(frames, end - start, "start {start}");
+    }
+}
+
+#[test]
 fn a_default_slur_or_slide_does_not_change_a_document_identity() {
     use maac::editing::{AuthoredDocument, FoundationEditContext};
     let normalized = |note: &str| {

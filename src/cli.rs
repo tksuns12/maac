@@ -510,6 +510,12 @@ pub struct ArtifactCommandResult {
     start_frame: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     end_frame: Option<u64>,
+    /// Set for a preview (`--preroll-frames`): the frames only approximate a
+    /// full render's, and the engine began at `render_start_frame`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    approximate: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    render_start_frame: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     edit: Option<crate::editing::AppliedTransaction>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1050,6 +1056,10 @@ pub fn execute_artifact_with_range(
         audio_clips: counts.audio_clips,
         start_frame: range.map(|range| range.start_frame),
         end_frame: range.map(|range| range.end_frame),
+        approximate: range.filter(|range| range.preroll_frames > 0).map(|_| true),
+        render_start_frame: range
+            .filter(|range| range.preroll_frames > 0)
+            .map(|range| range.start_frame.saturating_sub(range.preroll_frames)),
         edit: counts.edit,
         materialization: counts.materialization,
         windowed_query: counts.windowed_query,
@@ -1076,6 +1086,8 @@ fn execute_disk_media(
             audio_clips: 0,
             start_frame: None,
             end_frame: None,
+            approximate: None,
+            render_start_frame: None,
             edit: None,
             materialization: None,
             windowed_query: None,
@@ -1161,6 +1173,8 @@ fn execute_disk_media(
             audio_clips: 0,
             start_frame: None,
             end_frame: None,
+            approximate: None,
+            render_start_frame: None,
             edit: Some(edit),
             materialization: None,
             windowed_query: None,
@@ -1234,6 +1248,8 @@ fn execute_disk_media(
         audio_clips,
         start_frame: None,
         end_frame: None,
+        approximate: None,
+        render_start_frame: None,
         edit: None,
         materialization: None,
         windowed_query: None,
@@ -3111,6 +3127,8 @@ fn execute_checked_patch(
         audio_clips: 0,
         start_frame: None,
         end_frame: None,
+        approximate: None,
+        render_start_frame: None,
         edit: Some(edit),
         materialization: None,
         windowed_query: None,

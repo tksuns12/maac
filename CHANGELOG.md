@@ -14,8 +14,19 @@ promise of compatibility beyond the documented interfaces.
 - Optional `jit` cargo feature (off by default): a Cranelift renderer for
   instrument graphs that produces output bit-identical to the interpreter.
 
+### Fixed
+
+- A preview (`render --preroll-frames` and `analyze --window --preroll`) no
+  longer fails with a note-off or join error when it starts on the frame a
+  note ends or a joined note begins, which includes most bar lines, and a note
+  it restarts continues its pitch, gain, timbre and pressure curves instead of
+  replaying them from the start.
+
 ### Changed
 
+- `export::FrameRange` has a new public field `preroll_frames`; construct it
+  with `FrameRange::new`. A render result with a preroll adds `approximate` and
+  `render_start_frame`.
 - Development resumed on 2026-11-19; removed the unmaintained notice from the
   README and `Cargo.toml`.
 

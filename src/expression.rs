@@ -98,6 +98,9 @@ pub(crate) struct ExpressionRuntime<T> {
     pub(crate) curve: Arc<T>,
     pub(crate) coordinate_per_frame: Rational,
     pub(crate) gate: u64,
+    /// Frames the note had already sounded when the voice using this
+    /// expression began: nonzero only for a note a preview restarts midway.
+    shift: u64,
     segments: Vec<CompiledSegment>,
     gate_value: Option<f64>,
 }
@@ -109,21 +112,35 @@ impl<T: ExpressionCurve> ExpressionRuntime<T> {
             curve,
             coordinate_per_frame,
             gate,
+            shift: 0,
             segments,
             gate_value,
         }
     }
 
+    /// The same expression for a voice that begins `frames` into its note,
+    /// so it continues the curve instead of replaying it.
+    pub(crate) fn shifted(mut self, frames: u64) -> Self {
+        self.shift = frames;
+        self
+    }
+
     pub(crate) fn coordinate_at(&self, on_frame: u64, frame: u64) -> Rational {
         &self.coordinate_per_frame
-            * Rational::from_integer(frame.saturating_sub(on_frame).min(self.gate).into())
+            * Rational::from_integer(
+                frame
+                    .saturating_sub(on_frame)
+                    .saturating_add(self.shift)
+                    .min(self.gate)
+                    .into(),
+            )
     }
 
     /// Evaluate the expression at `frame` with bit-identical rounding to
     /// `curve.eval_rational(&self.coordinate_at(on_frame, frame))`, avoiding
     /// per-frame `BigInt` allocations and `gcd` reductions on the fast path.
     pub(crate) fn eval_at(&self, on_frame: u64, frame: u64) -> Option<f64> {
-        let delta = frame.saturating_sub(on_frame);
+        let delta = frame.saturating_sub(on_frame).saturating_add(self.shift);
         if delta >= self.gate {
             return self.gate_value;
         }

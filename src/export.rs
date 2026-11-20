@@ -80,7 +80,9 @@ pub struct WavStats {
 /// A reset-origin, half-open engine-frame interval for an offline excerpt.
 ///
 /// The range is checked against the plan's complete frame count at the export
-/// boundary. It never changes the plan or the renderer's reset origin.
+/// boundary. It never changes the plan or the renderer's reset origin; a
+/// preview (`preroll_frames > 0`) starts the engine early from reset state and
+/// stops it at the end of the range.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FrameRange {
     pub start_frame: u64,
@@ -280,8 +282,9 @@ pub fn write_wav_artifact_with_limits<W: Write + Seek>(
 }
 
 /// Stream one reset-origin frame range from a standalone artifact under the
-/// default caller limits. All frames execute and validate; selected frames
-/// stream to the caller's sink as they are rendered.
+/// default caller limits. Without a preroll all frames execute and validate;
+/// with one only the preview's frames do. Selected frames stream to the
+/// caller's sink as they are rendered.
 pub fn write_wav_artifact_range<W: Write + Seek>(
     sink: W,
     plan: &PlanArtifact,
@@ -431,11 +434,17 @@ where
                             channel,
                         })
                     } else if !(-1.0..=1.0).contains(&sample) {
-                        Err(ExportError::Pcm16Overload {
-                            frame: render_frame,
-                            channel,
-                            sample,
-                        })
+                        // A preview's warm-up frames are not written and only
+                        // approximate the full render, so they cannot fail it.
+                        if selected || range.preroll_frames == 0 {
+                            Err(ExportError::Pcm16Overload {
+                                frame: render_frame,
+                                channel,
+                                sample,
+                            })
+                        } else {
+                            Ok(())
+                        }
                     } else {
                         let value = quantize_pcm16(sample);
                         if selected {

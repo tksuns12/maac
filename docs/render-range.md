@@ -60,25 +60,37 @@ maac render PLAN -o WAV --start-frame N --end-frame M --preroll-frames K
 ```
 
 `--preroll-frames` needs `--start-frame`. The engine starts at frame
-`max(0, N - K)` from reset state, restarts any note still sounding there with
-a fresh envelope, drops earlier hits, starts effects empty, and stops at `M`.
-The result is **a preview, not a slice of the full render**: it differs
-wherever the missing history was still audible, and it skips the validation
-of frames before `N - K` and from `M` on. When `N - K <= 0` the preview starts
-at frame 0 and equals the exact excerpt.
+`max(0, N - K)` from reset state and stops at `M`:
+
+- A note still sounding at the start restarts there with a fresh envelope and
+  continues its pitch, gain, timbre and pressure curves from where the full
+  render would be. A note that ended at or before the start, including one
+  still in its release tail, is dropped. A note that joins a dropped one
+  starts its own voice.
+- Effects start empty, so reverb and delay tails from before the start are
+  missing.
+- Frames before `N` are not written, and an overloaded PCM16 sample among them
+  does not fail the preview. Frames from `M` on are not rendered or validated.
+
+The result is **a preview, not a slice of the full render**, and its JSON
+result says so: `approximate` is `true` and `render_start_frame` is the frame
+the engine began at. When `N - K <= 0` the engine starts at frame 0 and the
+written samples equal the exact excerpt's, but a plan that fails after `M`
+still succeeds here, where the exact excerpt reports the failure.
 
 How much preroll is enough depends on the plan's longest effect tails and
-sustained notes. On "Afterlight" (a two-second window in the middle of the
-song, Apple M1, release build with the `jit` feature):
+sustained notes, and on the window. Two measurements on "Afterlight"
+(a two-second window, Apple M1, release build with the `jit` feature; the
+difference is the RMS of preview minus exact excerpt, relative to the
+excerpt's RMS):
 
-| Preroll | Render time | Difference from the exact excerpt |
-| --- | ---: | --- |
-| none (exact) | 41 s | 0 |
-| 1 s | 0.7 s | -16 dB (audible) |
-| 2 s | 0.9 s | -73 dB |
-| 4 s | 2.3 s | -110 dB |
-| 8 s | 5.2 s | bit-identical in 99% of samples |
+| Preroll | Render time | Difference, window at 1:02 | Difference, window at 1:18 |
+| --- | ---: | ---: | ---: |
+| none (exact) | 41 s | 0 | 0 |
+| 1 s | 0.7 s | -16 dB | -29 dB |
+| 2 s | 0.9 s | -73 dB | -67 dB |
+| 4 s | 2.3 s | -110 dB | not measured |
+| 8 s | 5.2 s | bit-identical in 99% of samples | not measured |
 
 The library exposes the same as `DspEngine::render_span` and
 `FrameRange::with_preroll`.
-

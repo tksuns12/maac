@@ -1093,6 +1093,24 @@ impl<'a> DspEngine<'a> {
         } else {
             Vec::new()
         };
+        // What a preview skips: a note that ended at or before its start was
+        // never sounding, so it gets no note-off, and a note that joins one
+        // must start its own voice.
+        let carried_set: std::collections::HashSet<usize> = carried.iter().copied().collect();
+        let unstarted: std::collections::HashSet<(usize, String)> = if span.start > 0 {
+            self.events
+                .iter()
+                .enumerate()
+                .filter(|(index, event)| {
+                    matches!(event.data, EventData::Note { .. })
+                        && event.on_frame < span.start
+                        && !carried_set.contains(index)
+                })
+                .map(|(_, event)| (event.node, event.address.clone()))
+                .collect()
+        } else {
+            std::collections::HashSet::new()
+        };
         carried.sort_by(|&left, &right| {
             let (left, right) = (&self.events[left], &self.events[right]);
             (left.on_frame, left.order, left.address.as_bytes()).cmp(&(
@@ -1111,6 +1129,10 @@ impl<'a> DspEngine<'a> {
             // released tail available for a same-frame new voice.
             if let Some(events) = self.off_events.get(&frame_index).cloned() {
                 for event_index in events {
+                    let event = &self.events[event_index];
+                    if event.on_frame < span.start && !carried_set.contains(&event_index) {
+                        continue;
+                    }
                     self.release_event(event_index, frame_index)?;
                 }
             }
@@ -1128,7 +1150,12 @@ impl<'a> DspEngine<'a> {
             }
             if let Some(events) = self.on_events.get(&frame_index).cloned() {
                 for event_index in events {
-                    self.start_event(event_index, frame_index, false)?;
+                    let event = &self.events[event_index];
+                    let predecessor_missing = event
+                        .join
+                        .as_ref()
+                        .is_some_and(|join| unstarted.contains(&(event.node, join.from.clone())));
+                    self.start_event(event_index, frame_index, predecessor_missing)?;
                 }
             }
 
@@ -1385,6 +1412,13 @@ impl<'a> DspEngine<'a> {
             .nodes
             .get_mut(event.node)
             .ok_or_else(|| RenderError::RenderState("event node index is invalid".into()))?;
+        // A note a preview restarts midway continues its curves from where
+        // the full render would be, not from their start.
+        let shift = if carried {
+            frame.saturating_sub(event.on_frame)
+        } else {
+            0
+        };
         let (
             pitch_hz,
             velocity,
@@ -1415,10 +1449,10 @@ impl<'a> DspEngine<'a> {
             } => (
                 pitch_hz,
                 velocity,
-                pitch_expression,
-                gain_expression,
-                timbre_expression,
-                pressure_expression,
+                pitch_expression.map(|expression| expression.shifted(shift)),
+                gain_expression.map(|expression| expression.shifted(shift)),
+                timbre_expression.map(|expression| expression.shifted(shift)),
+                pressure_expression.map(|expression| expression.shifted(shift)),
             ),
         };
         if let Some(instrument) = &mut node.instrument {

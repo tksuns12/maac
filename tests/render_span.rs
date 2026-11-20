@@ -115,6 +115,83 @@ fn a_preview_restarts_notes_still_sounding_and_drops_finished_ones() {
 }
 
 #[test]
+fn a_preview_may_start_on_the_frame_a_note_ends() {
+    // `short` runs 24000..36000; a bar line is often a note's end frame.
+    let plan = plan();
+    for start in [36_000, 36_001, 35_999] {
+        let preview = render(
+            &plan,
+            Some(RenderSpan {
+                start,
+                end: start + 4_000,
+            }),
+        );
+        assert_eq!(preview.len(), 4_000, "start {start}");
+    }
+}
+
+/// A sine that bends up an octave over a four-second note.
+const BEND: &str = r#"maac 1;
+project p { score = [0q, 8q]; rate = 48000Hz; tail = 0s; tempo = &clock; meter = &metre; output = &osc:out; }
+tempo clock { points = [(0q, 120bpm, step)]; }
+meter metre { points = [(0q, 4, 4)]; }
+curve bend { clock = normalized; points = [(0, 0ct, linear), (1, 1200ct, step)]; }
+node osc { type = "core.sine/1"; params = { attack = 0s; release = 0s; level = 1/2; }; }
+pattern line { length = 8q;
+  note held { at = 0q; dur = 8q; pitch = A3; velocity = 0.8; expression b { kind = pitch; curve = &bend; } }
+}
+track t { target = &osc:events; }
+place once { pattern = &line; track = &t; at = 0q; }
+"#;
+
+fn crossings(frames: &[Vec<f64>]) -> usize {
+    frames
+        .windows(2)
+        .filter(|pair| (pair[0][0] < 0.0) != (pair[1][0] < 0.0))
+        .count()
+}
+
+#[test]
+fn a_restarted_note_continues_its_pitch_curve() {
+    let plan = compile_bundle_artifact(&SourceBundle::new("main.maac", BEND)).unwrap();
+    let limits = PlanLimits::song();
+    let port = PortRef::new("osc", "out").unwrap();
+    let render = |span: RenderSpan| {
+        let mut frames = Vec::new();
+        render_ports_artifact_span_with_limits(
+            &plan,
+            &limits,
+            std::slice::from_ref(&port),
+            span,
+            |outputs| {
+                frames.push(outputs[0].clone());
+                Ok(())
+            },
+        )
+        .unwrap();
+        frames
+    };
+    // Exact: from frame 0. Preview: restarted 12000 frames before the window.
+    let exact = render(RenderSpan {
+        start: 0,
+        end: 64_800,
+    });
+    let exact = &exact[60_000..];
+    let preview = render(RenderSpan {
+        start: 48_000,
+        end: 64_800,
+    });
+    let preview = &preview[60_000 - 48_000..];
+    let (exact, preview) = (crossings(exact), crossings(preview));
+    // About 390 Hz at this point of the bend; replaying the curve from the
+    // restart would give about 250 Hz, a third fewer crossings.
+    assert!(
+        exact.abs_diff(preview) <= 3,
+        "exact {exact} crossings, preview {preview}"
+    );
+}
+
+#[test]
 fn spans_must_be_nonempty_and_inside_the_render() {
     let plan = plan();
     let limits = PlanLimits::song();
