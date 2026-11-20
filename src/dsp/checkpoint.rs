@@ -69,6 +69,18 @@ pub struct Resumed<'a> {
 }
 
 impl CheckpointSet {
+    /// A set with no checkpoints, to ask what an edit would affect without
+    /// rendering the plan first.
+    pub fn without_checkpoints(plan: &PlanArtifact, limits: &PlanLimits) -> Result<Self> {
+        let engine = DspEngine::new_artifact_with_limits(plan, limits)?;
+        Ok(Self {
+            plan: plan.clone(),
+            limits: *limits,
+            schedule: Schedule::of(&engine),
+            checkpoints: Vec::new(),
+        })
+    }
+
     /// Render `plan` exactly, keeping a checkpoint every `every` frames.
     pub fn render<F>(
         plan: &PlanArtifact,
@@ -211,7 +223,7 @@ fn other_difference(old: &PlanView<'_>, new: &PlanView<'_>) -> Option<&'static s
         Some("modulations")
     } else if !same_instruments(old.instruments, new.instruments) {
         Some("instruments")
-    } else if old.production != new.production {
+    } else if !same_production(old.production, new.production) {
         Some("production settings")
     } else {
         None
@@ -233,6 +245,23 @@ fn same_instruments(
                 && a.samples == b.samples
                 && a.kits == b.kits
                 && a.effects == b.effects
+        }
+        _ => false,
+    }
+}
+
+/// Whether two production settings are alike apart from the execution
+/// identity, which hashes the source text and so changes with every edit.
+fn same_production(
+    old: Option<&crate::production_data::ProductionSettings>,
+    new: Option<&crate::production_data::ProductionSettings>,
+) -> bool {
+    match (old, new) {
+        (None, None) => true,
+        (Some(a), Some(b)) => {
+            a.schema_hash == b.schema_hash
+                && a.extension_id == b.extension_id
+                && a.deliveries == b.deliveries
         }
         _ => false,
     }

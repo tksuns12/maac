@@ -579,3 +579,72 @@ fn an_edited_song_resumes_exactly_over_many_seeds() {
     );
     assert!(tally.note_edits_caught * 10 >= tally.note_edits_late * 8);
 }
+
+/// On the checked-in examples, editing a note's velocity in the text must not
+/// make the comparison give up: every plan carries provenance (source hashes,
+/// execution identities) that changes with each edit and a render never reads.
+#[test]
+fn a_velocity_edit_in_a_real_example_keeps_checkpoints() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let (mut partial, mut full, mut unchanged, mut compiled) = (0, Vec::new(), 0, 0);
+    for name in [
+        "effects",
+        "core-delay",
+        "evening-window",
+        "hello",
+        "core-fader",
+        "production",
+        "core-noise",
+        "lofi/lofi",
+        "ferry/ferry",
+        "dub/dub",
+    ] {
+        let path = root.join("examples").join(format!("{name}.maac"));
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(base) = compile_text(&text) else {
+            continue;
+        };
+        compiled += 1;
+        let set = CheckpointSet::without_checkpoints(&base, &limits()).unwrap();
+        for (index, _) in text.rmatch_indices("velocity = ") {
+            let rest = &text[index + 11..];
+            let end = rest
+                .find(|c: char| !(c.is_ascii_digit() || c == '.' || c == '/'))
+                .unwrap_or(0);
+            if end == 0 {
+                continue;
+            }
+            let edited = format!("{}velocity = 0.31{}", &text[..index], &rest[end..]);
+            let Ok(plan) = compile_text(&edited) else {
+                continue;
+            };
+            match set.reuse_for(&plan).unwrap() {
+                Reuse::From(_) => partial += 1,
+                Reuse::Unchanged => unchanged += 1,
+                Reuse::Full(reason) => full.push((name, reason)),
+            }
+            break;
+        }
+    }
+    assert!(compiled >= 8, "only {compiled} examples compiled");
+    // An edit inside an instrument definition is a real full render; a note
+    // is not.
+    assert!(
+        partial >= 3,
+        "partial {partial}, unchanged {unchanged}, full {full:?}"
+    );
+    assert!(
+        full.iter().all(|(_, reason)| *reason == "instruments"),
+        "{full:?}"
+    );
+}
+
+fn compile_text(text: &str) -> Result<PlanArtifact, String> {
+    compile_bundle_artifact_with_limits(
+        &SourceBundle::new("standalone.maac", text.to_owned()),
+        &limits(),
+    )
+    .map_err(|error| format!("{error:?}"))
+}
