@@ -166,14 +166,19 @@ keep them; saving them to disk is possible but not proposed.
 
 ## Open questions for the owner
 
-1. Does the GUI link this crate **in-process**? Checkpoints in memory need a
-   long-lived process; the GUI is described as a separate application that
-   reads and writes MaaC data.
-2. What is the **memory budget** for checkpoints?
-3. Which edits must be **fast**? Notes and automation are in the allowlist;
-   patch, tempo-map and graph edits would be full renders.
-4. Is **0.9 s approximate** (preview) acceptable for auditioning with an exact
-   render following, or must the first sound be exact?
+Answered 2026-11-20:
+
+1. **In-process or separate?** Not decided; the owner has not chosen the GUI's
+   language. Checkpoints live in memory, so they need either the GUI linking
+   this crate (Rust) or a long-lived MaaC process the GUI talks to. Phase A
+   does not depend on the answer.
+2. **Memory budget.** Unknown to the owner. Decide after the spike measures
+   bytes per checkpoint.
+3. **Which edits must be fast?** The most common ones. Notes and automation
+   are in the allowlist; patch, tempo-map and graph edits are full renders
+   until usage shows they matter.
+4. **Approximate first?** Yes. After an edit, play the approximate preview
+   (PR #66) at once and let the exact render follow.
 
 ## Risks
 
