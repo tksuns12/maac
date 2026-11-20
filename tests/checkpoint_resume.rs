@@ -37,7 +37,7 @@ fn render_plain(plan: &PlanArtifact) -> Vec<f64> {
     out
 }
 
-fn render_checkpointed(plan: &PlanArtifact, every: u64) -> (Vec<f64>, Vec<Checkpoint<'_>>) {
+fn render_checkpointed(plan: &PlanArtifact, every: u64) -> (Vec<f64>, Vec<Checkpoint>) {
     let mut out = Vec::new();
     let checkpoints = engine(plan)
         .render_with_checkpoints(every, |frame| {
@@ -48,9 +48,16 @@ fn render_checkpointed(plan: &PlanArtifact, every: u64) -> (Vec<f64>, Vec<Checkp
     (out, checkpoints)
 }
 
-fn resume(plan: &PlanArtifact, checkpoint: &Checkpoint<'_>, total: u64) -> Vec<f64> {
+/// A freshly built engine for `plan` that continues from `checkpoint`.
+fn restored<'a>(plan: &'a PlanArtifact, checkpoint: &Checkpoint) -> DspEngine<'a> {
+    let mut engine = engine(plan);
+    engine.restore_from(checkpoint).unwrap();
+    engine
+}
+
+fn resume(plan: &PlanArtifact, checkpoint: &Checkpoint, total: u64) -> Vec<f64> {
     let mut out = Vec::new();
-    DspEngine::restore(checkpoint)
+    restored(plan, checkpoint)
         .render_span(
             RenderSpan {
                 start: checkpoint.frame(),
@@ -62,13 +69,13 @@ fn resume(plan: &PlanArtifact, checkpoint: &Checkpoint<'_>, total: u64) -> Vec<f
             },
         )
         .unwrap();
-    let _ = plan;
     out
 }
 
 /// Render `plan` plainly and with checkpoints, then resume from the first,
-/// a middle and the last checkpoint.
-fn check(name: &str, plan: &PlanArtifact, every: u64) {
+/// a middle and the last checkpoint on an engine built from `second`, a separate
+/// compile of the same source.
+fn check(name: &str, plan: &PlanArtifact, second: &PlanArtifact, every: u64) {
     let channels = usize::from(plan.output().channels);
     let total = plan.output().total_frames;
     let plain = render_plain(plan);
@@ -82,7 +89,7 @@ fn check(name: &str, plan: &PlanArtifact, every: u64) {
     let picks = [0, checkpoints.len() / 2, checkpoints.len() - 1];
     for &pick in &picks {
         let checkpoint = &checkpoints[pick];
-        let tail = resume(plan, checkpoint, total);
+        let tail = resume(second, checkpoint, total);
         let from = checkpoint.frame() as usize * channels;
         assert_eq!(
             bits(&plain[from..]),
@@ -139,7 +146,12 @@ fn resuming_a_checkpoint_equals_the_uninterrupted_render() {
         }
         // Short checkpoints for short songs, and spacing off the block size.
         let every = (plan.output().total_frames / 5).max(1) | 1;
-        check(&path.display().to_string(), &plan, every);
+        check(
+            &path.display().to_string(),
+            &plan,
+            &plan_of(&path).unwrap(),
+            every,
+        );
         checked += 1;
     }
     assert!(checked >= 30, "only {checked} examples were checked");
@@ -152,7 +164,12 @@ fn resuming_a_checkpoint_equals_the_uninterrupted_render_on_the_songs() {
     for path in examples("examples") {
         let plan = plan_of(&path).unwrap();
         if plan.output().total_frames > SHORT_FRAMES {
-            check(&path.display().to_string(), &plan, 48_000 * 4 + 37);
+            check(
+                &path.display().to_string(),
+                &plan,
+                &plan_of(&path).unwrap(),
+                48_000 * 4 + 37,
+            );
         }
     }
     for song in SONGS {
@@ -161,7 +178,7 @@ fn resuming_a_checkpoint_equals_the_uninterrupted_render_on_the_songs() {
             .join(song)
             .join(format!("{song}.maac"));
         let plan = plan_of(&path).unwrap_or_else(|| panic!("{song} compiles on its own"));
-        check(song, &plan, 48_000 * 4 + 37);
+        check(song, &plan, &plan_of(&path).unwrap(), 48_000 * 4 + 37);
     }
 }
 
@@ -251,7 +268,7 @@ fn a_restored_engine_is_an_ordinary_engine_after_its_one_render() {
     let (plain, checkpoints) = render_checkpointed(&plan, (total / 5) | 1);
     let checkpoint = &checkpoints[1];
     let from = checkpoint.frame() as usize * usize::from(plan.output().channels);
-    let mut restored = DspEngine::restore(checkpoint);
+    let mut restored = restored(&plan, checkpoint);
     let tail = tail_of(&mut restored, checkpoint.frame(), total).unwrap();
     assert_eq!(bits(&plain[from..]), bits(&tail));
     // After its one render it is an ordinary engine: a full render is exact.
@@ -266,7 +283,7 @@ fn a_restored_engine_refuses_a_span_that_misses_its_checkpoint_and_keeps_its_sta
     let (plain, checkpoints) = render_checkpointed(&plan, (total / 5) | 1);
     let checkpoint = &checkpoints[1];
     let from = checkpoint.frame() as usize * usize::from(plan.output().channels);
-    let mut restored = DspEngine::restore(checkpoint);
+    let mut restored = restored(&plan, checkpoint);
     assert!(tail_of(&mut restored, checkpoint.frame() + 1, total).is_err());
     assert!(tail_of(&mut restored, checkpoint.frame(), total + 1).is_err());
     let tail = tail_of(&mut restored, checkpoint.frame(), total).unwrap();
@@ -284,7 +301,7 @@ fn a_restored_render_that_stops_early_or_a_reset_never_passes_for_a_checkpoint()
     let (_, checkpoints) = render_checkpointed(&plan, (total / 5) | 1);
     let checkpoint = &checkpoints[1];
 
-    let mut stopped = DspEngine::restore(checkpoint);
+    let mut stopped = restored(&plan, checkpoint);
     let result = stopped.render_span(
         RenderSpan {
             start: checkpoint.frame(),
@@ -298,7 +315,7 @@ fn a_restored_render_that_stops_early_or_a_reset_never_passes_for_a_checkpoint()
         "a half-rendered engine rendered a preview without saying so"
     );
 
-    let mut reset = DspEngine::restore(checkpoint);
+    let mut reset = restored(&plan, checkpoint);
     reset.reset();
     // Reset engines render like any other: from frame 0 this is the full render.
     let full = tail_of(&mut reset, 0, total).unwrap();

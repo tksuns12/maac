@@ -162,7 +162,6 @@ where
 }
 
 /// Resettable sample based renderer for one immutable performance plan.
-#[derive(Clone)]
 pub struct DspEngine<'a> {
     plan: PlanView<'a>,
     limits: PlanLimits,
@@ -197,24 +196,58 @@ pub struct DspEngine<'a> {
     event_frames: Vec<Vec<u64>>,
     /// Block horizons stop at every multiple of this frame count, so an
     /// instrument holds nothing rendered ahead there; 0 means no checkpoints.
-    checkpoint_every: u64,
-    checkpoints: Vec<Checkpoint<'a>>,
+    checkpoint_rule: CheckpointRule,
+    checkpoints: Vec<Checkpoint>,
     /// Set on an engine restored from a checkpoint: the frame it continues at.
     resume_frame: Option<u64>,
 }
 
-/// The engine's state just before `frame` is rendered, on the plan it was
-/// taken from. Resuming from it renders the same frames the uninterrupted
-/// render does.
+/// The state of a render just before `frame`: every node's processors, voices
+/// and buffers. It owns its state and borrows no plan, so it outlives the plan
+/// it was taken from. [`DspEngine::restore_from`] continues the render from it
+/// on an engine built for the same plan, or for an edited one when the edit
+/// leaves everything before `frame` unchanged.
 #[derive(Clone)]
-pub struct Checkpoint<'a> {
+pub struct Checkpoint {
     frame: u64,
-    engine: Box<DspEngine<'a>>,
+    nodes: Vec<NodeState>,
+    output: Vec<f64>,
 }
 
-impl Checkpoint<'_> {
+impl Checkpoint {
     pub fn frame(&self) -> u64 {
         self.frame
+    }
+}
+
+/// Where a render keeps checkpoints.
+#[derive(Clone, Debug)]
+enum CheckpointRule {
+    Off,
+    /// Before every multiple of this many frames.
+    Every(u64),
+    /// Before each of these frames, ascending.
+    At(Vec<u64>),
+}
+
+impl CheckpointRule {
+    fn due(&self, frame: u64) -> bool {
+        match self {
+            Self::Off => false,
+            Self::Every(every) => frame.is_multiple_of(*every),
+            Self::At(frames) => frames.binary_search(&frame).is_ok(),
+        }
+    }
+
+    /// The first checkpoint frame after `frame`.
+    fn next_after(&self, frame: u64) -> Option<u64> {
+        match self {
+            Self::Off => None,
+            Self::Every(every) => Some((frame / every + 1) * every),
+            Self::At(frames) => frames
+                .get(frames.partition_point(|&at| at <= frame))
+                .copied(),
+        }
     }
 }
 
@@ -225,6 +258,9 @@ const RESUME_SPENT: u64 = u64::MAX;
 /// The closest two checkpoints may be. Each one copies the engine, so a spacing
 /// of a few frames would spend the render copying.
 const MIN_CHECKPOINT_SPACING: u64 = 32;
+
+mod checkpoint;
+pub use checkpoint::{CheckpointSet, Resumed, Reuse};
 
 type NodeReplacementFill<'a> = dyn FnMut(usize, u64, &mut [f64]) -> Result<()> + 'a;
 
@@ -701,7 +737,7 @@ impl<'a> DspEngine<'a> {
             parameters_settled,
             parameters_valid_until,
             event_frames,
-            checkpoint_every: 0,
+            checkpoint_rule: CheckpointRule::Off,
             checkpoints: Vec::new(),
             resume_frame: None,
         })
@@ -1175,10 +1211,7 @@ impl<'a> DspEngine<'a> {
         });
 
         for frame_index in span.start..span.end {
-            if self.checkpoint_every != 0
-                && frame_index > span.start
-                && frame_index % self.checkpoint_every == 0
-            {
+            if frame_index > span.start && self.checkpoint_rule.due(frame_index) {
                 self.take_checkpoint(frame_index)?;
             }
             self.read_delays();
@@ -1265,11 +1298,7 @@ impl<'a> DspEngine<'a> {
     }
 
     /// Render the whole plan, keeping a checkpoint every `every` frames.
-    pub fn render_with_checkpoints<F>(
-        &mut self,
-        every: u64,
-        callback: F,
-    ) -> Result<Vec<Checkpoint<'a>>>
+    pub fn render_with_checkpoints<F>(&mut self, every: u64, callback: F) -> Result<Vec<Checkpoint>>
     where
         F: FnMut(&[f64]) -> Result<()>,
     {
@@ -1278,26 +1307,74 @@ impl<'a> DspEngine<'a> {
                 "checkpoint spacing must be at least {MIN_CHECKPOINT_SPACING} frames"
             )));
         }
-        self.checkpoint_every = every;
+        self.render_with_rule(CheckpointRule::Every(every), callback)
+    }
+
+    /// Render the whole plan, keeping a checkpoint just before each of
+    /// `frames` (frame 0 is the start of every render and needs none).
+    pub fn render_with_checkpoints_at<F>(
+        &mut self,
+        frames: &[u64],
+        callback: F,
+    ) -> Result<Vec<Checkpoint>>
+    where
+        F: FnMut(&[f64]) -> Result<()>,
+    {
+        let mut frames: Vec<u64> = frames.iter().copied().filter(|&frame| frame > 0).collect();
+        frames.sort_unstable();
+        frames.dedup();
+        self.render_with_rule(CheckpointRule::At(frames), callback)
+    }
+
+    fn render_with_rule<F>(&mut self, rule: CheckpointRule, callback: F) -> Result<Vec<Checkpoint>>
+    where
+        F: FnMut(&[f64]) -> Result<()>,
+    {
+        self.checkpoint_rule = rule;
         self.checkpoints.clear();
         let end = self.plan.output.total_frames;
         let result = self.render_span(RenderSpan { start: 0, end }, callback);
-        self.checkpoint_every = 0;
+        self.checkpoint_rule = CheckpointRule::Off;
         let checkpoints = std::mem::take(&mut self.checkpoints);
         result.map(|()| checkpoints)
     }
 
-    /// An engine that continues the render from `checkpoint`: call
+    /// Make this engine continue the render from `checkpoint`: call
     /// [`Self::render_span`] with a span that starts at `checkpoint.frame()`.
-    /// The frames equal the uninterrupted render's, bit for bit. The restored
-    /// state serves one render: if that render fails, or the engine is reset,
-    /// restore it again. A span that starts elsewhere is refused. The engine
-    /// takes no checkpoints of its own.
-    pub fn restore(checkpoint: &Checkpoint<'a>) -> Self {
-        let mut engine = (*checkpoint.engine).clone();
-        engine.checkpoint_every = 0;
-        engine.resume_frame = Some(checkpoint.frame);
-        engine
+    /// The engine must be built for the plan the checkpoint was taken from, or
+    /// for an edit of it that changes nothing before that frame (the caller
+    /// decides that; see the plan comparison in `crate::checkpoint_diff`). The frames then equal
+    /// what a fresh render of this engine's plan produces, bit for bit. The
+    /// restored state serves one render: if that render fails, or the engine
+    /// is reset, restore it again. A span that starts elsewhere is refused. The
+    /// engine takes no checkpoints of its own while it resumes.
+    pub fn restore_from(&mut self, checkpoint: &Checkpoint) -> Result<()> {
+        let same_graph = checkpoint.nodes.len() == self.nodes.len()
+            && checkpoint.output.len() == self.frame.len()
+            && checkpoint
+                .nodes
+                .iter()
+                .zip(&self.nodes)
+                .all(|(saved, own)| saved.id == own.id && saved.output.len() == own.output.len());
+        if !same_graph || checkpoint.frame >= self.plan.output.total_frames {
+            return Err(RenderError::RenderState(
+                "the checkpoint does not belong to this plan's graph".into(),
+            ));
+        }
+        for (own, saved) in self.nodes.iter_mut().zip(&checkpoint.nodes) {
+            // The schedule of automation is this plan's; everything else in
+            // the node is state the render had built up.
+            let automations = std::mem::take(&mut own.automations);
+            *own = saved.clone();
+            own.automations = automations;
+        }
+        self.frame.copy_from_slice(&checkpoint.output);
+        self.parameters_settled.fill(false);
+        self.parameters_valid_until.fill(0);
+        self.checkpoint_rule = CheckpointRule::Off;
+        self.checkpoints.clear();
+        self.resume_frame = Some(checkpoint.frame);
+        Ok(())
     }
 
     fn take_checkpoint(&mut self, frame: u64) -> Result<()> {
@@ -1317,12 +1394,10 @@ impl<'a> DspEngine<'a> {
                 )));
             }
         }
-        let held = std::mem::take(&mut self.checkpoints);
-        let snapshot = self.clone();
-        self.checkpoints = held;
         self.checkpoints.push(Checkpoint {
             frame,
-            engine: Box::new(snapshot),
+            nodes: self.nodes.clone(),
+            output: self.frame.clone(),
         });
         Ok(())
     }
@@ -1807,10 +1882,7 @@ impl<'a> DspEngine<'a> {
                 }
                 horizon = horizon.min(lane.lane.stable_until(frame, self.tempo.score_end_frame));
             }
-            if let Some(next) = frame
-                .checked_div(self.checkpoint_every)
-                .map(|slot| (slot + 1) * self.checkpoint_every)
-            {
+            if let Some(next) = self.checkpoint_rule.next_after(frame) {
                 horizon = horizon.min(next);
             }
             horizon.max(frame + 1)
@@ -3202,7 +3274,7 @@ fn envelope_progress(elapsed_frames: u64, seconds: f64, rate: f64) -> f64 {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 struct EventRuntime {
     address: String,
     node: usize,
@@ -3215,14 +3287,14 @@ struct EventRuntime {
 }
 
 /// A joined note: the address of the note it continues, and how.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 struct JoinRuntime {
     from: String,
     slur: bool,
     slide_seconds: f64,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 // Retain inline preallocated expression state without a new per-note heap allocation.
 // Event count remains bounded by plan limits.
 #[allow(clippy::large_enum_variant)]
@@ -3696,7 +3768,7 @@ struct AutomationBinding {
 /// not overlap: the latest to start applies, its final value holds until the
 /// next starts, and before the first the node's base value applies. That is
 /// the curve an author would get by joining their curves by hand.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 struct AutomationLanes {
     lanes: Vec<AutomationRuntime>,
     tail_value: f64,
@@ -3757,7 +3829,7 @@ impl AutomationLanes {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 struct AutomationRuntime {
     clock: AutomationClock,
     /// Local floating anchor used only after exact frame selection. The
@@ -3774,7 +3846,7 @@ struct AutomationRuntime {
     starts_by_end: bool,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 struct AutomationPointRuntime {
     position: f64,
     value: f64,
@@ -5019,8 +5091,10 @@ place play { pattern=&phrase;track=&notes;at=0q; }
         let checkpoints = engine.render_with_checkpoints(64, |_| Ok(())).unwrap();
         assert!(checkpoints.len() >= 2, "plan too short for the test");
         let total = plan.output.total_frames;
-        let mut restored = DspEngine::restore(&checkpoints[0]);
-        assert_eq!(restored.checkpoint_every, 0);
+        let mut restored = DspEngine::new(&plan).unwrap();
+        restored.checkpoint_rule = CheckpointRule::Every(64);
+        restored.restore_from(&checkpoints[0]).unwrap();
+        assert!(matches!(restored.checkpoint_rule, CheckpointRule::Off));
         restored
             .render_span(
                 RenderSpan {

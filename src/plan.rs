@@ -1791,6 +1791,18 @@ pub(crate) enum NodeSlice<'a> {
     V7(&'a [crate::plan_v7::NodeV7]),
 }
 impl<'a> NodeSlice<'a> {
+    /// Whether both slices hold the same nodes of the same plan version.
+    pub(crate) fn same_as(self, other: &Self) -> bool {
+        match (self, *other) {
+            (Self::Legacy(a), Self::Legacy(b)) => a == b,
+            (Self::V4(a), Self::V4(b)) => a == b,
+            (Self::V5(a), Self::V5(b)) => a == b,
+            (Self::V6(a), Self::V6(b)) => a == b,
+            (Self::V7(a), Self::V7(b)) => a == b,
+            _ => false,
+        }
+    }
+
     pub(crate) fn len(self) -> usize {
         match self {
             Self::Legacy(nodes) => nodes.len(),

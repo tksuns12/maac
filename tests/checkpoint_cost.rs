@@ -71,7 +71,7 @@ fn checkpoint_bytes_and_clone_time() {
         for checkpoint in &checkpoints {
             let before = live();
             let started = Instant::now();
-            let copy = DspEngine::restore(checkpoint);
+            let copy = checkpoint.clone();
             clone_micros.push(started.elapsed().as_secs_f64() * 1e6);
             sizes.push(live() - before);
             drop(copy);

@@ -105,6 +105,18 @@ pub(crate) struct ExpressionRuntime<T> {
     gate_value: Option<f64>,
 }
 
+/// Two runtimes are equal when they were built from the same curve, rate and
+/// gate; `segments` is compiled from those and is not compared.
+impl<T: PartialEq> PartialEq for ExpressionRuntime<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.curve == other.curve
+            && self.coordinate_per_frame == other.coordinate_per_frame
+            && self.gate == other.gate
+            && self.shift == other.shift
+            && self.gate_value == other.gate_value
+    }
+}
+
 impl<T: ExpressionCurve> ExpressionRuntime<T> {
     pub(crate) fn new(curve: Arc<T>, coordinate_per_frame: Rational, gate: u64) -> Self {
         let (segments, gate_value) = compile_segments(curve.as_ref(), &coordinate_per_frame, gate);
