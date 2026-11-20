@@ -213,8 +213,11 @@ window is cheap; a late one costs nearly a full render.
 seconds before the window, from reset state:
 
 - every note that started earlier and is still sounding there starts again
-  at that frame, at its velocity but with a fresh envelope;
-- earlier hits and notes that have ended are dropped;
+  at that frame, at its velocity but with a fresh envelope; its pitch, gain,
+  timbre and pressure curves continue from where the full render would be, and
+  what it reads once at note-on is read at the note's own onset;
+- earlier hits and notes that have ended are dropped, and a note that joins a
+  dropped one starts its own voice;
 - reverb, delay and dynamics start empty.
 
 A preroll at least as long as the longest reverb tail and release makes the

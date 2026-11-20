@@ -183,11 +183,74 @@ fn a_restarted_note_continues_its_pitch_curve() {
     });
     let preview = &preview[60_000 - 48_000..];
     let (exact, preview) = (crossings(exact), crossings(preview));
-    // About 390 Hz at this point of the bend; replaying the curve from the
-    // restart would give about 250 Hz, a third fewer crossings.
+    // About 274 Hz at this point of the bend; replaying the curve from the
+    // restart would give about 230 Hz, some 16% fewer crossings.
     assert!(
         exact.abs_diff(preview) <= 3,
         "exact {exact} crossings, preview {preview}"
+    );
+}
+
+/// A note whose pressure curve falls to zero a quarter of the way in, and an
+/// envelope whose sustain is captured from the pressure at note-on.
+const CAPTURE: &str = r#"maac 1;
+project p { score = [0q, 4q]; tail = 0s; rate = 48000Hz; tempo = &clock; meter = &metre; output = &sound:out; }
+tempo clock { points = [(0q, 60bpm, step)]; }
+meter metre { points = [(0q, 4, 4)]; }
+instrument local { channels = 1; voice v { channels = 1; amplitude = &amp; output = &osc:out;
+  node amp { type = "synth.adsr/1"; params = { attack = 0s; decay = 0s; sustain = 0; release = 0s; }; }
+  node osc { type = "synth.sine/1"; params = { ratio = 0; frequency = 1000Hz; phase = 1/4; level = 1; }; }
+  node pressure { type = "synth.pressure/1"; }
+  modulate sustain_from_pressure { from = &pressure:out; to = &amp.params.sustain; depth = 1; } } }
+node sound { instrument = &local; config = { voices = 2; }; }
+curve press { clock = normalized; points = [(0, 1, step), (1/4, 0, step), (1, 0, step)]; }
+pattern phrase { length = 4q; note a { at = 0q; dur = 4q; pitch = C4; expression p { kind = pressure; curve = &press; } } }
+track notes { target = &sound:events; }
+place play { pattern = &phrase; track = &notes; at = 0q; }
+"#;
+
+#[test]
+fn a_restarted_note_captures_its_note_on_values_at_its_own_onset() {
+    // The sustain is read from the pressure once, at the note's onset, where
+    // the curve is 1. Restarting the note later must not read the curve there.
+    let plan = compile_bundle_artifact(&SourceBundle::new("main.maac", CAPTURE)).unwrap();
+    let limits = PlanLimits::song();
+    let port = PortRef::new("sound", "out").unwrap();
+    let peak = |span: RenderSpan, from: usize| {
+        let mut frames = Vec::new();
+        render_ports_artifact_span_with_limits(
+            &plan,
+            &limits,
+            std::slice::from_ref(&port),
+            span,
+            |outputs| {
+                frames.push(outputs[0][0]);
+                Ok(())
+            },
+        )
+        .unwrap();
+        frames[from..]
+            .iter()
+            .fold(0.0_f64, |peak, x| peak.max(x.abs()))
+    };
+    let exact = peak(
+        RenderSpan {
+            start: 0,
+            end: 100_000,
+        },
+        96_000,
+    );
+    let preview = peak(
+        RenderSpan {
+            start: 96_000,
+            end: 100_000,
+        },
+        0,
+    );
+    assert!(exact > 0.5, "the exact render sounds: {exact}");
+    assert!(
+        (exact - preview).abs() < 1e-9,
+        "exact peak {exact}, preview peak {preview}"
     );
 }
 

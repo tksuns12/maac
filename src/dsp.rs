@@ -1413,7 +1413,8 @@ impl<'a> DspEngine<'a> {
             .get_mut(event.node)
             .ok_or_else(|| RenderError::RenderState("event node index is invalid".into()))?;
         // A note a preview restarts midway continues its curves from where
-        // the full render would be, not from their start.
+        // the full render would be, not from their start. Values a voice
+        // captures at its note-on are still read at the note's own onset.
         let shift = if carried {
             frame.saturating_sub(event.on_frame)
         } else {
@@ -1449,10 +1450,10 @@ impl<'a> DspEngine<'a> {
             } => (
                 pitch_hz,
                 velocity,
-                pitch_expression.map(|expression| expression.shifted(shift)),
-                gain_expression.map(|expression| expression.shifted(shift)),
-                timbre_expression.map(|expression| expression.shifted(shift)),
-                pressure_expression.map(|expression| expression.shifted(shift)),
+                pitch_expression,
+                gain_expression,
+                timbre_expression,
+                pressure_expression,
             ),
         };
         if let Some(instrument) = &mut node.instrument {
@@ -1502,6 +1503,7 @@ impl<'a> DspEngine<'a> {
                     timbre_expression,
                     pressure_expression,
                     line,
+                    shift,
                 )
                 .map_err(|error| match error {
                     RenderError::VoiceLimit { address, .. } => RenderError::VoiceLimit {
@@ -1529,8 +1531,8 @@ impl<'a> DspEngine<'a> {
         let voice = Voice {
             address: event.address,
             pitch_hz,
-            pitch_expression,
-            gain_expression,
+            pitch_expression: pitch_expression.map(|expression| expression.shifted(shift)),
+            gain_expression: gain_expression.map(|expression| expression.shifted(shift)),
             velocity,
             on_frame: frame,
             attack,

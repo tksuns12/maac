@@ -483,7 +483,7 @@ impl InstrumentRuntime {
         frame: u64,
     ) -> Result<()> {
         self.note_on_with_expressions(
-            address, pitch_hz, velocity, frame, None, None, None, None, None,
+            address, pitch_hz, velocity, frame, None, None, None, None, None, 0,
         )
     }
 
@@ -506,6 +506,7 @@ impl InstrumentRuntime {
         timbre_expression: Option<ExpressionRuntime<TimbreExpression>>,
         pressure_expression: Option<ExpressionRuntime<PressureExpression>>,
         line: Option<Arc<crate::bow::Line>>,
+        expression_shift: u64,
     ) -> Result<()> {
         if !pitch_hz.is_finite() || !velocity.is_finite() || !(0.0..=1.0).contains(&velocity) {
             return Err(RenderError::Nonfinite(
@@ -576,6 +577,27 @@ impl InstrumentRuntime {
             voice
                 .graph
                 .excite_unmodulated(&self.program.voice, &self.controls, pitch_hz)?;
+        }
+        // A preview restarts a note that began `expression_shift` frames
+        // earlier: from here its curves continue from that point, but what it
+        // captured at note-on above was read at the note's own onset.
+        if expression_shift > 0 {
+            voice.pitch_expression = voice
+                .pitch_expression
+                .take()
+                .map(|expression| expression.shifted(expression_shift));
+            voice.gain_expression = voice
+                .gain_expression
+                .take()
+                .map(|expression| expression.shifted(expression_shift));
+            voice.timbre_expression = voice
+                .timbre_expression
+                .take()
+                .map(|expression| expression.shifted(expression_shift));
+            voice.pressure_expression = voice
+                .pressure_expression
+                .take()
+                .map(|expression| expression.shifted(expression_shift));
         }
         let insertion = match self
             .voices
@@ -4383,6 +4405,7 @@ mod block_tests {
                                 Some(timbre),
                                 Some(pressure),
                                 None,
+                                0,
                             )
                             .unwrap();
                     } else {

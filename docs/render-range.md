@@ -75,8 +75,9 @@ maac render PLAN -o WAV --start-frame N --end-frame M --preroll-frames K
 The result is **a preview, not a slice of the full render**, and its JSON
 result says so: `approximate` is `true` and `render_start_frame` is the frame
 the engine began at. When `N - K <= 0` the engine starts at frame 0 and the
-written samples equal the exact excerpt's, but a plan that fails after `M`
-still succeeds here, where the exact excerpt reports the failure.
+written samples equal the exact excerpt's, but a plan that fails before `N`
+(for example a PCM16 overload) or after `M` still succeeds here, where the
+exact excerpt reports the failure.
 
 How much preroll is enough depends on the plan's longest effect tails and
 sustained notes, and on the window. Two measurements on "Afterlight"
