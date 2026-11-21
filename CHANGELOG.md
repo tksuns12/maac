@@ -42,6 +42,12 @@ promise of compatibility beyond the documented interfaces.
   while the old plan keeps playing. `seek` restarts from the nearest checkpoint.
   `DspEngine::render_chunk` and `chunk_checkpoint` render an exact render in
   pieces. Library only; not used by the CLI.
+- `PlaybackConfig::preview_preroll_frames`, `PlaybackSwitch::approximate_from`,
+  `PlaybackStatus::approximate`, `DspEngine::render_preview_chunk`: when an edit
+  changes sound behind the playhead, a playback first plays the new plan
+  approximately (rendered cold a short way before the playhead, so notes sounding
+  through it restart and reverb tails are missing), within a second, and switches
+  to the exact render when that has caught up.
 - Optional `jit` cargo feature (off by default): a Cranelift renderer for
   instrument graphs that produces output bit-identical to the interpreter.
 

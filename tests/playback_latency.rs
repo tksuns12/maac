@@ -163,14 +163,22 @@ fn playback_latency_on_a_real_song() {
         let edited_at = Instant::now();
         bg.update(plan);
         let mut switch = None;
+        let mut exact = None;
         let mut stale_for = 0.0f64;
         while edited_at.elapsed() < Duration::from_secs(120) {
             let status = play.status();
             if status.stale {
                 stale_for = edited_at.elapsed().as_secs_f64();
             }
-            if status.switches.len() > 1 {
+            if status.switches.len() > 1 && switch.is_none() {
                 switch = Some((status.switches[1].frame, edited_at.elapsed().as_secs_f64()));
+            }
+            // Done when the sound is exact again.
+            if status.switches.len() > 1 && !status.approximate && !status.stale {
+                exact = Some((
+                    status.switches.last().unwrap().frame,
+                    edited_at.elapsed().as_secs_f64(),
+                ));
                 break;
             }
             std::thread::sleep(Duration::from_millis(1));
@@ -178,6 +186,29 @@ fn playback_latency_on_a_real_song() {
         let after = play.status();
         stop.store(true, Ordering::Release);
         reader.join().unwrap();
+        if let (Some((frame, took)), Some((exact_frame, exact_took))) = (switch, exact) {
+            println!(
+                "  {label} (effect from {:.1} s, playhead {:.1} s): first sound {:.2} s after play; \
+                 new plan heard from {:.1} s ({:.2} s after the playhead, {:.2} s after the edit, {}); \
+                 exact from {:.1} s ({:.2} s after the edit); underruns {}",
+                *bound as f64 / second,
+                at_edit as f64 / second,
+                first_sound.lock().unwrap().unwrap_or(f64::NAN),
+                frame as f64 / second,
+                (frame as f64 - at_edit as f64) / second,
+                took,
+                if after.switches.get(1).is_some_and(|s| s.approximate_from.is_some()) {
+                    "approximately"
+                } else {
+                    "exactly"
+                },
+                exact_frame as f64 / second,
+                exact_took,
+                after.underruns,
+            );
+            drop(play);
+            continue;
+        }
         match switch {
             Some((frame, took)) => println!(
                 "  {label} (effect from {:.1} s, playhead {:.1} s): first sound {:.2} s after play; \
