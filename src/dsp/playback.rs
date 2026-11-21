@@ -60,6 +60,11 @@ pub struct PlaybackConfig {
     /// Hold the session's background pre-render still for as long as the
     /// playback lives, to leave the processor to the producer.
     pub pause_prerender: bool,
+    /// When an edit changes frames already rendered, the new plan is first
+    /// rendered cold from this many frames before the playhead, to be heard
+    /// at once but approximately (see [`PlaybackSwitch::approximate_from`]),
+    /// until the exact render catches up. 0 turns the approximation off.
+    pub preview_preroll_frames: u64,
 }
 
 impl Default for PlaybackConfig {
@@ -68,6 +73,7 @@ impl Default for PlaybackConfig {
             lead_frames: 65_536,
             chunk_frames: 2_048,
             pause_prerender: false,
+            preview_preroll_frames: 24_000,
         }
     }
 }
@@ -81,6 +87,11 @@ pub struct PlaybackSwitch {
     /// [`SessionStatus::generation`](super::SessionStatus) counts them, once
     /// the plan was in place.
     pub generation: u64,
+    /// `Some(frame)`: the sound from here on is an approximation of the plan,
+    /// the frames of a render that started cold at `frame` (see
+    /// [`DspEngine::render_span`]), until the next switch of the same
+    /// generation without it, which is exact again.
+    pub approximate_from: Option<u64>,
 }
 
 /// What a [`Playback`] is doing.
@@ -97,6 +108,9 @@ pub struct PlaybackStatus {
     /// An edit changed frames already rendered and the producer is still
     /// rendering the new plan up to the playhead: the sound is the old plan's.
     pub stale: bool,
+    /// The sound is an approximation of the newest plan while the exact render
+    /// catches up.
+    pub approximate: bool,
     /// The plan each stretch of sound belongs to: the first entry is the plan
     /// at the start (or at the last seek), and each later one a change.
     pub switches: Vec<PlaybackSwitch>,
@@ -124,6 +138,7 @@ struct Ring {
     finished: bool,
     underruns: u64,
     stale: bool,
+    approximate: bool,
     catch_up_from: Option<u64>,
     switches: Vec<PlaybackSwitch>,
     error: Option<String>,
@@ -170,10 +185,12 @@ impl Playback {
                 finished: false,
                 underruns: 0,
                 stale: false,
+                approximate: false,
                 catch_up_from: None,
                 switches: vec![PlaybackSwitch {
                     frame: start,
                     generation: synced.generation,
+                    approximate_from: None,
                 }],
                 error: None,
             }),
@@ -188,6 +205,7 @@ impl Playback {
             play: Arc::clone(&play),
             lead: config.lead_frames,
             chunk: config.chunk_frames,
+            preroll: config.preview_preroll_frames,
             epoch: 0,
         };
         let pause = config.pause_prerender;
@@ -275,6 +293,7 @@ impl Playback {
         ring.seek_to = Some(frame);
         ring.finished = false;
         ring.stale = false;
+        ring.approximate = false;
         ring.error = None;
         drop(ring);
         self.play.room.notify_all();
@@ -288,6 +307,7 @@ impl Playback {
             underruns: ring.underruns,
             ended: ring.finished && ring.buffered == 0,
             stale: ring.stale,
+            approximate: ring.approximate,
             switches: ring.switches.clone(),
             catch_up_from: ring.catch_up_from,
             last_error: ring.error.clone(),
@@ -312,6 +332,7 @@ struct Ctx {
     play: Arc<Play>,
     lead: u64,
     chunk: u64,
+    preroll: u64,
     /// The seek count the producer has taken up.
     epoch: u64,
 }
@@ -411,7 +432,11 @@ fn note_plan(ctx: &Ctx, frame: u64, generation: u64) {
             if ring.switches.len() >= MAX_SWITCHES {
                 ring.switches.remove(0);
             }
-            ring.switches.push(PlaybackSwitch { frame, generation });
+            ring.switches.push(PlaybackSwitch {
+                frame,
+                generation,
+                approximate_from: None,
+            });
         }
     }
 }
@@ -579,8 +604,10 @@ fn take_seek(ctx: &mut Ctx) -> Result<Option<Next>> {
         ring.switches.push(PlaybackSwitch {
             frame,
             generation: synced.generation,
+            approximate_from: None,
         });
         ring.stale = false;
+        ring.approximate = false;
     }
     Ok(Some(Next::Again(Box::new(Setup::new(synced, frame)))))
 }
@@ -600,13 +627,18 @@ fn push(ctx: &Ctx, samples: Vec<f64>, _end: u64, last: bool) -> bool {
     true
 }
 
-fn record_switch(ctx: &Ctx, frame: u64, generation: u64) {
+fn record_switch(ctx: &Ctx, frame: u64, generation: u64, approximate_from: Option<u64>) {
     let mut ring = locked(&ctx.play.ring);
     if ring.switches.len() >= MAX_SWITCHES {
         ring.switches.remove(0);
     }
-    ring.switches.push(PlaybackSwitch { frame, generation });
+    ring.switches.push(PlaybackSwitch {
+        frame,
+        generation,
+        approximate_from,
+    });
     ring.stale = false;
+    ring.approximate = approximate_from.is_some();
 }
 
 /// Render one chunk of `engine` from `pos` into the ring. Returns the new
@@ -619,13 +651,19 @@ fn produce(
     pos: u64,
     total: u64,
     finish: bool,
+    approximate: bool,
 ) -> Result<Option<u64>> {
     let end = (pos + ctx.chunk).min(total);
     let mut samples = Vec::with_capacity((end - pos) as usize * ctx.play.channels);
-    engine.render_chunk(RenderSpan { start: pos, end }, |frame| {
+    let sink = |frame: &[f64]| {
         samples.extend_from_slice(frame);
         Ok(())
-    })?;
+    };
+    if approximate {
+        engine.render_preview_chunk(RenderSpan { start: pos, end }, sink)?;
+    } else {
+        engine.render_chunk(RenderSpan { start: pos, end }, sink)?;
+    }
     Ok(push(ctx, samples, end, finish && end >= total).then_some(end))
 }
 
@@ -686,7 +724,7 @@ fn play_engine(
                     return Ok(next);
                 }
             }
-            Wake::Room | Wake::Idle => match produce(ctx, engine, pos, total, true)? {
+            Wake::Room | Wake::Idle => match produce(ctx, engine, pos, total, true, false)? {
                 Some(end) => {
                     pos = end;
                     if pos >= next_snapshot && pos < total {
@@ -719,7 +757,7 @@ fn play_engine(
                     Reuse::From(frame) if frame >= pos => {
                         // The frames rendered so far are the new plan's too.
                         let restore = (pos > 0).then(|| engine.chunk_checkpoint()).transpose()?;
-                        record_switch(ctx, pos, synced.generation);
+                        record_switch(ctx, pos, synced.generation, None);
                         return Ok(Next::Again(Box::new(Setup {
                             plan: synced.plan,
                             limits: synced.limits,
@@ -749,15 +787,24 @@ fn play_engine(
                             ring.catch_up_from = Some(start.as_ref().map_or(0, Checkpoint::frame));
                         }
                         let new_total = synced.plan.output().total_frames;
+                        let preview = if ctx.preroll > 0 {
+                            Some(DspEngine::new_artifact_with_limits(
+                                &synced.plan,
+                                &synced.limits,
+                            )?)
+                        } else {
+                            None
+                        };
                         let target_plan = NewPlan {
                             engine: candidate,
+                            preview,
                             total: new_total,
                             start,
                             generation: synced.generation,
                         };
                         match catch_up(ctx, engine, &mut pos, total, target_plan)? {
                             Caught::Swap(restore) => {
-                                record_switch(ctx, pos, synced.generation);
+                                record_switch(ctx, pos, synced.generation, None);
                                 return Ok(Next::Again(Box::new(Setup {
                                     plan: synced.plan,
                                     limits: synced.limits,
@@ -769,7 +816,19 @@ fn play_engine(
                             Caught::Exit => return Ok(Next::Exit),
                             Caught::Seek(next) => return Ok(next),
                             // Another edit: looked at again from the top.
-                            Caught::Superseded => locked(&ctx.play.ring).stale = false,
+                            Caught::Superseded => {
+                                let mut ring = locked(&ctx.play.ring);
+                                ring.stale = false;
+                            }
+                            Caught::SupersededLive => {
+                                // The engine of the old plan stopped where the
+                                // approximate sound took over: start again from
+                                // the newest plan at the end of the ring.
+                                let synced = sync(&ctx.shared, pos)?;
+                                check_format(ctx, &synced.plan)?;
+                                note_plan(ctx, pos, synced.generation);
+                                return Ok(Next::Again(Box::new(Setup::new(synced, pos))));
+                            }
                             Caught::Finished => {
                                 locked(&ctx.play.ring).stale = false;
                                 generation = synced.generation;
@@ -788,6 +847,8 @@ enum Caught {
     Exit,
     Seek(Next),
     Superseded,
+    /// As `Superseded`, after the approximate sound had taken over.
+    SupersededLive,
     /// The old plan reached the end of the song first.
     Finished,
 }
@@ -795,6 +856,8 @@ enum Caught {
 /// The edited plan a catch-up renders toward the playhead.
 struct NewPlan<'a> {
     engine: DspEngine<'a>,
+    /// A second engine for the new plan, for the approximate sound.
+    preview: Option<DspEngine<'a>>,
     total: u64,
     /// The state to start from; `None` for frame 0.
     start: Option<Checkpoint>,
@@ -866,6 +929,7 @@ fn catch_up(
 ) -> Result<Caught> {
     let NewPlan {
         engine: mut candidate,
+        preview,
         total: new_total,
         start,
         generation,
@@ -882,6 +946,23 @@ fn catch_up(
     let hold = AtomicBool::new(false);
     let abort = AtomicBool::new(false);
     let close = 4 * ctx.chunk;
+    // The approximate sound: the new plan rendered cold from `cold` and kept
+    // in step with the playhead, then played in place of the old plan's.
+    struct Preview<'a> {
+        engine: DspEngine<'a>,
+        cold: u64,
+        at: u64,
+        live: bool,
+    }
+    let cold = pos.saturating_sub(ctx.preroll);
+    let mut preview = preview
+        .filter(|_| cold > 0 && cold < *pos)
+        .map(|engine| Preview {
+            engine,
+            cold,
+            at: cold,
+            live: false,
+        });
 
     enum Done {
         Caught(Caught),
@@ -897,11 +978,12 @@ fn catch_up(
         };
         let done = (|| -> Result<Done> {
             loop {
+                let live = preview.as_ref().is_some_and(|preview| preview.live);
                 if *pos >= new_total {
                     // The new plan ends before the playhead: it takes over there.
                     return Ok(Done::Caught(Caught::Swap(None)));
                 }
-                if *pos >= total {
+                if !live && *pos >= total {
                     if new_total > total {
                         // The old plan has no more to give but the new one is
                         // longer: nothing can be heard until it has caught up.
@@ -919,7 +1001,13 @@ fn catch_up(
                         }
                         continue;
                     }
-                    Wake::Edit => return Ok(Done::Caught(Caught::Superseded)),
+                    Wake::Edit => {
+                        return Ok(Done::Caught(if live {
+                            Caught::SupersededLive
+                        } else {
+                            Caught::Superseded
+                        }))
+                    }
                     Wake::Room | Wake::Idle => {}
                 }
                 let behind = *pos - reached.load(Ordering::Acquire);
@@ -928,10 +1016,51 @@ fn catch_up(
                     hold.store(true, Ordering::Release);
                     return Ok(Done::Hold);
                 }
-                if matches!(wake, Wake::Room) {
-                    if let Some(end) = produce(ctx, old, *pos, total, new_total <= total)? {
-                        *pos = end;
-                        target.store(end, Ordering::Release);
+                // The old plan's sound is worth less than getting the new one
+                // heard, so the preview comes first until the ring is nearly
+                // empty.
+                let starving = {
+                    let ring = locked(&ctx.play.ring);
+                    !ring.finished && ring.buffered < 2 * ctx.chunk
+                };
+                match preview.as_mut() {
+                    // Taken over: the sound is the new plan's, approximately.
+                    Some(preview) if preview.live => {
+                        if matches!(wake, Wake::Room) {
+                            if let Some(end) =
+                                produce(ctx, &mut preview.engine, *pos, new_total, true, true)?
+                            {
+                                *pos = end;
+                                target.store(end, Ordering::Release);
+                            }
+                        }
+                    }
+                    // Not yet: the old plan fills the ring while it is hungry,
+                    // and the preview is brought up to the playhead otherwise.
+                    Some(preview) if !(starving && matches!(wake, Wake::Room)) => {
+                        let end = (preview.at + CATCH_UP_STEP).min(*pos);
+                        preview.engine.render_preview_chunk(
+                            RenderSpan {
+                                start: preview.at,
+                                end,
+                            },
+                            |_| Ok(()),
+                        )?;
+                        preview.at = end;
+                        if preview.at == *pos {
+                            preview.live = true;
+                            record_switch(ctx, *pos, generation, Some(preview.cold));
+                        }
+                    }
+                    _ => {
+                        if matches!(wake, Wake::Room) {
+                            if let Some(end) =
+                                produce(ctx, old, *pos, total, new_total <= total, false)?
+                            {
+                                *pos = end;
+                                target.store(end, Ordering::Release);
+                            }
+                        }
                     }
                 }
             }

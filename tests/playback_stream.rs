@@ -44,6 +44,7 @@ fn config() -> PlaybackConfig {
         lead_frames: 4_096,
         chunk_frames: 1_000,
         pause_prerender: false,
+        preview_preroll_frames: 0,
     }
 }
 
@@ -127,6 +128,7 @@ fn reads_of_any_size_are_a_fresh_render() {
                     lead_frames: chunk.max(4_096),
                     chunk_frames: chunk,
                     pause_prerender: false,
+                    preview_preroll_frames: 0,
                 },
             )
             .unwrap();
@@ -181,19 +183,42 @@ fn assert_played(
             .map_or(frames, |next| (next.frame - start) as usize)
             .min(frames);
         assert!(until >= from, "{why}: switches out of order: {switches:?}");
-        let render = &renders[switch.generation as usize];
-        let (a, b) = (from * channels, until * channels);
-        let (c, d) = (
-            (start as usize) * channels + a,
-            (start as usize) * channels + b,
-        );
+        // The frames of the plan, from frame `base` of the song: an exact
+        // render from 0, or a render that started cold at `cold`.
+        let plan = plans[switch.generation as usize];
+        let (base, render) = match switch.approximate_from {
+            None => (0usize, renders[switch.generation as usize].clone()),
+            Some(cold) => {
+                let mut out = Vec::new();
+                DspEngine::new_artifact_with_limits(plan, &limits())
+                    .unwrap()
+                    .render_span(
+                        RenderSpan {
+                            start: cold,
+                            end: plan.output().total_frames,
+                        },
+                        |frame| {
+                            out.extend_from_slice(frame);
+                            Ok(())
+                        },
+                    )
+                    .unwrap();
+                (cold as usize, out)
+            }
+        };
+        let first = start as usize + from;
+        let last = start as usize + until;
+        let want = &render[(first - base) * channels..((last - base) * channels).min(render.len())];
         assert_eq!(
-            bits(&render[c..d.min(render.len())]),
-            bits(&got[a..(a + (d.min(render.len()) - c))]),
-            "{why}: frames {}..{} should be plan {} ({switches:?})",
-            start as usize + from,
-            start as usize + until,
-            switch.generation
+            bits(want),
+            bits(&got[from * channels..from * channels + want.len()]),
+            "{why}: frames {first}..{last} should be plan {} ({}) ({switches:?})",
+            switch.generation,
+            if switch.approximate_from.is_some() {
+                "approximate"
+            } else {
+                "exact"
+            }
         );
         from = until;
     }
@@ -484,7 +509,8 @@ fn a_bad_start_or_config_is_refused() {
             PlaybackConfig {
                 lead_frames: 100,
                 chunk_frames: 1_000,
-                pause_prerender: false
+                pause_prerender: false,
+                preview_preroll_frames: 0,
             }
         )
         .is_err());
@@ -785,6 +811,7 @@ fn a_lead_of_one_chunk_still_switches() {
                 lead_frames: 1_000,
                 chunk_frames: 1_000,
                 pause_prerender: false,
+                preview_preroll_frames: 0,
             },
         )
         .unwrap();
@@ -874,4 +901,129 @@ fn quick_updates_are_named_for_the_plan_that_played() {
         );
         assert_eq!(status.switches.last().unwrap().generation, 2, "{status:?}");
     }
+}
+
+// ---- the approximate sound -----------------------------------------------
+
+/// A preview cut into chunks is the preview of one render, whatever the cut.
+#[test]
+fn chunks_of_a_preview_are_one_preview() {
+    let plan = compile(&base_song(7)).unwrap();
+    let total = plan.output().total_frames;
+    let channels = usize::from(plan.output().channels);
+    for cold in [1u64, 30_000, 100_000] {
+        let mut whole = Vec::new();
+        DspEngine::new_artifact_with_limits(&plan, &limits())
+            .unwrap()
+            .render_span(
+                RenderSpan {
+                    start: cold,
+                    end: total,
+                },
+                |frame| {
+                    whole.extend_from_slice(frame);
+                    Ok(())
+                },
+            )
+            .unwrap();
+        for size in [1_000u64, 4_801, 70_000] {
+            let mut engine = DspEngine::new_artifact_with_limits(&plan, &limits()).unwrap();
+            let mut got = Vec::new();
+            let mut at = cold;
+            while at < total {
+                let end = (at + size).min(total);
+                engine
+                    .render_preview_chunk(RenderSpan { start: at, end }, |frame| {
+                        got.extend_from_slice(frame);
+                        Ok(())
+                    })
+                    .unwrap();
+                at = end;
+            }
+            assert_eq!(
+                bits(&whole),
+                bits(&got),
+                "cold {cold}, chunks of {size} ({} frames)",
+                got.len() / channels
+            );
+        }
+    }
+}
+
+#[test]
+fn a_misplaced_preview_chunk_is_refused() {
+    let plan = compile(&base_song(7)).unwrap();
+    let span = |start, end| RenderSpan { start, end };
+    let mut engine = DspEngine::new_artifact_with_limits(&plan, &limits()).unwrap();
+    // A preview does not start at frame 0 (that is the exact render).
+    assert!(engine
+        .render_preview_chunk(span(0, 100), |_| Ok(()))
+        .is_err());
+    engine
+        .render_preview_chunk(span(500, 900), |_| Ok(()))
+        .unwrap();
+    assert!(engine
+        .render_preview_chunk(span(1_000, 1_100), |_| Ok(()))
+        .is_err());
+    engine
+        .render_preview_chunk(span(900, 1_100), |_| Ok(()))
+        .unwrap();
+    // An exact engine is not made to continue a preview, nor the other way.
+    let mut exact = DspEngine::new_artifact_with_limits(&plan, &limits()).unwrap();
+    exact.render_chunk(span(0, 500), |_| Ok(())).unwrap();
+    assert!(exact
+        .render_preview_chunk(span(500, 900), |_| Ok(()))
+        .is_err());
+}
+
+/// An edit behind the playhead, far into a song nothing is rendered for: the
+/// new plan is heard approximately long before the exact render catches up,
+/// then exactly. Every stretch is what it says it is.
+#[test]
+fn the_new_plan_is_heard_approximately_then_exactly() {
+    let song = base_song(4);
+    let plan = compile(&song).unwrap();
+    let total = plan.output().total_frames;
+    let reference = maac::dsp::CheckpointSet::without_checkpoints(&plan, &limits()).unwrap();
+    let mut rng = Rng(9);
+    let early = (0..300)
+        .find_map(|index| {
+            let edited = compile(&edit(&song, &mut rng, 8 + index).0).ok()?;
+            (edited.output().total_frames == total
+                && matches!(
+                    reference.reuse_for(&edited).unwrap(),
+                    maac::dsp::Reuse::From(bound) if bound < total / 20
+                ))
+            .then_some(edited)
+        })
+        .expect("an early edit");
+    let start = total * 2 / 3;
+    let bg = session(&plan, false);
+    let play = bg
+        .play(
+            start,
+            PlaybackConfig {
+                preview_preroll_frames: 12_000,
+                ..config()
+            },
+        )
+        .unwrap();
+    let mut got = read_exactly(&play, 2_000, 500);
+    bg.update(&early);
+    got.extend(read_paced(&play, 480));
+    let status = play.status();
+    assert!(!status.stale && !status.approximate, "{status:?}");
+    let kinds: Vec<_> = status
+        .switches
+        .iter()
+        .map(|switch| (switch.generation, switch.approximate_from.is_some()))
+        .collect();
+    assert_eq!(kinds, [(0, false), (1, true), (1, false)], "{status:?}");
+    assert_played(
+        &got,
+        start,
+        &status.switches,
+        &[&plan, &early],
+        "approximate",
+    );
 }

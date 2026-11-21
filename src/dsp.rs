@@ -200,6 +200,9 @@ pub struct DspEngine<'a> {
     checkpoints: Vec<Checkpoint>,
     /// Set on an engine restored from a checkpoint: the frame it continues at.
     resume_frame: Option<u64>,
+    /// Where an approximate (preview) render began: a chunk that continues it
+    /// keeps skipping what a render from that frame never started.
+    preview_origin: Option<u64>,
     /// While a render hands its checkpoints on as they are taken, instead of
     /// keeping them in `checkpoints`.
     checkpoint_sink: Option<CheckpointSink>,
@@ -751,6 +754,7 @@ impl<'a> DspEngine<'a> {
             checkpoint_rule: CheckpointRule::Off,
             checkpoints: Vec::new(),
             resume_frame: None,
+            preview_origin: None,
             checkpoint_sink: None,
         })
     }
@@ -1178,7 +1182,15 @@ impl<'a> DspEngine<'a> {
         }
         // A resumed render continues the exact render; only a preview that
         // starts cold restarts the notes sounding at its first frame.
-        let preview = span.start > 0 && resume_frame.is_none();
+        let first = resume_frame.is_none();
+        let preview_origin = if first {
+            (span.start > 0).then_some(span.start)
+        } else {
+            self.preview_origin
+        };
+        self.preview_origin = preview_origin;
+        let preview = preview_origin.is_some();
+        let origin = preview_origin.unwrap_or(0);
         // A preview restarts, at its first frame, every note that sounds
         // through it, in the order the score would have started them.
         let mut carried: Vec<usize> = if preview {
@@ -1187,8 +1199,8 @@ impl<'a> DspEngine<'a> {
                 .enumerate()
                 .filter(|(_, event)| {
                     matches!(event.data, EventData::Note { .. })
-                        && event.on_frame < span.start
-                        && event.off_frame.is_some_and(|off| off > span.start)
+                        && event.on_frame < origin
+                        && event.off_frame.is_some_and(|off| off > origin)
                 })
                 .map(|(index, _)| index)
                 .collect()
@@ -1199,13 +1211,17 @@ impl<'a> DspEngine<'a> {
         // never sounding, so it gets no note-off, and a note that joins one
         // must start its own voice.
         let carried_set: std::collections::HashSet<usize> = carried.iter().copied().collect();
+        // A chunk that continues a preview does not restart them again.
+        if !first {
+            carried.clear();
+        }
         let unstarted: std::collections::HashSet<(usize, String)> = if preview {
             self.events
                 .iter()
                 .enumerate()
                 .filter(|(index, event)| {
                     matches!(event.data, EventData::Note { .. })
-                        && event.on_frame < span.start
+                        && event.on_frame < origin
                         && !carried_set.contains(index)
                 })
                 .map(|(_, event)| (event.node, event.address.clone()))
@@ -1235,8 +1251,7 @@ impl<'a> DspEngine<'a> {
             if let Some(events) = self.off_events.get(&frame_index).cloned() {
                 for event_index in events {
                     let event = &self.events[event_index];
-                    if preview && event.on_frame < span.start && !carried_set.contains(&event_index)
-                    {
+                    if preview && event.on_frame < origin && !carried_set.contains(&event_index) {
                         continue;
                     }
                     self.release_event(event_index, frame_index)?;
@@ -1453,6 +1468,7 @@ impl<'a> DspEngine<'a> {
         self.checkpoint_rule = CheckpointRule::Off;
         self.checkpoints.clear();
         self.resume_frame = Some(checkpoint.frame);
+        self.preview_origin = None;
         Ok(())
     }
 
@@ -1474,6 +1490,35 @@ impl<'a> DspEngine<'a> {
                     .into(),
             ));
         }
+        self.chunk(span, callback)
+    }
+
+    /// Render `span` as one piece of an *approximate* render that goes on in
+    /// further calls: the first starts cold at `span.start` of a reset engine,
+    /// as [`Self::render_span`] does for a preview, and each next one starts
+    /// where the last ended. The frames are those of one preview render from
+    /// the first start, bit for bit, however it is cut. Use
+    /// [`Self::render_chunk`] for the exact render.
+    pub fn render_preview_chunk<F>(&mut self, span: RenderSpan, callback: F) -> Result<()>
+    where
+        F: FnMut(&[f64]) -> Result<()>,
+    {
+        let continues = self.resume_frame == Some(span.start) && self.preview_origin.is_some();
+        let begins = self.resume_frame.is_none() && span.start > 0;
+        if !(continues || begins) {
+            return Err(RenderError::RenderState(
+                "a chunk of a preview starts on a reset engine, at a frame after 0, \
+                 or where the previous chunk of the preview ended"
+                    .into(),
+            ));
+        }
+        self.chunk(span, callback)
+    }
+
+    fn chunk<F>(&mut self, span: RenderSpan, callback: F) -> Result<()>
+    where
+        F: FnMut(&[f64]) -> Result<()>,
+    {
         // Block horizons stop at the end of the chunk, so no instrument holds
         // frames rendered ahead there and the state is a checkpoint's.
         self.checkpoint_rule = CheckpointRule::At(vec![span.end]);
@@ -1546,6 +1591,7 @@ impl<'a> DspEngine<'a> {
         self.parameters_valid_until.fill(0);
         self.frame.fill(0.0);
         self.resume_frame = None;
+        self.preview_origin = None;
     }
 
     fn read_delays(&mut self) {

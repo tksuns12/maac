@@ -512,3 +512,37 @@ hold threshold. Still open: rapid edits restart the catch-up each time (a slider
 drag may not switch until it stops); `read` frees chunk buffers on the audio
 thread; a panic in the catch-up's producer side is now stopped by a guard but
 untested.
+
+## Phase C4 results (approximate sound while the exact render catches up)
+
+An edit that changes frames behind the playhead used to leave the old plan
+playing until the exact new plan reached the playhead (16-42 s on heavy songs).
+`catch_up` now builds a second engine for the new plan and, after the edit,
+renders it cold from `preview_preroll_frames` (default 24 000) before the playhead
+up to the playhead, in the producer's spare time (before the old plan's refill,
+unless the ring is nearly empty). From there the ring is filled with that
+approximate sound (`PlaybackSwitch::approximate_from = Some(cold frame)`,
+`PlaybackStatus::approximate`) until the exact render hands over (a switch with
+`approximate_from = None`). The approximation is the engine's existing preview, so
+a stretch can be checked bit for bit against one preview render from its cold
+frame; `DspEngine::render_preview_chunk` renders it in pieces (the engine remembers
+where the preview began, so a continuing chunk skips what a render from there
+never started).
+
+Tests: a preview cut into chunks of 1 000 to 70 000 frames equals one preview
+render; misplaced preview chunks are refused; a playback with an early edit has
+exactly the switches exact, approximate, exact, each stretch equal to its fresh
+render. Not mutation-checked.
+
+Measured (Afterlight, release, loaded machine: the worker took 104 s to fill, 48 s
+when quiet): an edit behind the playhead is heard approximately 0.3-0.7 s after
+the edit (before: 16-25 s) and exactly after 23-33 s. Two of the four runs
+underran for seconds (426 and 655 reads) because the approximate sound itself
+renders at about real time on this song under load. Homeward was measured
+before the preview was given priority (no approximate sound there: the old
+plan's refill starved it) and not again.
+
+Limits: the approximation lacks reverb and delay tails from before its cold start
+and restarts sounding notes; an edit that arrives while it plays starts again from
+the newest plan at the end of the ring (silent advance, may run dry); rapid edits
+still restart the catch-up.
