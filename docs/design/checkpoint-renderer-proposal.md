@@ -453,8 +453,8 @@ is earlier than the playhead without catching up, keeping the switch list over
 a seek, accepting a chunk rendered before a seek, ignoring the edit bound when
 choosing a checkpoint, not stopping block horizons at chunk ends, letting the
 old plan starve the catch-up, not watching for edits, and switching one frame
-late. Not caught, and equivalent: not clearing the parameter caches between
-chunks (`restore_from` does, to be safe; staying valid is also correct).
+late. Also caught: not clearing the parameter caches between chunks (found when a
+leftover mutation broke the seek tests).
 A first version let the old plan starve the catch-up when the reader outran the
 producer, and the test reader (twice real time) flaked once in three before
 the producer was made to leave the catch-up the time above half a ring.
@@ -497,3 +497,18 @@ the playback's own snapshots the same Afterlight edits took 30–78 s.
 - The tests' wall-clock-sensitive part is the reader's pace (twice real
   time); a machine too slow to render at 2× real time would make them fail.
 - Measured on three songs, one run each, on a loaded machine.
+
+### Review of the first version (fixed)
+An independent review found: an edit that changes the channel count garbled the
+stream (now the producer reports an error and waits); a lead-in edit was
+labelled with the old plan; a lead of one chunk never handed over; a longer plan
+was cut at the old end; a producer error killed the playback for good (now a
+seek or an update restarts it); a stale `finished` after a seek; and a switch
+labelled with an older plan when two updates raced (the generation is now read
+under the slot lock). Regression tests cover the first five; mutation checks
+caught three of the six fixes. Not caught, because they are timing races: the
+generation read under the slot lock, the `finished` write after a seek, and the
+hold threshold. Still open: rapid edits restart the catch-up each time (a slider
+drag may not switch until it stops); `read` frees chunk buffers on the audio
+thread; a panic in the catch-up's producer side is now stopped by a guard but
+untested.

@@ -622,3 +622,256 @@ fn an_edit_just_behind_the_playhead_starts_from_the_players_own_snapshot() {
         "from the snapshot",
     );
 }
+
+// ---- found by review -----------------------------------------------------
+
+fn compile_text(text: String) -> PlanArtifact {
+    use maac::compiler::compile_bundle_artifact_with_limits;
+    use maac::SourceBundle;
+    compile_bundle_artifact_with_limits(&SourceBundle::new("standalone.maac", text), &limits())
+        .unwrap()
+}
+
+fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
+    let started = Instant::now();
+    while !done() {
+        assert!(started.elapsed() < WAIT, "timed out waiting for {what}");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+/// A different number of channels cannot be played on: the stream says so and
+/// keeps what it had; putting the plan back carries on where the ring ended.
+#[test]
+fn an_edit_that_changes_the_channels_stops_the_stream_cleanly() {
+    let song = base_song(6);
+    let plan = compile(&song).unwrap();
+    let stereo = compile_text(
+        source(&song)
+            .replace("output = &fader:out;", "output = &wide:out;")
+            .replace(
+                "node fader {",
+                "node wide { type = \"core.matrix/1\"; config = { inputs = 1; outputs = 2; \
+                 coefficients = [[3/4], [1/2]]; }; }\n\
+                 connect fader_wide { from = &fader:out; to = &wide:in; }\nnode fader {",
+            ),
+    );
+    assert_eq!(stereo.output().channels, 2);
+    let channels = usize::from(plan.output().channels);
+    let fresh = render_full(&plan);
+    let bg = session(&plan, false);
+    let play = bg.play(0, config()).unwrap();
+    let mut got = read_exactly(&play, 2_000, 500);
+    bg.update(&stereo);
+    wait_for("the format error", || play.status().last_error.is_some());
+    assert!(play.status().last_error.unwrap().contains("channels"));
+    // What was in the ring is still the old plan's, in whole mono frames.
+    let mut buffer = vec![0.0; 1_000 * channels];
+    loop {
+        let n = play.read(&mut buffer);
+        if n == 0 {
+            break;
+        }
+        got.extend_from_slice(&buffer[..n * channels]);
+    }
+    assert_eq!(play.status().position as usize, got.len() / channels);
+    assert_eq!(bits(&fresh[..got.len()]), bits(&got));
+    // The old plan back: the stream goes on from the end of what it played.
+    bg.update(&plan);
+    wait_for("the error to clear", || play.status().last_error.is_none());
+    got.extend(read_exactly(&play, 5_000, 700));
+    assert_eq!(bits(&fresh[..got.len()]), bits(&got));
+}
+
+/// A render that fails ends the producer's run, not the playback: a seek or a
+/// fixed plan starts it again.
+#[test]
+fn a_failed_render_is_recovered_from_by_a_seek_and_an_update() {
+    let song = base_song(1);
+    let plan = compile(&song).unwrap();
+    let bad = compile_text(source(&song).replace("gain = 2/5", "gain = 100000"));
+    let channels = usize::from(plan.output().channels);
+    let fresh = render_full(&plan);
+    let bg = session(&plan, false);
+    let play = bg.play(0, config()).unwrap();
+    let _ = read_exactly(&play, 500, 100);
+    bg.update(&bad);
+    // The failure comes when the producer reaches the frames that blow up, so
+    // the reader goes on.
+    let mut sink = vec![0.0; 480 * channels];
+    let mut read_until_error = |play: &Playback| {
+        wait_for("the render error", || {
+            play.read(&mut sink);
+            play.status().last_error.is_some()
+        });
+    };
+    read_until_error(&play);
+    // A seek with the bad plan in place fails again, but it is noticed.
+    play.seek(100);
+    assert!(play.status().last_error.is_none());
+    read_until_error(&play);
+    bg.update(&plan);
+    wait_for("the error to clear", || play.status().last_error.is_none());
+    // What the ring still held is the bad plan's; the sound from the switch on
+    // is the fixed plan's.
+    let from = play.status().switches.last().unwrap().frame;
+    while play.status().position < from {
+        let want = (from - play.status().position).min(400) as usize;
+        let mut skip = vec![0.0; want * channels];
+        let _ = play.read(&mut skip);
+    }
+    let got = read_exactly(&play, 2_000, 400);
+    assert_eq!(
+        bits(&fresh[from as usize * channels..(from as usize + 2_000) * channels]),
+        bits(&got),
+        "after the fix"
+    );
+}
+
+/// An edit that comes in before the first frame is heard is the plan the sound
+/// starts with: the list must say so.
+#[test]
+fn an_edit_during_the_lead_in_is_the_plan_the_sound_starts_with() {
+    let song = base_song(4);
+    let plan = compile(&song).unwrap();
+    let total = plan.output().total_frames;
+    let before = render_full(&plan);
+    let channels = usize::from(plan.output().channels);
+    let start = total * 2 / 3;
+    let mut rng = Rng(13);
+    let edited = (0..200)
+        .find_map(|index| {
+            let edited = compile(&edit(&song, &mut rng, index).0).ok()?;
+            let after = render_full(&edited);
+            let from = start as usize * channels;
+            (edited.output().total_frames == total && after[from..] != before[from..])
+                .then_some(edited)
+        })
+        .expect("an edit that changes the sound after the start");
+    for _ in 0..3 {
+        let bg = session(&plan, false);
+        let play = bg.play(start, config()).unwrap();
+        bg.update(&edited);
+        let got = read_paced(&play, 480);
+        let status = play.status();
+        assert_played(&got, start, &status.switches, &[&plan, &edited], "lead-in");
+    }
+}
+
+/// With a lead that is one chunk the catch-up still gets to hand over.
+#[test]
+fn a_lead_of_one_chunk_still_switches() {
+    let song = base_song(2);
+    let plan = compile(&song).unwrap();
+    let total = plan.output().total_frames;
+    let reference = maac::dsp::CheckpointSet::without_checkpoints(&plan, &limits()).unwrap();
+    let mut rng = Rng(8);
+    let edited = (0..300)
+        .find_map(|index| {
+            let edited = compile(&edit(&song, &mut rng, index).0).ok()?;
+            (edited.output().total_frames == total
+                && matches!(
+                    reference.reuse_for(&edited).ok()?,
+                    maac::dsp::Reuse::From(bound) if bound < 5_000
+                ))
+            .then_some(edited)
+        })
+        .expect("an edit near the start");
+    let bg = session(&plan, false);
+    let play = bg
+        .play(
+            0,
+            PlaybackConfig {
+                lead_frames: 1_000,
+                chunk_frames: 1_000,
+                pause_prerender: false,
+            },
+        )
+        .unwrap();
+    let mut got = read_exactly(&play, 20_000, 500);
+    bg.update(&edited);
+    got.extend(read_paced(&play, 480));
+    let status = play.status();
+    assert_eq!(status.switches.len(), 2, "{status:?}");
+    assert_played(
+        &got,
+        0,
+        &status.switches,
+        &[&plan, &edited],
+        "lead of one chunk",
+    );
+}
+
+/// The new plan is longer and the old one runs out first: the song goes on as
+/// the new plan instead of ending at the old end.
+#[test]
+fn a_longer_plan_is_played_to_its_end() {
+    let song = base_song(6);
+    let plan = compile(&song).unwrap();
+    let longer = compile_text(source(&song).replace("120bpm", "100bpm"));
+    let old_total = plan.output().total_frames;
+    let new_total = longer.output().total_frames;
+    assert!(new_total > old_total);
+    let start = old_total - 9_000;
+    let bg = session(&plan, false);
+    let play = bg.play(start, config()).unwrap();
+    let mut got = read_exactly(&play, 1_000, 500);
+    bg.update(&longer);
+    got.extend(read_paced(&play, 480));
+    let status = play.status();
+    assert!(status.last_error.is_none(), "{status:?}");
+    assert_eq!(
+        got.len() / usize::from(plan.output().channels),
+        (new_total - start) as usize,
+        "{status:?}"
+    );
+    assert_eq!(status.switches.len(), 2, "{status:?}");
+    assert_played(
+        &got,
+        start,
+        &status.switches,
+        &[&plan, &longer],
+        "longer plan",
+    );
+}
+
+/// Two updates in quick succession: whichever plan a stretch of sound is, the
+/// list names that one.
+#[test]
+fn quick_updates_are_named_for_the_plan_that_played() {
+    let song = base_song(2);
+    let plan = compile(&song).unwrap();
+    let total = plan.output().total_frames;
+    let mut rng = Rng(77);
+    let mut edits = Vec::new();
+    for index in 0..200 {
+        if let Ok(edited) = compile(&edit(&song, &mut rng, index).0) {
+            if edited.output().total_frames == total {
+                edits.push(edited);
+            }
+        }
+        if edits.len() == 2 {
+            break;
+        }
+    }
+    for round in 0..6 {
+        let bg = session(&plan, false);
+        let play = bg.play(0, config()).unwrap();
+        let mut got = read_exactly(&play, 2_000, 500);
+        bg.update(&edits[0]);
+        if round % 2 == 0 {
+            std::thread::sleep(Duration::from_millis(round as u64));
+        }
+        bg.update(&edits[1]);
+        got.extend(read_paced(&play, 480));
+        let status = play.status();
+        assert_played(
+            &got,
+            0,
+            &status.switches,
+            &[&plan, &edits[0], &edits[1]],
+            &format!("round {round}"),
+        );
+        assert_eq!(status.switches.last().unwrap().generation, 2, "{status:?}");
+    }
+}

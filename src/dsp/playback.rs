@@ -135,6 +135,7 @@ struct Play {
     room: Condvar,
     shutdown: AtomicBool,
     channels: usize,
+    rate: u32,
 }
 
 /// See the module documentation.
@@ -179,6 +180,7 @@ impl Playback {
             room: Condvar::new(),
             shutdown: AtomicBool::new(false),
             channels: usize::from(output.channels),
+            rate: output.sample_rate_hz,
         });
         let first = Setup::new(synced, start);
         let mut ctx = Ctx {
@@ -225,7 +227,7 @@ impl Playback {
     }
 
     /// Copy the next frames into `out` (a whole number of frames; a trailing
-    /// part of one is left alone) and return how many were ready. The rest of
+    /// part of one is set to silence) and return how many were ready. The rest of
     /// `out` is set to silence. Never renders.
     pub fn read(&self, out: &mut [f64]) -> usize {
         let channels = self.play.channels;
@@ -361,14 +363,18 @@ enum Wake {
 /// The latest plan, taken up into the session, and the checkpoint to start it
 /// from for `frame`.
 fn sync(shared: &Arc<Shared>, frame: u64) -> Result<Synced> {
-    // Read before the slot is: an update counted here has its plan in the slot
-    // or already in the session.
-    let generation = shared.stored.load(Ordering::Acquire);
     let _foreground = Foreground::new(shared);
     let mut state = locked(&shared.state);
-    if let Some(plan) = locked(&shared.slot).take() {
-        state.session.update(&plan);
-    }
+    // `update` stores its plan and counts it under the slot lock, so the count
+    // read here is exactly the number of plans that are in the slot or in the
+    // session: the plan taken below is the one the count names.
+    let generation = {
+        let mut slot = locked(&shared.slot);
+        if let Some(plan) = slot.take() {
+            state.session.update(&plan);
+        }
+        shared.stored.load(Ordering::Acquire)
+    };
     let (plan, limits, checkpoint) = state.session.checkpoint_before(frame)?;
     publish(shared, &state.session);
     Ok(Synced {
@@ -379,14 +385,70 @@ fn sync(shared: &Arc<Shared>, frame: u64) -> Result<Synced> {
     })
 }
 
+/// The reader's idea of a frame (its size and rate) is fixed when the playback
+/// starts; an edit that changes it cannot be played on.
+fn check_format(ctx: &Ctx, plan: &PlanArtifact) -> Result<()> {
+    let output = plan.output();
+    if usize::from(output.channels) != ctx.play.channels || output.sample_rate_hz != ctx.play.rate {
+        return Err(RenderError::RenderState(
+            "the edit changes the number of channels or the sample rate; \
+             start a new playback"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Note that the sound from `frame` on is the plan of `generation`. Where
+/// nothing has been put in the ring for that frame yet the entry already there
+/// is corrected instead of a new one added.
+fn note_plan(ctx: &Ctx, frame: u64, generation: u64) {
+    let mut ring = locked(&ctx.play.ring);
+    let empty = ring.buffered == 0;
+    match ring.switches.last_mut() {
+        Some(last) if last.frame == frame && empty => last.generation = generation,
+        _ => {
+            if ring.switches.len() >= MAX_SWITCHES {
+                ring.switches.remove(0);
+            }
+            ring.switches.push(PlaybackSwitch { frame, generation });
+        }
+    }
+}
+
+/// An error ends what the producer was doing, not the playback: it records
+/// the error and waits for a seek, or for the plan to change, and starts again.
 fn run(ctx: &mut Ctx, first: Setup) -> Result<()> {
+    let mut setup = first;
+    loop {
+        match run_plan(ctx, setup) {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                let generation = ctx.shared.stored.load(Ordering::Acquire);
+                locked(&ctx.play.ring).error = Some(format!("{error:?}"));
+                match idle_until_seek(ctx, Some(generation)) {
+                    Next::Exit => return Ok(()),
+                    Next::Again(next) => setup = *next,
+                }
+            }
+        }
+    }
+}
+
+fn run_plan(ctx: &mut Ctx, first: Setup) -> Result<()> {
     let mut setup = first;
     loop {
         let total = setup.plan.output().total_frames;
         if setup.pos >= total {
             // An edit made the plan shorter than the playhead: nothing is left.
-            locked(&ctx.play.ring).finished = true;
-            match idle_until_seek(ctx) {
+            {
+                let mut ring = locked(&ctx.play.ring);
+                // Not if a seek came in meanwhile: it cleared this.
+                if ring.epoch == ctx.epoch {
+                    ring.finished = true;
+                }
+            }
+            match idle_until_seek(ctx, None) {
                 Next::Exit => return Ok(()),
                 Next::Again(next) => {
                     setup = *next;
@@ -409,13 +471,17 @@ fn run(ctx: &mut Ctx, first: Setup) -> Result<()> {
     }
 }
 
-fn idle_until_seek(ctx: &mut Ctx) -> Next {
+/// Wait for a seek (or the end of the playback). With `retry` set, a change of
+/// plan after that generation also starts the producer again, from the end of
+/// what is in the ring.
+fn idle_until_seek(ctx: &mut Ctx, mut retry: Option<u64>) -> Next {
     loop {
         match wait_room(ctx, 0, false, false) {
             Wake::Exit => return Next::Exit,
             Wake::Seek => match take_seek(ctx) {
-                Some(next) => return next,
-                None => continue,
+                Ok(Some(next)) => return next,
+                Ok(None) => continue,
+                Err(error) => locked(&ctx.play.ring).error = Some(format!("{error:?}")),
             },
             Wake::Room | Wake::Edit | Wake::Idle => {
                 // Nothing to render: wait for the reader or a seek.
@@ -427,7 +493,38 @@ fn idle_until_seek(ctx: &mut Ctx) -> Next {
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
             }
         }
+        if let Some(seen) = retry {
+            let now = ctx.shared.stored.load(Ordering::Acquire);
+            if now != seen {
+                match resync_after_error(ctx) {
+                    Ok(setup) => return Next::Again(Box::new(setup)),
+                    Err(error) => {
+                        locked(&ctx.play.ring).error = Some(format!("{error:?}"));
+                        retry = Some(now);
+                    }
+                }
+            }
+        }
     }
+}
+
+/// Start again after an error from the newest plan, where the ring ends.
+fn resync_after_error(ctx: &Ctx) -> Result<Setup> {
+    let pos = {
+        let ring = locked(&ctx.play.ring);
+        ring.read_frame + ring.buffered
+    };
+    let synced = sync(&ctx.shared, pos)?;
+    check_format(ctx, &synced.plan)?;
+    let mut ring = locked(&ctx.play.ring);
+    if ring.epoch != ctx.epoch {
+        // A seek came in: it is taken up by the caller's next look.
+        return Err(RenderError::RenderState("a seek came in".into()));
+    }
+    ring.error = None;
+    drop(ring);
+    note_plan(ctx, pos, synced.generation);
+    Ok(Setup::new(synced, pos))
 }
 
 /// Wait until there is room for a chunk, or something else needs the
@@ -461,24 +558,22 @@ fn wait_room(ctx: &Ctx, generation: u64, watch_edits: bool, once: bool) -> Wake 
 
 /// Take up a seek: the plan as it is now, from the checkpoint nearest the
 /// frame. `None` if the seek was undone by the time it was looked at.
-fn take_seek(ctx: &mut Ctx) -> Option<Next> {
+fn take_seek(ctx: &mut Ctx) -> Result<Option<Next>> {
     let frame = {
         let mut ring = locked(&ctx.play.ring);
         ctx.epoch = ring.epoch;
-        ring.seek_to.take()?
-    };
-    let synced = match sync(&ctx.shared, frame) {
-        Ok(synced) => synced,
-        Err(error) => {
-            locked(&ctx.play.ring).error = Some(format!("{error:?}"));
-            return Some(Next::Exit);
+        match ring.seek_to.take() {
+            Some(frame) => frame,
+            None => return Ok(None),
         }
     };
+    let synced = sync(&ctx.shared, frame)?;
+    check_format(ctx, &synced.plan)?;
     {
         let mut ring = locked(&ctx.play.ring);
         // Only the newest seek counts.
         if ring.epoch != ctx.epoch {
-            return None;
+            return Ok(None);
         }
         ring.switches.clear();
         ring.switches.push(PlaybackSwitch {
@@ -487,19 +582,19 @@ fn take_seek(ctx: &mut Ctx) -> Option<Next> {
         });
         ring.stale = false;
     }
-    Some(Next::Again(Box::new(Setup::new(synced, frame))))
+    Ok(Some(Next::Again(Box::new(Setup::new(synced, frame)))))
 }
 
 /// Put a rendered chunk in the ring. False if a seek came in meanwhile and
 /// the chunk was dropped.
-fn push(ctx: &Ctx, samples: Vec<f64>, end: u64, total: u64) -> bool {
+fn push(ctx: &Ctx, samples: Vec<f64>, _end: u64, last: bool) -> bool {
     let mut ring = locked(&ctx.play.ring);
     if ring.epoch != ctx.epoch {
         return false;
     }
     ring.buffered += (samples.len() / ctx.play.channels) as u64;
     ring.chunks.push_back(Chunk { samples, taken: 0 });
-    if end >= total {
+    if last {
         ring.finished = true;
     }
     true
@@ -516,14 +611,22 @@ fn record_switch(ctx: &Ctx, frame: u64, generation: u64) {
 
 /// Render one chunk of `engine` from `pos` into the ring. Returns the new
 /// position, or `None` if a seek came in and the chunk was dropped.
-fn produce(ctx: &Ctx, engine: &mut DspEngine<'_>, pos: u64, total: u64) -> Result<Option<u64>> {
+///
+/// `finish` says whether reaching `total` ends the stream.
+fn produce(
+    ctx: &Ctx,
+    engine: &mut DspEngine<'_>,
+    pos: u64,
+    total: u64,
+    finish: bool,
+) -> Result<Option<u64>> {
     let end = (pos + ctx.chunk).min(total);
     let mut samples = Vec::with_capacity((end - pos) as usize * ctx.play.channels);
     engine.render_chunk(RenderSpan { start: pos, end }, |frame| {
         samples.extend_from_slice(frame);
         Ok(())
     })?;
-    Ok(push(ctx, samples, end, total).then_some(end))
+    Ok(push(ctx, samples, end, finish && end >= total).then_some(end))
 }
 
 /// Play `engine` (built for `setup.plan`, at frame `from`) from `setup.pos`
@@ -545,14 +648,17 @@ fn play_engine(
             return Ok(Next::Exit);
         }
         if locked(&ctx.play.ring).epoch != ctx.epoch {
-            if let Some(next) = take_seek(ctx) {
+            if let Some(next) = take_seek(ctx)? {
                 return Ok(next);
             }
             continue;
         }
         if ctx.shared.stored.load(Ordering::Acquire) != generation {
-            // Start again from the newest plan.
+            // Start again from the newest plan; nothing of this one has been
+            // heard, so the plan the sound starts with is corrected.
             let synced = sync(&ctx.shared, pos)?;
+            check_format(ctx, &synced.plan)?;
+            note_plan(ctx, pos, synced.generation);
             return Ok(Next::Again(Box::new(Setup::new(synced, pos))));
         }
         let end = (at + CATCH_UP_STEP).min(pos);
@@ -571,16 +677,16 @@ fn play_engine(
     loop {
         if pos >= total {
             // Everything is rendered; wait for the reader, or a seek.
-            return Ok(idle_until_seek(ctx));
+            return Ok(idle_until_seek(ctx, None));
         }
         match wait_room(ctx, generation, true, false) {
             Wake::Exit => return Ok(Next::Exit),
             Wake::Seek => {
-                if let Some(next) = take_seek(ctx) {
+                if let Some(next) = take_seek(ctx)? {
                     return Ok(next);
                 }
             }
-            Wake::Room | Wake::Idle => match produce(ctx, engine, pos, total)? {
+            Wake::Room | Wake::Idle => match produce(ctx, engine, pos, total, true)? {
                 Some(end) => {
                     pos = end;
                     if pos >= next_snapshot && pos < total {
@@ -595,6 +701,7 @@ fn play_engine(
             },
             Wake::Edit => {
                 let synced = sync(&ctx.shared, pos)?;
+                check_format(ctx, &synced.plan)?;
                 let candidate = DspEngine::new_artifact_with_limits(&synced.plan, &synced.limits)?;
                 if synced.plan.output().total_frames <= pos {
                     // The plan is now shorter than the playhead.
@@ -694,6 +801,19 @@ struct NewPlan<'a> {
     generation: u64,
 }
 
+struct AbortGuard<'a> {
+    flag: &'a AtomicBool,
+    armed: bool,
+}
+
+impl Drop for AbortGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.flag.store(true, Ordering::Release);
+        }
+    }
+}
+
 enum Chase {
     Ready(Option<Checkpoint>),
     Aborted,
@@ -769,20 +889,32 @@ fn catch_up(
     }
     let (done, joined) = std::thread::scope(|scope| {
         let handle = scope.spawn(|| chase(candidate, at, &target, &reached, &hold, &abort));
+        // Whatever happens below, even a panic, the chase is told to stop
+        // unless it is being waited for.
+        let mut guard = AbortGuard {
+            flag: &abort,
+            armed: true,
+        };
         let done = (|| -> Result<Done> {
             loop {
-                if *pos >= total {
-                    return Ok(Done::Caught(Caught::Finished));
-                }
                 if *pos >= new_total {
                     // The new plan ends before the playhead: it takes over there.
                     return Ok(Done::Caught(Caught::Swap(None)));
+                }
+                if *pos >= total {
+                    if new_total > total {
+                        // The old plan has no more to give but the new one is
+                        // longer: nothing can be heard until it has caught up.
+                        hold.store(true, Ordering::Release);
+                        return Ok(Done::Hold);
+                    }
+                    return Ok(Done::Caught(Caught::Finished));
                 }
                 let wake = wait_room(ctx, generation, true, true);
                 match wake {
                     Wake::Exit => return Ok(Done::Caught(Caught::Exit)),
                     Wake::Seek => {
-                        if let Some(next) = take_seek(ctx) {
+                        if let Some(next) = take_seek(ctx)? {
                             return Ok(Done::Caught(Caught::Seek(next)));
                         }
                         continue;
@@ -791,22 +923,23 @@ fn catch_up(
                     Wake::Room | Wake::Idle => {}
                 }
                 let behind = *pos - reached.load(Ordering::Acquire);
-                let spare = locked(&ctx.play.ring).buffered >= 2 * ctx.chunk;
+                let spare = locked(&ctx.play.ring).buffered >= (ctx.lead / 4).max(ctx.chunk);
                 if behind <= close && spare {
                     hold.store(true, Ordering::Release);
                     return Ok(Done::Hold);
                 }
                 if matches!(wake, Wake::Room) {
-                    if let Some(end) = produce(ctx, old, *pos, total)? {
+                    if let Some(end) = produce(ctx, old, *pos, total, new_total <= total)? {
                         *pos = end;
                         target.store(end, Ordering::Release);
                     }
                 }
             }
         })();
-        if !matches!(done, Ok(Done::Hold)) {
-            abort.store(true, Ordering::Release);
+        if matches!(done, Ok(Done::Hold)) {
+            guard.armed = false;
         }
+        drop(guard);
         (done, handle.join())
     });
     let chased =
