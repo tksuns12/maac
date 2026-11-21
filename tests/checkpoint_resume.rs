@@ -332,3 +332,37 @@ fn checkpoints_must_be_spaced_apart() {
         .render_with_checkpoints(1, |_| Ok(()))
         .is_err());
 }
+
+/// The public way to keep checkpoints while resuming has its own conditions.
+#[test]
+fn rendering_with_checkpoints_asks_for_frame_zero_or_the_restored_frame() {
+    let source = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/hello.maac"),
+    );
+    let Ok(source) = source else { return };
+    let plan = maac::compiler::compile_bundle_artifact_with_limits(
+        &maac::SourceBundle::new("hello.maac", source),
+        &PlanLimits::song(),
+    )
+    .unwrap();
+    let total = plan.output().total_frames;
+    let span = |start| maac::dsp::RenderSpan { start, end: total };
+    // A fresh engine may not start late: that would be a preview, whose state
+    // is not the exact render's.
+    assert!(engine(&plan)
+        .render_span_with_checkpoints(span(100), 64, |_| Ok(()))
+        .is_err());
+    // A spacing below the minimum is refused here as in `render_with_checkpoints`.
+    assert!(engine(&plan)
+        .render_span_with_checkpoints(span(0), 8, |_| Ok(()))
+        .is_err());
+    // From a restored engine it takes checkpoints for the frames it redoes.
+    let (_, checkpoints) = render_checkpointed(&plan, 4_801);
+    let first = &checkpoints[0];
+    let mut resumed = engine(&plan);
+    resumed.restore_from(first).unwrap();
+    let fresh = resumed
+        .render_span_with_checkpoints(span(first.frame()), 4_801, |_| Ok(()))
+        .unwrap();
+    assert_eq!(fresh.len(), checkpoints.len() - 1);
+}

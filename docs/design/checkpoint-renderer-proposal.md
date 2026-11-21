@@ -332,9 +332,19 @@ A render that fails leaves the session unchanged.
   counts each checkpoint as 8 MiB, above the 5.0 MB maximum measured on the
   five songs. The budget is therefore a count, `budget / 8 MiB`.
 - Thinning removes the checkpoint whose loss widens its gap least, weighted by
-  distance from the last render's start, so the song's ends thin first.
-- The chain test failed when stale checkpoints beyond the bound were kept (mutation
-  checked), after the first version of it did not: it needs a short render
-  followed by another with no edit between.
+  distance from the last render's start, so the far parts of the song get a
+  coarser grid. The last checkpoint's gap runs to the song's end: a first
+  version measured it to a made-up point and erased the whole tail after the
+  playhead (found by the thinning unit test).
+- Memory during a render is up to twice the budget (old and fresh checkpoints
+  together). A range at a tight spacing would hold far more fresh checkpoints
+  before thinning could drop any, so the spacing widens until the range yields
+  at most the budget's count.
+- Mutation checks, each caught by the named test: keeping checkpoints past the
+  bound (the chain test, which needed a short render followed by another with
+  no edit between; the first version did not catch it), keeping only the first
+  of several updates, trusting a `Full` reuse (tempo change), and ignoring the
+  channel count when skipping frames (stereo example). Review of the first
+  version found these test gaps, each since closed.
 - Not done: a generation number (nothing runs concurrently yet; C2 adds it),
   background pre-render (C2), playback streaming and latency numbers (C3).

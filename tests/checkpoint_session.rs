@@ -49,13 +49,34 @@ fn rendered(
 
 fn assert_range(session: &mut RenderSession, start: u64, end: u64, context: &str) {
     let plan = session.plan().clone();
+    assert_range_of(session, &plan, start, end, context);
+}
+
+/// The session's render of `start..end` equals that range of a fresh render
+/// of `plan`, which the test holds itself rather than asking the session.
+fn assert_range_of(
+    session: &mut RenderSession,
+    plan: &PlanArtifact,
+    start: u64,
+    end: u64,
+    context: &str,
+) {
     let channels = usize::from(plan.output().channels);
-    let fresh = render_full(&plan);
+    let fresh = render_full(plan);
     let (got, report) = rendered(session, start, end);
     assert_eq!(
         bits(&fresh[start as usize * channels..end as usize * channels]),
         bits(&got),
         "{context}: range {start}..{end}, {report:?}"
+    );
+    assert_ascending(session, context);
+}
+
+fn assert_ascending(session: &RenderSession, context: &str) {
+    let frames = session.checkpoint_frames();
+    assert!(
+        frames.windows(2).all(|pair| pair[0] < pair[1]),
+        "{context}: checkpoints not strictly ascending: {frames:?}"
     );
 }
 
@@ -80,14 +101,27 @@ fn chain(seed: u64, edits: usize, policy: SessionPolicy, tally: &mut Tally) {
         let Ok(plan) = compile(&next) else { continue };
         song = next;
         session.update(&plan);
-        let start = rng.below(total - 1);
+        let mut start = rng.below(total - 1);
+        // A third of the time the range begins on a checkpoint the session
+        // holds, which is where its comparisons are exact.
+        let held = session.checkpoint_frames();
+        if rng.below(3) == 0 && !held.is_empty() {
+            start = held[rng.below(held.len() as u64) as usize];
+        }
         // Half the time only a short stretch is rendered, which leaves the old
         // checkpoints after it in the session: the render that follows must
         // not trust them.
         let reach = if rng.below(2) == 0 { 20_000 } else { total };
-        let end = (start + 1 + rng.below(reach)).min(total);
+        let mut end = (start + 1 + rng.below(reach)).min(total);
+        if rng.below(3) == 0 {
+            // End exactly on a checkpoint frame of the grid, when one follows.
+            let on_grid =
+                (start / policy.spacing_frames + 1 + rng.below(3)) * policy.spacing_frames;
+            if on_grid > start && on_grid <= total {
+                end = on_grid;
+            }
+        }
         let context = format!("seed {seed} edit {index} {kind}");
-        let before = session.checkpoint_frames();
         let mut out = Vec::new();
         let report = session
             .render(start, end, |frame| {
@@ -127,7 +161,7 @@ fn chain(seed: u64, edits: usize, policy: SessionPolicy, tally: &mut Tally) {
             Reuse::From(_) => {}
         }
         tally.resumed += usize::from(report.started_at > 0);
-        drop(before);
+        assert_ascending(&session, &context);
     }
 }
 
@@ -140,6 +174,11 @@ fn a_session_follows_a_chain_of_edits_exactly() {
     let mut tally = Tally::default();
     for seed in 1..=4 {
         chain(seed, 6, SessionPolicy::new(SPACING), &mut tally);
+    }
+    // A spacing that divides the edit grid puts checkpoints exactly on the
+    // bounds that edits report.
+    for seed in 8..=10 {
+        chain(seed, 6, SessionPolicy::new(6_000), &mut tally);
     }
     assert!(
         tally.renders >= 10,
@@ -191,7 +230,17 @@ fn several_edits_before_one_render_cost_one_comparison() {
         }
     }
     assert_eq!(edits, 3);
-    assert_range(&mut session, 0, total, "after three edits");
+    // The reference is the last plan, held here; the session must have kept
+    // the last update, not the first, and resumes late.
+    let last = compile(&song).unwrap();
+    assert_range_of(
+        &mut session,
+        &last,
+        total * 3 / 4,
+        total,
+        "after three edits",
+    );
+    assert_range_of(&mut session, &last, 0, total, "again from the start");
 }
 
 #[test]
@@ -242,7 +291,7 @@ fn a_late_edit_resumes_late() {
         .max_by_key(|note| note.at)
         .expect("a note");
     last.velocity = if last.velocity == 5 { 6 } else { 5 };
-    let Ok(plan) = compile(&late) else { return };
+    let plan = compile(&late).expect("a velocity change compiles");
     session.update(&plan);
     // The listener is past the edit: the render may start from a checkpoint
     // near it, not from the beginning.
@@ -263,4 +312,66 @@ fn a_range_outside_the_plan_is_refused() {
     assert!(session.render(10, 10, |_| Ok(())).is_err());
     assert!(session.render(0, total + 1, |_| Ok(())).is_err());
     assert!(RenderSession::new(&plan, &limits(), SessionPolicy::new(8)).is_err());
+}
+
+/// A change a note list cannot make: another tempo. The session must start
+/// again from frame 0 and say why, even when asked for a late range.
+#[test]
+fn a_change_to_the_tempo_renders_from_the_start() {
+    let song = base_song(41);
+    let plan = compile(&song).unwrap();
+    let total = plan.output().total_frames;
+    let mut session = RenderSession::new(&plan, &limits(), SessionPolicy::new(SPACING)).unwrap();
+    assert_range(&mut session, 0, total, "first");
+
+    let text = source(&song).replace("120bpm", "121bpm");
+    let faster = maac::compiler::compile_bundle_artifact_with_limits(
+        &maac::SourceBundle::new("main.maac", text),
+        &limits(),
+    )
+    .unwrap();
+    let total = faster.output().total_frames;
+    session.update(&faster);
+    let (_, report) = rendered(&mut session, total * 3 / 4, total);
+    assert!(matches!(report.reuse, Reuse::Full(_)), "{report:?}");
+    assert_eq!(report.started_at, 0);
+    assert_range_of(
+        &mut session,
+        &faster,
+        total * 3 / 4,
+        total,
+        "after the tempo change",
+    );
+}
+
+/// Two channels, a range that begins between checkpoints, and a second range
+/// on the unchanged plan.
+#[test]
+fn a_stereo_song_renders_ranges_exactly() {
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/basic/full_band.maac");
+    let bundle =
+        maac::bundle_fs::load_bundle(&path, std::path::Path::new(env!("CARGO_MANIFEST_DIR")))
+            .unwrap();
+    let plan = maac::compiler::compile_bundle_artifact_with_limits(&bundle, &limits()).unwrap();
+    assert_eq!(plan.output().channels, 2);
+    let total = plan.output().total_frames.min(60_000 * 4);
+    let mut session = RenderSession::new(&plan, &limits(), SessionPolicy::new(10_007)).unwrap();
+    assert_range_of(&mut session, &plan, 0, total, "first");
+    for (start, end) in [(30_001, 50_000), (10_007, 20_014), (59_999, total)] {
+        assert_range_of(&mut session, &plan, start, end, "a later range");
+    }
+}
+
+/// A tight spacing over a long range must not hold more checkpoints than the
+/// budget while rendering.
+#[test]
+fn a_tight_spacing_is_widened_to_the_budget() {
+    let plan = compile(&base_song(51)).unwrap();
+    let total = plan.output().total_frames;
+    let policy = SessionPolicy::new(32).with_budget_bytes(4 * ESTIMATED_CHECKPOINT_BYTES);
+    let mut session = RenderSession::new(&plan, &limits(), policy).unwrap();
+    let (_, report) = rendered(&mut session, 0, total);
+    assert!(report.checkpoints <= 4, "{report:?}");
+    assert_range(&mut session, 0, total, "after widening");
 }
