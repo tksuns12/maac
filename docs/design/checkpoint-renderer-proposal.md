@@ -307,3 +307,34 @@ Answered 2026-11-20:
 - A note-on that reads the future in a way not on the §3 list (mitigated by
   test 2 and 3; every row of the table is verified in code before Phase B).
 - Memory per checkpoint larger than expected (decided by the spike).
+
+## Phase C decisions (2026-11-21)
+
+- The GUI uses the library in its own process, so a session is a library type
+  and checkpoints stay in memory.
+- An edit is first heard through the approximate preview; the session only
+  produces the exact render and the GUI swaps it in.
+- The memory budget follows what music programs do: a size that scales with the
+  machine and that the user can change. The library has no way to read the
+  machine's memory, so it defaults to 1 GiB and the caller passes its share.
+
+## Phase C1 results (synchronous session)
+
+`RenderSession` (src/dsp/session.rs): `update(plan)` only records the plan;
+`render(start, end, cb)` builds one engine, compares the plan with the one the
+checkpoints belong to (so several edits before a render cost one comparison),
+resumes from the last checkpoint at or before `min(bound, start)`, and keeps
+the old checkpoints up to the bound plus fresh ones for the frames it redid.
+A render that fails leaves the session unchanged.
+
+- Checkpoint size is not measured: the state is spread over every node (on
+  Afterlight the largest node is 23% of 1.17 MB of node state), so the session
+  counts each checkpoint as 8 MiB, above the 5.0 MB maximum measured on the
+  five songs. The budget is therefore a count, `budget / 8 MiB`.
+- Thinning removes the checkpoint whose loss widens its gap least, weighted by
+  distance from the last render's start, so the song's ends thin first.
+- The chain test failed when stale checkpoints beyond the bound were kept (mutation
+  checked), after the first version of it did not: it needs a short render
+  followed by another with no edit between.
+- Not done: a generation number (nothing runs concurrently yet; C2 adds it),
+  background pre-render (C2), playback streaming and latency numbers (C3).

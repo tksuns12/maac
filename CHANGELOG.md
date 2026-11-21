@@ -20,6 +20,13 @@ promise of compatibility beyond the documented interfaces.
   edit can change, and `resume` renders from the last checkpoint before it,
   bit-identical to a full render of the edited plan. Any other kind of edit
   reports `Reuse::Full` with the reason. Not yet used by the CLI.
+- `RenderSession`, `SessionPolicy` and `DspEngine::render_span_with_checkpoints`:
+  a long-lived exact render that follows edits. `update` records the edited
+  plan; `render(start, end, callback)` resumes from the last checkpoint the
+  edits allow, renders the range, and lays down fresh checkpoints so the next
+  edit starts close by. Checkpoints are kept to a budget (1 GiB by default,
+  counted at 8 MiB each) by thinning the ones farthest from the playhead.
+  Library only; not used by the CLI.
 - Optional `jit` cargo feature (off by default): a Cranelift renderer for
   instrument graphs that produces output bit-identical to the interpreter.
 

@@ -25,7 +25,7 @@ pub enum Reuse {
 }
 
 /// What a render scheduled: every note and hit, and every automated parameter.
-struct Schedule {
+pub(super) struct Schedule {
     events: Vec<EventRuntime>,
     lanes: BTreeMap<(String, String), AutomationLanes>,
     /// Whether each node's instrument reads the whole connected line a note
@@ -36,7 +36,7 @@ struct Schedule {
 }
 
 impl Schedule {
-    fn of(engine: &DspEngine<'_>) -> Self {
+    pub(super) fn of(engine: &DspEngine<'_>) -> Self {
         let mut lanes = BTreeMap::new();
         for node in &engine.nodes {
             for (parameter, binding) in &node.automations {
@@ -62,10 +62,10 @@ impl Schedule {
 
 /// The checkpoints of one exact render of a plan, and the plan.
 pub struct CheckpointSet {
-    plan: PlanArtifact,
-    limits: PlanLimits,
-    schedule: Schedule,
-    checkpoints: Vec<Checkpoint>,
+    pub(super) plan: PlanArtifact,
+    pub(super) limits: PlanLimits,
+    pub(super) schedule: Schedule,
+    pub(super) checkpoints: Vec<Checkpoint>,
 }
 
 /// An engine for an edited plan, ready to render from `start_frame`.
@@ -185,6 +185,11 @@ impl CheckpointSet {
     }
 
     fn reuse(&self, new: &DspEngine<'_>, new_plan: &PlanArtifact) -> Reuse {
+        self.reuse_with(&Schedule::of(new), new_plan)
+    }
+
+    /// As [`Self::reuse`], for an engine whose schedule is already read.
+    pub(super) fn reuse_with(&self, new: &Schedule, new_plan: &PlanArtifact) -> Reuse {
         if let Some(part) = other_difference(&self.plan.view(), &new_plan.view()) {
             return Reuse::Full(part);
         }
@@ -195,16 +200,12 @@ impl CheckpointSet {
         events_differ(&self.schedule.events, &new.events, reads_lines, &mut note);
         lanes_differ(
             &self.schedule.lanes,
-            &new_lanes(new),
+            &new.lanes,
             self.schedule.score_end,
             &mut note,
         );
         earliest.get().map_or(Reuse::Unchanged, Reuse::From)
     }
-}
-
-fn new_lanes(engine: &DspEngine<'_>) -> BTreeMap<(String, String), AutomationLanes> {
-    Schedule::of(engine).lanes
 }
 
 /// The first part of the plan, other than its notes, hits and automation, that

@@ -260,7 +260,9 @@ const RESUME_SPENT: u64 = u64::MAX;
 const MIN_CHECKPOINT_SPACING: u64 = 32;
 
 mod checkpoint;
+mod session;
 pub use checkpoint::{CheckpointSet, Resumed, Reuse};
+pub use session::{RenderReport, RenderSession, SessionPolicy, ESTIMATED_CHECKPOINT_BYTES};
 
 type NodeReplacementFill<'a> = dyn FnMut(usize, u64, &mut [f64]) -> Result<()> + 'a;
 
@@ -1324,6 +1326,39 @@ impl<'a> DspEngine<'a> {
         frames.sort_unstable();
         frames.dedup();
         self.render_with_rule(CheckpointRule::At(frames), callback)
+    }
+
+    /// Render `span`, keeping a checkpoint before every multiple of `every`
+    /// frames after its start. The span must start at frame 0 or, on an engine
+    /// from [`Self::restore_from`], at the checkpoint's frame: this is how a
+    /// render that resumed lays down checkpoints for the frames it redoes.
+    pub fn render_span_with_checkpoints<F>(
+        &mut self,
+        span: RenderSpan,
+        every: u64,
+        callback: F,
+    ) -> Result<Vec<Checkpoint>>
+    where
+        F: FnMut(&[f64]) -> Result<()>,
+    {
+        if every < MIN_CHECKPOINT_SPACING {
+            return Err(RenderError::RenderState(format!(
+                "checkpoint spacing must be at least {MIN_CHECKPOINT_SPACING} frames"
+            )));
+        }
+        if span.start > 0 && self.resume_frame != Some(span.start) {
+            return Err(RenderError::RenderState(
+                "an exact render with checkpoints starts at frame 0 or at the \
+                 frame this engine was restored to"
+                    .into(),
+            ));
+        }
+        self.checkpoint_rule = CheckpointRule::Every(every);
+        self.checkpoints.clear();
+        let result = self.render_span(span, callback);
+        self.checkpoint_rule = CheckpointRule::Off;
+        let checkpoints = std::mem::take(&mut self.checkpoints);
+        result.map(|()| checkpoints)
     }
 
     fn render_with_rule<F>(&mut self, rule: CheckpointRule, callback: F) -> Result<Vec<Checkpoint>>
