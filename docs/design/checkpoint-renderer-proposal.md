@@ -384,6 +384,25 @@ every checkpoint, the worker must render from frame 0 to rebuild them, and an
 edit that arrives before it has reached the edit's position renders from frame
 0 itself. A first run read 82 s for the fill because other jobs were running.
 
+Review of the first version found no way for a stale checkpoint to enter the
+set, and these problems, since fixed:
+- a set at its budget made the worker render the same tail at every wake and
+  keep nothing (a checkpoint added at the tail pushed another out); the worker
+  now leaves a full set alone unless the tail gap has grown past twice the
+  average one;
+- a panic in a render's callback leaked the foreground count and stopped the
+  worker for good (now a guard); a panic in the worker was silent (now caught
+  and reported in `status().last_error`);
+- the generation was read after the plan was taken up, so an update landing in
+  between did not stop the stretch (now read first);
+- `status` waited for the render's lock (now read from copies kept in atomics);
+- `render_span_with_checkpoints` left partial checkpoints in the engine after
+  an error.
+Tests added for each; mutation checks caught: no generation stop, adoption
+that keeps every checkpoint (caught by the stop test, not by the test written
+for it, which passes either way), no join on drop, no skip for a full set, no
+thinning on insert, and no retry after a cancelled stretch.
+
 Not done: the worker's OS priority is not lowered (it only yields to
 foreground renders); an update during a stretch of work always restarts it from
 the last committed checkpoint even if the edit is late; the plan is cloned

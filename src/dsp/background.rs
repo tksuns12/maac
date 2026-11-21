@@ -52,7 +52,6 @@ struct Signal {
 
 struct State {
     session: RenderSession,
-    last_error: Option<String>,
 }
 
 type Hook = Arc<dyn Fn(u64) + Send + Sync>;
@@ -61,6 +60,11 @@ struct Shared {
     state: Mutex<State>,
     /// The latest plan not yet handed to the session.
     slot: Mutex<Option<PlanArtifact>>,
+    /// What the session holds, copied out whenever it changes so that
+    /// [`BackgroundSession::status`] never waits for a render.
+    checkpoint_count: AtomicUsize,
+    last_checkpoint: AtomicU64,
+    last_error: Mutex<Option<String>>,
     /// Raised before a plan is put in the slot; the worker reads it to stop
     /// early. Correctness does not depend on it (see the module notes).
     generation: AtomicU64,
@@ -105,9 +109,11 @@ impl BackgroundSession {
         let shared = Arc::new(Shared {
             state: Mutex::new(State {
                 session: RenderSession::new(plan, limits, policy)?,
-                last_error: None,
             }),
             slot: Mutex::new(None),
+            checkpoint_count: AtomicUsize::new(0),
+            last_checkpoint: AtomicU64::new(0),
+            last_error: Mutex::new(None),
             generation: AtomicU64::new(0),
             foreground: AtomicUsize::new(0),
             auto: AtomicBool::new(auto_prerender),
@@ -144,34 +150,35 @@ impl BackgroundSession {
     /// Replace the plan. Returns at once; the next render uses it, and the
     /// worker stops what it was doing and carries on with it.
     pub fn update(&self, plan: &PlanArtifact) {
-        // The count goes up first: anything the worker commits after this is
-        // refused, and the plan is not applied before it is in the slot.
+        // The count goes up before the plan is in the slot, so a worker that
+        // took the count before this call and the plan after it still stops.
+        // It only hurries the worker; what the worker may commit is decided by
+        // the session's own update count.
         self.shared.generation.fetch_add(1, Ordering::AcqRel);
         *locked(&self.shared.slot) = Some(plan.clone());
         self.wake(false);
     }
 
-    /// Render frames `start..end` of the latest plan on this thread, exactly as
-    /// [`RenderSession::render`] does. The worker stops while this runs. Two
-    /// renders at once wait for each other.
+    /// Render frames `start..end` of the latest plan on this thread, with the
+    /// frames [`RenderSession::render`] gives. The worker stops while this
+    /// runs, and two renders at once wait for each other. The report's `reuse`
+    /// says `Unchanged` when the worker had already taken up the edit.
+    ///
+    /// Do not call [`Self::checkpoint_frames`] from `callback`: it waits for
+    /// the lock this render holds.
     pub fn render<F>(&self, start: u64, end: u64, callback: F) -> Result<RenderReport>
     where
         F: FnMut(&[f64]) -> Result<()>,
     {
         // Counted before the lock is asked for, so a worker holding it stops
         // at its next check instead of finishing its stretch.
-        self.shared.foreground.fetch_add(1, Ordering::AcqRel);
-        let result = {
-            let mut state = locked(&self.shared.state);
-            if let Some(plan) = locked(&self.shared.slot).take() {
-                state.session.update(&plan);
-            }
-            state.session.render(start, end, callback)
-        };
-        let _signal = locked(&self.shared.signal);
-        self.shared.foreground.fetch_sub(1, Ordering::AcqRel);
-        drop(_signal);
-        self.wake(false);
+        let _foreground = Foreground::new(&self.shared);
+        let mut state = locked(&self.shared.state);
+        if let Some(plan) = locked(&self.shared.slot).take() {
+            state.session.update(&plan);
+        }
+        let result = state.session.render(start, end, callback);
+        publish(&self.shared, &state.session);
         result
     }
 
@@ -180,13 +187,12 @@ impl BackgroundSession {
             let signal = locked(&self.shared.signal);
             signal.busy || signal.dirty
         };
-        let state = locked(&self.shared.state);
         SessionStatus {
-            checkpoints: state.session.checkpoint_count(),
-            last_checkpoint: state.session.last_checkpoint_frame(),
+            checkpoints: self.shared.checkpoint_count.load(Ordering::Acquire),
+            last_checkpoint: self.shared.last_checkpoint.load(Ordering::Acquire),
             busy,
             generation: self.shared.generation.load(Ordering::Acquire),
-            last_error: state.last_error.clone(),
+            last_error: locked(&self.shared.last_error).clone(),
         }
     }
 
@@ -209,7 +215,8 @@ impl BackgroundSession {
         true
     }
 
-    /// The frames of the checkpoints held, ascending.
+    /// The frames of the checkpoints held, ascending. Waits while a render
+    /// runs; [`Self::status`] does not.
     pub fn checkpoint_frames(&self) -> Vec<u64> {
         locked(&self.shared.state).session.checkpoint_frames()
     }
@@ -228,6 +235,37 @@ impl BackgroundSession {
         }
         self.shared.wake.notify_all();
     }
+}
+
+/// Counts a foreground render for as long as it lives, also when its callback
+/// panics, and lets the worker know when it ends.
+struct Foreground<'a>(&'a Arc<Shared>);
+
+impl<'a> Foreground<'a> {
+    fn new(shared: &'a Arc<Shared>) -> Self {
+        shared.foreground.fetch_add(1, Ordering::AcqRel);
+        Self(shared)
+    }
+}
+
+impl Drop for Foreground<'_> {
+    fn drop(&mut self) {
+        let mut signal = locked(&self.0.signal);
+        self.0.foreground.fetch_sub(1, Ordering::AcqRel);
+        if self.0.auto.load(Ordering::Acquire) {
+            signal.dirty = true;
+        }
+        self.0.wake.notify_all();
+    }
+}
+
+fn publish(shared: &Shared, session: &RenderSession) {
+    shared
+        .checkpoint_count
+        .store(session.checkpoint_count(), Ordering::Release);
+    shared
+        .last_checkpoint
+        .store(session.last_checkpoint_frame(), Ordering::Release);
 }
 
 impl Drop for BackgroundSession {
@@ -258,7 +296,16 @@ fn worker(shared: &Arc<Shared>) {
             signal.dirty = false;
             signal.busy = true;
         }
-        let retry = pass(shared);
+        let retry = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| pass(shared)))
+            .unwrap_or_else(|panic| {
+                let what = panic
+                    .downcast_ref::<&str>()
+                    .map(|text| (*text).to_string())
+                    .or_else(|| panic.downcast_ref::<String>().cloned())
+                    .unwrap_or_else(|| "unknown".into());
+                *locked(&shared.last_error) = Some(format!("the worker panicked: {what}"));
+                false
+            });
         let mut signal = locked(&shared.signal);
         signal.busy = false;
         signal.dirty |= retry;
@@ -269,24 +316,27 @@ fn worker(shared: &Arc<Shared>) {
 /// One stretch of work: take up the latest plan and render the rest of it for
 /// checkpoints. True if it was cut short and should be tried again.
 fn pass(shared: &Arc<Shared>) -> bool {
+    // Read before the plan is taken: an update that lands while the plan is
+    // being taken up then still stops this stretch.
+    let generation = shared.generation.load(Ordering::Acquire);
     let job = {
         let mut state = locked(&shared.state);
         if let Some(plan) = locked(&shared.slot).take() {
             state.session.update(&plan);
         }
         match state.session.adopt_pending() {
-            Ok(_) => state.last_error = None,
+            Ok(_) => *locked(&shared.last_error) = None,
             Err(error) => {
-                state.last_error = Some(format!("{error:?}"));
+                *locked(&shared.last_error) = Some(format!("{error:?}"));
                 return false;
             }
         }
+        publish(shared, &state.session);
         match state.session.prerender_job() {
             Some(job) => job,
             None => return false,
         }
     };
-    let generation = shared.generation.load(Ordering::Acquire);
     let stop = |shared: &Shared| {
         shared.generation.load(Ordering::Acquire) != generation
             || shared.foreground.load(Ordering::Acquire) > 0
@@ -296,7 +346,7 @@ fn pass(shared: &Arc<Shared>) -> bool {
         Ok(()) => false,
         Err(RenderError::Callback(_)) => true,
         Err(error) => {
-            locked(&shared.state).last_error = Some(format!("{error:?}"));
+            *locked(&shared.last_error) = Some(format!("{error:?}"));
             false
         }
     }
@@ -341,6 +391,7 @@ fn fill(shared: &Arc<Shared>, job: PrerenderJob, stop: &dyn Fn(&Shared) -> bool)
                 return Err(cancelled());
             }
             state.session.insert_checkpoint(checkpoint);
+            publish(&sink_shared, &state.session);
             Ok(())
         },
     )

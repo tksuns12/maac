@@ -3,11 +3,14 @@
 //! the plan most recently given, bit for bit, and work done for an older plan
 //! must never be kept.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use maac::dsp::{BackgroundSession, DspEngine, SessionPolicy, ESTIMATED_CHECKPOINT_BYTES};
+use maac::dsp::{
+    BackgroundSession, CheckpointSet, DspEngine, Reuse, SessionPolicy, ESTIMATED_CHECKPOINT_BYTES,
+};
 use maac::plan::PlanLimits;
 use maac::PlanArtifact;
 
@@ -95,20 +98,29 @@ fn without_auto_prerender_the_worker_waits_to_be_asked() {
 struct Gate {
     reached: mpsc::Receiver<u64>,
     go: mpsc::Sender<()>,
+    /// Checkpoints the worker has tried to commit, the held one included.
+    commits: Arc<AtomicUsize>,
 }
 
 fn gate(bg: &BackgroundSession) -> Gate {
     let (reached_tx, reached) = mpsc::channel();
     let (go, go_rx) = mpsc::channel::<()>();
     let go_rx = Mutex::new(Some(go_rx));
+    let commits = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&commits);
     bg.set_worker_hook(move |frame| {
+        counted.fetch_add(1, Ordering::SeqCst);
         // Only the first checkpoint is held.
         if let Some(go_rx) = go_rx.lock().unwrap().take() {
             reached_tx.send(frame).unwrap();
             let _ = go_rx.recv();
         }
     });
-    Gate { reached, go }
+    Gate {
+        reached,
+        go,
+        commits,
+    }
 }
 
 /// A render finishing late must not put a checkpoint of the old plan into the
@@ -156,6 +168,12 @@ fn work_for_an_older_plan_is_refused() {
     gate.go.send(()).unwrap();
     assert!(bg.wait_idle(WAIT));
     assert!(bg.status().last_error.is_none(), "{:?}", bg.status());
+    // The refused work is tried again for the new plan, by the worker alone.
+    assert!(
+        bg.status().last_checkpoint + 2 * SPACING >= total,
+        "the worker did not carry on: {:?}",
+        bg.status()
+    );
     // Late and middle ranges resume from whatever checkpoints are held.
     assert_range(&bg, &plan2, total * 3 / 4, total, "after the late commit");
     assert_range(
@@ -167,24 +185,222 @@ fn work_for_an_older_plan_is_refused() {
     );
 }
 
+/// A render holds the session for as long as it runs; `update` and `status`
+/// must not wait for it.
 #[test]
-fn update_does_not_wait_for_the_worker() {
+fn update_and_status_do_not_wait_for_a_render() {
     let plan = compile(&base_song(4)).unwrap();
+    let total = plan.output().total_frames;
+    let bg = session(&plan, SessionPolicy::new(SPACING), false);
+    let (inside, inside_rx) = mpsc::channel::<()>();
+    let (go, go_rx) = mpsc::channel::<()>();
+    std::thread::scope(|scope| {
+        let bg = &bg;
+        let render = scope.spawn(move || {
+            let mut first = true;
+            bg.render(0, total, |_| {
+                if std::mem::take(&mut first) {
+                    inside.send(()).unwrap();
+                    let _ = go_rx.recv();
+                }
+                Ok(())
+            })
+            .unwrap();
+        });
+        inside_rx.recv_timeout(WAIT).unwrap();
+        let started = Instant::now();
+        for _ in 0..50 {
+            bg.update(&plan);
+            let _ = bg.status();
+        }
+        assert!(
+            started.elapsed() < Duration::from_millis(250),
+            "50 updates and statuses took {:?} during a render",
+            started.elapsed()
+        );
+        go.send(()).unwrap();
+        render.join().unwrap();
+    });
+}
+
+/// An update cuts the worker's stretch short instead of letting it finish the
+/// old plan's tail. Counted in checkpoints the worker tried to commit: about
+/// one song's worth if it stops, twice that if it does not.
+#[test]
+fn an_update_stops_the_stretch_in_progress() {
+    let song = base_song(8);
+    let plan = compile(&song).unwrap();
+    let total = plan.output().total_frames;
     let bg = session(&plan, SessionPolicy::new(SPACING), false);
     let gate = gate(&bg);
     bg.prerender();
     gate.reached.recv_timeout(WAIT).unwrap();
-    let started = Instant::now();
-    for _ in 0..50 {
-        bg.update(&plan);
-    }
-    assert!(
-        started.elapsed() < Duration::from_millis(250),
-        "50 updates took {:?} with the worker busy",
-        started.elapsed()
-    );
+    // An edit that changes the song near its start: nothing of the old tail
+    // survives it.
+    let reference = CheckpointSet::without_checkpoints(&plan, &limits()).unwrap();
+    let mut rng = Rng(11);
+    let early = (0..200)
+        .find_map(|index| {
+            let plan = compile(&edit(&song, &mut rng, 8 + index).0).ok()?;
+            matches!(reference.reuse_for(&plan).unwrap(), Reuse::From(bound) if bound < total / 20)
+                .then_some(plan)
+        })
+        .expect("an early edit");
+    // With the worker free to carry on after an update, the commits of the
+    // old stretch and of the new one add up; they are few only if the update
+    // cut the old one short.
+    bg.set_auto_prerender(true);
+    bg.update(&early);
     gate.go.send(()).unwrap();
     assert!(bg.wait_idle(WAIT));
+    let one_song = (total / SPACING) as usize;
+    let commits = gate.commits.load(Ordering::SeqCst);
+    assert!(
+        commits <= one_song + one_song / 4,
+        "{commits} commits for a song of {one_song} checkpoints: the old stretch ran on"
+    );
+    assert_range(&bg, &early, total / 2, total, "after the update");
+}
+
+/// Update, let the worker take it up on its own, then render: the worker's
+/// adoption must have dropped what the edit invalidated.
+#[test]
+fn the_worker_takes_up_an_edit_by_itself() {
+    let song = base_song(9);
+    let plan = compile(&song).unwrap();
+    let total = plan.output().total_frames;
+    let bg = session(&plan, SessionPolicy::new(SPACING), true);
+    assert!(bg.wait_idle(WAIT));
+    let reference = CheckpointSet::without_checkpoints(&plan, &limits()).unwrap();
+    let mut rng = Rng(13);
+    let (early, bound) = (0..200)
+        .find_map(|index| {
+            let plan = compile(&edit(&song, &mut rng, 9 + index).0).ok()?;
+            match reference.reuse_for(&plan).unwrap() {
+                Reuse::From(bound) if bound < total / 20 => Some((plan, bound)),
+                _ => None,
+            }
+        })
+        .expect("an early edit");
+    bg.update(&early);
+    assert!(bg.wait_idle(WAIT));
+    assert!(bg.status().last_error.is_none(), "{:?}", bg.status());
+    // Ranges that begin just after the edit: a checkpoint of the old plan
+    // there would be wrong for the new one.
+    for start in [bound + 1, bound + SPACING, bound + 3 * SPACING] {
+        assert_range(
+            &bg,
+            &early,
+            start,
+            start + 30_000,
+            "worker adopted the edit",
+        );
+    }
+    assert_range(&bg, &early, total * 3 / 4, total, "late range");
+}
+
+/// A set at its budget does not render the same tail again at every wake.
+#[test]
+fn a_set_at_its_budget_is_left_alone() {
+    let plan = compile(&base_song(6)).unwrap();
+    let policy = SessionPolicy::new(SPACING).with_budget_bytes(3 * ESTIMATED_CHECKPOINT_BYTES);
+    let bg = session(&plan, policy, true);
+    let gate = gate(&bg);
+    gate.go.send(()).unwrap(); // nothing is held
+    assert!(bg.wait_idle(WAIT));
+    // Below its budget the set is filled in further; once it is full, asking
+    // again renders nothing.
+    let mut counts = Vec::new();
+    for _ in 0..6 {
+        bg.prerender();
+        assert!(bg.wait_idle(WAIT));
+        counts.push(gate.commits.load(Ordering::SeqCst));
+    }
+    assert!(
+        counts[4] == counts[5] && counts[3] == counts[5],
+        "the worker kept rendering with nothing to add: {counts:?}"
+    );
+    assert!(bg.status().checkpoints <= 3, "{:?}", bg.status());
+}
+
+#[test]
+fn the_worker_keeps_to_the_budget_while_adding() {
+    let plan = compile(&base_song(7)).unwrap();
+    let total = plan.output().total_frames;
+    let policy = SessionPolicy::new(SPACING).with_budget_bytes(3 * ESTIMATED_CHECKPOINT_BYTES);
+    let bg = session(&plan, policy, false);
+    // A render of the first quarter leaves a few checkpoints; the worker then
+    // adds more than the budget allows.
+    let mut sink = 0usize;
+    bg.render(0, total / 4, |_| {
+        sink += 1;
+        Ok(())
+    })
+    .unwrap();
+    bg.prerender();
+    assert!(bg.wait_idle(WAIT));
+    assert!(bg.status().checkpoints <= 3, "{:?}", bg.status());
+    assert_range(&bg, &plan, total / 2, total, "thinned by the worker");
+}
+
+/// A panic in a render's callback must not leave the worker stopped for good.
+#[test]
+fn a_panicking_callback_does_not_stop_the_worker() {
+    let plan = compile(&base_song(12)).unwrap();
+    let total = plan.output().total_frames;
+    let bg = session(&plan, SessionPolicy::new(SPACING), false);
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = bg.render(0, 64, |_| panic!("callback panic"));
+    }));
+    assert!(outcome.is_err());
+    bg.prerender();
+    assert!(bg.wait_idle(WAIT), "the worker never ran after the panic");
+    assert!(bg.status().checkpoints > 10, "{:?}", bg.status());
+    assert_range(&bg, &plan, total / 2, total, "after the panic");
+}
+
+/// A panic in the worker is reported, and the session carries on.
+#[test]
+fn a_panicking_worker_is_reported_and_the_session_goes_on() {
+    let plan = compile(&base_song(13)).unwrap();
+    let total = plan.output().total_frames;
+    let bg = session(&plan, SessionPolicy::new(SPACING), false);
+    let fired = AtomicUsize::new(0);
+    bg.set_worker_hook(move |_| {
+        if fired.fetch_add(1, Ordering::SeqCst) == 0 {
+            panic!("worker panic");
+        }
+    });
+    bg.prerender();
+    assert!(bg.wait_idle(WAIT), "wait_idle hung after a worker panic");
+    let status = bg.status();
+    assert!(
+        status
+            .last_error
+            .as_deref()
+            .is_some_and(|e| e.contains("panicked")),
+        "{status:?}"
+    );
+    assert_range(&bg, &plan, total / 2, total, "after the worker panic");
+}
+
+/// Dropping a busy session returns only once the worker is gone: nothing the
+/// worker held is alive afterwards.
+#[test]
+fn dropping_a_session_joins_its_worker() {
+    let plan = compile(&base_song(14)).unwrap();
+    for _ in 0..3 {
+        let bg = session(&plan, SessionPolicy::new(SPACING), true);
+        let token = Arc::new(());
+        let weak = Arc::downgrade(&token);
+        bg.set_worker_hook(move |_| {
+            let _keep = &token;
+            std::thread::sleep(Duration::from_millis(5));
+        });
+        std::thread::sleep(Duration::from_millis(30));
+        drop(bg);
+        assert!(weak.upgrade().is_none(), "the worker outlived its session");
+    }
 }
 
 #[test]
@@ -236,17 +452,6 @@ fn dropping_a_busy_session_stops_its_worker() {
         "{:?}",
         started.elapsed()
     );
-}
-
-#[test]
-fn a_tight_budget_holds_in_the_background_too() {
-    let plan = compile(&base_song(6)).unwrap();
-    let total = plan.output().total_frames;
-    let policy = SessionPolicy::new(SPACING).with_budget_bytes(3 * ESTIMATED_CHECKPOINT_BYTES);
-    let bg = session(&plan, policy, true);
-    assert!(bg.wait_idle(WAIT));
-    assert!(bg.status().checkpoints <= 3, "{:?}", bg.status());
-    assert_range(&bg, &plan, total / 2, total, "thinned");
 }
 
 /// Not a pass/fail test: how long until an edit can be heard when the worker

@@ -1349,8 +1349,10 @@ impl<'a> DspEngine<'a> {
     where
         F: FnMut(&[f64]) -> Result<()>,
     {
-        self.render_span_checkpointed(span, every, callback)?;
-        Ok(std::mem::take(&mut self.checkpoints))
+        self.checkpoint_sink = None;
+        let result = self.render_span_checkpointed(span, every, callback);
+        let checkpoints = std::mem::take(&mut self.checkpoints);
+        result.map(|()| checkpoints)
     }
 
     /// As [`Self::render_span_with_checkpoints`], but each checkpoint goes to

@@ -182,6 +182,13 @@ impl RenderSession {
         if total - from <= spacing {
             return None;
         }
+        // At the budget, a checkpoint added at the tail only pushes another
+        // out. Thinning leaves the tail gap near the average one, so more
+        // work is wanted only when that gap has grown well past it.
+        let held = self.set.checkpoints.len() as u64;
+        if held >= max as u64 && total - from <= 2 * (total / held.max(1)) {
+            return None;
+        }
         Some(PrerenderJob {
             plan: self.set.plan.clone(),
             limits: self.set.limits,

@@ -366,3 +366,64 @@ fn rendering_with_checkpoints_asks_for_frame_zero_or_the_restored_frame() {
         .unwrap();
     assert_eq!(fresh.len(), checkpoints.len() - 1);
 }
+
+/// Checkpoints go to the sink as they are taken, a sink error stops the render
+/// with that error, and the engine keeps nothing of it afterwards.
+#[test]
+fn a_checkpoint_sink_receives_checkpoints_and_can_stop_the_render() {
+    let Ok(source) = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/hello.maac"),
+    ) else {
+        return;
+    };
+    let plan = maac::compiler::compile_bundle_artifact_with_limits(
+        &maac::SourceBundle::new("hello.maac", source),
+        &PlanLimits::song(),
+    )
+    .unwrap();
+    let total = plan.output().total_frames;
+    let span = maac::dsp::RenderSpan {
+        start: 0,
+        end: total,
+    };
+    let (_, expected) = render_checkpointed(&plan, 4_801);
+
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink_seen = std::sync::Arc::clone(&seen);
+    let mut engine = engine(&plan);
+    engine
+        .render_span_with_checkpoint_sink(
+            span,
+            4_801,
+            |_| Ok(()),
+            move |checkpoint| {
+                sink_seen.lock().unwrap().push(checkpoint.frame());
+                Ok(())
+            },
+        )
+        .unwrap();
+    let frames: Vec<u64> = expected.iter().map(Checkpoint::frame).collect();
+    assert_eq!(*seen.lock().unwrap(), frames);
+
+    // A sink that refuses the second checkpoint stops the render.
+    let mut taken = 0;
+    let stopped = engine.render_span_with_checkpoint_sink(
+        span,
+        4_801,
+        |_| Ok(()),
+        move |_| {
+            taken += 1;
+            if taken == 2 {
+                Err(maac::dsp::RenderError::Callback("stop".into()))
+            } else {
+                Ok(())
+            }
+        },
+    );
+    assert!(matches!(stopped, Err(maac::dsp::RenderError::Callback(_))));
+    // The sink is gone and the failed render left no checkpoints behind.
+    let again = engine
+        .render_span_with_checkpoints(span, 4_801, |_| Ok(()))
+        .unwrap();
+    assert_eq!(again.len(), expected.len());
+}
