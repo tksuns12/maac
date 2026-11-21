@@ -348,3 +348,43 @@ A render that fails leaves the session unchanged.
   version found these test gaps, each since closed.
 - Not done: a generation number (nothing runs concurrently yet; C2 adds it),
   background pre-render (C2), playback streaming and latency numbers (C3).
+
+## Phase C2 results (background pre-render)
+
+`BackgroundSession` (src/dsp/background.rs) wraps a `RenderSession` and one
+worker thread. `update` puts the plan in a slot and returns; `render` runs on
+the caller's thread and the worker stops while it does; the worker adopts the
+latest plan (dropping the checkpoints the edit invalidates), then renders from
+the last checkpoint to the end, publishing each checkpoint as it is taken
+(`DspEngine::render_span_with_checkpoint_sink`).
+
+Correctness rests on one rule: the session counts its `update` calls under the
+state lock, and a checkpoint from the worker is accepted only if the count is
+what it was when that stretch of work began. A separate generation counter
+only tells the worker to stop early. The test holds the worker just before a
+commit, gives and renders an edit that changes the sound before that frame,
+then lets the worker go; with the count check removed the test fails
+(mutation checked).
+
+Measured on Afterlight (164 s, release, Apple silicon, spacing 4 s, velocity
+edits piled up on the text, 2 s window starting at the first affected frame):
+
+| | |
+|---|---|
+| worker fills all 40 checkpoints from nothing | 49.8 s |
+| edit at 45.7 s, worker idle | first sound 0.60 s, window 2.2 s |
+| edit at 43.8 s, worker idle | first sound 1.37 s, window 2.1 s |
+| edit at 43.3 s, worker still busy | first sound 1.22 s, window 1.9 s |
+| edit at 42.9 s, worker idle | first sound 1.04 s, window 1.7 s |
+| edit at 0.0 s | first sound 0.03 s (nothing before it to render) |
+| edit at 44.8 s straight after the edit at 0.0 s | first sound 10.1 s |
+
+The last row is the limit of the design: an edit at the very start invalidates
+every checkpoint, the worker must render from frame 0 to rebuild them, and an
+edit that arrives before it has reached the edit's position renders from frame
+0 itself. A first run read 82 s for the fill because other jobs were running.
+
+Not done: the worker's OS priority is not lowered (it only yields to
+foreground renders); an update during a stretch of work always restarts it from
+the last committed checkpoint even if the edit is late; the plan is cloned
+for each stretch.

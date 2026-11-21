@@ -27,6 +27,12 @@ promise of compatibility beyond the documented interfaces.
   edit starts close by. Checkpoints are kept to a budget (1 GiB by default,
   counted at 8 MiB each) by thinning the ones farthest from the playhead.
   Library only; not used by the CLI.
+- `BackgroundSession`: a `RenderSession` with a worker thread that fills in the
+  checkpoints from the last one to the end of the plan, after an edit or when a
+  plan is first opened. `update` never waits; `render` runs on the caller's
+  thread and the worker stops while it runs; work done for an older plan is
+  never kept. `DspEngine::render_span_with_checkpoint_sink` hands checkpoints
+  on as they are taken. Library only; not used by the CLI.
 - Optional `jit` cargo feature (off by default): a Cranelift renderer for
   instrument graphs that produces output bit-identical to the interpreter.
 

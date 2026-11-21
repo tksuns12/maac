@@ -57,6 +57,16 @@ impl SessionPolicy {
     }
 }
 
+/// What a background render of the rest of a plan starts from.
+pub(super) struct PrerenderJob {
+    pub plan: PlanArtifact,
+    pub limits: PlanLimits,
+    pub frontier: Option<Checkpoint>,
+    pub total: u64,
+    pub spacing: u64,
+    pub epoch: u64,
+}
+
 /// What one [`RenderSession::render`] did.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RenderReport {
@@ -75,6 +85,11 @@ pub struct RenderSession {
     /// The plan to render next, once edited.
     pending: Option<PlanArtifact>,
     policy: SessionPolicy,
+    /// Counts the calls of `update`. Work done for one plan in the background
+    /// is only accepted while this is still the value it started with.
+    epoch: u64,
+    /// Where the last render began: the playhead, which thinning keeps dense.
+    focus: u64,
 }
 
 impl RenderSession {
@@ -89,6 +104,8 @@ impl RenderSession {
             set: CheckpointSet::without_checkpoints(plan, limits)?,
             pending: None,
             policy,
+            epoch: 0,
+            focus: 0,
         })
     }
 
@@ -96,6 +113,7 @@ impl RenderSession {
     /// [`Self::render`].
     pub fn update(&mut self, plan: &PlanArtifact) {
         self.pending = Some(plan.clone());
+        self.epoch += 1;
     }
 
     /// The plan the next render uses.
@@ -106,6 +124,101 @@ impl RenderSession {
     /// The frames of the checkpoints held, ascending.
     pub fn checkpoint_frames(&self) -> Vec<u64> {
         self.set.checkpoints.iter().map(Checkpoint::frame).collect()
+    }
+
+    pub(super) fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    pub(super) fn has_pending(&self) -> bool {
+        self.pending.is_some()
+    }
+
+    /// Make the pending plan the session's own without rendering: the
+    /// checkpoints that cannot be trusted for it are dropped. Returns what the
+    /// edit let the session keep, or `None` when nothing was pending. On an
+    /// error the session is as it was.
+    pub(super) fn adopt_pending(&mut self) -> Result<Option<Reuse>> {
+        let Some(plan) = self.pending.as_ref() else {
+            return Ok(None);
+        };
+        let (schedule, reuse) = {
+            let engine = DspEngine::new_artifact_with_limits(plan, &self.set.limits)?;
+            let schedule = Schedule::of(&engine);
+            let reuse = self.set.reuse_with(&schedule, plan);
+            (schedule, reuse)
+        };
+        let kept_through = match reuse {
+            Reuse::Unchanged => u64::MAX,
+            Reuse::From(frame) => frame,
+            Reuse::Full(_) => 0,
+        };
+        self.set
+            .checkpoints
+            .retain(|checkpoint| checkpoint.frame() <= kept_through);
+        if let Some(plan) = self.pending.take() {
+            self.set.plan = plan;
+        }
+        self.set.schedule = schedule;
+        Ok(Some(reuse))
+    }
+
+    /// What a background render needs to fill the checkpoints from the last one
+    /// to the end of the plan; `None` when there is nothing to fill or an edit
+    /// is still pending.
+    pub(super) fn prerender_job(&self) -> Option<PrerenderJob> {
+        if self.pending.is_some() {
+            return None;
+        }
+        let total = self.set.plan.output().total_frames;
+        let frontier = self.set.checkpoints.last();
+        let from = frontier.map_or(0, Checkpoint::frame);
+        let max = self.policy.max_checkpoints();
+        let spacing = self
+            .policy
+            .spacing_frames
+            .max((total - from) / max as u64 + 1);
+        // Less than a spacing left: no checkpoint would be taken.
+        if total - from <= spacing {
+            return None;
+        }
+        Some(PrerenderJob {
+            plan: self.set.plan.clone(),
+            limits: self.set.limits,
+            frontier: frontier.cloned(),
+            total,
+            spacing,
+            epoch: self.epoch,
+        })
+    }
+
+    /// Add a checkpoint taken in the background, keeping the list ascending,
+    /// free of repeats and within the budget.
+    pub(super) fn insert_checkpoint(&mut self, checkpoint: Checkpoint) {
+        let frame = checkpoint.frame();
+        match self
+            .set
+            .checkpoints
+            .binary_search_by_key(&frame, Checkpoint::frame)
+        {
+            Ok(_) => return,
+            Err(at) => self.set.checkpoints.insert(at, checkpoint),
+        }
+        let total = self.set.plan.output().total_frames;
+        thin(
+            &mut self.set.checkpoints,
+            self.policy.max_checkpoints(),
+            self.focus,
+            total,
+        );
+    }
+
+    pub(super) fn last_checkpoint_frame(&self) -> u64 {
+        self.set.checkpoints.last().map_or(0, Checkpoint::frame)
+    }
+
+    pub(super) fn checkpoint_count(&self) -> usize {
+        self.set.checkpoints.len()
     }
 
     /// Render frames `start..end` of the current plan, exactly as a render from
@@ -186,6 +299,7 @@ impl RenderSession {
         checkpoints.extend(fresh);
         checkpoints.sort_by_key(Checkpoint::frame);
         thin(&mut checkpoints, max, start, total);
+        self.focus = start;
 
         if let Some(plan) = self.pending.take() {
             self.set.plan = plan;

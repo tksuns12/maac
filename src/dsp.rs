@@ -200,7 +200,12 @@ pub struct DspEngine<'a> {
     checkpoints: Vec<Checkpoint>,
     /// Set on an engine restored from a checkpoint: the frame it continues at.
     resume_frame: Option<u64>,
+    /// While a render hands its checkpoints on as they are taken, instead of
+    /// keeping them in `checkpoints`.
+    checkpoint_sink: Option<CheckpointSink>,
 }
+
+type CheckpointSink = Box<dyn FnMut(Checkpoint) -> Result<()> + Send + Sync>;
 
 /// The state of a render just before `frame`: every node's processors, voices
 /// and buffers. It owns its state and borrows no plan, so it outlives the plan
@@ -259,8 +264,10 @@ const RESUME_SPENT: u64 = u64::MAX;
 /// of a few frames would spend the render copying.
 const MIN_CHECKPOINT_SPACING: u64 = 32;
 
+mod background;
 mod checkpoint;
 mod session;
+pub use background::{BackgroundSession, SessionStatus};
 pub use checkpoint::{CheckpointSet, Resumed, Reuse};
 pub use session::{RenderReport, RenderSession, SessionPolicy, ESTIMATED_CHECKPOINT_BYTES};
 
@@ -742,6 +749,7 @@ impl<'a> DspEngine<'a> {
             checkpoint_rule: CheckpointRule::Off,
             checkpoints: Vec::new(),
             resume_frame: None,
+            checkpoint_sink: None,
         })
     }
 
@@ -1341,6 +1349,39 @@ impl<'a> DspEngine<'a> {
     where
         F: FnMut(&[f64]) -> Result<()>,
     {
+        self.render_span_checkpointed(span, every, callback)?;
+        Ok(std::mem::take(&mut self.checkpoints))
+    }
+
+    /// As [`Self::render_span_with_checkpoints`], but each checkpoint goes to
+    /// `sink` as soon as it is taken, so a long render can publish them as it
+    /// goes. If `sink` fails the render stops with its error.
+    pub fn render_span_with_checkpoint_sink<F, S>(
+        &mut self,
+        span: RenderSpan,
+        every: u64,
+        callback: F,
+        sink: S,
+    ) -> Result<()>
+    where
+        F: FnMut(&[f64]) -> Result<()>,
+        S: FnMut(Checkpoint) -> Result<()> + Send + Sync + 'static,
+    {
+        self.checkpoint_sink = Some(Box::new(sink));
+        let result = self.render_span_checkpointed(span, every, callback);
+        self.checkpoint_sink = None;
+        result
+    }
+
+    fn render_span_checkpointed<F>(
+        &mut self,
+        span: RenderSpan,
+        every: u64,
+        callback: F,
+    ) -> Result<()>
+    where
+        F: FnMut(&[f64]) -> Result<()>,
+    {
         if every < MIN_CHECKPOINT_SPACING {
             return Err(RenderError::RenderState(format!(
                 "checkpoint spacing must be at least {MIN_CHECKPOINT_SPACING} frames"
@@ -1357,8 +1398,7 @@ impl<'a> DspEngine<'a> {
         self.checkpoints.clear();
         let result = self.render_span(span, callback);
         self.checkpoint_rule = CheckpointRule::Off;
-        let checkpoints = std::mem::take(&mut self.checkpoints);
-        result.map(|()| checkpoints)
+        result
     }
 
     fn render_with_rule<F>(&mut self, rule: CheckpointRule, callback: F) -> Result<Vec<Checkpoint>>
@@ -1429,12 +1469,18 @@ impl<'a> DspEngine<'a> {
                 )));
             }
         }
-        self.checkpoints.push(Checkpoint {
+        let checkpoint = Checkpoint {
             frame,
             nodes: self.nodes.clone(),
             output: self.frame.clone(),
-        });
-        Ok(())
+        };
+        match &mut self.checkpoint_sink {
+            Some(sink) => sink(checkpoint),
+            None => {
+                self.checkpoints.push(checkpoint);
+                Ok(())
+            }
+        }
     }
 
     /// Clear every processor, voice, phase accumulator, and output sample.
