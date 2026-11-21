@@ -407,3 +407,93 @@ Not done: the worker's OS priority is not lowered (it only yields to
 foreground renders); an update during a stretch of work always restarts it from
 the last committed checkpoint even if the edit is late; the plan is cloned
 for each stretch.
+
+## Phase C3 results (playback while editing)
+
+`BackgroundSession::play(start, config)` returns a `Playback` (src/dsp/playback.rs).
+One producer thread renders chunks of the latest plan into a ring that stays
+`lead_frames` (default 65 536) ahead of the reader; `read` copies what is ready
+and zero-fills the rest (an audio callback never renders). The ring is a
+`Mutex<VecDeque>` held for microseconds, not a lock-free queue: simpler to
+check, and the critical sections are a memcpy. The library does not open an
+audio device; the GUI calls `read` from its device callback.
+
+Engine support: `DspEngine::render_chunk` renders an exact render in pieces
+(each chunk's block horizons stop at its end, so no instrument holds frames
+ahead there) and `chunk_checkpoint` snapshots the state between chunks.
+Cutting a render into chunks of 512 frames to the whole song costs nothing
+measurable (Afterlight, first 20 s: 4.13–4.28 s whatever the size, 4.28 s as one
+span).
+
+What an edit does to a playing stream, decided by `CheckpointSet::reuse_with`
+against the plan the producer is playing:
+- the effect starts at or after the producer's position: the engine's own
+  state is a checkpoint of the new plan too, so the new plan takes over at the
+  next chunk (zero catch-up);
+- the effect starts earlier: the new plan has to be rendered up to the
+  playhead. The producer keeps filling the ring with the old plan (marked
+  `stale`) while a second thread renders the new plan forward, from the
+  latest of the session's checkpoints and snapshots the playback took of its
+  own engine (every 24 000 frames, the last 8 kept). When it is within 4 chunks
+  and the ring has two chunks to spare, the producer holds still, the
+  catch-up finishes the last of the distance, and the sound switches;
+- the plan is now shorter than the playhead: the playback ends.
+`PlaybackStatus::switches` lists the frame each plan began at, so the GUI knows
+when an edit became audible. `seek` drops the ring and restarts from the nearest
+checkpoint, silent until it has caught up.
+
+Every frame handed out is a frame of an exact render of one plan: the tests
+compare every f64 of what a reader got against fresh renders of the plans the
+playback says it played (reads of 1, 17, 4096 and 100 000 frames; chunks of
+64 to 4801; edits from 15 generated edit kinds at the start, middle and with
+the worker running; edits before the playhead; a tempo edit that shortens the
+song, early and past its new end; seeks forward, back and past the end; an edit
+then a seek). Mutation checks, each caught: taking a switch whenever the edit
+is earlier than the playhead without catching up, keeping the switch list over
+a seek, accepting a chunk rendered before a seek, ignoring the edit bound when
+choosing a checkpoint, not stopping block horizons at chunk ends, letting the
+old plan starve the catch-up, not watching for edits, and switching one frame
+late. Not caught, and equivalent: not clearing the parameter caches between
+chunks (`restore_from` does, to be safe; staying valid is also correct).
+A first version let the old plan starve the catch-up when the reader outran the
+producer, and the test reader (twice real time) flaked once in three before
+the producer was made to leave the catch-up the time above half a ring.
+
+### Measured (release, Apple silicon, 8 cores; a reader pulling 512 frames at the speed the sound plays)
+
+The machine was shared: the load average was 26–37 during the runs, so
+the catch-up times are upper bounds. Playhead at a quarter of the song, the
+worker finished (checkpoints every ~4 s), edit made 4 s after play started.
+
+| | Afterlight (164 s) | Lantern (129 s) | Homeward (128 s) |
+|---|---|---|---|
+| first sound after `play` | 0.42–0.46 s | 0.11–0.13 s | 1.97–2.02 s |
+| edit with effect far ahead: new sound after the playhead | 1.4 s | 1.4 s | 1.4 s |
+| effect 0.5–3 s behind the playhead | 16–20 s | 2–3 s | 4–6 s |
+| effect 5 s behind | 19 s | 7.5 s | 18 s |
+| effect at the very start | 24 s | 15 s | 42 s |
+
+In the second row, 1.4 s is the ring: that much audio was already rendered
+with the old plan. In the other rows the figure is how long the old sound kept
+playing (the producer's catch-up time) until the new plan reached the playhead. The catch-up runs at the song's own render
+speed: Afterlight and Homeward render only about 1–2× real time in the
+sections measured, so a thread chasing a playhead that moves at 1× gains
+little (Lantern, faster, catches up in seconds). Before the second thread and
+the playback's own snapshots the same Afterlight edits took 30–78 s.
+
+### Not done / limits
+- An edit that changes the sound behind the playhead is heard late on a heavy
+  song (table above). Candidates: denser checkpoints near the playhead,
+  splitting the catch-up across more threads, or the GUI showing the
+  approximate preview of the new plan meanwhile (phase C's earlier decision).
+- Edits within the last `lead_frames` of the song may not be heard in this
+  playback (the producer has already put the end in the ring and stops
+  watching for edits).
+- The producer and catch-up threads and the pre-render worker can be three busy
+  cores; `pause_prerender` holds the worker still while the playback lives.
+  Thread priorities are not changed.
+- The playback's own snapshots are 1–5 MB each (up to 8 per playback) and
+  are not counted in the session's memory budget.
+- The tests' wall-clock-sensitive part is the reader's pace (twice real
+  time); a machine too slow to render at 2× real time would make them fail.
+- Measured on three songs, one run each, on a loaded machine.

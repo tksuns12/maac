@@ -163,6 +163,36 @@ impl RenderSession {
         Ok(Some(reuse))
     }
 
+    /// The plan a render would use now, and the latest checkpoint at or before
+    /// `frame` that holds exactly what a fresh render of that plan holds there
+    /// (`None`: start from frame 0). Nothing in the session changes.
+    pub(super) fn checkpoint_before(
+        &self,
+        frame: u64,
+    ) -> Result<(PlanArtifact, PlanLimits, Option<Checkpoint>)> {
+        let plan = self.plan();
+        let bound = match &self.pending {
+            None => u64::MAX,
+            Some(pending) => {
+                let engine = DspEngine::new_artifact_with_limits(pending, &self.set.limits)?;
+                match self.set.reuse_with(&Schedule::of(&engine), pending) {
+                    Reuse::Unchanged => u64::MAX,
+                    Reuse::From(frame) => frame,
+                    Reuse::Full(_) => return Ok((plan.clone(), self.set.limits, None)),
+                }
+            }
+        };
+        let limit = bound.min(frame);
+        let checkpoint = self
+            .set
+            .checkpoints
+            .iter()
+            .rev()
+            .find(|checkpoint| checkpoint.frame() <= limit)
+            .cloned();
+        Ok((plan.clone(), self.set.limits, checkpoint))
+    }
+
     /// What a background render needs to fill the checkpoints from the last one
     /// to the end of the plan; `None` when there is nothing to fill or an edit
     /// is still pending.

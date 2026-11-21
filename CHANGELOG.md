@@ -33,6 +33,15 @@ promise of compatibility beyond the documented interfaces.
   thread and the worker stops while it runs; work done for an older plan is
   never kept. `DspEngine::render_span_with_checkpoint_sink` hands checkpoints
   on as they are taken. Library only; not used by the CLI.
+- `BackgroundSession::play` and `Playback`: sound that keeps coming while the
+  plan is edited. A render thread stays a configurable lead ahead of a
+  non-blocking `read` (for an audio callback); each frame is a frame of an
+  exact render of one plan, and `PlaybackStatus::switches` says where the plan
+  changed. An edit that leaves the rendered frames alone takes effect at the
+  next chunk; one that changes them is rendered up to the playhead in spare time
+  while the old plan keeps playing. `seek` restarts from the nearest checkpoint.
+  `DspEngine::render_chunk` and `chunk_checkpoint` render an exact render in
+  pieces. Library only; not used by the CLI.
 - Optional `jit` cargo feature (off by default): a Cranelift renderer for
   instrument graphs that produces output bit-identical to the interpreter.
 

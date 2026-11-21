@@ -266,9 +266,11 @@ const MIN_CHECKPOINT_SPACING: u64 = 32;
 
 mod background;
 mod checkpoint;
+mod playback;
 mod session;
 pub use background::{BackgroundSession, SessionStatus};
 pub use checkpoint::{CheckpointSet, Resumed, Reuse};
+pub use playback::{Playback, PlaybackConfig, PlaybackStatus, PlaybackSwitch};
 pub use session::{RenderReport, RenderSession, SessionPolicy, ESTIMATED_CHECKPOINT_BYTES};
 
 type NodeReplacementFill<'a> = dyn FnMut(usize, u64, &mut [f64]) -> Result<()> + 'a;
@@ -1454,7 +1456,53 @@ impl<'a> DspEngine<'a> {
         Ok(())
     }
 
-    fn take_checkpoint(&mut self, frame: u64) -> Result<()> {
+    /// Render `span` as one piece of an exact render that goes on in further
+    /// calls: the first span starts at frame 0 (or at the frame of the
+    /// checkpoint given to [`Self::restore_from`]) and each next one starts
+    /// where the last ended. The frames are those a render of the whole plan
+    /// gives, bit for bit, however it is cut. A span that starts elsewhere is
+    /// refused, and so is every span after one that failed, until the engine is
+    /// restored again.
+    pub fn render_chunk<F>(&mut self, span: RenderSpan, callback: F) -> Result<()>
+    where
+        F: FnMut(&[f64]) -> Result<()>,
+    {
+        if span.start > 0 && self.resume_frame != Some(span.start) {
+            return Err(RenderError::RenderState(
+                "a chunk of an exact render starts at frame 0, at the frame this \
+                 engine was restored to, or where the previous chunk ended"
+                    .into(),
+            ));
+        }
+        // Block horizons stop at the end of the chunk, so no instrument holds
+        // frames rendered ahead there and the state is a checkpoint's.
+        self.checkpoint_rule = CheckpointRule::At(vec![span.end]);
+        self.checkpoints.clear();
+        let result = self.render_span(span, callback);
+        self.checkpoint_rule = CheckpointRule::Off;
+        if result.is_ok() {
+            // Parameters read ahead were read for this chunk's horizon.
+            self.parameters_settled.fill(false);
+            self.parameters_valid_until.fill(0);
+            self.resume_frame = Some(span.end);
+        }
+        result
+    }
+
+    /// The state after the last [`Self::render_chunk`] (or right after
+    /// [`Self::restore_from`]), as a checkpoint that can be restored on an
+    /// engine for the same plan, or for an edit that changes nothing before its
+    /// frame.
+    pub fn chunk_checkpoint(&self) -> Result<Checkpoint> {
+        match self.resume_frame {
+            Some(frame) if frame != RESUME_SPENT => self.snapshot(frame),
+            _ => Err(RenderError::RenderState(
+                "the engine is not between two chunks of an exact render".into(),
+            )),
+        }
+    }
+
+    fn snapshot(&self, frame: u64) -> Result<Checkpoint> {
         for node in &self.nodes {
             let ahead = node
                 .instrument
@@ -1471,11 +1519,15 @@ impl<'a> DspEngine<'a> {
                 )));
             }
         }
-        let checkpoint = Checkpoint {
+        Ok(Checkpoint {
             frame,
             nodes: self.nodes.clone(),
             output: self.frame.clone(),
-        };
+        })
+    }
+
+    fn take_checkpoint(&mut self, frame: u64) -> Result<()> {
+        let checkpoint = self.snapshot(frame)?;
         match &mut self.checkpoint_sink {
             Some(sink) => sink(checkpoint),
             None => {

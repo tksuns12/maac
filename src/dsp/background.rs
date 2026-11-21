@@ -20,6 +20,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use super::playback::{Playback, PlaybackConfig};
 use super::session::PrerenderJob;
 use super::*;
 use crate::plan_artifact::PlanArtifact;
@@ -50,16 +51,16 @@ struct Signal {
     shutdown: bool,
 }
 
-struct State {
-    session: RenderSession,
+pub(super) struct State {
+    pub(super) session: RenderSession,
 }
 
 type Hook = Arc<dyn Fn(u64) + Send + Sync>;
 
-struct Shared {
-    state: Mutex<State>,
+pub(super) struct Shared {
+    pub(super) state: Mutex<State>,
     /// The latest plan not yet handed to the session.
-    slot: Mutex<Option<PlanArtifact>>,
+    pub(super) slot: Mutex<Option<PlanArtifact>>,
     /// What the session holds, copied out whenever it changes so that
     /// [`BackgroundSession::status`] never waits for a render.
     checkpoint_count: AtomicUsize,
@@ -67,9 +68,13 @@ struct Shared {
     last_error: Mutex<Option<String>>,
     /// Raised before a plan is put in the slot; the worker reads it to stop
     /// early. Correctness does not depend on it (see the module notes).
-    generation: AtomicU64,
+    pub(super) generation: AtomicU64,
+    /// Counts the plans that are in the slot or past it: raised after the plan
+    /// is stored, where `generation` is raised before. A playback that has read
+    /// this knows every update it counts is visible to it.
+    pub(super) stored: AtomicU64,
     /// Foreground renders running or waiting for the state lock.
-    foreground: AtomicUsize,
+    pub(super) foreground: AtomicUsize,
     auto: AtomicBool,
     signal: Mutex<Signal>,
     wake: Condvar,
@@ -78,7 +83,7 @@ struct Shared {
     hook: Mutex<Option<Hook>>,
 }
 
-fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+pub(super) fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -115,6 +120,7 @@ impl BackgroundSession {
             last_checkpoint: AtomicU64::new(0),
             last_error: Mutex::new(None),
             generation: AtomicU64::new(0),
+            stored: AtomicU64::new(0),
             foreground: AtomicUsize::new(0),
             auto: AtomicBool::new(auto_prerender),
             signal: Mutex::new(Signal {
@@ -156,6 +162,7 @@ impl BackgroundSession {
         // the session's own update count.
         self.shared.generation.fetch_add(1, Ordering::AcqRel);
         *locked(&self.shared.slot) = Some(plan.clone());
+        self.shared.stored.fetch_add(1, Ordering::AcqRel);
         self.wake(false);
     }
 
@@ -180,6 +187,11 @@ impl BackgroundSession {
         let result = state.session.render(start, end, callback);
         publish(&self.shared, &state.session);
         result
+    }
+
+    /// Start playing the latest plan from `start`. See [`Playback`].
+    pub fn play(&self, start: u64, config: PlaybackConfig) -> Result<Playback> {
+        Playback::start(&self.shared, start, config)
     }
 
     pub fn status(&self) -> SessionStatus {
@@ -239,10 +251,10 @@ impl BackgroundSession {
 
 /// Counts a foreground render for as long as it lives, also when its callback
 /// panics, and lets the worker know when it ends.
-struct Foreground<'a>(&'a Arc<Shared>);
+pub(super) struct Foreground<'a>(&'a Arc<Shared>);
 
 impl<'a> Foreground<'a> {
-    fn new(shared: &'a Arc<Shared>) -> Self {
+    pub(super) fn new(shared: &'a Arc<Shared>) -> Self {
         shared.foreground.fetch_add(1, Ordering::AcqRel);
         Self(shared)
     }
@@ -259,7 +271,7 @@ impl Drop for Foreground<'_> {
     }
 }
 
-fn publish(shared: &Shared, session: &RenderSession) {
+pub(super) fn publish(shared: &Shared, session: &RenderSession) {
     shared
         .checkpoint_count
         .store(session.checkpoint_count(), Ordering::Release);
