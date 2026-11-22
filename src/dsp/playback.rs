@@ -3,7 +3,8 @@
 //!
 //! [`Playback`] runs one render thread that stays a little ahead of whoever
 //! reads. The reader (an audio callback, say) calls [`Playback::read`], which
-//! copies what is ready and never renders. Nothing the reader does waits on a
+//! copies what is ready and never renders or frees memory (the buffers of
+//! chunks it has finished go back to the producer). Nothing the reader does waits on a
 //! render; it waits only for the producer to put a chunk in or take one out,
 //! which is a few microseconds under a lock.
 //!
@@ -138,6 +139,9 @@ pub struct PlaybackStatus {
     pub last_error: Option<String>,
 }
 
+/// How many spent buffers the ring keeps: more than the lead holds chunks.
+const SPENT_BUFFERS: usize = 64;
+
 struct Chunk {
     samples: Vec<f64>,
     /// Samples already read.
@@ -146,6 +150,10 @@ struct Chunk {
 
 struct Ring {
     chunks: VecDeque<Chunk>,
+    /// Buffers of chunks that were read to the end, kept for the producer to
+    /// fill again, so that `read` never frees memory (it may run on an audio
+    /// thread). Its capacity is fixed when the ring is made and it never grows.
+    spent: Vec<Vec<f64>>,
     /// The frame the next read starts at.
     read_frame: u64,
     buffered: u64,
@@ -196,6 +204,7 @@ impl Playback {
         let play = Arc::new(Play {
             ring: Mutex::new(Ring {
                 chunks: VecDeque::new(),
+                spent: Vec::with_capacity(SPENT_BUFFERS),
                 read_frame: start,
                 buffered: 0,
                 epoch: 0,
@@ -285,7 +294,13 @@ impl Playback {
                 (chunk.taken == chunk.samples.len(), take)
             };
             if done {
-                ring.chunks.pop_front();
+                if let Some(chunk) = ring.chunks.pop_front() {
+                    // Keep the buffer unless there is no room: then it is freed,
+                    // which only happens if the producer is not taking them.
+                    if ring.spent.len() < ring.spent.capacity() {
+                        ring.spent.push(chunk.samples);
+                    }
+                }
             }
             got += take;
         }
@@ -743,7 +758,11 @@ fn produce(
     approximate: bool,
 ) -> Result<Option<u64>> {
     let end = (pos + ctx.chunk).min(total);
-    let mut samples = Vec::with_capacity((end - pos) as usize * ctx.play.channels);
+    let wanted = (end - pos) as usize * ctx.play.channels;
+    let recycled = locked(&ctx.play.ring).spent.pop();
+    let mut samples = recycled.unwrap_or_default();
+    samples.clear();
+    samples.reserve(wanted);
     let sink = |frame: &[f64]| {
         samples.extend_from_slice(frame);
         Ok(())

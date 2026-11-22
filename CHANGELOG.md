@@ -59,6 +59,9 @@ promise of compatibility beyond the documented interfaces.
 
 ### Fixed
 
+- `Playback::read` freed the buffer of every chunk it finished, on the
+  reader's (audio) thread. The buffers now go back to the producer for reuse,
+  so a steady-state read neither frees nor allocates memory.
 - `BackgroundSession::update` counted a plan after releasing the lock that held
   it, so a playback that took the plan in that instant could name it as the
   previous plan. The plan and its count now go in together.

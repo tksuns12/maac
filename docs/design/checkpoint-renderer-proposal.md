@@ -509,8 +509,10 @@ under the slot lock). Regression tests cover the first five; mutation checks
 caught three of the six fixes. Not caught, because they are timing races: the
 generation read under the slot lock, the `finished` write after a seek, and the
 hold threshold. Still open: rapid edits restart the catch-up each time (a slider
-drag may not switch until it stops); `read` frees chunk buffers on the audio
-thread; a panic in the catch-up's producer side is now stopped by a guard but
+drag may not switch until it stops); `read` freed chunk buffers on the audio
+thread (fixed afterwards: finished buffers go back to the producer, and
+`tests/playback_realtime.rs` counts frees and allocations on the reading
+thread); a panic in the catch-up's producer side is now stopped by a guard but
 untested.
 
 ## Phase C4 results (approximate sound while the exact render catches up)
