@@ -4,7 +4,9 @@
 //!
 //! A reader pulls the sound at the speed it plays (512 frames at a time) while
 //! the test edits the song. For each edit it reports how much sound after the
-//! playhead was the old plan's, and how long the producer took.
+//! playhead was the old plan's, and how long the producer took. Underruns
+//! (reads that came up short) are counted apart: those before the edit are the
+//! wait for the first sound at start-up, those after it are the edit's.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -190,7 +192,7 @@ fn playback_latency_on_a_real_song() {
             println!(
                 "  {label} (effect from {:.1} s, playhead {:.1} s): first sound {:.2} s after play; \
                  new plan heard from {:.1} s ({:.2} s after the playhead, {:.2} s after the edit, {}); \
-                 exact from {:.1} s ({:.2} s after the edit); underruns {}",
+                 exact from {:.1} s ({:.2} s after the edit); underruns {} before the edit (start-up), {} after it",
                 *bound as f64 / second,
                 at_edit as f64 / second,
                 first_sound.lock().unwrap().unwrap_or(f64::NAN),
@@ -204,7 +206,8 @@ fn playback_latency_on_a_real_song() {
                 },
                 exact_frame as f64 / second,
                 exact_took,
-                after.underruns,
+                before.underruns,
+                after.underruns - before.underruns,
             );
             drop(play);
             continue;
@@ -213,7 +216,7 @@ fn playback_latency_on_a_real_song() {
             Some((frame, took)) => println!(
                 "  {label} (effect from {:.1} s, playhead {:.1} s): first sound {:.2} s after play; \
                  new plan from {:.1} s, {:.2} s of old sound after the playhead, producer took {:.2} s{}; \
-                 underruns {}",
+                 underruns {} before the edit (start-up), {} after it",
                 *bound as f64 / second,
                 at_edit as f64 / second,
                 first_sound.lock().unwrap().unwrap_or(f64::NAN),
@@ -228,7 +231,8 @@ fn playback_latency_on_a_real_song() {
                 } else {
                     String::new()
                 },
-                after.underruns,
+                before.underruns,
+                after.underruns - before.underruns,
             ),
             None => println!("  {label}: no switch within 120 s: {after:?}"),
         }
