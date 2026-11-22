@@ -239,3 +239,73 @@ fn playback_latency_on_a_real_song() {
         drop(play);
     }
 }
+
+/// How soon sound starts when playing from a point some way past a checkpoint,
+/// with the approximate start on and off, and how long until it is exact.
+/// Run with `MAAC_SONG=homeward cargo test --release --test playback_latency
+/// playback_start -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn playback_start_on_a_real_song() {
+    let song = std::env::var("MAAC_SONG").unwrap_or_else(|_| "afterlight".into());
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("examples")
+        .join(&song)
+        .join(format!("{song}.maac"));
+    let text = std::fs::read_to_string(path).unwrap();
+    let base =
+        compile_bundle_artifact_with_limits(&SourceBundle::new("standalone.maac", text), &limits())
+            .unwrap();
+    let rate = u64::from(base.output().sample_rate_hz);
+    let second = rate as f64;
+    let spacing = rate * 4 + 37;
+    let bg = BackgroundSession::new(&base, &limits(), SessionPolicy::new(spacing)).unwrap();
+    assert!(bg.wait_idle(Duration::from_secs(900)));
+    println!("{song}: checkpoints every {:.1} s", spacing as f64 / second);
+    let checkpoint = 5 * spacing;
+    for offset_ms in [200u64, 500, 1_000, 2_000, 3_500] {
+        let start = checkpoint + offset_ms * rate / 1_000;
+        for approximate in [false, true] {
+            let begun = Instant::now();
+            let play = bg
+                .play(
+                    start,
+                    PlaybackConfig {
+                        approximate_start: approximate,
+                        ..PlaybackConfig::default()
+                    },
+                )
+                .unwrap();
+            let channels = play.channels();
+            let mut buffer = vec![0.0; 512 * channels];
+            let mut first_sound = None;
+            let mut exact = None;
+            let period = Duration::from_secs_f64(512.0 / second);
+            let mut next = Instant::now();
+            while begun.elapsed() < Duration::from_secs(60) {
+                if play.read(&mut buffer) > 0 && first_sound.is_none() {
+                    first_sound = Some(begun.elapsed().as_secs_f64());
+                }
+                let status = play.status();
+                if first_sound.is_some() && !status.approximate && exact.is_none() {
+                    exact = Some(begun.elapsed().as_secs_f64());
+                    break;
+                }
+                next += period;
+                if let Some(wait) = next.checked_duration_since(Instant::now()) {
+                    std::thread::sleep(wait);
+                }
+            }
+            let status = play.status();
+            println!(
+                "  {:.1} s past a checkpoint, approximate start {approximate}: first sound {:.2} s, \
+                 exact after {:.2} s, underruns {}, switches {}",
+                offset_ms as f64 / 1_000.0,
+                first_sound.unwrap_or(f64::NAN),
+                exact.unwrap_or(f64::NAN),
+                status.underruns,
+                status.switches.len(),
+            );
+        }
+    }
+}

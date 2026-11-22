@@ -45,6 +45,7 @@ fn config() -> PlaybackConfig {
         chunk_frames: 1_000,
         pause_prerender: false,
         preview_preroll_frames: 0,
+        approximate_start: false,
     }
 }
 
@@ -129,6 +130,7 @@ fn reads_of_any_size_are_a_fresh_render() {
                     chunk_frames: chunk,
                     pause_prerender: false,
                     preview_preroll_frames: 0,
+                    approximate_start: false,
                 },
             )
             .unwrap();
@@ -511,6 +513,7 @@ fn a_bad_start_or_config_is_refused() {
                 chunk_frames: 1_000,
                 pause_prerender: false,
                 preview_preroll_frames: 0,
+                approximate_start: false,
             }
         )
         .is_err());
@@ -812,6 +815,7 @@ fn a_lead_of_one_chunk_still_switches() {
                 chunk_frames: 1_000,
                 pause_prerender: false,
                 preview_preroll_frames: 0,
+                approximate_start: false,
             },
         )
         .unwrap();
@@ -1026,4 +1030,149 @@ fn the_new_plan_is_heard_approximately_then_exactly() {
         &[&plan, &early],
         "approximate",
     );
+}
+
+fn approximate_start_config() -> PlaybackConfig {
+    PlaybackConfig {
+        preview_preroll_frames: 12_000,
+        approximate_start: true,
+        ..config()
+    }
+}
+
+#[test]
+fn a_start_far_from_a_checkpoint_is_approximate_then_exact() {
+    let plan = compile(&base_song(5)).unwrap();
+    let total = plan.output().total_frames;
+    let start = total * 2 / 3;
+    // No worker: the only checkpoint is frame 0.
+    let bg = session(&plan, false);
+    let play = bg.play(start, approximate_start_config()).unwrap();
+    let got = read_paced(&play, 480);
+    let status = play.status();
+    assert!(!status.approximate && !status.stale, "{status:?}");
+    let kinds: Vec<_> = status
+        .switches
+        .iter()
+        .map(|switch| (switch.frame >= start, switch.approximate_from))
+        .collect();
+    assert_eq!(
+        kinds,
+        [(true, Some(start - 12_000)), (true, None)],
+        "{status:?}"
+    );
+    assert_eq!(status.switches[0].frame, start);
+    assert_played(&got, start, &status.switches, &[&plan], "approximate start");
+}
+
+#[test]
+fn a_start_near_a_checkpoint_is_exact() {
+    let plan = compile(&base_song(5)).unwrap();
+    let channels = usize::from(plan.output().channels);
+    let total = plan.output().total_frames;
+    let fresh = render_full(&plan);
+    let bg = session(&plan, true);
+    assert!(bg.wait_idle(WAIT));
+    // Three prerolls is 36 000 frames; the checkpoints are 4 801 apart.
+    let start = total / 2 + 1_234;
+    let play = bg.play(start, approximate_start_config()).unwrap();
+    let got = read_exactly(&play, 8_000, 500);
+    assert_eq!(
+        bits(&fresh[start as usize * channels..(start as usize + 8_000) * channels]),
+        bits(&got)
+    );
+    let status = play.status();
+    assert_eq!(status.switches.len(), 1, "{status:?}");
+    assert_eq!(status.switches[0].approximate_from, None);
+    assert!(!status.approximate);
+}
+
+#[test]
+fn a_seek_far_from_a_checkpoint_is_approximate_then_exact() {
+    let plan = compile(&base_song(5)).unwrap();
+    let total = plan.output().total_frames;
+    let bg = session(&plan, false);
+    let play = bg.play(0, approximate_start_config()).unwrap();
+    let _ = read_exactly(&play, 3_000, 700);
+    let target = total / 2 + 77;
+    play.seek(target);
+    let got = read_paced(&play, 480);
+    let status = play.status();
+    let kinds: Vec<_> = status
+        .switches
+        .iter()
+        .map(|switch| switch.approximate_from)
+        .collect();
+    assert_eq!(kinds, [Some(target - 12_000), None], "{status:?}");
+    assert_played(&got, target, &status.switches, &[&plan], "approximate seek");
+}
+
+#[test]
+fn an_edit_while_the_start_is_approximate_is_followed() {
+    let song = base_song(4);
+    let plan = compile(&song).unwrap();
+    let total = plan.output().total_frames;
+    let reference = maac::dsp::CheckpointSet::without_checkpoints(&plan, &limits()).unwrap();
+    let mut rng = Rng(11);
+    let early = (0..300)
+        .find_map(|index| {
+            let edited = compile(&edit(&song, &mut rng, 20 + index).0).ok()?;
+            (edited.output().total_frames == total
+                && matches!(
+                    reference.reuse_for(&edited).unwrap(),
+                    maac::dsp::Reuse::From(bound) if bound < total / 20
+                ))
+            .then_some(edited)
+        })
+        .expect("an early edit");
+    let start = total * 2 / 3;
+    let bg = session(&plan, false);
+    let play = bg.play(start, approximate_start_config()).unwrap();
+    bg.update(&early);
+    let got = read_paced(&play, 480);
+    let status = play.status();
+    assert!(!status.approximate && !status.stale, "{status:?}");
+    let last = status.switches.last().unwrap();
+    assert_eq!(
+        (last.generation, last.approximate_from),
+        (1, None),
+        "{status:?}"
+    );
+    assert_played(
+        &got,
+        start,
+        &status.switches,
+        &[&plan, &early],
+        "edit during an approximate start",
+    );
+}
+
+#[test]
+fn an_approximate_start_can_be_turned_off() {
+    let plan = compile(&base_song(5)).unwrap();
+    let channels = usize::from(plan.output().channels);
+    let total = plan.output().total_frames;
+    let fresh = render_full(&plan);
+    let start = total * 2 / 3;
+    for config in [
+        PlaybackConfig {
+            approximate_start: false,
+            ..approximate_start_config()
+        },
+        PlaybackConfig {
+            preview_preroll_frames: 0,
+            ..approximate_start_config()
+        },
+    ] {
+        let bg = session(&plan, false);
+        let play = bg.play(start, config).unwrap();
+        let got = read_exactly(&play, 8_000, 500);
+        assert_eq!(
+            bits(&fresh[start as usize * channels..(start as usize + 8_000) * channels]),
+            bits(&got)
+        );
+        let status = play.status();
+        assert_eq!(status.switches.len(), 1, "{status:?}");
+        assert_eq!(status.switches[0].approximate_from, None);
+    }
 }

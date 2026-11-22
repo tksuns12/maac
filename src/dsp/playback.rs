@@ -40,6 +40,10 @@ use crate::plan_artifact::PlanArtifact;
 const POLL: Duration = Duration::from_millis(5);
 /// Frames the producer renders silently in one step while catching up.
 const CATCH_UP_STEP: u64 = 2_048;
+/// A start is approximate only when the playhead is more than this many
+/// `preview_preroll_frames` past the checkpoint it starts from: closer, waiting
+/// is about as short as the approximation.
+const START_GATE_PREROLLS: u64 = 3;
 /// Frames between the snapshots the engine keeps of its own state behind the
 /// playhead, for an edit that changes what was just heard.
 const HISTORY_EVERY: u64 = 24_000;
@@ -65,6 +69,12 @@ pub struct PlaybackConfig {
     /// at once but approximately (see [`PlaybackSwitch::approximate_from`]),
     /// until the exact render catches up. 0 turns the approximation off.
     pub preview_preroll_frames: u64,
+    /// When the playhead is far (more than a few `preview_preroll_frames`)
+    /// past the nearest checkpoint, start or seek by playing the song
+    /// approximately from just before the playhead, while the exact render
+    /// catches up, instead of waiting for it in silence. Needs
+    /// `preview_preroll_frames` above 0.
+    pub approximate_start: bool,
 }
 
 impl Default for PlaybackConfig {
@@ -74,6 +84,7 @@ impl Default for PlaybackConfig {
             chunk_frames: 2_048,
             pause_prerender: false,
             preview_preroll_frames: 24_000,
+            approximate_start: true,
         }
     }
 }
@@ -206,6 +217,7 @@ impl Playback {
             lead: config.lead_frames,
             chunk: config.chunk_frames,
             preroll: config.preview_preroll_frames,
+            approximate_start: config.approximate_start,
             epoch: 0,
         };
         let pause = config.pause_prerender;
@@ -333,6 +345,7 @@ struct Ctx {
     lead: u64,
     chunk: u64,
     preroll: u64,
+    approximate_start: bool,
     /// The seek count the producer has taken up.
     epoch: u64,
 }
@@ -481,6 +494,19 @@ fn run_plan(ctx: &mut Ctx, first: Setup) -> Result<()> {
                 }
             }
         }
+        let nearest = setup.restore.as_ref().map_or(0, Checkpoint::frame);
+        if ctx.approximate_start
+            && ctx.preroll > 0
+            && setup.pos > nearest + START_GATE_PREROLLS * ctx.preroll
+        {
+            match start_approximately(ctx, &setup)? {
+                Next::Exit => return Ok(()),
+                Next::Again(next) => {
+                    setup = *next;
+                    continue;
+                }
+            }
+        }
         let mut engine = DspEngine::new_artifact_with_limits(&setup.plan, &setup.limits)?;
         let from = match setup.restore.take() {
             Some(checkpoint) => {
@@ -493,6 +519,45 @@ fn run_plan(ctx: &mut Ctx, first: Setup) -> Result<()> {
             Next::Exit => return Ok(()),
             Next::Again(next) => setup = *next,
         }
+    }
+}
+
+/// Start far from a checkpoint: nothing is in the ring to play meanwhile, so
+/// the catch-up has no old plan, and the sound starts with the approximate one.
+fn start_approximately(ctx: &mut Ctx, setup: &Setup) -> Result<Next> {
+    let exact = DspEngine::new_artifact_with_limits(&setup.plan, &setup.limits)?;
+    let preview = DspEngine::new_artifact_with_limits(&setup.plan, &setup.limits)?;
+    let mut pos = setup.pos;
+    let target = NewPlan {
+        engine: exact,
+        preview: Some(preview),
+        total: setup.plan.output().total_frames,
+        start: setup.restore.clone(),
+        generation: setup.generation,
+    };
+    match catch_up(ctx, None, &mut pos, 0, target)? {
+        Caught::Swap(restore) => {
+            record_switch(ctx, pos, setup.generation, None);
+            Ok(Next::Again(Box::new(Setup {
+                plan: setup.plan.clone(),
+                limits: setup.limits,
+                restore,
+                pos,
+                generation: setup.generation,
+            })))
+        }
+        Caught::Exit => Ok(Next::Exit),
+        Caught::Seek(next) => Ok(next),
+        // Another edit: the newest plan, from where the sound ends.
+        Caught::Superseded | Caught::SupersededLive => {
+            let synced = sync(&ctx.shared, pos)?;
+            check_format(ctx, &synced.plan)?;
+            note_plan(ctx, pos, synced.generation);
+            Ok(Next::Again(Box::new(Setup::new(synced, pos))))
+        }
+        Caught::Finished => Err(RenderError::RenderState(
+            "a start without an old plan cannot run into its end".into(),
+        )),
     }
 }
 
@@ -629,14 +694,24 @@ fn push(ctx: &Ctx, samples: Vec<f64>, _end: u64, last: bool) -> bool {
 
 fn record_switch(ctx: &Ctx, frame: u64, generation: u64, approximate_from: Option<u64>) {
     let mut ring = locked(&ctx.play.ring);
-    if ring.switches.len() >= MAX_SWITCHES {
-        ring.switches.remove(0);
+    let empty = ring.buffered == 0;
+    match ring.switches.last_mut() {
+        // Nothing of the earlier sound was put in the ring: it is corrected.
+        Some(last) if last.frame == frame && empty => {
+            last.generation = generation;
+            last.approximate_from = approximate_from;
+        }
+        _ => {
+            if ring.switches.len() >= MAX_SWITCHES {
+                ring.switches.remove(0);
+            }
+            ring.switches.push(PlaybackSwitch {
+                frame,
+                generation,
+                approximate_from,
+            });
+        }
     }
-    ring.switches.push(PlaybackSwitch {
-        frame,
-        generation,
-        approximate_from,
-    });
     ring.stale = false;
     ring.approximate = approximate_from.is_some();
 }
@@ -802,7 +877,7 @@ fn play_engine(
                             start,
                             generation: synced.generation,
                         };
-                        match catch_up(ctx, engine, &mut pos, total, target_plan)? {
+                        match catch_up(ctx, Some(engine), &mut pos, total, target_plan)? {
                             Caught::Swap(restore) => {
                                 record_switch(ctx, pos, synced.generation, None);
                                 return Ok(Next::Again(Box::new(Setup {
@@ -922,7 +997,7 @@ fn chase(
 /// caller switches.
 fn catch_up(
     ctx: &mut Ctx,
-    old: &mut DspEngine<'_>,
+    mut old: Option<&mut DspEngine<'_>>,
     pos: &mut u64,
     total: u64,
     target_plan: NewPlan<'_>,
@@ -983,7 +1058,7 @@ fn catch_up(
                     // The new plan ends before the playhead: it takes over there.
                     return Ok(Done::Caught(Caught::Swap(None)));
                 }
-                if !live && *pos >= total {
+                if old.is_some() && !live && *pos >= total {
                     if new_total > total {
                         // The old plan has no more to give but the new one is
                         // longer: nothing can be heard until it has caught up.
@@ -1011,7 +1086,10 @@ fn catch_up(
                     Wake::Room | Wake::Idle => {}
                 }
                 let behind = *pos - reached.load(Ordering::Acquire);
-                let spare = locked(&ctx.play.ring).buffered >= (ctx.lead / 4).max(ctx.chunk);
+                // With no old plan and nothing heard yet, the exact render
+                // arriving first needs no spare sound: it just starts.
+                let spare = (old.is_none() && !live)
+                    || locked(&ctx.play.ring).buffered >= (ctx.lead / 4).max(ctx.chunk);
                 if behind <= close && spare {
                     hold.store(true, Ordering::Release);
                     return Ok(Done::Hold);
@@ -1037,7 +1115,7 @@ fn catch_up(
                     }
                     // Not yet: the old plan fills the ring while it is hungry,
                     // and the preview is brought up to the playhead otherwise.
-                    Some(preview) if !(starving && matches!(wake, Wake::Room)) => {
+                    Some(preview) if old.is_none() || !(starving && matches!(wake, Wake::Room)) => {
                         let end = (preview.at + CATCH_UP_STEP).min(*pos);
                         preview.engine.render_preview_chunk(
                             RenderSpan {
@@ -1053,7 +1131,8 @@ fn catch_up(
                         }
                     }
                     _ => {
-                        if matches!(wake, Wake::Room) {
+                        if let (Some(old), true) = (old.as_deref_mut(), matches!(wake, Wake::Room))
+                        {
                             if let Some(end) =
                                 produce(ctx, old, *pos, total, new_total <= total, false)?
                             {
