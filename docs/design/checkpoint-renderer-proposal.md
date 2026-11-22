@@ -532,15 +532,27 @@ never started).
 Tests: a preview cut into chunks of 1 000 to 70 000 frames equals one preview
 render; misplaced preview chunks are refused; a playback with an early edit has
 exactly the switches exact, approximate, exact, each stretch equal to its fresh
-render. Not mutation-checked.
+render. Mutation-checked (8 mutants of the preview path: 5 caught, 2 equivalent,
+1 not testable without timing: the old plan refills the ring first when it runs
+nearly empty).
 
 Measured (Afterlight, release, loaded machine: the worker took 104 s to fill, 48 s
 when quiet): an edit behind the playhead is heard approximately 0.3-0.7 s after
-the edit (before: 16-25 s) and exactly after 23-33 s. Two of the four runs
-underran for seconds (426 and 655 reads) because the approximate sound itself
-renders at about real time on this song under load. Homeward was measured
-before the preview was given priority (no approximate sound there: the old
-plan's refill starved it) and not again.
+the edit (before: 16-25 s) and exactly after 23-33 s. The "underruns" first
+reported for two runs (426 and 655 reads) were most likely the start-up wait for
+the first sound, which the counter included; the harness now counts underruns
+before and after the edit apart. Remeasured, load average 10-140 on 8 cores:
+
+| song | first sound after play | approximate after the edit | exact after the edit | underruns after the edit |
+|---|---|---|---|---|
+| Afterlight | 0.43 s | 0.38 s | 18-23 s | 0 |
+| Homeward | 2.0 s | 0.81-0.88 s | 20-24 s | 0 |
+
+Approximate rendering alone runs 1.7-6.5x real time when the machine is quiet
+(Homeward 1.7-2.3x, Afterlight 3.9-6.5x); skipping the reverb changes nothing, the
+time goes to the instruments. Holding the exact catch-up back until the
+approximate sound is up saved about 3 s of the exact time but is within the noise
+of the machine's load, so it was not kept.
 
 Limits: the approximation lacks reverb and delay tails from before its cold start
 and restarts sounding notes; an edit that arrives while it plays starts again from
