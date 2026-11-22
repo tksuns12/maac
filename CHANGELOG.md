@@ -59,6 +59,9 @@ promise of compatibility beyond the documented interfaces.
 
 ### Fixed
 
+- `BackgroundSession::update` counted a plan after releasing the lock that held
+  it, so a playback that took the plan in that instant could name it as the
+  previous plan. The plan and its count now go in together.
 - A preview (`render --preroll-frames` and `analyze --window --preroll`) no
   longer fails with a note-off or join error when it starts on the frame a
   note ends or a joined note begins, which includes most bar lines, and a note

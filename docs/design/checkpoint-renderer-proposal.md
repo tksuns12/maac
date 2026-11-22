@@ -556,8 +556,10 @@ of the machine's load, so it was not kept.
 
 Limits: the approximation lacks reverb and delay tails from before its cold start
 and restarts sounding notes; an edit that arrives while it plays starts again from
-the newest plan at the end of the ring (silent advance, may run dry); rapid edits
-still restart the catch-up.
+the newest plan at the end of the ring (since C5 through the same gate as a start,
+so the sound goes on approximately from there when the checkpoint is far, and is
+silent until the exact render has caught up when it is near: it may run dry); rapid
+edits still restart the catch-up.
 
 ## Phase C5 results (approximate start)
 
@@ -604,11 +606,12 @@ is up before the exact render is within a few chunks: the margin is tens of
 milliseconds against a render of 30 000 to 160 000 frames, which a machine stalling
 the producer for that long would break.
 
-Mutation-checked (12 mutants of the start path): 8 caught. Equivalent: preroll 0
+Mutation-checked (12 mutants of the start path): 7 caught, 3 equivalent, 2 not
+caught. The equivalent ones: preroll 0
 without its guard (no preview is made, the exact render starts at once, the same
 sound; the guard avoids a thread and a spin); not noting the plan on a superseded
 start (the restart relabels it); starting the chase from frame 0 instead of the
-checkpoint (the same sound, only later). Not caught: dropping the reset of the
+checkpoint (the same sound, only later). The two not caught: dropping the reset of the
 approximate mark in `note_plan` (an edit would have to arrive in the moment between
 the preview going live and its first chunk reaching the ring); dropping the "nothing
 heard yet" waiver of the spare-sound condition (needs the exact engine to arrive

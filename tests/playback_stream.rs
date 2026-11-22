@@ -1023,6 +1023,7 @@ fn the_new_plan_is_heard_approximately_then_exactly() {
         .map(|switch| (switch.generation, switch.approximate_from.is_some()))
         .collect();
     assert_eq!(kinds, [(0, false), (1, true), (1, false)], "{status:?}");
+    assert_exact_took_over(&status, total);
     assert_played(
         &got,
         start,
@@ -1142,10 +1143,13 @@ fn an_edit_while_the_start_is_approximate_is_followed() {
     let play = bg.play(start, approximate_start_config()).unwrap();
     // Once the approximate sound is playing, so that the edit arrives while it
     // does (an edit that comes earlier is another path).
+    // Read off the switch, which stays: the flag goes out again at the hand-over.
     wait_for("the approximate sound", || {
-        play.status().approximate || play.status().ended
+        play.status()
+            .switches
+            .first()
+            .is_some_and(|switch| switch.approximate_from.is_some())
     });
-    assert!(play.status().approximate, "{:?}", play.status());
     bg.update(&early);
     let got = read_paced(&play, 480);
     let status = play.status();

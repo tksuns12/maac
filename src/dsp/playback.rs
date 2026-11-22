@@ -7,9 +7,13 @@
 //! render; it waits only for the producer to put a chunk in or take one out,
 //! which is a few microseconds under a lock.
 //!
-//! Every frame handed out is a frame of an exact render of one plan: the
-//! frames before a switch are those of the old plan, the frames after it those
-//! of the new one, each bit for bit what a fresh render of that plan gives.
+//! Every frame handed out is a frame of a render of one plan: the frames before
+//! a switch are those of the old plan, the frames after it those of the new one.
+//! Each is bit for bit what a fresh render of that plan gives, except in a
+//! stretch that [`PlaybackSwitch::approximate_from`] marks: there the plan was
+//! rendered cold from that frame (see [`PlaybackConfig::preview_preroll_frames`]
+//! and [`PlaybackConfig::approximate_start`]), which is what a fresh preview
+//! from that frame gives, until the exact render has caught up.
 //!
 //! * An edit that leaves the frames already rendered alone takes effect at the
 //!   next chunk: the engine's state at that point is a checkpoint of the new
@@ -450,7 +454,6 @@ fn note_plan(ctx: &Ctx, frame: u64, generation: u64) {
             // sound starts with is exact again until a preview is up.
             last.approximate_from = None;
         }
-        ring.approximate = false;
     } else {
         if ring.switches.len() >= MAX_SWITCHES {
             ring.switches.remove(0);
@@ -461,6 +464,8 @@ fn note_plan(ctx: &Ctx, frame: u64, generation: u64) {
             approximate_from: None,
         });
     }
+    // Either way the entry is exact: what follows is rendered from `frame` on.
+    ring.approximate = false;
 }
 
 /// An error ends what the producer was doing, not the playback: it records
