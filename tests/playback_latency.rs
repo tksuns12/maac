@@ -130,6 +130,8 @@ fn playback_latency_on_a_real_song() {
                 playhead,
                 PlaybackConfig {
                     pause_prerender: false,
+                    // The start is measured by the other test; here the edit.
+                    approximate_start: false,
                     ..PlaybackConfig::default()
                 },
             )

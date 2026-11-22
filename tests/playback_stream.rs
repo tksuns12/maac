@@ -1032,6 +1032,16 @@ fn the_new_plan_is_heard_approximately_then_exactly() {
     );
 }
 
+/// The exact render took the sound over before the song ended: the last
+/// switch is exact and starts at a frame that exists.
+fn assert_exact_took_over(status: &maac::dsp::PlaybackStatus, total: u64) {
+    let last = status.switches.last().unwrap();
+    assert!(
+        last.approximate_from.is_none() && last.frame < total,
+        "the exact render never took over: {status:?}"
+    );
+}
+
 fn approximate_start_config() -> PlaybackConfig {
     PlaybackConfig {
         preview_preroll_frames: 12_000,
@@ -1062,6 +1072,7 @@ fn a_start_far_from_a_checkpoint_is_approximate_then_exact() {
         "{status:?}"
     );
     assert_eq!(status.switches[0].frame, start);
+    assert_exact_took_over(&status, total);
     assert_played(&got, start, &status.switches, &[&plan], "approximate start");
 }
 
@@ -1104,6 +1115,7 @@ fn a_seek_far_from_a_checkpoint_is_approximate_then_exact() {
         .map(|switch| switch.approximate_from)
         .collect();
     assert_eq!(kinds, [Some(target - 12_000), None], "{status:?}");
+    assert_exact_took_over(&status, total);
     assert_played(&got, target, &status.switches, &[&plan], "approximate seek");
 }
 
@@ -1128,6 +1140,12 @@ fn an_edit_while_the_start_is_approximate_is_followed() {
     let start = total * 2 / 3;
     let bg = session(&plan, false);
     let play = bg.play(start, approximate_start_config()).unwrap();
+    // Once the approximate sound is playing, so that the edit arrives while it
+    // does (an edit that comes earlier is another path).
+    wait_for("the approximate sound", || {
+        play.status().approximate || play.status().ended
+    });
+    assert!(play.status().approximate, "{:?}", play.status());
     bg.update(&early);
     let got = read_paced(&play, 480);
     let status = play.status();
@@ -1138,6 +1156,7 @@ fn an_edit_while_the_start_is_approximate_is_followed() {
         (1, None),
         "{status:?}"
     );
+    assert!(last.frame < total, "{status:?}");
     assert_played(
         &got,
         start,
@@ -1201,5 +1220,6 @@ fn an_approximate_start_catches_up_from_a_real_checkpoint() {
         .map(|switch| switch.approximate_from)
         .collect();
     assert_eq!(kinds, [Some(start - 1_000), None], "{status:?}");
+    assert_exact_took_over(&status, total);
     assert_played(&got, start, &status.switches, &[&plan], "from a checkpoint");
 }

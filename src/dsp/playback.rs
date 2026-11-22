@@ -20,7 +20,10 @@
 //!   the old plan keeps playing. [`PlaybackStatus::stale`] says it is going
 //!   on. When the new plan has caught up the sound switches to it.
 //! * A seek throws away what was ready and starts again from the session's
-//!   nearest checkpoint; nothing plays until that has caught up.
+//!   nearest checkpoint. Close to it, nothing plays until the playhead is
+//!   reached; farther than a few `preview_preroll_frames`, the song is played
+//!   approximately from just before the playhead until the exact render has
+//!   caught up (`PlaybackConfig::approximate_start`, also for a start).
 //!
 //! The switches are listed in [`PlaybackStatus::switches`] with the frame
 //! where each took effect.
@@ -439,18 +442,24 @@ fn check_format(ctx: &Ctx, plan: &PlanArtifact) -> Result<()> {
 fn note_plan(ctx: &Ctx, frame: u64, generation: u64) {
     let mut ring = locked(&ctx.play.ring);
     let empty = ring.buffered == 0;
-    match ring.switches.last_mut() {
-        Some(last) if last.frame == frame && empty => last.generation = generation,
-        _ => {
-            if ring.switches.len() >= MAX_SWITCHES {
-                ring.switches.remove(0);
-            }
-            ring.switches.push(PlaybackSwitch {
-                frame,
-                generation,
-                approximate_from: None,
-            });
+    let corrects = empty && ring.switches.last().is_some_and(|last| last.frame == frame);
+    if corrects {
+        if let Some(last) = ring.switches.last_mut() {
+            last.generation = generation;
+            // Nothing of an approximate start is in the ring: the plan the
+            // sound starts with is exact again until a preview is up.
+            last.approximate_from = None;
         }
+        ring.approximate = false;
+    } else {
+        if ring.switches.len() >= MAX_SWITCHES {
+            ring.switches.remove(0);
+        }
+        ring.switches.push(PlaybackSwitch {
+            frame,
+            generation,
+            approximate_from: None,
+        });
     }
 }
 
@@ -497,7 +506,7 @@ fn run_plan(ctx: &mut Ctx, first: Setup) -> Result<()> {
         let nearest = setup.restore.as_ref().map_or(0, Checkpoint::frame);
         if ctx.approximate_start
             && ctx.preroll > 0
-            && setup.pos > nearest + START_GATE_PREROLLS * ctx.preroll
+            && setup.pos > nearest.saturating_add(START_GATE_PREROLLS.saturating_mul(ctx.preroll))
         {
             match start_approximately(ctx, &setup)? {
                 Next::Exit => return Ok(()),
@@ -991,7 +1000,8 @@ fn chase(
 }
 
 /// Render the new plan up to the playhead on a second thread while this one
-/// goes on filling the ring with the old plan. When the new plan is within a
+/// goes on filling the ring with the old plan (with no old plan, as at a start,
+/// the ring is filled by the approximate sound alone). When the new plan is within a
 /// few chunks of the playhead and the ring can spare the time, this thread
 /// stops producing, the other finishes the last of the distance, and the
 /// caller switches.

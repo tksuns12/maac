@@ -161,8 +161,13 @@ impl BackgroundSession {
         // It only hurries the worker; what the worker may commit is decided by
         // the session's own update count.
         self.shared.generation.fetch_add(1, Ordering::AcqRel);
-        *locked(&self.shared.slot) = Some(plan.clone());
-        self.shared.stored.fetch_add(1, Ordering::AcqRel);
+        // The plan and its count go in under one hold of the slot lock, which
+        // is also how a playback reads them (see `playback::sync`).
+        {
+            let mut slot = locked(&self.shared.slot);
+            *slot = Some(plan.clone());
+            self.shared.stored.fetch_add(1, Ordering::AcqRel);
+        }
         self.wake(false);
     }
 
