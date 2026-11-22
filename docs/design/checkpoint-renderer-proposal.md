@@ -558,3 +558,52 @@ Limits: the approximation lacks reverb and delay tails from before its cold star
 and restarts sounding notes; an edit that arrives while it plays starts again from
 the newest plan at the end of the ring (silent advance, may run dry); rapid edits
 still restart the catch-up.
+
+## Phase C5 results (approximate start)
+
+A start or a seek renders silently from the nearest checkpoint up to the playhead
+before the first frame can be played: up to the checkpoint spacing (4 s in the
+measurements), 1.8 s on Homeward 3.5 s past a checkpoint. When the playhead is more
+than three prerolls (`START_GATE_PREROLLS`, 72 000 frames by default) past its
+checkpoint, `run_plan` now calls `start_approximately`: the catch-up of C4 with no
+old plan. The exact engine restored from the checkpoint chases the playhead on its
+own thread; a second engine renders the plan cold from `pos - preroll` and its sound
+fills the ring; when the exact engine is within a few chunks, it takes over.
+Differences from an edit's catch-up: the preview always advances (the ring is empty,
+so it is always "starving"); the exact engine may take over before the approximate
+sound is up (nothing was heard, no switch is recorded for the approximation); the
+first entry of `switches` is relabelled approximate instead of a second entry added
+(`record_switch` corrects an entry at the same frame while nothing of it is in the
+ring). An edit during it starts again from the newest plan. `approximate_start:
+false`, or `preview_preroll_frames` 0, gives the old contract: `play` and `seek`
+are exact from the first frame.
+
+Measured (release, 8 cores, load average 50-70 from other work; a reader pulling 512
+frames at the speed the sound plays; first sound / until exact):
+
+| song | past a checkpoint | exact start | approximate start |
+|---|---|---|---|
+| Homeward | 1.0 s | 0.69 s | (below the gate) |
+| Homeward | 2.0 s | 1.15 s | 0.57 s / 3.1 s |
+| Homeward | 3.5 s | 1.83 s | 0.56 s / 4.5 s |
+| Afterlight | 2.0 s | 0.31 s | 0.14 s / 0.58 s |
+| Afterlight | 3.5 s | 0.53 s | 0.14 s / 0.79 s |
+
+The gate: at 1.0 s the approximate start would have saved about 0.1 s for a
+degraded start; the gain is worth it from about 1.5 s. (The 2 s first sound quoted
+in the C4 notes was measured at a load average of 100-140.)
+
+Tests: far start, far seek and a far start from a real checkpoint are approximate
+then exact, each stretch equal to a fresh render (the approximate stretch to a
+preview from its cold frame); a near start is exact and single; both off switches
+give an exact start; an edit during an approximate start is followed. Mutation-checked
+(9 mutants of the start path): 5 caught; 4 survive: preroll 0 without the guard is
+equivalent (no preview is made, the exact render starts at once); not noting the
+plan on a superseded start is equivalent (the restart relabels it); without the
+waiver for "nothing heard yet" and without the checkpoint to start from, the sound
+is the same (only later), and the first needs the exact engine to arrive before the
+approximate one, which no deterministic test can force.
+
+Limits: after a start the sound is approximate for 0.6-4.5 s on these songs (the
+time the exact render needs from the checkpoint); a start is not approximate below
+the gate; the approximation lacks reverb and delay tails from before the cold frame.

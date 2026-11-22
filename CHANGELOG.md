@@ -48,6 +48,12 @@ promise of compatibility beyond the documented interfaces.
   approximately (rendered cold a short way before the playhead, so notes sounding
   through it restart and reverb tails are missing), within a second, and switches
   to the exact render when that has caught up.
+- `PlaybackConfig::approximate_start` (on by default; needs `preview_preroll_frames`
+  above 0): when a playback starts, or seeks, more than three prerolls past its
+  nearest checkpoint, it plays the song approximately from just before the playhead
+  at once and switches to the exact render when that has caught up, instead of
+  waiting in silence. On a 128 s song, 3.5 s past a checkpoint, the first sound came
+  after 0.56 s instead of 1.83 s.
 - Optional `jit` cargo feature (off by default): a Cranelift renderer for
   instrument graphs that produces output bit-identical to the interpreter.
 

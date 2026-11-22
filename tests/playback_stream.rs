@@ -1176,3 +1176,30 @@ fn an_approximate_start_can_be_turned_off() {
         assert_eq!(status.switches[0].approximate_from, None);
     }
 }
+
+#[test]
+fn an_approximate_start_catches_up_from_a_real_checkpoint() {
+    let plan = compile(&base_song(5)).unwrap();
+    let total = plan.output().total_frames;
+    // Far apart, so that the exact render has much further to go than the
+    // approximate one, whatever the machine is doing.
+    let bg =
+        BackgroundSession::new_with(&plan, &limits(), SessionPolicy::new(40_000), true).unwrap();
+    assert!(bg.wait_idle(WAIT));
+    // The gate is three prerolls, 3 000 frames: 30 000 past a checkpoint is far.
+    let start = (total / 2 / 40_000) * 40_000 + 30_000;
+    let config = PlaybackConfig {
+        preview_preroll_frames: 1_000,
+        ..approximate_start_config()
+    };
+    let play = bg.play(start, config).unwrap();
+    let got = read_paced(&play, 480);
+    let status = play.status();
+    let kinds: Vec<_> = status
+        .switches
+        .iter()
+        .map(|switch| switch.approximate_from)
+        .collect();
+    assert_eq!(kinds, [Some(start - 1_000), None], "{status:?}");
+    assert_played(&got, start, &status.switches, &[&plan], "from a checkpoint");
+}
