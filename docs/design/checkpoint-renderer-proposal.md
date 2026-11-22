@@ -595,14 +595,29 @@ in the C4 notes was measured at a load average of 100-140.)
 
 Tests: far start, far seek and a far start from a real checkpoint are approximate
 then exact, each stretch equal to a fresh render (the approximate stretch to a
-preview from its cold frame); a near start is exact and single; both off switches
-give an exact start; an edit during an approximate start is followed. Mutation-checked
-(9 mutants of the start path): 5 caught; 4 survive: preroll 0 without the guard is
-equivalent (no preview is made, the exact render starts at once); not noting the
-plan on a superseded start is equivalent (the restart relabels it); without the
-waiver for "nothing heard yet" and without the checkpoint to start from, the sound
-is the same (only later), and the first needs the exact engine to arrive before the
-approximate one, which no deterministic test can force.
+preview from its cold frame) and each ending with an exact switch at a frame that
+exists (a hand-over at the end of the song would also give the shape "approximate,
+exact"); a near start is exact and single; both off switches give an exact start; an
+edit that arrives while the approximate sound is playing is followed; a preroll of
+`u64::MAX` does not overflow the gate. The far tests assume the approximate sound
+is up before the exact render is within a few chunks: the margin is tens of
+milliseconds against a render of 30 000 to 160 000 frames, which a machine stalling
+the producer for that long would break.
+
+Mutation-checked (12 mutants of the start path): 8 caught. Equivalent: preroll 0
+without its guard (no preview is made, the exact render starts at once, the same
+sound; the guard avoids a thread and a spin); not noting the plan on a superseded
+start (the restart relabels it); starting the chase from frame 0 instead of the
+checkpoint (the same sound, only later). Not caught: dropping the reset of the
+approximate mark in `note_plan` (an edit would have to arrive in the moment between
+the preview going live and its first chunk reaching the ring); dropping the "nothing
+heard yet" waiver of the spare-sound condition (needs the exact engine to arrive
+before the approximate one, which no deterministic test can force).
+
+A review also found that `BackgroundSession::update` released the slot lock before
+counting the plan, against its own comment: a playback taking the slot in between
+could name plan N+1 as plan N. The plan and the count now go in under one hold of
+the lock. No test: the window is a few instructions wide.
 
 Limits: after a start the sound is approximate for 0.6-4.5 s on these songs (the
 time the exact render needs from the checkpoint); a start is not approximate below

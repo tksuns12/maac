@@ -1223,3 +1223,28 @@ fn an_approximate_start_catches_up_from_a_real_checkpoint() {
     assert_exact_took_over(&status, total);
     assert_played(&got, start, &status.switches, &[&plan], "from a checkpoint");
 }
+
+#[test]
+fn an_enormous_preroll_does_not_overflow_the_start_gate() {
+    let plan = compile(&base_song(5)).unwrap();
+    let channels = usize::from(plan.output().channels);
+    let total = plan.output().total_frames;
+    let fresh = render_full(&plan);
+    let start = total * 2 / 3;
+    let bg = session(&plan, false);
+    let play = bg
+        .play(
+            start,
+            PlaybackConfig {
+                preview_preroll_frames: u64::MAX,
+                ..approximate_start_config()
+            },
+        )
+        .unwrap();
+    let got = read_exactly(&play, 8_000, 500);
+    assert_eq!(
+        bits(&fresh[start as usize * channels..(start as usize + 8_000) * channels]),
+        bits(&got)
+    );
+    assert!(play.status().last_error.is_none(), "{:?}", play.status());
+}
