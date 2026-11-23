@@ -625,3 +625,57 @@ the lock. No test: the window is a few instructions wide.
 Limits: after a start the sound is approximate for 0.6-4.5 s on these songs (the
 time the exact render needs from the checkpoint); a start is not approximate below
 the gate; the approximation lacks reverb and delay tails from before the cold frame.
+
+## Phase D results (parallel render)
+
+After an edit behind the playhead the exact sound came back 20-96 s later, because
+one thread renders Homeward at 0.64-2x the speed of the sound and the catch-up
+time is the gap divided by (speed - 1). The render is now spread over threads
+without changing a sample.
+
+How it works:
+
+- **Instruments side by side.** Where several instruments that nothing modulates
+  need a new block at the same frame, and the events at that frame have been
+  delivered, the blocks render at once (each runtime is moved to a worker and
+  back; no shared state). Block ends are clamped to multiples of 128 frames so
+  the refills of different instruments coincide. The engine then reads the
+  blocks in its own order, and an error is kept in the runtime until the frame
+  the serial engine would have reported it at.
+- **Voices of a heavy instrument.** The voices of one block are independent, so
+  a block that took over 60 microseconds last time is split into contiguous
+  groups, and the results are put back in voice order before the voices are
+  summed. Every sixteenth block is rendered whole to time it again.
+- **Pool.** Persistent threads (cores - 1, at most 7) with one shared queue; the
+  caller runs queued jobs while it waits, so a job may use the pool itself. A
+  job that panics gives an error, not a hang.
+- **Default.** An engine renders on `min(cores, 4)` threads;
+  `MAAC_RENDER_THREADS` or `set_render_threads` change it.
+
+Measured (release build, Homeward, 4 threads):
+
+| | 1 thread | 4 threads |
+|---|---|---|
+| full render | 69.6 s, 73.0 s | 31.8 s |
+| instruments only | | 35.6 s |
+| exact after a 5 s-behind edit | 96.4 s (3529 underruns) | 11.75 s (0 underruns) |
+| 31 checkpoints by the worker | 70.8 s | 46.7 s |
+
+The 4-thread playback run was made at a load average of about 180 and the
+1-thread run at 7.6, so the ratio is not exact. The full render's output has the
+same SHA as before on 1 and 4 threads. The voice split adds about 10% over the
+instrument split, within the noise of the runs.
+
+Tests: `tests/parallel_render.rs` (whole renders, a cold preview in pieces and
+checkpoint + resume on 1, 2, 3, 4 and 8 threads), `tests/parallel_voices.rs`
+(the same with the voice split forced on: `MAAC_VOICE_SPLIT_NANOS=0`, read once
+per process) and the pool's own tests. Mutants caught: instrument results put
+back on the wrong node, a block horizon that ignores the next event, voice
+results copied to the wrong slot, in the wrong order or grouped in the wrong
+order. Equivalent: removing the outer `needs_refill` check (`prefill` checks
+again); never splitting (that is the serial path).
+
+Limits: instruments with incoming modulation or a control render a frame at a
+time and stay on the calling thread; kit pieces are not separate tasks; the pool
+is shared by every engine in the process with no priority, so a chase can delay
+the engine feeding the ring when cores are few.

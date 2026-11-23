@@ -107,3 +107,60 @@ pub(crate) fn map<T: Send + 'static>(
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    type Job<T> = Box<dyn FnOnce() -> T + Send + 'static>;
+
+    #[test]
+    fn results_come_back_in_the_order_given() {
+        let jobs: Vec<Job<usize>> = (0..64usize)
+            .map(|n| {
+                Box::new(move || {
+                    // Later jobs finish first.
+                    std::thread::sleep(std::time::Duration::from_micros((64 - n as u64) * 20));
+                    n
+                }) as Job<usize>
+            })
+            .collect();
+        let done = map(jobs);
+        assert_eq!(done, (0..64usize).map(Some).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn a_job_that_panics_gives_none_and_the_others_still_run() {
+        let jobs: Vec<Job<u32>> = vec![
+            Box::new(|| 1),
+            Box::new(|| panic!("a job failed on purpose")),
+            Box::new(|| 3),
+        ];
+        assert_eq!(map(jobs), vec![Some(1), None, Some(3)]);
+        // The pool is still alive after a panic.
+        assert_eq!(map::<u8>(vec![Box::new(|| 7)]), vec![Some(7)]);
+    }
+
+    #[test]
+    fn a_job_may_use_the_pool_itself() {
+        let jobs: Vec<Job<u32>> = (0..16u32)
+            .map(|n| {
+                Box::new(move || {
+                    let inner: Vec<Job<u32>> = (0..8u32)
+                        .map(|m| Box::new(move || n * 10 + m) as Job<u32>)
+                        .collect();
+                    map(inner).into_iter().map(|v| v.unwrap()).sum::<u32>()
+                }) as Job<u32>
+            })
+            .collect();
+        let want: Vec<Option<u32>> = (0..16u32)
+            .map(|n| Some((0..8u32).map(|m| n * 10 + m).sum()))
+            .collect();
+        assert_eq!(map(jobs), want);
+    }
+
+    #[test]
+    fn no_jobs_give_no_results() {
+        assert!(map::<u8>(Vec::new()).is_empty());
+    }
+}

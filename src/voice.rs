@@ -87,8 +87,18 @@ struct VoiceGroup {
     scratch: Vec<[f64; 2]>,
 }
 
-/// A block that took longer than this (in nanoseconds) is worth splitting.
-const SPLIT_VOICES_ABOVE_NANOS: u64 = 60_000;
+/// A block that took longer than this (in nanoseconds) is worth splitting:
+/// 60 000, or the number in `MAAC_VOICE_SPLIT_NANOS` (the tests set 0 to split
+/// every block after the first, whatever the machine's speed).
+fn split_voices_above_nanos() -> u64 {
+    static LIMIT: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *LIMIT.get_or_init(|| {
+        std::env::var("MAAC_VOICE_SPLIT_NANOS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(60_000)
+    })
+}
 
 /// The most frames an instrument renders ahead at once.
 const BLOCK_FRAMES: usize = 128;
@@ -957,7 +967,7 @@ impl InstrumentRuntime {
         // Every sixteenth block is rendered whole to time it again.
         self.fills = self.fills.wrapping_add(1);
         let measuring = self.fills.is_multiple_of(16);
-        let groups = if !measuring && self.last_fill_nanos > SPLIT_VOICES_ABOVE_NANOS {
+        let groups = if !measuring && self.last_fill_nanos > split_voices_above_nanos() {
             self.threads.min(self.voices.len())
         } else {
             1
