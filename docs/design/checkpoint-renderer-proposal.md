@@ -646,9 +646,16 @@ How it works:
   a block that took over 60 microseconds last time is split into contiguous
   groups, and the results are put back in voice order before the voices are
   summed. Every sixteenth block is rendered whole to time it again.
-- **Pool.** Persistent threads (cores - 1, at most 7) with one shared queue; the
-  caller runs queued jobs while it waits, so a job may use the pool itself. A
-  job that panics gives an error, not a hang.
+- **Thread limit.** An engine shares the instruments of a batch out in at most
+  `threads` jobs, the costliest first (each to the job with the least so far,
+  by the time its last block took). Inside a batch the voices are not split
+  again, so one engine never has more than `threads` jobs in flight; the voice
+  split is used when an instrument renders alone.
+- **Pool.** Persistent threads (cores - 1, at most 7) with one shared queue. A
+  caller runs queued jobs while one of its own results is missing and goes on
+  with its work as soon as the last is in, so a job may use the pool itself and
+  a caller is not held for other callers' jobs. A job that panics gives an
+  error, not a hang, and its instrument or voices go back where they came from.
 - **Default.** An engine renders on `min(cores, 4)` threads;
   `MAAC_RENDER_THREADS` or `set_render_threads` change it.
 
@@ -675,7 +682,20 @@ results copied to the wrong slot, in the wrong order or grouped in the wrong
 order. Equivalent: removing the outer `needs_refill` check (`prefill` checks
 again); never splitting (that is the serial path).
 
+Review fixes: the thread count limited nothing (a batch went to every pool
+thread and a voice split ran other instruments' blocks on top of its own); a
+panic dropped the instrument that was out on a worker; the helping loop kept a
+caller busy with other engines' jobs; the voice scratch was copied into every
+checkpoint; the core count was read on every pool call. The tests now count
+voice splits and the widest batch (never above the thread count, mutant
+caught) and render the first 6 s of Lantern, which has batches of three or
+more, on 1, 2, 3, 4 and 8 threads.
+
 Limits: instruments with incoming modulation or a control render a frame at a
 time and stay on the calling thread; kit pieces are not separate tasks; the pool
 is shared by every engine in the process with no priority, so a chase can delay
-the engine feeding the ring when cores are few.
+the engine feeding the ring when cores are few. A panic in a worker leaves the
+engine usable only to report the error (every caller drops the engine after an
+error; no test makes a render panic). The block grid of 128 frames moves block
+ends on one thread too; 70 plans (seeds and examples) were compared with main
+and none differed.

@@ -12,6 +12,11 @@ mod song_edits;
 use song_edits::*;
 
 fn render(plan: &PlanArtifact, threads: usize) -> Vec<u64> {
+    render_counting(plan, threads).0
+}
+
+/// The render's bits and how many blocks had their voices split.
+fn render_counting(plan: &PlanArtifact, threads: usize) -> (Vec<u64>, u64) {
     let mut engine = DspEngine::new_artifact_with_limits(plan, &PlanLimits::song()).unwrap();
     engine.set_render_threads(threads);
     let mut out = Vec::new();
@@ -21,7 +26,7 @@ fn render(plan: &PlanArtifact, threads: usize) -> Vec<u64> {
             Ok(())
         })
         .unwrap();
-    out
+    (out, engine.voice_splits())
 }
 
 #[test]
@@ -31,11 +36,14 @@ fn split_voices_render_the_same_samples() {
         let plan = compile(&base_song(seed)).unwrap();
         let serial = render(&plan, 1);
         for threads in [2, 3, 8] {
+            let (parallel, splits) = render_counting(&plan, threads);
+            assert!(serial == parallel, "seed {seed}, {threads} threads differ");
             assert!(
-                serial == render(&plan, threads),
-                "seed {seed}, {threads} threads differ"
+                splits > 0,
+                "seed {seed}, {threads} threads: no block was split"
             );
         }
+        assert_eq!(render_counting(&plan, 1).1, 0);
     }
 }
 

@@ -207,6 +207,8 @@ pub struct DspEngine<'a> {
     threads: usize,
     /// How many batches of blocks went to several threads.
     parallel_batches: u64,
+    /// The most jobs any batch was shared out in.
+    widest_batch: usize,
     /// While a render hands its checkpoints on as they are taken, instead of
     /// keeping them in `checkpoints`.
     checkpoint_sink: Option<CheckpointSink>,
@@ -781,6 +783,7 @@ impl<'a> DspEngine<'a> {
             preview_origin: None,
             threads: default_threads(),
             parallel_batches: 0,
+            widest_batch: 0,
             checkpoint_sink: None,
         })
     }
@@ -800,6 +803,28 @@ impl<'a> DspEngine<'a> {
     /// side (always 0 on one thread).
     pub fn parallel_batches(&self) -> u64 {
         self.parallel_batches
+    }
+
+    /// The most jobs any batch of instrument blocks was shared out in. It
+    /// never exceeds the number of render threads.
+    pub fn widest_batch(&self) -> usize {
+        self.widest_batch
+    }
+
+    /// How many instrument blocks had their voices split across threads.
+    pub fn voice_splits(&self) -> u64 {
+        self.nodes
+            .iter()
+            .map(|node| {
+                node.instrument
+                    .as_ref()
+                    .map_or(0, InstrumentRuntime::splits)
+                    + node
+                        .kit_instrument
+                        .as_ref()
+                        .map_or(0, KitInstrumentRuntime::splits)
+            })
+            .sum()
     }
 
     /// Render instrument blocks on `threads` threads (1 renders on the
@@ -2099,26 +2124,68 @@ impl<'a> DspEngine<'a> {
             return Ok(());
         }
         self.parallel_batches += 1;
-        let mut taken = Vec::with_capacity(work.len());
-        let jobs: Vec<Box<dyn FnOnce() -> InstrumentRuntime + Send>> = work
+        // Share the instruments out in at most `threads` jobs, the costliest
+        // first, each to the job with the least so far. One job is the
+        // caller's own. Inside a job the voices are not split again: the
+        // batch already uses the threads.
+        let threads = self.threads;
+        type Entry = (usize, u64, InstrumentRuntime);
+        let mut runtimes: Vec<Entry> = work
             .into_iter()
             .map(|(node_index, horizon)| {
-                let mut runtime = self.nodes[node_index]
+                let runtime = self.nodes[node_index]
                     .instrument
                     .take()
                     .expect("checked above");
-                taken.push(node_index);
+                (node_index, horizon, runtime)
+            })
+            .collect();
+        runtimes.sort_by_key(|(_, _, runtime)| std::cmp::Reverse(runtime.cost_hint()));
+        let job_count = threads.min(runtimes.len());
+        let mut shares: Vec<(u64, Vec<Entry>)> = (0..job_count).map(|_| (0, Vec::new())).collect();
+        for entry in runtimes {
+            let cost = entry.2.cost_hint().max(1);
+            let share = shares
+                .iter_mut()
+                .min_by_key(|(total, _)| *total)
+                .expect("at least one job");
+            share.0 += cost;
+            share.1.push(entry);
+        }
+        self.widest_batch = self.widest_batch.max(job_count);
+        type Done = Vec<(usize, InstrumentRuntime, bool)>;
+        let jobs: Vec<Box<dyn FnOnce() -> Done + Send>> = shares
+            .into_iter()
+            .map(|(_, share)| {
                 Box::new(move || {
-                    runtime.prefill(frame, horizon);
-                    runtime
-                }) as Box<dyn FnOnce() -> InstrumentRuntime + Send>
+                    share
+                        .into_iter()
+                        .map(|(node_index, horizon, mut runtime)| {
+                            runtime.set_threads(1);
+                            // A panic is caught so that the runtime goes
+                            // back to its node.
+                            let panicked =
+                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    runtime.prefill(frame, horizon);
+                                }))
+                                .is_err();
+                            runtime.set_threads(threads);
+                            (node_index, runtime, panicked)
+                        })
+                        .collect()
+                }) as Box<dyn FnOnce() -> Done + Send>
             })
             .collect();
         let mut failed = false;
-        for (node_index, runtime) in taken.into_iter().zip(pool::map(jobs)) {
-            match runtime {
-                Some(runtime) => self.nodes[node_index].instrument = Some(runtime),
-                None => failed = true,
+        for done in pool::map(jobs) {
+            let Some(done) = done else {
+                // Unreachable while the jobs catch their own panics.
+                failed = true;
+                continue;
+            };
+            for (node_index, runtime, panicked) in done {
+                self.nodes[node_index].instrument = Some(runtime);
+                failed |= panicked;
             }
         }
         if failed {

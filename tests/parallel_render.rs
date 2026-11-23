@@ -1,6 +1,9 @@
 //! Rendering instrument blocks on several threads changes no sample: whatever
 //! the number of threads, a render is the same bit for bit.
 
+use std::path::Path;
+
+use maac::compiler::compile_bundle_artifact_with_limits;
 use maac::dsp::{DspEngine, RenderSpan};
 use maac::plan::PlanLimits;
 use maac::PlanArtifact;
@@ -126,4 +129,49 @@ fn checkpoints_and_resumes_are_the_same_on_any_number_of_threads() {
             "a resume on {threads} threads differs"
         );
     }
+}
+
+fn example(name: &str) -> PlanArtifact {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let bundle =
+        maac::bundle_fs::load_bundle(&root.join(format!("examples/{name}/{name}.maac")), root)
+            .unwrap();
+    compile_bundle_artifact_with_limits(&bundle, &limits()).unwrap()
+}
+
+/// The first `seconds` of `plan`, as bits, and the engine's batch statistics.
+fn excerpt(plan: &PlanArtifact, threads: usize, seconds: u64) -> (Vec<u64>, usize, u64) {
+    let mut engine = DspEngine::new_artifact_with_limits(plan, &limits()).unwrap();
+    engine.set_render_threads(threads);
+    let end = (u64::from(plan.output().sample_rate_hz) * seconds).min(plan.output().total_frames);
+    let mut out = Vec::new();
+    engine
+        .render_span(RenderSpan { start: 0, end }, |frame| {
+            out.extend(frame.iter().map(|sample| sample.to_bits()));
+            Ok(())
+        })
+        .unwrap();
+    (out, engine.widest_batch(), engine.parallel_batches())
+}
+
+#[test]
+fn a_song_of_many_instruments_is_the_same_and_stays_within_its_threads() {
+    let plan = example("lantern");
+    let (serial, widest, batches) = excerpt(&plan, 1, 6);
+    assert_eq!((widest, batches), (0, 0));
+    let mut most = 0;
+    for threads in [2, 3, 4, 8] {
+        let (parallel, widest, batches) = excerpt(&plan, threads, 6);
+        assert!(serial == parallel, "{threads} threads differ");
+        assert!(
+            batches > 0,
+            "{threads} threads: nothing rendered side by side"
+        );
+        assert!(
+            widest <= threads,
+            "{threads} threads: a batch was shared out in {widest} jobs"
+        );
+        most = most.max(widest);
+    }
+    assert!(most >= 3, "no batch of three or more jobs was ever made");
 }

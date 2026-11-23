@@ -23,10 +23,13 @@ static POOL: OnceLock<&'static Pool> = OnceLock::new();
 
 /// How many threads render beside the caller: the cores less one, at most 7.
 pub(crate) fn default_workers() -> usize {
-    std::thread::available_parallelism()
-        .map_or(1, std::num::NonZeroUsize::get)
-        .saturating_sub(1)
-        .min(7)
+    static WORKERS: OnceLock<usize> = OnceLock::new();
+    *WORKERS.get_or_init(|| {
+        std::thread::available_parallelism()
+            .map_or(1, std::num::NonZeroUsize::get)
+            .saturating_sub(1)
+            .min(7)
+    })
 }
 
 fn pool() -> &'static Pool {
@@ -87,7 +90,18 @@ pub(crate) fn map<T: Send + 'static>(
     for _ in 1..count.min(default_workers() + 1) {
         pool.wake.notify_one();
     }
-    loop {
+    // Help with whatever is queued while some result is missing, and stop
+    // when the last one is in: the caller is not held for other callers' work.
+    let mut out: Vec<Option<T>> = (0..count).map(|_| None).collect();
+    let mut received = 0;
+    while received < count {
+        while let Ok((index, value)) = results.try_recv() {
+            out[index] = value;
+            received += 1;
+        }
+        if received == count {
+            break;
+        }
         let task = pool
             .tasks
             .lock()
@@ -95,14 +109,14 @@ pub(crate) fn map<T: Send + 'static>(
             .pop_front();
         match task {
             Some(task) => task(),
-            None => break,
-        }
-    }
-    let mut out: Vec<Option<T>> = (0..count).map(|_| None).collect();
-    for _ in 0..count {
-        match results.recv() {
-            Ok((index, value)) => out[index] = value,
-            Err(_) => break,
+            // Nothing queued: what is missing is running on other threads.
+            None => match results.recv() {
+                Ok((index, value)) => {
+                    out[index] = value;
+                    received += 1;
+                }
+                Err(_) => break,
+            },
         }
     }
     out

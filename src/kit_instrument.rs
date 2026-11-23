@@ -418,6 +418,11 @@ impl KitInstrumentRuntime {
         Ok(&self.output[..self.channels])
     }
 
+    /// How many blocks of its pieces were split across threads.
+    pub(crate) fn splits(&self) -> u64 {
+        self.pieces.iter().map(|piece| piece.runtime.splits()).sum()
+    }
+
     /// Set how many threads the voices of each piece may render on.
     pub(crate) fn set_threads(&mut self, threads: usize) {
         for piece in &mut self.pieces {
