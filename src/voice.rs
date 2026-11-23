@@ -64,7 +64,28 @@ pub struct InstrumentRuntime {
     active_scratch: Vec<usize>,
     voice_errors_scratch: Vec<Option<(usize, RenderError)>>,
     sums_scratch: Vec<[f64; 2]>,
+    /// How many threads the voices of a block may render on. Set by the engine
+    /// before each render; not part of the instrument's state.
+    threads: usize,
+    /// How long the last block took to render, to decide whether splitting
+    /// the next one pays. Not part of the instrument's state.
+    last_fill_nanos: u64,
+    fills: u64,
+    /// Scratch buffers of the groups voices render in, kept between blocks.
+    group_buffers: Vec<(Vec<[f64; 3]>, Vec<[f64; 2]>)>,
 }
+
+/// What a group of voices hands back from a block rendered on another thread.
+struct VoiceGroup {
+    voices: Vec<VoiceState>,
+    output: Vec<[f64; 2]>,
+    results: Vec<(usize, Option<(usize, RenderError)>)>,
+    expressions: Vec<[f64; 3]>,
+    scratch: Vec<[f64; 2]>,
+}
+
+/// A block that took longer than this (in nanoseconds) is worth splitting.
+const SPLIT_VOICES_ABOVE_NANOS: u64 = 60_000;
 
 /// The most frames an instrument renders ahead at once.
 const BLOCK_FRAMES: usize = 128;
@@ -424,6 +445,10 @@ impl InstrumentRuntime {
             buffered: Vec::new(),
             buffered_start: 0,
             buffered_error: None,
+            threads: 1,
+            last_fill_nanos: 0,
+            fills: 0,
+            group_buffers: Vec::new(),
             next_frame: 0,
             scratch: Vec::new(),
             voice_frames: Vec::new(),
@@ -819,6 +844,80 @@ impl InstrumentRuntime {
         }
     }
 
+    /// Set how many threads the voices of a block may render on.
+    pub(crate) fn set_threads(&mut self, threads: usize) {
+        self.threads = threads.max(1);
+    }
+
+    /// The per-voice phase of [`Self::fill`] with the voices in `groups`
+    /// groups, each rendered by whichever thread takes it. A voice renders from
+    /// its own state alone, so the frames are those of rendering them in order.
+    fn render_voices_in_groups(&mut self, start: u64, frames: usize, groups: usize) {
+        let stride = BLOCK_FRAMES;
+        let rate = self.rate;
+        let total = self.voices.len();
+        let size = total.div_ceil(groups);
+        let mut rest = std::mem::take(&mut self.voices);
+        let mut parts = Vec::new();
+        while !rest.is_empty() {
+            let tail = rest.split_off(size.min(rest.len()));
+            parts.push(std::mem::replace(&mut rest, tail));
+        }
+        let mut firsts = Vec::with_capacity(parts.len());
+        let mut first = 0;
+        let jobs: Vec<Box<dyn FnOnce() -> VoiceGroup + Send>> = parts
+            .into_iter()
+            .map(|mut voices| {
+                firsts.push(first);
+                first += voices.len();
+                let program = Arc::clone(&self.program);
+                let controls = self.controls.clone();
+                let generation = self.controls_generation;
+                let (mut expressions, mut scratch) = self.group_buffers.pop().unwrap_or_default();
+                Box::new(move || {
+                    let mut output = vec![[0.0; 2]; voices.len() * stride];
+                    let mut results = Vec::with_capacity(voices.len());
+                    for (index, voice) in voices.iter_mut().enumerate() {
+                        results.push(render_voice(
+                            voice,
+                            &program,
+                            &controls,
+                            generation,
+                            start,
+                            frames,
+                            rate,
+                            &mut expressions,
+                            &mut scratch,
+                            &mut output[index * stride..(index + 1) * stride],
+                        ));
+                    }
+                    VoiceGroup {
+                        voices,
+                        output,
+                        results,
+                        expressions,
+                        scratch,
+                    }
+                }) as Box<dyn FnOnce() -> VoiceGroup + Send>
+            })
+            .collect();
+        let done = crate::dsp::pool_map(jobs);
+        for (first, group) in firsts.into_iter().zip(done) {
+            let Some(group) = group else {
+                panic!("a render thread panicked while rendering voices");
+            };
+            let count = group.voices.len();
+            self.voices.extend(group.voices);
+            self.voice_frames[first * stride..(first + count) * stride]
+                .copy_from_slice(&group.output);
+            for (length, error) in group.results {
+                self.active_scratch.push(length);
+                self.voice_errors_scratch.push(error);
+            }
+            self.group_buffers.push((group.expressions, group.scratch));
+        }
+    }
+
     /// Render `frames` frames from `start` into the buffer. Each voice graph
     /// runs node by node over the block; the voices and the shared graph are
     /// then combined frame by frame in the same order as [`Self::render`]
@@ -850,60 +949,41 @@ impl InstrumentRuntime {
         // Each voice: frames before its retirement, and its first error.
         self.active_scratch.clear();
         self.voice_errors_scratch.clear();
-        for (index, voice) in self.voices.iter_mut().enumerate() {
-            let mut length = frames;
-            let mut error = None;
-            if voice.released {
-                for offset in 1..frames {
-                    match voice.graph.finished(graph, start + offset as u64, rate) {
-                        Ok(true) => {
-                            length = offset;
-                            break;
-                        }
-                        Ok(false) => {}
-                        Err(failure) => {
-                            length = offset;
-                            error = Some((offset, failure));
-                            break;
-                        }
-                    }
-                }
+        // Splitting a block costs a few tens of microseconds, so only the
+        // instruments whose last block took longer than that are split.
+        // Every sixteenth block is rendered whole to time it again.
+        self.fills = self.fills.wrapping_add(1);
+        let measuring = self.fills % 16 == 0;
+        let groups = if !measuring && self.last_fill_nanos > SPLIT_VOICES_ABOVE_NANOS {
+            self.threads.min(self.voices.len())
+        } else {
+            1
+        };
+        let timer = std::time::Instant::now();
+        if groups > 1 {
+            self.render_voices_in_groups(start, frames, groups);
+        } else {
+            for (index, voice) in self.voices.iter_mut().enumerate() {
+                let (length, error) = render_voice(
+                    voice,
+                    &program,
+                    &self.controls,
+                    self.controls_generation,
+                    start,
+                    frames,
+                    rate,
+                    &mut self.expressions,
+                    &mut self.scratch,
+                    &mut self.voice_frames[index * stride..(index + 1) * stride],
+                );
+                self.active_scratch.push(length);
+                self.voice_errors_scratch.push(error);
             }
-            self.active_scratch.push(length);
-            let mut rendered = length;
-            for (offset, expression) in self.expressions[..length].iter_mut().enumerate() {
-                match voice.expression_inputs(start + offset as u64, rate) {
-                    Ok((pitch_hz, timbre, pressure)) => {
-                        *expression = [pitch_hz, timbre, pressure];
-                    }
-                    Err(failure) => {
-                        rendered = offset;
-                        error = Some((offset, failure));
-                        break;
-                    }
-                }
-            }
-            let (graph_frames, graph_error) = voice.graph.render_block(
-                graph,
-                &self.controls,
-                self.controls_generation,
-                start,
-                rendered,
-                rate,
-                &self.expressions[..rendered],
-                None,
-                &mut self.scratch,
-                stride,
-            );
-            if let Some(failure) = graph_error {
-                error = Some((graph_frames, failure));
-            }
-            let output = graph.output * stride;
-            self.voice_frames[index * stride..index * stride + graph_frames]
-                .copy_from_slice(&self.scratch[output..output + graph_frames]);
-            self.voice_errors_scratch.push(error);
         }
 
+        if groups == 1 {
+            self.last_fill_nanos = timer.elapsed().as_nanos() as u64;
+        }
         // Combine the voices frame by frame, in voice order.
         let voice_channels = graph.channels;
         self.sums_scratch.resize(frames, [0.0; 2]);
@@ -1230,6 +1310,88 @@ fn glided_velocity(velocity: f64, glide: Option<(f64, u64)>, frame: u64) -> f64 
         }
         _ => velocity,
     }
+}
+
+/// Render one voice's block: the frames before its retirement, and its
+/// first error. Fills `output` with the voice's frames and returns how many
+/// frames it is active for.
+#[allow(clippy::too_many_arguments)]
+fn render_voice(
+    voice: &mut VoiceState,
+    program: &CompiledInstrument,
+    controls: &[f64],
+    controls_generation: u64,
+    start: u64,
+    frames: usize,
+    rate: f64,
+    expressions: &mut Vec<[f64; 3]>,
+    scratch: &mut Vec<[f64; 2]>,
+    output_frames: &mut [[f64; 2]],
+) -> (usize, Option<(usize, RenderError)>) {
+    let graph = &program.voice;
+    let stride = BLOCK_FRAMES;
+    if expressions.len() < stride {
+        expressions.resize(stride, [0.0, 0.0, 0.0]);
+    }
+    let scratch_len = stride
+        * program.voice.nodes.len().max(
+            program
+                .shared
+                .as_ref()
+                .map_or(0, |shared| shared.nodes.len()),
+        );
+    if scratch.len() < scratch_len {
+        scratch.resize(scratch_len, [0.0; 2]);
+    }
+    let mut length = frames;
+    let mut error = None;
+    if voice.released {
+        for offset in 1..frames {
+            match voice.graph.finished(graph, start + offset as u64, rate) {
+                Ok(true) => {
+                    length = offset;
+                    break;
+                }
+                Ok(false) => {}
+                Err(failure) => {
+                    length = offset;
+                    error = Some((offset, failure));
+                    break;
+                }
+            }
+        }
+    }
+    let mut rendered = length;
+    for (offset, expression) in expressions[..length].iter_mut().enumerate() {
+        match voice.expression_inputs(start + offset as u64, rate) {
+            Ok((pitch_hz, timbre, pressure)) => {
+                *expression = [pitch_hz, timbre, pressure];
+            }
+            Err(failure) => {
+                rendered = offset;
+                error = Some((offset, failure));
+                break;
+            }
+        }
+    }
+    let (graph_frames, graph_error) = voice.graph.render_block(
+        graph,
+        controls,
+        controls_generation,
+        start,
+        rendered,
+        rate,
+        &expressions[..rendered],
+        None,
+        scratch,
+        stride,
+    );
+    if let Some(failure) = graph_error {
+        error = Some((graph_frames, failure));
+    }
+    let output = graph.output * stride;
+    output_frames[..graph_frames].copy_from_slice(&scratch[output..output + graph_frames]);
+    (length, error)
 }
 
 impl VoiceState {

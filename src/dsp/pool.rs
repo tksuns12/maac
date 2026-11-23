@@ -1,27 +1,21 @@
-//! Worker threads that render blocks of independent instruments side by side.
+//! Worker threads that render pieces of an instrument side by side.
 //!
 //! An instrument that nothing modulates renders from its own state and its own
-//! events alone, so the blocks that several of them need at the same frame can
-//! be rendered at once without changing a sample: each runtime is moved to
-//! whichever thread takes its job and moved back, and the engine reads the
-//! results in its own order. Nothing is shared while a block renders.
+//! events alone, and the voices of one instrument render from their own state
+//! within a block. So the blocks several instruments need at the same frame, or
+//! the voices of one block, can be rendered at once without changing a sample:
+//! what a piece needs is moved to whichever thread takes its task and moved
+//! back, and the caller reads the results in its own order. Nothing is shared
+//! while a piece renders.
 
 use std::collections::VecDeque;
-use std::sync::mpsc::{channel, Sender};
+use std::sync::mpsc::channel;
 use std::sync::{Condvar, Mutex, OnceLock};
 
-use crate::voice::InstrumentRuntime;
-
-struct Job {
-    index: usize,
-    runtime: InstrumentRuntime,
-    frame: u64,
-    horizon: u64,
-    reply: Sender<(usize, InstrumentRuntime, bool)>,
-}
+type Task = Box<dyn FnOnce() + Send + 'static>;
 
 struct Pool {
-    jobs: Mutex<VecDeque<Job>>,
+    tasks: Mutex<VecDeque<Task>>,
     wake: Condvar,
 }
 
@@ -38,25 +32,25 @@ pub(crate) fn default_workers() -> usize {
 fn pool() -> &'static Pool {
     POOL.get_or_init(|| {
         let pool: &'static Pool = Box::leak(Box::new(Pool {
-            jobs: Mutex::new(VecDeque::new()),
+            tasks: Mutex::new(VecDeque::new()),
             wake: Condvar::new(),
         }));
         for number in 0..default_workers() {
             let spawned = std::thread::Builder::new()
                 .name(format!("maac-render-{number}"))
                 .spawn(move || loop {
-                    let job = {
-                        let mut jobs = pool.jobs.lock().unwrap_or_else(|e| e.into_inner());
+                    let task = {
+                        let mut tasks = pool.tasks.lock().unwrap_or_else(|e| e.into_inner());
                         loop {
-                            if let Some(job) = jobs.pop_front() {
-                                break job;
+                            if let Some(task) = tasks.pop_front() {
+                                break task;
                             }
-                            jobs = pool.wake.wait(jobs).unwrap_or_else(|e| e.into_inner());
+                            tasks = pool.wake.wait(tasks).unwrap_or_else(|e| e.into_inner());
                         }
                     };
-                    run(job);
+                    task();
                 });
-            // Without a thread the caller renders everything itself.
+            // Without a thread the caller does everything itself.
             if spawned.is_err() {
                 break;
             }
@@ -65,57 +59,52 @@ fn pool() -> &'static Pool {
     })
 }
 
-fn run(mut job: Job) {
-    let done = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        job.runtime.prefill(job.frame, job.horizon);
-    }))
-    .is_ok();
-    // The caller may have gone: then there is nobody to tell.
-    let _ = job.reply.send((job.index, job.runtime, done));
-}
-
-/// Render the block each runtime needs at `frame`, up to its horizon, on the
-/// pool's threads and this one. Returns the runtimes by the index they came
-/// with, or the indices of those whose rendering panicked.
-pub(crate) fn prefill_all(
-    work: Vec<(usize, InstrumentRuntime, u64)>,
-    frame: u64,
-) -> Vec<(usize, InstrumentRuntime, bool)> {
+/// Run every job, on the pool's threads and this one, and return what each
+/// returned, in the order given. A job that panicked gives `None`.
+///
+/// The caller helps with whatever is queued (its own jobs or another's) while
+/// it waits, so a job may itself call this.
+pub(crate) fn map<T: Send + 'static>(
+    jobs: Vec<Box<dyn FnOnce() -> T + Send + 'static>>,
+) -> Vec<Option<T>> {
     let pool = pool();
-    let count = work.len();
+    let count = jobs.len();
     let (reply, results) = channel();
     {
-        let mut jobs = pool.jobs.lock().unwrap_or_else(|e| e.into_inner());
-        for (index, runtime, horizon) in work {
-            jobs.push_back(Job {
-                index,
-                runtime,
-                frame,
-                horizon,
-                reply: reply.clone(),
-            });
+        let mut tasks = pool.tasks.lock().unwrap_or_else(|e| e.into_inner());
+        for (index, job) in jobs.into_iter().enumerate() {
+            let reply = reply.clone();
+            tasks.push_back(Box::new(move || {
+                let value =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(job)).ok();
+                // The caller may have gone: then there is nobody to tell.
+                let _ = reply.send((index, value));
+            }));
         }
     }
     drop(reply);
-    pool.wake.notify_all();
-    // Help with whatever is queued, this batch's or another's, rather than wait.
+    // One wake per job, and none for the job this thread starts with: waking
+    // every worker for a few jobs costs more than the jobs.
+    for _ in 1..count.min(default_workers() + 1) {
+        pool.wake.notify_one();
+    }
     loop {
-        let job = pool
-            .jobs
+        let task = pool
+            .tasks
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .pop_front();
-        match job {
-            Some(job) => run(job),
+        match task {
+            Some(task) => task(),
             None => break,
         }
     }
-    let mut done = Vec::with_capacity(count);
-    while done.len() < count {
+    let mut out: Vec<Option<T>> = (0..count).map(|_| None).collect();
+    for _ in 0..count {
         match results.recv() {
-            Ok(result) => done.push(result),
+            Ok((index, value)) => out[index] = value,
             Err(_) => break,
         }
     }
-    done
+    out
 }

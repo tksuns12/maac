@@ -288,6 +288,7 @@ mod background;
 mod checkpoint;
 mod playback;
 mod pool;
+pub(crate) use pool::map as pool_map;
 mod session;
 pub use background::{BackgroundSession, SessionStatus};
 pub use checkpoint::{CheckpointSet, Resumed, Reuse};
@@ -1272,6 +1273,15 @@ impl<'a> DspEngine<'a> {
             ))
         });
 
+        let threads = self.threads;
+        for node in &mut self.nodes {
+            if let Some(runtime) = &mut node.instrument {
+                runtime.set_threads(threads);
+            }
+            if let Some(runtime) = &mut node.kit_instrument {
+                runtime.set_threads(threads);
+            }
+        }
         for frame_index in span.start..span.end {
             if frame_index > span.start && self.checkpoint_rule.due(frame_index) {
                 self.take_checkpoint(frame_index)?;
@@ -2083,25 +2093,30 @@ impl<'a> DspEngine<'a> {
         if work.len() < 2 {
             return Ok(());
         }
-        let count = work.len();
-        let work = work
+        self.parallel_batches += 1;
+        let mut taken = Vec::with_capacity(work.len());
+        let jobs: Vec<Box<dyn FnOnce() -> InstrumentRuntime + Send>> = work
             .into_iter()
             .map(|(node_index, horizon)| {
-                let runtime = self.nodes[node_index]
+                let mut runtime = self.nodes[node_index]
                     .instrument
                     .take()
                     .expect("checked above");
-                (node_index, runtime, horizon)
+                taken.push(node_index);
+                Box::new(move || {
+                    runtime.prefill(frame, horizon);
+                    runtime
+                }) as Box<dyn FnOnce() -> InstrumentRuntime + Send>
             })
             .collect();
-        self.parallel_batches += 1;
-        let done = pool::prefill_all(work, frame);
-        let mut panicked = done.len() < count;
-        for (node_index, runtime, ok) in done {
-            self.nodes[node_index].instrument = Some(runtime);
-            panicked |= !ok;
+        let mut failed = false;
+        for (node_index, runtime) in taken.into_iter().zip(pool::map(jobs)) {
+            match runtime {
+                Some(runtime) => self.nodes[node_index].instrument = Some(runtime),
+                None => failed = true,
+            }
         }
-        if panicked {
+        if failed {
             return Err(RenderError::RenderState(
                 "a render thread failed while rendering an instrument block".into(),
             ));
