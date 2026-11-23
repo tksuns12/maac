@@ -8,16 +8,65 @@
 //! back, and the caller reads the results in its own order. Nothing is shared
 //! while a piece renders.
 
+use std::cell::Cell;
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::channel;
 use std::sync::{Condvar, Mutex, OnceLock};
 
-type Task = Box<dyn FnOnce() + Send + 'static>;
+type Run = Box<dyn FnOnce() + Send + 'static>;
+
+/// A piece of work, tagged with the call that queued it so that the caller
+/// helps with its own pieces only, and with how urgent it is.
+struct Task {
+    call: u64,
+    low: bool,
+    run: Run,
+}
+
+/// Pieces for the sound being played come before pieces for work that only
+/// has to be done some time (the background worker, a catch-up).
+#[derive(Default)]
+struct Queues {
+    urgent: VecDeque<Task>,
+    background: VecDeque<Task>,
+}
+
+impl Queues {
+    fn pop(&mut self) -> Option<Task> {
+        self.urgent
+            .pop_front()
+            .or_else(|| self.background.pop_front())
+    }
+
+    /// The first queued piece of one call, urgent ones first.
+    fn pop_of(&mut self, call: u64) -> Option<Task> {
+        for queue in [&mut self.urgent, &mut self.background] {
+            if let Some(at) = queue.iter().position(|task| task.call == call) {
+                return queue.remove(at);
+            }
+        }
+        None
+    }
+}
 
 struct Pool {
-    tasks: Mutex<VecDeque<Task>>,
+    tasks: Mutex<Queues>,
     wake: Condvar,
 }
+
+thread_local! {
+    static LOW_PRIORITY: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Mark this thread's work as background work: the pieces it hands to the pool
+/// wait behind those of threads that are not marked. Call it at the start of a
+/// thread that renders only for the background worker or a catch-up.
+pub(crate) fn set_low_priority() {
+    LOW_PRIORITY.with(|low| low.set(true));
+}
+
+static NEXT_CALL: AtomicU64 = AtomicU64::new(0);
 
 static POOL: OnceLock<&'static Pool> = OnceLock::new();
 
@@ -35,7 +84,7 @@ pub(crate) fn default_workers() -> usize {
 fn pool() -> &'static Pool {
     POOL.get_or_init(|| {
         let pool: &'static Pool = Box::leak(Box::new(Pool {
-            tasks: Mutex::new(VecDeque::new()),
+            tasks: Mutex::new(Queues::default()),
             wake: Condvar::new(),
         }));
         for number in 0..default_workers() {
@@ -45,13 +94,16 @@ fn pool() -> &'static Pool {
                     let task = {
                         let mut tasks = pool.tasks.lock().unwrap_or_else(|e| e.into_inner());
                         loop {
-                            if let Some(task) = tasks.pop_front() {
+                            if let Some(task) = tasks.pop() {
                                 break task;
                             }
                             tasks = pool.wake.wait(tasks).unwrap_or_else(|e| e.into_inner());
                         }
                     };
-                    task();
+                    // A piece keeps the urgency of the thread that queued it, also
+                    // for what it queues in turn.
+                    LOW_PRIORITY.with(|low| low.set(task.low));
+                    (task.run)();
                 });
             // Without a thread the caller does everything itself.
             if spawned.is_err() {
@@ -65,23 +117,31 @@ fn pool() -> &'static Pool {
 /// Run every job, on the pool's threads and this one, and return what each
 /// returned, in the order given. A job that panicked gives `None`.
 ///
-/// The caller helps with whatever is queued (its own jobs or another's) while
-/// it waits, so a job may itself call this.
+/// The caller helps with its own queued jobs while it waits, so a job may
+/// itself call this, and the caller is never held by another caller's work.
 pub(crate) fn map<T: Send + 'static>(
     jobs: Vec<Box<dyn FnOnce() -> T + Send + 'static>>,
 ) -> Vec<Option<T>> {
     let pool = pool();
     let count = jobs.len();
     let (reply, results) = channel();
+    let call = NEXT_CALL.fetch_add(1, Ordering::Relaxed);
+    let low = LOW_PRIORITY.with(Cell::get);
     {
         let mut tasks = pool.tasks.lock().unwrap_or_else(|e| e.into_inner());
         for (index, job) in jobs.into_iter().enumerate() {
             let reply = reply.clone();
-            tasks.push_back(Box::new(move || {
+            let run: Run = Box::new(move || {
                 let value = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job)).ok();
                 // The caller may have gone: then there is nobody to tell.
                 let _ = reply.send((index, value));
-            }));
+            });
+            let queue = if low {
+                &mut tasks.background
+            } else {
+                &mut tasks.urgent
+            };
+            queue.push_back(Task { call, low, run });
         }
     }
     drop(reply);
@@ -90,8 +150,8 @@ pub(crate) fn map<T: Send + 'static>(
     for _ in 1..count.min(default_workers() + 1) {
         pool.wake.notify_one();
     }
-    // Help with whatever is queued while some result is missing, and stop
-    // when the last one is in: the caller is not held for other callers' work.
+    // Help with this call's own pieces while some result is missing, and stop
+    // when the last one is in.
     let mut out: Vec<Option<T>> = (0..count).map(|_| None).collect();
     let mut received = 0;
     while received < count {
@@ -106,9 +166,9 @@ pub(crate) fn map<T: Send + 'static>(
             .tasks
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .pop_front();
+            .pop_of(call);
         match task {
-            Some(task) => task(),
+            Some(task) => (task.run)(),
             // Nothing queued: what is missing is running on other threads.
             None => match results.recv() {
                 Ok((index, value)) => {
@@ -171,6 +231,48 @@ mod tests {
             .map(|n| Some((0..8u32).map(|m| n * 10 + m).sum()))
             .collect();
         assert_eq!(map(jobs), want);
+    }
+
+    #[test]
+    fn a_caller_runs_only_its_own_pieces() {
+        // Another call's pieces sit in the queue while this call waits.
+        let other = NEXT_CALL.fetch_add(1, Ordering::Relaxed);
+        let ran_here = std::sync::Arc::new(Mutex::new(Vec::new()));
+        {
+            let mut tasks = pool().tasks.lock().unwrap();
+            let ran = std::sync::Arc::clone(&ran_here);
+            let me = std::thread::current().id();
+            tasks.urgent.push_front(Task {
+                call: other,
+                low: false,
+                run: Box::new(move || ran.lock().unwrap().push(std::thread::current().id() == me)),
+            });
+        }
+        let jobs: Vec<Job<u8>> = vec![Box::new(|| 1), Box::new(|| 2)];
+        assert_eq!(map(jobs), vec![Some(1), Some(2)]);
+        // Take the other call's piece back out if no worker has run it yet:
+        // either way it did not run on this thread.
+        let _ = pool().tasks.lock().unwrap().pop_of(other);
+        assert!(!ran_here.lock().unwrap().contains(&true));
+    }
+
+    #[test]
+    fn urgent_pieces_come_out_before_background_ones() {
+        let mut queues = Queues::default();
+        for (call, low) in [(1, true), (2, false), (3, true), (4, false)] {
+            let task = Task {
+                call,
+                low,
+                run: Box::new(|| {}),
+            };
+            if low {
+                queues.background.push_back(task);
+            } else {
+                queues.urgent.push_back(task);
+            }
+        }
+        let order: Vec<u64> = std::iter::from_fn(|| queues.pop().map(|t| t.call)).collect();
+        assert_eq!(order, vec![2, 4, 1, 3]);
     }
 
     #[test]

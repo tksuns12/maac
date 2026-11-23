@@ -1059,7 +1059,11 @@ fn catch_up(
         Hold,
     }
     let (done, joined) = std::thread::scope(|scope| {
-        let handle = scope.spawn(|| chase(candidate, at, &target, &reached, &hold, &abort));
+        let handle = scope.spawn(|| {
+            // The ring is fed by the thread below: the catch-up waits behind it.
+            super::pool::set_low_priority();
+            chase(candidate, at, &target, &reached, &hold, &abort)
+        });
         // Whatever happens below, even a panic, the chase is told to stop
         // unless it is being waited for.
         let mut guard = AbortGuard {
