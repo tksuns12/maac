@@ -203,6 +203,10 @@ pub struct DspEngine<'a> {
     /// Where an approximate (preview) render began: a chunk that continues it
     /// keeps skipping what a render from that frame never started.
     preview_origin: Option<u64>,
+    /// How many threads render instrument blocks (1 renders on the caller's).
+    threads: usize,
+    /// How many batches of blocks went to several threads.
+    parallel_batches: u64,
     /// While a render hands its checkpoints on as they are taken, instead of
     /// keeping them in `checkpoints`.
     checkpoint_sink: Option<CheckpointSink>,
@@ -267,9 +271,23 @@ const RESUME_SPENT: u64 = u64::MAX;
 /// of a few frames would spend the render copying.
 const MIN_CHECKPOINT_SPACING: u64 = 32;
 
+/// Instrument blocks end on multiples of this many frames.
+const BLOCK_GRID: u64 = 128;
+
+/// How many threads an engine renders on unless told otherwise: one, or the
+/// number in `MAAC_RENDER_THREADS`.
+fn default_threads() -> usize {
+    std::env::var("MAAC_RENDER_THREADS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .filter(|&threads| threads >= 1)
+        .unwrap_or(1)
+}
+
 mod background;
 mod checkpoint;
 mod playback;
+mod pool;
 mod session;
 pub use background::{BackgroundSession, SessionStatus};
 pub use checkpoint::{CheckpointSet, Resumed, Reuse};
@@ -755,6 +773,8 @@ impl<'a> DspEngine<'a> {
             checkpoints: Vec::new(),
             resume_frame: None,
             preview_origin: None,
+            threads: default_threads(),
+            parallel_batches: 0,
             checkpoint_sink: None,
         })
     }
@@ -768,6 +788,20 @@ impl<'a> DspEngine<'a> {
         self.render_ports_inner(&[output], &[], false, None, None, |outputs, _| {
             callback(&outputs[0])
         })
+    }
+
+    /// How many times blocks of several instruments were rendered side by
+    /// side (always 0 on one thread).
+    pub fn parallel_batches(&self) -> u64 {
+        self.parallel_batches
+    }
+
+    /// Render instrument blocks on `threads` threads (1 renders on the
+    /// caller's alone). Every sample is the same whatever the number: the
+    /// instruments that start their blocks together render them side by side
+    /// and the engine reads them in its own order.
+    pub fn set_render_threads(&mut self, threads: usize) {
+        self.threads = threads.max(1);
     }
 
     /// Render the plan's output over `span` only, like [`Self::render`]: a
@@ -1280,6 +1314,9 @@ impl<'a> DspEngine<'a> {
                 }
             }
 
+            if self.threads > 1 {
+                self.prefill_instruments(frame_index)?;
+            }
             for order_index in 0..self.topo_order.len() {
                 let node_index = self.topo_order[order_index];
                 if let Some(replacement) = &mut replacement {
@@ -1986,6 +2023,92 @@ impl<'a> DspEngine<'a> {
         Ok(())
     }
 
+    /// The frame an instrument at `node_index` may render ahead to from
+    /// `frame`: the first where something that reaches it may change.
+    ///
+    /// An instrument whose parameters cannot change renders ahead until its
+    /// next event. A node with no modulation or control also renders ahead
+    /// while its automations hold still, to the first frame where one may
+    /// change. Blocks also end on multiples of [`BLOCK_GRID`], so that
+    /// instruments that start together need their next blocks together and
+    /// those can be rendered side by side.
+    fn block_horizon(&self, node_index: usize, frame: u64) -> u64 {
+        if self.incoming_modulations[node_index].is_empty()
+            && self.nodes[node_index].control.is_none()
+        {
+            let frames = &self.event_frames[node_index];
+            let mut horizon = frames
+                .get(frames.partition_point(|&event| event <= frame))
+                .copied()
+                .unwrap_or(self.plan.output.total_frames)
+                .min(self.plan.output.total_frames);
+            for lane in self.nodes[node_index].automations.values() {
+                if horizon <= frame + 1 {
+                    break;
+                }
+                horizon = horizon.min(lane.lane.stable_until(frame, self.tempo.score_end_frame));
+            }
+            if let Some(next) = self.checkpoint_rule.next_after(frame) {
+                horizon = horizon.min(next);
+            }
+            horizon = horizon.min((frame / BLOCK_GRID + 1) * BLOCK_GRID);
+            horizon.max(frame + 1)
+        } else {
+            frame + 1
+        }
+    }
+
+    /// Render, on several threads, the blocks that instruments need at
+    /// `frame`, so that each node's own step finds its block done. Only
+    /// instruments that nothing modulates are rendered this way; they read
+    /// nothing but their own state, which an event at `frame` has already
+    /// reached.
+    fn prefill_instruments(&mut self, frame: u64) -> Result<()> {
+        let mut work = Vec::new();
+        for &node_index in &self.topo_order {
+            let node = &self.nodes[node_index];
+            let Some(runtime) = &node.instrument else {
+                continue;
+            };
+            if node.effect.is_some()
+                || node.matrix.is_some()
+                || !self.incoming_modulations[node_index].is_empty()
+                || node.control.is_some()
+                || !runtime.needs_refill(frame)
+            {
+                continue;
+            }
+            work.push((node_index, self.block_horizon(node_index, frame)));
+        }
+        if work.len() < 2 {
+            return Ok(());
+        }
+        let count = work.len();
+        let work = work
+            .into_iter()
+            .map(|(node_index, horizon)| {
+                let runtime = self.nodes[node_index]
+                    .instrument
+                    .take()
+                    .expect("checked above");
+                (node_index, runtime, horizon)
+            })
+            .collect();
+        self.parallel_batches += 1;
+        let done = pool::prefill_all(work, frame);
+        let mut panicked = done.len() < count;
+        for (node_index, runtime, ok) in done {
+            self.nodes[node_index].instrument = Some(runtime);
+            panicked |= !ok;
+        }
+        if panicked {
+            return Err(RenderError::RenderState(
+                "a render thread failed while rendering an instrument block".into(),
+            ));
+        }
+        Ok(())
+    }
+
     fn process_node(&mut self, node_index: usize, frame: u64) -> Result<()> {
         if self.nodes[node_index].effect.is_some() {
             let mut input = [0.0; 2];
@@ -2044,32 +2167,8 @@ impl<'a> DspEngine<'a> {
             return Ok(());
         }
         // Instruments render first: their processor carries strings, and
-        // cloning it every frame allocated. An instrument whose parameters
-        // cannot change renders ahead until its next event.
-        // A node with no modulation or control also renders ahead while its
-        // automations hold still, to the first frame where one may change.
-        let horizon = if self.incoming_modulations[node_index].is_empty()
-            && self.nodes[node_index].control.is_none()
-        {
-            let frames = &self.event_frames[node_index];
-            let mut horizon = frames
-                .get(frames.partition_point(|&event| event <= frame))
-                .copied()
-                .unwrap_or(self.plan.output.total_frames)
-                .min(self.plan.output.total_frames);
-            for lane in self.nodes[node_index].automations.values() {
-                if horizon <= frame + 1 {
-                    break;
-                }
-                horizon = horizon.min(lane.lane.stable_until(frame, self.tempo.score_end_frame));
-            }
-            if let Some(next) = self.checkpoint_rule.next_after(frame) {
-                horizon = horizon.min(next);
-            }
-            horizon.max(frame + 1)
-        } else {
-            frame + 1
-        };
+        // cloning it every frame allocated.
+        let horizon = self.block_horizon(node_index, frame);
         let node = &mut self.nodes[node_index];
         let rendered = match node.processor {
             RuntimeProcessor::Core(Processor::Instrument { .. }) => Some(

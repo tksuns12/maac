@@ -773,24 +773,50 @@ impl InstrumentRuntime {
     /// frame below `horizon`. Every frame equals what frame-by-frame rendering
     /// gives, and an error is reported at the same frame.
     pub(crate) fn render_until(&mut self, frame: u64, horizon: u64) -> Result<&[f64]> {
-        let end = self.buffered_start + self.buffered.len() as u64;
-        if !(self.buffered_start..end).contains(&frame) {
-            if frame == end {
-                if let Some(error) = self.buffered_error.take() {
-                    return Err(error);
-                }
-            }
-            let frames = horizon.saturating_sub(frame).clamp(1, BLOCK_FRAMES as u64) as usize;
-            self.fill(frame, frames);
-            if self.buffered.is_empty() {
-                return Err(self.buffered_error.take().unwrap_or_else(|| {
-                    RenderError::RenderState("instrument block rendered no frame".into())
-                }));
-            }
+        if self.needs_refill(frame) {
+            self.refill(frame, horizon)?;
         }
         self.output = self.buffered[(frame - self.buffered_start) as usize];
         self.next_frame = frame + 1;
         Ok(&self.output[..self.program.channels])
+    }
+
+    /// Whether `frame` is outside the frames rendered ahead, so that
+    /// [`Self::render_until`] would render a block.
+    pub(crate) fn needs_refill(&self, frame: u64) -> bool {
+        let end = self.buffered_start + self.buffered.len() as u64;
+        !(self.buffered_start..end).contains(&frame)
+    }
+
+    /// The block `render_until` renders when `frame` is not buffered.
+    fn refill(&mut self, frame: u64, horizon: u64) -> Result<()> {
+        let end = self.buffered_start + self.buffered.len() as u64;
+        if frame == end {
+            if let Some(error) = self.buffered_error.take() {
+                return Err(error);
+            }
+        }
+        let frames = horizon.saturating_sub(frame).clamp(1, BLOCK_FRAMES as u64) as usize;
+        self.fill(frame, frames);
+        if self.buffered.is_empty() {
+            return Err(self.buffered_error.take().unwrap_or_else(|| {
+                RenderError::RenderState("instrument block rendered no frame".into())
+            }));
+        }
+        Ok(())
+    }
+
+    /// Render the block `render_until(frame, horizon)` is about to render, if
+    /// it has to, so that the call finds it done. An error is kept where
+    /// `render_until` reports it, at the frame it belongs to. This is what
+    /// lets a block be rendered on another thread, ahead of the call, with
+    /// the same result as rendering it in the call.
+    pub(crate) fn prefill(&mut self, frame: u64, horizon: u64) {
+        if self.needs_refill(frame) {
+            if let Err(error) = self.refill(frame, horizon) {
+                self.buffered_error = Some(error);
+            }
+        }
     }
 
     /// Render `frames` frames from `start` into the buffer. Each voice graph
