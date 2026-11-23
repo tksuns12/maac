@@ -32,7 +32,7 @@ use num_traits::{Signed, ToPrimitive, Zero};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 /// Result type used by the streaming renderer and its callback.
 pub type Result<T> = std::result::Result<T, RenderError>;
@@ -289,6 +289,19 @@ fn default_threads() -> usize {
                 .map_or(1, std::num::NonZeroUsize::get)
                 .min(4)
         })
+}
+
+/// How much work, besides the costliest instrument's, a batch of blocks needs
+/// before it is rendered on several threads: 100 000 ns, or the number in
+/// `MAAC_PARALLEL_MIN_NANOS` (the tests set 0 to parallelise every batch).
+fn parallel_batch_min_nanos() -> u64 {
+    static MIN: OnceLock<u64> = OnceLock::new();
+    *MIN.get_or_init(|| {
+        std::env::var("MAAC_PARALLEL_MIN_NANOS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(100_000)
+    })
 }
 
 mod background;
@@ -2121,6 +2134,25 @@ impl<'a> DspEngine<'a> {
             work.push((node_index, self.block_horizon(node_index, frame)));
         }
         if work.len() < 2 {
+            return Ok(());
+        }
+        // Handing blocks to other threads costs tens of microseconds of
+        // waking and waiting. It pays only when the blocks besides the
+        // costliest take longer than that, by the times the instruments last
+        // took; with none known yet the nodes render them one by one, which
+        // also tells their cost.
+        let mut hints: Vec<u64> = work
+            .iter()
+            .map(|&(node_index, _)| {
+                self.nodes[node_index]
+                    .instrument
+                    .as_ref()
+                    .map_or(0, InstrumentRuntime::cost_hint)
+            })
+            .collect();
+        hints.sort_unstable();
+        hints.pop();
+        if hints.iter().sum::<u64>() < parallel_batch_min_nanos() {
             return Ok(());
         }
         self.parallel_batches += 1;

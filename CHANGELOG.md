@@ -77,7 +77,10 @@ promise of compatibility beyond the documented interfaces.
   `DspEngine::set_render_threads` or `MAAC_RENDER_THREADS` set the number, and 1
   renders on the calling thread alone. After an edit behind the playhead the
   exact sound returns far sooner on a four-core run (Homeward: 7 s instead of
-  44-96 s).
+  96 s; Afterlight: 15.5 s instead of 17.7 s). A batch of blocks goes to other
+  threads only when the work besides the costliest instrument's is worth the
+  hand-over (`MAAC_PARALLEL_MIN_NANOS`, 100 000 ns); the sound being played
+  gets the pool's threads before the background worker and a catch-up.
 - `export::FrameRange` has a new public field `preroll_frames`; construct it
   with `FrameRange::new`. A render result with a preroll adds `approximate` and
   `render_start_frame`.

@@ -656,6 +656,14 @@ How it works:
   with its work as soon as the last is in, so a job may use the pool itself and
   a caller is not held for other callers' jobs. A job that panics gives an
   error, not a hang, and its instrument or voices go back where they came from.
+- **Priority and own jobs only.** The pool has an urgent and a background
+  queue: pieces queued by the playback thread come first, those queued by the
+  background worker and the catch-up wait. A caller helps with its own pieces
+  only, so it is never held by a long piece of another engine.
+- **Only when it pays.** Handing a batch to other threads costs tens of
+  microseconds. A batch is parallel only when the last known fill times of its
+  instruments, less the costliest, add up to 100 us (`MAAC_PARALLEL_MIN_NANOS`;
+  the tests set 0). Unknown times render serially, which measures them.
 - **Default.** An engine renders on `min(cores, 4)` threads;
   `MAAC_RENDER_THREADS` or `set_render_threads` change it.
 
@@ -672,6 +680,13 @@ playback run (an earlier build) at about 180 and gave 11.75 s. The full
 render's output has the same SHA as before on 1 and 4 threads. Before the
 review fixes the full render took 31.8 s: sharing a batch out in at most
 `threads` jobs and not splitting voices inside it cost about 7%.
+
+Afterlight (quiet machine, load 3-5), exact sound after an edit 5 s behind
+the playhead. Without the work gate parallel rendering made it worse: 1 thread
+17.7 s and 0 underruns; 2, 3 and 4 threads 24-25 s with 363, 401 and 474
+underruns (a priority queue alone changed nothing: 705). With the gate, 4
+threads: 15.5 s, 0 underruns, worker 40.0 s (1 thread 47.8 s). Homeward with
+the gate: 7.27 s, 0 underruns, worker 33.1 s.
 
 The voice split does not earn its place on this song: with it on the full
 render took 33.7 s and 34.2 s, with it off (`MAAC_VOICE_SPLIT_NANOS` very

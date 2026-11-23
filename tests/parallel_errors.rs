@@ -49,6 +49,8 @@ place play_c { pattern = &phrase; track = &notes_c; at = 0q; }
 
 /// Frames delivered, the error and its text, from a render on `threads`.
 fn run(project: &FrameProject, threads: usize) -> (Vec<u64>, Option<String>, u64) {
+    // Every batch goes to the threads, however little work it has.
+    std::env::set_var("MAAC_PARALLEL_MIN_NANOS", "0");
     let artifact = project.artifact();
     let mut engine = DspEngine::new_artifact(&artifact).unwrap();
     engine.set_render_threads(threads);

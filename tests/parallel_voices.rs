@@ -32,6 +32,7 @@ fn render_counting(plan: &PlanArtifact, threads: usize) -> (Vec<u64>, u64) {
 #[test]
 fn split_voices_render_the_same_samples() {
     std::env::set_var("MAAC_VOICE_SPLIT_NANOS", "0");
+    std::env::set_var("MAAC_PARALLEL_MIN_NANOS", "0");
     for seed in 1..=4 {
         let plan = compile(&base_song(seed)).unwrap();
         let serial = render(&plan, 1);
@@ -50,6 +51,7 @@ fn split_voices_render_the_same_samples() {
 #[test]
 fn split_voices_survive_a_seek_and_pieces() {
     std::env::set_var("MAAC_VOICE_SPLIT_NANOS", "0");
+    std::env::set_var("MAAC_PARALLEL_MIN_NANOS", "0");
     let plan = compile(&base_song(3)).unwrap();
     let total = plan.output().total_frames;
     let mut outputs = Vec::new();

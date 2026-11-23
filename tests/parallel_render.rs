@@ -17,6 +17,8 @@ fn limits() -> PlanLimits {
 }
 
 fn render(plan: &PlanArtifact, threads: usize) -> (Vec<u64>, u64) {
+    // Every batch goes to the threads, however little work it has.
+    std::env::set_var("MAAC_PARALLEL_MIN_NANOS", "0");
     let mut engine = DspEngine::new_artifact_with_limits(plan, &limits()).unwrap();
     engine.set_render_threads(threads);
     let mut out = Vec::new();
@@ -141,6 +143,8 @@ fn example(name: &str) -> PlanArtifact {
 
 /// The first `seconds` of `plan`, as bits, and the engine's batch statistics.
 fn excerpt(plan: &PlanArtifact, threads: usize, seconds: u64) -> (Vec<u64>, usize, u64) {
+    // Every batch goes to the threads, however little work it has.
+    std::env::set_var("MAAC_PARALLEL_MIN_NANOS", "0");
     let mut engine = DspEngine::new_artifact_with_limits(plan, &limits()).unwrap();
     engine.set_render_threads(threads);
     let end = (u64::from(plan.output().sample_rate_hz) * seconds).min(plan.output().total_frames);
