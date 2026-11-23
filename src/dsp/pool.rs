@@ -257,6 +257,32 @@ mod tests {
     }
 
     #[test]
+    fn pieces_run_with_the_priority_of_the_thread_that_queued_them() {
+        let flags = |jobs: usize| -> Vec<bool> {
+            let work: Vec<Job<bool>> = (0..jobs)
+                .map(|_| {
+                    Box::new(|| {
+                        std::thread::sleep(std::time::Duration::from_micros(200));
+                        LOW_PRIORITY.with(Cell::get)
+                    }) as Job<bool>
+                })
+                .collect();
+            map(work).into_iter().map(|flag| flag.unwrap()).collect()
+        };
+        // A fresh thread: marked low, every piece (also those a worker runs)
+        // is low; unmarked, none is.
+        let low = std::thread::spawn(move || {
+            set_low_priority();
+            flags(12)
+        })
+        .join()
+        .unwrap();
+        assert!(low.iter().all(|&flag| flag), "{low:?}");
+        let urgent = std::thread::spawn(move || flags(12)).join().unwrap();
+        assert!(urgent.iter().all(|&flag| !flag), "{urgent:?}");
+    }
+
+    #[test]
     fn urgent_pieces_come_out_before_background_ones() {
         let mut queues = Queues::default();
         for (call, low) in [(1, true), (2, false), (3, true), (4, false)] {

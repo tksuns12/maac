@@ -49,6 +49,9 @@ fn a_render_is_the_same_on_any_number_of_threads() {
 
 #[test]
 fn a_preview_and_pieces_are_the_same_on_any_number_of_threads() {
+    // Every batch goes to the threads, however little work it has; the gate is
+    // read once per process, so this must come before any engine renders.
+    std::env::set_var("MAAC_PARALLEL_MIN_NANOS", "0");
     let plan = compile(&base_song(2)).unwrap();
     let total = plan.output().total_frames;
     let start = total / 3;

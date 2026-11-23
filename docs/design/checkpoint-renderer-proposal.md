@@ -723,3 +723,14 @@ engine usable only to report the error (every caller drops the engine after an
 error; no test makes a render panic). The block grid of 128 frames moves block
 ends on one thread too; 70 plans (seeds and examples) were compared with main
 and none differed.
+
+Limits of the work gate (found in review, speed only, never a sample): the
+cost hint times the per-voice phase of the last whole block, not the voice
+mixing or an instrument's shared graph, and is not scaled by block length
+(blocks are 1-128 frames); an instrument whose voices have all ended keeps its
+last hint for up to 15 blocks; and when the gate closes, an instrument over
+60 us still splits its voices, one hand-off each. The gate at its default is
+not covered by a test (the parallel tests force it open); it is measured on
+Homeward and Afterlight above. The catch-up thread stays in the background
+queue also while playback waits for it, sharing it first come first served
+with the worker's pieces.
