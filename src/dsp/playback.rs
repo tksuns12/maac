@@ -139,8 +139,18 @@ pub struct PlaybackStatus {
     pub last_error: Option<String>,
 }
 
-/// How many spent buffers the ring keeps: more than the lead holds chunks.
-const SPENT_BUFFERS: usize = 64;
+/// How many spent buffers the ring keeps: twice the chunks the lead holds, and
+/// some more. The ring holds about `lead / chunk` chunks and each finished one
+/// goes to `spent`, so this is out of reach unless the chunks are short (the
+/// last one of a song, say) or the producer is not taking buffers back for a
+/// long time; only then does `read` free one.
+fn spent_buffers(lead_frames: u64, chunk_frames: u64) -> usize {
+    usize::try_from(lead_frames / chunk_frames.max(1))
+        .unwrap_or(usize::MAX / 4)
+        .saturating_mul(2)
+        .saturating_add(16)
+        .min(1 << 16)
+}
 
 struct Chunk {
     samples: Vec<f64>,
@@ -204,7 +214,7 @@ impl Playback {
         let play = Arc::new(Play {
             ring: Mutex::new(Ring {
                 chunks: VecDeque::new(),
-                spent: Vec::with_capacity(SPENT_BUFFERS),
+                spent: Vec::with_capacity(spent_buffers(config.lead_frames, config.chunk_frames)),
                 read_frame: start,
                 buffered: 0,
                 epoch: 0,
@@ -226,6 +236,10 @@ impl Playback {
             channels: usize::from(output.channels),
             rate: output.sample_rate_hz,
         });
+        // The standard library sets a lock up on its first use (an allocation on
+        // some systems): do it here, not in the first `read`.
+        drop(locked(&play.ring));
+        play.room.notify_all();
         let first = Setup::new(synced, start);
         let mut ctx = Ctx {
             shared: Arc::clone(shared),

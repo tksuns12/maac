@@ -42,8 +42,10 @@ unsafe impl GlobalAlloc for Counting {
 #[global_allocator]
 static ALLOCATOR: Counting = Counting;
 
-#[test]
-fn reading_neither_frees_nor_allocates() {
+/// Read a whole song in reads of 256 frames, counting what `read` frees and
+/// allocates on this thread, and seek once on the way (the seek itself is not
+/// counted: it is the controlling thread's).
+fn count_reads(lead_frames: u64, chunk_frames: u64) -> (u64, u64, usize) {
     let limits = PlanLimits::song();
     let plan = compile(&base_song(7)).unwrap();
     let bg = BackgroundSession::new_with(&plan, &limits, SessionPolicy::new(4_801), false).unwrap();
@@ -51,8 +53,8 @@ fn reading_neither_frees_nor_allocates() {
         .play(
             0,
             PlaybackConfig {
-                lead_frames: 8_192,
-                chunk_frames: 512,
+                lead_frames,
+                chunk_frames,
                 pause_prerender: false,
                 preview_preroll_frames: 0,
                 approximate_start: false,
@@ -60,23 +62,29 @@ fn reading_neither_frees_nor_allocates() {
         )
         .unwrap();
     let channels = play.channels();
+    let total = plan.output().total_frames;
     let mut buffer = vec![0.0; 256 * channels];
     let started = Instant::now();
-    // The first reads may set up locks inside the standard library; what
-    // counts is the steady state.
-    let mut warm = 0;
-    while warm < 4 {
+    let (mut frees, mut allocs, mut frames, mut seeked, mut lagged) = (0, 0, 0usize, false, false);
+    loop {
         assert!(started.elapsed() < Duration::from_secs(120), "stalled");
-        if play.read(&mut buffer) > 0 {
-            warm += 1;
-        } else {
-            std::thread::sleep(Duration::from_millis(1));
+        if frames >= 20_000 && !seeked {
+            seeked = true;
+            play.seek(total - lead_frames * 3 / 4);
         }
-    }
-    let (mut frees, mut allocs, mut frames) = (0, 0, 0usize);
-    // Many chunks go by, so that many buffers are finished.
-    while frames < 40_000 {
-        assert!(started.elapsed() < Duration::from_secs(120), "stalled");
+        // Once, let the producer run to the end of the song before reading on,
+        // so that the reader then finishes a whole lead of chunks while the
+        // producer has nothing left to produce.
+        if seeked && !lagged {
+            let status = play.status();
+            if status.position + status.buffered_frames >= total {
+                lagged = true;
+            } else {
+                assert!(started.elapsed() < Duration::from_secs(120), "stalled");
+                std::thread::sleep(Duration::from_millis(1));
+                continue;
+            }
+        }
         COUNTING.with(|on| on.set(true));
         let (f0, a0) = (FREES.with(Cell::get), ALLOCS.with(Cell::get));
         let got = play.read(&mut buffer);
@@ -86,10 +94,29 @@ fn reading_neither_frees_nor_allocates() {
         allocs += a1 - a0;
         frames += got;
         if got == 0 {
-            assert!(play.status().last_error.is_none());
+            let status = play.status();
+            assert!(status.last_error.is_none(), "{status:?}");
+            if status.ended {
+                return (frees, allocs, frames);
+            }
             std::thread::sleep(Duration::from_millis(1));
         }
     }
+}
+
+#[test]
+fn reading_neither_frees_nor_allocates() {
+    let (frees, allocs, frames) = count_reads(8_192, 512);
+    assert!(frames > 6_000, "the song was not read to its end");
+    assert_eq!(frees, 0, "read freed memory");
+    assert_eq!(allocs, 0, "read allocated memory");
+}
+
+/// More chunks of lead than any fixed number of kept buffers would cover.
+#[test]
+fn reading_a_long_lead_of_short_chunks_neither_frees_nor_allocates() {
+    let (frees, allocs, frames) = count_reads(65_536, 256);
+    assert!(frames > 6_000, "the song was not read to its end");
     assert_eq!(frees, 0, "read freed memory");
     assert_eq!(allocs, 0, "read allocated memory");
 }
