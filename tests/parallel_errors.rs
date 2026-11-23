@@ -10,9 +10,9 @@ use maac::dsp::DspEngine;
 mod frames;
 use frames::FrameProject;
 
-/// Two sweeps that push a filter cutoff below zero about 70 ms into a note
-/// (frame 3360), and a healthy tone.
-fn project(frames_per_note: u64) -> FrameProject {
+/// Two sweeps that push a filter cutoff below zero a fixed time into a note
+/// that starts at frame `onset`, and a healthy tone.
+fn project(onset: u64) -> FrameProject {
     let declarations = r#"
 instrument swept { channels = 1;
   voice v { channels = 1; amplitude = &amp; output = &tone:out;
@@ -42,15 +42,9 @@ track notes_c { target = &c:events; }
 place play_b { pattern = &phrase; track = &notes_b; at = 0q; }
 place play_c { pattern = &phrase; track = &notes_c; at = 0q; }
 "#;
-    let mut project = FrameProject::new(frames_per_note * 2, 0, "a", declarations);
+    let mut project = FrameProject::new(24_000, 0, "a", declarations);
     project.output = "mix".to_owned();
-    project.note("n1", 0, frames_per_note, "440Hz", "").note(
-        "n2",
-        frames_per_note,
-        frames_per_note * 2 - 1,
-        "330Hz",
-        "",
-    )
+    project.note("n1", onset, 23_999, "440Hz", "")
 }
 
 /// Frames delivered, the error and its text, from a render on `threads`.
@@ -72,10 +66,13 @@ fn run(project: &FrameProject, threads: usize) -> (Vec<u64>, Option<String>, u64
 
 #[test]
 fn an_error_comes_at_the_same_frame_on_any_number_of_threads() {
-    // Notes of different lengths put the failure on and off block boundaries.
-    for frames_per_note in [24_000, 24_960, 25_088, 26_000] {
-        let project = project(frames_per_note);
+    // Notes starting at different frames put the failure just before, on and
+    // just after the 128-frame block boundaries.
+    for onset in [0, 1, 2, 31, 63, 64, 65, 100, 126, 127, 128, 129, 191, 1_000] {
+        let frames_per_note = onset;
+        let project = project(onset);
         let (serial, error, batches) = run(&project, 1);
+
         assert_eq!(batches, 0);
         let error = error.unwrap_or_else(|| panic!("{frames_per_note}: the sweep did not fail"));
         assert!(
