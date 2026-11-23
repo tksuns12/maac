@@ -672,7 +672,7 @@ Measured (release build, Homeward; the final build, on a quiet machine, load 6-8
 | | 1 thread | 4 threads |
 |---|---|---|
 | full render | 69.6 s, 73.0 s | 34.0 s, 34.0 s |
-| exact sound after an edit 5 s behind the playhead | 96.4 s (3529 underruns) | 7.43 s (0 underruns) |
+| exact sound after an edit 5 s behind the playhead | 96.4 s (3529 underruns; load 7.6, an earlier build) | 7.43 s (0 underruns) |
 | 31 checkpoints by the worker | 70.8 s | 34.0 s |
 
 The 1-thread playback run was made at a load average of 7.6, the first 4-thread
@@ -680,6 +680,14 @@ playback run (an earlier build) at about 180 and gave 11.75 s. The full
 render's output has the same SHA as before on 1 and 4 threads. Before the
 review fixes the full render took 31.8 s: sharing a batch out in at most
 `threads` jobs and not splitting voices inside it cost about 7%.
+
+Repeat on the final build (load 6-8, so times wander): Homeward 1 thread 19.3 s
+and 0 underruns (the 96.4 s above was a single run on an earlier build and is not
+a baseline to quote), 4 threads 7.3 s; the full render's SHA is 98701218 on 1
+and 4 threads at the default gate (69.2 s, 39.7 s). Afterlight with the gate,
+exact sound after the edit and underruns after it: 4 threads 15.5, 20.3, 15.8 s
+(0, 0, 0), 3 threads 17.4 s (0), 2 threads 18.1 s (0), 1 thread 17.7 s (0).
+Parallel rendering gains little on Afterlight; the gate keeps it from costing.
 
 Afterlight (quiet machine, load 3-5), exact sound after an edit 5 s behind
 the playhead. Without the work gate parallel rendering made it worse: 1 thread

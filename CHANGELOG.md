@@ -76,8 +76,9 @@ promise of compatibility beyond the documented interfaces.
   engine uses up to four threads (the machine's cores, at most four);
   `DspEngine::set_render_threads` or `MAAC_RENDER_THREADS` set the number, and 1
   renders on the calling thread alone. After an edit behind the playhead the
-  exact sound returns far sooner on a four-core run (Homeward: 7 s instead of
-  96 s; Afterlight: 15.5 s instead of 17.7 s). A batch of blocks goes to other
+  exact sound returns sooner on a four-core run (Homeward: about 7 s instead
+  of 19 s on one thread; Afterlight: 16-20 s against 18 s, little gained but
+  nothing lost, no underruns). A batch of blocks goes to other
   threads only when the work besides the costliest instrument's is worth the
   hand-over (`MAAC_PARALLEL_MIN_NANOS`, 100 000 ns); the sound being played
   gets the pool's threads before the background worker and a catch-up.
