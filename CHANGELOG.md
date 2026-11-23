@@ -76,8 +76,8 @@ promise of compatibility beyond the documented interfaces.
   engine uses up to four threads (the machine's cores, at most four);
   `DspEngine::set_render_threads` or `MAAC_RENDER_THREADS` set the number, and 1
   renders on the calling thread alone. After an edit behind the playhead the
-  exact sound returns about three times sooner on a four-core run
-  (Homeward: 12 s instead of 44-96 s).
+  exact sound returns far sooner on a four-core run (Homeward: 7 s instead of
+  44-96 s).
 - `export::FrameRange` has a new public field `preroll_frames`; construct it
   with `FrameRange::new`. A render result with a preroll adds `approximate` and
   `render_start_frame`.

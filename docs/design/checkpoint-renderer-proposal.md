@@ -659,24 +659,33 @@ How it works:
 - **Default.** An engine renders on `min(cores, 4)` threads;
   `MAAC_RENDER_THREADS` or `set_render_threads` change it.
 
-Measured (release build, Homeward, 4 threads):
+Measured (release build, Homeward; the final build, on a quiet machine, load 6-8):
 
 | | 1 thread | 4 threads |
 |---|---|---|
-| full render | 69.6 s, 73.0 s | 31.8 s |
-| instruments only | | 35.6 s |
-| exact after a 5 s-behind edit | 96.4 s (3529 underruns) | 11.75 s (0 underruns) |
-| 31 checkpoints by the worker | 70.8 s | 46.7 s |
+| full render | 69.6 s, 73.0 s | 34.0 s, 34.0 s |
+| exact sound after an edit 5 s behind the playhead | 96.4 s (3529 underruns) | 7.43 s (0 underruns) |
+| 31 checkpoints by the worker | 70.8 s | 34.0 s |
 
-The 4-thread playback run was made at a load average of about 180 and the
-1-thread run at 7.6, so the ratio is not exact. The full render's output has the
-same SHA as before on 1 and 4 threads. The voice split adds about 10% over the
-instrument split, within the noise of the runs.
+The 1-thread playback run was made at a load average of 7.6, the first 4-thread
+playback run (an earlier build) at about 180 and gave 11.75 s. The full
+render's output has the same SHA as before on 1 and 4 threads. Before the
+review fixes the full render took 31.8 s: sharing a batch out in at most
+`threads` jobs and not splitting voices inside it cost about 7%.
+
+The voice split does not earn its place on this song: with it on the full
+render took 33.7 s and 34.2 s, with it off (`MAAC_VOICE_SPLIT_NANOS` very
+large) 34.1 s and 35.0 s, about 1.5%, within the noise. It only acts when an
+instrument refills alone. It is kept for now; dropping it removes about 300
+lines (`render_voices_in_groups`, the adaptive rule, the scratch buffers).
 
 Tests: `tests/parallel_render.rs` (whole renders, a cold preview in pieces and
 checkpoint + resume on 1, 2, 3, 4 and 8 threads), `tests/parallel_voices.rs`
 (the same with the voice split forced on: `MAAC_VOICE_SPLIT_NANOS=0`, read once
-per process) and the pool's own tests. Mutants caught: instrument results put
+per process), `tests/parallel_errors.rs` (two failing instruments and a healthy
+one refilling together: the same error and the same frames before it on 1, 2, 4
+and 8 threads, with mutants that drop the buffered error caught) and the pool's
+own tests. Mutants caught: instrument results put
 back on the wrong node, a block horizon that ignores the next event, voice
 results copied to the wrong slot, in the wrong order or grouped in the wrong
 order. Equivalent: removing the outer `needs_refill` check (`prefill` checks
