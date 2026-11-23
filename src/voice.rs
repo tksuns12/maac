@@ -21,6 +21,9 @@ use std::sync::Arc;
 const MAX_PARAMETER_SLOTS: usize = crate::processor::BOW.params.len();
 
 /// Immutable executable code shared by every instance of one instrument.
+/// A voice group's two output buffers, kept between blocks.
+type GroupBuffers = (Vec<[f64; 3]>, Vec<[f64; 2]>);
+
 #[derive(Debug)]
 pub struct CompiledInstrument {
     id: String,
@@ -72,7 +75,7 @@ pub struct InstrumentRuntime {
     last_fill_nanos: u64,
     fills: u64,
     /// Scratch buffers of the groups voices render in, kept between blocks.
-    group_buffers: Vec<(Vec<[f64; 3]>, Vec<[f64; 2]>)>,
+    group_buffers: Vec<GroupBuffers>,
 }
 
 /// What a group of voices hands back from a block rendered on another thread.
@@ -953,7 +956,7 @@ impl InstrumentRuntime {
         // instruments whose last block took longer than that are split.
         // Every sixteenth block is rendered whole to time it again.
         self.fills = self.fills.wrapping_add(1);
-        let measuring = self.fills % 16 == 0;
+        let measuring = self.fills.is_multiple_of(16);
         let groups = if !measuring && self.last_fill_nanos > SPLIT_VOICES_ABOVE_NANOS {
             self.threads.min(self.voices.len())
         } else {

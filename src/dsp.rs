@@ -274,14 +274,19 @@ const MIN_CHECKPOINT_SPACING: u64 = 32;
 /// Instrument blocks end on multiples of this many frames.
 const BLOCK_GRID: u64 = 128;
 
-/// How many threads an engine renders on unless told otherwise: one, or the
-/// number in `MAAC_RENDER_THREADS`.
+/// How many threads an engine renders on unless told otherwise: the number in
+/// `MAAC_RENDER_THREADS`, else the machine's cores up to four. The output is
+/// the same whatever the number, so this only trades time for cores.
 fn default_threads() -> usize {
     std::env::var("MAAC_RENDER_THREADS")
         .ok()
         .and_then(|value| value.parse().ok())
         .filter(|&threads| threads >= 1)
-        .unwrap_or(1)
+        .unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map_or(1, std::num::NonZeroUsize::get)
+                .min(4)
+        })
 }
 
 mod background;

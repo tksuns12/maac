@@ -75,8 +75,7 @@ pub(crate) fn map<T: Send + 'static>(
         for (index, job) in jobs.into_iter().enumerate() {
             let reply = reply.clone();
             tasks.push_back(Box::new(move || {
-                let value =
-                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(job)).ok();
+                let value = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job)).ok();
                 // The caller may have gone: then there is nobody to tell.
                 let _ = reply.send((index, value));
             }));
