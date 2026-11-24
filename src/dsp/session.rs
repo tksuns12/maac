@@ -33,6 +33,14 @@ pub struct SessionPolicy {
     /// twice this. The default is 1 GiB; a caller
     /// that knows the machine's memory can set a share of it.
     pub budget_bytes: u64,
+    /// Render threads for foreground [`RenderSession::render`] calls. `None`
+    /// uses the engine default (`MAAC_RENDER_THREADS`, else the machine's cores
+    /// up to four). `Some(0)` is clamped to 1.
+    pub render_threads: Option<usize>,
+    /// Render threads for [`BackgroundSession`](super::BackgroundSession)'s
+    /// background pre-render worker. `None` inherits `render_threads` (and then
+    /// the engine default). `Some(0)` is clamped to 1.
+    pub prerender_threads: Option<usize>,
 }
 
 impl SessionPolicy {
@@ -42,12 +50,28 @@ impl SessionPolicy {
         Self {
             spacing_frames,
             budget_bytes: Self::DEFAULT_BUDGET_BYTES,
+            render_threads: None,
+            prerender_threads: None,
         }
     }
 
     pub fn with_budget_bytes(mut self, budget_bytes: u64) -> Self {
         self.budget_bytes = budget_bytes;
         self
+    }
+
+    pub fn with_render_threads(mut self, threads: usize) -> Self {
+        self.render_threads = Some(threads);
+        self
+    }
+
+    pub fn with_prerender_threads(mut self, threads: usize) -> Self {
+        self.prerender_threads = Some(threads);
+        self
+    }
+
+    pub(super) fn effective_prerender_threads(&self) -> Option<usize> {
+        self.prerender_threads.or(self.render_threads)
     }
 
     /// At least one, so a tiny budget still lets a render resume.
@@ -65,6 +89,7 @@ pub(super) struct PrerenderJob {
     pub total: u64,
     pub spacing: u64,
     pub epoch: u64,
+    pub render_threads: Option<usize>,
 }
 
 /// What one [`RenderSession::render`] did.
@@ -226,6 +251,7 @@ impl RenderSession {
             total,
             spacing,
             epoch: self.epoch,
+            render_threads: self.policy.effective_prerender_threads(),
         })
     }
 
@@ -273,6 +299,9 @@ impl RenderSession {
             )));
         }
         let mut engine = DspEngine::new_artifact_with_limits(plan, &self.set.limits)?;
+        if let Some(threads) = self.policy.render_threads {
+            engine.set_render_threads(threads);
+        }
         let schedule = Schedule::of(&engine);
         let reuse = self.set.reuse_with(&schedule, plan);
         // Checkpoints at or before this frame render the same on both plans.

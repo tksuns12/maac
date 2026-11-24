@@ -54,6 +54,21 @@ promise of compatibility beyond the documented interfaces.
   at once and switches to the exact render when that has caught up, instead of
   waiting in silence. On a 128 s song, 3.5 s past a checkpoint, the first sound came
   after 0.56 s instead of 1.83 s.
+- `SessionPolicy::render_threads`, `SessionPolicy::prerender_threads` (with
+  `with_render_threads` / `with_prerender_threads` builders) and
+  `PlaybackConfig::render_threads`: configure per-session, background-worker and
+  per-playback thread counts in code instead of relying only on
+  `MAAC_RENDER_THREADS` or `DspEngine::set_render_threads`.
+- `PlaybackConfig::loop_range`, `Playback::set_loop` and
+  `PlaybackStatus::loop_range`: seamless exact looping over a `RenderSpan`
+  (`start < end`). The playback caches an exact checkpoint at `loop.start` so
+  subsequent wraps restore in under a millisecond with zero silence, bit-identical
+  to an exact render of `[start, end)`, and `PlaybackStatus::position` wraps
+  accurately across boundaries without allocations or frees on `Playback::read`.
+- `PlaybackConfig::edit_debounce`: coalesce rapid edits (such as slider drags)
+  until edits stay quiet for the given `Duration` (default `Duration::ZERO`)
+  before starting a catch-up or preview, while keeping the ring fed with the
+  current plan; `Playback::seek` bypasses the debounce.
 - Optional `jit` cargo feature (off by default): a Cranelift renderer for
   instrument graphs that produces output bit-identical to the interpreter.
 

@@ -58,6 +58,7 @@ fn count_reads(lead_frames: u64, chunk_frames: u64) -> (u64, u64, usize) {
                 pause_prerender: false,
                 preview_preroll_frames: 0,
                 approximate_start: false,
+                ..PlaybackConfig::default()
             },
         )
         .unwrap();
@@ -119,4 +120,52 @@ fn reading_a_long_lead_of_short_chunks_neither_frees_nor_allocates() {
     assert!(frames > 6_000, "the song was not read to its end");
     assert_eq!(frees, 0, "read freed memory");
     assert_eq!(allocs, 0, "read allocated memory");
+}
+
+/// Seamless looping across multiple passes keeps `read` free of allocations and frees.
+#[test]
+fn reading_across_loop_wraps_neither_frees_nor_allocates() {
+    let limits = PlanLimits::song();
+    let plan = compile(&base_song(7)).unwrap();
+    let bg = BackgroundSession::new_with(&plan, &limits, SessionPolicy::new(4_801), false).unwrap();
+    let span = maac::dsp::RenderSpan {
+        start: 3_000,
+        end: 7_500,
+    };
+    let play = bg
+        .play(
+            span.start,
+            PlaybackConfig {
+                lead_frames: 8_192,
+                chunk_frames: 512,
+                pause_prerender: false,
+                preview_preroll_frames: 0,
+                approximate_start: false,
+                loop_range: Some(span),
+                ..PlaybackConfig::default()
+            },
+        )
+        .unwrap();
+    let channels = play.channels();
+    let mut buffer = vec![0.0; 256 * channels];
+    let started = Instant::now();
+    let (mut frees, mut allocs, mut frames) = (0u64, 0u64, 0usize);
+    while frames < 18_000 {
+        assert!(started.elapsed() < Duration::from_secs(120), "stalled");
+        COUNTING.with(|on| on.set(true));
+        let (f0, a0) = (FREES.with(Cell::get), ALLOCS.with(Cell::get));
+        let got = play.read(&mut buffer);
+        let (f1, a1) = (FREES.with(Cell::get), ALLOCS.with(Cell::get));
+        COUNTING.with(|on| on.set(false));
+        frees += f1 - f0;
+        allocs += a1 - a0;
+        frames += got;
+        if got == 0 {
+            let status = play.status();
+            assert!(status.last_error.is_none(), "{status:?}");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+    assert_eq!(frees, 0, "loop read freed memory");
+    assert_eq!(allocs, 0, "loop read allocated memory");
 }

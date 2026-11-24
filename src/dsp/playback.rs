@@ -83,6 +83,20 @@ pub struct PlaybackConfig {
     /// catches up, instead of waiting for it in silence. Needs
     /// `preview_preroll_frames` above 0.
     pub approximate_start: bool,
+    /// Render threads for this playback's engines. `None` uses the engine
+    /// default (`MAAC_RENDER_THREADS`, else the machine's cores up to four).
+    /// `Some(0)` is clamped to 1.
+    pub render_threads: Option<usize>,
+    /// When `Some(span)`, play `[span.start, span.end)` repeatedly (clamped to
+    /// the plan's length) without stopping at `span.end`. Every pass is
+    /// bit-identical to an exact render of that range. Must be nonempty
+    /// (`start < end`).
+    pub loop_range: Option<RenderSpan>,
+    /// How long edits must stay quiet before this playback adopts the latest
+    /// plan. `Duration::ZERO` (the default) adopts every edit at once. While
+    /// waiting, the current plan keeps filling the ring so playback does not
+    /// underrun; [`Playback::seek`] always adopts the latest plan at once.
+    pub edit_debounce: Duration,
 }
 
 impl Default for PlaybackConfig {
@@ -93,6 +107,9 @@ impl Default for PlaybackConfig {
             pause_prerender: false,
             preview_preroll_frames: 24_000,
             approximate_start: true,
+            render_threads: None,
+            loop_range: None,
+            edit_debounce: Duration::ZERO,
         }
     }
 }
@@ -135,6 +152,8 @@ pub struct PlaybackStatus {
     pub switches: Vec<PlaybackSwitch>,
     /// The frame the last catch-up rendered forward from.
     pub catch_up_from: Option<u64>,
+    /// The active loop range, if any.
+    pub loop_range: Option<RenderSpan>,
     /// Why the producer stopped, if it did.
     pub last_error: Option<String>,
 }
@@ -152,7 +171,33 @@ fn spent_buffers(lead_frames: u64, chunk_frames: u64) -> usize {
         .min(1 << 16)
 }
 
+fn validate_loop(range: Option<RenderSpan>) -> Result<Option<RenderSpan>> {
+    if let Some(span) = range {
+        if span.start >= span.end {
+            return Err(RenderError::RenderState(format!(
+                "loop range {}..{} must be nonempty",
+                span.start, span.end
+            )));
+        }
+    }
+    Ok(range)
+}
+
+fn effective_loop(loop_range: Option<RenderSpan>, total: u64) -> Option<RenderSpan> {
+    let span = loop_range?;
+    if span.start >= total {
+        return None;
+    }
+    let end = span.end.min(total);
+    (span.start < end).then_some(RenderSpan {
+        start: span.start,
+        end,
+    })
+}
+
 struct Chunk {
+    /// The song frame of `samples[0]`.
+    start_frame: u64,
     samples: Vec<f64>,
     /// Samples already read.
     taken: usize,
@@ -170,6 +215,9 @@ struct Ring {
     /// Counts the seeks. A chunk rendered before one is dropped.
     epoch: u64,
     seek_to: Option<u64>,
+    /// Counts `set_loop` calls so the producer picks up loop changes.
+    loop_epoch: u64,
+    loop_range: Option<RenderSpan>,
     /// The producer has put the last frame of the plan in.
     finished: bool,
     underruns: u64,
@@ -178,6 +226,17 @@ struct Ring {
     catch_up_from: Option<u64>,
     switches: Vec<PlaybackSwitch>,
     error: Option<String>,
+}
+
+impl Ring {
+    /// The song frame immediately after the last buffered frame, or
+    /// `read_frame` when the ring is empty.
+    fn tail_frame(&self, channels: usize) -> u64 {
+        match self.chunks.back() {
+            Some(last) => last.start_frame + (last.samples.len() / channels) as u64,
+            None => self.read_frame,
+        }
+    }
 }
 
 struct Play {
@@ -203,6 +262,7 @@ impl Playback {
                     .into(),
             ));
         }
+        let loop_range = validate_loop(config.loop_range)?;
         let synced = sync(shared, start)?;
         let output = synced.plan.output();
         let total = output.total_frames;
@@ -219,6 +279,8 @@ impl Playback {
                 buffered: 0,
                 epoch: 0,
                 seek_to: None,
+                loop_epoch: 0,
+                loop_range,
                 finished: false,
                 underruns: 0,
                 stale: false,
@@ -248,6 +310,11 @@ impl Playback {
             chunk: config.chunk_frames,
             preroll: config.preview_preroll_frames,
             approximate_start: config.approximate_start,
+            render_threads: config.render_threads,
+            edit_debounce: config.edit_debounce,
+            loop_range,
+            loop_epoch: 0,
+            loop_cache: None,
             epoch: 0,
         };
         let pause = config.pause_prerender;
@@ -295,7 +362,7 @@ impl Playback {
         let mut ring = locked(&self.play.ring);
         let mut got = 0usize;
         while got < want {
-            let (done, take) = {
+            let (done, take, next_frame) = {
                 let Some(chunk) = ring.chunks.front_mut() else {
                     break;
                 };
@@ -305,8 +372,10 @@ impl Playback {
                 out[got * channels..(got + take) * channels]
                     .copy_from_slice(&chunk.samples[from..from + take * channels]);
                 chunk.taken += take * channels;
-                (chunk.taken == chunk.samples.len(), take)
+                let next_frame = chunk.start_frame + (chunk.taken / channels) as u64;
+                (chunk.taken == chunk.samples.len(), take, next_frame)
             };
+            ring.read_frame = next_frame;
             if done {
                 if let Some(chunk) = ring.chunks.pop_front() {
                     // Keep the buffer unless there is no room: then it is freed,
@@ -318,7 +387,9 @@ impl Playback {
             }
             got += take;
         }
-        ring.read_frame += got as u64;
+        if let Some(front) = ring.chunks.front() {
+            ring.read_frame = front.start_frame + (front.taken / channels) as u64;
+        }
         ring.buffered -= got as u64;
         if got < want && !ring.finished && ring.error.is_none() {
             ring.underruns += 1;
@@ -347,6 +418,78 @@ impl Playback {
         self.play.room.notify_all();
     }
 
+    /// Set or clear the loop range while playing. A nonempty `RenderSpan`
+    /// repeats `[start, end)` seamlessly (clamped to the plan's length); `None`
+    /// turns looping off. Any already-buffered frames that cross a boundary
+    /// inconsistent with `range` are trimmed so the change takes effect without
+    /// waiting for the full lead to drain.
+    pub fn set_loop(&self, range: Option<RenderSpan>) -> Result<()> {
+        let range = validate_loop(range)?;
+        let channels = self.play.channels;
+        let mut ring = locked(&self.play.ring);
+        if ring.loop_range == range {
+            return Ok(());
+        }
+        ring.loop_range = range;
+        ring.loop_epoch += 1;
+        // Do not wake an already-ended playback.
+        if !(ring.finished && ring.buffered == 0) {
+            let active_end = range
+                .filter(|span| ring.read_frame < span.end)
+                .map(|span| span.end);
+            let mut expected = ring.read_frame;
+            let mut keep = 0usize;
+            let mut trimmed = false;
+            let mut new_buffered = 0u64;
+            while keep < ring.chunks.len() {
+                let chunk = &mut ring.chunks[keep];
+                let chunk_start = chunk.start_frame + (chunk.taken / channels) as u64;
+                let chunk_frames = (chunk.samples.len() - chunk.taken) / channels;
+                let chunk_end = chunk_start + chunk_frames as u64;
+                if chunk_start != expected {
+                    let same_wrap =
+                        range.is_some_and(|span| expected == span.end && chunk_start == span.start);
+                    if !same_wrap {
+                        trimmed = true;
+                        break;
+                    }
+                }
+                if let Some(limit) = active_end {
+                    if chunk_end > limit {
+                        if chunk_start < limit {
+                            let keep_frames = (limit - chunk_start) as usize;
+                            chunk.samples.truncate(chunk.taken + keep_frames * channels);
+                            new_buffered += keep_frames as u64;
+                            keep += 1;
+                        }
+                        trimmed = true;
+                        break;
+                    }
+                }
+                new_buffered += chunk_frames as u64;
+                expected = chunk_end;
+                keep += 1;
+            }
+            while ring.chunks.len() > keep {
+                if let Some(chunk) = ring.chunks.pop_back() {
+                    if ring.spent.len() < ring.spent.capacity() {
+                        ring.spent.push(chunk.samples);
+                    }
+                }
+                trimmed = true;
+            }
+            if trimmed {
+                ring.buffered = new_buffered;
+                ring.finished = false;
+            } else if ring.finished && ring.buffered > 0 && active_end.is_some() {
+                ring.finished = false;
+            }
+        }
+        drop(ring);
+        self.play.room.notify_all();
+        Ok(())
+    }
+
     pub fn status(&self) -> PlaybackStatus {
         let ring = locked(&self.play.ring);
         PlaybackStatus {
@@ -358,6 +501,7 @@ impl Playback {
             approximate: ring.approximate,
             switches: ring.switches.clone(),
             catch_up_from: ring.catch_up_from,
+            loop_range: ring.loop_range,
             last_error: ring.error.clone(),
         }
     }
@@ -382,8 +526,33 @@ struct Ctx {
     chunk: u64,
     preroll: u64,
     approximate_start: bool,
+    render_threads: Option<usize>,
+    edit_debounce: Duration,
+    loop_range: Option<RenderSpan>,
+    /// The `set_loop` count the producer has taken up.
+    loop_epoch: u64,
+    /// Exact checkpoint cached at the active loop's `start` frame:
+    /// `(generation, frame, checkpoint)`.
+    loop_cache: Option<(u64, u64, Checkpoint)>,
     /// The seek count the producer has taken up.
     epoch: u64,
+}
+
+impl Ctx {
+    fn new_engine<'a>(&self, plan: &'a PlanArtifact, limits: &PlanLimits) -> Result<DspEngine<'a>> {
+        let mut engine = DspEngine::new_artifact_with_limits(plan, limits)?;
+        if let Some(threads) = self.render_threads {
+            engine.set_render_threads(threads);
+        }
+        Ok(engine)
+    }
+
+    fn cached_loop_checkpoint(&self, generation: u64, frame: u64) -> Option<Checkpoint> {
+        self.loop_cache
+            .as_ref()
+            .filter(|(gen, at, _)| *gen == generation && *at == frame)
+            .map(|(_, _, checkpoint)| checkpoint.clone())
+    }
 }
 
 /// A plan, and what the producer starts it from.
@@ -427,7 +596,31 @@ enum Wake {
     Room,
     Exit,
     Seek,
+    Loop,
     Edit,
+}
+
+/// Whether a newer plan is ready to be adopted (after `edit_debounce`), and if
+/// not, how long until the debounce window expires.
+fn edit_ready(ctx: &Ctx, generation: u64) -> (bool, Option<Duration>) {
+    if ctx.shared.stored.load(Ordering::Acquire) == generation {
+        return (false, None);
+    }
+    if ctx.edit_debounce.is_zero() {
+        return (true, None);
+    }
+    let updated_at = locked(&ctx.shared.slot).updated_at;
+    match updated_at {
+        Some(at) => {
+            let elapsed = at.elapsed();
+            if elapsed >= ctx.edit_debounce {
+                (true, None)
+            } else {
+                (false, Some(ctx.edit_debounce - elapsed))
+            }
+        }
+        None => (true, None),
+    }
 }
 
 /// The latest plan, taken up into the session, and the checkpoint to start it
@@ -440,7 +633,7 @@ fn sync(shared: &Arc<Shared>, frame: u64) -> Result<Synced> {
     // session: the plan taken below is the one the count names.
     let generation = {
         let mut slot = locked(&shared.slot);
-        if let Some(plan) = slot.take() {
+        if let Some(plan) = slot.plan.take() {
             state.session.update(&plan);
         }
         shared.stored.load(Ordering::Acquire)
@@ -537,11 +730,7 @@ fn run_plan(ctx: &mut Ctx, first: Setup) -> Result<()> {
                 }
             }
         }
-        let nearest = setup.restore.as_ref().map_or(0, Checkpoint::frame);
-        if ctx.approximate_start
-            && ctx.preroll > 0
-            && setup.pos > nearest.saturating_add(START_GATE_PREROLLS.saturating_mul(ctx.preroll))
-        {
+        if will_start_approximately(ctx, setup.pos, &setup.restore) {
             match start_approximately(ctx, &setup)? {
                 Next::Exit => return Ok(()),
                 Next::Again(next) => {
@@ -550,7 +739,7 @@ fn run_plan(ctx: &mut Ctx, first: Setup) -> Result<()> {
                 }
             }
         }
-        let mut engine = DspEngine::new_artifact_with_limits(&setup.plan, &setup.limits)?;
+        let mut engine = ctx.new_engine(&setup.plan, &setup.limits)?;
         let from = match setup.restore.take() {
             Some(checkpoint) => {
                 engine.restore_from(&checkpoint)?;
@@ -568,13 +757,14 @@ fn run_plan(ctx: &mut Ctx, first: Setup) -> Result<()> {
 /// Start far from a checkpoint: nothing is in the ring to play meanwhile, so
 /// the catch-up has no old plan, and the sound starts with the approximate one.
 fn start_approximately(ctx: &mut Ctx, setup: &Setup) -> Result<Next> {
-    let exact = DspEngine::new_artifact_with_limits(&setup.plan, &setup.limits)?;
-    let preview = DspEngine::new_artifact_with_limits(&setup.plan, &setup.limits)?;
+    let exact = ctx.new_engine(&setup.plan, &setup.limits)?;
+    let preview = ctx.new_engine(&setup.plan, &setup.limits)?;
     let mut pos = setup.pos;
+    let total = setup.plan.output().total_frames;
     let target = NewPlan {
         engine: exact,
         preview: Some(preview),
-        total: setup.plan.output().total_frames,
+        total,
         start: setup.restore.clone(),
         generation: setup.generation,
     };
@@ -598,10 +788,95 @@ fn start_approximately(ctx: &mut Ctx, setup: &Setup) -> Result<Next> {
             note_plan(ctx, pos, synced.generation);
             Ok(Next::Again(Box::new(Setup::new(synced, pos))))
         }
+        Caught::LoopWrap {
+            loop_start,
+            loop_checkpoint,
+            progress,
+        } => {
+            if let Some(cp) = loop_checkpoint {
+                ctx.loop_cache = Some((setup.generation, loop_start, cp));
+            }
+            let synced = sync(&ctx.shared, loop_start)?;
+            check_format(ctx, &synced.plan)?;
+            let best_restore = if synced.generation == setup.generation {
+                pick_latest(
+                    pick_latest(
+                        synced.checkpoint,
+                        ctx.cached_loop_checkpoint(setup.generation, loop_start),
+                    ),
+                    progress.filter(|cp| cp.frame() <= loop_start),
+                )
+            } else {
+                synced.checkpoint
+            };
+            if !will_start_approximately(ctx, loop_start, &best_restore) {
+                record_switch(ctx, loop_start, synced.generation, None);
+            }
+            Ok(Next::Again(Box::new(Setup {
+                plan: synced.plan,
+                limits: synced.limits,
+                restore: best_restore,
+                pos: loop_start,
+                generation: synced.generation,
+            })))
+        }
+        Caught::LoopChanged => take_loop_resync(ctx, setup.generation),
         Caught::Finished => Err(RenderError::RenderState(
             "a start without an old plan cannot run into its end".into(),
         )),
     }
+}
+
+fn will_start_approximately(ctx: &Ctx, pos: u64, restore: &Option<Checkpoint>) -> bool {
+    let nearest = restore.as_ref().map_or(0, Checkpoint::frame);
+    ctx.approximate_start
+        && ctx.preroll > 0
+        && pos > nearest.saturating_add(START_GATE_PREROLLS.saturating_mul(ctx.preroll))
+}
+
+fn pick_latest(a: Option<Checkpoint>, b: Option<Checkpoint>) -> Option<Checkpoint> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(if b.frame() > a.frame() { b } else { a }),
+        (a, b) => a.or(b),
+    }
+}
+
+/// Adopt a `set_loop` change and resume from the current tail of the ring (or
+/// wrap straight to `loop.start` if the ring was trimmed at `loop.end`).
+fn take_loop_resync(ctx: &mut Ctx, current_generation: u64) -> Result<Next> {
+    let tail = {
+        let ring = locked(&ctx.play.ring);
+        ctx.loop_epoch = ring.loop_epoch;
+        ctx.loop_range = ring.loop_range;
+        ring.tail_frame(ctx.play.channels)
+    };
+    let synced = sync(&ctx.shared, tail)?;
+    check_format(ctx, &synced.plan)?;
+    let total = synced.plan.output().total_frames;
+    let target_pos = match effective_loop(ctx.loop_range, total) {
+        Some(span) if tail == span.end => span.start,
+        _ => tail,
+    };
+    let synced = if target_pos == tail {
+        synced
+    } else {
+        sync(&ctx.shared, target_pos)?
+    };
+    check_format(ctx, &synced.plan)?;
+    let restore = pick_latest(
+        synced.checkpoint,
+        ctx.cached_loop_checkpoint(synced.generation, target_pos),
+    );
+    if synced.generation != current_generation {
+        record_switch(ctx, target_pos, synced.generation, None);
+    }
+    Ok(Next::Again(Box::new(Setup {
+        plan: synced.plan,
+        limits: synced.limits,
+        restore,
+        pos: target_pos,
+        generation: synced.generation,
+    })))
 }
 
 /// Wait for a seek (or the end of the playback). With `retry` set, a change of
@@ -616,6 +891,24 @@ fn idle_until_seek(ctx: &mut Ctx, mut retry: Option<u64>) -> Next {
                 Ok(None) => continue,
                 Err(error) => locked(&ctx.play.ring).error = Some(format!("{error:?}")),
             },
+            Wake::Loop => {
+                let (woke, tail) = {
+                    let ring = locked(&ctx.play.ring);
+                    ctx.loop_epoch = ring.loop_epoch;
+                    ctx.loop_range = ring.loop_range;
+                    (!ring.finished, ring.tail_frame(ctx.play.channels))
+                };
+                if woke {
+                    let generation = ctx.shared.stored.load(Ordering::Acquire);
+                    match take_loop_resync(ctx, generation) {
+                        Ok(next) => return next,
+                        Err(error) => {
+                            let _ = tail;
+                            locked(&ctx.play.ring).error = Some(format!("{error:?}"));
+                        }
+                    }
+                }
+            }
             Wake::Room | Wake::Edit | Wake::Idle => {
                 // Nothing to render: wait for the reader or a seek.
                 let ring = locked(&ctx.play.ring);
@@ -627,8 +920,9 @@ fn idle_until_seek(ctx: &mut Ctx, mut retry: Option<u64>) -> Next {
             }
         }
         if let Some(seen) = retry {
-            let now = ctx.shared.stored.load(Ordering::Acquire);
-            if now != seen {
+            let (ready, _) = edit_ready(ctx, seen);
+            if ready {
+                let now = ctx.shared.stored.load(Ordering::Acquire);
                 match resync_after_error(ctx) {
                     Ok(setup) => return Next::Again(Box::new(setup)),
                     Err(error) => {
@@ -645,7 +939,7 @@ fn idle_until_seek(ctx: &mut Ctx, mut retry: Option<u64>) -> Next {
 fn resync_after_error(ctx: &Ctx) -> Result<Setup> {
     let pos = {
         let ring = locked(&ctx.play.ring);
-        ring.read_frame + ring.buffered
+        ring.tail_frame(ctx.play.channels)
     };
     let synced = sync(&ctx.shared, pos)?;
     check_format(ctx, &synced.plan)?;
@@ -671,16 +965,26 @@ fn wait_room(ctx: &Ctx, generation: u64, watch_edits: bool, once: bool) -> Wake 
         if ring.epoch != ctx.epoch {
             return Wake::Seek;
         }
-        if watch_edits && ctx.shared.stored.load(Ordering::Acquire) != generation {
-            return Wake::Edit;
+        if ring.loop_epoch != ctx.loop_epoch {
+            return Wake::Loop;
         }
+        let debounce_wait = if watch_edits {
+            let (ready, wait_left) = edit_ready(ctx, generation);
+            if ready {
+                return Wake::Edit;
+            }
+            wait_left
+        } else {
+            None
+        };
         if !ring.finished && ring.buffered < ctx.lead {
             return Wake::Room;
         }
+        let wait = debounce_wait.map_or(POLL, |left| POLL.min(left.max(Duration::from_millis(1))));
         let (next, timeout) = ctx
             .play
             .room
-            .wait_timeout(ring, POLL)
+            .wait_timeout(ring, wait)
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         ring = next;
         if once && timeout.timed_out() {
@@ -720,19 +1024,40 @@ fn take_seek(ctx: &mut Ctx) -> Result<Option<Next>> {
     Ok(Some(Next::Again(Box::new(Setup::new(synced, frame)))))
 }
 
-/// Put a rendered chunk in the ring. False if a seek came in meanwhile and
-/// the chunk was dropped.
-fn push(ctx: &Ctx, samples: Vec<f64>, _end: u64, last: bool) -> bool {
+enum Push {
+    Ok,
+    Seeked,
+    LoopChanged,
+}
+
+/// Put a rendered chunk in the ring.
+fn push(ctx: &Ctx, start_frame: u64, samples: Vec<f64>, last: bool) -> Push {
     let mut ring = locked(&ctx.play.ring);
     if ring.epoch != ctx.epoch {
-        return false;
+        if ring.spent.len() < ring.spent.capacity() {
+            ring.spent.push(samples);
+        }
+        return Push::Seeked;
+    }
+    if ring.loop_epoch != ctx.loop_epoch {
+        if ring.spent.len() < ring.spent.capacity() {
+            ring.spent.push(samples);
+        }
+        return Push::LoopChanged;
+    }
+    if ring.chunks.is_empty() {
+        ring.read_frame = start_frame;
     }
     ring.buffered += (samples.len() / ctx.play.channels) as u64;
-    ring.chunks.push_back(Chunk { samples, taken: 0 });
+    ring.chunks.push_back(Chunk {
+        start_frame,
+        samples,
+        taken: 0,
+    });
     if last {
         ring.finished = true;
     }
-    true
+    Push::Ok
 }
 
 fn record_switch(ctx: &Ctx, frame: u64, generation: u64, approximate_from: Option<u64>) {
@@ -759,19 +1084,24 @@ fn record_switch(ctx: &Ctx, frame: u64, generation: u64, approximate_from: Optio
     ring.approximate = approximate_from.is_some();
 }
 
-/// Render one chunk of `engine` from `pos` into the ring. Returns the new
-/// position, or `None` if a seek came in and the chunk was dropped.
+enum Produce {
+    Pushed(u64),
+    Seeked,
+    LoopChanged,
+}
+
+/// Render one chunk of `engine` from `pos` into the ring.
 ///
-/// `finish` says whether reaching `total` ends the stream.
+/// `finish` says whether reaching `limit` ends the stream.
 fn produce(
     ctx: &Ctx,
     engine: &mut DspEngine<'_>,
     pos: u64,
-    total: u64,
+    limit: u64,
     finish: bool,
     approximate: bool,
-) -> Result<Option<u64>> {
-    let end = (pos + ctx.chunk).min(total);
+) -> Result<Produce> {
+    let end = (pos + ctx.chunk).min(limit);
     let wanted = (end - pos) as usize * ctx.play.channels;
     let recycled = locked(&ctx.play.ring).spent.pop();
     let mut samples = recycled.unwrap_or_default();
@@ -786,7 +1116,11 @@ fn produce(
     } else {
         engine.render_chunk(RenderSpan { start: pos, end }, sink)?;
     }
-    Ok(push(ctx, samples, end, finish && end >= total).then_some(end))
+    Ok(match push(ctx, pos, samples, finish && end >= limit) {
+        Push::Ok => Produce::Pushed(end),
+        Push::Seeked => Produce::Seeked,
+        Push::LoopChanged => Produce::LoopChanged,
+    })
 }
 
 /// Play `engine` (built for `setup.plan`, at frame `from`) from `setup.pos`
@@ -813,7 +1147,7 @@ fn play_engine(
             }
             continue;
         }
-        if ctx.shared.stored.load(Ordering::Acquire) != generation {
+        if edit_ready(ctx, generation).0 {
             // Start again from the newest plan; nothing of this one has been
             // heard, so the plan the sound starts with is corrected.
             let synced = sync(&ctx.shared, pos)?;
@@ -826,6 +1160,14 @@ fn play_engine(
         at = end;
     }
 
+    // If starting right at the active loop's start frame, cache its exact state
+    // so subsequent passes wrap without re-rendering from an earlier checkpoint.
+    if let Some(span) = effective_loop(ctx.loop_range, total) {
+        if pos == span.start && pos > 0 && ctx.cached_loop_checkpoint(generation, pos).is_none() {
+            ctx.loop_cache = Some((generation, pos, engine.chunk_checkpoint()?));
+        }
+    }
+
     let mut history: VecDeque<Checkpoint> = VecDeque::new();
     let mut next_snapshot = (pos / HISTORY_EVERY + 1) * HISTORY_EVERY;
     let own = CheckpointSet {
@@ -835,8 +1177,50 @@ fn play_engine(
         checkpoints: Vec::new(),
     };
     loop {
+        if let Some(span) = effective_loop(ctx.loop_range, total) {
+            if pos == span.end && pos > span.start {
+                // Seamless exact wrap back to `span.start`.
+                if span.start == 0 {
+                    engine.reset();
+                    pos = 0;
+                    next_snapshot = HISTORY_EVERY;
+                    continue;
+                }
+                if let Some(cp) = ctx.cached_loop_checkpoint(generation, span.start) {
+                    engine.restore_from(&cp)?;
+                    pos = span.start;
+                    next_snapshot = (pos / HISTORY_EVERY + 1) * HISTORY_EVERY;
+                    continue;
+                }
+                // No cached checkpoint at `span.start` yet (e.g., started
+                // inside the loop or loop start moved): sync and advance to
+                // `span.start`, which will then cache the checkpoint.
+                let synced = sync(&ctx.shared, span.start)?;
+                check_format(ctx, &synced.plan)?;
+                let own_snap = (synced.generation == generation)
+                    .then(|| {
+                        history
+                            .iter()
+                            .rev()
+                            .find(|c| c.frame() <= span.start)
+                            .cloned()
+                    })
+                    .flatten();
+                let restore = pick_latest(synced.checkpoint, own_snap);
+                if synced.generation != generation {
+                    record_switch(ctx, span.start, synced.generation, None);
+                }
+                return Ok(Next::Again(Box::new(Setup {
+                    plan: synced.plan,
+                    limits: synced.limits,
+                    restore,
+                    pos: span.start,
+                    generation: synced.generation,
+                })));
+            }
+        }
         if pos >= total {
-            // Everything is rendered; wait for the reader, or a seek.
+            // Everything is rendered; wait for the reader, a seek, or a loop.
             return Ok(idle_until_seek(ctx, None));
         }
         match wait_room(ctx, generation, true, false) {
@@ -846,23 +1230,88 @@ fn play_engine(
                     return Ok(next);
                 }
             }
-            Wake::Room | Wake::Idle => match produce(ctx, engine, pos, total, true, false)? {
-                Some(end) => {
-                    pos = end;
-                    if pos >= next_snapshot && pos < total {
-                        history.push_back(engine.chunk_checkpoint()?);
-                        if history.len() > HISTORY_KEPT {
-                            history.pop_front();
+            Wake::Loop => {
+                let tail = {
+                    let ring = locked(&ctx.play.ring);
+                    ctx.loop_epoch = ring.loop_epoch;
+                    ctx.loop_range = ring.loop_range;
+                    ring.tail_frame(ctx.play.channels)
+                };
+                if tail == pos {
+                    if let Some(span) = effective_loop(ctx.loop_range, total) {
+                        if pos == span.start
+                            && pos > 0
+                            && ctx.cached_loop_checkpoint(generation, pos).is_none()
+                        {
+                            ctx.loop_cache = Some((generation, pos, engine.chunk_checkpoint()?));
                         }
-                        next_snapshot = (pos / HISTORY_EVERY + 1) * HISTORY_EVERY;
+                    }
+                    continue;
+                }
+                // Buffered chunks were trimmed: wrap immediately if trimmed to
+                // the new loop's end, otherwise resume at `tail`.
+                if let Some(span) = effective_loop(ctx.loop_range, total) {
+                    if tail == span.end {
+                        pos = span.end;
+                        continue;
                     }
                 }
-                None => continue,
-            },
+                let synced = sync(&ctx.shared, tail)?;
+                check_format(ctx, &synced.plan)?;
+                let own_snap = (synced.generation == generation)
+                    .then(|| history.iter().rev().find(|c| c.frame() <= tail).cloned())
+                    .flatten();
+                let restore = pick_latest(
+                    pick_latest(synced.checkpoint, own_snap),
+                    ctx.cached_loop_checkpoint(synced.generation, tail),
+                );
+                if synced.generation != generation {
+                    record_switch(ctx, tail, synced.generation, None);
+                }
+                return Ok(Next::Again(Box::new(Setup {
+                    plan: synced.plan,
+                    limits: synced.limits,
+                    restore,
+                    pos: tail,
+                    generation: synced.generation,
+                })));
+            }
+            Wake::Room | Wake::Idle => {
+                let (limit, finish) = match effective_loop(ctx.loop_range, total) {
+                    Some(span) if pos < span.start => (span.start, false),
+                    Some(span) if pos < span.end => (span.end, false),
+                    _ => (total, true),
+                };
+                match produce(ctx, engine, pos, limit, finish, false)? {
+                    Produce::Pushed(end) => {
+                        pos = end;
+                        if let Some(span) = effective_loop(ctx.loop_range, total) {
+                            if pos == span.start
+                                && pos > 0
+                                && ctx.cached_loop_checkpoint(generation, pos).is_none()
+                            {
+                                ctx.loop_cache =
+                                    Some((generation, pos, engine.chunk_checkpoint()?));
+                            }
+                        }
+                        if pos >= next_snapshot && pos < total {
+                            history.push_back(engine.chunk_checkpoint()?);
+                            if history.len() > HISTORY_KEPT {
+                                history.pop_front();
+                            }
+                            next_snapshot = (pos / HISTORY_EVERY + 1) * HISTORY_EVERY;
+                        }
+                    }
+                    Produce::Seeked => continue,
+                    Produce::LoopChanged => {
+                        return take_loop_resync(ctx, generation);
+                    }
+                }
+            }
             Wake::Edit => {
                 let synced = sync(&ctx.shared, pos)?;
                 check_format(ctx, &synced.plan)?;
-                let candidate = DspEngine::new_artifact_with_limits(&synced.plan, &synced.limits)?;
+                let candidate = ctx.new_engine(&synced.plan, &synced.limits)?;
                 if synced.plan.output().total_frames <= pos {
                     // The plan is now shorter than the playhead.
                     return Ok(Next::Again(Box::new(Setup {
@@ -874,6 +1323,19 @@ fn play_engine(
                     })));
                 }
                 let reuse = own.reuse_with(&Schedule::of(&candidate), &synced.plan);
+                // Keep the cached loop-start checkpoint warm if the edit leaves
+                // everything up to it unchanged.
+                if let Some((cached_gen, cached_at, _)) = ctx.loop_cache.as_mut() {
+                    if *cached_gen == generation
+                        && match reuse {
+                            Reuse::Unchanged => true,
+                            Reuse::From(frame) => *cached_at <= frame,
+                            Reuse::Full(_) => false,
+                        }
+                    {
+                        *cached_gen = synced.generation;
+                    }
+                }
                 match reuse {
                     Reuse::Unchanged => generation = synced.generation,
                     Reuse::From(frame) if frame >= pos => {
@@ -899,10 +1361,7 @@ fn play_engine(
                         let own_snapshot = bound.and_then(|bound| {
                             history.iter().rev().find(|c| c.frame() <= bound).cloned()
                         });
-                        let start = match (synced.checkpoint.clone(), own_snapshot) {
-                            (Some(a), Some(b)) => Some(if b.frame() > a.frame() { b } else { a }),
-                            (a, b) => a.or(b),
-                        };
+                        let start = pick_latest(synced.checkpoint.clone(), own_snapshot);
                         {
                             let mut ring = locked(&ctx.play.ring);
                             ring.stale = true;
@@ -910,10 +1369,7 @@ fn play_engine(
                         }
                         let new_total = synced.plan.output().total_frames;
                         let preview = if ctx.preroll > 0 {
-                            Some(DspEngine::new_artifact_with_limits(
-                                &synced.plan,
-                                &synced.limits,
-                            )?)
+                            Some(ctx.new_engine(&synced.plan, &synced.limits)?)
                         } else {
                             None
                         };
@@ -951,6 +1407,46 @@ fn play_engine(
                                 note_plan(ctx, pos, synced.generation);
                                 return Ok(Next::Again(Box::new(Setup::new(synced, pos))));
                             }
+                            Caught::LoopWrap {
+                                loop_start,
+                                loop_checkpoint,
+                                progress,
+                            } => {
+                                locked(&ctx.play.ring).stale = false;
+                                if let Some(cp) = loop_checkpoint {
+                                    ctx.loop_cache = Some((synced.generation, loop_start, cp));
+                                }
+                                let latest = sync(&ctx.shared, loop_start)?;
+                                check_format(ctx, &latest.plan)?;
+                                let best_restore = if latest.generation == synced.generation {
+                                    pick_latest(
+                                        pick_latest(
+                                            latest.checkpoint,
+                                            ctx.cached_loop_checkpoint(
+                                                synced.generation,
+                                                loop_start,
+                                            ),
+                                        ),
+                                        progress.filter(|cp| cp.frame() <= loop_start),
+                                    )
+                                } else {
+                                    latest.checkpoint
+                                };
+                                if !will_start_approximately(ctx, loop_start, &best_restore) {
+                                    record_switch(ctx, loop_start, latest.generation, None);
+                                }
+                                return Ok(Next::Again(Box::new(Setup {
+                                    plan: latest.plan,
+                                    limits: latest.limits,
+                                    restore: best_restore,
+                                    pos: loop_start,
+                                    generation: latest.generation,
+                                })));
+                            }
+                            Caught::LoopChanged => {
+                                locked(&ctx.play.ring).stale = false;
+                                return take_loop_resync(ctx, generation);
+                            }
                             Caught::Finished => {
                                 locked(&ctx.play.ring).stale = false;
                                 generation = synced.generation;
@@ -971,6 +1467,15 @@ enum Caught {
     Superseded,
     /// As `Superseded`, after the approximate sound had taken over.
     SupersededLive,
+    /// The loop end was reached while catching up: wrap to `loop_start` on the
+    /// latest plan, keeping any checkpoint the chase already reached.
+    LoopWrap {
+        loop_start: u64,
+        loop_checkpoint: Option<Checkpoint>,
+        progress: Option<Checkpoint>,
+    },
+    /// `set_loop` was called while catching up.
+    LoopChanged,
     /// The old plan reached the end of the song first.
     Finished,
 }
@@ -1001,7 +1506,10 @@ impl Drop for AbortGuard<'_> {
 
 enum Chase {
     Ready(Option<Checkpoint>),
-    Aborted,
+    Aborted {
+        loop_checkpoint: Option<Checkpoint>,
+        progress: Option<Checkpoint>,
+    },
 }
 
 /// On its own thread: render the new plan forward toward `target` (the
@@ -1010,21 +1518,37 @@ enum Chase {
 fn chase(
     mut engine: DspEngine<'_>,
     mut at: u64,
+    loop_start: Option<u64>,
     target: &AtomicU64,
     reached: &AtomicU64,
     hold: &AtomicBool,
     abort: &AtomicBool,
 ) -> Result<Chase> {
+    let mut loop_checkpoint: Option<Checkpoint> = None;
     loop {
         if abort.load(Ordering::Acquire) {
-            return Ok(Chase::Aborted);
+            let progress = (at > 0 && loop_start.is_some_and(|l| at <= l))
+                .then(|| engine.chunk_checkpoint())
+                .transpose()?;
+            return Ok(Chase::Aborted {
+                loop_checkpoint,
+                progress,
+            });
         }
         let to = target.load(Ordering::Acquire);
         if at < to {
-            let end = (at + CATCH_UP_STEP).min(to);
+            let mut end = (at + CATCH_UP_STEP).min(to);
+            if let Some(l) = loop_start {
+                if at < l && end > l {
+                    end = l;
+                }
+            }
             engine.render_chunk(RenderSpan { start: at, end }, |_| Ok(()))?;
             at = end;
             reached.store(at, Ordering::Release);
+            if loop_checkpoint.is_none() && loop_start.is_some_and(|l| l > 0 && at == l) {
+                loop_checkpoint = Some(engine.chunk_checkpoint()?);
+            }
         } else if hold.load(Ordering::Acquire) {
             // The producer sets `hold` after its last move of `target`.
             if target.load(Ordering::Acquire) == at {
@@ -1069,6 +1593,7 @@ fn catch_up(
     let hold = AtomicBool::new(false);
     let abort = AtomicBool::new(false);
     let close = 4 * ctx.chunk;
+    let chase_loop_start = effective_loop(ctx.loop_range, new_total).map(|span| span.start);
     // The approximate sound: the new plan rendered cold from `cold` and kept
     // in step with the playhead, then played in place of the old plan's.
     struct Preview<'a> {
@@ -1089,10 +1614,21 @@ fn catch_up(
 
     enum Done {
         Caught(Caught),
+        LoopWrap(u64),
         Hold,
     }
     let (done, joined) = std::thread::scope(|scope| {
-        let handle = scope.spawn(|| chase(candidate, at, &target, &reached, &hold, &abort));
+        let handle = scope.spawn(|| {
+            chase(
+                candidate,
+                at,
+                chase_loop_start,
+                &target,
+                &reached,
+                &hold,
+                &abort,
+            )
+        });
         // Whatever happens below, even a panic, the chase is told to stop
         // unless it is being waited for.
         let mut guard = AbortGuard {
@@ -1102,6 +1638,23 @@ fn catch_up(
         let done = (|| -> Result<Done> {
             loop {
                 let live = preview.as_ref().is_some_and(|preview| preview.live);
+                let active_new_loop =
+                    effective_loop(ctx.loop_range, new_total).filter(|span| *pos <= span.end);
+                let active_old_loop =
+                    effective_loop(ctx.loop_range, total).filter(|span| *pos <= span.end);
+                if live {
+                    if let Some(span) = active_new_loop {
+                        if *pos >= span.end {
+                            return Ok(Done::LoopWrap(span.start));
+                        }
+                    }
+                } else if old.is_some() {
+                    if let Some(span) = active_old_loop {
+                        if *pos >= span.end {
+                            return Ok(Done::LoopWrap(span.start));
+                        }
+                    }
+                }
                 if *pos >= new_total {
                     // The new plan ends before the playhead: it takes over there.
                     return Ok(Done::Caught(Caught::Swap(None)));
@@ -1124,6 +1677,7 @@ fn catch_up(
                         }
                         continue;
                     }
+                    Wake::Loop => return Ok(Done::Caught(Caught::LoopChanged)),
                     Wake::Edit => {
                         return Ok(Done::Caught(if live {
                             Caught::SupersededLive
@@ -1153,11 +1707,19 @@ fn catch_up(
                     // Taken over: the sound is the new plan's, approximately.
                     Some(preview) if preview.live => {
                         if matches!(wake, Wake::Room) {
-                            if let Some(end) =
-                                produce(ctx, &mut preview.engine, *pos, new_total, true, true)?
-                            {
-                                *pos = end;
-                                target.store(end, Ordering::Release);
+                            let (limit, finish) = match active_new_loop {
+                                Some(span) if *pos < span.end => (span.end, false),
+                                _ => (new_total, true),
+                            };
+                            match produce(ctx, &mut preview.engine, *pos, limit, finish, true)? {
+                                Produce::Pushed(end) => {
+                                    *pos = end;
+                                    target.store(end, Ordering::Release);
+                                }
+                                Produce::Seeked => {}
+                                Produce::LoopChanged => {
+                                    return Ok(Done::Caught(Caught::LoopChanged));
+                                }
                             }
                         }
                     }
@@ -1181,11 +1743,19 @@ fn catch_up(
                     _ => {
                         if let (Some(old), true) = (old.as_deref_mut(), matches!(wake, Wake::Room))
                         {
-                            if let Some(end) =
-                                produce(ctx, old, *pos, total, new_total <= total, false)?
-                            {
-                                *pos = end;
-                                target.store(end, Ordering::Release);
+                            let (limit, finish) = match active_old_loop {
+                                Some(span) if *pos < span.end => (span.end, false),
+                                _ => (total, new_total <= total),
+                            };
+                            match produce(ctx, old, *pos, limit, finish, false)? {
+                                Produce::Pushed(end) => {
+                                    *pos = end;
+                                    target.store(end, Ordering::Release);
+                                }
+                                Produce::Seeked => {}
+                                Produce::LoopChanged => {
+                                    return Ok(Done::Caught(Caught::LoopChanged));
+                                }
                             }
                         }
                     }
@@ -1205,9 +1775,24 @@ fn catch_up(
             chased?;
             Ok(caught)
         }
+        Done::LoopWrap(loop_start) => match chased? {
+            Chase::Aborted {
+                loop_checkpoint,
+                progress,
+            } => Ok(Caught::LoopWrap {
+                loop_start,
+                loop_checkpoint,
+                progress,
+            }),
+            Chase::Ready(_) => Ok(Caught::LoopWrap {
+                loop_start,
+                loop_checkpoint: None,
+                progress: None,
+            }),
+        },
         Done::Hold => match chased? {
             Chase::Ready(state) => Ok(Caught::Swap(state)),
-            Chase::Aborted => Ok(Caught::Superseded),
+            Chase::Aborted { .. } => Ok(Caught::Superseded),
         },
     }
 }

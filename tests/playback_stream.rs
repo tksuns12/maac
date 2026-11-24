@@ -46,6 +46,7 @@ fn config() -> PlaybackConfig {
         pause_prerender: false,
         preview_preroll_frames: 0,
         approximate_start: false,
+        ..PlaybackConfig::default()
     }
 }
 
@@ -131,6 +132,7 @@ fn reads_of_any_size_are_a_fresh_render() {
                     pause_prerender: false,
                     preview_preroll_frames: 0,
                     approximate_start: false,
+                    ..PlaybackConfig::default()
                 },
             )
             .unwrap();
@@ -514,6 +516,7 @@ fn a_bad_start_or_config_is_refused() {
                 pause_prerender: false,
                 preview_preroll_frames: 0,
                 approximate_start: false,
+                ..PlaybackConfig::default()
             }
         )
         .is_err());
@@ -816,6 +819,7 @@ fn a_lead_of_one_chunk_still_switches() {
                 pause_prerender: false,
                 preview_preroll_frames: 0,
                 approximate_start: false,
+                ..PlaybackConfig::default()
             },
         )
         .unwrap();

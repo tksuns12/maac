@@ -383,3 +383,66 @@ must include it or use `..PlanLimits::default()`. Exhaustive `Plan` literals
 need `production: None` when no delivery is defined. These Rust additions do
 not change existing valid serialized plans. See the
 [retained production contract](performance-plan.md#native-production-and-named-deliveries).
+
+### Interactive sessions and playback
+
+Long-lived hosts (such as a companion studio GUI linking `maac` in-process) can
+keep engine checkpoints in memory across edits and stream audio into an output
+callback without opening an audio device inside `maac`. All of these types live
+in `maac::dsp` and are library-only (not exposed by the CLI).
+
+| Entry point | Purpose |
+| --- | --- |
+| `DspEngine::render_with_checkpoints` / `DspEngine::restore_from` / `Checkpoint` | Snapshot mutable engine state at chosen frames and resume bit-identically |
+| `CheckpointSet` / `Reuse` / `Resumed` | Compare an edited `PlanArtifact` against saved checkpoints (`Unchanged`, `From(frame)`, or `Full(reason)`) and resume from the latest valid checkpoint |
+| `RenderSession` / `SessionPolicy` / `RenderReport` | Synchronous long-lived exact render across `update(&plan)` and `render(start, end, cb)`, with checkpoint thinning under a memory budget (`1 GiB` default, counted at `ESTIMATED_CHECKPOINT_BYTES` = 8 MiB each) |
+| `BackgroundSession` / `SessionStatus` | `RenderSession` plus a background pre-render worker (`update` returns immediately; foreground `render` pauses the worker; stale checkpoints are never committed) |
+| `BackgroundSession::play(start, PlaybackConfig)` / `Playback` / `PlaybackStatus` / `PlaybackSwitch` | Streaming producer thread ahead of a non-blocking, allocation-free `Playback::read(&mut [f64])` suited for an audio callback, with live edit catch-up, approximate preview/start, `seek`, and seamless looping |
+
+Key configuration fields:
+
+- `SessionPolicy`: `spacing_frames` (at least 32), `budget_bytes`,
+  `render_threads: Option<usize>` (foreground `RenderSession::render`; `None`
+  uses `MAAC_RENDER_THREADS` or `min(cores, 4)`), and
+  `prerender_threads: Option<usize>` (background worker; `None` inherits
+  `render_threads`). Builders: `SessionPolicy::new(spacing)`,
+  `with_budget_bytes`, `with_render_threads`, `with_prerender_threads`.
+- `PlaybackConfig`: `lead_frames` (default 65 536), `chunk_frames` (default
+  2 048, minimum 64), `pause_prerender`, `preview_preroll_frames` (default
+  24 000; 0 disables approximate preview), `approximate_start` (default true),
+  `render_threads: Option<usize>` (engines owned by this playback),
+  `loop_range: Option<RenderSpan>` (seamless exact loop of `[start, end)`), and
+  `edit_debounce: Duration` (default `Duration::ZERO`; coalesces rapid edits
+  while keeping the ring fed; `seek` bypasses debounce).
+- `Playback::set_loop(Option<RenderSpan>)` turns looping on or off or updates
+  the loop range while playing, trimming any over-buffered frames past the new
+  boundary. Every pass of `[start, end)` is bit-identical to an exact render of
+  that range, and `PlaybackStatus::position` wraps accurately across boundaries.
+
+```rust
+use std::time::Duration;
+use maac::dsp::{BackgroundSession, PlaybackConfig, RenderSpan, SessionPolicy};
+use maac::plan::PlanLimits;
+
+let limits = PlanLimits::song();
+let policy = SessionPolicy::new(48_000 * 4)
+    .with_render_threads(4)
+    .with_prerender_threads(1);
+let session = BackgroundSession::new(&plan, &limits, policy)?;
+let playback = session.play(
+    0,
+    PlaybackConfig {
+        render_threads: Some(4),
+        loop_range: Some(RenderSpan { start: 0, end: 48_000 * 8 }),
+        edit_debounce: Duration::from_millis(80),
+        ..PlaybackConfig::default()
+    },
+)?;
+
+// Inside an audio callback (non-blocking, allocation-free in steady state):
+let mut out = vec![0.0_f64; 512 * playback.channels()];
+let _frames_read = playback.read(&mut out);
+```
+
+See the [checkpoint renderer proposal](design/checkpoint-renderer-proposal.md)
+for measurements, invalidation rules, and limits.

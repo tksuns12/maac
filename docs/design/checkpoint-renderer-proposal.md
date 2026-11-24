@@ -732,3 +732,30 @@ where a closed gate still handed work to other threads) and the urgent and
 background queues of the pool (Afterlight's underruns were cured by the work
 gate alone; the queues changed nothing measurable). The pool still lets a
 caller help with its own pieces only.
+
+## Studio integration API polish (2026-11-24)
+
+Added ahead of companion Studio GUI integration:
+
+- **Thread-count controls on configs:** `SessionPolicy::render_threads`,
+  `SessionPolicy::prerender_threads` (falling back to `render_threads`, then the
+  engine default), and `PlaybackConfig::render_threads`, so a host can give live
+  playback more threads while capping the background checkpoint worker.
+- **Seamless exact looping:** `PlaybackConfig::loop_range: Option<RenderSpan>`
+  and dynamic `Playback::set_loop(Option<RenderSpan>)` (reported in
+  `PlaybackStatus::loop_range`). The producer caches an exact checkpoint at
+  `loop.start` on the first pass (keeping it warm across edits that leave frames
+  up to `loop.start` unchanged) and restores it at `loop.end` without flushing
+  the ring. Each chunk records its `start_frame` so `PlaybackStatus::position`
+  wraps cleanly across boundaries while `Playback::read` stays allocation-free
+  and free-free (`tests/playback_realtime.rs`). During a catch-up, crossing
+  `loop.end` wraps to `loop.start` on the newest plan while preserving any
+  checkpoint the chase reached at or before `loop.start`.
+- **Rapid-edit coalescing:** `PlaybackConfig::edit_debounce: Duration` (default
+  `Duration::ZERO`). `BackgroundSession::update` stamps the latest arrival time
+  under its slot lock; `Playback` waits until edits stay quiet for
+  `edit_debounce` before adopting a new plan (continuing to feed the ring with
+  the current plan meanwhile), while `Playback::seek` bypasses the debounce.
+- **Reference docs:** documented `RenderSession`, `BackgroundSession`, and
+  `Playback` in [reference.md](../reference.md#interactive-sessions-and-playback).
+  Tests: `tests/playback_controls.rs` and `tests/playback_realtime.rs`.

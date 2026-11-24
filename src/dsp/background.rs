@@ -55,12 +55,19 @@ pub(super) struct State {
     pub(super) session: RenderSession,
 }
 
+#[derive(Default)]
+pub(super) struct PlanSlot {
+    pub(super) plan: Option<PlanArtifact>,
+    /// When [`BackgroundSession::update`] last put a plan in the slot.
+    pub(super) updated_at: Option<Instant>,
+}
+
 type Hook = Arc<dyn Fn(u64) + Send + Sync>;
 
 pub(super) struct Shared {
     pub(super) state: Mutex<State>,
-    /// The latest plan not yet handed to the session.
-    pub(super) slot: Mutex<Option<PlanArtifact>>,
+    /// The latest plan not yet handed to the session, and when it arrived.
+    pub(super) slot: Mutex<PlanSlot>,
     /// What the session holds, copied out whenever it changes so that
     /// [`BackgroundSession::status`] never waits for a render.
     checkpoint_count: AtomicUsize,
@@ -115,7 +122,7 @@ impl BackgroundSession {
             state: Mutex::new(State {
                 session: RenderSession::new(plan, limits, policy)?,
             }),
-            slot: Mutex::new(None),
+            slot: Mutex::new(PlanSlot::default()),
             checkpoint_count: AtomicUsize::new(0),
             last_checkpoint: AtomicU64::new(0),
             last_error: Mutex::new(None),
@@ -165,7 +172,8 @@ impl BackgroundSession {
         // is also how a playback reads them (see `playback::sync`).
         {
             let mut slot = locked(&self.shared.slot);
-            *slot = Some(plan.clone());
+            slot.plan = Some(plan.clone());
+            slot.updated_at = Some(Instant::now());
             self.shared.stored.fetch_add(1, Ordering::AcqRel);
         }
         self.wake(false);
@@ -186,7 +194,7 @@ impl BackgroundSession {
         // at its next check instead of finishing its stretch.
         let _foreground = Foreground::new(&self.shared);
         let mut state = locked(&self.shared.state);
-        if let Some(plan) = locked(&self.shared.slot).take() {
+        if let Some(plan) = locked(&self.shared.slot).plan.take() {
             state.session.update(&plan);
         }
         let result = state.session.render(start, end, callback);
@@ -338,7 +346,7 @@ fn pass(shared: &Arc<Shared>) -> bool {
     let generation = shared.generation.load(Ordering::Acquire);
     let job = {
         let mut state = locked(&shared.state);
-        if let Some(plan) = locked(&shared.slot).take() {
+        if let Some(plan) = locked(&shared.slot).plan.take() {
             state.session.update(&plan);
         }
         match state.session.adopt_pending() {
@@ -371,6 +379,9 @@ fn pass(shared: &Arc<Shared>) -> bool {
 
 fn fill(shared: &Arc<Shared>, job: PrerenderJob, stop: &dyn Fn(&Shared) -> bool) -> Result<()> {
     let mut engine = DspEngine::new_artifact_with_limits(&job.plan, &job.limits)?;
+    if let Some(threads) = job.render_threads {
+        engine.set_render_threads(threads);
+    }
     let start = match &job.frontier {
         Some(checkpoint) => {
             engine.restore_from(checkpoint)?;
