@@ -20,20 +20,6 @@ use std::sync::Arc;
 /// this size.
 const MAX_PARAMETER_SLOTS: usize = crate::processor::BOW.params.len();
 
-/// A voice group's two scratch buffers, kept between blocks.
-type GroupBuffers = (Vec<[f64; 3]>, Vec<[f64; 2]>);
-
-/// The scratch buffers of the voice groups. They hold no state, so a clone
-/// (a checkpoint, a restore) starts with none instead of copying them.
-#[derive(Debug, Default)]
-struct GroupScratch(Vec<GroupBuffers>);
-
-impl Clone for GroupScratch {
-    fn clone(&self) -> Self {
-        Self::default()
-    }
-}
-
 /// Immutable executable code shared by every instance of one instrument.
 #[derive(Debug)]
 pub struct CompiledInstrument {
@@ -78,41 +64,9 @@ pub struct InstrumentRuntime {
     active_scratch: Vec<usize>,
     voice_errors_scratch: Vec<Option<(usize, RenderError)>>,
     sums_scratch: Vec<[f64; 2]>,
-    /// How many threads the voices of a block may render on. Set by the engine
-    /// before each render; not part of the instrument's state.
-    threads: usize,
-    /// How long the last block took to render, to decide whether splitting
-    /// the next one pays. Not part of the instrument's state.
+    /// How long the last block took to render, to decide whether handing the
+    /// next one to other threads pays. Not part of the instrument's state.
     last_fill_nanos: u64,
-    fills: u64,
-    /// Scratch buffers of the groups voices render in, kept between blocks.
-    group_buffers: GroupScratch,
-    /// How many blocks were split across threads. Not part of the state.
-    splits: u64,
-}
-
-/// What a group of voices hands back from a block rendered on another thread.
-struct VoiceGroup {
-    voices: Vec<VoiceState>,
-    output: Vec<[f64; 2]>,
-    results: Vec<(usize, Option<(usize, RenderError)>)>,
-    expressions: Vec<[f64; 3]>,
-    scratch: Vec<[f64; 2]>,
-    /// A voice panicked while rendering; the group's voices are still here.
-    panicked: bool,
-}
-
-/// A block that took longer than this (in nanoseconds) is worth splitting:
-/// 60 000, or the number in `MAAC_VOICE_SPLIT_NANOS` (the tests set 0 to split
-/// every block after the first, whatever the machine's speed).
-fn split_voices_above_nanos() -> u64 {
-    static LIMIT: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
-    *LIMIT.get_or_init(|| {
-        std::env::var("MAAC_VOICE_SPLIT_NANOS")
-            .ok()
-            .and_then(|value| value.parse().ok())
-            .unwrap_or(60_000)
-    })
 }
 
 /// The most frames an instrument renders ahead at once.
@@ -473,11 +427,7 @@ impl InstrumentRuntime {
             buffered: Vec::new(),
             buffered_start: 0,
             buffered_error: None,
-            threads: 1,
             last_fill_nanos: 0,
-            fills: 0,
-            group_buffers: GroupScratch::default(),
-            splits: 0,
             next_frame: 0,
             scratch: Vec::new(),
             voice_frames: Vec::new(),
@@ -873,102 +823,11 @@ impl InstrumentRuntime {
         }
     }
 
-    /// How many blocks were split across threads so far.
-    pub(crate) fn splits(&self) -> u64 {
-        self.splits
-    }
-
-    /// How long the last whole block took, in nanoseconds: a guess at what
-    /// the next one costs, for sharing instruments among threads.
+    /// How long the last block took to render, in nanoseconds: a guess at
+    /// what the next one costs, for deciding whether handing instruments to
+    /// other threads pays.
     pub(crate) fn cost_hint(&self) -> u64 {
         self.last_fill_nanos
-    }
-
-    /// Set how many threads the voices of a block may render on.
-    pub(crate) fn set_threads(&mut self, threads: usize) {
-        self.threads = threads.max(1);
-    }
-
-    /// The per-voice phase of [`Self::fill`] with the voices in `groups`
-    /// groups, each rendered by whichever thread takes it. A voice renders from
-    /// its own state alone, so the frames are those of rendering them in order.
-    fn render_voices_in_groups(&mut self, start: u64, frames: usize, groups: usize) {
-        let stride = BLOCK_FRAMES;
-        let rate = self.rate;
-        let total = self.voices.len();
-        let size = total.div_ceil(groups);
-        let mut rest = std::mem::take(&mut self.voices);
-        let mut parts = Vec::new();
-        while !rest.is_empty() {
-            let tail = rest.split_off(size.min(rest.len()));
-            parts.push(std::mem::replace(&mut rest, tail));
-        }
-        let mut firsts = Vec::with_capacity(parts.len());
-        let mut first = 0;
-        let jobs: Vec<Box<dyn FnOnce() -> VoiceGroup + Send>> = parts
-            .into_iter()
-            .map(|mut voices| {
-                firsts.push(first);
-                first += voices.len();
-                let program = Arc::clone(&self.program);
-                let controls = self.controls.clone();
-                let generation = self.controls_generation;
-                let (mut expressions, mut scratch) = self.group_buffers.0.pop().unwrap_or_default();
-                Box::new(move || {
-                    let mut output = vec![[0.0; 2]; voices.len() * stride];
-                    let mut results = Vec::with_capacity(voices.len());
-                    // A panic is caught here so that the voices come back to
-                    // their instrument whatever happens.
-                    let rendered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        for (index, voice) in voices.iter_mut().enumerate() {
-                            results.push(render_voice(
-                                voice,
-                                &program,
-                                &controls,
-                                generation,
-                                start,
-                                frames,
-                                rate,
-                                &mut expressions,
-                                &mut scratch,
-                                &mut output[index * stride..(index + 1) * stride],
-                            ));
-                        }
-                    }));
-                    VoiceGroup {
-                        voices,
-                        output,
-                        results,
-                        expressions,
-                        scratch,
-                        panicked: rendered.is_err(),
-                    }
-                }) as Box<dyn FnOnce() -> VoiceGroup + Send>
-            })
-            .collect();
-        let done = crate::dsp::pool_map(jobs);
-        let mut panicked = false;
-        for (first, group) in firsts.into_iter().zip(done) {
-            // A job lost to a panic outside the voices has nothing to give
-            // back; the catch inside the job makes that unreachable.
-            let Some(group) = group else {
-                panic!("a render thread panicked while rendering voices");
-            };
-            panicked |= group.panicked;
-            let count = group.voices.len();
-            self.voices.extend(group.voices);
-            self.voice_frames[first * stride..(first + count) * stride]
-                .copy_from_slice(&group.output);
-            for (length, error) in group.results {
-                self.active_scratch.push(length);
-                self.voice_errors_scratch.push(error);
-            }
-            self.group_buffers
-                .0
-                .push((group.expressions, group.scratch));
-        }
-        // Every voice is back in place before the panic goes on.
-        assert!(!panicked, "a voice panicked while rendering on a thread");
     }
 
     /// Render `frames` frames from `start` into the buffer. Each voice graph
@@ -1002,42 +861,24 @@ impl InstrumentRuntime {
         // Each voice: frames before its retirement, and its first error.
         self.active_scratch.clear();
         self.voice_errors_scratch.clear();
-        // Splitting a block costs a few tens of microseconds, so only the
-        // instruments whose last block took longer than that are split.
-        // Every sixteenth block is rendered whole to time it again.
-        self.fills = self.fills.wrapping_add(1);
-        let measuring = self.fills.is_multiple_of(16);
-        let groups = if !measuring && self.last_fill_nanos > split_voices_above_nanos() {
-            self.threads.min(self.voices.len())
-        } else {
-            1
-        };
         let timer = std::time::Instant::now();
-        if groups > 1 {
-            self.splits += 1;
-            self.render_voices_in_groups(start, frames, groups);
-        } else {
-            for (index, voice) in self.voices.iter_mut().enumerate() {
-                let (length, error) = render_voice(
-                    voice,
-                    &program,
-                    &self.controls,
-                    self.controls_generation,
-                    start,
-                    frames,
-                    rate,
-                    &mut self.expressions,
-                    &mut self.scratch,
-                    &mut self.voice_frames[index * stride..(index + 1) * stride],
-                );
-                self.active_scratch.push(length);
-                self.voice_errors_scratch.push(error);
-            }
+        for (index, voice) in self.voices.iter_mut().enumerate() {
+            let (length, error) = render_voice(
+                voice,
+                &program,
+                &self.controls,
+                self.controls_generation,
+                start,
+                frames,
+                rate,
+                &mut self.expressions,
+                &mut self.scratch,
+                &mut self.voice_frames[index * stride..(index + 1) * stride],
+            );
+            self.active_scratch.push(length);
+            self.voice_errors_scratch.push(error);
         }
-
-        if groups == 1 {
-            self.last_fill_nanos = timer.elapsed().as_nanos() as u64;
-        }
+        self.last_fill_nanos = timer.elapsed().as_nanos() as u64;
         // Combine the voices frame by frame, in voice order.
         let voice_channels = graph.channels;
         self.sums_scratch.resize(frames, [0.0; 2]);

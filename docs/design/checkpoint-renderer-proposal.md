@@ -644,24 +644,17 @@ How it works:
   the refills of different instruments coincide. The engine then reads the
   blocks in its own order, and an error is kept in the runtime until the frame
   the serial engine would have reported it at.
-- **Voices of a heavy instrument.** The voices of one block are independent, so
-  a block that took over 60 microseconds last time is split into contiguous
-  groups, and the results are put back in voice order before the voices are
-  summed. Every sixteenth block is rendered whole to time it again.
 - **Thread limit.** An engine shares the instruments of a batch out in at most
   `threads` jobs, the costliest first (each to the job with the least so far,
-  by the time its last block took). Inside a batch the voices are not split
-  again, so one engine never has more than `threads` jobs in flight; the voice
-  split is used when an instrument renders alone.
+  by the time its last block took), so one engine never has more than
+  `threads` jobs in flight.
 - **Pool.** Persistent threads (cores - 1, at most 7) with one shared queue. A
   caller runs queued jobs while one of its own results is missing and goes on
   with its work as soon as the last is in, so a job may use the pool itself and
   a caller is not held for other callers' jobs. A job that panics gives an
-  error, not a hang, and its instrument or voices go back where they came from.
-- **Priority and own jobs only.** The pool has an urgent and a background
-  queue: pieces queued by the playback thread come first, those queued by the
-  background worker and the catch-up wait. A caller helps with its own pieces
-  only, so it is never held by a long piece of another engine.
+  error, not a hang, and its instrument goes back where it came from. A caller
+  helps with its own pieces only, so it is never held by a long piece of
+  another engine.
 - **Only when it pays.** Handing a batch to other threads costs tens of
   microseconds. A batch is parallel only when the last known fill times of its
   instruments, less the costliest, add up to 100 us (`MAAC_PARALLEL_MIN_NANOS`;
@@ -698,23 +691,13 @@ underruns (a priority queue alone changed nothing: 705). With the gate, 4
 threads: 15.5 s, 0 underruns, worker 40.0 s (1 thread 47.8 s). Homeward with
 the gate: 7.27 s, 0 underruns, worker 33.1 s.
 
-The voice split does not earn its place on this song: with it on the full
-render took 33.7 s and 34.2 s, with it off (`MAAC_VOICE_SPLIT_NANOS` very
-large) 34.1 s and 35.0 s, about 1.5%, within the noise. It only acts when an
-instrument refills alone. It is kept for now; dropping it removes about 300
-lines (`render_voices_in_groups`, the adaptive rule, the scratch buffers).
-
 Tests: `tests/parallel_render.rs` (whole renders, a cold preview in pieces and
-checkpoint + resume on 1, 2, 3, 4 and 8 threads), `tests/parallel_voices.rs`
-(the same with the voice split forced on: `MAAC_VOICE_SPLIT_NANOS=0`, read once
-per process), `tests/parallel_errors.rs` (two failing instruments and a healthy
+checkpoint + resume on 1, 2, 3, 4 and 8 threads), `tests/parallel_errors.rs` (two failing instruments and a healthy
 one refilling together: the same error and the same frames before it on 1, 2, 4
 and 8 threads, with mutants that drop the buffered error caught) and the pool's
 own tests. Mutants caught: instrument results put
-back on the wrong node, a block horizon that ignores the next event, voice
-results copied to the wrong slot, in the wrong order or grouped in the wrong
-order. Equivalent: removing the outer `needs_refill` check (`prefill` checks
-again); never splitting (that is the serial path).
+back on the wrong node, a block horizon that ignores the next event. Equivalent:
+removing the outer `needs_refill` check (`prefill` checks again).
 
 Review fixes: the thread count limited nothing (a batch went to every pool
 thread and a voice split ran other instruments' blocks on top of its own); a
@@ -728,7 +711,8 @@ more, on 1, 2, 3, 4 and 8 threads.
 Limits: instruments with incoming modulation or a control render a frame at a
 time and stay on the calling thread; kit pieces are not separate tasks; the pool
 is shared by every engine in the process with no priority, so a chase can delay
-the engine feeding the ring when cores are few. A panic in a worker leaves the
+the engine feeding the ring when cores are few (a priority queue was tried and
+removed: it changed no measurement). A panic in a worker leaves the
 engine usable only to report the error (every caller drops the engine after an
 error; no test makes a render panic). The block grid of 128 frames moves block
 ends on one thread too; 70 plans (seeds and examples) were compared with main
@@ -738,9 +722,13 @@ Limits of the work gate (found in review, speed only, never a sample): the
 cost hint times the per-voice phase of the last whole block, not the voice
 mixing or an instrument's shared graph, and is not scaled by block length
 (blocks are 1-128 frames); an instrument whose voices have all ended keeps its
-last hint for up to 15 blocks; and when the gate closes, an instrument over
-60 us still splits its voices, one hand-off each. The gate at its default is
-not covered by a test (the parallel tests force it open); it is measured on
-Homeward and Afterlight above. The catch-up thread stays in the background
-queue also while playback waits for it, sharing it first come first served
-with the worker's pieces.
+last hint for up to 15 blocks. The gate at its default is covered by a
+bit-identity test but not by one that proves it opens; it is measured on
+Homeward and Afterlight above.
+
+Removed after review of the results (2026-11-24, owner's call): the voice split
+(about 1.5% on Homeward, within the noise, about 300 lines, and the one place
+where a closed gate still handed work to other threads) and the urgent and
+background queues of the pool (Afterlight's underruns were cured by the work
+gate alone; the queues changed nothing measurable). The pool still lets a
+caller help with its own pieces only.

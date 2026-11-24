@@ -308,7 +308,6 @@ mod background;
 mod checkpoint;
 mod playback;
 mod pool;
-pub(crate) use pool::map as pool_map;
 mod session;
 pub use background::{BackgroundSession, SessionStatus};
 pub use checkpoint::{CheckpointSet, Resumed, Reuse};
@@ -824,22 +823,6 @@ impl<'a> DspEngine<'a> {
         self.widest_batch
     }
 
-    /// How many instrument blocks had their voices split across threads.
-    pub fn voice_splits(&self) -> u64 {
-        self.nodes
-            .iter()
-            .map(|node| {
-                node.instrument
-                    .as_ref()
-                    .map_or(0, InstrumentRuntime::splits)
-                    + node
-                        .kit_instrument
-                        .as_ref()
-                        .map_or(0, KitInstrumentRuntime::splits)
-            })
-            .sum()
-    }
-
     /// Render instrument blocks on `threads` threads (1 renders on the
     /// caller's alone). Every sample is the same whatever the number: the
     /// instruments that start their blocks together render them side by side
@@ -1316,15 +1299,6 @@ impl<'a> DspEngine<'a> {
             ))
         });
 
-        let threads = self.threads;
-        for node in &mut self.nodes {
-            if let Some(runtime) = &mut node.instrument {
-                runtime.set_threads(threads);
-            }
-            if let Some(runtime) = &mut node.kit_instrument {
-                runtime.set_threads(threads);
-            }
-        }
         for frame_index in span.start..span.end {
             if frame_index > span.start && self.checkpoint_rule.due(frame_index) {
                 self.take_checkpoint(frame_index)?;
@@ -2158,8 +2132,7 @@ impl<'a> DspEngine<'a> {
         self.parallel_batches += 1;
         // Share the instruments out in at most `threads` jobs, the costliest
         // first, each to the job with the least so far. One job is the
-        // caller's own. Inside a job the voices are not split again: the
-        // batch already uses the threads.
+        // caller's own.
         let threads = self.threads;
         type Entry = (usize, u64, InstrumentRuntime);
         let mut runtimes: Vec<Entry> = work
@@ -2193,7 +2166,6 @@ impl<'a> DspEngine<'a> {
                     share
                         .into_iter()
                         .map(|(node_index, horizon, mut runtime)| {
-                            runtime.set_threads(1);
                             // A panic is caught so that the runtime goes
                             // back to its node.
                             let panicked =
@@ -2201,7 +2173,6 @@ impl<'a> DspEngine<'a> {
                                     runtime.prefill(frame, horizon);
                                 }))
                                 .is_err();
-                            runtime.set_threads(threads);
                             (node_index, runtime, panicked)
                         })
                         .collect()

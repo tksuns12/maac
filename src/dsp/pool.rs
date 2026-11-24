@@ -1,14 +1,11 @@
 //! Worker threads that render pieces of an instrument side by side.
 //!
 //! An instrument that nothing modulates renders from its own state and its own
-//! events alone, and the voices of one instrument render from their own state
-//! within a block. So the blocks several instruments need at the same frame, or
-//! the voices of one block, can be rendered at once without changing a sample:
-//! what a piece needs is moved to whichever thread takes its task and moved
-//! back, and the caller reads the results in its own order. Nothing is shared
-//! while a piece renders.
+//! events alone. So the blocks several instruments need at the same frame can
+//! be rendered at once without changing a sample: an instrument is moved to
+//! whichever thread takes its task and moved back, and the caller reads the
+//! results in its own order. Nothing is shared while a piece renders.
 
-use std::cell::Cell;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::channel;
@@ -17,53 +14,26 @@ use std::sync::{Condvar, Mutex, OnceLock};
 type Run = Box<dyn FnOnce() + Send + 'static>;
 
 /// A piece of work, tagged with the call that queued it so that the caller
-/// helps with its own pieces only, and with how urgent it is.
+/// helps with its own pieces only.
 struct Task {
     call: u64,
-    low: bool,
     run: Run,
 }
 
-/// Pieces for the sound being played come before pieces for work that only
-/// has to be done some time (the background worker, a catch-up).
 #[derive(Default)]
-struct Queues {
-    urgent: VecDeque<Task>,
-    background: VecDeque<Task>,
-}
+struct Queue(VecDeque<Task>);
 
-impl Queues {
-    fn pop(&mut self) -> Option<Task> {
-        self.urgent
-            .pop_front()
-            .or_else(|| self.background.pop_front())
-    }
-
-    /// The first queued piece of one call, urgent ones first.
+impl Queue {
+    /// The first queued piece of one call.
     fn pop_of(&mut self, call: u64) -> Option<Task> {
-        for queue in [&mut self.urgent, &mut self.background] {
-            if let Some(at) = queue.iter().position(|task| task.call == call) {
-                return queue.remove(at);
-            }
-        }
-        None
+        let at = self.0.iter().position(|task| task.call == call)?;
+        self.0.remove(at)
     }
 }
 
 struct Pool {
-    tasks: Mutex<Queues>,
+    tasks: Mutex<Queue>,
     wake: Condvar,
-}
-
-thread_local! {
-    static LOW_PRIORITY: Cell<bool> = const { Cell::new(false) };
-}
-
-/// Mark this thread's work as background work: the pieces it hands to the pool
-/// wait behind those of threads that are not marked. Call it at the start of a
-/// thread that renders only for the background worker or a catch-up.
-pub(crate) fn set_low_priority() {
-    LOW_PRIORITY.with(|low| low.set(true));
 }
 
 static NEXT_CALL: AtomicU64 = AtomicU64::new(0);
@@ -84,7 +54,7 @@ pub(crate) fn default_workers() -> usize {
 fn pool() -> &'static Pool {
     POOL.get_or_init(|| {
         let pool: &'static Pool = Box::leak(Box::new(Pool {
-            tasks: Mutex::new(Queues::default()),
+            tasks: Mutex::new(Queue::default()),
             wake: Condvar::new(),
         }));
         for number in 0..default_workers() {
@@ -94,15 +64,12 @@ fn pool() -> &'static Pool {
                     let task = {
                         let mut tasks = pool.tasks.lock().unwrap_or_else(|e| e.into_inner());
                         loop {
-                            if let Some(task) = tasks.pop() {
+                            if let Some(task) = tasks.0.pop_front() {
                                 break task;
                             }
                             tasks = pool.wake.wait(tasks).unwrap_or_else(|e| e.into_inner());
                         }
                     };
-                    // A piece keeps the urgency of the thread that queued it, also
-                    // for what it queues in turn.
-                    LOW_PRIORITY.with(|low| low.set(task.low));
                     (task.run)();
                 });
             // Without a thread the caller does everything itself.
@@ -126,7 +93,6 @@ pub(crate) fn map<T: Send + 'static>(
     let count = jobs.len();
     let (reply, results) = channel();
     let call = NEXT_CALL.fetch_add(1, Ordering::Relaxed);
-    let low = LOW_PRIORITY.with(Cell::get);
     {
         let mut tasks = pool.tasks.lock().unwrap_or_else(|e| e.into_inner());
         for (index, job) in jobs.into_iter().enumerate() {
@@ -136,12 +102,7 @@ pub(crate) fn map<T: Send + 'static>(
                 // The caller may have gone: then there is nobody to tell.
                 let _ = reply.send((index, value));
             });
-            let queue = if low {
-                &mut tasks.background
-            } else {
-                &mut tasks.urgent
-            };
-            queue.push_back(Task { call, low, run });
+            tasks.0.push_back(Task { call, run });
         }
     }
     drop(reply);
@@ -242,9 +203,8 @@ mod tests {
             let mut tasks = pool().tasks.lock().unwrap();
             let ran = std::sync::Arc::clone(&ran_here);
             let me = std::thread::current().id();
-            tasks.urgent.push_front(Task {
+            tasks.0.push_front(Task {
                 call: other,
-                low: false,
                 run: Box::new(move || ran.lock().unwrap().push(std::thread::current().id() == me)),
             });
         }
@@ -254,51 +214,6 @@ mod tests {
         // either way it did not run on this thread.
         let _ = pool().tasks.lock().unwrap().pop_of(other);
         assert!(!ran_here.lock().unwrap().contains(&true));
-    }
-
-    #[test]
-    fn pieces_run_with_the_priority_of_the_thread_that_queued_them() {
-        let flags = |jobs: usize| -> Vec<bool> {
-            let work: Vec<Job<bool>> = (0..jobs)
-                .map(|_| {
-                    Box::new(|| {
-                        std::thread::sleep(std::time::Duration::from_micros(200));
-                        LOW_PRIORITY.with(Cell::get)
-                    }) as Job<bool>
-                })
-                .collect();
-            map(work).into_iter().map(|flag| flag.unwrap()).collect()
-        };
-        // A fresh thread: marked low, every piece (also those a worker runs)
-        // is low; unmarked, none is.
-        let low = std::thread::spawn(move || {
-            set_low_priority();
-            flags(12)
-        })
-        .join()
-        .unwrap();
-        assert!(low.iter().all(|&flag| flag), "{low:?}");
-        let urgent = std::thread::spawn(move || flags(12)).join().unwrap();
-        assert!(urgent.iter().all(|&flag| !flag), "{urgent:?}");
-    }
-
-    #[test]
-    fn urgent_pieces_come_out_before_background_ones() {
-        let mut queues = Queues::default();
-        for (call, low) in [(1, true), (2, false), (3, true), (4, false)] {
-            let task = Task {
-                call,
-                low,
-                run: Box::new(|| {}),
-            };
-            if low {
-                queues.background.push_back(task);
-            } else {
-                queues.urgent.push_back(task);
-            }
-        }
-        let order: Vec<u64> = std::iter::from_fn(|| queues.pop().map(|t| t.call)).collect();
-        assert_eq!(order, vec![2, 4, 1, 3]);
     }
 
     #[test]

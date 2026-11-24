@@ -134,11 +134,7 @@ impl BackgroundSession {
             let shared = Arc::clone(&shared);
             std::thread::Builder::new()
                 .name("maac-prerender".into())
-                .spawn(move || {
-                    // Its pieces wait behind those of the sound being played.
-                    super::pool::set_low_priority();
-                    worker(&shared)
-                })
+                .spawn(move || worker(&shared))
                 .map_err(|error| RenderError::RenderState(format!("no worker thread: {error}")))?
         };
         Ok(Self {

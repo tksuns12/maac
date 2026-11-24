@@ -74,8 +74,7 @@ promise of compatibility beyond the documented interfaces.
 ### Changed
 
 - Rendering uses several threads: instruments whose next blocks start together
-  render them side by side, and a heavy instrument's voices are split across
-  threads. The output is the same bit for bit on any number of threads. An
+  render them side by side. The output is the same bit for bit on any number of threads. An
   engine uses up to four threads (the machine's cores, at most four);
   `DspEngine::set_render_threads` or `MAAC_RENDER_THREADS` set the number, and 1
   renders on the calling thread alone. After an edit behind the playhead the
@@ -83,8 +82,7 @@ promise of compatibility beyond the documented interfaces.
   of 19 s on one thread; Afterlight: 16-20 s against 18 s, little gained but
   nothing lost, no underruns). A batch of blocks goes to other
   threads only when the work besides the costliest instrument's is worth the
-  hand-over (`MAAC_PARALLEL_MIN_NANOS`, 100 000 ns); the sound being played
-  gets the pool's threads before the background worker and a catch-up.
+  hand-over (`MAAC_PARALLEL_MIN_NANOS`, 100 000 ns).
 - `export::FrameRange` has a new public field `preroll_frames`; construct it
   with `FrameRange::new`. A render result with a preroll adds `approximate` and
   `render_start_frame`.
