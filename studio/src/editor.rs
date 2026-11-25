@@ -8,9 +8,12 @@
 use std::collections::BTreeSet;
 
 use maac::bundle::SourceBundle;
-use maac::editing::{BundleEditContext, Operation, SourceDocument, Transaction};
+use maac::editing::{Operation, SourceDocument, Transaction};
 use maac::plan::PlanLimits;
+use maac::PlanArtifact;
 use serde_json::{json, Value};
+
+use crate::project::{build_edit_context, EditedBundle};
 
 const PITCH_NAMES: [&str; 12] = [
     "C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B",
@@ -159,7 +162,8 @@ pub fn apply_note_edit(
     source_path: &[String],
     edit: NoteEdit,
     limits: &PlanLimits,
-) -> Result<(SourceBundle, String), String> {
+    base_plan: Option<&PlanArtifact>,
+) -> Result<(EditedBundle, String), String> {
     let entry_src = bundle
         .sources
         .get(&bundle.entry)
@@ -172,17 +176,22 @@ pub fn apply_note_edit(
     let (ops, summary) = build_operations(doc.authored().tree(), &info, edit)?;
     let tx = Transaction::new(doc.revision().to_owned(), ops)
         .map_err(|err| format!("{}: {}", err.code, err.message))?;
-    let context = BundleEditContext::new(bundle)
-        .map_err(|err| format!("{}: {}", err.code, err.message))?
-        .checking_compile(*limits);
+    let context = build_edit_context(bundle, &doc, limits, base_plan)?;
     doc.apply(&tx, &context)
         .map_err(|err| format!("{}: {}", err.code, err.message))?;
+    let compiled_plan = context.take_compiled_artifact(doc.authored());
 
     let mut updated = bundle.clone();
     updated
         .sources
         .insert(updated.entry.clone(), doc.source().to_owned());
-    Ok((updated, summary))
+    Ok((
+        EditedBundle {
+            bundle: updated,
+            compiled_plan,
+        },
+        summary,
+    ))
 }
 
 /// Apply one `BatchNoteEdit` across many unique note `source_paths` in a single
@@ -192,7 +201,8 @@ pub fn apply_batch_note_edit(
     source_paths: &[Vec<String>],
     edit: BatchNoteEdit,
     limits: &PlanLimits,
-) -> Result<(SourceBundle, String), String> {
+    base_plan: Option<&PlanArtifact>,
+) -> Result<(EditedBundle, String), String> {
     let entry_src = bundle
         .sources
         .get(&bundle.entry)
@@ -234,11 +244,10 @@ pub fn apply_batch_note_edit(
 
     let tx = Transaction::new(doc.revision().to_owned(), ops)
         .map_err(|err| format!("{}: {}", err.code, err.message))?;
-    let context = BundleEditContext::new(bundle)
-        .map_err(|err| format!("{}: {}", err.code, err.message))?
-        .checking_compile(*limits);
+    let context = build_edit_context(bundle, &doc, limits, base_plan)?;
     doc.apply(&tx, &context)
         .map_err(|err| format!("{}: {}", err.code, err.message))?;
+    let compiled_plan = context.take_compiled_artifact(doc.authored());
 
     let summary = match edit {
         BatchNoteEdit::ShiftPitchSemitones(d) => format!("Transposed {touched} notes ({d:+})"),
@@ -252,7 +261,13 @@ pub fn apply_batch_note_edit(
     updated
         .sources
         .insert(updated.entry.clone(), doc.source().to_owned());
-    Ok((updated, summary))
+    Ok((
+        EditedBundle {
+            bundle: updated,
+            compiled_plan,
+        },
+        summary,
+    ))
 }
 
 /// Split a shared placement into an independent pattern using Protocol 2's
@@ -262,7 +277,8 @@ pub fn materialize_note_placement(
     bundle: &SourceBundle,
     event_address: &str,
     limits: &PlanLimits,
-) -> Result<(SourceBundle, Option<String>, String), String> {
+    base_plan: Option<&PlanArtifact>,
+) -> Result<(EditedBundle, Option<String>, String), String> {
     let placement_id = event_address
         .split('/')
         .next()
@@ -306,14 +322,13 @@ pub fn materialize_note_placement(
         suffix += 1;
     };
 
-    let context = BundleEditContext::new(bundle)
-        .map_err(|err| format!("{}: {}", err.code, err.message))?
-        .checking_compile(*limits);
+    let context = build_edit_context(bundle, &doc, limits, base_plan)?;
     let plan = context
         .prepare_materialize_instance(doc.authored(), placement_id, &new_pat_id)
         .map_err(|err| format!("{}: {}", err.code, err.message))?;
     doc.apply(&plan.transaction, &context)
         .map_err(|err| format!("{}: {}", err.code, err.message))?;
+    let compiled_plan = context.take_compiled_artifact(doc.authored());
 
     let remapped_addr = plan
         .mappings
@@ -326,7 +341,14 @@ pub fn materialize_note_placement(
         .sources
         .insert(updated.entry.clone(), doc.source().to_owned());
     let summary = format!("Made `{placement_id}` unique → `{new_pat_id}`");
-    Ok((updated, remapped_addr, summary))
+    Ok((
+        EditedBundle {
+            bundle: updated,
+            compiled_plan,
+        },
+        remapped_addr,
+        summary,
+    ))
 }
 
 /// Insert a new `note` directly into the entry document's leaf `pattern`
@@ -338,7 +360,8 @@ pub fn add_note_at_score_pos(
     score_q: f64,
     midi_pitch: i32,
     limits: &PlanLimits,
-) -> Result<(SourceBundle, Vec<String>, String), String> {
+    base_plan: Option<&PlanArtifact>,
+) -> Result<(EditedBundle, Vec<String>, String), String> {
     let entry_src = bundle
         .sources
         .get(&bundle.entry)
@@ -532,11 +555,10 @@ pub fn add_note_at_score_pos(
     };
     let tx = Transaction::new(doc.revision().to_owned(), vec![op])
         .map_err(|err| format!("{}: {}", err.code, err.message))?;
-    let context = BundleEditContext::new(bundle)
-        .map_err(|err| format!("{}: {}", err.code, err.message))?
-        .checking_compile(*limits);
+    let context = build_edit_context(bundle, &doc, limits, base_plan)?;
     doc.apply(&tx, &context)
         .map_err(|err| format!("{}: {}", err.code, err.message))?;
+    let compiled_plan = context.take_compiled_artifact(doc.authored());
 
     let mut updated = bundle.clone();
     updated
@@ -544,7 +566,14 @@ pub fn add_note_at_score_pos(
         .insert(updated.entry.clone(), doc.source().to_owned());
     let new_path = vec![pat_id.clone(), new_id.clone()];
     let summary = format!("Added {pitch_sym} in {pat_id} @ {}", format_q(q16, 4));
-    Ok((updated, new_path, summary))
+    Ok((
+        EditedBundle {
+            bundle: updated,
+            compiled_plan,
+        },
+        new_path,
+        summary,
+    ))
 }
 
 /// Insert a new drum `hit` into the entry document's leaf `pattern` covering
@@ -556,7 +585,8 @@ pub fn add_hit_at_score_pos(
     key: &str,
     velocity: f32,
     limits: &PlanLimits,
-) -> Result<(SourceBundle, Vec<String>, String), String> {
+    base_plan: Option<&PlanArtifact>,
+) -> Result<(EditedBundle, Vec<String>, String), String> {
     let entry_src = bundle
         .sources
         .get(&bundle.entry)
@@ -730,11 +760,10 @@ pub fn add_hit_at_score_pos(
     };
     let tx = Transaction::new(doc.revision().to_owned(), vec![op])
         .map_err(|err| format!("{}: {}", err.code, err.message))?;
-    let context = BundleEditContext::new(bundle)
-        .map_err(|err| format!("{}: {}", err.code, err.message))?
-        .checking_compile(*limits);
+    let context = build_edit_context(bundle, &doc, limits, base_plan)?;
     doc.apply(&tx, &context)
         .map_err(|err| format!("{}: {}", err.code, err.message))?;
+    let compiled_plan = context.take_compiled_artifact(doc.authored());
 
     let mut updated = bundle.clone();
     updated
@@ -742,7 +771,14 @@ pub fn add_hit_at_score_pos(
         .insert(updated.entry.clone(), doc.source().to_owned());
     let new_path = vec![pat_id.clone(), new_id];
     let summary = format!("Added hit `{key}` in {pat_id} @ {}", format_q(q16, 4));
-    Ok((updated, new_path, summary))
+    Ok((
+        EditedBundle {
+            bundle: updated,
+            compiled_plan,
+        },
+        new_path,
+        summary,
+    ))
 }
 
 fn pattern_length_f64(objects: &serde_json::Map<String, Value>, pat_id: &str) -> Option<f64> {
@@ -997,7 +1033,7 @@ pub fn format_q(num: i64, den: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::project::{load_and_compile, load_from_bundle};
+    use crate::project::{load_and_compile, load_from_edited};
     use std::path::Path;
 
     #[test]
@@ -1023,64 +1059,77 @@ mod tests {
         let info = inspect_note_in_bundle(&data.bundle, &first_note.source_path).unwrap();
         let orig_midi = info.pitch_midi.unwrap();
 
-        // 1. Transpose +2 semitones
-        let (edited_bundle, _) = apply_note_edit(
+        // 1. Transpose +2 semitones (single-compile path reusing compiled artifact)
+        let started = std::time::Instant::now();
+        let (edited, _) = apply_note_edit(
             &data.bundle,
             &first_note.source_path,
             NoteEdit::SetPitchMidi(orig_midi + 2),
             &data.limits,
+            Some(&data.plan),
         )
         .expect("transpose note");
-        let edited_src = &edited_bundle.sources[&edited_bundle.entry];
+        assert!(edited.compiled_plan.is_some());
+        let edited_src = &edited.bundle.sources[&edited.bundle.entry];
         assert!(
             edited_src.contains("Morning Ferry"),
             "top comment must be preserved"
         );
-        let recompiled = load_from_bundle(
+        let recompiled = load_from_edited(
             data.entry_path.clone(),
             data.project_root.clone(),
-            edited_bundle.clone(),
+            edited.clone(),
         )
-        .expect("recompile edited ferry");
+        .expect("load edited ferry");
+        eprintln!(
+            "[ferry single-compile edit] note transpose total={:.1} ms",
+            started.elapsed().as_secs_f64() * 1000.0
+        );
         let updated_info =
             inspect_note_in_bundle(&recompiled.bundle, &first_note.source_path).unwrap();
         assert_eq!(updated_info.pitch_midi, Some(orig_midi + 2));
 
         // 2. Adjust velocity
-        let (vel_bundle, _) = apply_note_edit(
+        let (vel_edited, _) = apply_note_edit(
             &recompiled.bundle,
             &first_note.source_path,
             NoteEdit::SetVelocity(0.95),
             &data.limits,
+            Some(&recompiled.plan),
         )
         .expect("set velocity");
-        let vel_info = inspect_note_in_bundle(&vel_bundle, &first_note.source_path).unwrap();
+        assert!(vel_edited.compiled_plan.is_some());
+        let vel_info = inspect_note_in_bundle(&vel_edited.bundle, &first_note.source_path).unwrap();
         assert!((vel_info.velocity.unwrap() - 0.95).abs() < 0.01);
 
         // 3. Duplicate and delete
-        let (dup_bundle, _) = apply_note_edit(
-            &vel_bundle,
+        let (dup_edited, _) = apply_note_edit(
+            &vel_edited.bundle,
             &first_note.source_path,
             NoteEdit::Duplicate,
             &data.limits,
+            vel_edited.compiled_plan.as_ref(),
         )
         .expect("duplicate note");
-        let dup_data = load_from_bundle(
+        assert!(dup_edited.compiled_plan.is_some());
+        let dup_data = load_from_edited(
             data.entry_path.clone(),
             data.project_root.clone(),
-            dup_bundle.clone(),
+            dup_edited.clone(),
         )
-        .expect("recompile duplicated ferry");
+        .expect("load duplicated ferry");
         assert!(dup_data.notes.len() > data.notes.len());
 
-        let (del_bundle, _) = apply_note_edit(
-            &dup_bundle,
+        let (del_edited, _) = apply_note_edit(
+            &dup_edited.bundle,
             &first_note.source_path,
             NoteEdit::Delete,
             &data.limits,
+            Some(&dup_data.plan),
         )
         .expect("delete note");
-        assert!(inspect_note_in_bundle(&del_bundle, &first_note.source_path).is_none());
+        assert!(del_edited.compiled_plan.is_some());
+        assert!(inspect_note_in_bundle(&del_edited.bundle, &first_note.source_path).is_none());
     }
 
     #[test]
@@ -1097,12 +1146,17 @@ mod tests {
             .expect("find shared melody_chorus note");
         assert_eq!(shared_note.shared_occurrences, 2);
 
-        let (mat_bundle, remapped, _) =
-            materialize_note_placement(&data.bundle, &shared_note.address, &data.limits)
-                .expect("materialize melody_chorus placement");
+        let (mat_edited, remapped, _) = materialize_note_placement(
+            &data.bundle,
+            &shared_note.address,
+            &data.limits,
+            Some(&data.plan),
+        )
+        .expect("materialize melody_chorus placement");
+        assert!(mat_edited.compiled_plan.is_some());
         let new_addr = remapped.expect("remapped event address");
-        let recompiled = load_from_bundle(data.entry_path, data.project_root, mat_bundle)
-            .expect("recompile materialized ferry");
+        let recompiled = load_from_edited(data.entry_path, data.project_root, mat_edited)
+            .expect("load materialized ferry");
         let split_note = recompiled
             .notes
             .iter()
@@ -1140,10 +1194,12 @@ mod tests {
             &paths,
             BatchNoteEdit::ShiftPitchSemitones(2),
             &data.limits,
+            Some(&data.plan),
         )
         .expect("batch transpose 3 notes");
+        assert!(edited.compiled_plan.is_some());
         for (p, orig) in paths.iter().zip(orig_midis.iter()) {
-            let after = inspect_note_in_bundle(&edited, p)
+            let after = inspect_note_in_bundle(&edited.bundle, p)
                 .unwrap()
                 .pitch_midi
                 .unwrap();
@@ -1155,13 +1211,21 @@ mod tests {
     fn adds_note_at_score_position_in_ferry() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../examples/ferry/ferry.maac");
         let data = load_and_compile(&path).expect("compile ferry");
-        let (edited, new_path, _) =
-            add_note_at_score_pos(&data.bundle, "lead", 50.0, 76, &data.limits)
-                .expect("add note to lead in chorus1");
-        let info = inspect_note_in_bundle(&edited, &new_path).expect("inspect newly added note");
+        let (edited, new_path, _) = add_note_at_score_pos(
+            &data.bundle,
+            "lead",
+            50.0,
+            76,
+            &data.limits,
+            Some(&data.plan),
+        )
+        .expect("add note to lead in chorus1");
+        assert!(edited.compiled_plan.is_some());
+        let info =
+            inspect_note_in_bundle(&edited.bundle, &new_path).expect("inspect newly added note");
         assert_eq!(info.pitch_midi, Some(76));
-        let recompiled = load_from_bundle(data.entry_path, data.project_root, edited)
-            .expect("recompile ferry with added note");
+        let recompiled = load_from_edited(data.entry_path, data.project_root, edited)
+            .expect("load ferry with added note");
         assert!(recompiled.notes.len() > data.notes.len());
     }
 
@@ -1180,19 +1244,29 @@ mod tests {
             &hit.source_path,
             NoteEdit::SetVelocity(0.92),
             &data.limits,
+            Some(&data.plan),
         )
         .expect("set drum hit velocity");
-        let info1 = inspect_note_in_bundle(&b1, &hit.source_path).unwrap();
+        assert!(b1.compiled_plan.is_some());
+        let info1 = inspect_note_in_bundle(&b1.bundle, &hit.source_path).unwrap();
         assert!((info1.velocity.unwrap() - 0.92).abs() < 0.02);
 
-        let (b2, new_path, _) =
-            add_hit_at_score_pos(&b1, "drums", 18.0, "kick", 0.85, &data.limits)
-                .expect("add drum hit in ferry");
-        let added = inspect_note_in_bundle(&b2, &new_path).expect("inspect added hit");
+        let (b2, new_path, _) = add_hit_at_score_pos(
+            &b1.bundle,
+            "drums",
+            18.0,
+            "kick",
+            0.85,
+            &data.limits,
+            b1.compiled_plan.as_ref(),
+        )
+        .expect("add drum hit in ferry");
+        assert!(b2.compiled_plan.is_some());
+        let added = inspect_note_in_bundle(&b2.bundle, &new_path).expect("inspect added hit");
         assert_eq!(added.kind, "hit");
         assert_eq!(added.hit_key.as_deref(), Some("kick"));
-        let recompiled = load_from_bundle(data.entry_path, data.project_root, b2)
-            .expect("recompile ferry with added hit");
+        let recompiled = load_from_edited(data.entry_path, data.project_root, b2)
+            .expect("load ferry with added hit");
         assert!(recompiled.hits.len() > data.hits.len());
     }
 }

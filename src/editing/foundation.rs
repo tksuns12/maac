@@ -33,6 +33,26 @@ use super::{
 #[derive(Clone, Copy, Debug, Default)]
 pub struct FoundationEditContext;
 
+struct CompiledCandidate {
+    source: String,
+    artifact: Option<crate::PlanArtifact>,
+}
+
+#[derive(Default)]
+struct CompileCache(std::sync::Mutex<Option<CompiledCandidate>>);
+
+impl Clone for CompileCache {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+impl std::fmt::Debug for CompileCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CompileCache").finish_non_exhaustive()
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct BundleEditContext {
     bundle: crate::bundle::SourceBundle,
@@ -43,6 +63,10 @@ pub struct BundleEditContext {
     import_edit: Option<ImportEditMode>,
     /// Whether an edit must leave a document that compiles under `limits`.
     compiles: bool,
+    /// Single-entry cache of the most recently compiled candidate source so
+    /// `validate_document`, `validate_transition`, and callers do not compile
+    /// the same candidate multiple times.
+    compiled_cache: CompileCache,
 }
 
 #[derive(Clone, Debug)]
@@ -94,6 +118,7 @@ impl BundleEditContext {
             limits: crate::plan::PlanLimits::default(),
             import_edit: None,
             compiles: false,
+            compiled_cache: CompileCache::default(),
         })
     }
 
@@ -119,6 +144,80 @@ impl BundleEditContext {
         self
     }
 
+    /// Seed the compile cache with a `PlanArtifact` that was already compiled
+    /// from `base`, avoiding a redundant full-song compilation of the unchanged
+    /// base document during [`super::SourceDocument::apply`] and
+    /// [`Self::prepare_materialize_instance`].
+    pub fn with_compiled_base(
+        self,
+        base: &AuthoredDocument,
+        artifact: crate::PlanArtifact,
+    ) -> EditResult<Self> {
+        let source = super::source::authored_source(base.tree())?;
+        *self
+            .compiled_cache
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(CompiledCandidate {
+            source,
+            artifact: Some(artifact),
+        });
+        Ok(self)
+    }
+
+    /// Take the `PlanArtifact` produced for `document` during the most recent
+    /// compile-checked edit, avoiding a redundant second compilation by the
+    /// caller. Returns `None` if `document` was not compiled by this context.
+    pub fn take_compiled_artifact(
+        &self,
+        document: &AuthoredDocument,
+    ) -> Option<crate::PlanArtifact> {
+        let expected = super::source::authored_source(document.tree()).ok()?;
+        let mut cache = self
+            .compiled_cache
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if cache.as_ref().is_some_and(|c| c.source == expected) {
+            cache.take().and_then(|c| c.artifact)
+        } else {
+            None
+        }
+    }
+
+    fn has_compiled_cache(&self, bundle: &crate::bundle::SourceBundle) -> bool {
+        let Some(key) = bundle.sources.get(&self.source_path).map(String::as_str) else {
+            return false;
+        };
+        let cache = self
+            .compiled_cache
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        cache.as_ref().is_some_and(|c| c.source == key)
+    }
+
+    fn compile_candidate_cached(&self, bundle: &crate::bundle::SourceBundle) -> EditResult<()> {
+        if self.has_compiled_cache(bundle) {
+            return Ok(());
+        }
+        let artifact =
+            crate::compiler::check_or_compile_bundle_artifact_with_limits(bundle, &self.limits)
+                .map_err(map_diagnostics)?;
+        if let Some(key) = bundle.sources.get(&self.source_path) {
+            let mut cache = self
+                .compiled_cache
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *cache = Some(CompiledCandidate {
+                source: key.clone(),
+                artifact,
+            });
+        }
+        Ok(())
+    }
+
     /// Trusted archive editing context with the exact private native PCM
     /// snapshots used by the archived composition.
     pub(crate) fn new_disk_media(
@@ -136,6 +235,7 @@ impl BundleEditContext {
             limits,
             import_edit: None,
             compiles: false,
+            compiled_cache: CompileCache::default(),
         })
     }
 
@@ -244,6 +344,7 @@ impl BundleEditContext {
             limits,
             import_edit: Some(ImportEditMode::Graph { imports, overrides }),
             compiles: false,
+            compiled_cache: CompileCache::default(),
         })
     }
 
@@ -469,6 +570,9 @@ impl EditContext for BundleEditContext {
                 .map_err(map_diagnostics)?;
             return Ok(());
         }
+        if self.has_compiled_cache(&bundle) {
+            return Ok(());
+        }
         let (resolved, libraries) = self.resolved_candidate(authored)?;
         let target = resolved
             .documents
@@ -491,8 +595,7 @@ impl EditContext for BundleEditContext {
                             .is_some_and(|processor| processor.starts_with("fx.")))
             });
         if needs_artifact_validation {
-            return crate::compiler::check_bundle_artifact_with_limits(&bundle, &self.limits)
-                .map_err(map_diagnostics);
+            return self.compile_candidate_cached(&bundle);
         }
         let document = libraries.resolved_document();
         let descriptors =
@@ -560,8 +663,7 @@ impl EditContext for BundleEditContext {
         // A disk-media context compiles every document it validates.
         if self.compiles && self.disk_assets.is_none() {
             let bundle = self.candidate_bundle(candidate)?;
-            crate::compiler::check_bundle_artifact_with_limits(&bundle, &self.limits)
-                .map_err(map_diagnostics)?;
+            self.compile_candidate_cached(&bundle)?;
         }
         Ok(())
     }

@@ -6957,6 +6957,15 @@ pub fn check_bundle_artifact_with_limits(
     bundle: &SourceBundle,
     limits: &PlanLimits,
 ) -> Result<(), Diagnostics> {
+    check_or_compile_bundle_artifact_with_limits(bundle, limits).map(|_| ())
+}
+
+/// Like [`check_bundle_artifact_with_limits`], returning the compiled
+/// [`PlanArtifact`] when the bundle contains a composition `project`.
+pub(crate) fn check_or_compile_bundle_artifact_with_limits(
+    bundle: &SourceBundle,
+    limits: &PlanLimits,
+) -> Result<Option<PlanArtifact>, Diagnostics> {
     let (resolved, libraries, production, original) = prepare_artifact_bundle(bundle)?;
     if libraries
         .resolved_document()
@@ -6964,9 +6973,9 @@ pub fn check_bundle_artifact_with_limits(
         .values()
         .any(|object| object.kind == "project")
     {
-        compile_resolved_artifact(&resolved, libraries, limits, production, &original).map(|_| ())
+        compile_resolved_artifact(&resolved, libraries, limits, production, &original).map(Some)
     } else {
-        Ok(())
+        Ok(None)
     }
 }
 

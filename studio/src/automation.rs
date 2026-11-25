@@ -2,14 +2,15 @@
 //! `maac::editing::SourceDocument` + `BundleEditContext::checking_compile`.
 
 use maac::bundle::SourceBundle;
-use maac::editing::{BundleEditContext, Operation, SourceDocument, Transaction};
+use maac::editing::{Operation, SourceDocument, Transaction};
 use maac::parse_rational;
 use maac::plan::{PlanLimits, TempoMap};
+use maac::PlanArtifact;
 use num_traits::ToPrimitive;
 use serde_json::{json, Value};
 
 use crate::mixer::{MixerNodeInfo, ParamUnit};
-use crate::project::TrackInfo;
+use crate::project::{build_edit_context, EditedBundle, TrackInfo};
 
 #[derive(Clone, Debug)]
 pub struct AutomationPointView {
@@ -220,7 +221,8 @@ pub fn apply_curve_point_edit(
     new_value: Option<f32>,
     new_shape: Option<&str>,
     limits: &PlanLimits,
-) -> Result<(SourceBundle, String), String> {
+    base_plan: Option<&PlanArtifact>,
+) -> Result<(EditedBundle, String), String> {
     let entry_src = bundle
         .sources
         .get(&bundle.entry)
@@ -270,11 +272,10 @@ pub fn apply_curve_point_edit(
     };
     let tx = Transaction::new(doc.revision().to_owned(), vec![op])
         .map_err(|err| format!("{}: {}", err.code, err.message))?;
-    let context = BundleEditContext::new(bundle)
-        .map_err(|err| format!("{}: {}", err.code, err.message))?
-        .checking_compile(*limits);
+    let context = build_edit_context(bundle, &doc, limits, base_plan)?;
     doc.apply(&tx, &context)
         .map_err(|err| format!("{}: {}", err.code, err.message))?;
+    let compiled_plan = context.take_compiled_artifact(doc.authored());
 
     let mut updated = bundle.clone();
     updated
@@ -285,7 +286,13 @@ pub fn apply_curve_point_edit(
         (None, Some(s)) => format!("{curve_id}[{point_index}] shape → {s}"),
         (None, None) => format!("Updated {curve_id}[{point_index}]"),
     };
-    Ok((updated, summary))
+    Ok((
+        EditedBundle {
+            bundle: updated,
+            compiled_plan,
+        },
+        summary,
+    ))
 }
 
 /// Insert a new control point into `curve <curve_id>` in sorted time order.
@@ -296,7 +303,8 @@ pub fn apply_curve_point_add(
     value: f32,
     clock_is_seconds: bool,
     limits: &PlanLimits,
-) -> Result<(SourceBundle, usize, String), String> {
+    base_plan: Option<&PlanArtifact>,
+) -> Result<(EditedBundle, usize, String), String> {
     let entry_src = bundle
         .sources
         .get(&bundle.entry)
@@ -379,11 +387,10 @@ pub fn apply_curve_point_add(
     };
     let tx = Transaction::new(doc.revision().to_owned(), vec![op])
         .map_err(|err| format!("{}: {}", err.code, err.message))?;
-    let context = BundleEditContext::new(bundle)
-        .map_err(|err| format!("{}: {}", err.code, err.message))?
-        .checking_compile(*limits);
+    let context = build_edit_context(bundle, &doc, limits, base_plan)?;
     doc.apply(&tx, &context)
         .map_err(|err| format!("{}: {}", err.code, err.message))?;
+    let compiled_plan = context.take_compiled_artifact(doc.authored());
 
     let mut updated = bundle.clone();
     updated
@@ -391,7 +398,10 @@ pub fn apply_curve_point_add(
         .insert(updated.entry.clone(), doc.source().to_owned());
     let unit_lbl = if clock_is_seconds { "s" } else { "q" };
     Ok((
-        updated,
+        EditedBundle {
+            bundle: updated,
+            compiled_plan,
+        },
         insert_idx,
         format!("Added point on {curve_id} @ {snapped_pos:.2}{unit_lbl}"),
     ))
@@ -403,7 +413,8 @@ pub fn apply_curve_point_delete(
     curve_id: &str,
     point_index: usize,
     limits: &PlanLimits,
-) -> Result<(SourceBundle, String), String> {
+    base_plan: Option<&PlanArtifact>,
+) -> Result<(EditedBundle, String), String> {
     let entry_src = bundle
         .sources
         .get(&bundle.entry)
@@ -439,17 +450,22 @@ pub fn apply_curve_point_delete(
     };
     let tx = Transaction::new(doc.revision().to_owned(), vec![op])
         .map_err(|err| format!("{}: {}", err.code, err.message))?;
-    let context = BundleEditContext::new(bundle)
-        .map_err(|err| format!("{}: {}", err.code, err.message))?
-        .checking_compile(*limits);
+    let context = build_edit_context(bundle, &doc, limits, base_plan)?;
     doc.apply(&tx, &context)
         .map_err(|err| format!("{}: {}", err.code, err.message))?;
+    let compiled_plan = context.take_compiled_artifact(doc.authored());
 
     let mut updated = bundle.clone();
     updated
         .sources
         .insert(updated.entry.clone(), doc.source().to_owned());
-    Ok((updated, format!("Deleted {curve_id}[{point_index}]")))
+    Ok((
+        EditedBundle {
+            bundle: updated,
+            compiled_plan,
+        },
+        format!("Deleted {curve_id}[{point_index}]"),
+    ))
 }
 
 fn encode_curve_value(val: f32, unit: Option<&str>) -> Value {
@@ -534,7 +550,7 @@ fn reduce_frac(n: i64, d: i64) -> (i64, i64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::project::{load_and_compile, load_from_bundle};
+    use crate::project::{load_and_compile, load_from_edited};
     use std::path::Path;
 
     #[test]
@@ -557,9 +573,11 @@ mod tests {
             Some(8.5),
             Some("linear"),
             &data.limits,
+            Some(&data.plan),
         )
         .expect("edit lead_drive point 1");
-        let d1 = load_from_bundle(
+        assert!(b1.compiled_plan.is_some());
+        let d1 = load_from_edited(
             data.entry_path.clone(),
             data.project_root.clone(),
             b1.clone(),
@@ -569,10 +587,18 @@ mod tests {
         assert_eq!(d1.automations[0].points[1].shape, "linear");
 
         // Add a new point at 64q with value 10.0, then delete it cleanly.
-        let (b2, idx, _) =
-            apply_curve_point_add(&b1, "lead_drive", 64.0, 10.0, false, &data.limits)
-                .expect("add point on lead_drive");
-        let d2 = load_from_bundle(
+        let (b2, idx, _) = apply_curve_point_add(
+            &b1.bundle,
+            "lead_drive",
+            64.0,
+            10.0,
+            false,
+            &data.limits,
+            Some(&d1.plan),
+        )
+        .expect("add point on lead_drive");
+        assert!(b2.compiled_plan.is_some());
+        let d2 = load_from_edited(
             data.entry_path.clone(),
             data.project_root.clone(),
             b2.clone(),
@@ -580,9 +606,11 @@ mod tests {
         .expect("recompile after add point");
         assert_eq!(d2.automations[0].points.len(), 6);
 
-        let (b3, _) = apply_curve_point_delete(&b2, "lead_drive", idx, &data.limits)
-            .expect("delete added point");
-        let d3 = load_from_bundle(data.entry_path, data.project_root, b3)
+        let (b3, _) =
+            apply_curve_point_delete(&b2.bundle, "lead_drive", idx, &data.limits, Some(&d2.plan))
+                .expect("delete added point");
+        assert!(b3.compiled_plan.is_some());
+        let d3 = load_from_edited(data.entry_path, data.project_root, b3)
             .expect("recompile after delete point");
         assert_eq!(d3.automations[0].points.len(), 5);
     }

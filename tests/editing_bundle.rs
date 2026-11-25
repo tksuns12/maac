@@ -432,3 +432,66 @@ fn checking_compile_song_limits_apply_to_fx_projects() {
         .expect("song-limit BundleEditContext should accept fx song edits");
     assert!(doc.source().contains("Morning Ferry"));
 }
+
+#[test]
+fn take_compiled_artifact_matches_fresh_compile_bit_for_bit() {
+    let entry = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/ferry/ferry.maac");
+    let root = entry.parent().unwrap();
+    let bundle = maac::bundle_fs::load_bundle(&entry, root).unwrap();
+    let limits = maac::plan::PlanLimits::song();
+    let base_plan = maac::compiler::compile_bundle_artifact_with_limits(&bundle, &limits).unwrap();
+    let mut doc = maac::editing::SourceDocument::parse(&bundle.sources[&bundle.entry]).unwrap();
+
+    let context = BundleEditContext::new(&bundle)
+        .unwrap()
+        .checking_compile(limits)
+        .with_compiled_base(doc.authored(), base_plan)
+        .unwrap();
+
+    let tx = Transaction::new(
+        doc.revision().to_owned(),
+        vec![Operation::Set {
+            object: vec!["melody_chorus".into(), "f3".into()],
+            field: vec!["pitch".into()],
+            value: json!({"t":"symbol","v":"A5"}),
+            expect: None,
+            expect_absent: false,
+        }],
+    )
+    .unwrap();
+    doc.apply(&tx, &context).unwrap();
+    let reused = context
+        .take_compiled_artifact(doc.authored())
+        .expect("compiled artifact should be reusable after checking_compile apply");
+    // Second take returns None (moved out).
+    assert!(context.take_compiled_artifact(doc.authored()).is_none());
+
+    let mut updated_bundle = bundle.clone();
+    updated_bundle
+        .sources
+        .insert(updated_bundle.entry.clone(), doc.source().to_owned());
+    let fresh =
+        maac::compiler::compile_bundle_artifact_with_limits(&updated_bundle, &limits).unwrap();
+
+    let span = maac::dsp::RenderSpan {
+        start: 0,
+        end: 2_048,
+    };
+    let mut bits_reused = Vec::new();
+    maac::dsp::DspEngine::new_artifact_with_limits(&reused, &limits)
+        .unwrap()
+        .render_span(span, |frame| {
+            bits_reused.extend(frame.iter().map(|s| s.to_bits()));
+            Ok(())
+        })
+        .unwrap();
+    let mut bits_fresh = Vec::new();
+    maac::dsp::DspEngine::new_artifact_with_limits(&fresh, &limits)
+        .unwrap()
+        .render_span(span, |frame| {
+            bits_fresh.extend(frame.iter().map(|s| s.to_bits()));
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(bits_reused, bits_fresh);
+}

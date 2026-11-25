@@ -204,6 +204,35 @@ impl ProjectData {
     }
 }
 
+/// Result of a compile-checked Protocol 2 edit: the updated source bundle plus
+/// the `PlanArtifact` produced during compile validation so Studio does not
+/// compile the same bundle a second time.
+#[derive(Clone)]
+pub struct EditedBundle {
+    pub bundle: SourceBundle,
+    pub compiled_plan: Option<PlanArtifact>,
+}
+
+/// Construct a compile-checked `BundleEditContext`, seeding its cache with
+/// `base_plan` when available so `SourceDocument::apply` does not recompile
+/// the unchanged base document.
+pub fn build_edit_context(
+    bundle: &SourceBundle,
+    doc: &maac::editing::SourceDocument,
+    limits: &PlanLimits,
+    base_plan: Option<&PlanArtifact>,
+) -> Result<maac::editing::BundleEditContext, String> {
+    let mut ctx = maac::editing::BundleEditContext::new(bundle)
+        .map_err(|err| format!("{}: {}", err.code, err.message))?
+        .checking_compile(*limits);
+    if let Some(plan) = base_plan {
+        ctx = ctx
+            .with_compiled_base(doc.authored(), plan.clone())
+            .map_err(|err| format!("{}: {}", err.code, err.message))?;
+    }
+    Ok(ctx)
+}
+
 pub fn load_and_compile(entry_path: &Path) -> Result<ProjectData, String> {
     let canonical_entry = std::fs::canonicalize(entry_path)
         .map_err(|err| format!("cannot open {}: {err}", entry_path.display()))?;
@@ -228,6 +257,28 @@ pub fn load_from_bundle(
     project_root: PathBuf,
     bundle: SourceBundle,
 ) -> Result<ProjectData, String> {
+    load_from_bundle_with_plan(canonical_entry, project_root, bundle, None)
+}
+
+pub fn load_from_edited(
+    canonical_entry: PathBuf,
+    project_root: PathBuf,
+    edited: EditedBundle,
+) -> Result<ProjectData, String> {
+    load_from_bundle_with_plan(
+        canonical_entry,
+        project_root,
+        edited.bundle,
+        edited.compiled_plan,
+    )
+}
+
+pub fn load_from_bundle_with_plan(
+    canonical_entry: PathBuf,
+    project_root: PathBuf,
+    bundle: SourceBundle,
+    precompiled: Option<PlanArtifact>,
+) -> Result<ProjectData, String> {
     let started = Instant::now();
 
     let meter = bundle
@@ -237,13 +288,16 @@ pub fn load_from_bundle(
         .and_then(|doc| meter_of(&doc));
 
     let limits = PlanLimits::song();
-    let plan = compile_bundle_artifact_with_limits(&bundle, &limits).map_err(|diags| {
-        diags
-            .iter()
-            .map(|d| d.to_string())
-            .collect::<Vec<_>>()
-            .join("\n")
-    })?;
+    let plan = match precompiled {
+        Some(plan) => plan,
+        None => compile_bundle_artifact_with_limits(&bundle, &limits).map_err(|diags| {
+            diags
+                .iter()
+                .map(|d| d.to_string())
+                .collect::<Vec<_>>()
+                .join("\n")
+        })?,
+    };
 
     let output = plan.output();
     let total_frames = output.total_frames;

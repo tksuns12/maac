@@ -4,14 +4,15 @@
 use std::collections::{BTreeMap, HashSet};
 
 use maac::bundle::SourceBundle;
-use maac::editing::{BundleEditContext, Operation, SourceDocument, Transaction};
+use maac::editing::{Operation, SourceDocument, Transaction};
 use maac::graph::{GraphUnit, ParameterSpec};
 use maac::instrument_plan::InstrumentResources;
 use maac::plan::PlanLimits;
+use maac::PlanArtifact;
 use num_traits::ToPrimitive;
 use serde_json::{json, Value};
 
-use crate::project::TrackInfo;
+use crate::project::{build_edit_context, EditedBundle, TrackInfo};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NodeCategory {
@@ -780,7 +781,8 @@ pub fn apply_node_param_edit(
     unit: ParamUnit,
     value: f32,
     limits: &PlanLimits,
-) -> Result<(SourceBundle, String), String> {
+    base_plan: Option<&PlanArtifact>,
+) -> Result<(EditedBundle, String), String> {
     let entry_src = bundle
         .sources
         .get(&bundle.entry)
@@ -826,11 +828,10 @@ pub fn apply_node_param_edit(
 
     let tx = Transaction::new(doc.revision().to_owned(), vec![op])
         .map_err(|err| format!("{}: {}", err.code, err.message))?;
-    let context = BundleEditContext::new(bundle)
-        .map_err(|err| format!("{}: {}", err.code, err.message))?
-        .checking_compile(*limits);
+    let context = build_edit_context(bundle, &doc, limits, base_plan)?;
     doc.apply(&tx, &context)
         .map_err(|err| format!("{}: {}", err.code, err.message))?;
+    let compiled_plan = context.take_compiled_artifact(doc.authored());
 
     let mut updated = bundle.clone();
     updated
@@ -840,7 +841,13 @@ pub fn apply_node_param_edit(
         "{node_id}.{param_name} → {}",
         format_param_value(unit, value)
     );
-    Ok((updated, summary))
+    Ok((
+        EditedBundle {
+            bundle: updated,
+            compiled_plan,
+        },
+        summary,
+    ))
 }
 
 /// Remove an authored override from `node.<node_id>.params.<param_name>` so it
@@ -850,7 +857,8 @@ pub fn apply_node_param_reset(
     node_id: &str,
     param_name: &str,
     limits: &PlanLimits,
-) -> Result<(SourceBundle, String), String> {
+    base_plan: Option<&PlanArtifact>,
+) -> Result<(EditedBundle, String), String> {
     let entry_src = bundle
         .sources
         .get(&bundle.entry)
@@ -865,17 +873,22 @@ pub fn apply_node_param_reset(
     };
     let tx = Transaction::new(doc.revision().to_owned(), vec![op])
         .map_err(|err| format!("{}: {}", err.code, err.message))?;
-    let context = BundleEditContext::new(bundle)
-        .map_err(|err| format!("{}: {}", err.code, err.message))?
-        .checking_compile(*limits);
+    let context = build_edit_context(bundle, &doc, limits, base_plan)?;
     doc.apply(&tx, &context)
         .map_err(|err| format!("{}: {}", err.code, err.message))?;
+    let compiled_plan = context.take_compiled_artifact(doc.authored());
 
     let mut updated = bundle.clone();
     updated
         .sources
         .insert(updated.entry.clone(), doc.source().to_owned());
-    Ok((updated, format!("Reset {node_id}.{param_name}")))
+    Ok((
+        EditedBundle {
+            bundle: updated,
+            compiled_plan,
+        },
+        format!("Reset {node_id}.{param_name}"),
+    ))
 }
 
 pub fn format_param_value(unit: ParamUnit, val: f32) -> String {
@@ -1007,7 +1020,7 @@ fn reduce_frac(n: i64, d: i64) -> (i64, i64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::project::{load_and_compile, load_from_bundle};
+    use crate::project::{load_and_compile, load_from_edited};
     use std::path::Path;
 
     #[test]
@@ -1050,31 +1063,37 @@ mod tests {
             ParamUnit::Number,
             0.55,
             &data.limits,
+            Some(&data.plan),
         )
         .expect("edit hall.mix");
-        assert!(b1.sources[&b1.entry].contains("Morning Ferry"));
+        assert!(b1.compiled_plan.is_some());
+        assert!(b1.bundle.sources[&b1.bundle.entry].contains("Morning Ferry"));
 
         let (b2, _) = apply_node_param_edit(
-            &b1,
+            &b1.bundle,
             "glue",
             "threshold",
             ParamUnit::Decibels,
             -14.5,
             &data.limits,
+            b1.compiled_plan.as_ref(),
         )
         .expect("edit glue.threshold");
+        assert!(b2.compiled_plan.is_some());
 
         let (b3, _) = apply_node_param_edit(
-            &b2,
+            &b2.bundle,
             "picking",
             "brightness",
             ParamUnit::Hertz,
             4200.0,
             &data.limits,
+            b2.compiled_plan.as_ref(),
         )
         .expect("edit picking.brightness");
+        assert!(b3.compiled_plan.is_some());
 
-        let recompiled = load_from_bundle(
+        let recompiled = load_from_edited(
             data.entry_path.clone(),
             data.project_root.clone(),
             b3.clone(),
@@ -1089,9 +1108,16 @@ mod tests {
         assert!((mix2.value - 0.55).abs() < 0.02);
 
         // Reset picking.brightness back to default.
-        let (b4, _) = apply_node_param_reset(&b3, "picking", "brightness", &data.limits)
-            .expect("reset picking.brightness");
-        let recompiled2 = load_from_bundle(data.entry_path.clone(), data.project_root.clone(), b4)
+        let (b4, _) = apply_node_param_reset(
+            &b3.bundle,
+            "picking",
+            "brightness",
+            &data.limits,
+            Some(&recompiled.plan),
+        )
+        .expect("reset picking.brightness");
+        assert!(b4.compiled_plan.is_some());
+        let recompiled2 = load_from_edited(data.entry_path.clone(), data.project_root.clone(), b4)
             .expect("recompile after reset");
         let picking2 = recompiled2
             .mixer_nodes
@@ -1123,9 +1149,11 @@ mod tests {
             first_param.unit,
             first_param.default,
             &data.limits,
+            Some(&data.plan),
         )
         .expect("set param on node without existing params record");
-        load_from_bundle(data.entry_path, data.project_root, edited)
+        assert!(edited.compiled_plan.is_some());
+        load_from_edited(data.entry_path, data.project_root, edited)
             .expect("recompile hello after adding params");
     }
 }

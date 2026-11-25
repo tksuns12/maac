@@ -35,7 +35,9 @@ use crate::mixer::{
     apply_node_param_edit, apply_node_param_reset, format_param_value, MixerNodeInfo, NodeCategory,
     NodeParamInfo,
 };
-use crate::project::{format_time, load_and_compile, load_from_bundle, ProjectData};
+use crate::project::{
+    format_time, load_and_compile, load_from_bundle, load_from_edited, ProjectData,
+};
 use crate::timeline::{track_color, TimelineAction, TimelineView};
 use crate::watcher::ProjectWatcher;
 
@@ -667,6 +669,7 @@ impl StudioApp {
                     .unwrap_or_else(|| "kick".into());
                 let score_q = proj.frame_to_score_q(frame);
                 let bundle = proj.bundle.clone();
+                let base_plan = proj.plan.clone();
                 let entry_path = proj.entry_path.clone();
                 let project_root = proj.project_root.clone();
                 let limits = proj.limits;
@@ -675,16 +678,19 @@ impl StudioApp {
                 Task::perform(
                     async move {
                         let handle = std::thread::spawn(move || {
-                            let (updated_bundle, new_path, summary) = add_hit_at_score_pos(
+                            let started = Instant::now();
+                            let (edited, new_path, summary) = add_hit_at_score_pos(
                                 &bundle,
                                 &track_name,
                                 score_q,
                                 &key,
                                 velocity,
                                 &limits,
+                                Some(&base_plan),
                             )?;
-                            let recompiled =
-                                load_from_bundle(entry_path, project_root, updated_bundle)?;
+                            let mut recompiled =
+                                load_from_edited(entry_path, project_root, edited)?;
+                            recompiled.compile_ms = started.elapsed().as_millis() as u64;
                             Ok((Box::new(recompiled), new_path, summary))
                         });
                         handle
@@ -829,6 +835,7 @@ impl StudioApp {
                     return Task::none();
                 };
                 let bundle = proj.bundle.clone();
+                let base_plan = proj.plan.clone();
                 let entry_path = proj.entry_path.clone();
                 let project_root = proj.project_root.clone();
                 let limits = proj.limits;
@@ -837,16 +844,19 @@ impl StudioApp {
                 Task::perform(
                     async move {
                         let handle = std::thread::spawn(move || {
-                            let (updated_bundle, summary) = apply_curve_point_edit(
+                            let started = Instant::now();
+                            let (edited, summary) = apply_curve_point_edit(
                                 &bundle,
                                 &curve_id,
                                 point_idx,
                                 value,
                                 shape.as_deref(),
                                 &limits,
+                                Some(&base_plan),
                             )?;
-                            let recompiled =
-                                load_from_bundle(entry_path, project_root, updated_bundle)?;
+                            let mut recompiled =
+                                load_from_edited(entry_path, project_root, edited)?;
+                            recompiled.compile_ms = started.elapsed().as_millis() as u64;
                             Ok((Box::new(recompiled), summary))
                         });
                         handle
@@ -896,6 +906,7 @@ impl StudioApp {
                     (proj.frame_to_score_q(frame) - lane.anchor_raw).max(0.0)
                 };
                 let bundle = proj.bundle.clone();
+                let base_plan = proj.plan.clone();
                 let entry_path = proj.entry_path.clone();
                 let project_root = proj.project_root.clone();
                 let limits = proj.limits;
@@ -904,16 +915,19 @@ impl StudioApp {
                 Task::perform(
                     async move {
                         let handle = std::thread::spawn(move || {
-                            let (updated_bundle, _idx, summary) = apply_curve_point_add(
+                            let started = Instant::now();
+                            let (edited, _idx, summary) = apply_curve_point_add(
                                 &bundle,
                                 &curve_id,
                                 pos_raw,
                                 value,
                                 clock_is_seconds,
                                 &limits,
+                                Some(&base_plan),
                             )?;
-                            let recompiled =
-                                load_from_bundle(entry_path, project_root, updated_bundle)?;
+                            let mut recompiled =
+                                load_from_edited(entry_path, project_root, edited)?;
+                            recompiled.compile_ms = started.elapsed().as_millis() as u64;
                             Ok((Box::new(recompiled), summary))
                         });
                         handle
@@ -956,6 +970,7 @@ impl StudioApp {
                     return Task::none();
                 };
                 let bundle = proj.bundle.clone();
+                let base_plan = proj.plan.clone();
                 let entry_path = proj.entry_path.clone();
                 let project_root = proj.project_root.clone();
                 let limits = proj.limits;
@@ -966,10 +981,17 @@ impl StudioApp {
                 Task::perform(
                     async move {
                         let handle = std::thread::spawn(move || {
-                            let (updated_bundle, summary) =
-                                apply_curve_point_delete(&bundle, &curve_id, point_idx, &limits)?;
-                            let recompiled =
-                                load_from_bundle(entry_path, project_root, updated_bundle)?;
+                            let started = Instant::now();
+                            let (edited, summary) = apply_curve_point_delete(
+                                &bundle,
+                                &curve_id,
+                                point_idx,
+                                &limits,
+                                Some(&base_plan),
+                            )?;
+                            let mut recompiled =
+                                load_from_edited(entry_path, project_root, edited)?;
+                            recompiled.compile_ms = started.elapsed().as_millis() as u64;
                             Ok((Box::new(recompiled), summary))
                         });
                         handle
@@ -1070,6 +1092,7 @@ impl StudioApp {
                     return Task::none();
                 }
                 let bundle = proj.bundle.clone();
+                let base_plan = proj.plan.clone();
                 let entry_path = proj.entry_path.clone();
                 let project_root = proj.project_root.clone();
                 let limits = proj.limits;
@@ -1078,10 +1101,17 @@ impl StudioApp {
                 Task::perform(
                     async move {
                         let handle = std::thread::spawn(move || {
-                            let (updated_bundle, summary) =
-                                apply_batch_note_edit(&bundle, &source_paths, edit, &limits)?;
-                            let recompiled =
-                                load_from_bundle(entry_path, project_root, updated_bundle)?;
+                            let started = Instant::now();
+                            let (edited, summary) = apply_batch_note_edit(
+                                &bundle,
+                                &source_paths,
+                                edit,
+                                &limits,
+                                Some(&base_plan),
+                            )?;
+                            let mut recompiled =
+                                load_from_edited(entry_path, project_root, edited)?;
+                            recompiled.compile_ms = started.elapsed().as_millis() as u64;
                             Ok((Box::new(recompiled), summary))
                         });
                         handle
@@ -1118,6 +1148,7 @@ impl StudioApp {
                     return Task::none();
                 };
                 let bundle = proj.bundle.clone();
+                let base_plan = proj.plan.clone();
                 let entry_path = proj.entry_path.clone();
                 let project_root = proj.project_root.clone();
                 let limits = proj.limits;
@@ -1126,10 +1157,16 @@ impl StudioApp {
                 Task::perform(
                     async move {
                         let handle = std::thread::spawn(move || {
-                            let (updated_bundle, remapped, summary) =
-                                materialize_note_placement(&bundle, &addr, &limits)?;
-                            let recompiled =
-                                load_from_bundle(entry_path, project_root, updated_bundle)?;
+                            let started = Instant::now();
+                            let (edited, remapped, summary) = materialize_note_placement(
+                                &bundle,
+                                &addr,
+                                &limits,
+                                Some(&base_plan),
+                            )?;
+                            let mut recompiled =
+                                load_from_edited(entry_path, project_root, edited)?;
+                            recompiled.compile_ms = started.elapsed().as_millis() as u64;
                             Ok((Box::new(recompiled), remapped, summary))
                         });
                         handle
@@ -1242,6 +1279,7 @@ impl StudioApp {
                 };
                 let score_q = proj.frame_to_score_q(frame);
                 let bundle = proj.bundle.clone();
+                let base_plan = proj.plan.clone();
                 let entry_path = proj.entry_path.clone();
                 let project_root = proj.project_root.clone();
                 let limits = proj.limits;
@@ -1250,15 +1288,18 @@ impl StudioApp {
                 Task::perform(
                     async move {
                         let handle = std::thread::spawn(move || {
-                            let (updated_bundle, new_path, summary) = add_note_at_score_pos(
+                            let started = Instant::now();
+                            let (edited, new_path, summary) = add_note_at_score_pos(
                                 &bundle,
                                 &track_name,
                                 score_q,
                                 midi_pitch,
                                 &limits,
+                                Some(&base_plan),
                             )?;
-                            let recompiled =
-                                load_from_bundle(entry_path, project_root, updated_bundle)?;
+                            let mut recompiled =
+                                load_from_edited(entry_path, project_root, edited)?;
+                            recompiled.compile_ms = started.elapsed().as_millis() as u64;
                             Ok((Box::new(recompiled), new_path, summary))
                         });
                         handle
@@ -1329,6 +1370,7 @@ impl StudioApp {
                     return Task::none();
                 };
                 let bundle = proj.bundle.clone();
+                let base_plan = proj.plan.clone();
                 let entry_path = proj.entry_path.clone();
                 let project_root = proj.project_root.clone();
                 let limits = proj.limits;
@@ -1337,10 +1379,17 @@ impl StudioApp {
                 Task::perform(
                     async move {
                         let handle = std::thread::spawn(move || {
-                            let (updated_bundle, summary) =
-                                apply_note_edit(&bundle, &source_path, edit, &limits)?;
-                            let recompiled =
-                                load_from_bundle(entry_path, project_root, updated_bundle)?;
+                            let started = Instant::now();
+                            let (edited, summary) = apply_note_edit(
+                                &bundle,
+                                &source_path,
+                                edit,
+                                &limits,
+                                Some(&base_plan),
+                            )?;
+                            let mut recompiled =
+                                load_from_edited(entry_path, project_root, edited)?;
+                            recompiled.compile_ms = started.elapsed().as_millis() as u64;
                             Ok((Box::new(recompiled), summary))
                         });
                         handle
@@ -1636,6 +1685,7 @@ impl StudioApp {
                 };
                 let unit = param.unit;
                 let bundle = proj.bundle.clone();
+                let base_plan = proj.plan.clone();
                 let entry_path = proj.entry_path.clone();
                 let project_root = proj.project_root.clone();
                 let limits = proj.limits;
@@ -1644,16 +1694,19 @@ impl StudioApp {
                 Task::perform(
                     async move {
                         let handle = std::thread::spawn(move || {
-                            let (updated_bundle, summary) = apply_node_param_edit(
+                            let started = Instant::now();
+                            let (edited, summary) = apply_node_param_edit(
                                 &bundle,
                                 &node_id,
                                 &param_name,
                                 unit,
                                 value,
                                 &limits,
+                                Some(&base_plan),
                             )?;
-                            let recompiled =
-                                load_from_bundle(entry_path, project_root, updated_bundle)?;
+                            let mut recompiled =
+                                load_from_edited(entry_path, project_root, edited)?;
+                            recompiled.compile_ms = started.elapsed().as_millis() as u64;
                             Ok((Box::new(recompiled), summary))
                         });
                         handle
@@ -1691,6 +1744,7 @@ impl StudioApp {
                 self.param_drafts
                     .remove(&(node_id.clone(), param_name.clone()));
                 let bundle = proj.bundle.clone();
+                let base_plan = proj.plan.clone();
                 let entry_path = proj.entry_path.clone();
                 let project_root = proj.project_root.clone();
                 let limits = proj.limits;
@@ -1699,10 +1753,17 @@ impl StudioApp {
                 Task::perform(
                     async move {
                         let handle = std::thread::spawn(move || {
-                            let (updated_bundle, summary) =
-                                apply_node_param_reset(&bundle, &node_id, &param_name, &limits)?;
-                            let recompiled =
-                                load_from_bundle(entry_path, project_root, updated_bundle)?;
+                            let started = Instant::now();
+                            let (edited, summary) = apply_node_param_reset(
+                                &bundle,
+                                &node_id,
+                                &param_name,
+                                &limits,
+                                Some(&base_plan),
+                            )?;
+                            let mut recompiled =
+                                load_from_edited(entry_path, project_root, edited)?;
+                            recompiled.compile_ms = started.elapsed().as_millis() as u64;
                             Ok((Box::new(recompiled), summary))
                         });
                         handle

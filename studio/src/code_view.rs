@@ -312,9 +312,10 @@ mod tests {
             &["melody_chorus".into(), "f3".into()],
             NoteEdit::SetPitchMidi(71),
             &data.limits,
+            Some(&data.plan),
         )
         .expect("transpose f3 to B4");
-        let after = &edited.sources[&edited.entry];
+        let after = &edited.bundle.sources[&edited.bundle.entry];
 
         let diff = compute_line_diff(before, after, 2);
         assert_eq!(diff.added, 1);
