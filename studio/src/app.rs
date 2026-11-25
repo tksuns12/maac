@@ -20,12 +20,17 @@ use maac::PlanArtifact;
 
 use crate::analysis::{run_analysis, AnalysisSummary};
 use crate::audio::AudioEngine;
-use crate::project::{format_time, load_and_compile, ProjectData};
+use crate::editor::{
+    apply_note_edit, format_q, inspect_note_in_bundle, midi_to_pitch_symbol, NoteEdit,
+    NoteSourceInfo,
+};
+use crate::project::{format_time, load_and_compile, load_from_bundle, ProjectData};
 use crate::timeline::{track_color, TimelineAction, TimelineView};
 use crate::watcher::ProjectWatcher;
 
 const WATCH_DEBOUNCE: Duration = Duration::from_millis(120);
 const PLAYBACK_EDIT_DEBOUNCE: Duration = Duration::from_millis(80);
+const SELF_SAVE_SUPPRESS: Duration = Duration::from_millis(700);
 const CHECKPOINT_SECONDS: u64 = 4;
 
 #[derive(Debug, Clone)]
@@ -54,6 +59,33 @@ pub enum Message {
         revision: u64,
         result: Result<Box<PlanArtifact>, String>,
     },
+    SelectNote(Option<String>),
+    ClearSelection,
+    ApplyNoteEdit {
+        source_path: Vec<String>,
+        edit: NoteEdit,
+    },
+    VelocitySliderChanged(f32),
+    CommitVelocity,
+    NoteEditApplied {
+        prev_source: String,
+        summary: String,
+        result: Result<Box<ProjectData>, String>,
+    },
+    Undo,
+    Redo,
+    HistoryRestored {
+        is_undo: bool,
+        prev_source: String,
+        result: Result<Box<ProjectData>, String>,
+    },
+    SaveToDisk,
+    KeyboardNoteNudge {
+        pitch_semis: i32,
+        at_q16: i64,
+    },
+    KeyboardDeleteNote,
+    KeyboardDuplicateNote,
     GainChanged(f32),
     ZoomDelta {
         delta: f32,
@@ -88,9 +120,20 @@ pub struct StudioApp {
 
     auto_watch: bool,
     pending_watch_at: Option<Instant>,
+    last_self_save: Option<Instant>,
     compiling: bool,
     compile_error: Option<String>,
     last_reload_note: Option<String>,
+
+    // Direct editing & transactional history
+    selected_note_address: Option<String>,
+    selected_note_info: Option<NoteSourceInfo>,
+    velocity_draft: Option<f32>,
+    saved_source: Option<String>,
+    undo_stack: Vec<String>,
+    redo_stack: Vec<String>,
+    editing: bool,
+    edit_error: Option<String>,
 
     // Transport & view state
     playhead_frame: u64,
@@ -134,9 +177,18 @@ impl StudioApp {
             watcher: None,
             auto_watch: true,
             pending_watch_at: None,
+            last_self_save: None,
             compiling: false,
             compile_error: None,
             last_reload_note: None,
+            selected_note_address: None,
+            selected_note_info: None,
+            velocity_draft: None,
+            saved_source: None,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+            editing: false,
+            edit_error: None,
             playhead_frame: 0,
             checkpoint_frame: 0,
             checkpoint_count: 0,
@@ -170,9 +222,23 @@ impl StudioApp {
         (app, task)
     }
 
+    fn is_dirty(&self) -> bool {
+        match (&self.project, &self.saved_source) {
+            (Some(proj), Some(saved)) => proj
+                .bundle
+                .sources
+                .get(&proj.bundle.entry)
+                .is_some_and(|cur| cur != saved),
+            _ => false,
+        }
+    }
+
     pub fn title(&self) -> String {
         match &self.project {
-            Some(proj) => format!("MaaC Studio — {}", proj.title),
+            Some(proj) => {
+                let star = if self.is_dirty() { " *" } else { "" };
+                format!("MaaC Studio — {}{star}", proj.title)
+            }
             None => "MaaC Studio".into(),
         }
     }
@@ -184,12 +250,49 @@ impl StudioApp {
     pub fn subscription(&self) -> Subscription<Message> {
         let tick = iced::time::every(Duration::from_millis(16)).map(|_| Message::Tick);
         let keys = keyboard::on_key_press(|key, modifiers| {
-            if modifiers.command() || modifiers.control() || modifiers.alt() {
+            if modifiers.alt() {
                 return None;
+            }
+            if modifiers.command() || modifiers.control() {
+                return match key {
+                    Key::Character(ref c) if c.eq_ignore_ascii_case("z") => {
+                        if modifiers.shift() {
+                            Some(Message::Redo)
+                        } else {
+                            Some(Message::Undo)
+                        }
+                    }
+                    Key::Character(ref c) if c.eq_ignore_ascii_case("y") => Some(Message::Redo),
+                    Key::Character(ref c) if c.eq_ignore_ascii_case("s") => {
+                        Some(Message::SaveToDisk)
+                    }
+                    Key::Character(ref c) if c.eq_ignore_ascii_case("d") => {
+                        Some(Message::KeyboardDuplicateNote)
+                    }
+                    _ => None,
+                };
             }
             match key {
                 Key::Named(Named::Space) => Some(Message::TogglePlay),
                 Key::Named(Named::Home) => Some(Message::StopToStart),
+                Key::Named(Named::Escape) => Some(Message::ClearSelection),
+                Key::Named(Named::Delete | Named::Backspace) => Some(Message::KeyboardDeleteNote),
+                Key::Named(Named::ArrowUp) => Some(Message::KeyboardNoteNudge {
+                    pitch_semis: if modifiers.shift() { 12 } else { 1 },
+                    at_q16: 0,
+                }),
+                Key::Named(Named::ArrowDown) => Some(Message::KeyboardNoteNudge {
+                    pitch_semis: if modifiers.shift() { -12 } else { -1 },
+                    at_q16: 0,
+                }),
+                Key::Named(Named::ArrowRight) => Some(Message::KeyboardNoteNudge {
+                    pitch_semis: 0,
+                    at_q16: if modifiers.shift() { 4 } else { 1 },
+                }),
+                Key::Named(Named::ArrowLeft) => Some(Message::KeyboardNoteNudge {
+                    pitch_semis: 0,
+                    at_q16: if modifiers.shift() { -4 } else { -1 },
+                }),
                 Key::Character(ref c) if c.eq_ignore_ascii_case("l") => Some(Message::ToggleLoop),
                 Key::Character(ref c) if c.eq_ignore_ascii_case("s") => Some(Message::ToggleSnap),
                 Key::Character(ref c) if c.eq_ignore_ascii_case("f") => Some(Message::ToggleFollow),
@@ -391,6 +494,215 @@ impl StudioApp {
                 Task::none()
             }
 
+            Message::SelectNote(addr) => {
+                self.selected_note_address = addr;
+                self.edit_error = None;
+                self.refresh_selected_note_info();
+                Task::none()
+            }
+
+            Message::ClearSelection => {
+                self.selected_note_address = None;
+                self.selected_note_info = None;
+                self.velocity_draft = None;
+                self.edit_error = None;
+                Task::none()
+            }
+
+            Message::VelocitySliderChanged(v) => {
+                self.velocity_draft = Some(v.clamp(0.05, 1.0));
+                Task::none()
+            }
+
+            Message::CommitVelocity => {
+                if let (Some(info), Some(vel)) = (&self.selected_note_info, self.velocity_draft) {
+                    let source_path = info.path.clone();
+                    return self.update(Message::ApplyNoteEdit {
+                        source_path,
+                        edit: NoteEdit::SetVelocity(vel),
+                    });
+                }
+                Task::none()
+            }
+
+            Message::ApplyNoteEdit { source_path, edit } => {
+                if self.editing {
+                    return Task::none();
+                }
+                let Some(proj) = &self.project else {
+                    return Task::none();
+                };
+                let Some(prev_source) = proj.bundle.sources.get(&proj.bundle.entry).cloned() else {
+                    return Task::none();
+                };
+                let bundle = proj.bundle.clone();
+                let entry_path = proj.entry_path.clone();
+                let project_root = proj.project_root.clone();
+                let limits = proj.limits;
+                self.editing = true;
+                self.edit_error = None;
+                Task::perform(
+                    async move {
+                        let handle = std::thread::spawn(move || {
+                            let (updated_bundle, summary) =
+                                apply_note_edit(&bundle, &source_path, edit, &limits)?;
+                            let recompiled =
+                                load_from_bundle(entry_path, project_root, updated_bundle)?;
+                            Ok((Box::new(recompiled), summary))
+                        });
+                        handle
+                            .join()
+                            .unwrap_or_else(|_| Err("note edit worker panicked".into()))
+                    },
+                    move |res| match res {
+                        Ok((data, summary)) => Message::NoteEditApplied {
+                            prev_source: prev_source.clone(),
+                            summary,
+                            result: Ok(data),
+                        },
+                        Err(err) => Message::NoteEditApplied {
+                            prev_source: prev_source.clone(),
+                            summary: String::new(),
+                            result: Err(err),
+                        },
+                    },
+                )
+            }
+
+            Message::NoteEditApplied {
+                prev_source,
+                summary,
+                result,
+            } => {
+                self.editing = false;
+                match result {
+                    Ok(data) => {
+                        self.undo_stack.push(prev_source);
+                        if self.undo_stack.len() > 100 {
+                            self.undo_stack.remove(0);
+                        }
+                        self.redo_stack.clear();
+                        self.edit_error = None;
+                        let ms = data.compile_ms;
+                        return self.apply_in_memory_project(*data, format!("{summary} ({ms} ms)"));
+                    }
+                    Err(err) => {
+                        self.edit_error = Some(err);
+                    }
+                }
+                Task::none()
+            }
+
+            Message::Undo => {
+                if self.editing {
+                    return Task::none();
+                }
+                let Some(target_src) = self.undo_stack.pop() else {
+                    return Task::none();
+                };
+                self.spawn_history_restore(true, target_src)
+            }
+
+            Message::Redo => {
+                if self.editing {
+                    return Task::none();
+                }
+                let Some(target_src) = self.redo_stack.pop() else {
+                    return Task::none();
+                };
+                self.spawn_history_restore(false, target_src)
+            }
+
+            Message::HistoryRestored {
+                is_undo,
+                prev_source,
+                result,
+            } => {
+                self.editing = false;
+                match result {
+                    Ok(data) => {
+                        if is_undo {
+                            self.redo_stack.push(prev_source);
+                        } else {
+                            self.undo_stack.push(prev_source);
+                        }
+                        self.edit_error = None;
+                        let label = if is_undo { "Undo" } else { "Redo" };
+                        let ms = data.compile_ms;
+                        return self.apply_in_memory_project(*data, format!("{label} ({ms} ms)"));
+                    }
+                    Err(err) => {
+                        self.edit_error = Some(format!("History restore failed: {err}"));
+                    }
+                }
+                Task::none()
+            }
+
+            Message::SaveToDisk => {
+                let Some(proj) = &self.project else {
+                    return Task::none();
+                };
+                let Some(src) = proj.bundle.sources.get(&proj.bundle.entry) else {
+                    return Task::none();
+                };
+                match std::fs::write(&proj.entry_path, src) {
+                    Ok(()) => {
+                        self.saved_source = Some(src.clone());
+                        self.last_self_save = Some(Instant::now());
+                        self.pending_watch_at = None;
+                        self.edit_error = None;
+                        self.last_reload_note = Some(format!("Saved {}", proj.title));
+                    }
+                    Err(err) => {
+                        self.edit_error = Some(format!("Save failed: {err}"));
+                    }
+                }
+                Task::none()
+            }
+
+            Message::KeyboardNoteNudge {
+                pitch_semis,
+                at_q16,
+            } => {
+                let Some(info) = self.selected_note_info.clone() else {
+                    return Task::none();
+                };
+                if pitch_semis != 0 {
+                    if let Some(midi) = info.pitch_midi {
+                        return self.update(Message::ApplyNoteEdit {
+                            source_path: info.path,
+                            edit: NoteEdit::SetPitchMidi(midi + pitch_semis),
+                        });
+                    }
+                } else if at_q16 != 0 {
+                    return self.update(Message::ApplyNoteEdit {
+                        source_path: info.path,
+                        edit: NoteEdit::ShiftAtQuarter16ths(at_q16),
+                    });
+                }
+                Task::none()
+            }
+
+            Message::KeyboardDeleteNote => {
+                let Some(info) = self.selected_note_info.clone() else {
+                    return Task::none();
+                };
+                self.update(Message::ApplyNoteEdit {
+                    source_path: info.path,
+                    edit: NoteEdit::Delete,
+                })
+            }
+
+            Message::KeyboardDuplicateNote => {
+                let Some(info) = self.selected_note_info.clone() else {
+                    return Task::none();
+                };
+                self.update(Message::ApplyNoteEdit {
+                    source_path: info.path,
+                    edit: NoteEdit::Duplicate,
+                })
+            }
+
             Message::GainChanged(g) => {
                 self.audio.set_gain(g);
                 Task::none()
@@ -584,6 +896,39 @@ impl StudioApp {
                 TimelineAction::Seek(frame) => self.update(Message::Seek(frame)),
                 TimelineAction::SetLoop(range) => self.update(Message::SetLoop(range)),
                 TimelineAction::LoopRegion(span) => self.update(Message::LoopRegion(span)),
+                TimelineAction::SelectNote(addr) => self.update(Message::SelectNote(addr)),
+                TimelineAction::DragNotePitch {
+                    source_path,
+                    delta_semitones,
+                } => {
+                    let cur_midi = self
+                        .project
+                        .as_ref()
+                        .and_then(|proj| inspect_note_in_bundle(&proj.bundle, &source_path))
+                        .and_then(|info| info.pitch_midi);
+                    if let Some(midi) = cur_midi {
+                        self.update(Message::ApplyNoteEdit {
+                            source_path,
+                            edit: NoteEdit::SetPitchMidi(midi + delta_semitones),
+                        })
+                    } else {
+                        Task::none()
+                    }
+                }
+                TimelineAction::DragNoteTiming {
+                    source_path,
+                    delta_quarter_16ths,
+                } => self.update(Message::ApplyNoteEdit {
+                    source_path,
+                    edit: NoteEdit::ShiftAtQuarter16ths(delta_quarter_16ths),
+                }),
+                TimelineAction::DragNoteDuration {
+                    source_path,
+                    delta_quarter_16ths,
+                } => self.update(Message::ApplyNoteEdit {
+                    source_path,
+                    edit: NoteEdit::ShiftDurQuarter16ths(delta_quarter_16ths),
+                }),
                 TimelineAction::Zoom { delta, anchor } => {
                     self.update(Message::ZoomDelta { delta, anchor })
                 }
@@ -624,15 +969,22 @@ impl StudioApp {
                     }
                 }
 
-                // 3. Poll project file watcher (debounced) for seamless live reloads.
+                // 3. Poll project file watcher (debounced, suppressing our own saves).
                 if self.auto_watch {
+                    let suppress = self
+                        .last_self_save
+                        .is_some_and(|t| t.elapsed() < SELF_SAVE_SUPPRESS);
                     if let Some(watcher) = &self.watcher {
                         if let Some(at) = watcher.poll_latest() {
-                            self.pending_watch_at = Some(at);
+                            if !suppress {
+                                self.pending_watch_at = Some(at);
+                            }
                         }
                     }
-                    if let Some(at) = self.pending_watch_at {
-                        if at.elapsed() >= WATCH_DEBOUNCE && !self.compiling {
+                    if suppress {
+                        self.pending_watch_at = None;
+                    } else if let Some(at) = self.pending_watch_at {
+                        if at.elapsed() >= WATCH_DEBOUNCE && !self.compiling && !self.editing {
                             self.pending_watch_at = None;
                             if let Some(proj) = &self.project {
                                 self.compiling = true;
@@ -644,6 +996,82 @@ impl StudioApp {
                 Task::none()
             }
         }
+    }
+
+    fn refresh_selected_note_info(&mut self) {
+        let Some(proj) = &self.project else {
+            self.selected_note_info = None;
+            self.velocity_draft = None;
+            return;
+        };
+        let Some(addr) = self.selected_note_address.as_deref() else {
+            self.selected_note_info = None;
+            self.velocity_draft = None;
+            return;
+        };
+        if let Some(note) = proj.notes.iter().find(|n| n.address == addr) {
+            let info = inspect_note_in_bundle(&proj.bundle, &note.source_path);
+            self.velocity_draft = info
+                .as_ref()
+                .and_then(|i| i.velocity)
+                .or(Some(note.velocity));
+            self.selected_note_info = info;
+        } else {
+            self.selected_note_address = None;
+            self.selected_note_info = None;
+            self.velocity_draft = None;
+        }
+    }
+
+    fn spawn_history_restore(&mut self, is_undo: bool, target_source: String) -> Task<Message> {
+        let Some(proj) = &self.project else {
+            return Task::none();
+        };
+        let Some(prev_source) = proj.bundle.sources.get(&proj.bundle.entry).cloned() else {
+            return Task::none();
+        };
+        let mut bundle = proj.bundle.clone();
+        bundle.sources.insert(bundle.entry.clone(), target_source);
+        let entry_path = proj.entry_path.clone();
+        let project_root = proj.project_root.clone();
+        self.editing = true;
+        self.edit_error = None;
+        Task::perform(
+            async move {
+                let handle = std::thread::spawn(move || {
+                    load_from_bundle(entry_path, project_root, bundle).map(Box::new)
+                });
+                handle
+                    .join()
+                    .unwrap_or_else(|_| Err("history restore worker panicked".into()))
+            },
+            move |result| Message::HistoryRestored {
+                is_undo,
+                prev_source: prev_source.clone(),
+                result,
+            },
+        )
+    }
+
+    fn apply_in_memory_project(&mut self, data: ProjectData, status_msg: String) -> Task<Message> {
+        let track_count = data.tracks.len();
+        if self.visible_tracks.len() != track_count {
+            self.visible_tracks = vec![true; track_count];
+        }
+        let has_mix_filter = !self.solo_tracks.is_empty() || !self.muted_tracks.is_empty();
+        self.last_reload_note = Some(status_msg);
+        if !has_mix_filter {
+            if let Some(session) = &self.session {
+                session.update(&data.plan);
+            }
+            self.active_plan = Some(data.plan.clone());
+            self.project = Some(data);
+            self.refresh_selected_note_info();
+            return Task::none();
+        }
+        self.project = Some(data);
+        self.refresh_selected_note_info();
+        self.spawn_mix_update()
     }
 
     fn effective_muted_nodes(&self, proj: &ProjectData) -> HashSet<String> {
@@ -697,6 +1125,7 @@ impl StudioApp {
             prev.sample_rate_hz == data.sample_rate_hz && prev.channels == data.channels
         });
 
+        let disk_source = data.bundle.sources.get(&data.bundle.entry).cloned();
         let compile_ms = data.compile_ms;
         let track_count = data.tracks.len();
         if self.visible_tracks.len() != track_count {
@@ -704,6 +1133,13 @@ impl StudioApp {
         }
 
         if is_reload && same_format && self.session.is_some() {
+            let source_changed = self.saved_source != disk_source;
+            self.saved_source = disk_source;
+            if source_changed {
+                self.undo_stack.clear();
+                self.redo_stack.clear();
+            }
+            self.edit_error = None;
             let has_mix_filter = !self.solo_tracks.is_empty() || !self.muted_tracks.is_empty();
             self.last_reload_note = Some(format!("Reloaded in {compile_ms} ms — live update sent"));
             if !has_mix_filter {
@@ -712,9 +1148,11 @@ impl StudioApp {
                 }
                 self.active_plan = Some(data.plan.clone());
                 self.project = Some(data);
+                self.refresh_selected_note_info();
                 return Task::none();
             }
             self.project = Some(data);
+            self.refresh_selected_note_info();
             return self.spawn_mix_update();
         }
 
@@ -726,6 +1164,13 @@ impl StudioApp {
         self.playback = None;
         self.muted_tracks.clear();
         self.solo_tracks.clear();
+        self.saved_source = disk_source;
+        self.undo_stack.clear();
+        self.redo_stack.clear();
+        self.selected_note_address = None;
+        self.selected_note_info = None;
+        self.velocity_draft = None;
+        self.edit_error = None;
 
         let spacing = (data.sample_rate_hz as u64 * CHECKPOINT_SECONDS).max(4_096);
         let policy = SessionPolicy::new(spacing)
@@ -899,7 +1344,7 @@ impl StudioApp {
         let (badge_text, badge_color) =
             if self.compile_error.is_some() || self.playback_error.is_some() {
                 ("ERROR", Color::from_rgb(0.92, 0.30, 0.32))
-            } else if self.compiling {
+            } else if self.compiling || self.editing {
                 ("COMPILING", Color::from_rgb(0.55, 0.62, 0.96))
             } else if self.approximate {
                 ("APPROX", Color::from_rgb(0.95, 0.72, 0.22))
@@ -938,6 +1383,28 @@ impl StudioApp {
             None => String::new(),
         };
 
+        let dirty = self.is_dirty();
+        let can_undo = !self.undo_stack.is_empty() && !self.editing;
+        let can_redo = !self.redo_stack.is_empty() && !self.editing;
+        let undo_btn = button(text("Undo").size(12))
+            .padding([5, 8])
+            .style(studio_button_style)
+            .on_press_maybe(can_undo.then_some(Message::Undo));
+        let redo_btn = button(text("Redo").size(12))
+            .padding([5, 8])
+            .style(studio_button_style)
+            .on_press_maybe(can_redo.then_some(Message::Redo));
+        let save_btn = button(text(if dirty { "Save*" } else { "Save" }).size(12))
+            .padding([5, 9])
+            .style(move |theme, status| {
+                if dirty {
+                    accent_button_style(Color::from_rgb(0.84, 0.54, 0.16), theme, status)
+                } else {
+                    studio_button_style(theme, status)
+                }
+            })
+            .on_press_maybe(dirty.then_some(Message::SaveToDisk));
+
         let meter_text = format!(
             "L {:>3.0}% R {:>3.0}%",
             (self.peaks.0 * 100.0).min(100.0),
@@ -946,7 +1413,7 @@ impl StudioApp {
 
         let vol_slider = slider(0.0..=1.2_f32, self.audio.gain(), Message::GainChanged)
             .step(0.01_f32)
-            .width(Length::Fixed(80.0));
+            .width(Length::Fixed(72.0));
 
         let watch_toggle = toggler(self.auto_watch)
             .label("Watch")
@@ -961,7 +1428,7 @@ impl StudioApp {
             })
             .size(12),
         )
-        .padding([5, 9])
+        .padding([5, 8])
         .style(studio_button_style)
         .on_press_maybe(
             (self.project.is_some() && !self.exporting)
@@ -973,11 +1440,11 @@ impl StudioApp {
             text(if self.show_sidebar {
                 "Hide Panel"
             } else {
-                "Analysis"
+                "Panel"
             })
             .size(12),
         )
-        .padding([5, 9])
+        .padding([5, 8])
         .style(studio_button_style)
         .on_press(Message::ToggleSidebar);
 
@@ -986,23 +1453,24 @@ impl StudioApp {
             play_btn,
             stop_btn,
             loop_btn,
-            Space::with_width(6),
-            text(time_display).size(13.5),
-            Space::with_width(6),
+            Space::with_width(4),
+            text(time_display).size(13),
+            Space::with_width(4),
             status_badge,
-            Space::with_width(6),
+            Space::with_width(4),
             text(ckpt_text)
-                .size(11.5)
+                .size(11)
                 .color(Color::from_rgb(0.66, 0.72, 0.80)),
             horizontal_space(),
+            undo_btn,
+            redo_btn,
+            save_btn,
+            Space::with_width(4),
             text(meter_text)
                 .size(11)
                 .color(Color::from_rgb(0.55, 0.85, 0.72)),
-            Space::with_width(6),
             vol_slider,
-            Space::with_width(6),
             watch_toggle,
-            Space::with_width(4),
             export_btn,
             text(jit_tag)
                 .size(11)
@@ -1218,11 +1686,20 @@ impl StudioApp {
             ..Default::default()
         });
 
+        let selected_source_path = self.selected_note_address.as_deref().and_then(|addr| {
+            proj.notes
+                .iter()
+                .find(|n| n.address == addr)
+                .map(|n| n.source_path.as_slice())
+        });
+
         let timeline_canvas: Element<'a, Message> = Element::from(
             canvas(TimelineView {
                 project: proj,
                 visible_tracks: &self.visible_tracks,
                 audible_tracks,
+                selected_note_address: self.selected_note_address.as_deref(),
+                selected_source_path,
                 playhead_frame: self.playhead_frame,
                 checkpoint_frame: self.checkpoint_frame,
                 loop_range: self.loop_range,
@@ -1262,7 +1739,7 @@ impl StudioApp {
                 format_time(span.end, proj.sample_rate_hz)
             ),
             None => {
-                "Click to seek (Alt = free) · Drag ruler / Shift+drag to loop · Double-click region to loop"
+                "Click note to edit · Drag note pitch/time/edge · Click empty to seek · Drag ruler / Shift+drag to loop"
                     .into()
             }
         };
@@ -1338,6 +1815,276 @@ impl StudioApp {
                 )
                 .padding(8)
                 .width(Length::Fill),
+            );
+        }
+
+        if let Some(err) = &self.edit_error {
+            col = col.push(
+                container(
+                    text(format!("Edit: {err}"))
+                        .size(11.5)
+                        .color(Color::from_rgb(0.98, 0.56, 0.56)),
+                )
+                .padding(8)
+                .width(Length::Fill)
+                .style(|_| container::Style {
+                    background: Some(Background::Color(Color::from_rgba(0.65, 0.12, 0.14, 0.30))),
+                    border: Border {
+                        color: Color::from_rgb(0.85, 0.30, 0.32),
+                        width: 1.0,
+                        radius: 4.0.into(),
+                    },
+                    ..Default::default()
+                }),
+            );
+        }
+
+        // Direct note editor inspector
+        if let Some(note) = self
+            .selected_note_address
+            .as_deref()
+            .and_then(|addr| proj.notes.iter().find(|n| n.address == addr))
+        {
+            let track_name = proj
+                .tracks
+                .get(note.track_idx)
+                .map(|t| t.name.as_str())
+                .unwrap_or("track");
+            let track_col = track_color(note.track_idx);
+            let mut header = row![
+                text("SELECTED NOTE")
+                    .size(10.5)
+                    .color(Color::from_rgb(0.58, 0.66, 0.78)),
+                Space::with_width(6),
+                text(track_name).size(11).color(track_col),
+                horizontal_space(),
+            ]
+            .align_y(Alignment::Center);
+            if note.shared_occurrences > 1 {
+                header = header.push(
+                    container(
+                        text(format!("×{}", note.shared_occurrences))
+                            .size(10)
+                            .color(Color::BLACK),
+                    )
+                    .padding([1, 5])
+                    .style(|_| container::Style {
+                        background: Some(Background::Color(Color::from_rgb(0.92, 0.72, 0.24))),
+                        border: Border {
+                            radius: 3.0.into(),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    }),
+                );
+                header = header.push(Space::with_width(4));
+            }
+            header = header.push(
+                button(text("×").size(11))
+                    .padding([1, 6])
+                    .style(studio_button_style)
+                    .on_press(Message::ClearSelection),
+            );
+
+            let path_label = if note.source_path.is_empty() {
+                note.address.clone()
+            } else {
+                note.source_path.join(" / ")
+            };
+            let pos_label = format!(
+                "{} · {}",
+                proj.format_bar_position(note.on_frame),
+                format_time(note.on_frame, proj.sample_rate_hz)
+            );
+            let mut card = Column::new().spacing(6).push(header).push(
+                text(format!("{path_label}   ({pos_label})"))
+                    .size(11)
+                    .color(Color::from_rgb(0.76, 0.82, 0.90)),
+            );
+
+            if let Some(info) = &self.selected_note_info {
+                let busy = self.editing;
+                let sp = info.path.clone();
+
+                if info.kind == "note" {
+                    if let Some(midi) = info.pitch_midi {
+                        let pitch_str = info
+                            .pitch_symbol
+                            .clone()
+                            .unwrap_or_else(|| midi_to_pitch_symbol(midi));
+                        let p_btn = |lbl: &'static str, delta: i32| {
+                            let path = sp.clone();
+                            button(text(lbl).size(10.5))
+                                .padding([2, 6])
+                                .style(studio_button_style)
+                                .on_press_maybe((!busy).then_some(Message::ApplyNoteEdit {
+                                    source_path: path,
+                                    edit: NoteEdit::SetPitchMidi(midi + delta),
+                                }))
+                        };
+                        card = card.push(
+                            row![
+                                text("Pitch")
+                                    .size(11)
+                                    .width(Length::Fixed(34.0))
+                                    .color(Color::from_rgb(0.62, 0.68, 0.78)),
+                                p_btn("-12", -12),
+                                p_btn("-1", -1),
+                                container(text(pitch_str).size(12).color(Color::WHITE))
+                                    .width(Length::Fixed(36.0))
+                                    .center_x(Length::Fixed(36.0)),
+                                p_btn("+1", 1),
+                                p_btn("+12", 12),
+                            ]
+                            .spacing(4)
+                            .align_y(Alignment::Center),
+                        );
+                    }
+                } else {
+                    card = card.push(
+                        text(format!(
+                            "Kind: {} (timing/dur/velocity editable)",
+                            info.kind
+                        ))
+                        .size(10.5)
+                        .color(Color::from_rgb(0.64, 0.70, 0.80)),
+                    );
+                }
+
+                let at_btn = |lbl: &'static str, delta: i64| {
+                    let path = sp.clone();
+                    button(text(lbl).size(10.5))
+                        .padding([2, 5])
+                        .style(studio_button_style)
+                        .on_press_maybe((!busy).then_some(Message::ApplyNoteEdit {
+                            source_path: path,
+                            edit: NoteEdit::ShiftAtQuarter16ths(delta),
+                        }))
+                };
+                card = card.push(
+                    row![
+                        text("At")
+                            .size(11)
+                            .width(Length::Fixed(34.0))
+                            .color(Color::from_rgb(0.62, 0.68, 0.78)),
+                        at_btn("-½", -2),
+                        at_btn("-¼", -1),
+                        container(text(format_q(info.at_q.0, info.at_q.1)).size(11.5))
+                            .width(Length::Fixed(46.0))
+                            .center_x(Length::Fixed(46.0)),
+                        at_btn("+¼", 1),
+                        at_btn("+½", 2),
+                    ]
+                    .spacing(4)
+                    .align_y(Alignment::Center),
+                );
+
+                let dur_btn = |lbl: &'static str, delta: i64| {
+                    let path = sp.clone();
+                    button(text(lbl).size(10.5))
+                        .padding([2, 5])
+                        .style(studio_button_style)
+                        .on_press_maybe((!busy).then_some(Message::ApplyNoteEdit {
+                            source_path: path,
+                            edit: NoteEdit::ShiftDurQuarter16ths(delta),
+                        }))
+                };
+                card = card.push(
+                    row![
+                        text("Dur")
+                            .size(11)
+                            .width(Length::Fixed(34.0))
+                            .color(Color::from_rgb(0.62, 0.68, 0.78)),
+                        dur_btn("-¼", -1),
+                        container(text(format_q(info.dur_q.0, info.dur_q.1)).size(11.5))
+                            .width(Length::Fixed(46.0))
+                            .center_x(Length::Fixed(46.0)),
+                        dur_btn("+¼", 1),
+                        dur_btn("+½", 2),
+                    ]
+                    .spacing(4)
+                    .align_y(Alignment::Center),
+                );
+
+                let vel_val = self
+                    .velocity_draft
+                    .or(info.velocity)
+                    .unwrap_or(note.velocity);
+                let vel_slider = slider(0.05..=1.0_f32, vel_val, Message::VelocitySliderChanged)
+                    .step(0.01_f32)
+                    .on_release(Message::CommitVelocity)
+                    .width(Length::Fill);
+                card = card.push(
+                    row![
+                        text("Vel")
+                            .size(11)
+                            .width(Length::Fixed(34.0))
+                            .color(Color::from_rgb(0.62, 0.68, 0.78)),
+                        vel_slider,
+                        text(format!("{vel_val:.2}"))
+                            .size(11)
+                            .color(Color::from_rgb(0.76, 0.82, 0.90)),
+                    ]
+                    .spacing(6)
+                    .align_y(Alignment::Center),
+                );
+
+                let dup_btn = button(text("Duplicate (⌘D)").size(11))
+                    .padding([3, 8])
+                    .style(studio_button_style)
+                    .on_press_maybe((!busy).then_some(Message::ApplyNoteEdit {
+                        source_path: sp.clone(),
+                        edit: NoteEdit::Duplicate,
+                    }));
+                let del_btn = button(text("Delete (⌫)").size(11))
+                    .padding([3, 8])
+                    .style(|theme, status| {
+                        accent_button_style(Color::from_rgb(0.68, 0.22, 0.26), theme, status)
+                    })
+                    .on_press_maybe((!busy).then_some(Message::ApplyNoteEdit {
+                        source_path: sp,
+                        edit: NoteEdit::Delete,
+                    }));
+                card = card.push(row![dup_btn, horizontal_space(), del_btn].spacing(6));
+
+                if note.shared_occurrences > 1 {
+                    card = card.push(
+                        text(format!(
+                            "Edits source pattern (shared across {} notes)",
+                            note.shared_occurrences
+                        ))
+                        .size(10)
+                        .color(Color::from_rgb(0.84, 0.70, 0.36)),
+                    );
+                }
+            } else {
+                card = card.push(
+                    text(format!(
+                        "{} · vel {:.2} — defined outside entry file (read-only)",
+                        midi_to_pitch_symbol(note.midi_pitch.round() as i32),
+                        note.velocity
+                    ))
+                    .size(10.5)
+                    .color(Color::from_rgb(0.60, 0.66, 0.76)),
+                );
+            }
+
+            col = col.push(container(card).padding(9).width(Length::Fill).style(|_| {
+                container::Style {
+                    background: Some(Background::Color(Color::from_rgb(0.115, 0.132, 0.170))),
+                    border: Border {
+                        color: Color::from_rgba(0.45, 0.72, 0.98, 0.35),
+                        width: 1.0,
+                        radius: 5.0.into(),
+                    },
+                    ..Default::default()
+                }
+            }));
+        } else {
+            col = col.push(
+                text("Click any note on the piano roll to inspect & edit (↑/↓ pitch, ←/→ timing, ⌘Z undo, ⌘S save).")
+                    .size(10.5)
+                    .color(Color::from_rgb(0.50, 0.56, 0.66)),
             );
         }
 

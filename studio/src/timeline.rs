@@ -1,5 +1,5 @@
-//! Interactive iced Canvas for the bar/region ruler, piano roll, drum strip,
-//! checkpoint frontier, playhead, and draggable bar-snapped loop range.
+//! Interactive iced Canvas for the bar/region ruler, editable piano roll,
+//! drum strip, checkpoint frontier, playhead, and draggable bar-snapped loop.
 
 use std::time::Instant;
 
@@ -8,7 +8,8 @@ use iced::widget::canvas::{self, Frame, Geometry, Path, Stroke, Text};
 use iced::{Color, Point, Rectangle, Renderer, Size, Theme};
 use maac::dsp::RenderSpan;
 
-use crate::project::{format_time, ProjectData};
+use crate::editor::midi_to_pitch_symbol;
+use crate::project::{format_time, ProjectData, RollNote};
 
 pub const RULER_HEIGHT: f32 = 38.0;
 const DRUM_STRIP_HEIGHT: f32 = 54.0;
@@ -36,14 +37,49 @@ pub enum TimelineAction {
     Seek(u64),
     SetLoop(Option<RenderSpan>),
     LoopRegion(RenderSpan),
-    Zoom { delta: f32, anchor: f32 },
+    SelectNote(Option<String>),
+    DragNotePitch {
+        source_path: Vec<String>,
+        delta_semitones: i32,
+    },
+    DragNoteTiming {
+        source_path: Vec<String>,
+        delta_quarter_16ths: i64,
+    },
+    DragNoteDuration {
+        source_path: Vec<String>,
+        delta_quarter_16ths: i64,
+    },
+    Zoom {
+        delta: f32,
+        anchor: f32,
+    },
     Pan(f32),
+}
+
+#[derive(Clone, Debug)]
+enum NoteDragMode {
+    Move,
+    ResizeRight,
+}
+
+#[derive(Clone, Debug)]
+struct NoteDrag {
+    source_path: Vec<String>,
+    mode: NoteDragMode,
+    start_pos: Point,
+    current_pos: Point,
+    orig_midi: f32,
+    orig_on: u64,
+    orig_off: u64,
+    moved: bool,
 }
 
 #[derive(Default)]
 pub struct InteractionState {
     dragging_loop: Option<(u64, u64)>,
     drag_moved: bool,
+    note_drag: Option<NoteDrag>,
     shift_held: bool,
     alt_held: bool,
     last_ruler_click: Option<(Instant, f32)>,
@@ -53,6 +89,8 @@ pub struct TimelineView<'a> {
     pub project: &'a ProjectData,
     pub visible_tracks: &'a [bool],
     pub audible_tracks: Vec<bool>,
+    pub selected_note_address: Option<&'a str>,
+    pub selected_source_path: Option<&'a [String]>,
     pub playhead_frame: u64,
     pub checkpoint_frame: u64,
     pub loop_range: Option<RenderSpan>,
@@ -91,6 +129,83 @@ impl<'a> TimelineView<'a> {
             self.project.snap_frame_to_bar(frame)
         } else {
             frame
+        }
+    }
+
+    fn roll_bounds(&self, h: f32) -> (f32, f32, f32, f32) {
+        let has_hits = !self.project.hits.is_empty();
+        let drum_h = if has_hits { DRUM_STRIP_HEIGHT } else { 0.0 };
+        let roll_top = RULER_HEIGHT;
+        let roll_bottom = (h - drum_h - CHECKPOINT_BAR_HEIGHT).max(roll_top + 20.0);
+        let roll_h = roll_bottom - roll_top;
+        let pitch_span = (self.project.max_pitch - self.project.min_pitch).max(1.0);
+        let note_h = ((roll_h / pitch_span) * 0.85).clamp(2.5, 11.0);
+        (roll_top, roll_bottom, roll_h, note_h)
+    }
+
+    fn note_rect(&self, note: &RollNote, w: f32, h: f32) -> Rectangle {
+        let (roll_top, roll_bottom, roll_h, note_h) = self.roll_bounds(h);
+        let pitch_span = (self.project.max_pitch - self.project.min_pitch).max(1.0);
+        let x0 = self.frame_to_x(note.on_frame, w);
+        let x1 = self.frame_to_x(note.off_frame, w);
+        let nw = (x1 - x0).max(4.0);
+        let norm = ((note.midi_pitch - self.project.min_pitch) / pitch_span).clamp(0.0, 1.0);
+        let y = (roll_bottom - norm * roll_h - note_h * 0.5).clamp(roll_top, roll_bottom - note_h);
+        Rectangle {
+            x: x0,
+            y,
+            width: nw,
+            height: note_h,
+        }
+    }
+
+    fn hit_test_note(&self, pos: Point, w: f32, h: f32) -> Option<(&RollNote, NoteDragMode)> {
+        let (roll_top, roll_bottom, _, _) = self.roll_bounds(h);
+        if pos.y < roll_top || pos.y > roll_bottom {
+            return None;
+        }
+        let (v0, v1) = self.view_window();
+        // Search in reverse so topmost drawn notes match first; prefer exact hit,
+        // with a small vertical pad for thin zoomed-out notes.
+        for note in self.project.notes.iter().rev() {
+            if !self
+                .visible_tracks
+                .get(note.track_idx)
+                .copied()
+                .unwrap_or(true)
+            {
+                continue;
+            }
+            if (note.off_frame as f64) < v0 || (note.on_frame as f64) > v1 {
+                continue;
+            }
+            let r = self.note_rect(note, w, h);
+            let pad_y = (6.0 - r.height * 0.5).max(2.0);
+            if pos.x >= r.x - 2.0
+                && pos.x <= r.x + r.width + 3.0
+                && pos.y >= r.y - pad_y
+                && pos.y <= r.y + r.height + pad_y
+            {
+                let resize = r.width >= 10.0 && pos.x >= r.x + r.width - 5.0;
+                let mode = if resize {
+                    NoteDragMode::ResizeRight
+                } else {
+                    NoteDragMode::Move
+                };
+                return Some((note, mode));
+            }
+        }
+        None
+    }
+
+    fn quarter_frames(&self) -> f64 {
+        if self.project.bars.len() >= 2 {
+            let b0 = self.project.bars[0];
+            let b1 = self.project.bars[1];
+            let beats = b0.beats.max(1) as f64;
+            (b1.frame.saturating_sub(b0.frame) as f64 / beats).max(1.0)
+        } else {
+            self.project.sample_rate_hz as f64 * 0.5
         }
     }
 }
@@ -135,6 +250,7 @@ impl canvas::Program<TimelineAction> for TimelineView<'_> {
             canvas::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)) => {
                 if cursor.is_over(bounds) {
                     state.dragging_loop = None;
+                    state.note_drag = None;
                     return (
                         canvas::event::Status::Captured,
                         Some(TimelineAction::SetLoop(None)),
@@ -145,7 +261,6 @@ impl canvas::Program<TimelineAction> for TimelineView<'_> {
                 if let Some(pos) = cursor.position_in(bounds) {
                     let raw_frame = self.x_to_frame(pos.x, bounds.width);
                     let in_ruler = pos.y <= RULER_HEIGHT;
-                    // Double-click on a region in the ruler loops that region.
                     if in_ruler {
                         let now = Instant::now();
                         if let Some((prev_t, prev_x)) = state.last_ruler_click {
@@ -169,13 +284,42 @@ impl canvas::Program<TimelineAction> for TimelineView<'_> {
                             }
                         }
                         state.last_ruler_click = Some((now, pos.x));
-                    }
-                    let frame = self.snap_if_enabled(raw_frame, state.alt_held);
-                    if in_ruler || state.shift_held {
+                        let frame = self.snap_if_enabled(raw_frame, state.alt_held);
                         state.dragging_loop = Some((frame, frame));
                         state.drag_moved = false;
                         return (canvas::event::Status::Captured, None);
                     }
+
+                    // Shift+drag anywhere drags a loop range.
+                    if state.shift_held {
+                        let frame = self.snap_if_enabled(raw_frame, state.alt_held);
+                        state.dragging_loop = Some((frame, frame));
+                        state.drag_moved = false;
+                        return (canvas::event::Status::Captured, None);
+                    }
+
+                    // Hit-test piano roll notes for direct selection & drag-editing.
+                    if let Some((note, mode)) = self.hit_test_note(pos, bounds.width, bounds.height)
+                    {
+                        let addr = note.address.clone();
+                        state.note_drag = Some(NoteDrag {
+                            source_path: note.source_path.clone(),
+                            mode,
+                            start_pos: pos,
+                            current_pos: pos,
+                            orig_midi: note.midi_pitch,
+                            orig_on: note.on_frame,
+                            orig_off: note.off_frame,
+                            moved: false,
+                        });
+                        return (
+                            canvas::event::Status::Captured,
+                            Some(TimelineAction::SelectNote(Some(addr))),
+                        );
+                    }
+
+                    // Clicked empty space: seek playhead.
+                    let frame = self.snap_if_enabled(raw_frame, state.alt_held);
                     return (
                         canvas::event::Status::Captured,
                         Some(TimelineAction::Seek(frame)),
@@ -183,6 +327,17 @@ impl canvas::Program<TimelineAction> for TimelineView<'_> {
                 }
             }
             canvas::Event::Mouse(mouse::Event::CursorMoved { .. }) => {
+                if let Some(drag) = state.note_drag.as_mut() {
+                    if let Some(pos) = cursor.position_in(bounds) {
+                        if (pos.x - drag.start_pos.x).abs() > 4.0
+                            || (pos.y - drag.start_pos.y).abs() > 4.0
+                        {
+                            drag.moved = true;
+                        }
+                        drag.current_pos = pos;
+                        return (canvas::event::Status::Captured, None);
+                    }
+                }
                 if let Some((anchor, _)) = state.dragging_loop {
                     if let Some(pos) = cursor.position_in(bounds) {
                         let raw = self.x_to_frame(pos.x, bounds.width);
@@ -196,6 +351,56 @@ impl canvas::Program<TimelineAction> for TimelineView<'_> {
                 }
             }
             canvas::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                if let Some(drag) = state.note_drag.take() {
+                    if !drag.moved {
+                        return (canvas::event::Status::Captured, None);
+                    }
+                    let (_, _, roll_h, _) = self.roll_bounds(bounds.height);
+                    let pitch_span = (self.project.max_pitch - self.project.min_pitch).max(1.0);
+                    let dx = drag.current_pos.x - drag.start_pos.x;
+                    let dy = drag.start_pos.y - drag.current_pos.y; // up = positive semitones
+                    let (v0, v1) = self.view_window();
+                    let df = (dx as f64 / bounds.width.max(1.0) as f64) * (v1 - v0);
+                    let delta_q16 = (df / (self.quarter_frames() / 4.0)).round() as i64;
+
+                    match drag.mode {
+                        NoteDragMode::ResizeRight => {
+                            if delta_q16 != 0 {
+                                return (
+                                    canvas::event::Status::Captured,
+                                    Some(TimelineAction::DragNoteDuration {
+                                        source_path: drag.source_path,
+                                        delta_quarter_16ths: delta_q16,
+                                    }),
+                                );
+                            }
+                        }
+                        NoteDragMode::Move => {
+                            if dy.abs() >= dx.abs() {
+                                let semis = ((dy / roll_h) * pitch_span).round() as i32;
+                                if semis != 0 {
+                                    return (
+                                        canvas::event::Status::Captured,
+                                        Some(TimelineAction::DragNotePitch {
+                                            source_path: drag.source_path,
+                                            delta_semitones: semis,
+                                        }),
+                                    );
+                                }
+                            } else if delta_q16 != 0 {
+                                return (
+                                    canvas::event::Status::Captured,
+                                    Some(TimelineAction::DragNoteTiming {
+                                        source_path: drag.source_path,
+                                        delta_quarter_16ths: delta_q16,
+                                    }),
+                                );
+                            }
+                        }
+                    }
+                    return (canvas::event::Status::Captured, None);
+                }
+
                 if let Some((a, b)) = state.dragging_loop.take() {
                     let moved = state.drag_moved;
                     state.drag_moved = false;
@@ -243,9 +448,7 @@ impl canvas::Program<TimelineAction> for TimelineView<'_> {
 
         let has_hits = !self.project.hits.is_empty();
         let drum_h = if has_hits { DRUM_STRIP_HEIGHT } else { 0.0 };
-        let roll_top = RULER_HEIGHT;
-        let roll_bottom = (h - drum_h - CHECKPOINT_BAR_HEIGHT).max(roll_top + 20.0);
-        let roll_h = roll_bottom - roll_top;
+        let (roll_top, roll_bottom, roll_h, note_h) = self.roll_bounds(h);
 
         // 1. Ruler background & declared regions.
         frame.fill_rectangle(
@@ -408,8 +611,7 @@ impl canvas::Program<TimelineAction> for TimelineView<'_> {
             }
         }
 
-        // 4. Piano roll notes (dimmed when track is muted).
-        let note_h = ((roll_h / pitch_span) * 0.85).clamp(2.5, 11.0);
+        // 4. Piano roll notes (dimmed when muted; highlighted when selected or sharing source).
         for note in &self.project.notes {
             if !self
                 .visible_tracks
@@ -422,28 +624,107 @@ impl canvas::Program<TimelineAction> for TimelineView<'_> {
             if (note.off_frame as f64) < v0 || (note.on_frame as f64) > v1 {
                 continue;
             }
-            let x0 = self.frame_to_x(note.on_frame, w).clamp(0.0, w);
-            let x1 = self.frame_to_x(note.off_frame, w).clamp(0.0, w);
+            let r = self.note_rect(note, w, h);
+            let x0 = r.x.clamp(0.0, w);
+            let x1 = (r.x + r.width).clamp(0.0, w);
             let nw = (x1 - x0).max(2.0);
-            let norm = ((note.midi_pitch - min_p) / pitch_span).clamp(0.0, 1.0);
-            let y =
-                (roll_bottom - norm * roll_h - note_h * 0.5).clamp(roll_top, roll_bottom - note_h);
             let base = track_color(note.track_idx);
             let audible = self
                 .audible_tracks
                 .get(note.track_idx)
                 .copied()
                 .unwrap_or(true);
-            let alpha = if audible {
+            let is_selected = self
+                .selected_note_address
+                .is_some_and(|addr| addr == note.address);
+            let is_sibling = !is_selected
+                && self
+                    .selected_source_path
+                    .is_some_and(|sp| !sp.is_empty() && sp == note.source_path.as_slice());
+            let alpha = if is_selected {
+                1.0
+            } else if audible {
                 (0.35 + 0.65 * note.velocity).clamp(0.3, 1.0)
             } else {
                 0.15
             };
             frame.fill_rectangle(
-                Point::new(x0, y),
+                Point::new(x0, r.y),
                 Size::new(nw, note_h),
                 Color::from_rgba(base.r, base.g, base.b, alpha),
             );
+            if is_selected {
+                frame.stroke(
+                    &Path::rectangle(
+                        Point::new(x0 - 1.0, r.y - 1.0),
+                        Size::new(nw + 2.0, note_h + 2.0),
+                    ),
+                    Stroke::default().with_color(Color::WHITE).with_width(1.8),
+                );
+            } else if is_sibling {
+                frame.stroke(
+                    &Path::rectangle(Point::new(x0, r.y), Size::new(nw, note_h)),
+                    Stroke::default()
+                        .with_color(Color::from_rgba(1.0, 1.0, 1.0, 0.45))
+                        .with_width(1.0),
+                );
+            }
+        }
+
+        // Live drag ghost preview for pitch/timing/duration edits.
+        if let Some(drag) = state.note_drag.as_ref().filter(|d| d.moved) {
+            let dx = drag.current_pos.x - drag.start_pos.x;
+            let dy = drag.start_pos.y - drag.current_pos.y;
+            let mut gx0 = self.frame_to_x(drag.orig_on, w);
+            let mut gx1 = self.frame_to_x(drag.orig_off, w);
+            let mut gmidi = drag.orig_midi;
+            let label = match drag.mode {
+                NoteDragMode::ResizeRight => {
+                    gx1 = (gx1 + dx).max(gx0 + 4.0);
+                    let df = (dx as f64 / w.max(1.0) as f64) * (v1 - v0);
+                    let q16 = (df / (self.quarter_frames() / 4.0)).round() as i64;
+                    format!("dur {:+}/4q", q16)
+                }
+                NoteDragMode::Move => {
+                    if dy.abs() >= dx.abs() {
+                        let semis = ((dy / roll_h) * pitch_span).round() as i32;
+                        gmidi = (drag.orig_midi + semis as f32).clamp(min_p, max_p);
+                        format!(
+                            "{} ({:+})",
+                            midi_to_pitch_symbol(gmidi.round() as i32),
+                            semis
+                        )
+                    } else {
+                        gx0 += dx;
+                        gx1 += dx;
+                        let df = (dx as f64 / w.max(1.0) as f64) * (v1 - v0);
+                        let q16 = (df / (self.quarter_frames() / 4.0)).round() as i64;
+                        format!("at {:+}/4q", q16)
+                    }
+                }
+            };
+            let norm = ((gmidi - min_p) / pitch_span).clamp(0.0, 1.0);
+            let gy =
+                (roll_bottom - norm * roll_h - note_h * 0.5).clamp(roll_top, roll_bottom - note_h);
+            let gw = (gx1 - gx0).max(4.0);
+            frame.fill_rectangle(
+                Point::new(gx0, gy),
+                Size::new(gw, note_h),
+                Color::from_rgba(1.0, 1.0, 1.0, 0.35),
+            );
+            frame.stroke(
+                &Path::rectangle(Point::new(gx0, gy), Size::new(gw, note_h)),
+                Stroke::default()
+                    .with_color(Color::from_rgb(0.40, 0.90, 1.0))
+                    .with_width(1.6),
+            );
+            frame.fill_text(Text {
+                content: label,
+                position: Point::new(gx0 + 4.0, (gy - 14.0).max(roll_top + 2.0)),
+                color: Color::from_rgb(0.90, 0.98, 1.0),
+                size: iced::Pixels(11.0),
+                ..Text::default()
+            });
         }
 
         // 5. Bottom drum / percussion hit strip.
@@ -556,12 +837,24 @@ impl canvas::Program<TimelineAction> for TimelineView<'_> {
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> mouse::Interaction {
+        if let Some(drag) = &state.note_drag {
+            return match drag.mode {
+                NoteDragMode::ResizeRight => mouse::Interaction::ResizingHorizontally,
+                NoteDragMode::Move => mouse::Interaction::Grabbing,
+            };
+        }
         if state.dragging_loop.is_some() {
             return mouse::Interaction::ResizingHorizontally;
         }
         if let Some(pos) = cursor.position_in(bounds) {
             if pos.y <= RULER_HEIGHT || state.shift_held {
                 return mouse::Interaction::Crosshair;
+            }
+            if let Some((_, mode)) = self.hit_test_note(pos, bounds.width, bounds.height) {
+                return match mode {
+                    NoteDragMode::ResizeRight => mouse::Interaction::ResizingHorizontally,
+                    NoteDragMode::Move => mouse::Interaction::Grab,
+                };
             }
             return mouse::Interaction::Pointer;
         }

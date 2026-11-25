@@ -1,6 +1,7 @@
 mod analysis;
 mod app;
 mod audio;
+mod editor;
 mod project;
 mod timeline;
 mod watcher;

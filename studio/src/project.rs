@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use maac::analyze::meter_of;
+use maac::bundle::SourceBundle;
 use maac::bundle_fs::load_bundle;
 use maac::compiler::compile_bundle_artifact_with_limits;
 use maac::music::MeterMap;
@@ -30,6 +31,9 @@ pub struct BarTick {
 
 #[derive(Clone, Debug)]
 pub struct RollNote {
+    pub address: String,
+    pub source_path: Vec<String>,
+    pub shared_occurrences: usize,
     pub track_idx: usize,
     pub on_frame: u64,
     pub off_frame: u64,
@@ -56,6 +60,7 @@ pub struct ProjectData {
     pub entry_path: PathBuf,
     pub project_root: PathBuf,
     pub title: String,
+    pub bundle: SourceBundle,
     pub plan: PlanArtifact,
     pub plan_json: Option<Arc<serde_json::Value>>,
     pub limits: PlanLimits,
@@ -158,7 +163,6 @@ impl ProjectData {
 }
 
 pub fn load_and_compile(entry_path: &Path) -> Result<ProjectData, String> {
-    let started = Instant::now();
     let canonical_entry = std::fs::canonicalize(entry_path)
         .map_err(|err| format!("cannot open {}: {err}", entry_path.display()))?;
     let project_root = canonical_entry
@@ -173,6 +177,16 @@ pub fn load_and_compile(entry_path: &Path) -> Result<ProjectData, String> {
             .collect::<Vec<_>>()
             .join("\n")
     })?;
+
+    load_from_bundle(canonical_entry, project_root, bundle)
+}
+
+pub fn load_from_bundle(
+    canonical_entry: PathBuf,
+    project_root: PathBuf,
+    bundle: SourceBundle,
+) -> Result<ProjectData, String> {
+    let started = Instant::now();
 
     let meter = bundle
         .sources
@@ -202,6 +216,7 @@ pub fn load_and_compile(entry_path: &Path) -> Result<ProjectData, String> {
     let mut tracks: Vec<TrackInfo> = Vec::new();
     let mut notes: Vec<RollNote> = Vec::new();
     let mut hits: Vec<RollHit> = Vec::new();
+    let mut source_counts: BTreeMap<Vec<String>, usize> = BTreeMap::new();
     let mut min_pitch = f32::INFINITY;
     let mut max_pitch = f32::NEG_INFINITY;
 
@@ -237,7 +252,13 @@ pub fn load_and_compile(entry_path: &Path) -> Result<ProjectData, String> {
                     .min(total_frames);
                 let vel = velocity.to_f32().unwrap_or(0.7).clamp(0.05, 1.0);
                 tracks[track_idx].note_count += 1;
+                if !ev.source.path.is_empty() {
+                    *source_counts.entry(ev.source.path.clone()).or_insert(0) += 1;
+                }
                 notes.push(RollNote {
+                    address: ev.address,
+                    source_path: ev.source.path,
+                    shared_occurrences: 1,
                     track_idx,
                     on_frame: ev.on_frame,
                     off_frame: off_frame.max(ev.on_frame + 1),
@@ -255,6 +276,12 @@ pub fn load_and_compile(entry_path: &Path) -> Result<ProjectData, String> {
                 });
             }
             EventKind::Message { .. } => {}
+        }
+    }
+
+    for note in &mut notes {
+        if let Some(&count) = source_counts.get(&note.source_path) {
+            note.shared_occurrences = count;
         }
     }
 
@@ -289,6 +316,7 @@ pub fn load_and_compile(entry_path: &Path) -> Result<ProjectData, String> {
         entry_path: canonical_entry,
         project_root,
         title,
+        bundle,
         plan,
         plan_json,
         limits,
