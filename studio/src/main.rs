@@ -1,6 +1,7 @@
 mod analysis;
 mod app;
 mod audio;
+mod automation;
 mod code_view;
 mod editor;
 mod mixer;

@@ -22,6 +22,7 @@ pub struct NoteSourceInfo {
     pub kind: String,
     pub pitch_symbol: Option<String>,
     pub pitch_midi: Option<i32>,
+    pub hit_key: Option<String>,
     pub at_q: (i64, i64),
     pub dur_q: (i64, i64),
     pub velocity: Option<f32>,
@@ -31,6 +32,7 @@ pub struct NoteSourceInfo {
 #[derive(Clone, Debug)]
 pub enum NoteEdit {
     SetPitchMidi(i32),
+    SetHitKey(String),
     ShiftAtQuarter16ths(i64),
     ShiftDurQuarter16ths(i64),
     SetVelocity(f32),
@@ -106,7 +108,7 @@ pub fn inspect_note_in_bundle(
     let tree = doc.authored().tree();
     let obj = lookup_object(tree, source_path)?;
     let kind = obj.get("kind")?.as_str()?.to_owned();
-    if kind != "note" && kind != "chord" {
+    if kind != "note" && kind != "chord" && kind != "hit" {
         return None;
     }
     let fields = obj.get("fields")?.as_object()?;
@@ -114,13 +116,18 @@ pub fn inspect_note_in_bundle(
     let dur_q = fields
         .get("dur")
         .and_then(read_quantity_q)
-        .unwrap_or((1, 1));
+        .unwrap_or((1, 2));
     let pitch_symbol = fields
         .get("pitch")
         .and_then(|v| (v.get("t")?.as_str()? == "symbol").then(|| v.get("v")?.as_str()))
         .flatten()
         .map(str::to_owned);
     let pitch_midi = pitch_symbol.as_deref().and_then(pitch_symbol_to_midi);
+    let hit_key = fields
+        .get("key")
+        .and_then(|v| (v.get("t")?.as_str()? == "string").then(|| v.get("v")?.as_str()))
+        .flatten()
+        .map(str::to_owned);
     let velocity = fields.get("velocity").and_then(read_number_f32);
 
     let pattern_length_q = if source_path.len() >= 2 {
@@ -136,6 +143,7 @@ pub fn inspect_note_in_bundle(
         kind,
         pitch_symbol,
         pitch_midi,
+        hit_key,
         at_q,
         dur_q,
         velocity,
@@ -539,6 +547,204 @@ pub fn add_note_at_score_pos(
     Ok((updated, new_path, summary))
 }
 
+/// Insert a new drum `hit` into the entry document's leaf `pattern` covering
+/// `(track_name, score_q)`.
+pub fn add_hit_at_score_pos(
+    bundle: &SourceBundle,
+    track_name: &str,
+    score_q: f64,
+    key: &str,
+    velocity: f32,
+    limits: &PlanLimits,
+) -> Result<(SourceBundle, Vec<String>, String), String> {
+    let entry_src = bundle
+        .sources
+        .get(&bundle.entry)
+        .ok_or_else(|| "missing entry source in bundle".to_string())?;
+    let mut doc =
+        SourceDocument::parse(entry_src).map_err(|err| format!("{}: {}", err.code, err.message))?;
+
+    let tree = doc.authored().tree().clone();
+    let objects = tree
+        .get("objects")
+        .and_then(|v| v.as_object())
+        .ok_or_else(|| "missing objects map".to_string())?;
+
+    let track_ids: BTreeSet<String> = objects
+        .iter()
+        .filter_map(|(id, obj)| {
+            if obj.get("kind")?.as_str()? != "track" {
+                return None;
+            }
+            let target_node = obj
+                .pointer("/fields/target/path/0")
+                .and_then(|v| v.as_str())?;
+            (target_node == track_name).then(|| id.clone())
+        })
+        .collect();
+    if track_ids.is_empty() {
+        return Err(format!(
+            "no editable track targeting `{track_name}` in entry document"
+        ));
+    }
+
+    let mut chosen: Option<(String, f64)> = None;
+    let mut nearest: Option<(f64, String, f64)> = None;
+    for obj in objects.values() {
+        if obj.get("kind").and_then(|k| k.as_str()) != Some("place") {
+            continue;
+        }
+        let Some(trk_id) = obj.pointer("/fields/track/path/0").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        if !track_ids.contains(trk_id) {
+            continue;
+        }
+        let Some(pat_id) = obj
+            .pointer("/fields/pattern/path/0")
+            .and_then(|v| v.as_str())
+        else {
+            continue;
+        };
+        let Some(pat_len) = pattern_length_f64(objects, pat_id) else {
+            continue;
+        };
+        let place_at = obj
+            .pointer("/fields/at")
+            .and_then(read_quantity_q)
+            .map(frac_to_f64)
+            .unwrap_or(0.0);
+        let count = obj
+            .pointer("/fields/count")
+            .and_then(read_number_f32)
+            .map(|c| c.round().max(1.0) as i64)
+            .unwrap_or(1);
+        let total_len = pat_len * (count as f64);
+        if score_q >= place_at - 0.01 && score_q < place_at + total_len - 0.01 {
+            chosen = Some((pat_id.to_owned(), (score_q - place_at).rem_euclid(pat_len)));
+            break;
+        }
+        let dist = if score_q < place_at {
+            place_at - score_q
+        } else {
+            score_q - (place_at + total_len)
+        };
+        if nearest.as_ref().is_none_or(|n| dist < n.0) {
+            let clamped = (score_q - place_at).clamp(0.0, (pat_len - 0.25).max(0.0));
+            nearest = Some((dist, pat_id.to_owned(), clamped));
+        }
+    }
+
+    let (mut pat_id, mut local_q) = chosen
+        .or_else(|| nearest.map(|(_, p, q)| (p, q)))
+        .ok_or_else(|| format!("no editable placement found for drum track `{track_name}`"))?;
+
+    // Descend through nested `use` children to find a leaf pattern.
+    for _ in 0..8 {
+        let Some(pat_obj) = objects.get(&pat_id) else {
+            break;
+        };
+        let Some(children) = pat_obj.get("children").and_then(|v| v.as_object()) else {
+            break;
+        };
+        let matching_use = children.values().find_map(|child| {
+            if child.get("kind").and_then(|k| k.as_str()) != Some("use") {
+                return None;
+            }
+            let target_pat = child
+                .pointer("/fields/pattern/path/0")
+                .and_then(|v| v.as_str())?;
+            let child_len = pattern_length_f64(objects, target_pat)?;
+            let use_at = child
+                .pointer("/fields/at")
+                .and_then(read_quantity_q)
+                .map(frac_to_f64)
+                .unwrap_or(0.0);
+            let count = child
+                .pointer("/fields/count")
+                .and_then(read_number_f32)
+                .map(|c| c.round().max(1.0) as i64)
+                .unwrap_or(1);
+            let total = child_len * (count as f64);
+            if local_q >= use_at - 0.01 && local_q < use_at + total - 0.01 {
+                Some((
+                    target_pat.to_owned(),
+                    (local_q - use_at).rem_euclid(child_len),
+                ))
+            } else {
+                None
+            }
+        });
+        if let Some((next_pat, next_q)) = matching_use {
+            pat_id = next_pat;
+            local_q = next_q;
+        } else {
+            break;
+        }
+    }
+
+    let leaf_pat = objects
+        .get(&pat_id)
+        .filter(|o| o.get("kind").and_then(|k| k.as_str()) == Some("pattern"))
+        .ok_or_else(|| format!("target pattern `{pat_id}` is not editable in entry document"))?;
+    let pat_len_q = leaf_pat
+        .pointer("/fields/length")
+        .and_then(read_quantity_q)
+        .unwrap_or((4, 1));
+    let pat_len_f = frac_to_f64(pat_len_q);
+    let q16 = (local_q * 4.0)
+        .round()
+        .clamp(0.0, ((pat_len_f * 4.0) - 1.0).max(0.0)) as i64;
+
+    let pct = (velocity.clamp(0.05, 1.0) * 100.0).round() as i64;
+    let (vn, vd) = reduce_frac(pct, 100);
+
+    let existing: BTreeSet<String> = leaf_pat
+        .get("children")
+        .and_then(|v| v.as_object())
+        .map(|m| m.keys().cloned().collect())
+        .unwrap_or_default();
+    let mut suffix = 1usize;
+    let new_id = loop {
+        let candidate = format!("hit_{suffix}");
+        if !existing.contains(&candidate) {
+            break candidate;
+        }
+        suffix += 1;
+    };
+
+    let hit_obj = json!({
+        "kind": "hit",
+        "fields": {
+            "at": quantity_q_json(q16, 4),
+            "key": { "t": "string", "v": key },
+            "velocity": { "t": "number", "n": vn.to_string(), "d": vd.to_string() }
+        },
+        "children": {}
+    });
+
+    let op = Operation::InsertObject {
+        parent: vec![pat_id.clone()],
+        id: new_id.clone(),
+        object_value: hit_obj,
+    };
+    let tx = Transaction::new(doc.revision().to_owned(), vec![op])
+        .map_err(|err| format!("{}: {}", err.code, err.message))?;
+    let context = BundleEditContext::new(bundle)
+        .map_err(|err| format!("{}: {}", err.code, err.message))?
+        .checking_compile(*limits);
+    doc.apply(&tx, &context)
+        .map_err(|err| format!("{}: {}", err.code, err.message))?;
+
+    let mut updated = bundle.clone();
+    updated
+        .sources
+        .insert(updated.entry.clone(), doc.source().to_owned());
+    let new_path = vec![pat_id.clone(), new_id];
+    let summary = format!("Added hit `{key}` in {pat_id} @ {}", format_q(q16, 4));
+    Ok((updated, new_path, summary))
+}
+
 fn pattern_length_f64(objects: &serde_json::Map<String, Value>, pat_id: &str) -> Option<f64> {
     let pat = objects.get(pat_id)?;
     if pat.get("kind")?.as_str()? != "pattern" {
@@ -590,6 +796,19 @@ fn build_operations(
                 expect_absent: false,
             };
             Ok((vec![op], format!("Pitch → {symbol}")))
+        }
+        NoteEdit::SetHitKey(key) => {
+            if info.kind != "hit" {
+                return Err("kit piece key editing is supported for `hit` objects".into());
+            }
+            let op = Operation::Set {
+                object: info.path.clone(),
+                field: vec!["key".into()],
+                value: json!({ "t": "string", "v": key }),
+                expect: None,
+                expect_absent: false,
+            };
+            Ok((vec![op], format!("Hit key → {key}")))
         }
         NoteEdit::ShiftAtQuarter16ths(delta_16ths) => {
             let (mut num, mut den) = add_frac(info.at_q, (delta_16ths, 4));
@@ -944,5 +1163,36 @@ mod tests {
         let recompiled = load_from_bundle(data.entry_path, data.project_root, edited)
             .expect("recompile ferry with added note");
         assert!(recompiled.notes.len() > data.notes.len());
+    }
+
+    #[test]
+    fn edits_and_adds_drum_hits_in_ferry() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../examples/ferry/ferry.maac");
+        let data = load_and_compile(&path).expect("compile ferry");
+        let hit = data.hits.first().expect("at least one drum hit in ferry");
+        let info = inspect_note_in_bundle(&data.bundle, &hit.source_path)
+            .expect("inspect drum hit in ferry");
+        assert_eq!(info.kind, "hit");
+        assert!(info.hit_key.is_some());
+
+        let (b1, _) = apply_note_edit(
+            &data.bundle,
+            &hit.source_path,
+            NoteEdit::SetVelocity(0.92),
+            &data.limits,
+        )
+        .expect("set drum hit velocity");
+        let info1 = inspect_note_in_bundle(&b1, &hit.source_path).unwrap();
+        assert!((info1.velocity.unwrap() - 0.92).abs() < 0.02);
+
+        let (b2, new_path, _) =
+            add_hit_at_score_pos(&b1, "drums", 18.0, "kick", 0.85, &data.limits)
+                .expect("add drum hit in ferry");
+        let added = inspect_note_in_bundle(&b2, &new_path).expect("inspect added hit");
+        assert_eq!(added.kind, "hit");
+        assert_eq!(added.hit_key.as_deref(), Some("kick"));
+        let recompiled = load_from_bundle(data.entry_path, data.project_root, b2)
+            .expect("recompile ferry with added hit");
+        assert!(recompiled.hits.len() > data.hits.len());
     }
 }

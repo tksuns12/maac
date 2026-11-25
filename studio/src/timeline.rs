@@ -10,10 +10,12 @@ use iced::{Color, Point, Rectangle, Renderer, Size, Theme};
 use maac::dsp::RenderSpan;
 
 use crate::editor::midi_to_pitch_symbol;
-use crate::project::{format_time, ProjectData, RollNote};
+use crate::mixer::format_param_value;
+use crate::project::{format_time, ProjectData, RollHit, RollNote};
 
 pub const RULER_HEIGHT: f32 = 38.0;
-const DRUM_STRIP_HEIGHT: f32 = 54.0;
+const AUTO_LANE_HEIGHT: f32 = 64.0;
+const DRUM_STRIP_HEIGHT: f32 = 56.0;
 const CHECKPOINT_BAR_HEIGHT: f32 = 5.0;
 
 pub const TRACK_PALETTE: [Color; 10] = [
@@ -44,6 +46,29 @@ pub enum TimelineAction {
     AddNoteAt {
         frame: u64,
         midi_pitch: i32,
+    },
+    SelectHit(String),
+    DragHitVelocity {
+        source_path: Vec<String>,
+        velocity: f32,
+    },
+    AddHitAt {
+        frame: u64,
+        velocity: f32,
+    },
+    SelectAutoPoint {
+        lane_idx: usize,
+        point_idx: usize,
+    },
+    DragAutoPointValue {
+        lane_idx: usize,
+        point_idx: usize,
+        value: f32,
+    },
+    AddAutoPoint {
+        lane_idx: usize,
+        frame: u64,
+        value: f32,
     },
     DragNotePitch {
         source_path: Vec<String>,
@@ -82,12 +107,33 @@ struct NoteDrag {
     moved: bool,
 }
 
+#[derive(Clone, Debug)]
+struct HitDrag {
+    source_path: Vec<String>,
+    start_pos: Point,
+    current_pos: Point,
+    orig_on: u64,
+    orig_velocity: f32,
+    moved: bool,
+}
+
+#[derive(Clone, Debug)]
+struct AutoPointDrag {
+    lane_idx: usize,
+    point_idx: usize,
+    start_pos: Point,
+    current_pos: Point,
+    moved: bool,
+}
+
 #[derive(Default)]
 pub struct InteractionState {
     dragging_loop: Option<(u64, u64)>,
     drag_moved: bool,
     marquee: Option<(Point, Point)>,
     note_drag: Option<NoteDrag>,
+    hit_drag: Option<HitDrag>,
+    auto_drag: Option<AutoPointDrag>,
     shift_held: bool,
     alt_held: bool,
     cmd_held: bool,
@@ -101,6 +147,10 @@ pub struct TimelineView<'a> {
     pub audible_tracks: Vec<bool>,
     pub selected_notes: &'a HashSet<String>,
     pub selected_source_path: Option<&'a [String]>,
+    pub selected_hit_address: Option<&'a str>,
+    pub show_automation: bool,
+    pub active_auto_lane: usize,
+    pub selected_auto_point: Option<(usize, usize)>,
     pub playhead_frame: u64,
     pub checkpoint_frame: u64,
     pub loop_range: Option<RenderSpan>,
@@ -142,15 +192,107 @@ impl<'a> TimelineView<'a> {
         }
     }
 
+    fn has_auto_lane(&self) -> bool {
+        self.show_automation && !self.project.automations.is_empty()
+    }
+
     fn roll_bounds(&self, h: f32) -> (f32, f32, f32, f32) {
         let has_hits = !self.project.hits.is_empty();
         let drum_h = if has_hits { DRUM_STRIP_HEIGHT } else { 0.0 };
+        let auto_h = if self.has_auto_lane() {
+            AUTO_LANE_HEIGHT
+        } else {
+            0.0
+        };
         let roll_top = RULER_HEIGHT;
-        let roll_bottom = (h - drum_h - CHECKPOINT_BAR_HEIGHT).max(roll_top + 20.0);
+        let roll_bottom = (h - auto_h - drum_h - CHECKPOINT_BAR_HEIGHT).max(roll_top + 20.0);
         let roll_h = roll_bottom - roll_top;
         let pitch_span = (self.project.max_pitch - self.project.min_pitch).max(1.0);
         let note_h = ((roll_h / pitch_span) * 0.85).clamp(2.5, 11.0);
         (roll_top, roll_bottom, roll_h, note_h)
+    }
+
+    fn auto_bounds(&self, h: f32) -> Option<(f32, f32)> {
+        if !self.has_auto_lane() {
+            return None;
+        }
+        let (_, roll_bottom, _, _) = self.roll_bounds(h);
+        Some((roll_bottom, roll_bottom + AUTO_LANE_HEIGHT))
+    }
+
+    fn drum_bounds(&self, h: f32) -> Option<(f32, f32)> {
+        if self.project.hits.is_empty() {
+            return None;
+        }
+        let top = match self.auto_bounds(h) {
+            Some((_, ab)) => ab,
+            None => self.roll_bounds(h).1,
+        };
+        Some((top, top + DRUM_STRIP_HEIGHT))
+    }
+
+    fn auto_val_to_y(&self, v: f32, top: f32, bottom: f32, min_v: f32, max_v: f32) -> f32 {
+        let inner_top = top + 16.0;
+        let inner_bot = bottom - 7.0;
+        let span = (max_v - min_v).max(1e-4);
+        let norm = ((v - min_v) / span).clamp(0.0, 1.0);
+        inner_bot - norm * (inner_bot - inner_top)
+    }
+
+    fn auto_y_to_val(&self, y: f32, top: f32, bottom: f32, min_v: f32, max_v: f32) -> f32 {
+        let inner_top = top + 16.0;
+        let inner_bot = bottom - 7.0;
+        let norm = ((inner_bot - y) / (inner_bot - inner_top).max(1.0)).clamp(0.0, 1.0);
+        min_v + norm * (max_v - min_v)
+    }
+
+    fn hit_test_auto_point(&self, pos: Point, w: f32, h: f32) -> Option<(usize, usize)> {
+        let (top, bottom) = self.auto_bounds(h)?;
+        if pos.y < top || pos.y > bottom {
+            return None;
+        }
+        let lane_idx = self
+            .active_auto_lane
+            .min(self.project.automations.len().saturating_sub(1));
+        let lane = self.project.automations.get(lane_idx)?;
+        let mut best: Option<(f32, usize)> = None;
+        for pt in &lane.points {
+            let px = self.frame_to_x(pt.frame, w);
+            let py = self.auto_val_to_y(pt.value, top, bottom, lane.min_val, lane.max_val);
+            let dist = ((pos.x - px).powi(2) + (pos.y - py).powi(2)).sqrt();
+            if dist <= 10.0 && best.is_none_or(|(d, _)| dist < d) {
+                best = Some((dist, pt.index));
+            }
+        }
+        best.map(|(_, pidx)| (lane_idx, pidx))
+    }
+
+    fn hit_test_hit(&self, pos: Point, w: f32, h: f32) -> Option<&RollHit> {
+        let (strip_top, strip_bottom) = self.drum_bounds(h)?;
+        if pos.y < strip_top || pos.y > strip_bottom {
+            return None;
+        }
+        let (v0, v1) = self.view_window();
+        let mut best: Option<(f32, &RollHit)> = None;
+        for hit in &self.project.hits {
+            if !self
+                .visible_tracks
+                .get(hit.track_idx)
+                .copied()
+                .unwrap_or(true)
+            {
+                continue;
+            }
+            if (hit.on_frame as f64) < v0 || (hit.on_frame as f64) > v1 {
+                continue;
+            }
+            let x = self.frame_to_x(hit.on_frame, w);
+            let dx = (pos.x - (x + 1.25)).abs();
+            if dx <= 5.5 && best.is_none_or(|(d, _)| dx < d) {
+                best = Some((dx, hit));
+            }
+        }
+        best.map(|(_, hit)| hit)
     }
 
     fn note_rect(&self, note: &RollNote, w: f32, h: f32) -> Rectangle {
@@ -300,6 +442,8 @@ impl canvas::Program<TimelineAction> for TimelineView<'_> {
                 if cursor.is_over(bounds) {
                     state.dragging_loop = None;
                     state.note_drag = None;
+                    state.hit_drag = None;
+                    state.auto_drag = None;
                     state.marquee = None;
                     return (
                         canvas::event::Status::Captured,
@@ -386,6 +530,113 @@ impl canvas::Program<TimelineAction> for TimelineView<'_> {
                         return (canvas::event::Status::Captured, None);
                     }
 
+                    // 1. Hit-test automation lane control points & double-click to add point.
+                    if let Some((auto_top, auto_bot)) = self.auto_bounds(bounds.height) {
+                        if pos.y >= auto_top && pos.y <= auto_bot {
+                            if let Some((lane_idx, point_idx)) =
+                                self.hit_test_auto_point(pos, bounds.width, bounds.height)
+                            {
+                                state.last_empty_click = None;
+                                state.auto_drag = Some(AutoPointDrag {
+                                    lane_idx,
+                                    point_idx,
+                                    start_pos: pos,
+                                    current_pos: pos,
+                                    moved: false,
+                                });
+                                return (
+                                    canvas::event::Status::Captured,
+                                    Some(TimelineAction::SelectAutoPoint {
+                                        lane_idx,
+                                        point_idx,
+                                    }),
+                                );
+                            }
+                            let now = Instant::now();
+                            if let Some((prev_t, prev_p)) = state.last_empty_click {
+                                if now.duration_since(prev_t).as_millis() < 360
+                                    && (pos.x - prev_p.x).abs() < 10.0
+                                    && (pos.y - prev_p.y).abs() < 10.0
+                                {
+                                    state.last_empty_click = None;
+                                    let lane_idx = self
+                                        .active_auto_lane
+                                        .min(self.project.automations.len().saturating_sub(1));
+                                    if let Some(lane) = self.project.automations.get(lane_idx) {
+                                        let value = self.auto_y_to_val(
+                                            pos.y,
+                                            auto_top,
+                                            auto_bot,
+                                            lane.min_val,
+                                            lane.max_val,
+                                        );
+                                        return (
+                                            canvas::event::Status::Captured,
+                                            Some(TimelineAction::AddAutoPoint {
+                                                lane_idx,
+                                                frame: raw_frame,
+                                                value,
+                                            }),
+                                        );
+                                    }
+                                }
+                            }
+                            state.last_empty_click = Some((now, pos));
+                            let frame = self.snap_if_enabled(raw_frame, state.alt_held);
+                            return (
+                                canvas::event::Status::Captured,
+                                Some(TimelineAction::Seek(frame)),
+                            );
+                        }
+                    }
+
+                    // 2. Hit-test drum HITS strip for direct selection, velocity/timing drag, & double-click add.
+                    if let Some((drum_top, drum_bot)) = self.drum_bounds(bounds.height) {
+                        if pos.y >= drum_top && pos.y <= drum_bot {
+                            if let Some(hit) = self.hit_test_hit(pos, bounds.width, bounds.height) {
+                                let addr = hit.address.clone();
+                                state.last_empty_click = None;
+                                state.hit_drag = Some(HitDrag {
+                                    source_path: hit.source_path.clone(),
+                                    start_pos: pos,
+                                    current_pos: pos,
+                                    orig_on: hit.on_frame,
+                                    orig_velocity: hit.velocity,
+                                    moved: false,
+                                });
+                                return (
+                                    canvas::event::Status::Captured,
+                                    Some(TimelineAction::SelectHit(addr)),
+                                );
+                            }
+                            let now = Instant::now();
+                            if let Some((prev_t, prev_p)) = state.last_empty_click {
+                                if now.duration_since(prev_t).as_millis() < 360
+                                    && (pos.x - prev_p.x).abs() < 10.0
+                                    && (pos.y - prev_p.y).abs() < 10.0
+                                {
+                                    state.last_empty_click = None;
+                                    let drum_h = (drum_bot - drum_top).max(10.0);
+                                    let vel = ((drum_bot - 4.0 - pos.y) / (drum_h - 14.0))
+                                        .clamp(0.15, 1.0);
+                                    return (
+                                        canvas::event::Status::Captured,
+                                        Some(TimelineAction::AddHitAt {
+                                            frame: raw_frame,
+                                            velocity: vel,
+                                        }),
+                                    );
+                                }
+                            }
+                            state.last_empty_click = Some((now, pos));
+                            let frame = self.snap_if_enabled(raw_frame, state.alt_held);
+                            return (
+                                canvas::event::Status::Captured,
+                                Some(TimelineAction::Seek(frame)),
+                            );
+                        }
+                    }
+
                     // Double-click empty piano roll space to add a new note at (frame, pitch).
                     let (roll_top, roll_bottom, _, _) = self.roll_bounds(bounds.height);
                     if pos.y >= roll_top && pos.y <= roll_bottom {
@@ -418,6 +669,26 @@ impl canvas::Program<TimelineAction> for TimelineView<'_> {
                 }
             }
             canvas::Event::Mouse(mouse::Event::CursorMoved { .. }) => {
+                if let Some(drag) = state.auto_drag.as_mut() {
+                    if let Some(pos) = cursor.position_in(bounds) {
+                        if (pos.y - drag.start_pos.y).abs() > 3.0 {
+                            drag.moved = true;
+                        }
+                        drag.current_pos = pos;
+                        return (canvas::event::Status::Captured, None);
+                    }
+                }
+                if let Some(drag) = state.hit_drag.as_mut() {
+                    if let Some(pos) = cursor.position_in(bounds) {
+                        if (pos.x - drag.start_pos.x).abs() > 4.0
+                            || (pos.y - drag.start_pos.y).abs() > 4.0
+                        {
+                            drag.moved = true;
+                        }
+                        drag.current_pos = pos;
+                        return (canvas::event::Status::Captured, None);
+                    }
+                }
                 if let Some((_, end)) = state.marquee.as_mut() {
                     if let Some(pos) = cursor.position_in(bounds) {
                         *end = pos;
@@ -448,6 +719,65 @@ impl canvas::Program<TimelineAction> for TimelineView<'_> {
                 }
             }
             canvas::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                if let Some(drag) = state.auto_drag.take() {
+                    if drag.moved {
+                        if let (Some((auto_top, auto_bot)), Some(lane)) = (
+                            self.auto_bounds(bounds.height),
+                            self.project.automations.get(drag.lane_idx),
+                        ) {
+                            let val = self.auto_y_to_val(
+                                drag.current_pos.y,
+                                auto_top,
+                                auto_bot,
+                                lane.min_val,
+                                lane.max_val,
+                            );
+                            return (
+                                canvas::event::Status::Captured,
+                                Some(TimelineAction::DragAutoPointValue {
+                                    lane_idx: drag.lane_idx,
+                                    point_idx: drag.point_idx,
+                                    value: val,
+                                }),
+                            );
+                        }
+                    }
+                    return (canvas::event::Status::Captured, None);
+                }
+                if let Some(drag) = state.hit_drag.take() {
+                    if drag.moved {
+                        let dx = drag.current_pos.x - drag.start_pos.x;
+                        let dy = drag.start_pos.y - drag.current_pos.y;
+                        if dy.abs() >= dx.abs() {
+                            if let Some((drum_top, drum_bot)) = self.drum_bounds(bounds.height) {
+                                let drum_h = (drum_bot - drum_top).max(10.0);
+                                let new_vel =
+                                    (drag.orig_velocity + dy / (drum_h - 14.0)).clamp(0.05, 1.0);
+                                return (
+                                    canvas::event::Status::Captured,
+                                    Some(TimelineAction::DragHitVelocity {
+                                        source_path: drag.source_path,
+                                        velocity: new_vel,
+                                    }),
+                                );
+                            }
+                        } else {
+                            let (v0, v1) = self.view_window();
+                            let df = (dx as f64 / bounds.width.max(1.0) as f64) * (v1 - v0);
+                            let delta_q16 = (df / (self.quarter_frames() / 4.0)).round() as i64;
+                            if delta_q16 != 0 {
+                                return (
+                                    canvas::event::Status::Captured,
+                                    Some(TimelineAction::DragNoteTiming {
+                                        source_path: drag.source_path,
+                                        delta_quarter_16ths: delta_q16,
+                                    }),
+                                );
+                            }
+                        }
+                    }
+                    return (canvas::event::Status::Captured, None);
+                }
                 if let Some((a, b)) = state.marquee.take() {
                     if (a.x - b.x).abs() > 4.0 || (a.y - b.y).abs() > 4.0 {
                         let selected = self.notes_in_marquee(a, b, bounds.width, bounds.height);
@@ -553,8 +883,6 @@ impl canvas::Program<TimelineAction> for TimelineView<'_> {
             Color::from_rgb(0.082, 0.092, 0.115),
         );
 
-        let has_hits = !self.project.hits.is_empty();
-        let drum_h = if has_hits { DRUM_STRIP_HEIGHT } else { 0.0 };
         let (roll_top, roll_bottom, roll_h, note_h) = self.roll_bounds(h);
 
         // 1. Ruler background & declared regions.
@@ -854,9 +1182,173 @@ impl canvas::Program<TimelineAction> for TimelineView<'_> {
             });
         }
 
-        // 5. Bottom drum / percussion hit strip.
-        if has_hits {
-            let strip_top = roll_bottom;
+        // 5a. Automation curve lane (when enabled and project declares automation).
+        if let Some((auto_top, auto_bot)) = self.auto_bounds(h) {
+            let lane_idx = self
+                .active_auto_lane
+                .min(self.project.automations.len().saturating_sub(1));
+            let auto_h = auto_bot - auto_top;
+            frame.fill_rectangle(
+                Point::new(0.0, auto_top),
+                Size::new(w, auto_h),
+                Color::from_rgb(0.072, 0.082, 0.106),
+            );
+            frame.stroke(
+                &Path::line(Point::new(0.0, auto_top), Point::new(w, auto_top)),
+                Stroke::default()
+                    .with_color(Color::from_rgba(1.0, 1.0, 1.0, 0.16))
+                    .with_width(1.0),
+            );
+            if let Some(lane) = self.project.automations.get(lane_idx) {
+                let accent = lane
+                    .track_idx
+                    .map(track_color)
+                    .unwrap_or(Color::from_rgb(0.96, 0.76, 0.30));
+                let title = format!(
+                    "AUTO · {}.{} ({})",
+                    lane.target_node, lane.target_param, lane.id
+                );
+                frame.fill_text(Text {
+                    content: title,
+                    position: Point::new(6.0, auto_top + 2.5),
+                    color: Color::from_rgba(accent.r, accent.g, accent.b, 0.90),
+                    size: iced::Pixels(9.5),
+                    ..Text::default()
+                });
+                let range_label = format!(
+                    "{} .. {}",
+                    format_param_value(lane.unit, lane.min_val),
+                    format_param_value(lane.unit, lane.max_val)
+                );
+                frame.fill_text(Text {
+                    content: range_label,
+                    position: Point::new((w - 120.0).max(160.0), auto_top + 2.5),
+                    color: Color::from_rgba(0.65, 0.72, 0.82, 0.65),
+                    size: iced::Pixels(9.5),
+                    ..Text::default()
+                });
+
+                // Build curve polyline & subtle shaded area.
+                let mut pts_xy: Vec<(f32, f32, &str, usize, f32)> = lane
+                    .points
+                    .iter()
+                    .map(|pt| {
+                        let effective_val = state
+                            .auto_drag
+                            .as_ref()
+                            .filter(|d| {
+                                d.moved && d.lane_idx == lane_idx && d.point_idx == pt.index
+                            })
+                            .map(|d| {
+                                self.auto_y_to_val(
+                                    d.current_pos.y,
+                                    auto_top,
+                                    auto_bot,
+                                    lane.min_val,
+                                    lane.max_val,
+                                )
+                            })
+                            .unwrap_or(pt.value);
+                        let px = self.frame_to_x(pt.frame, w);
+                        let py = self.auto_val_to_y(
+                            effective_val,
+                            auto_top,
+                            auto_bot,
+                            lane.min_val,
+                            lane.max_val,
+                        );
+                        (px, py, pt.shape.as_str(), pt.index, effective_val)
+                    })
+                    .collect();
+
+                if !pts_xy.is_empty() {
+                    let base_y = auto_bot - 6.0;
+                    let curve_path = Path::new(|b| {
+                        let first = pts_xy[0];
+                        b.move_to(Point::new(first.0.clamp(0.0, w), first.1));
+                        for pair in pts_xy.windows(2) {
+                            let (_, y0, shape, _, _) = pair[0];
+                            let (x1, y1, _, _, _) = pair[1];
+                            if shape == "step" {
+                                b.line_to(Point::new(x1, y0));
+                                b.line_to(Point::new(x1, y1));
+                            } else {
+                                b.line_to(Point::new(x1, y1));
+                            }
+                        }
+                        if let Some(last) = pts_xy.last() {
+                            b.line_to(Point::new(w, last.1));
+                        }
+                    });
+                    let area_path = Path::new(|b| {
+                        let first = pts_xy[0];
+                        b.move_to(Point::new(first.0.clamp(0.0, w), base_y));
+                        b.line_to(Point::new(first.0.clamp(0.0, w), first.1));
+                        for pair in pts_xy.windows(2) {
+                            let (_, y0, shape, _, _) = pair[0];
+                            let (x1, y1, _, _, _) = pair[1];
+                            if shape == "step" {
+                                b.line_to(Point::new(x1, y0));
+                                b.line_to(Point::new(x1, y1));
+                            } else {
+                                b.line_to(Point::new(x1, y1));
+                            }
+                        }
+                        if let Some(last) = pts_xy.last() {
+                            b.line_to(Point::new(w, last.1));
+                            b.line_to(Point::new(w, base_y));
+                        }
+                        b.close();
+                    });
+                    frame.fill(
+                        &area_path,
+                        Color::from_rgba(accent.r, accent.g, accent.b, 0.14),
+                    );
+                    frame.stroke(
+                        &curve_path,
+                        Stroke::default().with_color(accent).with_width(1.8),
+                    );
+
+                    // Draw clickable control point handles.
+                    for (px, py, _, pidx, eff_val) in pts_xy.drain(..) {
+                        if px < -6.0 || px > w + 6.0 {
+                            continue;
+                        }
+                        let is_sel = self.selected_auto_point == Some((lane_idx, pidx));
+                        let radius = if is_sel { 5.0 } else { 3.6 };
+                        frame.fill(
+                            &Path::circle(Point::new(px, py), radius),
+                            if is_sel { Color::WHITE } else { accent },
+                        );
+                        frame.stroke(
+                            &Path::circle(Point::new(px, py), radius),
+                            Stroke::default()
+                                .with_color(Color::from_rgb(0.08, 0.09, 0.12))
+                                .with_width(1.2),
+                        );
+                        let dragging_this = state.auto_drag.as_ref().is_some_and(|d| {
+                            d.moved && d.lane_idx == lane_idx && d.point_idx == pidx
+                        });
+                        if dragging_this {
+                            frame.fill_text(Text {
+                                content: format_param_value(lane.unit, eff_val),
+                                position: Point::new(
+                                    (px + 8.0).min(w - 60.0),
+                                    (py - 12.0).max(auto_top + 12.0),
+                                ),
+                                color: Color::WHITE,
+                                size: iced::Pixels(10.5),
+                                ..Text::default()
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        // 5b. Bottom drum / percussion hit strip (interactive: click, drag vel/time, double-click add).
+        if let Some((strip_top, strip_bot)) = self.drum_bounds(h) {
+            let drum_h = strip_bot - strip_top;
             frame.fill_rectangle(
                 Point::new(0.0, strip_top),
                 Size::new(w, drum_h),
@@ -869,8 +1361,8 @@ impl canvas::Program<TimelineAction> for TimelineView<'_> {
                     .with_width(1.0),
             );
             frame.fill_text(Text {
-                content: "HITS".into(),
-                position: Point::new(6.0, strip_top + 4.0),
+                content: "HITS (click / drag vel·time / dbl-click add)".into(),
+                position: Point::new(6.0, strip_top + 3.0),
                 color: Color::from_rgba(0.65, 0.70, 0.78, 0.55),
                 size: iced::Pixels(9.5),
                 ..Text::default()
@@ -888,20 +1380,82 @@ impl canvas::Program<TimelineAction> for TimelineView<'_> {
                     continue;
                 }
                 let x = self.frame_to_x(hit.on_frame, w);
-                let bar_h = (hit.velocity * (drum_h - 14.0)).max(6.0);
-                let y = strip_top + drum_h - 4.0 - bar_h;
+                let bar_h = (hit.velocity * (drum_h - 16.0)).max(6.0);
+                let y = strip_bot - 4.0 - bar_h;
                 let base = track_color(hit.track_idx);
                 let audible = self
                     .audible_tracks
                     .get(hit.track_idx)
                     .copied()
                     .unwrap_or(true);
-                let alpha = if audible { 0.85 } else { 0.16 };
+                let is_selected = self
+                    .selected_hit_address
+                    .is_some_and(|addr| addr == hit.address);
+                let is_sibling = !is_selected
+                    && self.selected_hit_address.is_some()
+                    && self
+                        .selected_source_path
+                        .is_some_and(|sp| !sp.is_empty() && sp == hit.source_path.as_slice());
+                let alpha = if is_selected {
+                    1.0
+                } else if audible {
+                    0.85
+                } else {
+                    0.16
+                };
+                let bar_w = if is_selected { 4.0 } else { 2.6 };
                 frame.fill_rectangle(
                     Point::new(x, y),
-                    Size::new(2.5, bar_h),
+                    Size::new(bar_w, bar_h),
                     Color::from_rgba(base.r, base.g, base.b, alpha),
                 );
+                if is_selected {
+                    frame.stroke(
+                        &Path::rectangle(
+                            Point::new(x - 1.0, y - 1.0),
+                            Size::new(bar_w + 2.0, bar_h + 2.0),
+                        ),
+                        Stroke::default().with_color(Color::WHITE).with_width(1.6),
+                    );
+                } else if is_sibling {
+                    frame.stroke(
+                        &Path::rectangle(Point::new(x, y), Size::new(bar_w, bar_h)),
+                        Stroke::default()
+                            .with_color(Color::from_rgba(1.0, 1.0, 1.0, 0.45))
+                            .with_width(1.0),
+                    );
+                }
+            }
+
+            // Live hit drag ghost preview (velocity or timing).
+            if let Some(drag) = state.hit_drag.as_ref().filter(|d| d.moved) {
+                let dx = drag.current_pos.x - drag.start_pos.x;
+                let dy = drag.start_pos.y - drag.current_pos.y;
+                let mut gx = self.frame_to_x(drag.orig_on, w);
+                let mut gvel = drag.orig_velocity;
+                let label = if dy.abs() >= dx.abs() {
+                    gvel = (drag.orig_velocity + dy / (drum_h - 14.0)).clamp(0.05, 1.0);
+                    format!("vel {:.2}", gvel)
+                } else {
+                    gx += dx;
+                    let df = (dx as f64 / w.max(1.0) as f64) * (v1 - v0);
+                    let q16 = (df / (self.quarter_frames() / 4.0)).round() as i64;
+                    format!("at {:+}/4q", q16)
+                };
+                let gh = (gvel * (drum_h - 16.0)).max(6.0);
+                let gy = strip_bot - 4.0 - gh;
+                frame.fill_rectangle(
+                    Point::new(gx, gy),
+                    Size::new(4.0, gh),
+                    Color::from_rgba(0.45, 0.92, 1.0, 0.75),
+                );
+                frame.fill_text(Text {
+                    content: label,
+                    position: Point::new((gx + 6.0).min(w - 60.0), strip_top + 14.0),
+                    color: Color::WHITE,
+                    size: iced::Pixels(10.5),
+                    ..Text::default()
+                });
             }
         }
 

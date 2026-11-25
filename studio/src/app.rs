@@ -22,17 +22,19 @@ use maac::PlanArtifact;
 
 use crate::analysis::{run_analysis, AnalysisSummary};
 use crate::audio::AudioEngine;
+use crate::automation::{apply_curve_point_add, apply_curve_point_delete, apply_curve_point_edit};
 use crate::code_view::{
     changed_new_lines, compute_line_diff, locate_object_lines, DiffLineKind, DiffSummary,
     SourceHighlight,
 };
 use crate::editor::{
-    add_note_at_score_pos, apply_batch_note_edit, apply_note_edit, format_q,
+    add_hit_at_score_pos, add_note_at_score_pos, apply_batch_note_edit, apply_note_edit, format_q,
     inspect_note_in_bundle, materialize_note_placement, midi_to_pitch_symbol, BatchNoteEdit,
     NoteEdit, NoteSourceInfo,
 };
 use crate::mixer::{
-    apply_node_param_edit, apply_node_param_reset, MixerNodeInfo, NodeCategory, NodeParamInfo,
+    apply_node_param_edit, apply_node_param_reset, format_param_value, MixerNodeInfo, NodeCategory,
+    NodeParamInfo,
 };
 use crate::project::{format_time, load_and_compile, load_from_bundle, ProjectData};
 use crate::timeline::{track_color, TimelineAction, TimelineView};
@@ -107,6 +109,40 @@ pub enum Message {
         new_source_path: Vec<String>,
         summary: String,
         result: Result<Box<ProjectData>, String>,
+    },
+    SelectHit(Option<String>),
+    AddHitAt {
+        frame: u64,
+        velocity: f32,
+    },
+    HitAdded {
+        prev_source: String,
+        new_source_path: Vec<String>,
+        summary: String,
+        result: Result<Box<ProjectData>, String>,
+    },
+    ToggleAutomation,
+    SelectAutoLane(usize),
+    SelectAutoPoint {
+        lane_idx: usize,
+        point_idx: usize,
+    },
+    AutoValueSliderChanged(f32),
+    CommitAutoPointValue,
+    ApplyAutoPointEdit {
+        lane_idx: usize,
+        point_idx: usize,
+        value: Option<f32>,
+        shape: Option<String>,
+    },
+    AddAutoPoint {
+        lane_idx: usize,
+        frame: u64,
+        value: f32,
+    },
+    DeleteAutoPoint {
+        lane_idx: usize,
+        point_idx: usize,
     },
     VelocitySliderChanged(f32),
     CommitVelocity,
@@ -192,8 +228,15 @@ pub struct StudioApp {
     // Direct editing & transactional history
     selected_note_address: Option<String>,
     selected_notes: HashSet<String>,
+    selected_hit_address: Option<String>,
     selected_note_info: Option<NoteSourceInfo>,
     velocity_draft: Option<f32>,
+
+    // Automation lane state
+    show_automation: bool,
+    active_auto_lane: usize,
+    selected_auto_point: Option<(usize, usize)>,
+    auto_value_draft: Option<f32>,
     saved_source: Option<String>,
     undo_stack: Vec<String>,
     redo_stack: Vec<String>,
@@ -262,8 +305,13 @@ impl StudioApp {
             last_reload_note: None,
             selected_note_address: None,
             selected_notes: HashSet::new(),
+            selected_hit_address: None,
             selected_note_info: None,
             velocity_draft: None,
+            show_automation: true,
+            active_auto_lane: 0,
+            selected_auto_point: None,
+            auto_value_draft: None,
             saved_source: None,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
@@ -590,6 +638,9 @@ impl StudioApp {
 
             Message::SelectNote(addr) => {
                 self.selected_notes.clear();
+                self.selected_hit_address = None;
+                self.selected_auto_point = None;
+                self.auto_value_draft = None;
                 if let Some(a) = &addr {
                     self.selected_notes.insert(a.clone());
                 }
@@ -597,6 +648,369 @@ impl StudioApp {
                 self.edit_error = None;
                 self.refresh_selected_note_info();
                 Task::none()
+            }
+
+            Message::SelectHit(addr) => {
+                self.selected_notes.clear();
+                self.selected_note_address = None;
+                self.selected_auto_point = None;
+                self.auto_value_draft = None;
+                self.selected_hit_address = addr;
+                self.edit_error = None;
+                self.refresh_selected_note_info();
+                Task::none()
+            }
+
+            Message::AddHitAt { frame, velocity } => {
+                if self.editing {
+                    return Task::none();
+                }
+                let Some(proj) = &self.project else {
+                    return Task::none();
+                };
+                let Some(prev_source) = proj.bundle.sources.get(&proj.bundle.entry).cloned() else {
+                    return Task::none();
+                };
+                let selected_hit = self
+                    .selected_hit_address
+                    .as_deref()
+                    .and_then(|addr| proj.hits.iter().find(|h| h.address == addr));
+                let target_track_idx = selected_hit
+                    .map(|h| h.track_idx)
+                    .or_else(|| proj.tracks.iter().position(|t| t.hit_count > 0));
+                let Some(track_idx) = target_track_idx else {
+                    self.edit_error = Some("No drum hit track available".into());
+                    return Task::none();
+                };
+                let track_name = proj.tracks[track_idx].name.clone();
+                let key = selected_hit
+                    .map(|h| h.key.clone())
+                    .or_else(|| {
+                        proj.track_hit_keys
+                            .get(&track_idx)
+                            .and_then(|k| k.first().cloned())
+                    })
+                    .unwrap_or_else(|| "kick".into());
+                let score_q = proj.frame_to_score_q(frame);
+                let bundle = proj.bundle.clone();
+                let entry_path = proj.entry_path.clone();
+                let project_root = proj.project_root.clone();
+                let limits = proj.limits;
+                self.editing = true;
+                self.edit_error = None;
+                Task::perform(
+                    async move {
+                        let handle = std::thread::spawn(move || {
+                            let (updated_bundle, new_path, summary) = add_hit_at_score_pos(
+                                &bundle,
+                                &track_name,
+                                score_q,
+                                &key,
+                                velocity,
+                                &limits,
+                            )?;
+                            let recompiled =
+                                load_from_bundle(entry_path, project_root, updated_bundle)?;
+                            Ok((Box::new(recompiled), new_path, summary))
+                        });
+                        handle
+                            .join()
+                            .unwrap_or_else(|_| Err("add hit worker panicked".into()))
+                    },
+                    move |res| match res {
+                        Ok((data, new_source_path, summary)) => Message::HitAdded {
+                            prev_source: prev_source.clone(),
+                            new_source_path,
+                            summary,
+                            result: Ok(data),
+                        },
+                        Err(err) => Message::HitAdded {
+                            prev_source: prev_source.clone(),
+                            new_source_path: Vec::new(),
+                            summary: String::new(),
+                            result: Err(err),
+                        },
+                    },
+                )
+            }
+
+            Message::HitAdded {
+                prev_source,
+                new_source_path,
+                summary,
+                result,
+            } => {
+                self.editing = false;
+                match result {
+                    Ok(data) => {
+                        self.undo_stack.push(prev_source);
+                        if self.undo_stack.len() > 100 {
+                            self.undo_stack.remove(0);
+                        }
+                        self.redo_stack.clear();
+                        self.edit_error = None;
+                        if let Some(added) =
+                            data.hits.iter().find(|h| h.source_path == new_source_path)
+                        {
+                            self.selected_notes.clear();
+                            self.selected_note_address = None;
+                            self.selected_hit_address = Some(added.address.clone());
+                        }
+                        let ms = data.compile_ms;
+                        return self.apply_in_memory_project(*data, format!("{summary} ({ms} ms)"));
+                    }
+                    Err(err) => {
+                        self.edit_error = Some(err);
+                    }
+                }
+                Task::none()
+            }
+
+            Message::ToggleAutomation => {
+                self.show_automation = !self.show_automation;
+                Task::none()
+            }
+
+            Message::SelectAutoLane(idx) => {
+                self.active_auto_lane = idx;
+                self.selected_auto_point = Some((idx, 0));
+                if let Some(val) = self
+                    .project
+                    .as_ref()
+                    .and_then(|p| p.automations.get(idx))
+                    .and_then(|l| l.points.first())
+                    .map(|pt| pt.value)
+                {
+                    self.auto_value_draft = Some(val);
+                }
+                self.refresh_code_cache();
+                Task::none()
+            }
+
+            Message::SelectAutoPoint {
+                lane_idx,
+                point_idx,
+            } => {
+                self.selected_notes.clear();
+                self.selected_note_address = None;
+                self.selected_hit_address = None;
+                self.selected_note_info = None;
+                self.active_auto_lane = lane_idx;
+                self.selected_auto_point = Some((lane_idx, point_idx));
+                self.auto_value_draft = self
+                    .project
+                    .as_ref()
+                    .and_then(|p| p.automations.get(lane_idx))
+                    .and_then(|l| l.points.iter().find(|pt| pt.index == point_idx))
+                    .map(|pt| pt.value);
+                self.edit_error = None;
+                self.refresh_code_cache();
+                Task::none()
+            }
+
+            Message::AutoValueSliderChanged(v) => {
+                self.auto_value_draft = Some(v);
+                Task::none()
+            }
+
+            Message::CommitAutoPointValue => {
+                if let (Some((lane_idx, point_idx)), Some(val)) =
+                    (self.selected_auto_point, self.auto_value_draft)
+                {
+                    return self.update(Message::ApplyAutoPointEdit {
+                        lane_idx,
+                        point_idx,
+                        value: Some(val),
+                        shape: None,
+                    });
+                }
+                Task::none()
+            }
+
+            Message::ApplyAutoPointEdit {
+                lane_idx,
+                point_idx,
+                value,
+                shape,
+            } => {
+                if self.editing {
+                    return Task::none();
+                }
+                let Some(proj) = &self.project else {
+                    return Task::none();
+                };
+                let Some(curve_id) = proj
+                    .automations
+                    .get(lane_idx)
+                    .and_then(|l| l.curve_id.clone())
+                else {
+                    self.edit_error = Some("Automation curve is not editable in entry file".into());
+                    return Task::none();
+                };
+                let Some(prev_source) = proj.bundle.sources.get(&proj.bundle.entry).cloned() else {
+                    return Task::none();
+                };
+                let bundle = proj.bundle.clone();
+                let entry_path = proj.entry_path.clone();
+                let project_root = proj.project_root.clone();
+                let limits = proj.limits;
+                self.editing = true;
+                self.edit_error = None;
+                Task::perform(
+                    async move {
+                        let handle = std::thread::spawn(move || {
+                            let (updated_bundle, summary) = apply_curve_point_edit(
+                                &bundle,
+                                &curve_id,
+                                point_idx,
+                                value,
+                                shape.as_deref(),
+                                &limits,
+                            )?;
+                            let recompiled =
+                                load_from_bundle(entry_path, project_root, updated_bundle)?;
+                            Ok((Box::new(recompiled), summary))
+                        });
+                        handle
+                            .join()
+                            .unwrap_or_else(|_| Err("automation edit worker panicked".into()))
+                    },
+                    move |res| match res {
+                        Ok((data, summary)) => Message::NoteEditApplied {
+                            prev_source: prev_source.clone(),
+                            summary,
+                            result: Ok(data),
+                        },
+                        Err(err) => Message::NoteEditApplied {
+                            prev_source: prev_source.clone(),
+                            summary: String::new(),
+                            result: Err(err),
+                        },
+                    },
+                )
+            }
+
+            Message::AddAutoPoint {
+                lane_idx,
+                frame,
+                value,
+            } => {
+                if self.editing {
+                    return Task::none();
+                }
+                let Some(proj) = &self.project else {
+                    return Task::none();
+                };
+                let Some(lane) = proj.automations.get(lane_idx) else {
+                    return Task::none();
+                };
+                let Some(curve_id) = lane.curve_id.clone() else {
+                    self.edit_error = Some("Automation curve is not editable in entry file".into());
+                    return Task::none();
+                };
+                let Some(prev_source) = proj.bundle.sources.get(&proj.bundle.entry).cloned() else {
+                    return Task::none();
+                };
+                let clock_is_seconds = lane.clock_is_seconds;
+                let pos_raw = if clock_is_seconds {
+                    (frame as f64 / proj.sample_rate_hz.max(1) as f64 - lane.anchor_raw).max(0.0)
+                } else {
+                    (proj.frame_to_score_q(frame) - lane.anchor_raw).max(0.0)
+                };
+                let bundle = proj.bundle.clone();
+                let entry_path = proj.entry_path.clone();
+                let project_root = proj.project_root.clone();
+                let limits = proj.limits;
+                self.editing = true;
+                self.edit_error = None;
+                Task::perform(
+                    async move {
+                        let handle = std::thread::spawn(move || {
+                            let (updated_bundle, _idx, summary) = apply_curve_point_add(
+                                &bundle,
+                                &curve_id,
+                                pos_raw,
+                                value,
+                                clock_is_seconds,
+                                &limits,
+                            )?;
+                            let recompiled =
+                                load_from_bundle(entry_path, project_root, updated_bundle)?;
+                            Ok((Box::new(recompiled), summary))
+                        });
+                        handle
+                            .join()
+                            .unwrap_or_else(|_| Err("automation add worker panicked".into()))
+                    },
+                    move |res| match res {
+                        Ok((data, summary)) => Message::NoteEditApplied {
+                            prev_source: prev_source.clone(),
+                            summary,
+                            result: Ok(data),
+                        },
+                        Err(err) => Message::NoteEditApplied {
+                            prev_source: prev_source.clone(),
+                            summary: String::new(),
+                            result: Err(err),
+                        },
+                    },
+                )
+            }
+
+            Message::DeleteAutoPoint {
+                lane_idx,
+                point_idx,
+            } => {
+                if self.editing {
+                    return Task::none();
+                }
+                let Some(proj) = &self.project else {
+                    return Task::none();
+                };
+                let Some(curve_id) = proj
+                    .automations
+                    .get(lane_idx)
+                    .and_then(|l| l.curve_id.clone())
+                else {
+                    return Task::none();
+                };
+                let Some(prev_source) = proj.bundle.sources.get(&proj.bundle.entry).cloned() else {
+                    return Task::none();
+                };
+                let bundle = proj.bundle.clone();
+                let entry_path = proj.entry_path.clone();
+                let project_root = proj.project_root.clone();
+                let limits = proj.limits;
+                self.selected_auto_point = None;
+                self.auto_value_draft = None;
+                self.editing = true;
+                self.edit_error = None;
+                Task::perform(
+                    async move {
+                        let handle = std::thread::spawn(move || {
+                            let (updated_bundle, summary) =
+                                apply_curve_point_delete(&bundle, &curve_id, point_idx, &limits)?;
+                            let recompiled =
+                                load_from_bundle(entry_path, project_root, updated_bundle)?;
+                            Ok((Box::new(recompiled), summary))
+                        });
+                        handle
+                            .join()
+                            .unwrap_or_else(|_| Err("automation delete worker panicked".into()))
+                    },
+                    move |res| match res {
+                        Ok((data, summary)) => Message::NoteEditApplied {
+                            prev_source: prev_source.clone(),
+                            summary,
+                            result: Ok(data),
+                        },
+                        Err(err) => Message::NoteEditApplied {
+                            prev_source: prev_source.clone(),
+                            summary: String::new(),
+                            result: Err(err),
+                        },
+                    },
+                )
             }
 
             Message::ToggleSelectNote(addr) => {
@@ -625,6 +1039,9 @@ impl StudioApp {
             Message::ClearSelection => {
                 self.selected_notes.clear();
                 self.selected_note_address = None;
+                self.selected_hit_address = None;
+                self.selected_auto_point = None;
+                self.auto_value_draft = None;
                 self.selected_note_info = None;
                 self.velocity_draft = None;
                 self.edit_error = None;
@@ -712,8 +1129,11 @@ impl StudioApp {
                 if self.editing {
                     return Task::none();
                 }
-                let (Some(proj), Some(addr)) = (&self.project, self.selected_note_address.clone())
-                else {
+                let target_addr = self
+                    .selected_note_address
+                    .clone()
+                    .or_else(|| self.selected_hit_address.clone());
+                let (Some(proj), Some(addr)) = (&self.project, target_addr) else {
                     return Task::none();
                 };
                 let Some(prev_source) = proj.bundle.sources.get(&proj.bundle.entry).cloned() else {
@@ -771,9 +1191,13 @@ impl StudioApp {
                         self.redo_stack.clear();
                         self.edit_error = None;
                         if let Some(new_addr) = remapped_addr {
-                            self.selected_notes.clear();
-                            self.selected_notes.insert(new_addr.clone());
-                            self.selected_note_address = Some(new_addr);
+                            if self.selected_hit_address.is_some() {
+                                self.selected_hit_address = Some(new_addr);
+                            } else {
+                                self.selected_notes.clear();
+                                self.selected_notes.insert(new_addr.clone());
+                                self.selected_note_address = Some(new_addr);
+                            }
                         }
                         let ms = data.compile_ms;
                         return self.apply_in_memory_project(*data, format!("{summary} ({ms} ms)"));
@@ -1510,6 +1934,43 @@ impl StudioApp {
                 TimelineAction::AddNoteAt { frame, midi_pitch } => {
                     self.update(Message::AddNoteAt { frame, midi_pitch })
                 }
+                TimelineAction::SelectHit(addr) => self.update(Message::SelectHit(Some(addr))),
+                TimelineAction::DragHitVelocity {
+                    source_path,
+                    velocity,
+                } => self.update(Message::ApplyNoteEdit {
+                    source_path,
+                    edit: NoteEdit::SetVelocity(velocity),
+                }),
+                TimelineAction::AddHitAt { frame, velocity } => {
+                    self.update(Message::AddHitAt { frame, velocity })
+                }
+                TimelineAction::SelectAutoPoint {
+                    lane_idx,
+                    point_idx,
+                } => self.update(Message::SelectAutoPoint {
+                    lane_idx,
+                    point_idx,
+                }),
+                TimelineAction::DragAutoPointValue {
+                    lane_idx,
+                    point_idx,
+                    value,
+                } => self.update(Message::ApplyAutoPointEdit {
+                    lane_idx,
+                    point_idx,
+                    value: Some(value),
+                    shape: None,
+                }),
+                TimelineAction::AddAutoPoint {
+                    lane_idx,
+                    frame,
+                    value,
+                } => self.update(Message::AddAutoPoint {
+                    lane_idx,
+                    frame,
+                    value,
+                }),
                 TimelineAction::DragNotePitch {
                     source_path,
                     delta_semitones,
@@ -1634,6 +2095,9 @@ impl StudioApp {
         let Some(proj) = &self.project else {
             self.selected_notes.clear();
             self.selected_note_address = None;
+            self.selected_hit_address = None;
+            self.selected_auto_point = None;
+            self.auto_value_draft = None;
             self.selected_note_info = None;
             self.velocity_draft = None;
             return;
@@ -1647,9 +2111,36 @@ impl StudioApp {
         {
             self.selected_note_address = self.selected_notes.iter().next().cloned();
         }
+        if let Some((li, pi)) = self.selected_auto_point {
+            if let Some(pt) = proj
+                .automations
+                .get(li)
+                .and_then(|l| l.points.iter().find(|p| p.index == pi))
+            {
+                self.auto_value_draft = Some(pt.value);
+            } else {
+                self.selected_auto_point = None;
+                self.auto_value_draft = None;
+            }
+        }
+        if let Some(hit_addr) = self.selected_hit_address.as_deref() {
+            if let Some(hit) = proj.hits.iter().find(|h| h.address == hit_addr) {
+                let info = inspect_note_in_bundle(&proj.bundle, &hit.source_path);
+                self.velocity_draft = info
+                    .as_ref()
+                    .and_then(|i| i.velocity)
+                    .or(Some(hit.velocity));
+                self.selected_note_info = info;
+                self.refresh_code_cache();
+                return;
+            } else {
+                self.selected_hit_address = None;
+            }
+        }
         let Some(addr) = self.selected_note_address.as_deref() else {
             self.selected_note_info = None;
             self.velocity_draft = None;
+            self.refresh_code_cache();
             return;
         };
         if let Some(note) = proj.notes.iter().find(|n| n.address == addr) {
@@ -1681,17 +2172,26 @@ impl StudioApp {
             return;
         };
 
-        // Highlight priority: selected note (if in Roll mode or note selected) -> selected mixer/FX node.
+        let auto_curve_path = self.selected_auto_point.and_then(|(li, _)| {
+            proj.automations
+                .get(li)
+                .and_then(|l| l.curve_id.clone())
+                .map(|cid| vec![cid])
+        });
+
+        // Highlight priority: selected note/hit -> selected automation curve -> selected mixer/FX node.
         let target_path: Option<Vec<String>> = if !self.show_mixer {
             self.selected_note_info
                 .as_ref()
                 .map(|i| i.path.clone())
+                .or(auto_curve_path)
                 .or_else(|| self.selected_node_id.clone().map(|id| vec![id]))
         } else {
             self.selected_node_id
                 .clone()
                 .map(|id| vec![id])
                 .or_else(|| self.selected_note_info.as_ref().map(|i| i.path.clone()))
+                .or(auto_curve_path)
         };
         self.cached_highlight = target_path
             .as_deref()
@@ -1867,6 +2367,10 @@ impl StudioApp {
         self.redo_stack.clear();
         self.selected_notes.clear();
         self.selected_note_address = None;
+        self.selected_hit_address = None;
+        self.selected_auto_point = None;
+        self.auto_value_draft = None;
+        self.active_auto_lane = 0;
         self.selected_note_info = None;
         self.velocity_draft = None;
         self.selected_node_id = None;
@@ -2340,56 +2844,88 @@ impl StudioApp {
                     }
                 })
                 .on_press(Message::ToggleCodePanel),
-            button(text(if snap_on { "Snap: Bar" } else { "Snap: Free" }).size(11.5))
-                .padding([3, 7])
-                .style(move |theme, status| {
-                    if snap_on {
-                        accent_button_style(Color::from_rgb(0.22, 0.50, 0.66), theme, status)
-                    } else {
-                        studio_button_style(theme, status)
-                    }
-                })
-                .on_press(Message::ToggleSnap),
-            button(text("Follow").size(11.5))
-                .padding([3, 7])
-                .style(move |theme, status| {
-                    if follow_on {
-                        accent_button_style(Color::from_rgb(0.20, 0.56, 0.48), theme, status)
-                    } else {
-                        studio_button_style(theme, status)
-                    }
-                })
-                .on_press(Message::ToggleFollow),
-            Space::with_width(4),
-            button(text("-").size(12))
-                .padding([3, 7])
-                .style(studio_button_style)
-                .on_press(Message::ZoomDelta {
-                    delta: -1.0,
-                    anchor: 0.5
-                }),
-            button(text("Fit").size(11.5))
-                .padding([3, 7])
-                .style(studio_button_style)
-                .on_press(Message::ZoomFit),
-            button(text("+").size(12))
-                .padding([3, 7])
-                .style(studio_button_style)
-                .on_press(Message::ZoomDelta {
-                    delta: 1.0,
-                    anchor: 0.5
-                }),
-            text(format!("{:.1}x", self.zoom))
-                .size(11)
-                .color(Color::from_rgb(0.66, 0.72, 0.80)),
-            Space::with_width(4),
-            button(text("Recompile").size(11.5))
-                .padding([3, 8])
-                .style(studio_button_style)
-                .on_press(Message::RecompileNow),
         ]
         .spacing(4)
         .align_y(Alignment::Center);
+
+        if !proj.automations.is_empty() {
+            let auto_on = self.show_automation;
+            zoom_controls = zoom_controls.push(
+                button(text("Auto").size(11.5))
+                    .padding([3, 7])
+                    .style(move |theme, status| {
+                        if auto_on {
+                            accent_button_style(Color::from_rgb(0.76, 0.54, 0.16), theme, status)
+                        } else {
+                            studio_button_style(theme, status)
+                        }
+                    })
+                    .on_press(Message::ToggleAutomation),
+            );
+        }
+
+        zoom_controls = zoom_controls
+            .push(
+                button(text(if snap_on { "Snap: Bar" } else { "Snap: Free" }).size(11.5))
+                    .padding([3, 7])
+                    .style(move |theme, status| {
+                        if snap_on {
+                            accent_button_style(Color::from_rgb(0.22, 0.50, 0.66), theme, status)
+                        } else {
+                            studio_button_style(theme, status)
+                        }
+                    })
+                    .on_press(Message::ToggleSnap),
+            )
+            .push(
+                button(text("Follow").size(11.5))
+                    .padding([3, 7])
+                    .style(move |theme, status| {
+                        if follow_on {
+                            accent_button_style(Color::from_rgb(0.20, 0.56, 0.48), theme, status)
+                        } else {
+                            studio_button_style(theme, status)
+                        }
+                    })
+                    .on_press(Message::ToggleFollow),
+            )
+            .push(Space::with_width(4))
+            .push(
+                button(text("-").size(12))
+                    .padding([3, 7])
+                    .style(studio_button_style)
+                    .on_press(Message::ZoomDelta {
+                        delta: -1.0,
+                        anchor: 0.5,
+                    }),
+            )
+            .push(
+                button(text("Fit").size(11.5))
+                    .padding([3, 7])
+                    .style(studio_button_style)
+                    .on_press(Message::ZoomFit),
+            )
+            .push(
+                button(text("+").size(12))
+                    .padding([3, 7])
+                    .style(studio_button_style)
+                    .on_press(Message::ZoomDelta {
+                        delta: 1.0,
+                        anchor: 0.5,
+                    }),
+            )
+            .push(
+                text(format!("{:.1}x", self.zoom))
+                    .size(11)
+                    .color(Color::from_rgb(0.66, 0.72, 0.80)),
+            )
+            .push(Space::with_width(4))
+            .push(
+                button(text("Recompile").size(11.5))
+                    .padding([3, 8])
+                    .style(studio_button_style)
+                    .on_press(Message::RecompileNow),
+            );
 
         if self.loop_range.is_some() {
             zoom_controls = zoom_controls.push(
@@ -2424,12 +2960,23 @@ impl StudioApp {
         let main_pane: Element<'a, Message> = if self.show_mixer {
             self.view_mixer_console(proj)
         } else {
-            let selected_source_path = self.selected_note_address.as_deref().and_then(|addr| {
-                proj.notes
-                    .iter()
-                    .find(|n| n.address == addr)
-                    .map(|n| n.source_path.as_slice())
-            });
+            let selected_source_path = self
+                .selected_note_address
+                .as_deref()
+                .and_then(|addr| {
+                    proj.notes
+                        .iter()
+                        .find(|n| n.address == addr)
+                        .map(|n| n.source_path.as_slice())
+                })
+                .or_else(|| {
+                    self.selected_hit_address.as_deref().and_then(|addr| {
+                        proj.hits
+                            .iter()
+                            .find(|h| h.address == addr)
+                            .map(|h| h.source_path.as_slice())
+                    })
+                });
 
             Element::from(
                 canvas(TimelineView {
@@ -2438,6 +2985,10 @@ impl StudioApp {
                     audible_tracks,
                     selected_notes: &self.selected_notes,
                     selected_source_path,
+                    selected_hit_address: self.selected_hit_address.as_deref(),
+                    show_automation: self.show_automation,
+                    active_auto_lane: self.active_auto_lane,
+                    selected_auto_point: self.selected_auto_point,
                     playhead_frame: self.playhead_frame,
                     checkpoint_frame: self.checkpoint_frame,
                     loop_range: self.loop_range,
@@ -2988,9 +3539,363 @@ impl StudioApp {
                     ..Default::default()
                 }
             }));
+        } else if let Some(hit) = self
+            .selected_hit_address
+            .as_deref()
+            .and_then(|addr| proj.hits.iter().find(|h| h.address == addr))
+        {
+            let track_name = proj
+                .tracks
+                .get(hit.track_idx)
+                .map(|t| t.name.as_str())
+                .unwrap_or("drums");
+            let track_col = track_color(hit.track_idx);
+            let busy = self.editing;
+            let mut header = row![
+                text("SELECTED HIT")
+                    .size(10.5)
+                    .color(Color::from_rgb(0.58, 0.66, 0.78)),
+                Space::with_width(6),
+                text(format!("{track_name} · {}", hit.key))
+                    .size(11)
+                    .color(track_col),
+                horizontal_space(),
+            ]
+            .align_y(Alignment::Center);
+            if hit.shared_occurrences > 1 {
+                header = header.push(
+                    container(
+                        text(format!("×{}", hit.shared_occurrences))
+                            .size(10)
+                            .color(Color::BLACK),
+                    )
+                    .padding([1, 5])
+                    .style(|_| container::Style {
+                        background: Some(Background::Color(Color::from_rgb(0.92, 0.72, 0.24))),
+                        border: Border {
+                            radius: 3.0.into(),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    }),
+                );
+                header = header.push(Space::with_width(4));
+            }
+            header = header.push(
+                button(text("×").size(11))
+                    .padding([1, 6])
+                    .style(studio_button_style)
+                    .on_press(Message::ClearSelection),
+            );
+
+            let path_label = if hit.source_path.is_empty() {
+                hit.address.clone()
+            } else {
+                hit.source_path.join(" / ")
+            };
+            let pos_label = format!(
+                "{} · {}",
+                proj.format_bar_position(hit.on_frame),
+                format_time(hit.on_frame, proj.sample_rate_hz)
+            );
+            let mut card = Column::new().spacing(6).push(header).push(
+                text(format!("{path_label}   ({pos_label})"))
+                    .size(11)
+                    .color(Color::from_rgb(0.76, 0.82, 0.90)),
+            );
+
+            if let Some(info) = &self.selected_note_info {
+                let sp = info.path.clone();
+                if let Some(keys) = proj.track_hit_keys.get(&hit.track_idx) {
+                    let mut key_row = Row::new().spacing(4).align_y(Alignment::Center);
+                    for k in keys {
+                        let active = info.hit_key.as_deref() == Some(k.as_str());
+                        let path = sp.clone();
+                        let k_owned = k.clone();
+                        key_row = key_row.push(
+                            button(text(k).size(10))
+                                .padding([2, 6])
+                                .style(move |t, s| {
+                                    if active {
+                                        accent_button_style(Color::from_rgb(0.24, 0.62, 0.44), t, s)
+                                    } else {
+                                        studio_button_style(t, s)
+                                    }
+                                })
+                                .on_press_maybe((!busy).then_some(Message::ApplyNoteEdit {
+                                    source_path: path,
+                                    edit: NoteEdit::SetHitKey(k_owned),
+                                })),
+                        );
+                    }
+                    card = card.push(scrollable(key_row).direction(
+                        scrollable::Direction::Horizontal(
+                            scrollable::Scrollbar::new().width(3).scroller_width(3),
+                        ),
+                    ));
+                }
+
+                let at_btn = |lbl: &'static str, delta: i64| {
+                    let path = sp.clone();
+                    button(text(lbl).size(10.5))
+                        .padding([2, 5])
+                        .style(studio_button_style)
+                        .on_press_maybe((!busy).then_some(Message::ApplyNoteEdit {
+                            source_path: path,
+                            edit: NoteEdit::ShiftAtQuarter16ths(delta),
+                        }))
+                };
+                card = card.push(
+                    row![
+                        text("At")
+                            .size(11)
+                            .width(Length::Fixed(34.0))
+                            .color(Color::from_rgb(0.62, 0.68, 0.78)),
+                        at_btn("-½", -2),
+                        at_btn("-¼", -1),
+                        container(text(format_q(info.at_q.0, info.at_q.1)).size(11.5))
+                            .width(Length::Fixed(46.0))
+                            .center_x(Length::Fixed(46.0)),
+                        at_btn("+¼", 1),
+                        at_btn("+½", 2),
+                    ]
+                    .spacing(4)
+                    .align_y(Alignment::Center),
+                );
+
+                let vel_val = self
+                    .velocity_draft
+                    .or(info.velocity)
+                    .unwrap_or(hit.velocity);
+                let vel_slider = slider(0.05..=1.0_f32, vel_val, Message::VelocitySliderChanged)
+                    .step(0.01_f32)
+                    .on_release(Message::CommitVelocity)
+                    .width(Length::Fill);
+                card = card.push(
+                    row![
+                        text("Vel")
+                            .size(11)
+                            .width(Length::Fixed(34.0))
+                            .color(Color::from_rgb(0.62, 0.68, 0.78)),
+                        vel_slider,
+                        text(format!("{vel_val:.2}"))
+                            .size(11)
+                            .color(Color::from_rgb(0.76, 0.82, 0.90)),
+                    ]
+                    .spacing(6)
+                    .align_y(Alignment::Center),
+                );
+
+                let dup_btn = button(text("Duplicate (⌘D)").size(11))
+                    .padding([3, 8])
+                    .style(studio_button_style)
+                    .on_press_maybe((!busy).then_some(Message::ApplyNoteEdit {
+                        source_path: sp.clone(),
+                        edit: NoteEdit::Duplicate,
+                    }));
+                let del_btn = button(text("Delete (⌫)").size(11))
+                    .padding([3, 8])
+                    .style(|theme, status| {
+                        accent_button_style(Color::from_rgb(0.68, 0.22, 0.26), theme, status)
+                    })
+                    .on_press_maybe((!busy).then_some(Message::ApplyNoteEdit {
+                        source_path: sp,
+                        edit: NoteEdit::Delete,
+                    }));
+                card = card.push(row![dup_btn, horizontal_space(), del_btn].spacing(6));
+
+                if hit.shared_occurrences > 1 {
+                    card = card.push(
+                        row![
+                            text(format!("Shared ×{} occurrences", hit.shared_occurrences))
+                                .size(10)
+                                .color(Color::from_rgb(0.84, 0.70, 0.36)),
+                            horizontal_space(),
+                            button(text("Make Unique (Split)").size(10.5))
+                                .padding([3, 8])
+                                .style(|theme, status| {
+                                    accent_button_style(
+                                        Color::from_rgb(0.74, 0.50, 0.14),
+                                        theme,
+                                        status,
+                                    )
+                                })
+                                .on_press_maybe(
+                                    (!busy).then_some(Message::MaterializeSelectedNote)
+                                ),
+                        ]
+                        .align_y(Alignment::Center),
+                    );
+                }
+            }
+
+            col = col.push(container(card).padding(9).width(Length::Fill).style(|_| {
+                container::Style {
+                    background: Some(Background::Color(Color::from_rgb(0.112, 0.138, 0.150))),
+                    border: Border {
+                        color: Color::from_rgba(0.45, 0.86, 0.62, 0.40),
+                        width: 1.0,
+                        radius: 5.0.into(),
+                    },
+                    ..Default::default()
+                }
+            }));
+        } else if let Some((lane_idx, point_idx)) = self.selected_auto_point {
+            if let Some(lane) = proj.automations.get(lane_idx) {
+                if let Some(pt) = lane.points.iter().find(|p| p.index == point_idx) {
+                    let busy = self.editing;
+                    let accent = lane
+                        .track_idx
+                        .map(track_color)
+                        .unwrap_or(Color::from_rgb(0.96, 0.76, 0.30));
+                    let header = row![
+                        text("AUTOMATION POINT")
+                            .size(10.5)
+                            .color(Color::from_rgb(0.58, 0.66, 0.78)),
+                        Space::with_width(6),
+                        text(format!("{}.{}", lane.target_node, lane.target_param))
+                            .size(11)
+                            .color(accent),
+                        horizontal_space(),
+                        button(text("×").size(11))
+                            .padding([1, 6])
+                            .style(studio_button_style)
+                            .on_press(Message::ClearSelection),
+                    ]
+                    .align_y(Alignment::Center);
+
+                    let unit_lbl = if lane.clock_is_seconds { "s" } else { "q" };
+                    let mut card = Column::new().spacing(6).push(header).push(
+                        text(format!(
+                            "{} [pt #{}] @ {:.2}{unit_lbl} ({})",
+                            lane.curve_id.as_deref().unwrap_or(&lane.id),
+                            point_idx,
+                            pt.pos_raw,
+                            proj.format_bar_position(pt.frame)
+                        ))
+                        .size(11)
+                        .color(Color::from_rgb(0.76, 0.82, 0.90)),
+                    );
+
+                    if proj.automations.len() > 1 {
+                        let mut lanes_row = Row::new().spacing(4);
+                        for (idx, l) in proj.automations.iter().enumerate() {
+                            let active = idx == lane_idx;
+                            lanes_row = lanes_row.push(
+                                button(
+                                    text(format!("{}.{}", l.target_node, l.target_param)).size(10),
+                                )
+                                .padding([2, 6])
+                                .style(move |t, s| {
+                                    if active {
+                                        accent_button_style(Color::from_rgb(0.76, 0.54, 0.16), t, s)
+                                    } else {
+                                        studio_button_style(t, s)
+                                    }
+                                })
+                                .on_press(Message::SelectAutoLane(idx)),
+                            );
+                        }
+                        card = card.push(scrollable(lanes_row).direction(
+                            scrollable::Direction::Horizontal(
+                                scrollable::Scrollbar::new().width(3).scroller_width(3),
+                            ),
+                        ));
+                    }
+
+                    let val = self.auto_value_draft.unwrap_or(pt.value);
+                    let step = ((lane.max_val - lane.min_val) / 200.0).max(0.01);
+                    let val_slider = slider(
+                        lane.min_val..=lane.max_val.max(lane.min_val + 0.01),
+                        val.clamp(lane.min_val, lane.max_val),
+                        Message::AutoValueSliderChanged,
+                    )
+                    .step(step)
+                    .on_release(Message::CommitAutoPointValue)
+                    .width(Length::Fill);
+
+                    card = card.push(
+                        row![
+                            text("Val")
+                                .size(11)
+                                .width(Length::Fixed(34.0))
+                                .color(Color::from_rgb(0.62, 0.68, 0.78)),
+                            val_slider,
+                            text(format_param_value(lane.unit, val))
+                                .size(11)
+                                .color(Color::from_rgb(0.55, 0.86, 0.78)),
+                        ]
+                        .spacing(6)
+                        .align_y(Alignment::Center),
+                    );
+
+                    if lane.editable_in_entry {
+                        let shape_btn = |shape: &'static str| {
+                            let active = pt.shape == shape;
+                            button(text(shape).size(10.5))
+                                .padding([2, 7])
+                                .style(move |t, s| {
+                                    if active {
+                                        accent_button_style(Color::from_rgb(0.76, 0.54, 0.16), t, s)
+                                    } else {
+                                        studio_button_style(t, s)
+                                    }
+                                })
+                                .on_press_maybe((!busy).then_some(Message::ApplyAutoPointEdit {
+                                    lane_idx,
+                                    point_idx,
+                                    value: None,
+                                    shape: Some(shape.to_owned()),
+                                }))
+                        };
+                        card = card.push(
+                            row![
+                                text("Curve")
+                                    .size(11)
+                                    .width(Length::Fixed(34.0))
+                                    .color(Color::from_rgb(0.62, 0.68, 0.78)),
+                                shape_btn("step"),
+                                shape_btn("linear"),
+                                shape_btn("exponential"),
+                            ]
+                            .spacing(4)
+                            .align_y(Alignment::Center),
+                        );
+
+                        if lane.points.len() > 1 {
+                            card = card.push(row![
+                                horizontal_space(),
+                                button(text("Delete Point").size(11))
+                                    .padding([3, 8])
+                                    .style(|t, s| {
+                                        accent_button_style(Color::from_rgb(0.68, 0.22, 0.26), t, s)
+                                    })
+                                    .on_press_maybe((!busy).then_some(Message::DeleteAutoPoint {
+                                        lane_idx,
+                                        point_idx,
+                                    })),
+                            ]);
+                        }
+                    }
+
+                    col = col.push(container(card).padding(9).width(Length::Fill).style(|_| {
+                        container::Style {
+                            background: Some(Background::Color(Color::from_rgb(
+                                0.125, 0.122, 0.152,
+                            ))),
+                            border: Border {
+                                color: Color::from_rgba(0.96, 0.76, 0.30, 0.45),
+                                width: 1.0,
+                                radius: 5.0.into(),
+                            },
+                            ..Default::default()
+                        }
+                    }));
+                }
+            }
         } else {
             col = col.push(
-                text("Click or ⌘-drag notes to edit · Double-click empty piano roll to insert a new note.")
+                text("Click or ⌘-drag notes, click HITS or AUTO points to edit · Double-click empty lane to insert.")
                     .size(10.5)
                     .color(Color::from_rgb(0.50, 0.56, 0.66)),
             );

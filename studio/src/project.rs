@@ -14,6 +14,7 @@ use maac::plan::{EventKind, PlanLimits, Region, TempoMap};
 use maac::{parse_rational, PlanArtifact};
 use num_traits::ToPrimitive;
 
+use crate::automation::{extract_automations, AutomationLane};
 use crate::mixer::{extract_mixer_nodes, MixerNodeInfo};
 
 #[derive(Clone, Debug)]
@@ -46,6 +47,10 @@ pub struct RollNote {
 
 #[derive(Clone, Debug)]
 pub struct RollHit {
+    pub address: String,
+    pub source_path: Vec<String>,
+    pub shared_occurrences: usize,
+    pub key: String,
     pub track_idx: usize,
     pub on_frame: u64,
     pub velocity: f32,
@@ -76,7 +81,9 @@ pub struct ProjectData {
     pub notes: Vec<RollNote>,
     pub hits: Vec<RollHit>,
     pub tracks: Vec<TrackInfo>,
+    pub track_hit_keys: BTreeMap<usize, Vec<String>>,
     pub mixer_nodes: Vec<MixerNodeInfo>,
+    pub automations: Vec<AutomationLane>,
     pub min_pitch: f32,
     pub max_pitch: f32,
     pub compile_ms: u64,
@@ -301,10 +308,17 @@ pub fn load_from_bundle(
                     velocity: vel,
                 });
             }
-            EventKind::Hit { velocity, .. } => {
+            EventKind::Hit { key, velocity } => {
                 let vel = velocity.to_f32().unwrap_or(0.7).clamp(0.05, 1.0);
                 tracks[track_idx].hit_count += 1;
+                if !ev.source.path.is_empty() {
+                    *source_counts.entry(ev.source.path.clone()).or_insert(0) += 1;
+                }
                 hits.push(RollHit {
+                    address: ev.address,
+                    source_path: ev.source.path,
+                    shared_occurrences: 1,
+                    key,
                     track_idx,
                     on_frame: ev.on_frame,
                     velocity: vel,
@@ -319,6 +333,21 @@ pub fn load_from_bundle(
             note.shared_occurrences = count;
         }
     }
+    let mut track_hit_keys_sets: BTreeMap<usize, std::collections::BTreeSet<String>> =
+        BTreeMap::new();
+    for hit in &mut hits {
+        if let Some(&count) = source_counts.get(&hit.source_path) {
+            hit.shared_occurrences = count;
+        }
+        track_hit_keys_sets
+            .entry(hit.track_idx)
+            .or_default()
+            .insert(hit.key.clone());
+    }
+    let track_hit_keys: BTreeMap<usize, Vec<String>> = track_hit_keys_sets
+        .into_iter()
+        .map(|(idx, set)| (idx, set.into_iter().collect()))
+        .collect();
 
     if !min_pitch.is_finite() || !max_pitch.is_finite() {
         min_pitch = 48.0;
@@ -335,14 +364,22 @@ pub fn load_from_bundle(
         .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
         .map(Arc::new);
 
-    let (regions, bars, mixer_nodes) = match plan_json.as_deref() {
+    let (regions, bars, mixer_nodes, automations) = match plan_json.as_deref() {
         Some(json) => {
             let (regions, bars) =
                 extract_timeline_grid(json, &plan, meter.as_ref(), sample_rate_hz, total_frames);
             let mixer_nodes = extract_mixer_nodes(&bundle, json, &tracks, sample_rate_hz);
-            (regions, bars, mixer_nodes)
+            let automations = extract_automations(
+                &bundle,
+                json,
+                &tracks,
+                &mixer_nodes,
+                sample_rate_hz,
+                total_frames,
+            );
+            (regions, bars, mixer_nodes, automations)
         }
-        None => (Vec::new(), Vec::new(), Vec::new()),
+        None => (Vec::new(), Vec::new(), Vec::new(), Vec::new()),
     };
 
     let title = canonical_entry
@@ -367,7 +404,9 @@ pub fn load_from_bundle(
         notes,
         hits,
         tracks,
+        track_hit_keys,
         mixer_nodes,
+        automations,
         min_pitch: (min_pitch - 2.0).max(0.0),
         max_pitch: (max_pitch + 2.0).min(127.0),
         compile_ms: started.elapsed().as_millis() as u64,
