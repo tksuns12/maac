@@ -1,5 +1,6 @@
 # Rust build artifacts
 /target/
+/studio/target/
 
 # Local repository analysis output
 /graphify-out/
