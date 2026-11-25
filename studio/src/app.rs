@@ -21,8 +21,9 @@ use maac::PlanArtifact;
 use crate::analysis::{run_analysis, AnalysisSummary};
 use crate::audio::AudioEngine;
 use crate::editor::{
-    apply_note_edit, format_q, inspect_note_in_bundle, midi_to_pitch_symbol, NoteEdit,
-    NoteSourceInfo,
+    add_note_at_score_pos, apply_batch_note_edit, apply_note_edit, format_q,
+    inspect_note_in_bundle, materialize_note_placement, midi_to_pitch_symbol, BatchNoteEdit,
+    NoteEdit, NoteSourceInfo,
 };
 use crate::mixer::{
     apply_node_param_edit, apply_node_param_reset, MixerNodeInfo, NodeCategory, NodeParamInfo,
@@ -63,10 +64,30 @@ pub enum Message {
         result: Result<Box<PlanArtifact>, String>,
     },
     SelectNote(Option<String>),
+    ToggleSelectNote(String),
+    SelectNotesBox(Vec<String>),
     ClearSelection,
     ApplyNoteEdit {
         source_path: Vec<String>,
         edit: NoteEdit,
+    },
+    ApplyBatchNoteEdit(BatchNoteEdit),
+    MaterializeSelectedNote,
+    MaterializedApplied {
+        prev_source: String,
+        remapped_addr: Option<String>,
+        summary: String,
+        result: Result<Box<ProjectData>, String>,
+    },
+    AddNoteAt {
+        frame: u64,
+        midi_pitch: i32,
+    },
+    NoteAdded {
+        prev_source: String,
+        new_source_path: Vec<String>,
+        summary: String,
+        result: Result<Box<ProjectData>, String>,
     },
     VelocitySliderChanged(f32),
     CommitVelocity,
@@ -145,6 +166,7 @@ pub struct StudioApp {
 
     // Direct editing & transactional history
     selected_note_address: Option<String>,
+    selected_notes: HashSet<String>,
     selected_note_info: Option<NoteSourceInfo>,
     velocity_draft: Option<f32>,
     saved_source: Option<String>,
@@ -205,6 +227,7 @@ impl StudioApp {
             compile_error: None,
             last_reload_note: None,
             selected_note_address: None,
+            selected_notes: HashSet::new(),
             selected_note_info: None,
             velocity_draft: None,
             saved_source: None,
@@ -522,13 +545,41 @@ impl StudioApp {
             }
 
             Message::SelectNote(addr) => {
+                self.selected_notes.clear();
+                if let Some(a) = &addr {
+                    self.selected_notes.insert(a.clone());
+                }
                 self.selected_note_address = addr;
                 self.edit_error = None;
                 self.refresh_selected_note_info();
                 Task::none()
             }
 
+            Message::ToggleSelectNote(addr) => {
+                if self.selected_notes.contains(&addr) {
+                    self.selected_notes.remove(&addr);
+                    if self.selected_note_address.as_deref() == Some(addr.as_str()) {
+                        self.selected_note_address = self.selected_notes.iter().next().cloned();
+                    }
+                } else {
+                    self.selected_notes.insert(addr.clone());
+                    self.selected_note_address = Some(addr);
+                }
+                self.edit_error = None;
+                self.refresh_selected_note_info();
+                Task::none()
+            }
+
+            Message::SelectNotesBox(addrs) => {
+                self.selected_notes = addrs.into_iter().collect();
+                self.selected_note_address = self.selected_notes.iter().next().cloned();
+                self.edit_error = None;
+                self.refresh_selected_note_info();
+                Task::none()
+            }
+
             Message::ClearSelection => {
+                self.selected_notes.clear();
                 self.selected_note_address = None;
                 self.selected_note_info = None;
                 self.velocity_draft = None;
@@ -542,12 +593,272 @@ impl StudioApp {
             }
 
             Message::CommitVelocity => {
-                if let (Some(info), Some(vel)) = (&self.selected_note_info, self.velocity_draft) {
+                let Some(vel) = self.velocity_draft else {
+                    return Task::none();
+                };
+                if self.selected_notes.len() > 1 {
+                    return self
+                        .update(Message::ApplyBatchNoteEdit(BatchNoteEdit::SetVelocity(vel)));
+                }
+                if let Some(info) = &self.selected_note_info {
                     let source_path = info.path.clone();
                     return self.update(Message::ApplyNoteEdit {
                         source_path,
                         edit: NoteEdit::SetVelocity(vel),
                     });
+                }
+                Task::none()
+            }
+
+            Message::ApplyBatchNoteEdit(edit) => {
+                if self.editing || self.selected_notes.is_empty() {
+                    return Task::none();
+                }
+                let Some(proj) = &self.project else {
+                    return Task::none();
+                };
+                let Some(prev_source) = proj.bundle.sources.get(&proj.bundle.entry).cloned() else {
+                    return Task::none();
+                };
+                let source_paths: Vec<Vec<String>> = proj
+                    .notes
+                    .iter()
+                    .filter(|n| self.selected_notes.contains(&n.address))
+                    .map(|n| n.source_path.clone())
+                    .collect();
+                if source_paths.is_empty() {
+                    return Task::none();
+                }
+                let bundle = proj.bundle.clone();
+                let entry_path = proj.entry_path.clone();
+                let project_root = proj.project_root.clone();
+                let limits = proj.limits;
+                self.editing = true;
+                self.edit_error = None;
+                Task::perform(
+                    async move {
+                        let handle = std::thread::spawn(move || {
+                            let (updated_bundle, summary) =
+                                apply_batch_note_edit(&bundle, &source_paths, edit, &limits)?;
+                            let recompiled =
+                                load_from_bundle(entry_path, project_root, updated_bundle)?;
+                            Ok((Box::new(recompiled), summary))
+                        });
+                        handle
+                            .join()
+                            .unwrap_or_else(|_| Err("batch edit worker panicked".into()))
+                    },
+                    move |res| match res {
+                        Ok((data, summary)) => Message::NoteEditApplied {
+                            prev_source: prev_source.clone(),
+                            summary,
+                            result: Ok(data),
+                        },
+                        Err(err) => Message::NoteEditApplied {
+                            prev_source: prev_source.clone(),
+                            summary: String::new(),
+                            result: Err(err),
+                        },
+                    },
+                )
+            }
+
+            Message::MaterializeSelectedNote => {
+                if self.editing {
+                    return Task::none();
+                }
+                let (Some(proj), Some(addr)) = (&self.project, self.selected_note_address.clone())
+                else {
+                    return Task::none();
+                };
+                let Some(prev_source) = proj.bundle.sources.get(&proj.bundle.entry).cloned() else {
+                    return Task::none();
+                };
+                let bundle = proj.bundle.clone();
+                let entry_path = proj.entry_path.clone();
+                let project_root = proj.project_root.clone();
+                let limits = proj.limits;
+                self.editing = true;
+                self.edit_error = None;
+                Task::perform(
+                    async move {
+                        let handle = std::thread::spawn(move || {
+                            let (updated_bundle, remapped, summary) =
+                                materialize_note_placement(&bundle, &addr, &limits)?;
+                            let recompiled =
+                                load_from_bundle(entry_path, project_root, updated_bundle)?;
+                            Ok((Box::new(recompiled), remapped, summary))
+                        });
+                        handle
+                            .join()
+                            .unwrap_or_else(|_| Err("materialize worker panicked".into()))
+                    },
+                    move |res| match res {
+                        Ok((data, remapped_addr, summary)) => Message::MaterializedApplied {
+                            prev_source: prev_source.clone(),
+                            remapped_addr,
+                            summary,
+                            result: Ok(data),
+                        },
+                        Err(err) => Message::MaterializedApplied {
+                            prev_source: prev_source.clone(),
+                            remapped_addr: None,
+                            summary: String::new(),
+                            result: Err(err),
+                        },
+                    },
+                )
+            }
+
+            Message::MaterializedApplied {
+                prev_source,
+                remapped_addr,
+                summary,
+                result,
+            } => {
+                self.editing = false;
+                match result {
+                    Ok(data) => {
+                        self.undo_stack.push(prev_source);
+                        if self.undo_stack.len() > 100 {
+                            self.undo_stack.remove(0);
+                        }
+                        self.redo_stack.clear();
+                        self.edit_error = None;
+                        if let Some(new_addr) = remapped_addr {
+                            self.selected_notes.clear();
+                            self.selected_notes.insert(new_addr.clone());
+                            self.selected_note_address = Some(new_addr);
+                        }
+                        let ms = data.compile_ms;
+                        return self.apply_in_memory_project(*data, format!("{summary} ({ms} ms)"));
+                    }
+                    Err(err) => {
+                        self.edit_error = Some(err);
+                    }
+                }
+                Task::none()
+            }
+
+            Message::AddNoteAt { frame, midi_pitch } => {
+                if self.editing {
+                    return Task::none();
+                }
+                let Some(proj) = &self.project else {
+                    return Task::none();
+                };
+                let Some(prev_source) = proj.bundle.sources.get(&proj.bundle.entry).cloned() else {
+                    return Task::none();
+                };
+                // Pick target track: selected note's track -> selected mixer track -> first visible audible melodic track.
+                let audible = self.audible_track_flags(proj);
+                let target_track = self
+                    .selected_note_address
+                    .as_deref()
+                    .and_then(|addr| proj.notes.iter().find(|n| n.address == addr))
+                    .and_then(|n| proj.tracks.get(n.track_idx))
+                    .map(|t| t.name.clone())
+                    .or_else(|| {
+                        self.selected_node_id
+                            .as_deref()
+                            .filter(|id| {
+                                proj.tracks
+                                    .iter()
+                                    .any(|t| t.name == *id && t.note_count > 0)
+                            })
+                            .map(str::to_owned)
+                    })
+                    .or_else(|| {
+                        proj.tracks
+                            .iter()
+                            .enumerate()
+                            .find(|(idx, t)| {
+                                t.note_count > 0
+                                    && self.visible_tracks.get(*idx).copied().unwrap_or(true)
+                                    && audible.get(*idx).copied().unwrap_or(true)
+                            })
+                            .map(|(_, t)| t.name.clone())
+                    })
+                    .or_else(|| {
+                        proj.tracks
+                            .iter()
+                            .find(|t| t.note_count > 0)
+                            .map(|t| t.name.clone())
+                    });
+                let Some(track_name) = target_track else {
+                    self.edit_error = Some("No melodic track available to insert a note".into());
+                    return Task::none();
+                };
+                let score_q = proj.frame_to_score_q(frame);
+                let bundle = proj.bundle.clone();
+                let entry_path = proj.entry_path.clone();
+                let project_root = proj.project_root.clone();
+                let limits = proj.limits;
+                self.editing = true;
+                self.edit_error = None;
+                Task::perform(
+                    async move {
+                        let handle = std::thread::spawn(move || {
+                            let (updated_bundle, new_path, summary) = add_note_at_score_pos(
+                                &bundle,
+                                &track_name,
+                                score_q,
+                                midi_pitch,
+                                &limits,
+                            )?;
+                            let recompiled =
+                                load_from_bundle(entry_path, project_root, updated_bundle)?;
+                            Ok((Box::new(recompiled), new_path, summary))
+                        });
+                        handle
+                            .join()
+                            .unwrap_or_else(|_| Err("add note worker panicked".into()))
+                    },
+                    move |res| match res {
+                        Ok((data, new_source_path, summary)) => Message::NoteAdded {
+                            prev_source: prev_source.clone(),
+                            new_source_path,
+                            summary,
+                            result: Ok(data),
+                        },
+                        Err(err) => Message::NoteAdded {
+                            prev_source: prev_source.clone(),
+                            new_source_path: Vec::new(),
+                            summary: String::new(),
+                            result: Err(err),
+                        },
+                    },
+                )
+            }
+
+            Message::NoteAdded {
+                prev_source,
+                new_source_path,
+                summary,
+                result,
+            } => {
+                self.editing = false;
+                match result {
+                    Ok(data) => {
+                        self.undo_stack.push(prev_source);
+                        if self.undo_stack.len() > 100 {
+                            self.undo_stack.remove(0);
+                        }
+                        self.redo_stack.clear();
+                        self.edit_error = None;
+                        if let Some(added) =
+                            data.notes.iter().find(|n| n.source_path == new_source_path)
+                        {
+                            self.selected_notes.clear();
+                            self.selected_notes.insert(added.address.clone());
+                            self.selected_note_address = Some(added.address.clone());
+                        }
+                        let ms = data.compile_ms;
+                        return self.apply_in_memory_project(*data, format!("{summary} ({ms} ms)"));
+                    }
+                    Err(err) => {
+                        self.edit_error = Some(err);
+                    }
                 }
                 Task::none()
             }
@@ -691,6 +1002,18 @@ impl StudioApp {
                 pitch_semis,
                 at_q16,
             } => {
+                if self.selected_notes.len() > 1 {
+                    if pitch_semis != 0 {
+                        return self.update(Message::ApplyBatchNoteEdit(
+                            BatchNoteEdit::ShiftPitchSemitones(pitch_semis),
+                        ));
+                    } else if at_q16 != 0 {
+                        return self.update(Message::ApplyBatchNoteEdit(
+                            BatchNoteEdit::ShiftAtQuarter16ths(at_q16),
+                        ));
+                    }
+                    return Task::none();
+                }
                 let Some(info) = self.selected_note_info.clone() else {
                     return Task::none();
                 };
@@ -711,6 +1034,9 @@ impl StudioApp {
             }
 
             Message::KeyboardDeleteNote => {
+                if self.selected_notes.len() > 1 {
+                    return self.update(Message::ApplyBatchNoteEdit(BatchNoteEdit::Delete));
+                }
                 let Some(info) = self.selected_note_info.clone() else {
                     return Task::none();
                 };
@@ -1072,10 +1398,24 @@ impl StudioApp {
                 TimelineAction::SetLoop(range) => self.update(Message::SetLoop(range)),
                 TimelineAction::LoopRegion(span) => self.update(Message::LoopRegion(span)),
                 TimelineAction::SelectNote(addr) => self.update(Message::SelectNote(addr)),
+                TimelineAction::ToggleSelectNote(addr) => {
+                    self.update(Message::ToggleSelectNote(addr))
+                }
+                TimelineAction::SelectNotesBox(addrs) => {
+                    self.update(Message::SelectNotesBox(addrs))
+                }
+                TimelineAction::AddNoteAt { frame, midi_pitch } => {
+                    self.update(Message::AddNoteAt { frame, midi_pitch })
+                }
                 TimelineAction::DragNotePitch {
                     source_path,
                     delta_semitones,
                 } => {
+                    if self.selected_notes.len() > 1 {
+                        return self.update(Message::ApplyBatchNoteEdit(
+                            BatchNoteEdit::ShiftPitchSemitones(delta_semitones),
+                        ));
+                    }
                     let cur_midi = self
                         .project
                         .as_ref()
@@ -1093,17 +1433,31 @@ impl StudioApp {
                 TimelineAction::DragNoteTiming {
                     source_path,
                     delta_quarter_16ths,
-                } => self.update(Message::ApplyNoteEdit {
-                    source_path,
-                    edit: NoteEdit::ShiftAtQuarter16ths(delta_quarter_16ths),
-                }),
+                } => {
+                    if self.selected_notes.len() > 1 {
+                        return self.update(Message::ApplyBatchNoteEdit(
+                            BatchNoteEdit::ShiftAtQuarter16ths(delta_quarter_16ths),
+                        ));
+                    }
+                    self.update(Message::ApplyNoteEdit {
+                        source_path,
+                        edit: NoteEdit::ShiftAtQuarter16ths(delta_quarter_16ths),
+                    })
+                }
                 TimelineAction::DragNoteDuration {
                     source_path,
                     delta_quarter_16ths,
-                } => self.update(Message::ApplyNoteEdit {
-                    source_path,
-                    edit: NoteEdit::ShiftDurQuarter16ths(delta_quarter_16ths),
-                }),
+                } => {
+                    if self.selected_notes.len() > 1 {
+                        return self.update(Message::ApplyBatchNoteEdit(
+                            BatchNoteEdit::ShiftDurQuarter16ths(delta_quarter_16ths),
+                        ));
+                    }
+                    self.update(Message::ApplyNoteEdit {
+                        source_path,
+                        edit: NoteEdit::ShiftDurQuarter16ths(delta_quarter_16ths),
+                    })
+                }
                 TimelineAction::Zoom { delta, anchor } => {
                     self.update(Message::ZoomDelta { delta, anchor })
                 }
@@ -1175,10 +1529,21 @@ impl StudioApp {
 
     fn refresh_selected_note_info(&mut self) {
         let Some(proj) = &self.project else {
+            self.selected_notes.clear();
+            self.selected_note_address = None;
             self.selected_note_info = None;
             self.velocity_draft = None;
             return;
         };
+        let valid: HashSet<&str> = proj.notes.iter().map(|n| n.address.as_str()).collect();
+        self.selected_notes.retain(|a| valid.contains(a.as_str()));
+        if self
+            .selected_note_address
+            .as_deref()
+            .is_some_and(|a| !valid.contains(a))
+        {
+            self.selected_note_address = self.selected_notes.iter().next().cloned();
+        }
         let Some(addr) = self.selected_note_address.as_deref() else {
             self.selected_note_info = None;
             self.velocity_draft = None;
@@ -1344,6 +1709,7 @@ impl StudioApp {
         self.saved_source = disk_source;
         self.undo_stack.clear();
         self.redo_stack.clear();
+        self.selected_notes.clear();
         self.selected_note_address = None;
         self.selected_note_info = None;
         self.velocity_draft = None;
@@ -1891,7 +2257,7 @@ impl StudioApp {
                     project: proj,
                     visible_tracks: &self.visible_tracks,
                     audible_tracks,
-                    selected_note_address: self.selected_note_address.as_deref(),
+                    selected_notes: &self.selected_notes,
                     selected_source_path,
                     playhead_frame: self.playhead_frame,
                     checkpoint_frame: self.checkpoint_frame,
@@ -1933,7 +2299,7 @@ impl StudioApp {
                 format_time(span.end, proj.sample_rate_hz)
             ),
             None => {
-                "Click note to edit · Drag note pitch/time/edge · Click empty to seek · Drag ruler / Shift+drag to loop"
+                "Click/⌘-click/⌘-drag notes · Double-click empty roll to add note · Drag ruler / Shift+drag to loop"
                     .into()
             }
         };
@@ -2033,8 +2399,142 @@ impl StudioApp {
             );
         }
 
-        // Direct note editor inspector
-        if let Some(note) = self
+        // Direct note editor inspector (multi-note batch mode or single-note mode)
+        if self.selected_notes.len() > 1 {
+            let unique_sources: HashSet<&[String]> = proj
+                .notes
+                .iter()
+                .filter(|n| self.selected_notes.contains(&n.address))
+                .map(|n| n.source_path.as_slice())
+                .filter(|sp| !sp.is_empty())
+                .collect();
+            let busy = self.editing;
+            let header = row![
+                text(format!("SELECTED NOTES ({})", self.selected_notes.len()))
+                    .size(10.5)
+                    .color(Color::from_rgb(0.45, 0.82, 0.98)),
+                horizontal_space(),
+                button(text("×").size(11))
+                    .padding([1, 6])
+                    .style(studio_button_style)
+                    .on_press(Message::ClearSelection),
+            ]
+            .align_y(Alignment::Center);
+
+            let bp_btn = |lbl: &'static str, delta: i32| {
+                button(text(lbl).size(10.5))
+                    .padding([2, 7])
+                    .style(studio_button_style)
+                    .on_press_maybe((!busy).then_some(Message::ApplyBatchNoteEdit(
+                        BatchNoteEdit::ShiftPitchSemitones(delta),
+                    )))
+            };
+            let bat_btn = |lbl: &'static str, delta: i64| {
+                button(text(lbl).size(10.5))
+                    .padding([2, 6])
+                    .style(studio_button_style)
+                    .on_press_maybe((!busy).then_some(Message::ApplyBatchNoteEdit(
+                        BatchNoteEdit::ShiftAtQuarter16ths(delta),
+                    )))
+            };
+            let bdur_btn = |lbl: &'static str, delta: i64| {
+                button(text(lbl).size(10.5))
+                    .padding([2, 6])
+                    .style(studio_button_style)
+                    .on_press_maybe((!busy).then_some(Message::ApplyBatchNoteEdit(
+                        BatchNoteEdit::ShiftDurQuarter16ths(delta),
+                    )))
+            };
+
+            let vel_val = self.velocity_draft.unwrap_or(0.7);
+            let vel_slider = slider(0.05..=1.0_f32, vel_val, Message::VelocitySliderChanged)
+                .step(0.01_f32)
+                .on_release(Message::CommitVelocity)
+                .width(Length::Fill);
+
+            let del_btn = button(text("Delete All (⌫)").size(11))
+                .padding([3, 9])
+                .style(|theme, status| {
+                    accent_button_style(Color::from_rgb(0.68, 0.22, 0.26), theme, status)
+                })
+                .on_press_maybe(
+                    (!busy).then_some(Message::ApplyBatchNoteEdit(BatchNoteEdit::Delete)),
+                );
+
+            let batch_card = column![
+                header,
+                text(format!(
+                    "{} unique authored note(s) · edits apply in one Undo step",
+                    unique_sources.len()
+                ))
+                .size(10.5)
+                .color(Color::from_rgb(0.66, 0.72, 0.82)),
+                row![
+                    text("Pitch")
+                        .size(11)
+                        .width(Length::Fixed(34.0))
+                        .color(Color::from_rgb(0.62, 0.68, 0.78)),
+                    bp_btn("-12", -12),
+                    bp_btn("-1", -1),
+                    bp_btn("+1", 1),
+                    bp_btn("+12", 12),
+                ]
+                .spacing(4)
+                .align_y(Alignment::Center),
+                row![
+                    text("At")
+                        .size(11)
+                        .width(Length::Fixed(34.0))
+                        .color(Color::from_rgb(0.62, 0.68, 0.78)),
+                    bat_btn("-½", -2),
+                    bat_btn("-¼", -1),
+                    bat_btn("+¼", 1),
+                    bat_btn("+½", 2),
+                ]
+                .spacing(4)
+                .align_y(Alignment::Center),
+                row![
+                    text("Dur")
+                        .size(11)
+                        .width(Length::Fixed(34.0))
+                        .color(Color::from_rgb(0.62, 0.68, 0.78)),
+                    bdur_btn("-¼", -1),
+                    bdur_btn("+¼", 1),
+                    bdur_btn("+½", 2),
+                ]
+                .spacing(4)
+                .align_y(Alignment::Center),
+                row![
+                    text("Vel")
+                        .size(11)
+                        .width(Length::Fixed(34.0))
+                        .color(Color::from_rgb(0.62, 0.68, 0.78)),
+                    vel_slider,
+                    text(format!("{vel_val:.2}"))
+                        .size(11)
+                        .color(Color::from_rgb(0.76, 0.82, 0.90)),
+                ]
+                .spacing(6)
+                .align_y(Alignment::Center),
+                row![horizontal_space(), del_btn],
+            ]
+            .spacing(6);
+
+            col = col.push(
+                container(batch_card)
+                    .padding(9)
+                    .width(Length::Fill)
+                    .style(|_| container::Style {
+                        background: Some(Background::Color(Color::from_rgb(0.115, 0.132, 0.170))),
+                        border: Border {
+                            color: Color::from_rgba(0.40, 0.84, 0.98, 0.45),
+                            width: 1.2,
+                            radius: 5.0.into(),
+                        },
+                        ..Default::default()
+                    }),
+            );
+        } else if let Some(note) = self
             .selected_note_address
             .as_deref()
             .and_then(|addr| proj.notes.iter().find(|n| n.address == addr))
@@ -2243,12 +2743,25 @@ impl StudioApp {
 
                 if note.shared_occurrences > 1 {
                     card = card.push(
-                        text(format!(
-                            "Edits source pattern (shared across {} notes)",
-                            note.shared_occurrences
-                        ))
-                        .size(10)
-                        .color(Color::from_rgb(0.84, 0.70, 0.36)),
+                        row![
+                            text(format!("Shared ×{} occurrences", note.shared_occurrences))
+                                .size(10)
+                                .color(Color::from_rgb(0.84, 0.70, 0.36)),
+                            horizontal_space(),
+                            button(text("Make Unique (Split)").size(10.5))
+                                .padding([3, 8])
+                                .style(|theme, status| {
+                                    accent_button_style(
+                                        Color::from_rgb(0.74, 0.50, 0.14),
+                                        theme,
+                                        status,
+                                    )
+                                })
+                                .on_press_maybe(
+                                    (!busy).then_some(Message::MaterializeSelectedNote)
+                                ),
+                        ]
+                        .align_y(Alignment::Center),
                     );
                 }
             } else {
@@ -2276,7 +2789,7 @@ impl StudioApp {
             }));
         } else {
             col = col.push(
-                text("Click any note on the piano roll to inspect & edit (↑/↓ pitch, ←/→ timing, ⌘Z undo, ⌘S save).")
+                text("Click or ⌘-drag notes to edit · Double-click empty piano roll to insert a new note.")
                     .size(10.5)
                     .color(Color::from_rgb(0.50, 0.56, 0.66)),
             );

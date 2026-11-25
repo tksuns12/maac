@@ -29,6 +29,7 @@ pub struct BarTick {
     pub bar: i64,
     pub frame: u64,
     pub beats: u32,
+    pub score_q: f64,
 }
 
 #[derive(Clone, Debug)]
@@ -137,6 +138,37 @@ impl ProjectData {
         let frac = (frame.saturating_sub(cur.frame) as f64 / span as f64).clamp(0.0, 0.9999);
         let beat = (frac * cur.beats.max(1) as f64).floor() as u32 + 1;
         format!("Bar {}.{}", cur.bar, beat)
+    }
+
+    /// Convert an audio frame back into an approximate score quarter position
+    /// using the precomputed tempo-aware bar grid.
+    pub fn frame_to_score_q(&self, frame: u64) -> f64 {
+        if self.bars.is_empty() {
+            return (frame as f64 / self.sample_rate_hz.max(1) as f64) * 2.0;
+        }
+        let idx = self.bars.partition_point(|b| b.frame <= frame);
+        let cur_idx = idx.saturating_sub(1);
+        let cur = self.bars[cur_idx];
+        if let Some(next) = self.bars.get(cur_idx + 1) {
+            let df = next.frame.saturating_sub(cur.frame).max(1) as f64;
+            let dq = (next.score_q - cur.score_q).max(0.0);
+            let frac = (frame.saturating_sub(cur.frame) as f64 / df).clamp(0.0, 1.0);
+            cur.score_q + frac * dq
+        } else {
+            let prev_df = if cur_idx > 0 {
+                cur.frame
+                    .saturating_sub(self.bars[cur_idx - 1].frame)
+                    .max(1) as f64
+            } else {
+                self.sample_rate_hz.max(1) as f64 * 2.0
+            };
+            let prev_dq = if cur_idx > 0 {
+                (cur.score_q - self.bars[cur_idx - 1].score_q).max(1.0)
+            } else {
+                cur.beats.max(1) as f64
+            };
+            cur.score_q + (frame.saturating_sub(cur.frame) as f64 / prev_df) * prev_dq
+        }
     }
 
     /// Build a validated `PlanArtifact` with events for `muted_nodes` removed so
@@ -415,6 +447,7 @@ fn extract_timeline_grid(
                     break;
                 };
                 // Infer beat count from bar length in quarter notes.
+                let score_q = bar_q.to_f64().unwrap_or(0.0);
                 let beats = meter
                     .bar_to_q(bar_num + 1, &one)
                     .ok()
@@ -425,6 +458,7 @@ fn extract_timeline_grid(
                     bar: bar_num,
                     frame,
                     beats,
+                    score_q,
                 });
             }
         }
@@ -441,6 +475,7 @@ fn extract_timeline_grid(
                 bar: bar_num,
                 frame,
                 beats: 4,
+                score_q: q.to_f64().unwrap_or(0.0),
             });
             q += &four;
             bar_num += 1;

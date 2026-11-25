@@ -1,6 +1,7 @@
 //! Interactive iced Canvas for the bar/region ruler, editable piano roll,
 //! drum strip, checkpoint frontier, playhead, and draggable bar-snapped loop.
 
+use std::collections::HashSet;
 use std::time::Instant;
 
 use iced::mouse;
@@ -38,6 +39,12 @@ pub enum TimelineAction {
     SetLoop(Option<RenderSpan>),
     LoopRegion(RenderSpan),
     SelectNote(Option<String>),
+    ToggleSelectNote(String),
+    SelectNotesBox(Vec<String>),
+    AddNoteAt {
+        frame: u64,
+        midi_pitch: i32,
+    },
     DragNotePitch {
         source_path: Vec<String>,
         delta_semitones: i32,
@@ -79,17 +86,20 @@ struct NoteDrag {
 pub struct InteractionState {
     dragging_loop: Option<(u64, u64)>,
     drag_moved: bool,
+    marquee: Option<(Point, Point)>,
     note_drag: Option<NoteDrag>,
     shift_held: bool,
     alt_held: bool,
+    cmd_held: bool,
     last_ruler_click: Option<(Instant, f32)>,
+    last_empty_click: Option<(Instant, Point)>,
 }
 
 pub struct TimelineView<'a> {
     pub project: &'a ProjectData,
     pub visible_tracks: &'a [bool],
     pub audible_tracks: Vec<bool>,
-    pub selected_note_address: Option<&'a str>,
+    pub selected_notes: &'a HashSet<String>,
     pub selected_source_path: Option<&'a [String]>,
     pub playhead_frame: u64,
     pub checkpoint_frame: u64,
@@ -198,6 +208,44 @@ impl<'a> TimelineView<'a> {
         None
     }
 
+    fn y_to_midi(&self, y: f32, h: f32) -> i32 {
+        let (_, roll_bottom, roll_h, _) = self.roll_bounds(h);
+        let pitch_span = (self.project.max_pitch - self.project.min_pitch).max(1.0);
+        let norm = ((roll_bottom - y) / roll_h.max(1.0)).clamp(0.0, 1.0);
+        (self.project.min_pitch + norm * pitch_span)
+            .round()
+            .clamp(12.0, 119.0) as i32
+    }
+
+    fn notes_in_marquee(&self, a: Point, b: Point, w: f32, h: f32) -> Vec<String> {
+        let min_x = a.x.min(b.x);
+        let max_x = a.x.max(b.x);
+        let min_y = a.y.min(b.y);
+        let max_y = a.y.max(b.y);
+        let (v0, v1) = self.view_window();
+        let mut out = Vec::new();
+        for note in &self.project.notes {
+            if !self
+                .visible_tracks
+                .get(note.track_idx)
+                .copied()
+                .unwrap_or(true)
+            {
+                continue;
+            }
+            if (note.off_frame as f64) < v0 || (note.on_frame as f64) > v1 {
+                continue;
+            }
+            let r = self.note_rect(note, w, h);
+            let overlaps =
+                r.x + r.width >= min_x && r.x <= max_x && r.y + r.height >= min_y && r.y <= max_y;
+            if overlaps {
+                out.push(note.address.clone());
+            }
+        }
+        out
+    }
+
     fn quarter_frames(&self) -> f64 {
         if self.project.bars.len() >= 2 {
             let b0 = self.project.bars[0];
@@ -224,6 +272,7 @@ impl canvas::Program<TimelineAction> for TimelineView<'_> {
             canvas::Event::Keyboard(iced::keyboard::Event::ModifiersChanged(mods)) => {
                 state.shift_held = mods.shift();
                 state.alt_held = mods.alt();
+                state.cmd_held = mods.command() || mods.control();
                 return (canvas::event::Status::Ignored, None);
             }
             canvas::Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
@@ -251,6 +300,7 @@ impl canvas::Program<TimelineAction> for TimelineView<'_> {
                 if cursor.is_over(bounds) {
                     state.dragging_loop = None;
                     state.note_drag = None;
+                    state.marquee = None;
                     return (
                         canvas::event::Status::Captured,
                         Some(TimelineAction::SetLoop(None)),
@@ -290,18 +340,19 @@ impl canvas::Program<TimelineAction> for TimelineView<'_> {
                         return (canvas::event::Status::Captured, None);
                     }
 
-                    // Shift+drag anywhere drags a loop range.
-                    if state.shift_held {
-                        let frame = self.snap_if_enabled(raw_frame, state.alt_held);
-                        state.dragging_loop = Some((frame, frame));
-                        state.drag_moved = false;
-                        return (canvas::event::Status::Captured, None);
-                    }
-
                     // Hit-test piano roll notes for direct selection & drag-editing.
                     if let Some((note, mode)) = self.hit_test_note(pos, bounds.width, bounds.height)
                     {
                         let addr = note.address.clone();
+                        state.last_empty_click = None;
+                        if state.cmd_held || state.shift_held {
+                            return (
+                                canvas::event::Status::Captured,
+                                Some(TimelineAction::ToggleSelectNote(addr)),
+                            );
+                        }
+                        let already_in_multi =
+                            self.selected_notes.len() > 1 && self.selected_notes.contains(&addr);
                         state.note_drag = Some(NoteDrag {
                             source_path: note.source_path.clone(),
                             mode,
@@ -312,13 +363,53 @@ impl canvas::Program<TimelineAction> for TimelineView<'_> {
                             orig_off: note.off_frame,
                             moved: false,
                         });
+                        if already_in_multi {
+                            return (canvas::event::Status::Captured, None);
+                        }
                         return (
                             canvas::event::Status::Captured,
                             Some(TimelineAction::SelectNote(Some(addr))),
                         );
                     }
 
-                    // Clicked empty space: seek playhead.
+                    // Shift+drag on empty roll drags a loop range.
+                    if state.shift_held {
+                        let frame = self.snap_if_enabled(raw_frame, state.alt_held);
+                        state.dragging_loop = Some((frame, frame));
+                        state.drag_moved = false;
+                        return (canvas::event::Status::Captured, None);
+                    }
+
+                    // Cmd/Ctrl+drag on empty roll starts a marquee multi-note selection box.
+                    if state.cmd_held {
+                        state.marquee = Some((pos, pos));
+                        return (canvas::event::Status::Captured, None);
+                    }
+
+                    // Double-click empty piano roll space to add a new note at (frame, pitch).
+                    let (roll_top, roll_bottom, _, _) = self.roll_bounds(bounds.height);
+                    if pos.y >= roll_top && pos.y <= roll_bottom {
+                        let now = Instant::now();
+                        if let Some((prev_t, prev_p)) = state.last_empty_click {
+                            if now.duration_since(prev_t).as_millis() < 360
+                                && (pos.x - prev_p.x).abs() < 10.0
+                                && (pos.y - prev_p.y).abs() < 10.0
+                            {
+                                state.last_empty_click = None;
+                                let midi_pitch = self.y_to_midi(pos.y, bounds.height);
+                                return (
+                                    canvas::event::Status::Captured,
+                                    Some(TimelineAction::AddNoteAt {
+                                        frame: raw_frame,
+                                        midi_pitch,
+                                    }),
+                                );
+                            }
+                        }
+                        state.last_empty_click = Some((now, pos));
+                    }
+
+                    // Single-click empty space: seek playhead.
                     let frame = self.snap_if_enabled(raw_frame, state.alt_held);
                     return (
                         canvas::event::Status::Captured,
@@ -327,6 +418,12 @@ impl canvas::Program<TimelineAction> for TimelineView<'_> {
                 }
             }
             canvas::Event::Mouse(mouse::Event::CursorMoved { .. }) => {
+                if let Some((_, end)) = state.marquee.as_mut() {
+                    if let Some(pos) = cursor.position_in(bounds) {
+                        *end = pos;
+                        return (canvas::event::Status::Captured, None);
+                    }
+                }
                 if let Some(drag) = state.note_drag.as_mut() {
                     if let Some(pos) = cursor.position_in(bounds) {
                         if (pos.x - drag.start_pos.x).abs() > 4.0
@@ -351,6 +448,16 @@ impl canvas::Program<TimelineAction> for TimelineView<'_> {
                 }
             }
             canvas::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                if let Some((a, b)) = state.marquee.take() {
+                    if (a.x - b.x).abs() > 4.0 || (a.y - b.y).abs() > 4.0 {
+                        let selected = self.notes_in_marquee(a, b, bounds.width, bounds.height);
+                        return (
+                            canvas::event::Status::Captured,
+                            Some(TimelineAction::SelectNotesBox(selected)),
+                        );
+                    }
+                    return (canvas::event::Status::Captured, None);
+                }
                 if let Some(drag) = state.note_drag.take() {
                     if !drag.moved {
                         return (canvas::event::Status::Captured, None);
@@ -634,10 +741,9 @@ impl canvas::Program<TimelineAction> for TimelineView<'_> {
                 .get(note.track_idx)
                 .copied()
                 .unwrap_or(true);
-            let is_selected = self
-                .selected_note_address
-                .is_some_and(|addr| addr == note.address);
+            let is_selected = self.selected_notes.contains(&note.address);
             let is_sibling = !is_selected
+                && self.selected_notes.len() == 1
                 && self
                     .selected_source_path
                     .is_some_and(|sp| !sp.is_empty() && sp == note.source_path.as_slice());
@@ -667,6 +773,27 @@ impl canvas::Program<TimelineAction> for TimelineView<'_> {
                     Stroke::default()
                         .with_color(Color::from_rgba(1.0, 1.0, 1.0, 0.45))
                         .with_width(1.0),
+                );
+            }
+        }
+
+        // Marquee multi-selection rectangle (Cmd/Ctrl+drag).
+        if let Some((a, b)) = state.marquee {
+            let x = a.x.min(b.x);
+            let y = a.y.min(b.y);
+            let mw = (a.x - b.x).abs();
+            let mh = (a.y - b.y).abs();
+            if mw > 2.0 || mh > 2.0 {
+                frame.fill_rectangle(
+                    Point::new(x, y),
+                    Size::new(mw, mh),
+                    Color::from_rgba(0.36, 0.78, 0.98, 0.16),
+                );
+                frame.stroke(
+                    &Path::rectangle(Point::new(x, y), Size::new(mw, mh)),
+                    Stroke::default()
+                        .with_color(Color::from_rgba(0.42, 0.86, 1.0, 0.85))
+                        .with_width(1.2),
                 );
             }
         }

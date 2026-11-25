@@ -38,6 +38,15 @@ pub enum NoteEdit {
     Delete,
 }
 
+#[derive(Clone, Debug)]
+pub enum BatchNoteEdit {
+    ShiftPitchSemitones(i32),
+    ShiftAtQuarter16ths(i64),
+    ShiftDurQuarter16ths(i64),
+    SetVelocity(f32),
+    Delete,
+}
+
 /// Convert a MIDI note number (`0..=127`, where 60 = `C4`, 69 = `A4`) into a
 /// MaaC pitch symbol such as `"C4"` or `"F#5"`.
 pub fn midi_to_pitch_symbol(midi: i32) -> String {
@@ -166,6 +175,400 @@ pub fn apply_note_edit(
         .sources
         .insert(updated.entry.clone(), doc.source().to_owned());
     Ok((updated, summary))
+}
+
+/// Apply one `BatchNoteEdit` across many unique note `source_paths` in a single
+/// atomic Protocol 2 transaction (so one Undo reverts the entire batch).
+pub fn apply_batch_note_edit(
+    bundle: &SourceBundle,
+    source_paths: &[Vec<String>],
+    edit: BatchNoteEdit,
+    limits: &PlanLimits,
+) -> Result<(SourceBundle, String), String> {
+    let entry_src = bundle
+        .sources
+        .get(&bundle.entry)
+        .ok_or_else(|| "missing entry source in bundle".to_string())?;
+    let mut doc =
+        SourceDocument::parse(entry_src).map_err(|err| format!("{}: {}", err.code, err.message))?;
+
+    let mut seen: BTreeSet<Vec<String>> = BTreeSet::new();
+    let mut ops: Vec<Operation> = Vec::new();
+    let mut touched = 0usize;
+
+    for sp in source_paths {
+        if sp.is_empty() || !seen.insert(sp.clone()) {
+            continue;
+        }
+        let Some(info) = inspect_note_in_bundle(bundle, sp) else {
+            continue;
+        };
+        let single_edit = match &edit {
+            BatchNoteEdit::ShiftPitchSemitones(delta) => {
+                let Some(midi) = info.pitch_midi else {
+                    continue;
+                };
+                NoteEdit::SetPitchMidi(midi + *delta)
+            }
+            BatchNoteEdit::ShiftAtQuarter16ths(d) => NoteEdit::ShiftAtQuarter16ths(*d),
+            BatchNoteEdit::ShiftDurQuarter16ths(d) => NoteEdit::ShiftDurQuarter16ths(*d),
+            BatchNoteEdit::SetVelocity(v) => NoteEdit::SetVelocity(*v),
+            BatchNoteEdit::Delete => NoteEdit::Delete,
+        };
+        let (mut note_ops, _) = build_operations(doc.authored().tree(), &info, single_edit)?;
+        ops.append(&mut note_ops);
+        touched += 1;
+    }
+
+    if ops.is_empty() {
+        return Err("no editable notes in selection".into());
+    }
+
+    let tx = Transaction::new(doc.revision().to_owned(), ops)
+        .map_err(|err| format!("{}: {}", err.code, err.message))?;
+    let context = BundleEditContext::new(bundle)
+        .map_err(|err| format!("{}: {}", err.code, err.message))?
+        .checking_compile(*limits);
+    doc.apply(&tx, &context)
+        .map_err(|err| format!("{}: {}", err.code, err.message))?;
+
+    let summary = match edit {
+        BatchNoteEdit::ShiftPitchSemitones(d) => format!("Transposed {touched} notes ({d:+})"),
+        BatchNoteEdit::ShiftAtQuarter16ths(d) => format!("Shifted {touched} notes ({d:+}/4q)"),
+        BatchNoteEdit::ShiftDurQuarter16ths(d) => format!("Resized {touched} notes ({d:+}/4q)"),
+        BatchNoteEdit::SetVelocity(v) => format!("Set velocity {:.2} on {touched} notes", v),
+        BatchNoteEdit::Delete => format!("Deleted {touched} notes"),
+    };
+
+    let mut updated = bundle.clone();
+    updated
+        .sources
+        .insert(updated.entry.clone(), doc.source().to_owned());
+    Ok((updated, summary))
+}
+
+/// Split a shared placement into an independent pattern using Protocol 2's
+/// `BundleEditContext::prepare_materialize_instance`, returning the updated
+/// bundle and the remapped event address for `event_address`.
+pub fn materialize_note_placement(
+    bundle: &SourceBundle,
+    event_address: &str,
+    limits: &PlanLimits,
+) -> Result<(SourceBundle, Option<String>, String), String> {
+    let placement_id = event_address
+        .split('/')
+        .next()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "cannot determine placement ID from note address".to_string())?;
+
+    let entry_src = bundle
+        .sources
+        .get(&bundle.entry)
+        .ok_or_else(|| "missing entry source in bundle".to_string())?;
+    let mut doc =
+        SourceDocument::parse(entry_src).map_err(|err| format!("{}: {}", err.code, err.message))?;
+
+    let objects = doc
+        .authored()
+        .tree()
+        .get("objects")
+        .and_then(|v| v.as_object())
+        .ok_or_else(|| "missing objects map".to_string())?;
+    if objects
+        .get(placement_id)
+        .and_then(|o| o.get("kind"))
+        .and_then(|k| k.as_str())
+        != Some("place")
+    {
+        return Err(format!(
+            "placement `{placement_id}` is not editable in the entry document"
+        ));
+    }
+
+    let mut suffix = 1usize;
+    let new_pat_id = loop {
+        let candidate = if suffix == 1 {
+            format!("{placement_id}_unique")
+        } else {
+            format!("{placement_id}_unique_{suffix}")
+        };
+        if !objects.contains_key(&candidate) {
+            break candidate;
+        }
+        suffix += 1;
+    };
+
+    let context = BundleEditContext::new(bundle)
+        .map_err(|err| format!("{}: {}", err.code, err.message))?
+        .checking_compile(*limits);
+    let plan = context
+        .prepare_materialize_instance(doc.authored(), placement_id, &new_pat_id)
+        .map_err(|err| format!("{}: {}", err.code, err.message))?;
+    doc.apply(&plan.transaction, &context)
+        .map_err(|err| format!("{}: {}", err.code, err.message))?;
+
+    let remapped_addr = plan
+        .mappings
+        .iter()
+        .find(|m| m.old_event_address == event_address)
+        .map(|m| m.new_event_address.clone());
+
+    let mut updated = bundle.clone();
+    updated
+        .sources
+        .insert(updated.entry.clone(), doc.source().to_owned());
+    let summary = format!("Made `{placement_id}` unique → `{new_pat_id}`");
+    Ok((updated, remapped_addr, summary))
+}
+
+/// Insert a new `note` directly into the entry document's leaf `pattern`
+/// covering `(track_name, score_q)`, compensating for any `transpose` on
+/// enclosing `place`/`use` statements so the inserted note sounds at `midi_pitch`.
+pub fn add_note_at_score_pos(
+    bundle: &SourceBundle,
+    track_name: &str,
+    score_q: f64,
+    midi_pitch: i32,
+    limits: &PlanLimits,
+) -> Result<(SourceBundle, Vec<String>, String), String> {
+    let entry_src = bundle
+        .sources
+        .get(&bundle.entry)
+        .ok_or_else(|| "missing entry source in bundle".to_string())?;
+    let mut doc =
+        SourceDocument::parse(entry_src).map_err(|err| format!("{}: {}", err.code, err.message))?;
+
+    let tree = doc.authored().tree().clone();
+    let objects = tree
+        .get("objects")
+        .and_then(|v| v.as_object())
+        .ok_or_else(|| "missing objects map".to_string())?;
+
+    // Find all `track` object IDs targeting `node <track_name>`.
+    let track_ids: BTreeSet<String> = objects
+        .iter()
+        .filter_map(|(id, obj)| {
+            if obj.get("kind")?.as_str()? != "track" {
+                return None;
+            }
+            let target_node = obj
+                .pointer("/fields/target/path/0")
+                .and_then(|v| v.as_str())?;
+            (target_node == track_name).then(|| id.clone())
+        })
+        .collect();
+
+    if track_ids.is_empty() {
+        return Err(format!(
+            "no editable track targeting `{track_name}` in entry document"
+        ));
+    }
+
+    // Find a `place` on one of those tracks covering `score_q` (or fallback to nearest place).
+    let mut chosen: Option<(String, f64, i32)> = None;
+    let mut nearest: Option<(f64, String, f64, i32)> = None;
+
+    for obj in objects.values() {
+        if obj.get("kind").and_then(|k| k.as_str()) != Some("place") {
+            continue;
+        }
+        let Some(trk_id) = obj.pointer("/fields/track/path/0").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        if !track_ids.contains(trk_id) {
+            continue;
+        }
+        let Some(pat_id) = obj
+            .pointer("/fields/pattern/path/0")
+            .and_then(|v| v.as_str())
+        else {
+            continue;
+        };
+        let Some(pat_len) = pattern_length_f64(objects, pat_id) else {
+            continue;
+        };
+        let place_at = obj
+            .pointer("/fields/at")
+            .and_then(read_quantity_q)
+            .map(frac_to_f64)
+            .unwrap_or(0.0);
+        let count = obj
+            .pointer("/fields/count")
+            .and_then(read_number_f32)
+            .map(|c| c.round().max(1.0) as i64)
+            .unwrap_or(1);
+        let place_transpose = obj
+            .pointer("/fields/transpose")
+            .and_then(read_transpose_semitones)
+            .unwrap_or(0);
+        let total_len = pat_len * (count as f64);
+        if score_q >= place_at - 0.01 && score_q < place_at + total_len - 0.01 {
+            let local_q = (score_q - place_at).rem_euclid(pat_len);
+            chosen = Some((pat_id.to_owned(), local_q, place_transpose));
+            break;
+        }
+        let dist = if score_q < place_at {
+            place_at - score_q
+        } else {
+            score_q - (place_at + total_len)
+        };
+        if nearest.as_ref().is_none_or(|n| dist < n.0) {
+            let clamped_local = (score_q - place_at).clamp(0.0, (pat_len - 0.25).max(0.0));
+            nearest = Some((dist, pat_id.to_owned(), clamped_local, place_transpose));
+        }
+    }
+
+    let (mut pat_id, mut local_q, mut transpose_semis) = chosen
+        .or_else(|| nearest.map(|(_, p, q, t)| (p, q, t)))
+        .ok_or_else(|| format!("no editable placement found for track `{track_name}`"))?;
+
+    // Descend through nested `use` children to find the concrete leaf `pattern`.
+    for _ in 0..8 {
+        let Some(pat_obj) = objects.get(&pat_id) else {
+            break;
+        };
+        let Some(children) = pat_obj.get("children").and_then(|v| v.as_object()) else {
+            break;
+        };
+        let matching_use = children.values().find_map(|child| {
+            if child.get("kind").and_then(|k| k.as_str()) != Some("use") {
+                return None;
+            }
+            let target_pat = child
+                .pointer("/fields/pattern/path/0")
+                .and_then(|v| v.as_str())?;
+            let child_len = pattern_length_f64(objects, target_pat)?;
+            let use_at = child
+                .pointer("/fields/at")
+                .and_then(read_quantity_q)
+                .map(frac_to_f64)
+                .unwrap_or(0.0);
+            let count = child
+                .pointer("/fields/count")
+                .and_then(read_number_f32)
+                .map(|c| c.round().max(1.0) as i64)
+                .unwrap_or(1);
+            let total = child_len * (count as f64);
+            if local_q >= use_at - 0.01 && local_q < use_at + total - 0.01 {
+                let inner_q = (local_q - use_at).rem_euclid(child_len);
+                let use_tr = child
+                    .pointer("/fields/transpose")
+                    .and_then(read_transpose_semitones)
+                    .unwrap_or(0);
+                Some((target_pat.to_owned(), inner_q, use_tr))
+            } else {
+                None
+            }
+        });
+        if let Some((next_pat, next_q, next_tr)) = matching_use {
+            pat_id = next_pat;
+            local_q = next_q;
+            transpose_semis += next_tr;
+        } else {
+            break;
+        }
+    }
+
+    let leaf_pat = objects
+        .get(&pat_id)
+        .filter(|o| o.get("kind").and_then(|k| k.as_str()) == Some("pattern"))
+        .ok_or_else(|| format!("target pattern `{pat_id}` is not editable in entry document"))?;
+    let pat_len_q = leaf_pat
+        .pointer("/fields/length")
+        .and_then(read_quantity_q)
+        .unwrap_or((4, 1));
+    let pat_len_f = frac_to_f64(pat_len_q);
+
+    // Quantize local onset to nearest 1/4q (16th note), clamped inside pattern length.
+    let q16 = (local_q * 4.0)
+        .round()
+        .clamp(0.0, ((pat_len_f * 4.0) - 1.0).max(0.0)) as i64;
+    let dur_16 = if (pat_len_f * 4.0) as i64 - q16 >= 2 {
+        2
+    } else {
+        1
+    };
+
+    let authored_midi = (midi_pitch - transpose_semis).clamp(12, 119);
+    let pitch_sym = midi_to_pitch_symbol(authored_midi);
+
+    let existing: BTreeSet<String> = leaf_pat
+        .get("children")
+        .and_then(|v| v.as_object())
+        .map(|m| m.keys().cloned().collect())
+        .unwrap_or_default();
+    let mut suffix = 1usize;
+    let new_id = loop {
+        let candidate = format!("add_{suffix}");
+        if !existing.contains(&candidate) {
+            break candidate;
+        }
+        suffix += 1;
+    };
+
+    let note_obj = json!({
+        "kind": "note",
+        "fields": {
+            "at": quantity_q_json(q16, 4),
+            "dur": quantity_q_json(dur_16, 4),
+            "pitch": { "t": "symbol", "v": pitch_sym },
+            "velocity": { "t": "number", "n": "7", "d": "10" }
+        },
+        "children": {}
+    });
+
+    let op = Operation::InsertObject {
+        parent: vec![pat_id.clone()],
+        id: new_id.clone(),
+        object_value: note_obj,
+    };
+    let tx = Transaction::new(doc.revision().to_owned(), vec![op])
+        .map_err(|err| format!("{}: {}", err.code, err.message))?;
+    let context = BundleEditContext::new(bundle)
+        .map_err(|err| format!("{}: {}", err.code, err.message))?
+        .checking_compile(*limits);
+    doc.apply(&tx, &context)
+        .map_err(|err| format!("{}: {}", err.code, err.message))?;
+
+    let mut updated = bundle.clone();
+    updated
+        .sources
+        .insert(updated.entry.clone(), doc.source().to_owned());
+    let new_path = vec![pat_id.clone(), new_id.clone()];
+    let summary = format!("Added {pitch_sym} in {pat_id} @ {}", format_q(q16, 4));
+    Ok((updated, new_path, summary))
+}
+
+fn pattern_length_f64(objects: &serde_json::Map<String, Value>, pat_id: &str) -> Option<f64> {
+    let pat = objects.get(pat_id)?;
+    if pat.get("kind")?.as_str()? != "pattern" {
+        return None;
+    }
+    let len = pat.pointer("/fields/length").and_then(read_quantity_q)?;
+    let f = frac_to_f64(len);
+    (f > 0.0).then_some(f)
+}
+
+fn frac_to_f64(q: (i64, i64)) -> f64 {
+    q.0 as f64 / q.1.max(1) as f64
+}
+
+fn read_transpose_semitones(value: &Value) -> Option<i32> {
+    if value.get("t")?.as_str()? != "quantity" {
+        return None;
+    }
+    let unit = value.get("u")?.as_str()?;
+    let n: f64 = value.get("n")?.as_str()?.parse().ok()?;
+    let d: f64 = value.get("d")?.as_str()?.parse().ok()?;
+    if d <= 0.0 {
+        return None;
+    }
+    let v = n / d;
+    match unit {
+        "ct" => Some((v / 100.0).round() as i32),
+        "st" => Some(v.round() as i32),
+        _ => None,
+    }
 }
 
 fn build_operations(
@@ -459,5 +862,87 @@ mod tests {
         )
         .expect("delete note");
         assert!(inspect_note_in_bundle(&del_bundle, &first_note.source_path).is_none());
+    }
+
+    #[test]
+    fn materializes_shared_chorus_placement_keeping_note_identity() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../examples/ferry/ferry.maac");
+        let data = load_and_compile(&path).expect("compile ferry");
+        let shared_note = data
+            .notes
+            .iter()
+            .find(|n| {
+                n.shared_occurrences > 1
+                    && n.source_path.first().map(String::as_str) == Some("melody_chorus")
+            })
+            .expect("find shared melody_chorus note");
+        assert_eq!(shared_note.shared_occurrences, 2);
+
+        let (mat_bundle, remapped, _) =
+            materialize_note_placement(&data.bundle, &shared_note.address, &data.limits)
+                .expect("materialize melody_chorus placement");
+        let new_addr = remapped.expect("remapped event address");
+        let recompiled = load_from_bundle(data.entry_path, data.project_root, mat_bundle)
+            .expect("recompile materialized ferry");
+        let split_note = recompiled
+            .notes
+            .iter()
+            .find(|n| n.address == new_addr)
+            .expect("find remapped note in recompiled plan");
+        assert_eq!(
+            split_note.shared_occurrences, 1,
+            "split placement note should now be unique"
+        );
+    }
+
+    #[test]
+    fn batch_transposes_multiple_notes_atomically() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../examples/ferry/ferry.maac");
+        let data = load_and_compile(&path).expect("compile ferry");
+        let paths: Vec<Vec<String>> = data
+            .notes
+            .iter()
+            .filter(|n| n.source_path.first().map(String::as_str) == Some("melody_chorus"))
+            .take(3)
+            .map(|n| n.source_path.clone())
+            .collect();
+        let orig_midis: Vec<i32> = paths
+            .iter()
+            .map(|p| {
+                inspect_note_in_bundle(&data.bundle, p)
+                    .unwrap()
+                    .pitch_midi
+                    .unwrap()
+            })
+            .collect();
+
+        let (edited, _) = apply_batch_note_edit(
+            &data.bundle,
+            &paths,
+            BatchNoteEdit::ShiftPitchSemitones(2),
+            &data.limits,
+        )
+        .expect("batch transpose 3 notes");
+        for (p, orig) in paths.iter().zip(orig_midis.iter()) {
+            let after = inspect_note_in_bundle(&edited, p)
+                .unwrap()
+                .pitch_midi
+                .unwrap();
+            assert_eq!(after, orig + 2);
+        }
+    }
+
+    #[test]
+    fn adds_note_at_score_position_in_ferry() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../examples/ferry/ferry.maac");
+        let data = load_and_compile(&path).expect("compile ferry");
+        let (edited, new_path, _) =
+            add_note_at_score_pos(&data.bundle, "lead", 50.0, 76, &data.limits)
+                .expect("add note to lead in chorus1");
+        let info = inspect_note_in_bundle(&edited, &new_path).expect("inspect newly added note");
+        assert_eq!(info.pitch_midi, Some(76));
+        let recompiled = load_from_bundle(data.entry_path, data.project_root, edited)
+            .expect("recompile ferry with added note");
+        assert!(recompiled.notes.len() > data.notes.len());
     }
 }
