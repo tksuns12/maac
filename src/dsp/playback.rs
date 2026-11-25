@@ -33,7 +33,7 @@
 //! The switches are listed in [`PlaybackStatus::switches`] with the frame
 //! where each took effect.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
@@ -218,6 +218,15 @@ struct Ring {
     /// Counts `set_loop` calls so the producer picks up loop changes.
     loop_epoch: u64,
     loop_range: Option<RenderSpan>,
+    /// Counts live mute / parameter override updates so the producer applies
+    /// them on the next chunk without rebuilding the plan or checkpoints.
+    live_epoch: u64,
+    live_muted: HashSet<String>,
+    live_params: BTreeMap<(String, String), f64>,
+    /// When set, `live_params` are cleared automatically once playback reaches
+    /// a plan generation at or above this value (for glitch-free handoff after
+    /// committing a live slider tweak to the plan).
+    clear_params_at_generation: Option<u64>,
     /// The producer has put the last frame of the plan in.
     finished: bool,
     underruns: u64,
@@ -281,6 +290,10 @@ impl Playback {
                 seek_to: None,
                 loop_epoch: 0,
                 loop_range,
+                live_epoch: 0,
+                live_muted: HashSet::new(),
+                live_params: BTreeMap::new(),
+                clear_params_at_generation: None,
                 finished: false,
                 underruns: 0,
                 stale: false,
@@ -315,6 +328,9 @@ impl Playback {
             loop_range,
             loop_epoch: 0,
             loop_cache: None,
+            live_epoch: 0,
+            live_muted: HashSet::new(),
+            live_params: BTreeMap::new(),
             epoch: 0,
         };
         let pause = config.pause_prerender;
@@ -490,6 +506,75 @@ impl Playback {
         Ok(())
     }
 
+    /// Mute or unmute graph nodes in real time during live playback.
+    ///
+    /// Unlike replacing the plan, this updates the active DSP engine in place
+    /// with a smooth ~5 ms fade per node and takes effect on the next rendered
+    /// chunk without invalidating checkpoints or triggering catch-up.
+    pub fn set_muted_nodes(&self, muted: HashSet<String>) {
+        let mut ring = locked(&self.play.ring);
+        if ring.live_muted == muted {
+            return;
+        }
+        ring.live_muted = muted;
+        ring.live_epoch = ring.live_epoch.wrapping_add(1);
+        drop(ring);
+        self.play.room.notify_all();
+    }
+
+    /// Override a node parameter in real time during live playback (for
+    /// example, while dragging a mixer or effect slider). Takes effect on the
+    /// next rendered chunk without recompiling or invalidating checkpoints.
+    pub fn set_live_param(&self, node: impl Into<String>, param: impl Into<String>, value: f64) {
+        if !value.is_finite() {
+            return;
+        }
+        let mut ring = locked(&self.play.ring);
+        let key = (node.into(), param.into());
+        if ring.live_params.get(&key).copied() == Some(value)
+            && ring.clear_params_at_generation.is_none()
+        {
+            return;
+        }
+        ring.live_params.insert(key, value);
+        ring.clear_params_at_generation = None;
+        ring.live_epoch = ring.live_epoch.wrapping_add(1);
+        drop(ring);
+        self.play.room.notify_all();
+    }
+
+    /// Clear all real-time parameter overrides immediately while preserving
+    /// any active node mutes.
+    pub fn clear_live_params(&self) {
+        let mut ring = locked(&self.play.ring);
+        if ring.live_params.is_empty() && ring.clear_params_at_generation.is_none() {
+            return;
+        }
+        ring.live_params.clear();
+        ring.clear_params_at_generation = None;
+        ring.live_epoch = ring.live_epoch.wrapping_add(1);
+        drop(ring);
+        self.play.room.notify_all();
+    }
+
+    /// Schedule active live parameter overrides to clear automatically once
+    /// playback adopts a plan whose generation is at least `generation`.
+    ///
+    /// This keeps a dragged mixer/FX slider audible at its new value while the
+    /// committed `.maac` edit compiles and switches over, preventing any brief
+    /// dip back to the previous plan's parameter value.
+    pub fn clear_live_params_from_generation(&self, generation: u64) {
+        let mut ring = locked(&self.play.ring);
+        if ring.live_params.is_empty() {
+            ring.clear_params_at_generation = None;
+            return;
+        }
+        ring.clear_params_at_generation = Some(generation);
+        ring.live_epoch = ring.live_epoch.wrapping_add(1);
+        drop(ring);
+        self.play.room.notify_all();
+    }
+
     pub fn status(&self) -> PlaybackStatus {
         let ring = locked(&self.play.ring);
         PlaybackStatus {
@@ -534,6 +619,10 @@ struct Ctx {
     /// Exact checkpoint cached at the active loop's `start` frame:
     /// `(generation, frame, checkpoint)`.
     loop_cache: Option<(u64, u64, Checkpoint)>,
+    /// The live-control update count the producer has applied.
+    live_epoch: u64,
+    live_muted: HashSet<String>,
+    live_params: BTreeMap<(String, String), f64>,
     /// The seek count the producer has taken up.
     epoch: u64,
 }
@@ -552,6 +641,71 @@ impl Ctx {
             .as_ref()
             .filter(|(gen, at, _)| *gen == generation && *at == frame)
             .map(|(_, _, checkpoint)| checkpoint.clone())
+    }
+
+    /// Snapshot the latest live mute & parameter overrides from the ring and
+    /// apply them immediately (no mute fade-out burst) onto a freshly prepared
+    /// engine right before it starts producing audible chunks.
+    fn apply_live_state_to_new_engine(&mut self, engine: &mut DspEngine<'_>, generation: u64) {
+        {
+            let mut ring = locked(&self.play.ring);
+            if ring
+                .clear_params_at_generation
+                .is_some_and(|target| generation >= target)
+            {
+                ring.live_params.clear();
+                ring.clear_params_at_generation = None;
+                ring.live_epoch = ring.live_epoch.wrapping_add(1);
+            }
+            self.live_epoch = ring.live_epoch;
+            self.live_muted.clone_from(&ring.live_muted);
+            self.live_params.clone_from(&ring.live_params);
+        }
+        if !self.live_muted.is_empty() || engine.has_live_mutes() {
+            engine.set_muted_nodes_immediate(&self.live_muted);
+        }
+        if engine.has_live_params() {
+            engine.clear_live_params();
+        }
+        for ((node, param), &value) in &self.live_params {
+            engine.set_live_param(node, param, value);
+        }
+    }
+
+    /// Sync any new live mute / parameter updates onto an already-playing
+    /// engine (with smooth ~5 ms mute fades). Fast-paths in ~20 ns when
+    /// nothing changed.
+    fn sync_live_controls(&mut self, engine: &mut DspEngine<'_>, generation: u64) {
+        let (changed, params_changed) = {
+            let mut ring = locked(&self.play.ring);
+            if ring
+                .clear_params_at_generation
+                .is_some_and(|target| generation >= target)
+            {
+                ring.live_params.clear();
+                ring.clear_params_at_generation = None;
+                ring.live_epoch = ring.live_epoch.wrapping_add(1);
+            }
+            if ring.live_epoch == self.live_epoch {
+                return;
+            }
+            self.live_epoch = ring.live_epoch;
+            let params_changed = self.live_params != ring.live_params;
+            self.live_muted.clone_from(&ring.live_muted);
+            if params_changed {
+                self.live_params.clone_from(&ring.live_params);
+            }
+            (true, params_changed)
+        };
+        if changed {
+            engine.set_muted_nodes(&self.live_muted);
+            if params_changed {
+                engine.clear_live_params();
+                for ((node, param), &value) in &self.live_params {
+                    engine.set_live_param(node, param, value);
+                }
+            }
+        }
     }
 }
 
@@ -768,7 +922,7 @@ fn start_approximately(ctx: &mut Ctx, setup: &Setup) -> Result<Next> {
         start: setup.restore.clone(),
         generation: setup.generation,
     };
-    match catch_up(ctx, None, &mut pos, 0, target)? {
+    match catch_up(ctx, None, None, &mut pos, 0, target)? {
         Caught::Swap(restore) => {
             record_switch(ctx, pos, setup.generation, None);
             Ok(Next::Again(Box::new(Setup {
@@ -1167,6 +1321,7 @@ fn play_engine(
             ctx.loop_cache = Some((generation, pos, engine.chunk_checkpoint()?));
         }
     }
+    ctx.apply_live_state_to_new_engine(engine, generation);
 
     let mut history: VecDeque<Checkpoint> = VecDeque::new();
     let mut next_snapshot = (pos / HISTORY_EVERY + 1) * HISTORY_EVERY;
@@ -1182,12 +1337,14 @@ fn play_engine(
                 // Seamless exact wrap back to `span.start`.
                 if span.start == 0 {
                     engine.reset();
+                    ctx.apply_live_state_to_new_engine(engine, generation);
                     pos = 0;
                     next_snapshot = HISTORY_EVERY;
                     continue;
                 }
                 if let Some(cp) = ctx.cached_loop_checkpoint(generation, span.start) {
                     engine.restore_from(&cp)?;
+                    ctx.apply_live_state_to_new_engine(engine, generation);
                     pos = span.start;
                     next_snapshot = (pos / HISTORY_EVERY + 1) * HISTORY_EVERY;
                     continue;
@@ -1238,12 +1395,15 @@ fn play_engine(
                     ring.tail_frame(ctx.play.channels)
                 };
                 if tail == pos {
-                    if let Some(span) = effective_loop(ctx.loop_range, total) {
-                        if pos == span.start
-                            && pos > 0
-                            && ctx.cached_loop_checkpoint(generation, pos).is_none()
-                        {
-                            ctx.loop_cache = Some((generation, pos, engine.chunk_checkpoint()?));
+                    if !engine.has_live_mutes() && !engine.has_live_params() {
+                        if let Some(span) = effective_loop(ctx.loop_range, total) {
+                            if pos == span.start
+                                && pos > 0
+                                && ctx.cached_loop_checkpoint(generation, pos).is_none()
+                            {
+                                ctx.loop_cache =
+                                    Some((generation, pos, engine.chunk_checkpoint()?));
+                            }
                         }
                     }
                     continue;
@@ -1277,6 +1437,7 @@ fn play_engine(
                 })));
             }
             Wake::Room | Wake::Idle => {
+                ctx.sync_live_controls(engine, generation);
                 let (limit, finish) = match effective_loop(ctx.loop_range, total) {
                     Some(span) if pos < span.start => (span.start, false),
                     Some(span) if pos < span.end => (span.end, false),
@@ -1285,21 +1446,24 @@ fn play_engine(
                 match produce(ctx, engine, pos, limit, finish, false)? {
                     Produce::Pushed(end) => {
                         pos = end;
-                        if let Some(span) = effective_loop(ctx.loop_range, total) {
-                            if pos == span.start
-                                && pos > 0
-                                && ctx.cached_loop_checkpoint(generation, pos).is_none()
-                            {
-                                ctx.loop_cache =
-                                    Some((generation, pos, engine.chunk_checkpoint()?));
+                        let pure_state = !engine.has_live_mutes() && !engine.has_live_params();
+                        if pure_state {
+                            if let Some(span) = effective_loop(ctx.loop_range, total) {
+                                if pos == span.start
+                                    && pos > 0
+                                    && ctx.cached_loop_checkpoint(generation, pos).is_none()
+                                {
+                                    ctx.loop_cache =
+                                        Some((generation, pos, engine.chunk_checkpoint()?));
+                                }
                             }
-                        }
-                        if pos >= next_snapshot && pos < total {
-                            history.push_back(engine.chunk_checkpoint()?);
-                            if history.len() > HISTORY_KEPT {
-                                history.pop_front();
+                            if pos >= next_snapshot && pos < total {
+                                history.push_back(engine.chunk_checkpoint()?);
+                                if history.len() > HISTORY_KEPT {
+                                    history.pop_front();
+                                }
+                                next_snapshot = (pos / HISTORY_EVERY + 1) * HISTORY_EVERY;
                             }
-                            next_snapshot = (pos / HISTORY_EVERY + 1) * HISTORY_EVERY;
                         }
                     }
                     Produce::Seeked => continue,
@@ -1338,7 +1502,7 @@ fn play_engine(
                 }
                 match reuse {
                     Reuse::Unchanged => generation = synced.generation,
-                    Reuse::From(frame) if frame >= pos => {
+                    Reuse::From(frame) if frame >= pos && !engine.has_live_params() => {
                         // The frames rendered so far are the new plan's too.
                         let restore = (pos > 0).then(|| engine.chunk_checkpoint()).transpose()?;
                         record_switch(ctx, pos, synced.generation, None);
@@ -1380,7 +1544,14 @@ fn play_engine(
                             start,
                             generation: synced.generation,
                         };
-                        match catch_up(ctx, Some(engine), &mut pos, total, target_plan)? {
+                        match catch_up(
+                            ctx,
+                            Some(engine),
+                            Some(generation),
+                            &mut pos,
+                            total,
+                            target_plan,
+                        )? {
                             Caught::Swap(restore) => {
                                 record_switch(ctx, pos, synced.generation, None);
                                 return Ok(Next::Again(Box::new(Setup {
@@ -1570,6 +1741,7 @@ fn chase(
 fn catch_up(
     ctx: &mut Ctx,
     mut old: Option<&mut DspEngine<'_>>,
+    old_generation: Option<u64>,
     pos: &mut u64,
     total: u64,
     target_plan: NewPlan<'_>,
@@ -1707,6 +1879,7 @@ fn catch_up(
                     // Taken over: the sound is the new plan's, approximately.
                     Some(preview) if preview.live => {
                         if matches!(wake, Wake::Room) {
+                            ctx.sync_live_controls(&mut preview.engine, generation);
                             let (limit, finish) = match active_new_loop {
                                 Some(span) if *pos < span.end => (span.end, false),
                                 _ => (new_total, true),
@@ -1736,6 +1909,7 @@ fn catch_up(
                         )?;
                         preview.at = end;
                         if preview.at == *pos {
+                            ctx.apply_live_state_to_new_engine(&mut preview.engine, generation);
                             preview.live = true;
                             record_switch(ctx, *pos, generation, Some(preview.cold));
                         }
@@ -1743,6 +1917,7 @@ fn catch_up(
                     _ => {
                         if let (Some(old), true) = (old.as_deref_mut(), matches!(wake, Wake::Room))
                         {
+                            ctx.sync_live_controls(old, old_generation.unwrap_or(0));
                             let (limit, finish) = match active_old_loop {
                                 Some(span) if *pos < span.end => (span.end, false),
                                 _ => (total, new_total <= total),

@@ -731,3 +731,134 @@ fn approximate_start_inside_short_loop_converges_to_exact() {
         bits(&pass)
     );
 }
+
+// ---- live in-place mute & parameter overrides ----------------------------
+
+#[test]
+fn live_mute_silences_all_sources_in_place_without_plan_switch() {
+    use std::collections::HashSet;
+
+    let plan = compile(&base_song(3)).unwrap();
+    let channels = usize::from(plan.output().channels);
+    let bg =
+        BackgroundSession::new_with(&plan, &limits(), SessionPolicy::new(SPACING), false).unwrap();
+    let play = bg
+        .play(
+            0,
+            PlaybackConfig {
+                lead_frames: 2_048,
+                chunk_frames: 512,
+                pause_prerender: false,
+                preview_preroll_frames: 0,
+                approximate_start: false,
+                ..PlaybackConfig::default()
+            },
+        )
+        .unwrap();
+
+    // Read a short initial stretch to confirm normal audible signal.
+    let initial = read_exactly(&play, 4_096, 512);
+    let peak_initial = initial.iter().map(|s| s.abs()).fold(0.0_f64, f64::max);
+    assert!(peak_initial > 1e-4, "expected audible signal before mute");
+
+    // Mute the final output node (`fader`) in place: must NOT trigger a plan switch or stale catch-up.
+    let switches_before = play.status().switches.len();
+    play.set_muted_nodes(HashSet::from(["fader".to_string()]));
+
+    // Drain at most lead + one chunk + 5ms ramp (~240 frames) => silence must arrive promptly.
+    let _transition = read_exactly(&play, 3_584, 512);
+    let muted_slice = read_exactly(&play, 2_048, 512);
+    let peak_muted = muted_slice.iter().map(|s| s.abs()).fold(0.0_f64, f64::max);
+    assert!(
+        peak_muted < 1e-12,
+        "expected silence after live mute, got peak {peak_muted}"
+    );
+    let st = play.status();
+    assert_eq!(
+        st.switches.len(),
+        switches_before,
+        "live mute must not cause a plan switch"
+    );
+    assert!(!st.stale, "live mute must not mark playback stale");
+    assert!(st.last_error.is_none(), "{st:?}");
+
+    // Unmute in place: audio must return cleanly within lead + ramp.
+    play.set_muted_nodes(HashSet::new());
+    let _unmute_transition = read_exactly(&play, 3_584, 512);
+    let unmuted_slice = read_exactly(&play, 4_096, 512);
+    let peak_unmuted = unmuted_slice
+        .iter()
+        .map(|s| s.abs())
+        .fold(0.0_f64, f64::max);
+    assert!(
+        peak_unmuted > 1e-4,
+        "expected audio to return after unmute, got peak {peak_unmuted} (ch={channels})"
+    );
+}
+
+#[test]
+fn live_param_override_changes_audio_in_place_and_hands_off_cleanly() {
+    let song = base_song(3);
+    let plan = compile(&song).unwrap();
+    let fresh = render_full(&plan);
+    let channels = usize::from(plan.output().channels);
+    let bg =
+        BackgroundSession::new_with(&plan, &limits(), SessionPolicy::new(SPACING), false).unwrap();
+    let play = bg
+        .play(
+            0,
+            PlaybackConfig {
+                lead_frames: 2_048,
+                chunk_frames: 512,
+                pause_prerender: false,
+                preview_preroll_frames: 0,
+                approximate_start: false,
+                ..PlaybackConfig::default()
+            },
+        )
+        .unwrap();
+
+    // First verify normal frames match offline render bit-for-bit.
+    let head = read_exactly(&play, 2_048, 512);
+    assert_eq!(bits(&fresh[..2_048 * channels]), bits(&head));
+
+    // Invalid live overrides must be safely ignored without breaking playback.
+    play.set_live_param("nonexistent", "gain", 0.5);
+    play.set_live_param("feedback", "gain", -99.0);
+    play.set_live_param("feedback", "gain", f64::NAN);
+
+    // Override `feedback.gain` from 0.4 -> 0.0 (live mixer drag) and verify output diverges
+    // immediately without any plan switch or error.
+    let switches_before = play.status().switches.len();
+    play.set_live_param("feedback", "gain", 0.0);
+    let _drain = read_exactly(&play, 3_072, 512);
+    let pos_before = play.status().position as usize;
+    let overridden = read_exactly(&play, 4_096, 512);
+    let expected_unmodified = &fresh[pos_before * channels..(pos_before + 4_096) * channels];
+    let max_diff = overridden
+        .iter()
+        .zip(expected_unmodified)
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0_f64, f64::max);
+    assert!(
+        max_diff > 1e-4,
+        "expected live param override to audibly alter output, max_diff={max_diff}"
+    );
+    let st = play.status();
+    assert_eq!(st.switches.len(), switches_before);
+    assert!(st.last_error.is_none(), "{st:?}");
+
+    // Clearing live params immediately must succeed without error.
+    play.clear_live_params();
+    let _ = read_exactly(&play, 2_048, 512);
+    assert!(play.status().last_error.is_none());
+
+    // Schedule clear on next generation handoff and update plan cleanly.
+    play.set_live_param("feedback", "gain", 0.0);
+    let _ = read_exactly(&play, 1_024, 512);
+    bg.update(&plan);
+    let target_gen = bg.status().generation;
+    play.clear_live_params_from_generation(target_gen);
+    let _ = read_exactly(&play, 4_096, 512);
+    assert!(play.status().last_error.is_none());
+}

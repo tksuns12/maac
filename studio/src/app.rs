@@ -18,7 +18,6 @@ use maac::export::{
     render_wav_to_path_artifact_range_with_limits, render_wav_to_path_artifact_with_limits,
     FrameRange, WavFormat,
 };
-use maac::PlanArtifact;
 
 use crate::analysis::{run_analysis, AnalysisSummary};
 use crate::audio::AudioEngine;
@@ -41,7 +40,9 @@ use crate::timeline::{track_color, TimelineAction, TimelineView};
 use crate::watcher::ProjectWatcher;
 
 const WATCH_DEBOUNCE: Duration = Duration::from_millis(120);
-const PLAYBACK_EDIT_DEBOUNCE: Duration = Duration::from_millis(80);
+const PLAYBACK_EDIT_DEBOUNCE: Duration = Duration::from_millis(20);
+const PLAYBACK_LEAD_FRAMES: u64 = 3_072; // ~64 ms @ 48 kHz for DAW-grade live responsiveness
+const PLAYBACK_CHUNK_FRAMES: u64 = 512; // ~10.7 ms @ 48 kHz
 const SELF_SAVE_SUPPRESS: Duration = Duration::from_millis(700);
 const CHECKPOINT_SECONDS: u64 = 4;
 
@@ -80,10 +81,6 @@ pub enum Message {
     ToggleTrackMute(usize),
     ToggleTrackSolo(usize),
     ClearSoloMute,
-    MixPlanReady {
-        revision: u64,
-        result: Result<Box<PlanArtifact>, String>,
-    },
     SelectNote(Option<String>),
     ToggleSelectNote(String),
     SelectNotesBox(Vec<String>),
@@ -213,7 +210,6 @@ pub enum Message {
 pub struct StudioApp {
     audio: AudioEngine,
     project: Option<ProjectData>,
-    active_plan: Option<PlanArtifact>,
     session: Option<BackgroundSession>,
     playback: Option<Arc<Playback>>,
     watcher: Option<ProjectWatcher>,
@@ -273,7 +269,6 @@ pub struct StudioApp {
     visible_tracks: Vec<bool>,
     muted_tracks: HashSet<String>,
     solo_tracks: HashSet<String>,
-    mix_revision: u64,
     zoom: f32,
     scroll: f32,
     peaks: (f32, f32),
@@ -293,7 +288,6 @@ impl StudioApp {
         let app = Self {
             audio: AudioEngine::new(48_000),
             project: None,
-            active_plan: None,
             session: None,
             playback: None,
             watcher: None,
@@ -342,7 +336,6 @@ impl StudioApp {
             visible_tracks: Vec::new(),
             muted_tracks: HashSet::new(),
             solo_tracks: HashSet::new(),
-            mix_revision: 0,
             zoom: 1.0,
             scroll: 0.0,
             peaks: (0.0, 0.0),
@@ -588,7 +581,7 @@ impl StudioApp {
                     if !self.muted_tracks.remove(&name) {
                         self.muted_tracks.insert(name);
                     }
-                    return self.spawn_mix_update();
+                    self.apply_live_mutes();
                 }
                 Task::none()
             }
@@ -603,7 +596,7 @@ impl StudioApp {
                     if !self.solo_tracks.remove(&name) {
                         self.solo_tracks.insert(name);
                     }
-                    return self.spawn_mix_update();
+                    self.apply_live_mutes();
                 }
                 Task::none()
             }
@@ -612,26 +605,7 @@ impl StudioApp {
                 if !self.muted_tracks.is_empty() || !self.solo_tracks.is_empty() {
                     self.muted_tracks.clear();
                     self.solo_tracks.clear();
-                    return self.spawn_mix_update();
-                }
-                Task::none()
-            }
-
-            Message::MixPlanReady { revision, result } => {
-                if revision != self.mix_revision {
-                    return Task::none();
-                }
-                match result {
-                    Ok(plan) => {
-                        if let Some(session) = &self.session {
-                            session.update(&plan);
-                        }
-                        self.active_plan = Some(*plan);
-                        self.playback_error = None;
-                    }
-                    Err(err) => {
-                        self.playback_error = Some(format!("Solo/Mute update failed: {err}"));
-                    }
+                    self.apply_live_mutes();
                 }
                 Task::none()
             }
@@ -760,6 +734,10 @@ impl StudioApp {
                         return self.apply_in_memory_project(*data, format!("{summary} ({ms} ms)"));
                     }
                     Err(err) => {
+                        self.param_drafts.clear();
+                        if let Some(pb) = &self.playback {
+                            pb.clear_live_params();
+                        }
                         self.edit_error = Some(err);
                     }
                 }
@@ -1203,6 +1181,10 @@ impl StudioApp {
                         return self.apply_in_memory_project(*data, format!("{summary} ({ms} ms)"));
                     }
                     Err(err) => {
+                        self.param_drafts.clear();
+                        if let Some(pb) = &self.playback {
+                            pb.clear_live_params();
+                        }
                         self.edit_error = Some(err);
                     }
                 }
@@ -1326,6 +1308,10 @@ impl StudioApp {
                         return self.apply_in_memory_project(*data, format!("{summary} ({ms} ms)"));
                     }
                     Err(err) => {
+                        self.param_drafts.clear();
+                        if let Some(pb) = &self.playback {
+                            pb.clear_live_params();
+                        }
                         self.edit_error = Some(err);
                     }
                 }
@@ -1394,6 +1380,10 @@ impl StudioApp {
                         return self.apply_in_memory_project(*data, format!("{summary} ({ms} ms)"));
                     }
                     Err(err) => {
+                        self.param_drafts.clear();
+                        if let Some(pb) = &self.playback {
+                            pb.clear_live_params();
+                        }
                         self.edit_error = Some(err);
                     }
                 }
@@ -1609,6 +1599,9 @@ impl StudioApp {
                 param_name,
                 value,
             } => {
+                if let Some(pb) = &self.playback {
+                    pb.set_live_param(node_id.clone(), param_name.clone(), f64::from(value));
+                }
                 self.param_drafts.insert((node_id, param_name), value);
                 Task::none()
             }
@@ -1804,13 +1797,10 @@ impl StudioApp {
                 loop_only,
                 path: Some(path),
             } => {
-                let Some(proj) = &self.project else {
+                let Some(proj) = self.project.clone() else {
                     return Task::none();
                 };
-                let plan = self
-                    .active_plan
-                    .clone()
-                    .unwrap_or_else(|| proj.plan.clone());
+                let muted = self.effective_muted_nodes(&proj);
                 let limits = proj.limits;
                 let loop_span = if loop_only { self.loop_range } else { None };
                 let rate = proj.sample_rate_hz;
@@ -1825,6 +1815,11 @@ impl StudioApp {
                     async move {
                         let handle = std::thread::spawn(move || {
                             let started = Instant::now();
+                            let plan = if muted.is_empty() {
+                                proj.plan.clone()
+                            } else {
+                                proj.plan_with_muted(&muted)?
+                            };
                             let stats = match loop_span {
                                 Some(span) => {
                                     let end = span.end.min(plan.output().total_frames);
@@ -1879,20 +1874,24 @@ impl StudioApp {
                 if self.analyzing {
                     return Task::none();
                 }
-                let Some(proj) = &self.project else {
+                let Some(proj) = self.project.clone() else {
                     return Task::none();
                 };
                 self.analyzing = true;
                 self.analysis_error = None;
-                let plan = self
-                    .active_plan
-                    .clone()
-                    .unwrap_or_else(|| proj.plan.clone());
+                let muted = self.effective_muted_nodes(&proj);
                 let meter = proj.meter.clone();
                 let limits = proj.limits;
                 Task::perform(
                     async move {
-                        let handle = std::thread::spawn(move || run_analysis(plan, meter, limits));
+                        let handle = std::thread::spawn(move || {
+                            let plan = if muted.is_empty() {
+                                proj.plan.clone()
+                            } else {
+                                proj.plan_with_muted(&muted)?
+                            };
+                            run_analysis(plan, meter, limits)
+                        });
                         handle
                             .join()
                             .unwrap_or_else(|_| Err("analysis worker panicked".into()))
@@ -2242,20 +2241,18 @@ impl StudioApp {
         if self.visible_tracks.len() != track_count {
             self.visible_tracks = vec![true; track_count];
         }
-        let has_mix_filter = !self.solo_tracks.is_empty() || !self.muted_tracks.is_empty();
         self.last_reload_note = Some(status_msg);
-        if !has_mix_filter {
-            if let Some(session) = &self.session {
-                session.update(&data.plan);
+        if let Some(session) = &self.session {
+            session.update(&data.plan);
+            let target_gen = session.status().generation;
+            if let Some(pb) = &self.playback {
+                pb.clear_live_params_from_generation(target_gen);
             }
-            self.active_plan = Some(data.plan.clone());
-            self.project = Some(data);
-            self.refresh_selected_note_info();
-            return Task::none();
         }
         self.project = Some(data);
+        self.apply_live_mutes();
         self.refresh_selected_note_info();
-        self.spawn_mix_update()
+        Task::none()
     }
 
     fn effective_muted_nodes(&self, proj: &ProjectData) -> HashSet<String> {
@@ -2278,30 +2275,11 @@ impl StudioApp {
             .collect()
     }
 
-    fn spawn_mix_update(&mut self) -> Task<Message> {
-        let Some(proj) = self.project.clone() else {
-            return Task::none();
+    fn apply_live_mutes(&self) {
+        let (Some(proj), Some(pb)) = (&self.project, &self.playback) else {
+            return;
         };
-        self.mix_revision += 1;
-        let revision = self.mix_revision;
-        let muted = self.effective_muted_nodes(&proj);
-        if muted.is_empty() {
-            let plan = proj.plan.clone();
-            if let Some(session) = &self.session {
-                session.update(&plan);
-            }
-            self.active_plan = Some(plan);
-            return Task::none();
-        }
-        Task::perform(
-            async move {
-                let handle = std::thread::spawn(move || proj.plan_with_muted(&muted).map(Box::new));
-                handle
-                    .join()
-                    .unwrap_or_else(|_| Err("solo/mute worker panicked".into()))
-            },
-            move |result| Message::MixPlanReady { revision, result },
-        )
+        pb.set_muted_nodes(self.effective_muted_nodes(proj));
     }
 
     fn apply_compiled_project(&mut self, data: ProjectData, is_reload: bool) -> Task<Message> {
@@ -2337,20 +2315,18 @@ impl StudioApp {
                 self.redo_stack.clear();
             }
             self.edit_error = None;
-            let has_mix_filter = !self.solo_tracks.is_empty() || !self.muted_tracks.is_empty();
             self.last_reload_note = Some(format!("Reloaded in {compile_ms} ms — live update sent"));
-            if !has_mix_filter {
-                if let Some(session) = &self.session {
-                    session.update(&data.plan);
+            if let Some(session) = &self.session {
+                session.update(&data.plan);
+                let target_gen = session.status().generation;
+                if let Some(pb) = &self.playback {
+                    pb.clear_live_params_from_generation(target_gen);
                 }
-                self.active_plan = Some(data.plan.clone());
-                self.project = Some(data);
-                self.refresh_selected_note_info();
-                return Task::none();
             }
             self.project = Some(data);
+            self.apply_live_mutes();
             self.refresh_selected_note_info();
-            return self.spawn_mix_update();
+            return Task::none();
         }
 
         // Fresh project open (or audio format changed): rebuild session, watcher, playback.
@@ -2403,7 +2379,6 @@ impl StudioApp {
         self.scroll = 0.0;
         self.analysis = None;
         self.analysis_error = None;
-        self.active_plan = Some(data.plan.clone());
         self.last_reload_note = Some(format!("Loaded in {compile_ms} ms"));
         self.project = Some(data);
         self.refresh_code_cache();
@@ -2424,10 +2399,10 @@ impl StudioApp {
         };
         let start = self.playhead_frame.min(proj.total_frames.saturating_sub(1));
         let config = PlaybackConfig {
-            lead_frames: 65_536,
-            chunk_frames: 2_048,
+            lead_frames: PLAYBACK_LEAD_FRAMES,
+            chunk_frames: PLAYBACK_CHUNK_FRAMES,
             pause_prerender: false,
-            preview_preroll_frames: proj.sample_rate_hz as u64 / 2,
+            preview_preroll_frames: proj.sample_rate_hz as u64 / 4,
             approximate_start: true,
             render_threads: Some(4),
             loop_range: self.loop_range,
@@ -2435,6 +2410,7 @@ impl StudioApp {
         };
         match session.play(start, config) {
             Ok(pb) => {
+                pb.set_muted_nodes(self.effective_muted_nodes(proj));
                 let pb = Arc::new(pb);
                 self.audio
                     .set_playback(Some(Arc::clone(&pb)), proj.sample_rate_hz, proj.channels);

@@ -602,4 +602,117 @@ mod tests {
         assert!(summary.integrated_lufs.is_some());
         assert!(!summary.sources.is_empty());
     }
+
+    #[test]
+    fn low_latency_live_mute_and_param_sweep_on_ferry() {
+        use maac::dsp::{BackgroundSession, PlaybackConfig, SessionPolicy};
+        use std::time::Duration;
+
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../examples/ferry/ferry.maac");
+        let data = load_and_compile(&path).expect("compile ferry.maac");
+        let rate = data.sample_rate_hz as u64;
+        let channels = data.channels;
+        let policy = SessionPolicy::new(rate * 4)
+            .with_render_threads(4)
+            .with_prerender_threads(1);
+        let session = BackgroundSession::new(&data.plan, &data.limits, policy).expect("session");
+        // Start mid-song (bar 17) where all tracks are active.
+        let start = data.bars.get(16).map_or(rate * 20, |b| b.frame);
+        let play = session
+            .play(
+                start,
+                PlaybackConfig {
+                    lead_frames: 3_072,
+                    chunk_frames: 512,
+                    pause_prerender: false,
+                    preview_preroll_frames: rate / 4,
+                    approximate_start: true,
+                    render_threads: Some(4),
+                    loop_range: None,
+                    edit_debounce: Duration::from_millis(20),
+                },
+            )
+            .expect("playback");
+
+        // Wait until the ring has filled to at least half lead before starting real-time reads.
+        let warm_start = Instant::now();
+        while play.status().buffered_frames < 1_536 {
+            assert!(
+                warm_start.elapsed() < Duration::from_secs(10),
+                "timed out warming ferry playback: {:?}",
+                play.status()
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+
+        let mut buf = vec![0.0_f64; 512 * channels];
+        let mut mute_sent_at: Option<Instant> = None;
+        let mut silence_heard_ms: Option<f64> = None;
+        let all_tracks: HashSet<String> = data.tracks.iter().map(|t| t.name.clone()).collect();
+        let switches_before = play.status().switches.len();
+
+        // Stream ~1.6 seconds (150 chunks of 512 frames @ 48 kHz = 10.67 ms each) at real-time pace.
+        let stream_origin = Instant::now();
+        for step in 0..150u64 {
+            let target_time = Duration::from_micros(step * 10_667);
+            if let Some(rem) = target_time.checked_sub(stream_origin.elapsed()) {
+                std::thread::sleep(rem);
+            }
+            let got = play.read(&mut buf);
+            assert_eq!(got, 512, "short read at step {step}: {:?}", play.status());
+            let peak = buf.iter().map(|s| s.abs()).fold(0.0_f64, f64::max);
+
+            if step == 30 {
+                // Mute ALL tracks in place: reverb tail decays, then wait for silence.
+                // Also mute the master/output nodes to measure raw mute-to-silence latency.
+                let mut mutes = all_tracks.clone();
+                for node in &data.mixer_nodes {
+                    mutes.insert(node.id.clone());
+                }
+                mute_sent_at = Some(Instant::now());
+                play.set_muted_nodes(mutes);
+            } else if let Some(t0) = mute_sent_at {
+                if silence_heard_ms.is_none() && peak < 1e-9 {
+                    silence_heard_ms = Some(t0.elapsed().as_secs_f64() * 1000.0);
+                }
+            }
+
+            if step == 70 {
+                // Unmute everything cleanly in place.
+                play.set_muted_nodes(HashSet::new());
+            }
+
+            if (90..120).contains(&step) {
+                // Live continuous mixer slider drag on `hall.mix` (0.10 -> 0.55).
+                let frac = (step - 90) as f64 / 29.0;
+                play.set_live_param("hall", "mix", 0.10 + frac * 0.45);
+            }
+            if step == 125 {
+                play.clear_live_params();
+            }
+        }
+
+        let st = play.status();
+        let lat_ms = silence_heard_ms.expect("expected live mute to reach silence promptly");
+        eprintln!(
+            "[ferry low-latency bench] mute-to-silence={lat_ms:.1} ms, underruns={}, switches={}, stale={}",
+            st.underruns,
+            st.switches.len(),
+            st.stale
+        );
+        assert!(st.last_error.is_none(), "{st:?}");
+        assert_eq!(
+            st.underruns, 0,
+            "expected 0 underruns at lead=3072/chunk=512 on ferry.maac"
+        );
+        assert!(
+            lat_ms < 120.0,
+            "expected mute-to-silence < 120 ms, got {lat_ms:.1} ms"
+        );
+        assert!(
+            st.switches.len() <= switches_before + 1,
+            "live mute/param sweep must not trigger spurious plan switches: {:?}",
+            st.switches
+        );
+    }
 }

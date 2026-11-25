@@ -30,7 +30,7 @@ use num_bigint::BigInt;
 use num_integer::Integer;
 use num_traits::{Signed, ToPrimitive, Zero};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::sync::{Arc, OnceLock};
 
@@ -212,6 +212,16 @@ pub struct DspEngine<'a> {
     /// While a render hands its checkpoints on as they are taken, instead of
     /// keeping them in `checkpoints`.
     checkpoint_sink: Option<CheckpointSink>,
+    /// Live real-time node mute targets (all false for normal offline renders).
+    live_muted: Vec<bool>,
+    /// Per-node smooth mute gain (1.0 = unmuted, 0.0 = muted), ramped over ~5 ms.
+    live_mute_gain: Vec<f64>,
+    /// Fast-path flag: true only while any node is muted or ramping.
+    has_live_mutes: bool,
+    /// Original plan `base_params` per node, captured lazily only when live
+    /// parameter overrides are active so [`Self::clear_live_params`] can
+    /// restore the plan's exact values.
+    original_base_params: Option<Vec<BTreeMap<String, f64>>>,
 }
 
 type CheckpointSink = Box<dyn FnMut(Checkpoint) -> Result<()> + Send + Sync>;
@@ -766,6 +776,7 @@ impl<'a> DspEngine<'a> {
             frames.sort_unstable();
             frames.dedup();
         }
+        let node_count = nodes.len();
         Ok(Self {
             plan,
             limits: *limits,
@@ -797,6 +808,10 @@ impl<'a> DspEngine<'a> {
             parallel_batches: 0,
             widest_batch: 0,
             checkpoint_sink: None,
+            live_muted: vec![false; node_count],
+            live_mute_gain: vec![1.0; node_count],
+            has_live_mutes: false,
+            original_base_params: None,
         })
     }
 
@@ -829,6 +844,126 @@ impl<'a> DspEngine<'a> {
     /// and the engine reads them in its own order.
     pub fn set_render_threads(&mut self, threads: usize) {
         self.threads = threads.max(1);
+    }
+
+    /// Mute or unmute graph nodes in real time during live playback.
+    ///
+    /// Affected nodes fade smoothly over ~5 ms to prevent clicks while leaving
+    /// downstream effects (such as reverb and delay tails) free to decay
+    /// naturally. When no nodes are muted and all fades have settled,
+    /// rendering executes the exact same bit-identical path as an offline
+    /// render.
+    pub fn set_muted_nodes(&mut self, muted: &HashSet<String>) {
+        self.apply_muted_nodes(muted, true);
+    }
+
+    pub(crate) fn set_muted_nodes_immediate(&mut self, muted: &HashSet<String>) {
+        self.apply_muted_nodes(muted, false);
+    }
+
+    fn apply_muted_nodes(&mut self, muted: &HashSet<String>, ramp: bool) {
+        let mut active = false;
+        for (index, node) in self.nodes.iter().enumerate() {
+            if node.control.is_some() || node.delay.is_some() {
+                self.live_muted[index] = false;
+                self.live_mute_gain[index] = 1.0;
+                continue;
+            }
+            let is_muted = muted.contains(&node.id);
+            self.live_muted[index] = is_muted;
+            if !ramp {
+                self.live_mute_gain[index] = if is_muted { 0.0 } else { 1.0 };
+            }
+            if is_muted || self.live_mute_gain[index] < 1.0 {
+                active = true;
+            }
+        }
+        self.has_live_mutes = active;
+    }
+
+    /// Whether any node currently has an active live mute or mute fade.
+    pub fn has_live_mutes(&self) -> bool {
+        self.has_live_mutes
+    }
+
+    /// Override a node parameter in real time for live preview (for example,
+    /// while dragging a mixer or effect slider). Returns `true` if the node
+    /// and parameter exist and passed range validation; returns `false`
+    /// without mutating engine state otherwise.
+    pub fn set_live_param(&mut self, node_id: &str, param: &str, value: f64) -> bool {
+        if !value.is_finite() {
+            return false;
+        }
+        let Some(&index) = self.node_indices.get(node_id) else {
+            return false;
+        };
+        if !self.nodes[index].base_params.contains_key(param)
+            || !self.nodes[index].current_params.contains_key(param)
+        {
+            return false;
+        }
+        if self.original_base_params.is_none() {
+            self.original_base_params = Some(
+                self.nodes
+                    .iter()
+                    .map(|node| node.base_params.clone())
+                    .collect(),
+            );
+        }
+        let node = &mut self.nodes[index];
+        let old_current = node.current_params[param];
+        let old_base = node.base_params[param];
+        node.current_params.insert(param.to_owned(), value);
+        let valid = node.validate_current_parameters(self.rate).is_ok()
+            && node
+                .instrument
+                .as_mut()
+                .is_none_or(|inst| inst.update_controls(&node.current_params).is_ok())
+            && node
+                .kit_instrument
+                .as_mut()
+                .is_none_or(|kit| kit.update_controls(&node.current_params).is_ok())
+            && node
+                .effect
+                .as_mut()
+                .is_none_or(|fx| fx.update_controls(&node.current_params).is_ok());
+        if !valid {
+            node.current_params.insert(param.to_owned(), old_current);
+            node.base_params.insert(param.to_owned(), old_base);
+            if let Some(inst) = &mut node.instrument {
+                let _ = inst.update_controls(&node.current_params);
+            }
+            if let Some(kit) = &mut node.kit_instrument {
+                let _ = kit.update_controls(&node.current_params);
+            }
+            if let Some(fx) = &mut node.effect {
+                let _ = fx.update_controls(&node.current_params);
+            }
+            return false;
+        }
+        node.base_params.insert(param.to_owned(), value);
+        self.parameters_settled[index] = false;
+        self.parameters_valid_until[index] = 0;
+        true
+    }
+
+    /// Restore all node parameters to the plan's original values, clearing any
+    /// real-time overrides set by [`Self::set_live_param`].
+    pub fn clear_live_params(&mut self) {
+        let Some(originals) = self.original_base_params.take() else {
+            return;
+        };
+        for (index, (node, orig)) in self.nodes.iter_mut().zip(originals).enumerate() {
+            node.base_params = orig;
+            node.current_params.clone_from(&node.base_params);
+            self.parameters_settled[index] = false;
+            self.parameters_valid_until[index] = 0;
+        }
+    }
+
+    /// Whether any live parameter overrides are currently active on this engine.
+    pub fn has_live_params(&self) -> bool {
+        self.original_base_params.is_some()
     }
 
     /// Render the plan's output over `span` only, like [`Self::render`]: a
@@ -1364,6 +1499,28 @@ impl<'a> DspEngine<'a> {
                     }
                 }
                 self.process_node(node_index, frame_index)?;
+                if self.has_live_mutes {
+                    let target = if self.live_muted[node_index] {
+                        0.0
+                    } else {
+                        1.0
+                    };
+                    let gain = &mut self.live_mute_gain[node_index];
+                    if *gain != target {
+                        let step = 1.0 / (self.rate * 0.005).max(1.0);
+                        if target < *gain {
+                            *gain = (*gain - step).max(0.0);
+                        } else {
+                            *gain = (*gain + step).min(1.0);
+                        }
+                    }
+                    if *gain < 1.0 {
+                        let g = *gain;
+                        for sample in &mut self.nodes[node_index].output {
+                            *sample *= g;
+                        }
+                    }
+                }
             }
             self.commit_delays()?;
 
@@ -1381,6 +1538,12 @@ impl<'a> DspEngine<'a> {
                 *reduction = self.nodes[index].gain_reduction();
             }
             callback(&outputs, &reductions)?;
+        }
+        if self.has_live_mutes
+            && !self.live_muted.iter().any(|&muted| muted)
+            && self.live_mute_gain.iter().all(|&gain| gain >= 1.0)
+        {
+            self.has_live_mutes = false;
         }
         if self.resume_frame == Some(RESUME_SPENT) {
             self.resume_frame = None;
@@ -1533,6 +1696,7 @@ impl<'a> DspEngine<'a> {
         self.checkpoints.clear();
         self.resume_frame = Some(checkpoint.frame);
         self.preview_origin = None;
+        self.original_base_params = None;
         Ok(())
     }
 
@@ -1656,6 +1820,16 @@ impl<'a> DspEngine<'a> {
         self.frame.fill(0.0);
         self.resume_frame = None;
         self.preview_origin = None;
+        if self.has_live_mutes {
+            let mut any = false;
+            for (muted, gain) in self.live_muted.iter().zip(&mut self.live_mute_gain) {
+                *gain = if *muted { 0.0 } else { 1.0 };
+                if *muted {
+                    any = true;
+                }
+            }
+            self.has_live_mutes = any;
+        }
     }
 
     fn read_delays(&mut self) {
