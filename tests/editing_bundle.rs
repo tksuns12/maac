@@ -389,3 +389,46 @@ fn copied_production_schema_can_become_the_builtin_form() {
     .unwrap();
     apply_transaction(&mut document, &tx, &context).unwrap();
 }
+
+#[test]
+fn checking_compile_song_limits_apply_to_fx_projects() {
+    let entry = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/ferry/ferry.maac");
+    let root = entry.parent().unwrap();
+    let bundle = maac::bundle_fs::load_bundle(&entry, root).unwrap();
+    let mut doc = maac::editing::SourceDocument::parse(&bundle.sources[&bundle.entry]).unwrap();
+    let context = BundleEditContext::new(&bundle)
+        .unwrap()
+        .checking_compile(maac::plan::PlanLimits::song());
+    let first_note_path = doc
+        .authored()
+        .tree()
+        .get("objects")
+        .and_then(|v| v.as_object())
+        .and_then(|objs| {
+            objs.iter().find_map(|(pat_id, pat)| {
+                pat.get("children")
+                    .and_then(|v| v.as_object())
+                    .and_then(|children| {
+                        children.iter().find_map(|(child_id, child)| {
+                            (child.get("kind").and_then(|k| k.as_str()) == Some("note"))
+                                .then(|| vec![pat_id.clone(), child_id.clone()])
+                        })
+                    })
+            })
+        })
+        .expect("ferry.maac should contain at least one note");
+    let tx = Transaction::new(
+        doc.revision().to_owned(),
+        vec![Operation::Set {
+            object: first_note_path,
+            field: vec!["pitch".into()],
+            value: json!({"t":"symbol","v":"C5"}),
+            expect: None,
+            expect_absent: false,
+        }],
+    )
+    .unwrap();
+    doc.apply(&tx, &context)
+        .expect("song-limit BundleEditContext should accept fx song edits");
+    assert!(doc.source().contains("Morning Ferry"));
+}

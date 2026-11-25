@@ -491,7 +491,8 @@ impl EditContext for BundleEditContext {
                             .is_some_and(|processor| processor.starts_with("fx.")))
             });
         if needs_artifact_validation {
-            return crate::compiler::check_bundle_artifact(&bundle).map_err(map_diagnostics);
+            return crate::compiler::check_bundle_artifact_with_limits(&bundle, &self.limits)
+                .map_err(map_diagnostics);
         }
         let document = libraries.resolved_document();
         let descriptors =
