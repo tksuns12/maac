@@ -14,6 +14,8 @@ use maac::plan::{EventKind, PlanLimits, Region, TempoMap};
 use maac::{parse_rational, PlanArtifact};
 use num_traits::ToPrimitive;
 
+use crate::mixer::{extract_mixer_nodes, MixerNodeInfo};
+
 #[derive(Clone, Debug)]
 pub struct RegionSpan {
     pub id: String,
@@ -73,6 +75,7 @@ pub struct ProjectData {
     pub notes: Vec<RollNote>,
     pub hits: Vec<RollHit>,
     pub tracks: Vec<TrackInfo>,
+    pub mixer_nodes: Vec<MixerNodeInfo>,
     pub min_pitch: f32,
     pub max_pitch: f32,
     pub compile_ms: u64,
@@ -300,11 +303,14 @@ pub fn load_from_bundle(
         .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
         .map(Arc::new);
 
-    let (regions, bars) = match plan_json.as_deref() {
+    let (regions, bars, mixer_nodes) = match plan_json.as_deref() {
         Some(json) => {
-            extract_timeline_grid(json, &plan, meter.as_ref(), sample_rate_hz, total_frames)
+            let (regions, bars) =
+                extract_timeline_grid(json, &plan, meter.as_ref(), sample_rate_hz, total_frames);
+            let mixer_nodes = extract_mixer_nodes(&bundle, json, &tracks, sample_rate_hz);
+            (regions, bars, mixer_nodes)
         }
-        None => (Vec::new(), Vec::new()),
+        None => (Vec::new(), Vec::new(), Vec::new()),
     };
 
     let title = canonical_entry
@@ -329,6 +335,7 @@ pub fn load_from_bundle(
         notes,
         hits,
         tracks,
+        mixer_nodes,
         min_pitch: (min_pitch - 2.0).max(0.0),
         max_pitch: (max_pitch + 2.0).min(127.0),
         compile_ms: started.elapsed().as_millis() as u64,

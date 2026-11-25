@@ -1,6 +1,6 @@
 //! Main Elm-architecture `iced` application for MaaC Studio.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -23,6 +23,9 @@ use crate::audio::AudioEngine;
 use crate::editor::{
     apply_note_edit, format_q, inspect_note_in_bundle, midi_to_pitch_symbol, NoteEdit,
     NoteSourceInfo,
+};
+use crate::mixer::{
+    apply_node_param_edit, apply_node_param_reset, MixerNodeInfo, NodeCategory, NodeParamInfo,
 };
 use crate::project::{format_time, load_and_compile, load_from_bundle, ProjectData};
 use crate::timeline::{track_color, TimelineAction, TimelineView};
@@ -86,6 +89,21 @@ pub enum Message {
     },
     KeyboardDeleteNote,
     KeyboardDuplicateNote,
+    ToggleMixer,
+    SelectMixerNode(Option<String>),
+    NodeParamDraft {
+        node_id: String,
+        param_name: String,
+        value: f32,
+    },
+    CommitNodeParam {
+        node_id: String,
+        param_name: String,
+    },
+    ResetNodeParam {
+        node_id: String,
+        param_name: String,
+    },
     GainChanged(f32),
     ZoomDelta {
         delta: f32,
@@ -134,6 +152,11 @@ pub struct StudioApp {
     redo_stack: Vec<String>,
     editing: bool,
     edit_error: Option<String>,
+
+    // Live Mixer & Node/FX Parameter Editor
+    show_mixer: bool,
+    selected_node_id: Option<String>,
+    param_drafts: HashMap<(String, String), f32>,
 
     // Transport & view state
     playhead_frame: u64,
@@ -189,6 +212,9 @@ impl StudioApp {
             redo_stack: Vec::new(),
             editing: false,
             edit_error: None,
+            show_mixer: false,
+            selected_node_id: None,
+            param_drafts: HashMap::new(),
             playhead_frame: 0,
             checkpoint_frame: 0,
             checkpoint_count: 0,
@@ -294,6 +320,7 @@ impl StudioApp {
                     at_q16: if modifiers.shift() { -4 } else { -1 },
                 }),
                 Key::Character(ref c) if c.eq_ignore_ascii_case("l") => Some(Message::ToggleLoop),
+                Key::Character(ref c) if c.eq_ignore_ascii_case("m") => Some(Message::ToggleMixer),
                 Key::Character(ref c) if c.eq_ignore_ascii_case("s") => Some(Message::ToggleSnap),
                 Key::Character(ref c) if c.eq_ignore_ascii_case("f") => Some(Message::ToggleFollow),
                 Key::Character(ref c) if c.eq_ignore_ascii_case("r") => Some(Message::RecompileNow),
@@ -703,6 +730,154 @@ impl StudioApp {
                 })
             }
 
+            Message::ToggleMixer => {
+                self.show_mixer = !self.show_mixer;
+                if self.show_mixer && self.selected_node_id.is_none() {
+                    if let Some(proj) = &self.project {
+                        self.selected_node_id = proj
+                            .mixer_nodes
+                            .iter()
+                            .find(|n| n.category == NodeCategory::Effect)
+                            .or_else(|| proj.mixer_nodes.first())
+                            .map(|n| n.id.clone());
+                    }
+                }
+                Task::none()
+            }
+
+            Message::SelectMixerNode(id) => {
+                self.selected_node_id = id;
+                self.edit_error = None;
+                Task::none()
+            }
+
+            Message::NodeParamDraft {
+                node_id,
+                param_name,
+                value,
+            } => {
+                self.param_drafts.insert((node_id, param_name), value);
+                Task::none()
+            }
+
+            Message::CommitNodeParam {
+                node_id,
+                param_name,
+            } => {
+                if self.editing {
+                    return Task::none();
+                }
+                let Some(value) = self
+                    .param_drafts
+                    .get(&(node_id.clone(), param_name.clone()))
+                    .copied()
+                else {
+                    return Task::none();
+                };
+                let Some(proj) = &self.project else {
+                    return Task::none();
+                };
+                let Some(param) = proj
+                    .mixer_nodes
+                    .iter()
+                    .find(|n| n.id == node_id)
+                    .and_then(|n| n.params.iter().find(|p| p.name == param_name))
+                else {
+                    return Task::none();
+                };
+                let Some(prev_source) = proj.bundle.sources.get(&proj.bundle.entry).cloned() else {
+                    return Task::none();
+                };
+                let unit = param.unit;
+                let bundle = proj.bundle.clone();
+                let entry_path = proj.entry_path.clone();
+                let project_root = proj.project_root.clone();
+                let limits = proj.limits;
+                self.editing = true;
+                self.edit_error = None;
+                Task::perform(
+                    async move {
+                        let handle = std::thread::spawn(move || {
+                            let (updated_bundle, summary) = apply_node_param_edit(
+                                &bundle,
+                                &node_id,
+                                &param_name,
+                                unit,
+                                value,
+                                &limits,
+                            )?;
+                            let recompiled =
+                                load_from_bundle(entry_path, project_root, updated_bundle)?;
+                            Ok((Box::new(recompiled), summary))
+                        });
+                        handle
+                            .join()
+                            .unwrap_or_else(|_| Err("node param edit worker panicked".into()))
+                    },
+                    move |res| match res {
+                        Ok((data, summary)) => Message::NoteEditApplied {
+                            prev_source: prev_source.clone(),
+                            summary,
+                            result: Ok(data),
+                        },
+                        Err(err) => Message::NoteEditApplied {
+                            prev_source: prev_source.clone(),
+                            summary: String::new(),
+                            result: Err(err),
+                        },
+                    },
+                )
+            }
+
+            Message::ResetNodeParam {
+                node_id,
+                param_name,
+            } => {
+                if self.editing {
+                    return Task::none();
+                }
+                let Some(proj) = &self.project else {
+                    return Task::none();
+                };
+                let Some(prev_source) = proj.bundle.sources.get(&proj.bundle.entry).cloned() else {
+                    return Task::none();
+                };
+                self.param_drafts
+                    .remove(&(node_id.clone(), param_name.clone()));
+                let bundle = proj.bundle.clone();
+                let entry_path = proj.entry_path.clone();
+                let project_root = proj.project_root.clone();
+                let limits = proj.limits;
+                self.editing = true;
+                self.edit_error = None;
+                Task::perform(
+                    async move {
+                        let handle = std::thread::spawn(move || {
+                            let (updated_bundle, summary) =
+                                apply_node_param_reset(&bundle, &node_id, &param_name, &limits)?;
+                            let recompiled =
+                                load_from_bundle(entry_path, project_root, updated_bundle)?;
+                            Ok((Box::new(recompiled), summary))
+                        });
+                        handle
+                            .join()
+                            .unwrap_or_else(|_| Err("node param reset worker panicked".into()))
+                    },
+                    move |res| match res {
+                        Ok((data, summary)) => Message::NoteEditApplied {
+                            prev_source: prev_source.clone(),
+                            summary,
+                            result: Ok(data),
+                        },
+                        Err(err) => Message::NoteEditApplied {
+                            prev_source: prev_source.clone(),
+                            summary: String::new(),
+                            result: Err(err),
+                        },
+                    },
+                )
+            }
+
             Message::GainChanged(g) => {
                 self.audio.set_gain(g);
                 Task::none()
@@ -1054,6 +1229,7 @@ impl StudioApp {
     }
 
     fn apply_in_memory_project(&mut self, data: ProjectData, status_msg: String) -> Task<Message> {
+        self.param_drafts.clear();
         let track_count = data.tracks.len();
         if self.visible_tracks.len() != track_count {
             self.visible_tracks = vec![true; track_count];
@@ -1133,6 +1309,7 @@ impl StudioApp {
         }
 
         if is_reload && same_format && self.session.is_some() {
+            self.param_drafts.clear();
             let source_changed = self.saved_source != disk_source;
             self.saved_source = disk_source;
             if source_changed {
@@ -1170,6 +1347,8 @@ impl StudioApp {
         self.selected_note_address = None;
         self.selected_note_info = None;
         self.velocity_draft = None;
+        self.selected_node_id = None;
+        self.param_drafts.clear();
         self.edit_error = None;
 
         let spacing = (data.sample_rate_hz as u64 * CHECKPOINT_SECONDS).max(4_096);
@@ -1604,7 +1783,18 @@ impl StudioApp {
 
         let snap_on = self.snap_to_bar;
         let follow_on = self.auto_follow;
+        let mixer_on = self.show_mixer;
         let mut zoom_controls = row![
+            button(text(if mixer_on { "Piano Roll" } else { "Mixer (M)" }).size(11.5))
+                .padding([3, 8])
+                .style(move |theme, status| {
+                    if mixer_on {
+                        accent_button_style(Color::from_rgb(0.42, 0.34, 0.78), theme, status)
+                    } else {
+                        studio_button_style(theme, status)
+                    }
+                })
+                .on_press(Message::ToggleMixer),
             button(text(if snap_on { "Snap: Bar" } else { "Snap: Free" }).size(11.5))
                 .padding([3, 7])
                 .style(move |theme, status| {
@@ -1686,39 +1876,43 @@ impl StudioApp {
             ..Default::default()
         });
 
-        let selected_source_path = self.selected_note_address.as_deref().and_then(|addr| {
-            proj.notes
-                .iter()
-                .find(|n| n.address == addr)
-                .map(|n| n.source_path.as_slice())
-        });
+        let main_pane: Element<'a, Message> = if self.show_mixer {
+            self.view_mixer_console(proj)
+        } else {
+            let selected_source_path = self.selected_note_address.as_deref().and_then(|addr| {
+                proj.notes
+                    .iter()
+                    .find(|n| n.address == addr)
+                    .map(|n| n.source_path.as_slice())
+            });
 
-        let timeline_canvas: Element<'a, Message> = Element::from(
-            canvas(TimelineView {
-                project: proj,
-                visible_tracks: &self.visible_tracks,
-                audible_tracks,
-                selected_note_address: self.selected_note_address.as_deref(),
-                selected_source_path,
-                playhead_frame: self.playhead_frame,
-                checkpoint_frame: self.checkpoint_frame,
-                loop_range: self.loop_range,
-                snap_to_bar: self.snap_to_bar,
-                approximate: self.approximate,
-                stale: self.stale,
-                zoom: self.zoom,
-                scroll: self.scroll,
-            })
-            .width(Length::Fill)
-            .height(Length::Fill),
-        )
-        .map(Message::Timeline);
+            Element::from(
+                canvas(TimelineView {
+                    project: proj,
+                    visible_tracks: &self.visible_tracks,
+                    audible_tracks,
+                    selected_note_address: self.selected_note_address.as_deref(),
+                    selected_source_path,
+                    playhead_frame: self.playhead_frame,
+                    checkpoint_frame: self.checkpoint_frame,
+                    loop_range: self.loop_range,
+                    snap_to_bar: self.snap_to_bar,
+                    approximate: self.approximate,
+                    stale: self.stale,
+                    zoom: self.zoom,
+                    scroll: self.scroll,
+                })
+                .width(Length::Fill)
+                .height(Length::Fill),
+            )
+            .map(Message::Timeline)
+        };
 
-        let mut left_col = column![sub_bar, timeline_canvas]
+        let mut left_col = column![sub_bar, main_pane]
             .width(Length::FillPortion(3))
             .height(Length::Fill);
 
-        if self.zoom > 1.01 {
+        if !self.show_mixer && self.zoom > 1.01 {
             let max_scroll = (1.0 - 1.0 / self.zoom).max(0.001);
             let pan_bar = container(
                 slider(0.0_f32..=max_scroll, self.scroll, Message::ScrollChanged)
@@ -2089,6 +2283,54 @@ impl StudioApp {
         }
 
         // Declared regions quick jump & loop
+        // Quick FX / Bus selector chips & Node/FX Parameter Inspector
+        if let Some(node) = self
+            .selected_node_id
+            .as_deref()
+            .and_then(|id| proj.mixer_nodes.iter().find(|n| n.id == id))
+        {
+            col = col.push(self.view_node_inspector_card(node));
+        } else if proj
+            .mixer_nodes
+            .iter()
+            .any(|n| n.category != NodeCategory::Instrument)
+        {
+            let mut fx_chips = Row::new().spacing(4).align_y(Alignment::Center);
+            for node in proj
+                .mixer_nodes
+                .iter()
+                .filter(|n| n.category != NodeCategory::Instrument)
+            {
+                let id = node.id.clone();
+                fx_chips = fx_chips.push(
+                    button(text(&node.id).size(10.5))
+                        .padding([2, 7])
+                        .style(studio_button_style)
+                        .on_press(Message::SelectMixerNode(Some(id))),
+                );
+            }
+            col = col.push(
+                column![
+                    row![
+                        text("BUS / FX NODES")
+                            .size(10.5)
+                            .color(Color::from_rgb(0.58, 0.66, 0.78)),
+                        horizontal_space(),
+                        button(text("Open Mixer (M)").size(10))
+                            .padding([2, 6])
+                            .style(studio_button_style)
+                            .on_press(Message::ToggleMixer),
+                    ]
+                    .align_y(Alignment::Center),
+                    scrollable(fx_chips).direction(scrollable::Direction::Horizontal(
+                        scrollable::Scrollbar::new().width(3).scroller_width(3),
+                    )),
+                ]
+                .spacing(5),
+            );
+        }
+
+        col = col.push(Space::with_height(4));
         col = col.push(
             text("REGIONS")
                 .size(11)
@@ -2312,6 +2554,398 @@ impl StudioApp {
                 ..Default::default()
             })
             .into()
+    }
+
+    fn view_mixer_console<'a>(&'a self, proj: &'a ProjectData) -> Element<'a, Message> {
+        let instruments: Vec<&MixerNodeInfo> = proj
+            .mixer_nodes
+            .iter()
+            .filter(|n| n.category == NodeCategory::Instrument)
+            .collect();
+        let bus_fx: Vec<&MixerNodeInfo> = proj
+            .mixer_nodes
+            .iter()
+            .filter(|n| n.category != NodeCategory::Instrument)
+            .collect();
+
+        let header = row![
+            text("LIVE MIXER & FX CONSOLE")
+                .size(12)
+                .color(Color::from_rgb(0.76, 0.84, 0.96)),
+            Space::with_width(10),
+            text(format!(
+                "{} Tracks · {} Bus / FX",
+                instruments.len(),
+                bus_fx.len()
+            ))
+            .size(11)
+            .color(Color::from_rgb(0.56, 0.64, 0.76)),
+            horizontal_space(),
+            text("Drag sliders & release to apply live · Click strip header to inspect all params")
+                .size(11)
+                .color(Color::from_rgb(0.52, 0.58, 0.68)),
+        ]
+        .align_y(Alignment::Center)
+        .padding([10, 14]);
+
+        if proj.mixer_nodes.is_empty() {
+            return container(
+                text("No parameterized instrument or FX nodes found in this score.")
+                    .size(13)
+                    .color(Color::from_rgb(0.60, 0.66, 0.76)),
+            )
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .into();
+        }
+
+        let mut body = Column::new().spacing(10).padding([2, 14]);
+
+        if !instruments.is_empty() {
+            let mut inst_row = Row::new()
+                .spacing(10)
+                .padding([2, 0])
+                .align_y(Alignment::Start);
+            for node in &instruments {
+                inst_row = inst_row.push(self.view_mixer_strip(node));
+            }
+            body = body.push(
+                text(format!("INSTRUMENTS ({})", instruments.len()))
+                    .size(10.5)
+                    .color(Color::from_rgb(0.56, 0.66, 0.78)),
+            );
+            body = body.push(scrollable(inst_row).width(Length::Fill).direction(
+                scrollable::Direction::Horizontal(
+                    scrollable::Scrollbar::new().width(6).scroller_width(6),
+                ),
+            ));
+        }
+
+        if !bus_fx.is_empty() {
+            let mut fx_row = Row::new()
+                .spacing(10)
+                .padding([2, 0])
+                .align_y(Alignment::Start);
+            for node in &bus_fx {
+                fx_row = fx_row.push(self.view_mixer_strip(node));
+            }
+            body = body.push(
+                text(format!("BUS / FX / MASTER ({})", bus_fx.len()))
+                    .size(10.5)
+                    .color(Color::from_rgb(0.90, 0.70, 0.34)),
+            );
+            body = body.push(scrollable(fx_row).width(Length::Fill).direction(
+                scrollable::Direction::Horizontal(
+                    scrollable::Scrollbar::new().width(6).scroller_width(6),
+                ),
+            ));
+        }
+
+        let scroll_body = scrollable(body).width(Length::Fill).height(Length::Fill);
+
+        container(column![header, scroll_body].height(Length::Fill))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .style(|_| container::Style {
+                background: Some(Background::Color(Color::from_rgb(0.075, 0.084, 0.105))),
+                ..Default::default()
+            })
+            .into()
+    }
+
+    fn view_mixer_strip<'a>(&'a self, node: &'a MixerNodeInfo) -> Element<'a, Message> {
+        let accent = match node.track_idx {
+            Some(idx) => track_color(idx),
+            None => match node.category {
+                NodeCategory::Effect => Color::from_rgb(0.94, 0.66, 0.24),
+                NodeCategory::MixBus => Color::from_rgb(0.32, 0.80, 0.76),
+                NodeCategory::Instrument => Color::from_rgb(0.42, 0.72, 0.98),
+            },
+        };
+        let is_selected = self.selected_node_id.as_deref() == Some(node.id.as_str());
+
+        let top_stripe = container(Space::with_height(4))
+            .width(Length::Fill)
+            .style(move |_| container::Style {
+                background: Some(Background::Color(accent)),
+                border: Border {
+                    radius: 3.0.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+
+        let title_btn = button(
+            column![
+                text(&node.id).size(13).color(Color::WHITE),
+                text(&node.processor_label)
+                    .size(10.5)
+                    .color(Color::from_rgb(0.62, 0.70, 0.80)),
+            ]
+            .spacing(1),
+        )
+        .width(Length::Fill)
+        .padding([4, 6])
+        .style(move |theme, status| {
+            if is_selected {
+                accent_button_style(Color::from_rgb(0.22, 0.34, 0.54), theme, status)
+            } else {
+                studio_button_style(theme, status)
+            }
+        })
+        .on_press(Message::SelectMixerNode(Some(node.id.clone())));
+
+        let mut strip = Column::new().spacing(8).push(top_stripe).push(title_btn);
+
+        // Live M/S controls directly on instrument track strips
+        if let Some(idx) = node.track_idx {
+            let is_muted = self.muted_tracks.contains(&node.id);
+            let is_solo = self.solo_tracks.contains(&node.id);
+            let m_btn = button(text("Mute").size(10.5))
+                .padding([3, 8])
+                .width(Length::FillPortion(1))
+                .style(move |theme, status| {
+                    if is_muted {
+                        accent_button_style(Color::from_rgb(0.80, 0.26, 0.30), theme, status)
+                    } else {
+                        studio_button_style(theme, status)
+                    }
+                })
+                .on_press(Message::ToggleTrackMute(idx));
+            let s_btn = button(text("Solo").size(10.5))
+                .padding([3, 8])
+                .width(Length::FillPortion(1))
+                .style(move |theme, status| {
+                    if is_solo {
+                        accent_button_style(Color::from_rgb(0.84, 0.62, 0.14), theme, status)
+                    } else {
+                        studio_button_style(theme, status)
+                    }
+                })
+                .on_press(Message::ToggleTrackSolo(idx));
+            strip = strip.push(row![m_btn, s_btn].spacing(5));
+        }
+
+        // Show top 5 priority controls right on the channel strip
+        let shown = 5usize;
+        for param in node.params.iter().take(shown) {
+            strip = strip.push(self.view_param_slider_row(node, param, true));
+        }
+
+        if node.params.len() > shown {
+            let extra = node.params.len() - shown;
+            strip = strip.push(
+                button(text(format!("+{extra} more in Inspector →")).size(10.5))
+                    .width(Length::Fill)
+                    .padding([4, 6])
+                    .style(studio_button_style)
+                    .on_press(Message::SelectMixerNode(Some(node.id.clone()))),
+            );
+        }
+
+        let border_color = if is_selected {
+            Color::from_rgb(0.45, 0.74, 0.98)
+        } else {
+            Color::from_rgba(1.0, 1.0, 1.0, 0.09)
+        };
+        let border_w = if is_selected { 1.6 } else { 1.0 };
+
+        container(strip)
+            .width(Length::Fixed(186.0))
+            .height(Length::Shrink)
+            .padding(9)
+            .style(move |_| container::Style {
+                background: Some(Background::Color(Color::from_rgb(0.105, 0.118, 0.150))),
+                border: Border {
+                    color: border_color,
+                    width: border_w,
+                    radius: 6.0.into(),
+                },
+                ..Default::default()
+            })
+            .into()
+    }
+
+    fn view_node_inspector_card<'a>(&'a self, node: &'a MixerNodeInfo) -> Element<'a, Message> {
+        let accent = match node.track_idx {
+            Some(idx) => track_color(idx),
+            None => Color::from_rgb(0.94, 0.68, 0.28),
+        };
+        let mut header = row![
+            text("NODE / FX")
+                .size(10.5)
+                .color(Color::from_rgb(0.58, 0.66, 0.78)),
+            Space::with_width(6),
+            text(&node.id).size(12).color(accent),
+            horizontal_space(),
+        ]
+        .align_y(Alignment::Center);
+
+        if let Some(idx) = node.track_idx {
+            let is_muted = self.muted_tracks.contains(&node.id);
+            let is_solo = self.solo_tracks.contains(&node.id);
+            header = header
+                .push(
+                    button(text("M").size(9.5))
+                        .padding([2, 5])
+                        .style(move |t, s| {
+                            if is_muted {
+                                accent_button_style(Color::from_rgb(0.80, 0.26, 0.30), t, s)
+                            } else {
+                                studio_button_style(t, s)
+                            }
+                        })
+                        .on_press(Message::ToggleTrackMute(idx)),
+                )
+                .push(Space::with_width(2))
+                .push(
+                    button(text("S").size(9.5))
+                        .padding([2, 5])
+                        .style(move |t, s| {
+                            if is_solo {
+                                accent_button_style(Color::from_rgb(0.84, 0.62, 0.14), t, s)
+                            } else {
+                                studio_button_style(t, s)
+                            }
+                        })
+                        .on_press(Message::ToggleTrackSolo(idx)),
+                )
+                .push(Space::with_width(4));
+        }
+
+        header = header.push(
+            button(text("×").size(11))
+                .padding([1, 6])
+                .style(studio_button_style)
+                .on_press(Message::SelectMixerNode(None)),
+        );
+
+        let mut card = Column::new().spacing(7).push(header).push(
+            text(format!(
+                "{}  ·  {} params",
+                node.processor_label,
+                node.params.len()
+            ))
+            .size(10.5)
+            .color(Color::from_rgb(0.60, 0.66, 0.76)),
+        );
+
+        for param in &node.params {
+            card = card.push(self.view_param_slider_row(node, param, false));
+        }
+
+        if !node.editable_in_entry {
+            card = card.push(
+                text("Node defined outside entry file (read-only)")
+                    .size(10)
+                    .color(Color::from_rgb(0.76, 0.62, 0.42)),
+            );
+        }
+
+        container(card)
+            .padding(9)
+            .width(Length::Fill)
+            .style(|_| container::Style {
+                background: Some(Background::Color(Color::from_rgb(0.112, 0.128, 0.164))),
+                border: Border {
+                    color: Color::from_rgba(0.92, 0.68, 0.26, 0.38),
+                    width: 1.0,
+                    radius: 5.0.into(),
+                },
+                ..Default::default()
+            })
+            .into()
+    }
+
+    fn view_param_slider_row<'a>(
+        &'a self,
+        node: &'a MixerNodeInfo,
+        param: &'a NodeParamInfo,
+        compact: bool,
+    ) -> Element<'a, Message> {
+        let current = self
+            .param_drafts
+            .get(&(node.id.clone(), param.name.clone()))
+            .copied()
+            .unwrap_or(param.value);
+        let pos = param.to_slider_pos(current);
+        let val_text = param.format_value(current);
+
+        let mut top = row![text(&param.name)
+            .size(if compact { 10.5 } else { 11.0 })
+            .color(if param.is_authored {
+                Color::from_rgb(0.90, 0.94, 0.99)
+            } else {
+                Color::from_rgb(0.68, 0.74, 0.82)
+            })]
+        .spacing(4)
+        .align_y(Alignment::Center);
+
+        if param.is_automated {
+            top = top.push(
+                container(text("AUTO").size(8.5).color(Color::BLACK))
+                    .padding([1, 4])
+                    .style(|_| container::Style {
+                        background: Some(Background::Color(Color::from_rgb(0.92, 0.72, 0.24))),
+                        border: Border {
+                            radius: 3.0.into(),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    }),
+            );
+        }
+
+        top = top.push(horizontal_space()).push(
+            text(val_text)
+                .size(if compact { 10.5 } else { 11.0 })
+                .color(Color::from_rgb(0.55, 0.86, 0.78)),
+        );
+
+        if !compact && param.is_authored && node.editable_in_entry {
+            let nid = node.id.clone();
+            let pname = param.name.clone();
+            top = top.push(
+                button(text("↺").size(10))
+                    .padding([1, 5])
+                    .style(studio_button_style)
+                    .on_press_maybe((!self.editing).then_some(Message::ResetNodeParam {
+                        node_id: nid,
+                        param_name: pname,
+                    })),
+            );
+        }
+
+        let nid_change = node.id.clone();
+        let pname_change = param.name.clone();
+        let nid_commit = node.id.clone();
+        let pname_commit = param.name.clone();
+        let param_clone = param.clone();
+
+        let ctrl: Element<'a, Message> = if node.editable_in_entry {
+            slider(0.0_f32..=1.0_f32, pos, move |new_pos| {
+                Message::NodeParamDraft {
+                    node_id: nid_change.clone(),
+                    param_name: pname_change.clone(),
+                    value: param_clone.value_at_slider_pos(new_pos),
+                }
+            })
+            .step(0.005_f32)
+            .on_release(Message::CommitNodeParam {
+                node_id: nid_commit,
+                param_name: pname_commit,
+            })
+            .width(Length::Fill)
+            .into()
+        } else {
+            slider(0.0_f32..=1.0_f32, pos, |_| Message::Tick)
+                .width(Length::Fill)
+                .into()
+        };
+
+        column![top, ctrl].spacing(2).into()
     }
 }
 
