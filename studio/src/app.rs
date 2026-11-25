@@ -10,7 +10,9 @@ use iced::widget::{
     button, canvas, column, container, horizontal_space, row, scrollable, slider, text, toggler,
     Column, Row, Space,
 };
-use iced::{Alignment, Background, Border, Color, Element, Length, Subscription, Task, Theme};
+use iced::{
+    Alignment, Background, Border, Color, Element, Font, Length, Subscription, Task, Theme,
+};
 use maac::dsp::{BackgroundSession, Playback, PlaybackConfig, RenderSpan, SessionPolicy};
 use maac::export::{
     render_wav_to_path_artifact_range_with_limits, render_wav_to_path_artifact_with_limits,
@@ -20,6 +22,10 @@ use maac::PlanArtifact;
 
 use crate::analysis::{run_analysis, AnalysisSummary};
 use crate::audio::AudioEngine;
+use crate::code_view::{
+    changed_new_lines, compute_line_diff, locate_object_lines, DiffLineKind, DiffSummary,
+    SourceHighlight,
+};
 use crate::editor::{
     add_note_at_score_pos, apply_batch_note_edit, apply_note_edit, format_q,
     inspect_note_in_bundle, materialize_note_placement, midi_to_pitch_symbol, BatchNoteEdit,
@@ -36,6 +42,19 @@ const WATCH_DEBOUNCE: Duration = Duration::from_millis(120);
 const PLAYBACK_EDIT_DEBOUNCE: Duration = Duration::from_millis(80);
 const SELF_SAVE_SUPPRESS: Duration = Duration::from_millis(700);
 const CHECKPOINT_SECONDS: u64 = 4;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CodeTab {
+    LiveCode,
+    UnsavedDiff,
+    ExternalDiff,
+}
+
+#[derive(Clone, Debug)]
+struct ExternalChange {
+    prev_source: String,
+    diff: DiffSummary,
+}
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -125,6 +144,12 @@ pub enum Message {
         node_id: String,
         param_name: String,
     },
+    ToggleCodePanel,
+    SelectCodeTab(CodeTab),
+    ToggleCodeFocused,
+    DiscardUnsavedEdits,
+    RevertExternalEdit,
+    DismissExternalChange,
     GainChanged(f32),
     ZoomDelta {
         delta: f32,
@@ -179,6 +204,15 @@ pub struct StudioApp {
     show_mixer: bool,
     selected_node_id: Option<String>,
     param_drafts: HashMap<(String, String), f32>,
+
+    // Live .maac Code & Diff Collaboration Panel
+    show_code: bool,
+    code_tab: CodeTab,
+    code_focused_only: bool,
+    cached_highlight: Option<SourceHighlight>,
+    cached_unsaved_diff: DiffSummary,
+    cached_changed_lines: HashSet<usize>,
+    external_change: Option<ExternalChange>,
 
     // Transport & view state
     playhead_frame: u64,
@@ -238,6 +272,13 @@ impl StudioApp {
             show_mixer: false,
             selected_node_id: None,
             param_drafts: HashMap::new(),
+            show_code: false,
+            code_tab: CodeTab::LiveCode,
+            code_focused_only: true,
+            cached_highlight: None,
+            cached_unsaved_diff: DiffSummary::default(),
+            cached_changed_lines: HashSet::new(),
+            external_change: None,
             playhead_frame: 0,
             checkpoint_frame: 0,
             checkpoint_count: 0,
@@ -344,6 +385,9 @@ impl StudioApp {
                 }),
                 Key::Character(ref c) if c.eq_ignore_ascii_case("l") => Some(Message::ToggleLoop),
                 Key::Character(ref c) if c.eq_ignore_ascii_case("m") => Some(Message::ToggleMixer),
+                Key::Character(ref c) if c.eq_ignore_ascii_case("c") => {
+                    Some(Message::ToggleCodePanel)
+                }
                 Key::Character(ref c) if c.eq_ignore_ascii_case("s") => Some(Message::ToggleSnap),
                 Key::Character(ref c) if c.eq_ignore_ascii_case("f") => Some(Message::ToggleFollow),
                 Key::Character(ref c) if c.eq_ignore_ascii_case("r") => Some(Message::RecompileNow),
@@ -584,6 +628,7 @@ impl StudioApp {
                 self.selected_note_info = None;
                 self.velocity_draft = None;
                 self.edit_error = None;
+                self.refresh_code_cache();
                 Task::none()
             }
 
@@ -983,13 +1028,16 @@ impl StudioApp {
                 let Some(src) = proj.bundle.sources.get(&proj.bundle.entry) else {
                     return Task::none();
                 };
-                match std::fs::write(&proj.entry_path, src) {
+                let title = proj.title.clone();
+                let saved = src.clone();
+                match std::fs::write(&proj.entry_path, &saved) {
                     Ok(()) => {
-                        self.saved_source = Some(src.clone());
+                        self.saved_source = Some(saved);
                         self.last_self_save = Some(Instant::now());
                         self.pending_watch_at = None;
                         self.edit_error = None;
-                        self.last_reload_note = Some(format!("Saved {}", proj.title));
+                        self.last_reload_note = Some(format!("Saved {title}"));
+                        self.refresh_code_cache();
                     }
                     Err(err) => {
                         self.edit_error = Some(format!("Save failed: {err}"));
@@ -1068,12 +1116,67 @@ impl StudioApp {
                             .map(|n| n.id.clone());
                     }
                 }
+                self.refresh_code_cache();
                 Task::none()
             }
 
             Message::SelectMixerNode(id) => {
                 self.selected_node_id = id;
                 self.edit_error = None;
+                self.refresh_code_cache();
+                Task::none()
+            }
+
+            Message::ToggleCodePanel => {
+                self.show_code = !self.show_code;
+                if self.show_code {
+                    self.refresh_code_cache();
+                }
+                Task::none()
+            }
+
+            Message::SelectCodeTab(tab) => {
+                self.code_tab = tab;
+                self.show_code = true;
+                self.refresh_code_cache();
+                Task::none()
+            }
+
+            Message::ToggleCodeFocused => {
+                self.code_focused_only = !self.code_focused_only;
+                Task::none()
+            }
+
+            Message::DiscardUnsavedEdits => {
+                if self.editing {
+                    return Task::none();
+                }
+                let Some(saved) = self.saved_source.clone() else {
+                    return Task::none();
+                };
+                if !self.is_dirty() {
+                    return Task::none();
+                }
+                // Treat discard as a restorable state (pushes discarded state onto redo_stack).
+                self.spawn_history_restore(true, saved)
+            }
+
+            Message::RevertExternalEdit => {
+                if self.editing {
+                    return Task::none();
+                }
+                let Some(ext) = self.external_change.take() else {
+                    return Task::none();
+                };
+                self.code_tab = CodeTab::UnsavedDiff;
+                self.spawn_history_restore(true, ext.prev_source)
+            }
+
+            Message::DismissExternalChange => {
+                self.external_change = None;
+                if self.code_tab == CodeTab::ExternalDiff {
+                    self.code_tab = CodeTab::LiveCode;
+                }
                 Task::none()
             }
 
@@ -1561,6 +1664,46 @@ impl StudioApp {
             self.selected_note_info = None;
             self.velocity_draft = None;
         }
+        self.refresh_code_cache();
+    }
+
+    fn refresh_code_cache(&mut self) {
+        let Some(proj) = &self.project else {
+            self.cached_highlight = None;
+            self.cached_unsaved_diff = DiffSummary::default();
+            self.cached_changed_lines.clear();
+            return;
+        };
+        let Some(current) = proj.bundle.sources.get(&proj.bundle.entry) else {
+            self.cached_highlight = None;
+            self.cached_unsaved_diff = DiffSummary::default();
+            self.cached_changed_lines.clear();
+            return;
+        };
+
+        // Highlight priority: selected note (if in Roll mode or note selected) -> selected mixer/FX node.
+        let target_path: Option<Vec<String>> = if !self.show_mixer {
+            self.selected_note_info
+                .as_ref()
+                .map(|i| i.path.clone())
+                .or_else(|| self.selected_node_id.clone().map(|id| vec![id]))
+        } else {
+            self.selected_node_id
+                .clone()
+                .map(|id| vec![id])
+                .or_else(|| self.selected_note_info.as_ref().map(|i| i.path.clone()))
+        };
+        self.cached_highlight = target_path
+            .as_deref()
+            .and_then(|path| locate_object_lines(current, path));
+
+        if let Some(saved) = self.saved_source.as_deref() {
+            self.cached_unsaved_diff = compute_line_diff(saved, current, 2);
+            self.cached_changed_lines = changed_new_lines(saved, current);
+        } else {
+            self.cached_unsaved_diff = DiffSummary::default();
+            self.cached_changed_lines.clear();
+        }
     }
 
     fn spawn_history_restore(&mut self, is_undo: bool, target_source: String) -> Task<Message> {
@@ -1675,7 +1818,19 @@ impl StudioApp {
 
         if is_reload && same_format && self.session.is_some() {
             self.param_drafts.clear();
-            let source_changed = self.saved_source != disk_source;
+            let prev_saved = self.saved_source.clone();
+            let source_changed = prev_saved != disk_source;
+            if let (Some(before), Some(after)) = (prev_saved, disk_source.as_deref()) {
+                if before != after {
+                    let diff = compute_line_diff(&before, after, 2);
+                    if !diff.is_empty() {
+                        self.external_change = Some(ExternalChange {
+                            prev_source: before,
+                            diff,
+                        });
+                    }
+                }
+            }
             self.saved_source = disk_source;
             if source_changed {
                 self.undo_stack.clear();
@@ -1707,6 +1862,7 @@ impl StudioApp {
         self.muted_tracks.clear();
         self.solo_tracks.clear();
         self.saved_source = disk_source;
+        self.external_change = None;
         self.undo_stack.clear();
         self.redo_stack.clear();
         self.selected_notes.clear();
@@ -1746,6 +1902,7 @@ impl StudioApp {
         self.active_plan = Some(data.plan.clone());
         self.last_reload_note = Some(format!("Loaded in {compile_ms} ms"));
         self.project = Some(data);
+        self.refresh_code_cache();
 
         self.ensure_playback_started();
         if was_playing {
@@ -2150,6 +2307,16 @@ impl StudioApp {
         let snap_on = self.snap_to_bar;
         let follow_on = self.auto_follow;
         let mixer_on = self.show_mixer;
+        let code_on = self.show_code;
+        let has_ext = self.external_change.is_some();
+        let diff_changes = self.cached_unsaved_diff.added + self.cached_unsaved_diff.removed;
+        let code_label = if has_ext && !code_on {
+            "Code · AI!".to_owned()
+        } else if diff_changes > 0 {
+            format!("Code (±{diff_changes})")
+        } else {
+            "Code (C)".to_owned()
+        };
         let mut zoom_controls = row![
             button(text(if mixer_on { "Piano Roll" } else { "Mixer (M)" }).size(11.5))
                 .padding([3, 8])
@@ -2161,6 +2328,18 @@ impl StudioApp {
                     }
                 })
                 .on_press(Message::ToggleMixer),
+            button(text(code_label).size(11.5))
+                .padding([3, 8])
+                .style(move |theme, status| {
+                    if has_ext && !code_on {
+                        accent_button_style(Color::from_rgb(0.14, 0.56, 0.58), theme, status)
+                    } else if code_on {
+                        accent_button_style(Color::from_rgb(0.24, 0.44, 0.74), theme, status)
+                    } else {
+                        studio_button_style(theme, status)
+                    }
+                })
+                .on_press(Message::ToggleCodePanel),
             button(text(if snap_on { "Snap: Bar" } else { "Snap: Free" }).size(11.5))
                 .padding([3, 7])
                 .style(move |theme, status| {
@@ -2274,19 +2453,41 @@ impl StudioApp {
             .map(Message::Timeline)
         };
 
-        let mut left_col = column![sub_bar, main_pane]
+        let mut left_col = column![sub_bar]
             .width(Length::FillPortion(3))
             .height(Length::Fill);
 
-        if !self.show_mixer && self.zoom > 1.01 {
-            let max_scroll = (1.0 - 1.0 / self.zoom).max(0.001);
-            let pan_bar = container(
-                slider(0.0_f32..=max_scroll, self.scroll, Message::ScrollChanged)
-                    .step(0.002_f32)
-                    .width(Length::Fill),
-            )
-            .padding([2, 12]);
-            left_col = left_col.push(pan_bar);
+        if self.show_code {
+            let top_wrap = container(main_pane)
+                .width(Length::Fill)
+                .height(Length::FillPortion(5));
+            let code_wrap = container(self.view_code_panel(proj))
+                .width(Length::Fill)
+                .height(Length::FillPortion(3));
+            left_col = left_col.push(top_wrap);
+            if !self.show_mixer && self.zoom > 1.01 {
+                let max_scroll = (1.0 - 1.0 / self.zoom).max(0.001);
+                let pan_bar = container(
+                    slider(0.0_f32..=max_scroll, self.scroll, Message::ScrollChanged)
+                        .step(0.002_f32)
+                        .width(Length::Fill),
+                )
+                .padding([2, 12]);
+                left_col = left_col.push(pan_bar);
+            }
+            left_col = left_col.push(code_wrap);
+        } else {
+            left_col = left_col.push(main_pane);
+            if !self.show_mixer && self.zoom > 1.01 {
+                let max_scroll = (1.0 - 1.0 / self.zoom).max(0.001);
+                let pan_bar = container(
+                    slider(0.0_f32..=max_scroll, self.scroll, Message::ScrollChanged)
+                        .step(0.002_f32)
+                        .width(Length::Fill),
+                )
+                .padding([2, 12]);
+                left_col = left_col.push(pan_bar);
+            }
         }
 
         // Bottom status strip
@@ -3459,6 +3660,361 @@ impl StudioApp {
         };
 
         column![top, ctrl].spacing(2).into()
+    }
+
+    fn view_code_panel<'a>(&'a self, proj: &'a ProjectData) -> Element<'a, Message> {
+        let dirty = self.is_dirty();
+        let tab = self.code_tab;
+        let diff_badge = if !self.cached_unsaved_diff.is_empty() {
+            format!(
+                "Unsaved Diff (+{}/-{})",
+                self.cached_unsaved_diff.added, self.cached_unsaved_diff.removed
+            )
+        } else {
+            "Unsaved Diff".into()
+        };
+        let ext_badge = match &self.external_change {
+            Some(ext) => format!("AI / External (+{}/-{})", ext.diff.added, ext.diff.removed),
+            None => "AI / External".into(),
+        };
+        let has_ext = self.external_change.is_some();
+
+        let tab_code = button(text("Live Code").size(11.5))
+            .padding([3, 9])
+            .style(move |t, s| {
+                if tab == CodeTab::LiveCode {
+                    accent_button_style(Color::from_rgb(0.24, 0.44, 0.74), t, s)
+                } else {
+                    studio_button_style(t, s)
+                }
+            })
+            .on_press(Message::SelectCodeTab(CodeTab::LiveCode));
+
+        let tab_diff = button(text(diff_badge).size(11.5))
+            .padding([3, 9])
+            .style(move |t, s| {
+                if tab == CodeTab::UnsavedDiff {
+                    accent_button_style(Color::from_rgb(0.76, 0.50, 0.14), t, s)
+                } else if dirty {
+                    accent_button_style(Color::from_rgb(0.45, 0.34, 0.14), t, s)
+                } else {
+                    studio_button_style(t, s)
+                }
+            })
+            .on_press(Message::SelectCodeTab(CodeTab::UnsavedDiff));
+
+        let tab_ext = button(text(ext_badge).size(11.5))
+            .padding([3, 9])
+            .style(move |t, s| {
+                if tab == CodeTab::ExternalDiff {
+                    accent_button_style(Color::from_rgb(0.14, 0.56, 0.58), t, s)
+                } else if has_ext {
+                    accent_button_style(Color::from_rgb(0.14, 0.38, 0.42), t, s)
+                } else {
+                    studio_button_style(t, s)
+                }
+            })
+            .on_press(Message::SelectCodeTab(CodeTab::ExternalDiff));
+
+        let mut header = row![tab_code, tab_diff, tab_ext]
+            .spacing(6)
+            .align_y(Alignment::Center);
+
+        if tab == CodeTab::LiveCode {
+            if let Some(hl) = &self.cached_highlight {
+                let loc = if hl.start_line == hl.end_line {
+                    format!("Line {} · {}", hl.start_line, hl.label)
+                } else {
+                    format!("Lines {}–{} · {}", hl.start_line, hl.end_line, hl.label)
+                };
+                header = header
+                    .push(Space::with_width(8))
+                    .push(text(loc).size(11).color(Color::from_rgb(0.54, 0.80, 0.98)));
+                let focused = self.code_focused_only;
+                header = header.push(Space::with_width(6)).push(
+                    button(text(if focused { "Focused" } else { "Full File" }).size(10.5))
+                        .padding([2, 7])
+                        .style(studio_button_style)
+                        .on_press(Message::ToggleCodeFocused),
+                );
+            }
+        }
+
+        header = header.push(horizontal_space());
+
+        if tab == CodeTab::ExternalDiff {
+            if self.external_change.is_some() {
+                header = header
+                    .push(
+                        button(text("Revert AI Edit").size(11))
+                            .padding([3, 8])
+                            .style(|t, s| {
+                                accent_button_style(Color::from_rgb(0.72, 0.24, 0.28), t, s)
+                            })
+                            .on_press_maybe((!self.editing).then_some(Message::RevertExternalEdit)),
+                    )
+                    .push(
+                        button(text("Keep").size(11))
+                            .padding([3, 8])
+                            .style(studio_button_style)
+                            .on_press(Message::DismissExternalChange),
+                    );
+            }
+        } else if dirty {
+            header = header
+                .push(
+                    button(text("Discard").size(11))
+                        .padding([3, 8])
+                        .style(studio_button_style)
+                        .on_press_maybe((!self.editing).then_some(Message::DiscardUnsavedEdits)),
+                )
+                .push(
+                    button(text("Save* (⌘S)").size(11))
+                        .padding([3, 8])
+                        .style(|t, s| accent_button_style(Color::from_rgb(0.84, 0.54, 0.16), t, s))
+                        .on_press(Message::SaveToDisk),
+                );
+        }
+
+        header = header.push(
+            button(text("×").size(11))
+                .padding([2, 7])
+                .style(studio_button_style)
+                .on_press(Message::ToggleCodePanel),
+        );
+
+        let header_bar = container(header.padding([5, 10]))
+            .width(Length::Fill)
+            .style(|_| container::Style {
+                background: Some(Background::Color(Color::from_rgb(0.105, 0.118, 0.150))),
+                border: Border {
+                    color: Color::from_rgba(1.0, 1.0, 1.0, 0.10),
+                    width: 1.0,
+                    radius: 0.0.into(),
+                },
+                ..Default::default()
+            });
+
+        let body: Element<'a, Message> = match tab {
+            CodeTab::LiveCode => {
+                let src = proj
+                    .bundle
+                    .sources
+                    .get(&proj.bundle.entry)
+                    .map(String::as_str)
+                    .unwrap_or("");
+                let all_lines: Vec<&str> = src.lines().collect();
+                let (start_idx, end_idx) = match (&self.cached_highlight, self.code_focused_only) {
+                    (Some(hl), true) => {
+                        let s = hl.start_line.saturating_sub(13).max(1);
+                        let e = (hl.end_line + 14).min(all_lines.len().max(1));
+                        (s - 1, e)
+                    }
+                    _ => (0, all_lines.len()),
+                };
+
+                let mut lines_col = Column::new().spacing(1).padding([6, 10]);
+                if start_idx > 0 {
+                    lines_col = lines_col.push(
+                        text(format!(
+                            "  … {} earlier lines hidden (click Focused to view Full File)",
+                            start_idx
+                        ))
+                        .size(10.5)
+                        .font(Font::MONOSPACE)
+                        .color(Color::from_rgb(0.46, 0.52, 0.62)),
+                    );
+                }
+
+                for (idx, line) in all_lines[start_idx..end_idx].iter().enumerate() {
+                    let line_no = start_idx + idx + 1;
+                    let is_hl = self
+                        .cached_highlight
+                        .as_ref()
+                        .is_some_and(|hl| line_no >= hl.start_line && line_no <= hl.end_line);
+                    let is_changed = self.cached_changed_lines.contains(&line_no);
+                    let marker = if is_hl {
+                        "▶"
+                    } else if is_changed {
+                        "+"
+                    } else {
+                        " "
+                    };
+                    let marker_color = if is_hl {
+                        Color::from_rgb(0.45, 0.84, 1.0)
+                    } else if is_changed {
+                        Color::from_rgb(0.42, 0.88, 0.58)
+                    } else {
+                        Color::from_rgb(0.40, 0.46, 0.56)
+                    };
+                    let text_color = if line.trim_start().starts_with("//") {
+                        Color::from_rgb(0.48, 0.56, 0.66)
+                    } else if is_hl {
+                        Color::WHITE
+                    } else {
+                        Color::from_rgb(0.84, 0.88, 0.94)
+                    };
+
+                    let line_row = row![
+                        text(format!("{line_no:>4} {marker} "))
+                            .size(11.5)
+                            .font(Font::MONOSPACE)
+                            .color(marker_color),
+                        text(*line)
+                            .size(11.5)
+                            .font(Font::MONOSPACE)
+                            .color(text_color),
+                    ];
+
+                    let styled: Element<'a, Message> = if is_hl {
+                        container(line_row)
+                            .width(Length::Fill)
+                            .style(|_| container::Style {
+                                background: Some(Background::Color(Color::from_rgba(
+                                    0.22, 0.50, 0.86, 0.28,
+                                ))),
+                                ..Default::default()
+                            })
+                            .into()
+                    } else if is_changed {
+                        container(line_row)
+                            .width(Length::Fill)
+                            .style(|_| container::Style {
+                                background: Some(Background::Color(Color::from_rgba(
+                                    0.14, 0.48, 0.26, 0.20,
+                                ))),
+                                ..Default::default()
+                            })
+                            .into()
+                    } else {
+                        line_row.into()
+                    };
+                    lines_col = lines_col.push(styled);
+                }
+
+                if end_idx < all_lines.len() {
+                    lines_col = lines_col.push(
+                        text(format!(
+                            "  … {} following lines hidden",
+                            all_lines.len() - end_idx
+                        ))
+                        .size(10.5)
+                        .font(Font::MONOSPACE)
+                        .color(Color::from_rgb(0.46, 0.52, 0.62)),
+                    );
+                }
+
+                scrollable(lines_col)
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .into()
+            }
+            CodeTab::UnsavedDiff => self.view_diff_summary(
+                &self.cached_unsaved_diff,
+                "Working buffer matches disk — edit notes or mixer sliders to preview exact .maac changes here.",
+            ),
+            CodeTab::ExternalDiff => match &self.external_change {
+                Some(ext) => self.view_diff_summary(
+                    &ext.diff,
+                    "External reload matched previous content.",
+                ),
+                None => container(
+                    text("No external / AI file edits detected yet. With Watch enabled, edits saved by an AI agent or external editor appear here.")
+                        .size(11.5)
+                        .color(Color::from_rgb(0.54, 0.60, 0.70)),
+                )
+                .padding(14)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into(),
+            },
+        };
+
+        container(column![header_bar, body].height(Length::Fill))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .style(|_| container::Style {
+                background: Some(Background::Color(Color::from_rgb(0.068, 0.076, 0.095))),
+                border: Border {
+                    color: Color::from_rgba(1.0, 1.0, 1.0, 0.12),
+                    width: 1.0,
+                    radius: 0.0.into(),
+                },
+                ..Default::default()
+            })
+            .into()
+    }
+
+    fn view_diff_summary<'a>(
+        &'a self,
+        diff: &'a DiffSummary,
+        empty_msg: &'static str,
+    ) -> Element<'a, Message> {
+        if diff.is_empty() {
+            return container(
+                text(empty_msg)
+                    .size(11.5)
+                    .color(Color::from_rgb(0.54, 0.60, 0.70)),
+            )
+            .padding(14)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into();
+        }
+
+        let mut col = Column::new().spacing(2).padding([6, 10]);
+        for hunk in &diff.hunks {
+            col = col.push(
+                text(&hunk.header)
+                    .size(11)
+                    .font(Font::MONOSPACE)
+                    .color(Color::from_rgb(0.52, 0.76, 0.96)),
+            );
+            for line in &hunk.lines {
+                let old_s = line
+                    .old_line
+                    .map_or_else(|| "    ".into(), |n| format!("{n:>4}"));
+                let new_s = line
+                    .new_line
+                    .map_or_else(|| "    ".into(), |n| format!("{n:>4}"));
+                let (prefix, fg, bg) = match line.kind {
+                    DiffLineKind::Context => {
+                        (" ", Color::from_rgb(0.72, 0.78, 0.86), Color::TRANSPARENT)
+                    }
+                    DiffLineKind::Added => (
+                        "+",
+                        Color::from_rgb(0.62, 0.96, 0.72),
+                        Color::from_rgba(0.14, 0.48, 0.24, 0.26),
+                    ),
+                    DiffLineKind::Removed => (
+                        "-",
+                        Color::from_rgb(0.98, 0.62, 0.64),
+                        Color::from_rgba(0.58, 0.16, 0.18, 0.28),
+                    ),
+                };
+                let r = row![
+                    text(format!("{old_s} {new_s} {prefix} "))
+                        .size(11.5)
+                        .font(Font::MONOSPACE)
+                        .color(fg),
+                    text(&line.text).size(11.5).font(Font::MONOSPACE).color(fg),
+                ];
+                col = col.push(
+                    container(r)
+                        .width(Length::Fill)
+                        .style(move |_| container::Style {
+                            background: Some(Background::Color(bg)),
+                            ..Default::default()
+                        }),
+                );
+            }
+            col = col.push(Space::with_height(6));
+        }
+
+        scrollable(col)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
     }
 }
 
