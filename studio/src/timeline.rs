@@ -1,5 +1,5 @@
-//! Interactive iced Canvas for the region ruler, piano roll, drum strip,
-//! checkpoint frontier, playhead, and draggable loop range.
+//! Interactive iced Canvas for the bar/region ruler, piano roll, drum strip,
+//! checkpoint frontier, playhead, and draggable bar-snapped loop range.
 
 use std::time::Instant;
 
@@ -10,7 +10,7 @@ use maac::dsp::RenderSpan;
 
 use crate::project::{format_time, ProjectData};
 
-pub const RULER_HEIGHT: f32 = 36.0;
+pub const RULER_HEIGHT: f32 = 38.0;
 const DRUM_STRIP_HEIGHT: f32 = 54.0;
 const CHECKPOINT_BAR_HEIGHT: f32 = 5.0;
 
@@ -45,15 +45,18 @@ pub struct InteractionState {
     dragging_loop: Option<(u64, u64)>,
     drag_moved: bool,
     shift_held: bool,
+    alt_held: bool,
     last_ruler_click: Option<(Instant, f32)>,
 }
 
 pub struct TimelineView<'a> {
     pub project: &'a ProjectData,
     pub visible_tracks: &'a [bool],
+    pub audible_tracks: Vec<bool>,
     pub playhead_frame: u64,
     pub checkpoint_frame: u64,
     pub loop_range: Option<RenderSpan>,
+    pub snap_to_bar: bool,
     pub approximate: bool,
     pub stale: bool,
     pub zoom: f32,
@@ -82,6 +85,14 @@ impl<'a> TimelineView<'a> {
         let (v0, v1) = self.view_window();
         (((frame as f64 - v0) / (v1 - v0)) as f32) * width
     }
+
+    fn snap_if_enabled(&self, frame: u64, alt_held: bool) -> u64 {
+        if self.snap_to_bar && !alt_held {
+            self.project.snap_frame_to_bar(frame)
+        } else {
+            frame
+        }
+    }
 }
 
 impl canvas::Program<TimelineAction> for TimelineView<'_> {
@@ -97,6 +108,7 @@ impl canvas::Program<TimelineAction> for TimelineView<'_> {
         match event {
             canvas::Event::Keyboard(iced::keyboard::Event::ModifiersChanged(mods)) => {
                 state.shift_held = mods.shift();
+                state.alt_held = mods.alt();
                 return (canvas::event::Status::Ignored, None);
             }
             canvas::Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
@@ -131,7 +143,7 @@ impl canvas::Program<TimelineAction> for TimelineView<'_> {
             }
             canvas::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
                 if let Some(pos) = cursor.position_in(bounds) {
-                    let frame = self.x_to_frame(pos.x, bounds.width);
+                    let raw_frame = self.x_to_frame(pos.x, bounds.width);
                     let in_ruler = pos.y <= RULER_HEIGHT;
                     // Double-click on a region in the ruler loops that region.
                     if in_ruler {
@@ -141,11 +153,10 @@ impl canvas::Program<TimelineAction> for TimelineView<'_> {
                                 && (pos.x - prev_x).abs() < 12.0
                             {
                                 state.last_ruler_click = None;
-                                if let Some(region) = self
-                                    .project
-                                    .regions
-                                    .iter()
-                                    .find(|r| frame >= r.start_frame && frame < r.end_frame)
+                                if let Some(region) =
+                                    self.project.regions.iter().find(|r| {
+                                        raw_frame >= r.start_frame && raw_frame < r.end_frame
+                                    })
                                 {
                                     return (
                                         canvas::event::Status::Captured,
@@ -159,6 +170,7 @@ impl canvas::Program<TimelineAction> for TimelineView<'_> {
                         }
                         state.last_ruler_click = Some((now, pos.x));
                     }
+                    let frame = self.snap_if_enabled(raw_frame, state.alt_held);
                     if in_ruler || state.shift_held {
                         state.dragging_loop = Some((frame, frame));
                         state.drag_moved = false;
@@ -173,8 +185,9 @@ impl canvas::Program<TimelineAction> for TimelineView<'_> {
             canvas::Event::Mouse(mouse::Event::CursorMoved { .. }) => {
                 if let Some((anchor, _)) = state.dragging_loop {
                     if let Some(pos) = cursor.position_in(bounds) {
-                        let current = self.x_to_frame(pos.x, bounds.width);
-                        if current.abs_diff(anchor) > self.project.sample_rate_hz as u64 / 20 {
+                        let raw = self.x_to_frame(pos.x, bounds.width);
+                        let current = self.snap_if_enabled(raw, state.alt_held);
+                        if raw.abs_diff(anchor) > self.project.sample_rate_hz as u64 / 20 {
                             state.drag_moved = true;
                         }
                         state.dragging_loop = Some((anchor, current));
@@ -186,7 +199,10 @@ impl canvas::Program<TimelineAction> for TimelineView<'_> {
                 if let Some((a, b)) = state.dragging_loop.take() {
                     let moved = state.drag_moved;
                     state.drag_moved = false;
-                    let (start, end) = if a <= b { (a, b) } else { (b, a) };
+                    let (start, mut end) = if a <= b { (a, b) } else { (b, a) };
+                    if moved && self.snap_to_bar && !state.alt_held && end == start {
+                        end = self.project.next_bar_after(start);
+                    }
                     if moved && end > start + 256 {
                         return (
                             canvas::event::Status::Captured,
@@ -195,7 +211,7 @@ impl canvas::Program<TimelineAction> for TimelineView<'_> {
                     } else {
                         return (
                             canvas::event::Status::Captured,
-                            Some(TimelineAction::Seek(a)),
+                            Some(TimelineAction::Seek(start)),
                         );
                     }
                 }
@@ -253,11 +269,10 @@ impl canvas::Program<TimelineAction> for TimelineView<'_> {
                 Color::from_rgba(0.18, 0.24, 0.34, 0.30)
             };
             frame.fill_rectangle(Point::new(x0, 0.0), Size::new(x1 - x0, RULER_HEIGHT), tint);
-            // Subtle vertical region divider down through the piano roll.
             frame.stroke(
                 &Path::line(Point::new(x0, 0.0), Point::new(x0, roll_bottom)),
                 Stroke::default()
-                    .with_color(Color::from_rgba(1.0, 1.0, 1.0, 0.09))
+                    .with_color(Color::from_rgba(1.0, 1.0, 1.0, 0.11))
                     .with_width(1.0),
             );
             if x1 - x0 > 34.0 {
@@ -265,48 +280,65 @@ impl canvas::Program<TimelineAction> for TimelineView<'_> {
                 frame.fill_text(Text {
                     content: caption.to_owned(),
                     position: Point::new(x0 + 6.0, 4.0),
-                    color: Color::from_rgb(0.86, 0.90, 0.96),
+                    color: Color::from_rgb(0.88, 0.92, 0.98),
                     size: iced::Pixels(11.5),
                     ..Text::default()
                 });
             }
         }
 
-        // Time ticks along the bottom half of the ruler.
-        let rate = self.project.sample_rate_hz.max(1) as f64;
-        let vis_secs = (v1 - v0) / rate;
-        let tick_step_s = choose_tick_step(vis_secs);
-        let first_tick = ((v0 / rate) / tick_step_s).ceil() as i64;
-        let last_tick = ((v1 / rate) / tick_step_s).floor() as i64;
-        for t in first_tick..=last_tick {
-            let sec = (t as f64) * tick_step_s;
-            let f = (sec * rate).round() as u64;
-            let x = self.frame_to_x(f, w);
-            if x < 0.0 || x > w {
-                continue;
+        // Bar grid lines & bar labels along the bottom half of the ruler.
+        if !self.project.bars.is_empty() {
+            let first_vis = self.project.bars.partition_point(|b| (b.frame as f64) < v0);
+            let last_vis = self
+                .project
+                .bars
+                .partition_point(|b| (b.frame as f64) <= v1);
+            let vis_bars = last_vis.saturating_sub(first_vis).max(1);
+            let label_stride = choose_bar_stride(vis_bars);
+            for b in &self.project.bars[first_vis..last_vis] {
+                let x = self.frame_to_x(b.frame, w);
+                if x < 0.0 || x > w {
+                    continue;
+                }
+                let is_major = (b.bar - 1) % 4 == 0;
+                let line_alpha = if is_major { 0.085 } else { 0.03 };
+                if vis_bars <= 96 || is_major {
+                    frame.stroke(
+                        &Path::line(Point::new(x, roll_top), Point::new(x, roll_bottom)),
+                        Stroke::default()
+                            .with_color(Color::from_rgba(1.0, 1.0, 1.0, line_alpha))
+                            .with_width(1.0),
+                    );
+                }
+                if (b.bar - 1) % label_stride == 0 {
+                    frame.stroke(
+                        &Path::line(
+                            Point::new(x, RULER_HEIGHT - 8.0),
+                            Point::new(x, RULER_HEIGHT),
+                        ),
+                        Stroke::default()
+                            .with_color(Color::from_rgba(0.75, 0.80, 0.88, 0.40))
+                            .with_width(1.0),
+                    );
+                    let label = if label_stride == 1 && vis_bars <= 18 {
+                        format!(
+                            "{} · {}",
+                            b.bar,
+                            format_time(b.frame, self.project.sample_rate_hz)
+                        )
+                    } else {
+                        format!("{}", b.bar)
+                    };
+                    frame.fill_text(Text {
+                        content: label,
+                        position: Point::new(x + 3.0, RULER_HEIGHT - 16.0),
+                        color: Color::from_rgba(0.72, 0.78, 0.88, 0.78),
+                        size: iced::Pixels(10.0),
+                        ..Text::default()
+                    });
+                }
             }
-            frame.stroke(
-                &Path::line(
-                    Point::new(x, RULER_HEIGHT - 8.0),
-                    Point::new(x, RULER_HEIGHT),
-                ),
-                Stroke::default()
-                    .with_color(Color::from_rgba(0.75, 0.80, 0.88, 0.35))
-                    .with_width(1.0),
-            );
-            frame.stroke(
-                &Path::line(Point::new(x, roll_top), Point::new(x, roll_bottom)),
-                Stroke::default()
-                    .with_color(Color::from_rgba(1.0, 1.0, 1.0, 0.035))
-                    .with_width(1.0),
-            );
-            frame.fill_text(Text {
-                content: format_time(f, self.project.sample_rate_hz),
-                position: Point::new(x + 3.0, RULER_HEIGHT - 16.0),
-                color: Color::from_rgba(0.70, 0.76, 0.85, 0.72),
-                size: iced::Pixels(10.0),
-                ..Text::default()
-            });
         }
 
         // 2. Piano roll horizontal octave grid lines (every C: MIDI % 12 == 0).
@@ -337,7 +369,10 @@ impl canvas::Program<TimelineAction> for TimelineView<'_> {
 
         // 3. Active loop overlay (and live drag preview).
         let preview_loop = state.dragging_loop.and_then(|(a, b)| {
-            let (s, e) = if a <= b { (a, b) } else { (b, a) };
+            let (s, mut e) = if a <= b { (a, b) } else { (b, a) };
+            if state.drag_moved && self.snap_to_bar && !state.alt_held && e == s {
+                e = self.project.next_bar_after(s);
+            }
             (state.drag_moved && e > s + 256).then_some(RenderSpan { start: s, end: e })
         });
         if let Some(span) = preview_loop.or(self.loop_range) {
@@ -373,7 +408,7 @@ impl canvas::Program<TimelineAction> for TimelineView<'_> {
             }
         }
 
-        // 4. Piano roll notes.
+        // 4. Piano roll notes (dimmed when track is muted).
         let note_h = ((roll_h / pitch_span) * 0.85).clamp(2.5, 11.0);
         for note in &self.project.notes {
             if !self
@@ -394,7 +429,16 @@ impl canvas::Program<TimelineAction> for TimelineView<'_> {
             let y =
                 (roll_bottom - norm * roll_h - note_h * 0.5).clamp(roll_top, roll_bottom - note_h);
             let base = track_color(note.track_idx);
-            let alpha = (0.35 + 0.65 * note.velocity).clamp(0.3, 1.0);
+            let audible = self
+                .audible_tracks
+                .get(note.track_idx)
+                .copied()
+                .unwrap_or(true);
+            let alpha = if audible {
+                (0.35 + 0.65 * note.velocity).clamp(0.3, 1.0)
+            } else {
+                0.15
+            };
             frame.fill_rectangle(
                 Point::new(x0, y),
                 Size::new(nw, note_h),
@@ -439,10 +483,16 @@ impl canvas::Program<TimelineAction> for TimelineView<'_> {
                 let bar_h = (hit.velocity * (drum_h - 14.0)).max(6.0);
                 let y = strip_top + drum_h - 4.0 - bar_h;
                 let base = track_color(hit.track_idx);
+                let audible = self
+                    .audible_tracks
+                    .get(hit.track_idx)
+                    .copied()
+                    .unwrap_or(true);
+                let alpha = if audible { 0.85 } else { 0.16 };
                 frame.fill_rectangle(
                     Point::new(x, y),
                     Size::new(2.5, bar_h),
-                    Color::from_rgba(base.r, base.g, base.b, 0.85),
+                    Color::from_rgba(base.r, base.g, base.b, alpha),
                 );
             }
         }
@@ -519,12 +569,12 @@ impl canvas::Program<TimelineAction> for TimelineView<'_> {
     }
 }
 
-fn choose_tick_step(visible_seconds: f64) -> f64 {
-    const STEPS: [f64; 10] = [0.5, 1.0, 2.0, 5.0, 10.0, 15.0, 30.0, 60.0, 120.0, 300.0];
-    for step in STEPS {
-        if visible_seconds / step <= 14.0 {
-            return step;
+fn choose_bar_stride(visible_bars: usize) -> i64 {
+    const STRIDES: [i64; 6] = [1, 2, 4, 8, 16, 32];
+    for stride in STRIDES {
+        if (visible_bars as i64) / stride <= 24 {
+            return stride;
         }
     }
-    300.0
+    32
 }

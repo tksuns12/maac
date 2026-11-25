@@ -206,6 +206,9 @@ struct CallbackRunner {
     dev_rate: u32,
     dev_channels: usize,
     scratch: Vec<f64>,
+    // Smooth 5 ms de-click envelope on play/pause transitions.
+    env: f64,
+    env_step: f64,
     // Simple fractional resampler state when device rate != plan rate.
     frac_pos: f64,
     prev_l: f64,
@@ -216,12 +219,16 @@ struct CallbackRunner {
 
 impl CallbackRunner {
     fn new(state: Arc<AudioState>, dev_rate: u32, dev_channels: usize) -> Self {
+        let rate = dev_rate.max(1);
+        let fade_frames = ((rate as f64) * 0.005).max(1.0);
         Self {
             state,
-            dev_rate: dev_rate.max(1),
+            dev_rate: rate,
             dev_channels: dev_channels.max(1),
             // Pre-allocated for up to 8 channels * SCRATCH_FRAMES: zero allocs in callback.
             scratch: vec![0.0; SCRATCH_FRAMES * 8],
+            env: 0.0,
+            env_step: 1.0 / fade_frames,
             frac_pos: 1.0,
             prev_l: 0.0,
             prev_r: 0.0,
@@ -231,7 +238,8 @@ impl CallbackRunner {
     }
 
     fn fill_f32(&mut self, out: &mut [f32]) {
-        if !self.state.playing.load(Ordering::Acquire) {
+        let want_play = self.state.playing.load(Ordering::Acquire);
+        if !want_play && self.env <= 0.0 {
             out.fill(0.0);
             return;
         }
@@ -240,6 +248,7 @@ impl CallbackRunner {
             return;
         };
         let Some(playback) = guard.as_ref() else {
+            self.env = 0.0;
             out.fill(0.0);
             return;
         };
@@ -261,10 +270,16 @@ impl CallbackRunner {
                 let slice = &mut self.scratch[..max_chunk * plan_ch];
                 let _got = playback.read(slice);
                 for f in 0..max_chunk {
+                    self.env = if want_play {
+                        (self.env + self.env_step).min(1.0)
+                    } else {
+                        (self.env - self.env_step).max(0.0)
+                    };
+                    let eff_gain = gain * self.env;
                     let base = f * plan_ch;
-                    let l = (slice[base] * gain).clamp(-1.0, 1.0) as f32;
+                    let l = (slice[base] * eff_gain).clamp(-1.0, 1.0) as f32;
                     let r = if plan_ch >= 2 {
-                        (slice[base + 1] * gain).clamp(-1.0, 1.0) as f32
+                        (slice[base + 1] * eff_gain).clamp(-1.0, 1.0) as f32
                     } else {
                         l
                     };
@@ -297,11 +312,17 @@ impl CallbackRunner {
                     self.curr_l = slice[0];
                     self.curr_r = if plan_ch >= 2 { slice[1] } else { slice[0] };
                 }
+                self.env = if want_play {
+                    (self.env + self.env_step).min(1.0)
+                } else {
+                    (self.env - self.env_step).max(0.0)
+                };
+                let eff_gain = gain * self.env;
                 let t = self.frac_pos;
-                let l = ((self.prev_l + (self.curr_l - self.prev_l) * t) * gain).clamp(-1.0, 1.0)
-                    as f32;
-                let r = ((self.prev_r + (self.curr_r - self.prev_r) * t) * gain).clamp(-1.0, 1.0)
-                    as f32;
+                let l = ((self.prev_l + (self.curr_l - self.prev_l) * t) * eff_gain)
+                    .clamp(-1.0, 1.0) as f32;
+                let r = ((self.prev_r + (self.curr_r - self.prev_r) * t) * eff_gain)
+                    .clamp(-1.0, 1.0) as f32;
                 self.frac_pos += ratio;
                 peak_l = peak_l.max(l.abs());
                 peak_r = peak_r.max(r.abs());

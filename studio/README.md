@@ -2,12 +2,13 @@
 
 A native Rust companion studio GUI for [MaaC (Music as a Code)](../README.md), built with `iced`, `cpal`, and `maac` linked in-process inside this monorepo.
 
-## Phase 1 MVP Features
+## Features
 
-- **In-process live playback:** opens `.maac` projects with `BackgroundSession` + `Playback` + `cpal` CoreAudio/ALSA output (allocation-free audio callback).
-- **Seamless transport & looping:** play/pause (`Space`), click-to-seek, drag on the ruler (or `Shift`+drag on the piano roll) to set/adjust a seamless bit-exact loop, double-click a region to loop it, right-click to clear loop (`L` toggles loop).
-- **Live collaboration with AI & external editors:** watches the project folder for `.maac` / audio asset saves, recompiles in the background, and calls `BackgroundSession::update` with `edit_debounce` so edits flow into playback without stopping transport.
-- **Piano roll, regions, and `maac analyze`:** per-track colored piano roll, drum hit strip, declared region ruler, checkpoint frontier indicator, stereo peak meter, and asynchronous `maac analyze` loudness/findings sidebar.
+- **In-process live playback:** opens `.maac` projects with `BackgroundSession` + `Playback` + `cpal` CoreAudio/ALSA output (allocation-free audio callback with 5 ms de-click play/pause fades).
+- **Bar grid, snapping, & seamless looping:** `MeterMap`/`TempoMap`-driven bar ruler (`Bar X.Y` readout), bar-snapped click-to-seek (`Alt` for free seek), drag on the ruler (or `Shift`+drag on the piano roll) to set a bar-snapped seamless bit-exact loop, double-click a region to loop it, right-click to clear loop, and `Auto-Follow` viewport scrolling (`L` loop, `S` snap, `F` follow).
+- **Per-track live audio Solo / Mute:** `S` / `M` buttons on every track filter events through the exact synth, effect, and master chain while keeping transport running.
+- **Live collaboration with AI & external editors:** watches the project folder for `.maac` / audio asset saves, recompiles in the background, and calls `BackgroundSession::update` with `edit_debounce` so edits flow into playback without stopping transport (preserving active Solo/Mute).
+- **Piano roll, regions, `maac analyze`, & WAV export:** per-track colored piano roll, drum hit strip, declared region ruler, checkpoint frontier indicator, stereo peak meter, asynchronous `maac analyze` loudness/sections/findings sidebar, and one-click `Export WAV` / `Export Loop`.
 
 ## Run
 

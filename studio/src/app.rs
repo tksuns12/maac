@@ -1,5 +1,6 @@
 //! Main Elm-architecture `iced` application for MaaC Studio.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -11,6 +12,11 @@ use iced::widget::{
 };
 use iced::{Alignment, Background, Border, Color, Element, Length, Subscription, Task, Theme};
 use maac::dsp::{BackgroundSession, Playback, PlaybackConfig, RenderSpan, SessionPolicy};
+use maac::export::{
+    render_wav_to_path_artifact_range_with_limits, render_wav_to_path_artifact_with_limits,
+    FrameRange, WavFormat,
+};
+use maac::PlanArtifact;
 
 use crate::analysis::{run_analysis, AnalysisSummary};
 use crate::audio::AudioEngine;
@@ -37,8 +43,17 @@ pub enum Message {
     SetLoop(Option<RenderSpan>),
     LoopRegion(RenderSpan),
     ToggleLoop,
+    ToggleSnap,
+    ToggleFollow,
     ToggleWatch(bool),
-    ToggleTrack(usize),
+    ToggleTrackVisible(usize),
+    ToggleTrackMute(usize),
+    ToggleTrackSolo(usize),
+    ClearSoloMute,
+    MixPlanReady {
+        revision: u64,
+        result: Result<Box<PlanArtifact>, String>,
+    },
     GainChanged(f32),
     ZoomDelta {
         delta: f32,
@@ -48,6 +63,14 @@ pub enum Message {
     PanDelta(f32),
     ScrollChanged(f32),
     RecompileNow,
+    ExportWav {
+        loop_only: bool,
+    },
+    ExportPathPicked {
+        loop_only: bool,
+        path: Option<PathBuf>,
+    },
+    ExportFinished(Result<String, String>),
     RunAnalysis,
     AnalysisFinished(Result<AnalysisSummary, String>),
     ToggleSidebar,
@@ -58,6 +81,7 @@ pub enum Message {
 pub struct StudioApp {
     audio: AudioEngine,
     project: Option<ProjectData>,
+    active_plan: Option<PlanArtifact>,
     session: Option<BackgroundSession>,
     playback: Option<Arc<Playback>>,
     watcher: Option<ProjectWatcher>,
@@ -79,10 +103,18 @@ pub struct StudioApp {
     playback_error: Option<String>,
     loop_range: Option<RenderSpan>,
     last_loop_range: Option<RenderSpan>,
+    snap_to_bar: bool,
+    auto_follow: bool,
     visible_tracks: Vec<bool>,
+    muted_tracks: HashSet<String>,
+    solo_tracks: HashSet<String>,
+    mix_revision: u64,
     zoom: f32,
     scroll: f32,
     peaks: (f32, f32),
+
+    // Export
+    exporting: bool,
 
     // Analysis sidebar
     show_sidebar: bool,
@@ -96,6 +128,7 @@ impl StudioApp {
         let app = Self {
             audio: AudioEngine::new(48_000),
             project: None,
+            active_plan: None,
             session: None,
             playback: None,
             watcher: None,
@@ -114,10 +147,16 @@ impl StudioApp {
             playback_error: None,
             loop_range: None,
             last_loop_range: None,
+            snap_to_bar: true,
+            auto_follow: true,
             visible_tracks: Vec::new(),
+            muted_tracks: HashSet::new(),
+            solo_tracks: HashSet::new(),
+            mix_revision: 0,
             zoom: 1.0,
             scroll: 0.0,
             peaks: (0.0, 0.0),
+            exporting: false,
             show_sidebar: true,
             analyzing: false,
             analysis: None,
@@ -152,6 +191,8 @@ impl StudioApp {
                 Key::Named(Named::Space) => Some(Message::TogglePlay),
                 Key::Named(Named::Home) => Some(Message::StopToStart),
                 Key::Character(ref c) if c.eq_ignore_ascii_case("l") => Some(Message::ToggleLoop),
+                Key::Character(ref c) if c.eq_ignore_ascii_case("s") => Some(Message::ToggleSnap),
+                Key::Character(ref c) if c.eq_ignore_ascii_case("f") => Some(Message::ToggleFollow),
                 Key::Character(ref c) if c.eq_ignore_ascii_case("r") => Some(Message::RecompileNow),
                 Key::Character(ref c) if c.eq_ignore_ascii_case("a") => Some(Message::RunAnalysis),
                 _ => None,
@@ -196,7 +237,7 @@ impl StudioApp {
                 match result {
                     Ok(data) => {
                         self.compile_error = None;
-                        self.apply_compiled_project(*data, is_reload);
+                        return self.apply_compiled_project(*data, is_reload);
                     }
                     Err(err) => {
                         self.compile_error =
@@ -269,15 +310,83 @@ impl StudioApp {
                 Task::none()
             }
 
+            Message::ToggleSnap => {
+                self.snap_to_bar = !self.snap_to_bar;
+                Task::none()
+            }
+
+            Message::ToggleFollow => {
+                self.auto_follow = !self.auto_follow;
+                Task::none()
+            }
+
             Message::ToggleWatch(on) => {
                 self.auto_watch = on;
                 self.pending_watch_at = None;
                 Task::none()
             }
 
-            Message::ToggleTrack(idx) => {
+            Message::ToggleTrackVisible(idx) => {
                 if let Some(vis) = self.visible_tracks.get_mut(idx) {
                     *vis = !*vis;
+                }
+                Task::none()
+            }
+
+            Message::ToggleTrackMute(idx) => {
+                if let Some(name) = self
+                    .project
+                    .as_ref()
+                    .and_then(|p| p.tracks.get(idx))
+                    .map(|t| t.name.clone())
+                {
+                    if !self.muted_tracks.remove(&name) {
+                        self.muted_tracks.insert(name);
+                    }
+                    return self.spawn_mix_update();
+                }
+                Task::none()
+            }
+
+            Message::ToggleTrackSolo(idx) => {
+                if let Some(name) = self
+                    .project
+                    .as_ref()
+                    .and_then(|p| p.tracks.get(idx))
+                    .map(|t| t.name.clone())
+                {
+                    if !self.solo_tracks.remove(&name) {
+                        self.solo_tracks.insert(name);
+                    }
+                    return self.spawn_mix_update();
+                }
+                Task::none()
+            }
+
+            Message::ClearSoloMute => {
+                if !self.muted_tracks.is_empty() || !self.solo_tracks.is_empty() {
+                    self.muted_tracks.clear();
+                    self.solo_tracks.clear();
+                    return self.spawn_mix_update();
+                }
+                Task::none()
+            }
+
+            Message::MixPlanReady { revision, result } => {
+                if revision != self.mix_revision {
+                    return Task::none();
+                }
+                match result {
+                    Ok(plan) => {
+                        if let Some(session) = &self.session {
+                            session.update(&plan);
+                        }
+                        self.active_plan = Some(*plan);
+                        self.playback_error = None;
+                    }
+                    Err(err) => {
+                        self.playback_error = Some(format!("Solo/Mute update failed: {err}"));
+                    }
                 }
                 Task::none()
             }
@@ -321,6 +430,111 @@ impl StudioApp {
                 Task::none()
             }
 
+            Message::ExportWav { loop_only } => {
+                if self.exporting {
+                    return Task::none();
+                }
+                let Some(proj) = &self.project else {
+                    return Task::none();
+                };
+                let stem = proj
+                    .entry_path
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "export".into());
+                let default_name = if loop_only {
+                    format!("{stem}-loop.wav")
+                } else {
+                    format!("{stem}.wav")
+                };
+                let dir = proj.project_root.clone();
+                Task::perform(
+                    async move {
+                        rfd::FileDialog::new()
+                            .set_directory(dir)
+                            .set_file_name(default_name)
+                            .add_filter("WAV Audio", &["wav"])
+                            .save_file()
+                    },
+                    move |path| Message::ExportPathPicked { loop_only, path },
+                )
+            }
+
+            Message::ExportPathPicked {
+                loop_only,
+                path: Some(path),
+            } => {
+                let Some(proj) = &self.project else {
+                    return Task::none();
+                };
+                let plan = self
+                    .active_plan
+                    .clone()
+                    .unwrap_or_else(|| proj.plan.clone());
+                let limits = proj.limits;
+                let loop_span = if loop_only { self.loop_range } else { None };
+                let rate = proj.sample_rate_hz;
+                self.exporting = true;
+                self.last_reload_note = Some(format!(
+                    "Exporting {}...",
+                    path.file_name()
+                        .map(|s| s.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| path.display().to_string())
+                ));
+                Task::perform(
+                    async move {
+                        let handle = std::thread::spawn(move || {
+                            let started = Instant::now();
+                            let stats = match loop_span {
+                                Some(span) => {
+                                    let end = span.end.min(plan.output().total_frames);
+                                    let range = FrameRange::new(span.start, end);
+                                    render_wav_to_path_artifact_range_with_limits(
+                                        &plan,
+                                        &path,
+                                        WavFormat::Float32,
+                                        true,
+                                        range,
+                                        &limits,
+                                    )
+                                }
+                                None => render_wav_to_path_artifact_with_limits(
+                                    &plan,
+                                    &path,
+                                    WavFormat::Float32,
+                                    true,
+                                    &limits,
+                                ),
+                            }
+                            .map_err(|e| format!("Export failed: {e}"))?;
+                            let secs = started.elapsed().as_secs_f64();
+                            let name = path
+                                .file_name()
+                                .map(|s| s.to_string_lossy().into_owned())
+                                .unwrap_or_else(|| path.display().to_string());
+                            Ok(format!(
+                                "Exported {name} ({}) in {secs:.1}s",
+                                format_time(stats.frames, rate)
+                            ))
+                        });
+                        handle
+                            .join()
+                            .unwrap_or_else(|_| Err("export worker panicked".into()))
+                    },
+                    Message::ExportFinished,
+                )
+            }
+            Message::ExportPathPicked { path: None, .. } => Task::none(),
+
+            Message::ExportFinished(res) => {
+                self.exporting = false;
+                match res {
+                    Ok(msg) => self.last_reload_note = Some(msg),
+                    Err(err) => self.playback_error = Some(err),
+                }
+                Task::none()
+            }
+
             Message::RunAnalysis => {
                 if self.analyzing {
                     return Task::none();
@@ -330,7 +544,10 @@ impl StudioApp {
                 };
                 self.analyzing = true;
                 self.analysis_error = None;
-                let plan = proj.plan.clone();
+                let plan = self
+                    .active_plan
+                    .clone()
+                    .unwrap_or_else(|| proj.plan.clone());
                 let meter = proj.meter.clone();
                 let limits = proj.limits;
                 Task::perform(
@@ -394,7 +611,20 @@ impl StudioApp {
                 }
                 self.peaks = self.audio.peaks();
 
-                // 2. Poll project file watcher (debounced) for seamless live reloads.
+                // 2. Auto-follow playhead when zoomed in and playing.
+                if self.auto_follow && self.audio.is_playing() && self.zoom > 1.01 {
+                    if let Some(proj) = &self.project {
+                        let total = proj.total_frames.max(1) as f32;
+                        let pos_frac = self.playhead_frame as f32 / total;
+                        let vis = 1.0 / self.zoom;
+                        let max_scroll = (1.0 - vis).max(0.0);
+                        if pos_frac < self.scroll || pos_frac > self.scroll + vis * 0.88 {
+                            self.scroll = (pos_frac - vis * 0.12).clamp(0.0, max_scroll);
+                        }
+                    }
+                }
+
+                // 3. Poll project file watcher (debounced) for seamless live reloads.
                 if self.auto_watch {
                     if let Some(watcher) = &self.watcher {
                         if let Some(at) = watcher.poll_latest() {
@@ -416,7 +646,53 @@ impl StudioApp {
         }
     }
 
-    fn apply_compiled_project(&mut self, data: ProjectData, is_reload: bool) {
+    fn effective_muted_nodes(&self, proj: &ProjectData) -> HashSet<String> {
+        if !self.solo_tracks.is_empty() {
+            proj.tracks
+                .iter()
+                .filter(|t| !self.solo_tracks.contains(&t.name))
+                .map(|t| t.name.clone())
+                .collect()
+        } else {
+            self.muted_tracks.clone()
+        }
+    }
+
+    fn audible_track_flags(&self, proj: &ProjectData) -> Vec<bool> {
+        let muted = self.effective_muted_nodes(proj);
+        proj.tracks
+            .iter()
+            .map(|t| !muted.contains(&t.name))
+            .collect()
+    }
+
+    fn spawn_mix_update(&mut self) -> Task<Message> {
+        let Some(proj) = self.project.clone() else {
+            return Task::none();
+        };
+        self.mix_revision += 1;
+        let revision = self.mix_revision;
+        let muted = self.effective_muted_nodes(&proj);
+        if muted.is_empty() {
+            let plan = proj.plan.clone();
+            if let Some(session) = &self.session {
+                session.update(&plan);
+            }
+            self.active_plan = Some(plan);
+            return Task::none();
+        }
+        Task::perform(
+            async move {
+                let handle = std::thread::spawn(move || proj.plan_with_muted(&muted).map(Box::new));
+                handle
+                    .join()
+                    .unwrap_or_else(|_| Err("solo/mute worker panicked".into()))
+            },
+            move |result| Message::MixPlanReady { revision, result },
+        )
+    }
+
+    fn apply_compiled_project(&mut self, data: ProjectData, is_reload: bool) -> Task<Message> {
         let same_format = self.project.as_ref().is_some_and(|prev| {
             prev.sample_rate_hz == data.sample_rate_hz && prev.channels == data.channels
         });
@@ -427,14 +703,19 @@ impl StudioApp {
             self.visible_tracks = vec![true; track_count];
         }
 
-        if is_reload && same_format {
-            if let Some(session) = &self.session {
-                session.update(&data.plan);
-                self.last_reload_note =
-                    Some(format!("Reloaded in {compile_ms} ms — live update sent"));
+        if is_reload && same_format && self.session.is_some() {
+            let has_mix_filter = !self.solo_tracks.is_empty() || !self.muted_tracks.is_empty();
+            self.last_reload_note = Some(format!("Reloaded in {compile_ms} ms — live update sent"));
+            if !has_mix_filter {
+                if let Some(session) = &self.session {
+                    session.update(&data.plan);
+                }
+                self.active_plan = Some(data.plan.clone());
                 self.project = Some(data);
-                return;
+                return Task::none();
             }
+            self.project = Some(data);
+            return self.spawn_mix_update();
         }
 
         // Fresh project open (or audio format changed): rebuild session, watcher, playback.
@@ -443,6 +724,8 @@ impl StudioApp {
         self.audio
             .set_playback(None, data.sample_rate_hz, data.channels);
         self.playback = None;
+        self.muted_tracks.clear();
+        self.solo_tracks.clear();
 
         let spacing = (data.sample_rate_hz as u64 * CHECKPOINT_SECONDS).max(4_096);
         let policy = SessionPolicy::new(spacing)
@@ -470,6 +753,7 @@ impl StudioApp {
         self.scroll = 0.0;
         self.analysis = None;
         self.analysis_error = None;
+        self.active_plan = Some(data.plan.clone());
         self.last_reload_note = Some(format!("Loaded in {compile_ms} ms"));
         self.project = Some(data);
 
@@ -477,6 +761,7 @@ impl StudioApp {
         if was_playing {
             self.audio.set_playing(true);
         }
+        Task::none()
     }
 
     fn ensure_playback_started(&mut self) {
@@ -592,11 +877,22 @@ impl StudioApp {
             .on_press_maybe(self.project.is_some().then_some(Message::ToggleLoop));
 
         let time_display = match &self.project {
-            Some(proj) => format!(
-                "{} / {}",
-                format_time(self.playhead_frame, proj.sample_rate_hz),
-                format_time(proj.total_frames, proj.sample_rate_hz)
-            ),
+            Some(proj) => {
+                let bar_str = proj.format_bar_position(self.playhead_frame);
+                if bar_str.is_empty() {
+                    format!(
+                        "{} / {}",
+                        format_time(self.playhead_frame, proj.sample_rate_hz),
+                        format_time(proj.total_frames, proj.sample_rate_hz)
+                    )
+                } else {
+                    format!(
+                        "{bar_str}  ·  {} / {}",
+                        format_time(self.playhead_frame, proj.sample_rate_hz),
+                        format_time(proj.total_frames, proj.sample_rate_hz)
+                    )
+                }
+            }
             None => "--:--.- / --:--.-".into(),
         };
 
@@ -643,19 +939,34 @@ impl StudioApp {
         };
 
         let meter_text = format!(
-            "L {:>4.0}%  R {:>4.0}%",
+            "L {:>3.0}% R {:>3.0}%",
             (self.peaks.0 * 100.0).min(100.0),
             (self.peaks.1 * 100.0).min(100.0)
         );
 
         let vol_slider = slider(0.0..=1.2_f32, self.audio.gain(), Message::GainChanged)
             .step(0.01_f32)
-            .width(Length::Fixed(88.0));
+            .width(Length::Fixed(80.0));
 
         let watch_toggle = toggler(self.auto_watch)
             .label("Watch")
             .on_toggle(Message::ToggleWatch)
             .size(16.0);
+
+        let export_btn = button(
+            text(if self.exporting {
+                "Exporting..."
+            } else {
+                "Export WAV"
+            })
+            .size(12),
+        )
+        .padding([5, 9])
+        .style(studio_button_style)
+        .on_press_maybe(
+            (self.project.is_some() && !self.exporting)
+                .then_some(Message::ExportWav { loop_only: false }),
+        );
 
         let jit_tag = if cfg!(feature = "jit") { "JIT" } else { "INT" };
         let sidebar_btn = button(
@@ -666,7 +977,7 @@ impl StudioApp {
             })
             .size(12),
         )
-        .padding([5, 10])
+        .padding([5, 9])
         .style(studio_button_style)
         .on_press(Message::ToggleSidebar);
 
@@ -675,33 +986,30 @@ impl StudioApp {
             play_btn,
             stop_btn,
             loop_btn,
-            Space::with_width(8),
-            text(time_display).size(14),
-            Space::with_width(8),
+            Space::with_width(6),
+            text(time_display).size(13.5),
+            Space::with_width(6),
             status_badge,
-            Space::with_width(8),
+            Space::with_width(6),
             text(ckpt_text)
-                .size(12)
+                .size(11.5)
                 .color(Color::from_rgb(0.66, 0.72, 0.80)),
             horizontal_space(),
             text(meter_text)
                 .size(11)
                 .color(Color::from_rgb(0.55, 0.85, 0.72)),
-            Space::with_width(8),
-            text("Vol")
-                .size(11)
-                .color(Color::from_rgb(0.70, 0.74, 0.82)),
-            vol_slider,
-            Space::with_width(8),
-            watch_toggle,
             Space::with_width(6),
+            vol_slider,
+            Space::with_width(6),
+            watch_toggle,
+            Space::with_width(4),
+            export_btn,
             text(jit_tag)
                 .size(11)
                 .color(Color::from_rgb(0.56, 0.66, 0.82)),
-            Space::with_width(6),
             sidebar_btn,
         ]
-        .spacing(6)
+        .spacing(5)
         .align_y(Alignment::Center)
         .padding([8, 12]);
 
@@ -729,7 +1037,12 @@ impl StudioApp {
                     .size(14)
                     .color(Color::from_rgb(0.68, 0.74, 0.84)),
             )
-            .push(button(text("Open .maac Project").size(15)).on_press(Message::OpenDialog))
+            .push(
+                button(text("Open .maac Project").size(15))
+                    .padding([8, 16])
+                    .style(|t, s| accent_button_style(Color::from_rgb(0.24, 0.48, 0.86), t, s))
+                    .on_press(Message::OpenDialog),
+            )
             .push(
                 text(self.audio.device_summary())
                     .size(12)
@@ -753,10 +1066,16 @@ impl StudioApp {
     }
 
     fn view_workspace<'a>(&'a self, proj: &'a ProjectData) -> Element<'a, Message> {
-        // Track chips + zoom bar
+        let audible_tracks = self.audible_track_flags(proj);
+        let any_mix_filter = !self.muted_tracks.is_empty() || !self.solo_tracks.is_empty();
+
+        // Track chips with integrated M (Mute) / S (Solo) audio controls
         let mut track_row = Row::new().spacing(6).align_y(Alignment::Center);
         for (idx, tr) in proj.tracks.iter().enumerate() {
             let visible = self.visible_tracks.get(idx).copied().unwrap_or(true);
+            let is_muted = self.muted_tracks.contains(&tr.name);
+            let is_solo = self.solo_tracks.contains(&tr.name);
+            let audible = audible_tracks.get(idx).copied().unwrap_or(true);
             let c = track_color(idx);
             let label = format!(
                 "{} ({})",
@@ -767,33 +1086,91 @@ impl StudioApp {
                     tr.hit_count
                 }
             );
-            let chip_color = if visible {
+            let chip_color = if visible && audible {
                 c
             } else {
-                Color::from_rgb(0.38, 0.42, 0.48)
+                Color::from_rgb(0.42, 0.46, 0.54)
             };
+
+            let name_btn = button(text(label).size(11).color(chip_color))
+                .padding([3, 7])
+                .style(move |theme, status| track_chip_style(c, visible && audible, theme, status))
+                .on_press(Message::ToggleTrackVisible(idx));
+
+            let m_btn = button(text("M").size(10))
+                .padding([3, 5])
+                .style(move |theme, status| {
+                    if is_muted {
+                        accent_button_style(Color::from_rgb(0.80, 0.26, 0.30), theme, status)
+                    } else {
+                        studio_button_style(theme, status)
+                    }
+                })
+                .on_press(Message::ToggleTrackMute(idx));
+
+            let s_btn = button(text("S").size(10))
+                .padding([3, 5])
+                .style(move |theme, status| {
+                    if is_solo {
+                        accent_button_style(Color::from_rgb(0.84, 0.62, 0.14), theme, status)
+                    } else {
+                        studio_button_style(theme, status)
+                    }
+                })
+                .on_press(Message::ToggleTrackSolo(idx));
+
             track_row = track_row.push(
-                button(text(label).size(11.5).color(chip_color))
-                    .padding([3, 9])
-                    .style(move |theme, status| track_chip_style(c, visible, theme, status))
-                    .on_press(Message::ToggleTrack(idx)),
+                row![name_btn, m_btn, s_btn]
+                    .spacing(2)
+                    .align_y(Alignment::Center),
+            );
+        }
+        if any_mix_filter {
+            track_row = track_row.push(
+                button(text("All").size(10.5))
+                    .padding([3, 7])
+                    .style(studio_button_style)
+                    .on_press(Message::ClearSoloMute),
             );
         }
 
-        let zoom_controls = row![
+        let snap_on = self.snap_to_bar;
+        let follow_on = self.auto_follow;
+        let mut zoom_controls = row![
+            button(text(if snap_on { "Snap: Bar" } else { "Snap: Free" }).size(11.5))
+                .padding([3, 7])
+                .style(move |theme, status| {
+                    if snap_on {
+                        accent_button_style(Color::from_rgb(0.22, 0.50, 0.66), theme, status)
+                    } else {
+                        studio_button_style(theme, status)
+                    }
+                })
+                .on_press(Message::ToggleSnap),
+            button(text("Follow").size(11.5))
+                .padding([3, 7])
+                .style(move |theme, status| {
+                    if follow_on {
+                        accent_button_style(Color::from_rgb(0.20, 0.56, 0.48), theme, status)
+                    } else {
+                        studio_button_style(theme, status)
+                    }
+                })
+                .on_press(Message::ToggleFollow),
+            Space::with_width(4),
             button(text("-").size(12))
-                .padding([3, 8])
+                .padding([3, 7])
                 .style(studio_button_style)
                 .on_press(Message::ZoomDelta {
                     delta: -1.0,
                     anchor: 0.5
                 }),
-            button(text("Fit").size(12))
-                .padding([3, 8])
+            button(text("Fit").size(11.5))
+                .padding([3, 7])
                 .style(studio_button_style)
                 .on_press(Message::ZoomFit),
             button(text("+").size(12))
-                .padding([3, 8])
+                .padding([3, 7])
                 .style(studio_button_style)
                 .on_press(Message::ZoomDelta {
                     delta: 1.0,
@@ -802,21 +1179,33 @@ impl StudioApp {
             text(format!("{:.1}x", self.zoom))
                 .size(11)
                 .color(Color::from_rgb(0.66, 0.72, 0.80)),
-            Space::with_width(8),
-            button(text("Recompile").size(12))
-                .padding([3, 9])
+            Space::with_width(4),
+            button(text("Recompile").size(11.5))
+                .padding([3, 8])
                 .style(studio_button_style)
                 .on_press(Message::RecompileNow),
         ]
-        .spacing(5)
+        .spacing(4)
         .align_y(Alignment::Center);
+
+        if self.loop_range.is_some() {
+            zoom_controls = zoom_controls.push(
+                button(text("Export Loop").size(11.5))
+                    .padding([3, 8])
+                    .style(studio_button_style)
+                    .on_press_maybe(
+                        (!self.exporting).then_some(Message::ExportWav { loop_only: true }),
+                    ),
+            );
+        }
 
         let sub_bar = container(
             row![
-                scrollable(track_row).direction(scrollable::Direction::Horizontal(
-                    scrollable::Scrollbar::new().width(4).scroller_width(4),
-                )),
-                horizontal_space(),
+                scrollable(track_row).width(Length::Fill).direction(
+                    scrollable::Direction::Horizontal(
+                        scrollable::Scrollbar::new().width(4).scroller_width(4),
+                    )
+                ),
                 zoom_controls,
             ]
             .spacing(8)
@@ -833,9 +1222,11 @@ impl StudioApp {
             canvas(TimelineView {
                 project: proj,
                 visible_tracks: &self.visible_tracks,
+                audible_tracks,
                 playhead_frame: self.playhead_frame,
                 checkpoint_frame: self.checkpoint_frame,
                 loop_range: self.loop_range,
+                snap_to_bar: self.snap_to_bar,
                 approximate: self.approximate,
                 stale: self.stale,
                 zoom: self.zoom,
@@ -864,12 +1255,14 @@ impl StudioApp {
         // Bottom status strip
         let loop_desc = match self.loop_range {
             Some(span) => format!(
-                "Loop {}–{}  (Right-click canvas to clear)",
+                "Loop {}–{} ({}–{}) · Right-click to clear",
+                proj.format_bar_position(span.start),
+                proj.format_bar_position(span.end.saturating_sub(1)),
                 format_time(span.start, proj.sample_rate_hz),
                 format_time(span.end, proj.sample_rate_hz)
             ),
             None => {
-                "Click to seek · Drag ruler or Shift+drag to loop · Double-click region to loop"
+                "Click to seek (Alt = free) · Drag ruler / Shift+drag to loop · Double-click region to loop"
                     .into()
             }
         };
