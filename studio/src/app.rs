@@ -26,6 +26,12 @@ use crate::code_view::{
     changed_new_lines, compute_line_diff, locate_object_lines, DiffLineKind, DiffSummary,
     SourceHighlight,
 };
+use crate::collab::{
+    build_agent_prompt, copy_to_clipboard, detect_local_agents, diff_projects_for_highlight,
+    load_collab_file, measure_region_audio, run_agent_turn, save_collab_file, AbComparison, AbSide,
+    AgentKind, AgentTurnOutcome, AudioRegionSnapshot, ChatMessage, ChatRole, CollabFile,
+    DetectedAgent, PinAuthor, ReviewPin, SharedFocusContext,
+};
 use crate::editor::{
     add_hit_at_score_pos, add_note_at_score_pos, apply_batch_note_edit, apply_note_edit, format_q,
     inspect_note_in_bundle, materialize_note_placement, midi_to_pitch_symbol, BatchNoteEdit,
@@ -232,6 +238,31 @@ pub enum Message {
     DiscardUnsavedEdits,
     RevertExternalEdit,
     DismissExternalChange,
+    // AI + Human Live Collaboration
+    ToggleCollabPanel,
+    SetSidebarCollab(bool),
+    SelectAgentBackend(AgentKind),
+    ToggleAutoLoopAiEdit,
+    CollabPinDraftChanged(String),
+    AddReviewPin,
+    TogglePinResolved(u64),
+    DeleteReviewPin(u64),
+    JumpToReviewPin(u64),
+    RefreshAudioSnapshot,
+    AudioSnapshotReady(Result<AudioRegionSnapshot, String>),
+    CopyCollabContext,
+    CollabPromptChanged(String),
+    SendCollabPrompt(Option<String>),
+    AgentTurnFinished {
+        before_source: String,
+        before_project: Box<ProjectData>,
+        prompt_label: String,
+        result: Result<Box<AgentTurnOutcome>, String>,
+    },
+    SwitchAbSide(AbSide),
+    JumpAndLoopAiEdit,
+    AcceptAiEdit,
+    RejectAiEdit,
     GainChanged(f32),
     ZoomDelta {
         delta: f32,
@@ -313,6 +344,21 @@ pub struct StudioApp {
     cached_changed_lines: HashSet<usize>,
     external_change: Option<ExternalChange>,
 
+    // AI + Human Live Collaboration (Chat, Review Pins, Shared Focus, Audio Telemetry, A/B)
+    show_collab: bool,
+    detected_agents: Vec<DetectedAgent>,
+    selected_agent: Option<AgentKind>,
+    auto_loop_ai_edit: bool,
+    collab_pins: Vec<ReviewPin>,
+    next_pin_id: u64,
+    collab_pin_draft: String,
+    collab_chat: Vec<ChatMessage>,
+    collab_prompt_input: String,
+    agent_running: bool,
+    audio_snapshot: Option<AudioRegionSnapshot>,
+    audio_snapshot_busy: bool,
+    ab_comparison: Option<AbComparison>,
+
     // Transport & view state
     playhead_frame: u64,
     checkpoint_frame: u64,
@@ -345,6 +391,8 @@ pub struct StudioApp {
 
 impl StudioApp {
     pub fn new(initial_path: Option<PathBuf>) -> (Self, Task<Message>) {
+        let detected_agents = detect_local_agents();
+        let selected_agent = detected_agents.first().map(|a| a.kind);
         let app = Self {
             audio: AudioEngine::new(48_000),
             project: None,
@@ -393,6 +441,19 @@ impl StudioApp {
             cached_unsaved_diff: DiffSummary::default(),
             cached_changed_lines: HashSet::new(),
             external_change: None,
+            show_collab: false,
+            detected_agents,
+            selected_agent,
+            auto_loop_ai_edit: true,
+            collab_pins: Vec::new(),
+            next_pin_id: 1,
+            collab_pin_draft: String::new(),
+            collab_chat: Vec::new(),
+            collab_prompt_input: String::new(),
+            agent_running: false,
+            audio_snapshot: None,
+            audio_snapshot_busy: false,
+            ab_comparison: None,
             playhead_frame: 0,
             checkpoint_frame: 0,
             checkpoint_count: 0,
@@ -459,62 +520,111 @@ impl StudioApp {
 
     pub fn subscription(&self) -> Subscription<Message> {
         let tick = iced::time::every(Duration::from_millis(16)).map(|_| Message::Tick);
-        let keys = keyboard::on_key_press(|key, modifiers| {
-            if modifiers.alt() {
-                return None;
-            }
-            if modifiers.command() || modifiers.control() {
-                return match key {
-                    Key::Character(ref c) if c.eq_ignore_ascii_case("z") => {
-                        if modifiers.shift() {
-                            Some(Message::Redo)
-                        } else {
-                            Some(Message::Undo)
+        let text_input_open = self.show_collab || self.plugin_picker.is_some();
+        let keys = if text_input_open {
+            keyboard::on_key_press(|key, modifiers| {
+                if modifiers.command() || modifiers.control() {
+                    return match key {
+                        Key::Character(ref c) if c.eq_ignore_ascii_case("z") => {
+                            if modifiers.shift() {
+                                Some(Message::Redo)
+                            } else {
+                                Some(Message::Undo)
+                            }
                         }
+                        Key::Character(ref c) if c.eq_ignore_ascii_case("y") => Some(Message::Redo),
+                        Key::Character(ref c) if c.eq_ignore_ascii_case("s") => {
+                            Some(Message::SaveToDisk)
+                        }
+                        Key::Character(ref c) if c.eq_ignore_ascii_case("g") => {
+                            Some(Message::ToggleCollabPanel)
+                        }
+                        _ => None,
+                    };
+                }
+                match key {
+                    Key::Named(Named::Escape) => Some(Message::ClearSelection),
+                    _ => None,
+                }
+            })
+        } else {
+            keyboard::on_key_press(|key, modifiers| {
+                if modifiers.alt() {
+                    return None;
+                }
+                if modifiers.command() || modifiers.control() {
+                    return match key {
+                        Key::Character(ref c) if c.eq_ignore_ascii_case("z") => {
+                            if modifiers.shift() {
+                                Some(Message::Redo)
+                            } else {
+                                Some(Message::Undo)
+                            }
+                        }
+                        Key::Character(ref c) if c.eq_ignore_ascii_case("y") => Some(Message::Redo),
+                        Key::Character(ref c) if c.eq_ignore_ascii_case("s") => {
+                            Some(Message::SaveToDisk)
+                        }
+                        Key::Character(ref c) if c.eq_ignore_ascii_case("d") => {
+                            Some(Message::KeyboardDuplicateNote)
+                        }
+                        Key::Character(ref c) if c.eq_ignore_ascii_case("g") => {
+                            Some(Message::ToggleCollabPanel)
+                        }
+                        _ => None,
+                    };
+                }
+                match key {
+                    Key::Named(Named::Space) => Some(Message::TogglePlay),
+                    Key::Named(Named::Home) => Some(Message::StopToStart),
+                    Key::Named(Named::Escape) => Some(Message::ClearSelection),
+                    Key::Named(Named::Delete | Named::Backspace) => {
+                        Some(Message::KeyboardDeleteNote)
                     }
-                    Key::Character(ref c) if c.eq_ignore_ascii_case("y") => Some(Message::Redo),
+                    Key::Named(Named::ArrowUp) => Some(Message::KeyboardNoteNudge {
+                        pitch_semis: if modifiers.shift() { 12 } else { 1 },
+                        at_q16: 0,
+                    }),
+                    Key::Named(Named::ArrowDown) => Some(Message::KeyboardNoteNudge {
+                        pitch_semis: if modifiers.shift() { -12 } else { -1 },
+                        at_q16: 0,
+                    }),
+                    Key::Named(Named::ArrowRight) => Some(Message::KeyboardNoteNudge {
+                        pitch_semis: 0,
+                        at_q16: if modifiers.shift() { 4 } else { 1 },
+                    }),
+                    Key::Named(Named::ArrowLeft) => Some(Message::KeyboardNoteNudge {
+                        pitch_semis: 0,
+                        at_q16: if modifiers.shift() { -4 } else { -1 },
+                    }),
+                    Key::Character(ref c) if c.eq_ignore_ascii_case("l") => {
+                        Some(Message::ToggleLoop)
+                    }
+                    Key::Character(ref c) if c.eq_ignore_ascii_case("m") => {
+                        Some(Message::ToggleMixer)
+                    }
+                    Key::Character(ref c) if c.eq_ignore_ascii_case("c") => {
+                        Some(Message::ToggleCodePanel)
+                    }
+                    Key::Character(ref c) if c.eq_ignore_ascii_case("g") => {
+                        Some(Message::ToggleCollabPanel)
+                    }
                     Key::Character(ref c) if c.eq_ignore_ascii_case("s") => {
-                        Some(Message::SaveToDisk)
+                        Some(Message::ToggleSnap)
                     }
-                    Key::Character(ref c) if c.eq_ignore_ascii_case("d") => {
-                        Some(Message::KeyboardDuplicateNote)
+                    Key::Character(ref c) if c.eq_ignore_ascii_case("f") => {
+                        Some(Message::ToggleFollow)
+                    }
+                    Key::Character(ref c) if c.eq_ignore_ascii_case("r") => {
+                        Some(Message::RecompileNow)
+                    }
+                    Key::Character(ref c) if c.eq_ignore_ascii_case("a") => {
+                        Some(Message::RunAnalysis)
                     }
                     _ => None,
-                };
-            }
-            match key {
-                Key::Named(Named::Space) => Some(Message::TogglePlay),
-                Key::Named(Named::Home) => Some(Message::StopToStart),
-                Key::Named(Named::Escape) => Some(Message::ClearSelection),
-                Key::Named(Named::Delete | Named::Backspace) => Some(Message::KeyboardDeleteNote),
-                Key::Named(Named::ArrowUp) => Some(Message::KeyboardNoteNudge {
-                    pitch_semis: if modifiers.shift() { 12 } else { 1 },
-                    at_q16: 0,
-                }),
-                Key::Named(Named::ArrowDown) => Some(Message::KeyboardNoteNudge {
-                    pitch_semis: if modifiers.shift() { -12 } else { -1 },
-                    at_q16: 0,
-                }),
-                Key::Named(Named::ArrowRight) => Some(Message::KeyboardNoteNudge {
-                    pitch_semis: 0,
-                    at_q16: if modifiers.shift() { 4 } else { 1 },
-                }),
-                Key::Named(Named::ArrowLeft) => Some(Message::KeyboardNoteNudge {
-                    pitch_semis: 0,
-                    at_q16: if modifiers.shift() { -4 } else { -1 },
-                }),
-                Key::Character(ref c) if c.eq_ignore_ascii_case("l") => Some(Message::ToggleLoop),
-                Key::Character(ref c) if c.eq_ignore_ascii_case("m") => Some(Message::ToggleMixer),
-                Key::Character(ref c) if c.eq_ignore_ascii_case("c") => {
-                    Some(Message::ToggleCodePanel)
                 }
-                Key::Character(ref c) if c.eq_ignore_ascii_case("s") => Some(Message::ToggleSnap),
-                Key::Character(ref c) if c.eq_ignore_ascii_case("f") => Some(Message::ToggleFollow),
-                Key::Character(ref c) if c.eq_ignore_ascii_case("r") => Some(Message::RecompileNow),
-                Key::Character(ref c) if c.eq_ignore_ascii_case("a") => Some(Message::RunAnalysis),
-                _ => None,
-            }
-        });
+            })
+        };
         Subscription::batch([tick, keys])
     }
 
@@ -1726,6 +1836,460 @@ impl StudioApp {
                 Task::none()
             }
 
+            Message::ToggleCollabPanel => {
+                if self.show_sidebar && self.show_collab {
+                    self.show_collab = false;
+                } else {
+                    self.show_sidebar = true;
+                    self.show_collab = true;
+                    if self.audio_snapshot.is_none() && !self.audio_snapshot_busy {
+                        return self.update(Message::RefreshAudioSnapshot);
+                    }
+                }
+                Task::none()
+            }
+
+            Message::SetSidebarCollab(enable) => {
+                self.show_sidebar = true;
+                self.show_collab = enable;
+                if enable && self.audio_snapshot.is_none() && !self.audio_snapshot_busy {
+                    return self.update(Message::RefreshAudioSnapshot);
+                }
+                Task::none()
+            }
+
+            Message::SelectAgentBackend(kind) => {
+                self.selected_agent = Some(kind);
+                Task::none()
+            }
+
+            Message::ToggleAutoLoopAiEdit => {
+                self.auto_loop_ai_edit = !self.auto_loop_ai_edit;
+                Task::none()
+            }
+
+            Message::CollabPinDraftChanged(val) => {
+                self.collab_pin_draft = val;
+                Task::none()
+            }
+
+            Message::AddReviewPin => {
+                let text = self.collab_pin_draft.trim().to_owned();
+                if text.is_empty() {
+                    return Task::none();
+                }
+                let Some(proj) = &self.project else {
+                    return Task::none();
+                };
+                let (frame, end_frame) = match self.loop_range {
+                    Some(lr) => (lr.start, Some(lr.end)),
+                    None => (self.playhead_frame, None),
+                };
+                let bar_label = proj.format_bar_position(frame);
+                let track = self
+                    .selected_note_address
+                    .as_deref()
+                    .and_then(|addr| proj.notes.iter().find(|n| n.address == addr))
+                    .and_then(|n| proj.tracks.get(n.track_idx).map(|t| t.name.clone()))
+                    .or_else(|| self.selected_node_id.clone());
+                let id = self.next_pin_id;
+                self.next_pin_id += 1;
+                self.collab_pins.push(ReviewPin {
+                    id,
+                    frame,
+                    end_frame,
+                    bar_label: bar_label.clone(),
+                    track,
+                    text,
+                    resolved: false,
+                    created_by: PinAuthor::Human,
+                });
+                self.collab_pin_draft.clear();
+                self.persist_collab_file();
+                self.last_reload_note = Some(format!("Pinned review note #{id} at {bar_label}"));
+                Task::none()
+            }
+
+            Message::TogglePinResolved(id) => {
+                if let Some(pin) = self.collab_pins.iter_mut().find(|p| p.id == id) {
+                    pin.resolved = !pin.resolved;
+                    self.persist_collab_file();
+                }
+                Task::none()
+            }
+
+            Message::DeleteReviewPin(id) => {
+                self.collab_pins.retain(|p| p.id != id);
+                self.persist_collab_file();
+                Task::none()
+            }
+
+            Message::JumpToReviewPin(id) => {
+                let Some(pin) = self.collab_pins.iter().find(|p| p.id == id).cloned() else {
+                    return Task::none();
+                };
+                self.show_sidebar = true;
+                self.show_collab = true;
+                self.playhead_frame = pin.frame;
+                if let Some(pb) = &self.playback {
+                    pb.seek(pin.frame);
+                }
+                if let Some(end) = pin.end_frame {
+                    if end > pin.frame + 256 {
+                        self.apply_loop(Some(RenderSpan {
+                            start: pin.frame,
+                            end,
+                        }));
+                    }
+                }
+                self.last_reload_note =
+                    Some(format!("Jumped to Pin #{} ({})", pin.id, pin.bar_label));
+                Task::none()
+            }
+
+            Message::RefreshAudioSnapshot => {
+                let Some(proj) = self.project.clone() else {
+                    return Task::none();
+                };
+                if self.audio_snapshot_busy {
+                    return Task::none();
+                }
+                self.audio_snapshot_busy = true;
+                let lr = self.loop_range;
+                let ph = self.playhead_frame;
+                Task::perform(
+                    async move {
+                        let handle =
+                            std::thread::spawn(move || measure_region_audio(&proj, lr, ph));
+                        handle
+                            .join()
+                            .unwrap_or_else(|_| Err("audio snapshot worker panicked".into()))
+                    },
+                    Message::AudioSnapshotReady,
+                )
+            }
+
+            Message::AudioSnapshotReady(result) => {
+                self.audio_snapshot_busy = false;
+                match result {
+                    Ok(snap) => {
+                        self.last_reload_note = Some(format!(
+                            "Audio snapshot ({}, {} ms)",
+                            snap.bar_span_label, snap.elapsed_ms
+                        ));
+                        self.audio_snapshot = Some(snap);
+                    }
+                    Err(err) => {
+                        self.edit_error = Some(err);
+                    }
+                }
+                Task::none()
+            }
+
+            Message::CopyCollabContext => {
+                let Some(proj) = &self.project else {
+                    return Task::none();
+                };
+                let ctx = SharedFocusContext::capture(
+                    proj,
+                    self.playhead_frame,
+                    self.loop_range,
+                    &self.selected_notes,
+                    self.selected_node_id.as_deref(),
+                    &self.muted_tracks,
+                    &self.solo_tracks,
+                    &self.plugin_slots,
+                    &self.collab_pins,
+                    self.audio_snapshot.as_ref(),
+                    self.analysis.as_ref(),
+                    &self.collab_chat,
+                );
+                let draft = if self.collab_prompt_input.trim().is_empty() {
+                    "(Describe what you want to change here)"
+                } else {
+                    self.collab_prompt_input.trim()
+                };
+                let prompt = build_agent_prompt(&ctx, draft);
+                match copy_to_clipboard(&prompt) {
+                    Ok(()) => {
+                        self.last_reload_note = Some(
+                            "Copied shared Studio context + audio telemetry to clipboard".into(),
+                        );
+                    }
+                    Err(err) => {
+                        self.edit_error = Some(err);
+                    }
+                }
+                Task::none()
+            }
+
+            Message::CollabPromptChanged(val) => {
+                self.collab_prompt_input = val;
+                Task::none()
+            }
+
+            Message::SendCollabPrompt(preset) => {
+                if self.agent_running || self.editing {
+                    return Task::none();
+                }
+                let instruction = match preset {
+                    Some(text) => text,
+                    None => {
+                        let t = self.collab_prompt_input.trim().to_owned();
+                        if t.is_empty() {
+                            return Task::none();
+                        }
+                        self.collab_prompt_input.clear();
+                        t
+                    }
+                };
+                let Some(proj) = self.project.clone() else {
+                    return Task::none();
+                };
+                let Some(agent) = self
+                    .selected_agent
+                    .and_then(|k| self.detected_agents.iter().find(|a| a.kind == k).cloned())
+                    .or_else(|| self.detected_agents.first().cloned())
+                else {
+                    self.edit_error = Some(
+                        "No local agent CLI found (claude / agy / codex / gemini). Use 'Copy Context' to collaborate with an external agent.".into(),
+                    );
+                    return Task::none();
+                };
+                let Some(before_source) = proj.bundle.sources.get(&proj.bundle.entry).cloned()
+                else {
+                    return Task::none();
+                };
+
+                let ctx = SharedFocusContext::capture(
+                    &proj,
+                    self.playhead_frame,
+                    self.loop_range,
+                    &self.selected_notes,
+                    self.selected_node_id.as_deref(),
+                    &self.muted_tracks,
+                    &self.solo_tracks,
+                    &self.plugin_slots,
+                    &self.collab_pins,
+                    self.audio_snapshot.as_ref(),
+                    self.analysis.as_ref(),
+                    &self.collab_chat,
+                );
+                let prompt = build_agent_prompt(&ctx, &instruction);
+                let prompt_label: String = instruction.chars().take(48).collect();
+
+                self.collab_chat.push(ChatMessage {
+                    role: ChatRole::User,
+                    text: instruction,
+                    detail: Some(format!(
+                        "{} · {}",
+                        ctx.playhead_bar,
+                        ctx.loop_label.as_deref().unwrap_or("No loop")
+                    )),
+                });
+                self.persist_collab_file();
+                self.agent_running = true;
+                self.edit_error = None;
+                self.last_reload_note = Some(format!(
+                    "Running {} co-producer agent...",
+                    agent.kind.label()
+                ));
+
+                // Suppress file watcher while our in-app agent is editing so we handle A/B cleanly.
+                self.last_self_save = Some(Instant::now());
+                let before_src_clone = before_source.clone();
+                let before_proj_box = Box::new(proj.clone());
+                Task::perform(
+                    async move {
+                        let handle = std::thread::spawn(move || {
+                            run_agent_turn(&agent, &proj, &before_src_clone, &prompt).map(Box::new)
+                        });
+                        handle
+                            .join()
+                            .unwrap_or_else(|_| Err("agent runner thread panicked".into()))
+                    },
+                    move |result| Message::AgentTurnFinished {
+                        before_source: before_source.clone(),
+                        before_project: before_proj_box.clone(),
+                        prompt_label: prompt_label.clone(),
+                        result,
+                    },
+                )
+            }
+
+            Message::AgentTurnFinished {
+                before_source,
+                before_project,
+                prompt_label,
+                result,
+            } => {
+                self.agent_running = false;
+                self.last_self_save = Some(Instant::now());
+                self.pending_watch_at = None;
+                match result {
+                    Ok(outcome) => {
+                        for pid in &outcome.resolved_pins {
+                            if let Some(pin) = self.collab_pins.iter_mut().find(|p| p.id == *pid) {
+                                pin.resolved = true;
+                            }
+                        }
+                        if let Some(err) = outcome.compile_error {
+                            self.edit_error = Some(format!("Agent edit compile error: {err}"));
+                            self.collab_chat.push(ChatMessage {
+                                role: ChatRole::Agent,
+                                text: outcome.reply_text,
+                                detail: Some(format!(
+                                    "Compile error ({:.1}s) — file kept for review",
+                                    outcome.elapsed_ms as f64 / 1000.0
+                                )),
+                            });
+                            self.persist_collab_file();
+                            return Task::none();
+                        }
+
+                        if let Some((after_source, after_project, highlight)) =
+                            outcome.updated_project
+                        {
+                            let summary = highlight.summary_line(&after_project);
+                            let jump_span = highlight.bounding_span;
+                            self.collab_chat.push(ChatMessage {
+                                role: ChatRole::Agent,
+                                text: outcome.reply_text,
+                                detail: Some(format!(
+                                    "{summary} · {:.1}s",
+                                    outcome.elapsed_ms as f64 / 1000.0
+                                )),
+                            });
+
+                            let diff = compute_line_diff(&before_source, &after_source, 2);
+                            if !diff.is_empty() {
+                                self.external_change = Some(ExternalChange {
+                                    prev_source: before_source.clone(),
+                                    diff,
+                                });
+                            }
+
+                            let ab = AbComparison {
+                                label: prompt_label,
+                                before_source,
+                                before_project: *before_project,
+                                after_source: after_source.clone(),
+                                after_project: after_project.clone(),
+                                active_side: AbSide::After,
+                                highlight,
+                            };
+                            self.ab_comparison = Some(ab);
+                            self.saved_source = Some(after_source);
+                            self.apply_ab_project(after_project);
+                            if self.auto_loop_ai_edit {
+                                if let Some(span) = jump_span {
+                                    self.apply_loop(Some(span));
+                                    self.playhead_frame = span.start;
+                                    if let Some(pb) = &self.playback {
+                                        pb.seek(span.start);
+                                    }
+                                }
+                            }
+                            self.last_reload_note =
+                                Some(format!("AI Edit ready (B: After) · {summary}"));
+                            self.persist_collab_file();
+                            return self.update(Message::RefreshAudioSnapshot);
+                        } else {
+                            self.collab_chat.push(ChatMessage {
+                                role: ChatRole::Agent,
+                                text: outcome.reply_text,
+                                detail: Some(format!(
+                                    "No file edits · {:.1}s",
+                                    outcome.elapsed_ms as f64 / 1000.0
+                                )),
+                            });
+                            self.last_reload_note = Some("Agent replied (no file changes)".into());
+                            self.persist_collab_file();
+                        }
+                    }
+                    Err(err) => {
+                        self.edit_error = Some(err.clone());
+                        self.collab_chat.push(ChatMessage {
+                            role: ChatRole::System,
+                            text: format!("Agent error: {err}"),
+                            detail: None,
+                        });
+                        self.persist_collab_file();
+                    }
+                }
+                Task::none()
+            }
+
+            Message::SwitchAbSide(side) => {
+                let target_proj = if let Some(ab) = &mut self.ab_comparison {
+                    if ab.active_side == side {
+                        return Task::none();
+                    }
+                    ab.active_side = side;
+                    match side {
+                        AbSide::Before => Some(ab.before_project.clone()),
+                        AbSide::After => Some(ab.after_project.clone()),
+                    }
+                } else {
+                    None
+                };
+                if let Some(proj) = target_proj {
+                    self.apply_ab_project(proj);
+                    self.last_reload_note = Some(match side {
+                        AbSide::Before => "Auditioning A: Before AI Edit (live)".into(),
+                        AbSide::After => "Auditioning B: After AI Edit (live)".into(),
+                    });
+                }
+                Task::none()
+            }
+
+            Message::JumpAndLoopAiEdit => {
+                if let Some(span) = self
+                    .ab_comparison
+                    .as_ref()
+                    .and_then(|ab| ab.highlight.bounding_span)
+                {
+                    self.apply_loop(Some(span));
+                    self.playhead_frame = span.start;
+                    if let Some(pb) = &self.playback {
+                        pb.seek(span.start);
+                    }
+                    self.last_reload_note = Some("Looped AI-edited section".into());
+                }
+                Task::none()
+            }
+
+            Message::AcceptAiEdit => {
+                let Some(ab) = self.ab_comparison.take() else {
+                    return Task::none();
+                };
+                self.undo_stack.push(ab.before_source);
+                self.redo_stack.clear();
+                self.saved_source = Some(ab.after_source.clone());
+                self.external_change = None;
+                self.last_self_save = Some(Instant::now());
+                let _ = std::fs::write(&ab.after_project.entry_path, &ab.after_source);
+                if ab.active_side != AbSide::After {
+                    self.apply_ab_project(ab.after_project);
+                }
+                self.last_reload_note = Some("Accepted AI edit (Cmd+Z still undoes)".into());
+                Task::none()
+            }
+
+            Message::RejectAiEdit => {
+                let Some(ab) = self.ab_comparison.take() else {
+                    return Task::none();
+                };
+                self.last_self_save = Some(Instant::now());
+                self.pending_watch_at = None;
+                let _ = std::fs::write(&ab.before_project.entry_path, &ab.before_source);
+                self.saved_source = Some(ab.before_source);
+                self.external_change = None;
+                self.apply_ab_project(ab.before_project);
+                self.last_reload_note = Some("Reverted to A: Before AI Edit".into());
+                Task::none()
+            }
+
             Message::NodeParamDraft {
                 node_id,
                 param_name,
@@ -2538,6 +3102,7 @@ impl StudioApp {
                     self.update(Message::ZoomDelta { delta, anchor })
                 }
                 TimelineAction::Pan(delta) => self.update(Message::PanDelta(delta)),
+                TimelineAction::JumpToPin(pin_id) => self.update(Message::JumpToReviewPin(pin_id)),
             },
 
             Message::Tick => {
@@ -2915,6 +3480,19 @@ impl StudioApp {
                 if before != after {
                     let diff = compute_line_diff(&before, after, 2);
                     if !diff.is_empty() {
+                        if let Some(prev_proj) = self.project.clone() {
+                            let highlight =
+                                diff_projects_for_highlight(&prev_proj, &data, &before, after);
+                            self.ab_comparison = Some(AbComparison {
+                                label: "External / AI Edit".into(),
+                                before_source: before.clone(),
+                                before_project: prev_proj,
+                                after_source: after.to_owned(),
+                                after_project: data.clone(),
+                                active_side: AbSide::After,
+                                highlight,
+                            });
+                        }
                         self.external_change = Some(ExternalChange {
                             prev_source: before,
                             diff,
@@ -2968,6 +3546,20 @@ impl StudioApp {
         self.plugin_picker = None;
         self.sf2_picker = None;
         self.edit_error = None;
+        self.ab_comparison = None;
+        self.audio_snapshot = None;
+        self.audio_snapshot_busy = false;
+        if let Ok(Some(cf)) = load_collab_file(&data.entry_path) {
+            self.collab_pins = cf.pins;
+            self.next_pin_id = cf
+                .next_pin_id
+                .max(self.collab_pins.iter().map(|p| p.id + 1).max().unwrap_or(1));
+            self.collab_chat = cf.chat;
+        } else {
+            self.collab_pins.clear();
+            self.next_pin_id = 1;
+            self.collab_chat.clear();
+        }
         {
             let mut rack = self
                 .host_rack
@@ -3024,6 +3616,36 @@ impl StudioApp {
             self.audio.set_playing(true);
         }
         Task::none()
+    }
+
+    fn persist_collab_file(&self) {
+        let Some(proj) = &self.project else {
+            return;
+        };
+        let file = CollabFile {
+            version: 1,
+            next_pin_id: self.next_pin_id,
+            pins: self.collab_pins.clone(),
+            chat: self.collab_chat.clone(),
+        };
+        let _ = save_collab_file(&proj.entry_path, &file);
+    }
+
+    fn apply_ab_project(&mut self, data: ProjectData) {
+        if self.visible_tracks.len() != data.tracks.len() {
+            self.visible_tracks = vec![true; data.tracks.len()];
+        }
+        if let Some(session) = &self.session {
+            session.update(&data.plan);
+            let target_gen = session.status().generation;
+            if let Some(pb) = &self.playback {
+                pb.clear_live_params_from_generation(target_gen);
+            }
+        }
+        self.project = Some(data);
+        self.apply_live_mutes();
+        self.refresh_selected_note_info();
+        self.refresh_code_cache();
     }
 
     fn ensure_playback_started(&mut self) {
@@ -3457,6 +4079,32 @@ impl StudioApp {
                     }
                 })
                 .on_press(Message::ToggleCodePanel),
+            {
+                let collab_on = self.show_sidebar && self.show_collab;
+                let open_pins = self.collab_pins.iter().filter(|p| !p.resolved).count();
+                let ab_active = self.ab_comparison.is_some();
+                let collab_lbl = if self.agent_running {
+                    "AI · Thinking...".to_owned()
+                } else if ab_active {
+                    "AI · A/B!".to_owned()
+                } else if open_pins > 0 {
+                    format!("AI Collab ({open_pins})")
+                } else {
+                    "AI Collab (G)".to_owned()
+                };
+                button(text(collab_lbl).size(11.5))
+                    .padding([3, 8])
+                    .style(move |theme, status| {
+                        if ab_active {
+                            accent_button_style(Color::from_rgb(0.14, 0.62, 0.68), theme, status)
+                        } else if collab_on {
+                            accent_button_style(Color::from_rgb(0.16, 0.54, 0.62), theme, status)
+                        } else {
+                            studio_button_style(theme, status)
+                        }
+                    })
+                    .on_press(Message::ToggleCollabPanel)
+            },
         ]
         .spacing(4)
         .align_y(Alignment::Center);
@@ -3610,6 +4258,8 @@ impl StudioApp {
                     stale: self.stale,
                     zoom: self.zoom,
                     scroll: self.scroll,
+                    review_pins: &self.collab_pins,
+                    ai_highlight: self.ab_comparison.as_ref().map(|ab| &ab.highlight),
                 })
                 .width(Length::Fill)
                 .height(Length::Fill),
@@ -3620,6 +4270,10 @@ impl StudioApp {
         let mut left_col = column![sub_bar]
             .width(Length::FillPortion(3))
             .height(Length::Fill);
+
+        if let Some(ab) = &self.ab_comparison {
+            left_col = left_col.push(self.view_ab_banner(proj, ab));
+        }
 
         if self.show_code {
             let top_wrap = container(main_pane)
@@ -3709,6 +4363,46 @@ impl StudioApp {
 
     fn view_sidebar<'a>(&'a self, proj: &'a ProjectData) -> Element<'a, Message> {
         let mut col = Column::new().spacing(10).padding(12);
+
+        let open_pins = self.collab_pins.iter().filter(|p| !p.resolved).count();
+        let collab_tab_lbl = if self.agent_running {
+            "AI Collab ●".to_owned()
+        } else if open_pins > 0 {
+            format!("AI Collab ({open_pins})")
+        } else {
+            "AI Collab".to_owned()
+        };
+        let is_collab = self.show_collab;
+        let mode_tabs = row![
+            button(text("Inspector").size(11))
+                .padding([4, 8])
+                .width(Length::FillPortion(1))
+                .style(move |t, s| {
+                    if !is_collab {
+                        accent_button_style(Color::from_rgb(0.26, 0.44, 0.72), t, s)
+                    } else {
+                        studio_button_style(t, s)
+                    }
+                })
+                .on_press(Message::SetSidebarCollab(false)),
+            button(text(collab_tab_lbl).size(11))
+                .padding([4, 8])
+                .width(Length::FillPortion(1))
+                .style(move |t, s| {
+                    if is_collab {
+                        accent_button_style(Color::from_rgb(0.14, 0.56, 0.64), t, s)
+                    } else {
+                        studio_button_style(t, s)
+                    }
+                })
+                .on_press(Message::SetSidebarCollab(true)),
+        ]
+        .spacing(6);
+        col = col.push(mode_tabs);
+
+        if self.show_collab {
+            return self.view_collab_sidebar(proj, col);
+        }
 
         if let Some(err) = &self.compile_error {
             col = col.push(
@@ -5774,6 +6468,546 @@ impl StudioApp {
         };
 
         column![top, ctrl].spacing(2).into()
+    }
+
+    fn view_ab_banner<'a>(
+        &'a self,
+        proj: &'a ProjectData,
+        ab: &'a AbComparison,
+    ) -> Element<'a, Message> {
+        let is_before = ab.active_side == AbSide::Before;
+        let is_after = ab.active_side == AbSide::After;
+        let summary = ab.highlight.summary_line(proj);
+        let has_span = ab.highlight.bounding_span.is_some();
+
+        let mut bar = row![
+            text("AI REVIEW")
+                .size(11)
+                .color(Color::from_rgb(0.32, 0.94, 0.98)),
+            text(format!("{} · {summary}", ab.label))
+                .size(11)
+                .color(Color::from_rgb(0.84, 0.90, 0.96)),
+            horizontal_space(),
+            button(text("A: Before").size(10.5))
+                .padding([3, 8])
+                .style(move |t, s| {
+                    if is_before {
+                        accent_button_style(Color::from_rgb(0.82, 0.52, 0.16), t, s)
+                    } else {
+                        studio_button_style(t, s)
+                    }
+                })
+                .on_press(Message::SwitchAbSide(AbSide::Before)),
+            button(text("B: After").size(10.5))
+                .padding([3, 8])
+                .style(move |t, s| {
+                    if is_after {
+                        accent_button_style(Color::from_rgb(0.14, 0.62, 0.68), t, s)
+                    } else {
+                        studio_button_style(t, s)
+                    }
+                })
+                .on_press(Message::SwitchAbSide(AbSide::After)),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center);
+
+        if has_span {
+            bar = bar.push(
+                button(text("Loop Changed").size(10.5))
+                    .padding([3, 8])
+                    .style(|t, s| accent_button_style(Color::from_rgb(0.28, 0.44, 0.74), t, s))
+                    .on_press(Message::JumpAndLoopAiEdit),
+            );
+        }
+
+        bar = bar
+            .push(
+                button(text("Accept").size(10.5))
+                    .padding([3, 8])
+                    .style(|t, s| accent_button_style(Color::from_rgb(0.18, 0.62, 0.40), t, s))
+                    .on_press(Message::AcceptAiEdit),
+            )
+            .push(
+                button(text("Reject").size(10.5))
+                    .padding([3, 8])
+                    .style(|t, s| accent_button_style(Color::from_rgb(0.68, 0.24, 0.28), t, s))
+                    .on_press(Message::RejectAiEdit),
+            );
+
+        container(bar.padding([5, 12]))
+            .width(Length::Fill)
+            .style(|_| container::Style {
+                background: Some(Background::Color(Color::from_rgb(0.085, 0.145, 0.175))),
+                border: Border {
+                    color: Color::from_rgba(0.24, 0.88, 0.96, 0.42),
+                    width: 1.0,
+                    radius: 0.0.into(),
+                },
+                ..Default::default()
+            })
+            .into()
+    }
+
+    fn view_collab_sidebar<'a>(
+        &'a self,
+        proj: &'a ProjectData,
+        mut col: Column<'a, Message>,
+    ) -> Element<'a, Message> {
+        if let Some(err) = &self.edit_error {
+            col = col.push(
+                container(text(err).size(11).color(Color::from_rgb(0.98, 0.56, 0.56)))
+                    .padding(7)
+                    .width(Length::Fill)
+                    .style(|_| container::Style {
+                        background: Some(Background::Color(Color::from_rgba(
+                            0.65, 0.12, 0.14, 0.30,
+                        ))),
+                        border: Border {
+                            color: Color::from_rgb(0.85, 0.30, 0.32),
+                            width: 1.0,
+                            radius: 4.0.into(),
+                        },
+                        ..Default::default()
+                    }),
+            );
+        }
+
+        // 1. Agent Backend & Controls Card
+        let mut backend_row = Row::new().spacing(4).align_y(Alignment::Center);
+        if self.detected_agents.is_empty() {
+            backend_row = backend_row.push(
+                text("No local CLI (use Copy Context)")
+                    .size(10.5)
+                    .color(Color::from_rgb(0.76, 0.64, 0.44)),
+            );
+        } else {
+            for agent in &self.detected_agents {
+                let kind = agent.kind;
+                let active = self.selected_agent == Some(kind);
+                backend_row = backend_row.push(
+                    button(text(kind.label()).size(10.5))
+                        .padding([2, 7])
+                        .style(move |t, s| {
+                            if active {
+                                accent_button_style(Color::from_rgb(0.16, 0.58, 0.66), t, s)
+                            } else {
+                                studio_button_style(t, s)
+                            }
+                        })
+                        .on_press(Message::SelectAgentBackend(kind)),
+                );
+            }
+        }
+        let auto_loop = self.auto_loop_ai_edit;
+        let backend_actions = row![
+            button(
+                text(if auto_loop {
+                    "Auto-Loop: ON"
+                } else {
+                    "Auto-Loop: OFF"
+                })
+                .size(10),
+            )
+            .padding([2, 7])
+            .style(move |t, s| {
+                if auto_loop {
+                    accent_button_style(Color::from_rgb(0.24, 0.52, 0.46), t, s)
+                } else {
+                    studio_button_style(t, s)
+                }
+            })
+            .on_press(Message::ToggleAutoLoopAiEdit),
+            horizontal_space(),
+            button(text("Copy Context").size(10))
+                .padding([2, 7])
+                .style(studio_button_style)
+                .on_press(Message::CopyCollabContext),
+        ]
+        .spacing(5)
+        .align_y(Alignment::Center);
+
+        let backend_card = container(
+            column![
+                row![
+                    text("AI CO-PRODUCER")
+                        .size(11)
+                        .color(Color::from_rgb(0.36, 0.90, 0.96)),
+                    horizontal_space(),
+                    text(if self.agent_running {
+                        "Running..."
+                    } else {
+                        "Ready"
+                    })
+                    .size(10)
+                    .color(if self.agent_running {
+                        Color::from_rgb(0.98, 0.78, 0.30)
+                    } else {
+                        Color::from_rgb(0.46, 0.84, 0.64)
+                    }),
+                ],
+                backend_row,
+                backend_actions,
+            ]
+            .spacing(6),
+        )
+        .padding(8)
+        .width(Length::Fill)
+        .style(|_| container::Style {
+            background: Some(Background::Color(Color::from_rgb(0.100, 0.125, 0.155))),
+            border: Border {
+                color: Color::from_rgba(0.26, 0.84, 0.92, 0.35),
+                width: 1.0,
+                radius: 5.0.into(),
+            },
+            ..Default::default()
+        });
+        col = col.push(backend_card);
+
+        // 2. Shared Focus & Audio Telemetry Card
+        let playhead_bar = proj.format_bar_position(self.playhead_frame);
+        let loop_text = match self.loop_range {
+            Some(lr) => format!(
+                "Loop {}–{}",
+                proj.format_bar_position(lr.start),
+                proj.format_bar_position(lr.end)
+            ),
+            None => "No loop".into(),
+        };
+        let sel_text = if !self.selected_notes.is_empty() {
+            format!("{} selected notes", self.selected_notes.len())
+        } else if let Some(node) = &self.selected_node_id {
+            format!("Node: {node}")
+        } else {
+            "Whole mix".into()
+        };
+        let audio_text = match &self.audio_snapshot {
+            Some(snap) => snap.compact_label(),
+            None if self.audio_snapshot_busy => "Measuring focused audio...".into(),
+            None => "Click Measure to share RMS & spectrum".into(),
+        };
+        let focus_card = container(
+            column![
+                row![
+                    text("SHARED FOCUS & AUDIO")
+                        .size(10.5)
+                        .color(Color::from_rgb(0.68, 0.78, 0.90)),
+                    horizontal_space(),
+                    button(
+                        text(if self.audio_snapshot_busy {
+                            "Measuring..."
+                        } else {
+                            "Measure"
+                        })
+                        .size(10),
+                    )
+                    .padding([2, 6])
+                    .style(studio_button_style)
+                    .on_press_maybe(
+                        (!self.audio_snapshot_busy).then_some(Message::RefreshAudioSnapshot)
+                    ),
+                ]
+                .align_y(Alignment::Center),
+                text(format!("{playhead_bar} · {loop_text} · {sel_text}"))
+                    .size(10.5)
+                    .color(Color::from_rgb(0.84, 0.90, 0.96)),
+                text(audio_text)
+                    .size(10)
+                    .color(Color::from_rgb(0.54, 0.86, 0.76)),
+            ]
+            .spacing(4),
+        )
+        .padding(8)
+        .width(Length::Fill)
+        .style(|_| container::Style {
+            background: Some(Background::Color(Color::from_rgb(0.098, 0.110, 0.138))),
+            border: Border {
+                color: Color::from_rgba(1.0, 1.0, 1.0, 0.10),
+                width: 1.0,
+                radius: 5.0.into(),
+            },
+            ..Default::default()
+        });
+        col = col.push(focus_card);
+
+        // 3. Timeline Review Pins Card
+        let open_count = self.collab_pins.iter().filter(|p| !p.resolved).count();
+        let pin_input = row![
+            text_input(
+                &format!("Pin note @ {playhead_bar}..."),
+                &self.collab_pin_draft
+            )
+            .on_input(Message::CollabPinDraftChanged)
+            .on_submit(Message::AddReviewPin)
+            .size(11)
+            .padding([4, 6]),
+            button(text("+ Pin").size(10.5))
+                .padding([4, 8])
+                .style(|t, s| accent_button_style(Color::from_rgb(0.84, 0.52, 0.16), t, s))
+                .on_press(Message::AddReviewPin),
+        ]
+        .spacing(4)
+        .align_y(Alignment::Center);
+
+        let mut pin_list = Column::new().spacing(4);
+        if self.collab_pins.is_empty() {
+            pin_list = pin_list.push(
+                text("No review pins yet. Drop a pin on any bar to guide the agent.")
+                    .size(10.5)
+                    .color(Color::from_rgb(0.54, 0.60, 0.70)),
+            );
+        } else {
+            for pin in &self.collab_pins {
+                let resolved = pin.resolved;
+                let id = pin.id;
+                let hdr = format!(
+                    "#{} {} {}",
+                    pin.id,
+                    pin.bar_label,
+                    pin.track.as_deref().unwrap_or("")
+                );
+                pin_list = pin_list.push(
+                    container(
+                        column![
+                            row![
+                                button(text(hdr).size(10))
+                                    .padding([1, 5])
+                                    .style(move |t, s| {
+                                        if resolved {
+                                            accent_button_style(
+                                                Color::from_rgb(0.20, 0.54, 0.40),
+                                                t,
+                                                s,
+                                            )
+                                        } else {
+                                            accent_button_style(
+                                                Color::from_rgb(0.82, 0.50, 0.16),
+                                                t,
+                                                s,
+                                            )
+                                        }
+                                    })
+                                    .on_press(Message::JumpToReviewPin(id)),
+                                horizontal_space(),
+                                button(text(if resolved { "✓" } else { "○" }).size(10))
+                                    .padding([1, 5])
+                                    .style(studio_button_style)
+                                    .on_press(Message::TogglePinResolved(id)),
+                                button(text("×").size(10))
+                                    .padding([1, 5])
+                                    .style(studio_button_style)
+                                    .on_press(Message::DeleteReviewPin(id)),
+                            ]
+                            .spacing(3)
+                            .align_y(Alignment::Center),
+                            text(&pin.text).size(10.5).color(if resolved {
+                                Color::from_rgb(0.54, 0.64, 0.60)
+                            } else {
+                                Color::from_rgb(0.88, 0.90, 0.95)
+                            }),
+                        ]
+                        .spacing(3),
+                    )
+                    .padding(5)
+                    .width(Length::Fill)
+                    .style(|_| container::Style {
+                        background: Some(Background::Color(Color::from_rgb(0.120, 0.132, 0.164))),
+                        border: Border {
+                            color: Color::from_rgba(1.0, 1.0, 1.0, 0.08),
+                            width: 1.0,
+                            radius: 4.0.into(),
+                        },
+                        ..Default::default()
+                    }),
+                );
+            }
+        }
+
+        let mut pin_header = row![
+            text(format!("REVIEW PINS ({open_count} open)"))
+                .size(10.5)
+                .color(Color::from_rgb(0.96, 0.72, 0.34)),
+            horizontal_space(),
+        ]
+        .align_y(Alignment::Center);
+        if open_count > 0 {
+            pin_header = pin_header.push(
+                button(text("Fix Open Pins").size(10))
+                    .padding([2, 6])
+                    .style(|t, s| accent_button_style(Color::from_rgb(0.16, 0.56, 0.64), t, s))
+                    .on_press_maybe((!self.agent_running).then(|| {
+                        Message::SendCollabPrompt(Some(
+                            "Please address all Open Timeline Review Pins in the score and mark each resolved pin with [RESOLVED #<id>]."
+                                .into(),
+                        ))
+                    })),
+            );
+        }
+
+        let pins_card = container(
+            column![
+                pin_header,
+                pin_input,
+                scrollable(pin_list.padding(iced::Padding {
+                    top: 0.0,
+                    right: 10.0,
+                    bottom: 0.0,
+                    left: 0.0,
+                }))
+                .width(Length::Fill)
+                .height(Length::Fixed(118.0)),
+            ]
+            .spacing(6),
+        )
+        .padding(8)
+        .width(Length::Fill)
+        .style(|_| container::Style {
+            background: Some(Background::Color(Color::from_rgb(0.098, 0.110, 0.138))),
+            border: Border {
+                color: Color::from_rgba(0.96, 0.66, 0.24, 0.24),
+                width: 1.0,
+                radius: 5.0.into(),
+            },
+            ..Default::default()
+        });
+        col = col.push(pins_card);
+
+        // 4. Live Agent Chat Thread & Prompt Composer
+        let mut chat_col = Column::new().spacing(6);
+        if self.collab_chat.is_empty() {
+            chat_col = chat_col.push(
+                text("Ask your AI co-producer to refine chords, add drum fills, balance the mix, or fix open pins. Your playhead, loop, selection, and audio telemetry are shared automatically.")
+                    .size(10.5)
+                    .color(Color::from_rgb(0.56, 0.64, 0.74)),
+            );
+        } else {
+            for msg in &self.collab_chat {
+                let (who, accent, bg) = match msg.role {
+                    ChatRole::User => (
+                        "You",
+                        Color::from_rgb(0.56, 0.78, 0.98),
+                        Color::from_rgb(0.125, 0.150, 0.205),
+                    ),
+                    ChatRole::Agent => (
+                        "Agent",
+                        Color::from_rgb(0.36, 0.90, 0.86),
+                        Color::from_rgb(0.100, 0.145, 0.160),
+                    ),
+                    ChatRole::System => (
+                        "System",
+                        Color::from_rgb(0.96, 0.66, 0.42),
+                        Color::from_rgb(0.165, 0.125, 0.120),
+                    ),
+                };
+                let mut bubble = Column::new().spacing(3).push(
+                    row![
+                        text(who).size(10).color(accent),
+                        horizontal_space(),
+                        text(msg.detail.as_deref().unwrap_or(""))
+                            .size(9.5)
+                            .color(Color::from_rgb(0.56, 0.64, 0.74)),
+                    ]
+                    .align_y(Alignment::Center),
+                );
+                bubble = bubble.push(
+                    text(&msg.text)
+                        .size(10.5)
+                        .color(Color::from_rgb(0.88, 0.92, 0.96)),
+                );
+                chat_col = chat_col.push(container(bubble).padding(7).width(Length::Fill).style(
+                    move |_| container::Style {
+                        background: Some(Background::Color(bg)),
+                        border: Border {
+                            color: Color::from_rgba(accent.r, accent.g, accent.b, 0.22),
+                            width: 1.0,
+                            radius: 5.0.into(),
+                        },
+                        ..Default::default()
+                    },
+                ));
+            }
+        }
+
+        let quick_row = row![
+            button(text("Balance Mix").size(9.5))
+                .padding([2, 6])
+                .style(studio_button_style)
+                .on_press_maybe((!self.agent_running).then(|| {
+                    Message::SendCollabPrompt(Some(
+                        "Inspect the focused audio telemetry and mix parameters, and tighten the balance so the focused section sounds clearer without clipping."
+                            .into(),
+                    ))
+                })),
+            button(text("Drum Fill").size(9.5))
+                .padding([2, 6])
+                .style(studio_button_style)
+                .on_press_maybe((!self.agent_running).then(|| {
+                    Message::SendCollabPrompt(Some(
+                        "Add a tasteful drum fill right at the end of the currently focused loop or playhead bar."
+                            .into(),
+                    ))
+                })),
+            button(text("Brighten").size(9.5))
+                .padding([2, 6])
+                .style(studio_button_style)
+                .on_press_maybe((!self.agent_running).then(|| {
+                    Message::SendCollabPrompt(Some(
+                        "Make the focused track or section slightly brighter and more expressive while preserving the groove."
+                            .into(),
+                    ))
+                })),
+        ]
+        .spacing(4);
+
+        let composer = row![
+            text_input("Ask AI about this section...", &self.collab_prompt_input)
+                .on_input(Message::CollabPromptChanged)
+                .on_submit(Message::SendCollabPrompt(None))
+                .size(11)
+                .padding([5, 7]),
+            button(text(if self.agent_running { "..." } else { "Send" }).size(11))
+                .padding([5, 10])
+                .style(|t, s| accent_button_style(Color::from_rgb(0.16, 0.58, 0.66), t, s))
+                .on_press_maybe((!self.agent_running).then_some(Message::SendCollabPrompt(None))),
+        ]
+        .spacing(5)
+        .align_y(Alignment::Center);
+
+        let chat_card = container(
+            column![
+                text("COLLABORATION CHAT")
+                    .size(10.5)
+                    .color(Color::from_rgb(0.68, 0.78, 0.90)),
+                scrollable(chat_col.padding(iced::Padding {
+                    top: 0.0,
+                    right: 10.0,
+                    bottom: 0.0,
+                    left: 0.0,
+                }))
+                .width(Length::Fill)
+                .height(Length::Fixed(240.0)),
+                quick_row,
+                composer,
+            ]
+            .spacing(6),
+        )
+        .padding(8)
+        .width(Length::Fill)
+        .style(|_| container::Style {
+            background: Some(Background::Color(Color::from_rgb(0.098, 0.110, 0.138))),
+            border: Border {
+                color: Color::from_rgba(0.24, 0.84, 0.92, 0.24),
+                width: 1.0,
+                radius: 5.0.into(),
+            },
+            ..Default::default()
+        });
+        col = col.push(chat_card);
+
+        scrollable(col)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
     }
 
     fn view_code_panel<'a>(&'a self, proj: &'a ProjectData) -> Element<'a, Message> {

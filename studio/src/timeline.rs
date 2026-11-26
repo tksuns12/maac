@@ -9,6 +9,7 @@ use iced::widget::canvas::{self, Frame, Geometry, Path, Stroke, Text};
 use iced::{Color, Point, Rectangle, Renderer, Size, Theme};
 use maac::dsp::RenderSpan;
 
+use crate::collab::{AiEditHighlight, ReviewPin};
 use crate::editor::midi_to_pitch_symbol;
 use crate::mixer::format_param_value;
 use crate::project::{format_time, ProjectData, RollHit, RollNote};
@@ -87,6 +88,7 @@ pub enum TimelineAction {
         anchor: f32,
     },
     Pan(f32),
+    JumpToPin(u64),
 }
 
 #[derive(Clone, Debug)]
@@ -159,6 +161,8 @@ pub struct TimelineView<'a> {
     pub stale: bool,
     pub zoom: f32,
     pub scroll: f32,
+    pub review_pins: &'a [ReviewPin],
+    pub ai_highlight: Option<&'a AiEditHighlight>,
 }
 
 impl<'a> TimelineView<'a> {
@@ -456,6 +460,16 @@ impl canvas::Program<TimelineAction> for TimelineView<'_> {
                     let raw_frame = self.x_to_frame(pos.x, bounds.width);
                     let in_ruler = pos.y <= RULER_HEIGHT;
                     if in_ruler {
+                        // Clicking a Review Pin badge jumps directly to that pin.
+                        for pin in self.review_pins {
+                            let px = self.frame_to_x(pin.frame, bounds.width);
+                            if (pos.x - px).abs() <= 14.0 && pos.y >= 18.0 {
+                                return (
+                                    canvas::event::Status::Captured,
+                                    Some(TimelineAction::JumpToPin(pin.id)),
+                                );
+                            }
+                        }
                         let now = Instant::now();
                         if let Some((prev_t, prev_x)) = state.last_ruler_click {
                             if now.duration_since(prev_t).as_millis() < 360
@@ -1046,7 +1060,27 @@ impl canvas::Program<TimelineAction> for TimelineView<'_> {
             }
         }
 
-        // 4. Piano roll notes (dimmed when muted; highlighted when selected or sharing source).
+        // 3b. AI Edit Highlight bands (shows exact sections touched by the agent).
+        if let Some(hl) = self.ai_highlight {
+            for span in &hl.changed_spans {
+                let ax0 = self.frame_to_x(span.start, w).clamp(0.0, w);
+                let ax1 = self.frame_to_x(span.end, w).clamp(0.0, w);
+                if ax1 > ax0 {
+                    frame.fill_rectangle(
+                        Point::new(ax0, roll_top),
+                        Size::new((ax1 - ax0).max(3.0), h - roll_top - CHECKPOINT_BAR_HEIGHT),
+                        Color::from_rgba(0.24, 0.88, 0.96, 0.11),
+                    );
+                    frame.fill_rectangle(
+                        Point::new(ax0, RULER_HEIGHT - 4.0),
+                        Size::new((ax1 - ax0).max(4.0), 4.0),
+                        Color::from_rgba(0.26, 0.92, 0.98, 0.92),
+                    );
+                }
+            }
+        }
+
+        // 4. Piano roll notes (dimmed when muted; highlighted when selected, AI-edited, or sharing source).
         for note in &self.project.notes {
             if !self
                 .visible_tracks
@@ -1087,6 +1121,9 @@ impl canvas::Program<TimelineAction> for TimelineView<'_> {
                 Size::new(nw, note_h),
                 Color::from_rgba(base.r, base.g, base.b, alpha),
             );
+            let is_ai_changed = self
+                .ai_highlight
+                .is_some_and(|hl| hl.changed_note_addresses.contains(&note.address));
             if is_selected {
                 frame.stroke(
                     &Path::rectangle(
@@ -1094,6 +1131,16 @@ impl canvas::Program<TimelineAction> for TimelineView<'_> {
                         Size::new(nw + 2.0, note_h + 2.0),
                     ),
                     Stroke::default().with_color(Color::WHITE).with_width(1.8),
+                );
+            } else if is_ai_changed {
+                frame.stroke(
+                    &Path::rectangle(
+                        Point::new(x0 - 1.0, r.y - 1.0),
+                        Size::new(nw + 2.0, note_h + 2.0),
+                    ),
+                    Stroke::default()
+                        .with_color(Color::from_rgb(0.26, 0.94, 1.0))
+                        .with_width(1.6),
                 );
             } else if is_sibling {
                 frame.stroke(
@@ -1482,6 +1529,47 @@ impl canvas::Program<TimelineAction> for TimelineView<'_> {
                 .with_color(Color::from_rgba(1.0, 1.0, 1.0, 0.16))
                 .with_width(1.0),
         );
+
+        // 6b. Timeline Review Pins (collaborative bar annotations shared with the AI agent).
+        for pin in self.review_pins {
+            if (pin.frame as f64) < v0 || (pin.frame as f64) > v1 {
+                continue;
+            }
+            let px = self.frame_to_x(pin.frame, w);
+            let pin_color = if pin.resolved {
+                Color::from_rgb(0.26, 0.72, 0.54)
+            } else {
+                Color::from_rgb(0.98, 0.62, 0.20)
+            };
+            frame.stroke(
+                &Path::line(
+                    Point::new(px, RULER_HEIGHT),
+                    Point::new(px, h - CHECKPOINT_BAR_HEIGHT),
+                ),
+                Stroke::default()
+                    .with_color(Color::from_rgba(
+                        pin_color.r,
+                        pin_color.g,
+                        pin_color.b,
+                        if pin.resolved { 0.22 } else { 0.45 },
+                    ))
+                    .with_width(1.2),
+            );
+            let badge_w = 24.0;
+            let badge_x = (px - badge_w * 0.5).clamp(2.0, (w - badge_w - 2.0).max(2.0));
+            frame.fill_rectangle(
+                Point::new(badge_x, RULER_HEIGHT - 16.0),
+                Size::new(badge_w, 14.0),
+                pin_color,
+            );
+            frame.fill_text(Text {
+                content: format!("#{}", pin.id),
+                position: Point::new(badge_x + 3.0, RULER_HEIGHT - 15.0),
+                color: Color::from_rgb(0.06, 0.07, 0.09),
+                size: iced::Pixels(10.0),
+                ..Text::default()
+            });
+        }
 
         // 7. Playhead needle.
         if (self.playhead_frame as f64) >= v0 && (self.playhead_frame as f64) <= v1 {
