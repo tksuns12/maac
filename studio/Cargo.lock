@@ -2696,11 +2696,15 @@ name = "maac-studio"
 version = "0.1.0"
 dependencies = [
  "cpal",
+ "hound",
  "iced",
+ "libc",
+ "libloading 0.8.9",
  "maac",
  "notify",
  "num-traits",
  "rfd",
+ "serde",
  "serde_json",
 ]
 

@@ -2,13 +2,13 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use iced::keyboard::{self, key::Named, Key};
 use iced::widget::{
-    button, canvas, column, container, horizontal_space, row, scrollable, slider, text, toggler,
-    Column, Row, Space,
+    button, canvas, column, container, horizontal_space, row, scrollable, slider, text, text_input,
+    toggler, Column, Row, Space,
 };
 use iced::{
     Alignment, Background, Border, Color, Element, Font, Length, Subscription, Task, Theme,
@@ -35,9 +35,17 @@ use crate::mixer::{
     apply_node_param_edit, apply_node_param_reset, format_param_value, MixerNodeInfo, NodeCategory,
     NodeParamInfo,
 };
+use crate::plugins::freeze::{freeze_target_to_maac, FreezeOutcome};
+use crate::plugins::rack_file::{load_rack_file, save_rack_file};
+use crate::plugins::{
+    scan_installed_plugins, HostRack, PluginDescriptor, PluginKind, PluginSlotSummary, SlotTarget,
+};
 use crate::project::{
     format_time, load_and_compile, load_from_bundle, load_from_edited, ProjectData,
 };
+use crate::sampler_import::emit_maac::{emit_maac_library, wire_imported_library_into_bundle};
+use crate::sampler_import::sf2::{list_sf2_presets, parse_sf2_preset, Sf2PresetInfo};
+use crate::sampler_import::sfz::parse_sfz;
 use crate::timeline::{track_color, TimelineAction, TimelineView};
 use crate::watcher::ProjectWatcher;
 
@@ -179,6 +187,44 @@ pub enum Message {
         node_id: String,
         param_name: String,
     },
+    PluginScanReady(Vec<PluginDescriptor>),
+    OpenPluginPicker {
+        target: SlotTarget,
+        kind: PluginKind,
+    },
+    ClosePluginPicker,
+    PluginSearchChanged(String),
+    AddPluginSlot {
+        target: SlotTarget,
+        descriptor: PluginDescriptor,
+    },
+    SelectPluginSlot(Option<u64>),
+    TogglePluginBypass(u64),
+    RemovePluginSlot(u64),
+    PluginParamChanged {
+        slot_id: u64,
+        param_id: u32,
+        value: f32,
+    },
+    FreezePluginTarget(SlotTarget),
+    FreezeFinished {
+        prev_source: String,
+        target: SlotTarget,
+        result: Result<Box<FreezeOutcome>, String>,
+    },
+    OpenSamplerImportDialog,
+    SamplerFilePicked(Option<PathBuf>),
+    SelectSf2TargetTrack(Option<String>),
+    ImportSf2Preset {
+        bank: u16,
+        program: u16,
+    },
+    CloseSf2Picker,
+    SamplerImported {
+        prev_source: String,
+        summary: String,
+        result: Result<Box<ProjectData>, String>,
+    },
     ToggleCodePanel,
     SelectCodeTab(CodeTab),
     ToggleCodeFocused,
@@ -245,6 +291,16 @@ pub struct StudioApp {
     show_mixer: bool,
     selected_node_id: Option<String>,
     param_drafts: HashMap<(String, String), f32>,
+
+    // External DAW Plugins (AU / CLAP) + Freeze + SF2/SFZ Importer
+    host_rack: Arc<Mutex<HostRack>>,
+    plugin_catalog: Vec<PluginDescriptor>,
+    plugin_slots: Vec<PluginSlotSummary>,
+    selected_plugin_slot: Option<u64>,
+    plugin_picker: Option<(SlotTarget, PluginKind)>,
+    plugin_search: String,
+    freezing: bool,
+    sf2_picker: Option<(PathBuf, Vec<Sf2PresetInfo>, Option<String>)>,
 
     // Live .maac Code & Diff Collaboration Panel
     show_code: bool,
@@ -316,6 +372,17 @@ impl StudioApp {
             show_mixer: false,
             selected_node_id: None,
             param_drafts: HashMap::new(),
+            host_rack: Arc::new(Mutex::new(HostRack::new(
+                48_000.0,
+                PLAYBACK_CHUNK_FRAMES as usize,
+            ))),
+            plugin_catalog: Vec::new(),
+            plugin_slots: Vec::new(),
+            selected_plugin_slot: None,
+            plugin_picker: None,
+            plugin_search: String::new(),
+            freezing: false,
+            sf2_picker: None,
             show_code: false,
             code_tab: CodeTab::LiveCode,
             code_focused_only: true,
@@ -348,9 +415,16 @@ impl StudioApp {
             analysis_error: None,
         };
 
+        let scan_task = Task::perform(
+            async {
+                let handle = std::thread::spawn(scan_installed_plugins);
+                handle.join().unwrap_or_default()
+            },
+            Message::PluginScanReady,
+        );
         let task = match initial_path {
-            Some(path) => spawn_compile(path, false),
-            None => Task::none(),
+            Some(path) => Task::batch([scan_task, spawn_compile(path, false)]),
+            None => scan_task,
         };
         (app, task)
     }
@@ -1495,10 +1569,16 @@ impl StudioApp {
                 let saved = src.clone();
                 match std::fs::write(&proj.entry_path, &saved) {
                     Ok(()) => {
+                        let rack_file = self
+                            .host_rack
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .to_rack_file();
+                        let rack_err = save_rack_file(&proj.entry_path, &rack_file).err();
                         self.saved_source = Some(saved);
                         self.last_self_save = Some(Instant::now());
                         self.pending_watch_at = None;
-                        self.edit_error = None;
+                        self.edit_error = rack_err;
                         self.last_reload_note = Some(format!("Saved {title}"));
                         self.refresh_code_cache();
                     }
@@ -1783,6 +1863,351 @@ impl StudioApp {
                         },
                     },
                 )
+            }
+
+            Message::PluginScanReady(catalog) => {
+                self.plugin_catalog = catalog;
+                if let Some(proj) = &self.project {
+                    let is_empty = self
+                        .host_rack
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .is_empty();
+                    if is_empty {
+                        if let Ok(Some(rf)) = load_rack_file(&proj.entry_path) {
+                            let warnings = self
+                                .host_rack
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .load_rack_file(&rf, &self.plugin_catalog);
+                            self.refresh_plugin_slots();
+                            if !warnings.is_empty() {
+                                self.edit_error = Some(warnings.join("; "));
+                            }
+                        }
+                    }
+                }
+                Task::none()
+            }
+
+            Message::OpenPluginPicker { target, kind } => {
+                self.plugin_picker = Some((target, kind));
+                self.plugin_search.clear();
+                self.show_sidebar = true;
+                Task::none()
+            }
+
+            Message::ClosePluginPicker => {
+                self.plugin_picker = None;
+                self.plugin_search.clear();
+                Task::none()
+            }
+
+            Message::PluginSearchChanged(q) => {
+                self.plugin_search = q;
+                Task::none()
+            }
+
+            Message::AddPluginSlot { target, descriptor } => {
+                let res = {
+                    let mut rack = self
+                        .host_rack
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    rack.add_slot(target, &descriptor)
+                };
+                match res {
+                    Ok(slot_id) => {
+                        self.plugin_picker = None;
+                        self.plugin_search.clear();
+                        self.selected_plugin_slot = Some(slot_id);
+                        self.edit_error = None;
+                        self.refresh_plugin_slots();
+                        self.last_reload_note = Some(format!(
+                            "Loaded [{}] {} ({})",
+                            descriptor.format.label(),
+                            descriptor.name,
+                            descriptor.kind.label()
+                        ));
+                    }
+                    Err(err) => {
+                        self.edit_error = Some(format!("Plugin load failed: {err}"));
+                    }
+                }
+                Task::none()
+            }
+
+            Message::SelectPluginSlot(slot_id) => {
+                self.selected_plugin_slot = slot_id;
+                if slot_id.is_some() {
+                    self.show_sidebar = true;
+                }
+                Task::none()
+            }
+
+            Message::TogglePluginBypass(slot_id) => {
+                self.host_rack
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .toggle_bypass(slot_id);
+                self.refresh_plugin_slots();
+                Task::none()
+            }
+
+            Message::RemovePluginSlot(slot_id) => {
+                self.host_rack
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .remove_slot(slot_id);
+                if self.selected_plugin_slot == Some(slot_id) {
+                    self.selected_plugin_slot = None;
+                }
+                self.refresh_plugin_slots();
+                Task::none()
+            }
+
+            Message::PluginParamChanged {
+                slot_id,
+                param_id,
+                value,
+            } => {
+                self.host_rack
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .set_param(slot_id, param_id, value);
+                if let Some(slot) = self.plugin_slots.iter_mut().find(|s| s.slot_id == slot_id) {
+                    if let Some(entry) =
+                        slot.param_values.iter_mut().find(|(id, _)| *id == param_id)
+                    {
+                        entry.1 = value;
+                    }
+                }
+                Task::none()
+            }
+
+            Message::FreezePluginTarget(target) => {
+                if self.freezing || self.editing {
+                    return Task::none();
+                }
+                let Some(proj) = &self.project else {
+                    return Task::none();
+                };
+                let Some(prev_source) = proj.bundle.sources.get(&proj.bundle.entry).cloned() else {
+                    return Task::none();
+                };
+                let rack_file = self
+                    .host_rack
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .to_rack_file();
+                let bundle = proj.bundle.clone();
+                let plan = proj.plan.clone();
+                let limits = proj.limits;
+                let project_root = proj.project_root.clone();
+                let catalog = self.plugin_catalog.clone();
+                let span = self.loop_range;
+                let target_clone = target.clone();
+                self.freezing = true;
+                self.edit_error = None;
+                self.last_reload_note = Some("Freezing plugin to pure .maac PCM...".into());
+                Task::perform(
+                    async move {
+                        let handle = std::thread::spawn(move || {
+                            freeze_target_to_maac(
+                                &bundle,
+                                &plan,
+                                &limits,
+                                &project_root,
+                                &rack_file,
+                                &catalog,
+                                &target_clone,
+                                span,
+                            )
+                            .map(Box::new)
+                        });
+                        handle
+                            .join()
+                            .unwrap_or_else(|_| Err("freeze worker panicked".into()))
+                    },
+                    move |result| Message::FreezeFinished {
+                        prev_source: prev_source.clone(),
+                        target: target.clone(),
+                        result,
+                    },
+                )
+            }
+
+            Message::FreezeFinished {
+                prev_source,
+                target,
+                result,
+            } => {
+                self.freezing = false;
+                match result {
+                    Ok(outcome) => {
+                        let Some(proj) = &self.project else {
+                            return Task::none();
+                        };
+                        let entry_path = proj.entry_path.clone();
+                        let project_root = proj.project_root.clone();
+                        let summary = format!(
+                            "{} ({}, {} KiB)",
+                            outcome.summary,
+                            outcome.frozen_node_id,
+                            outcome.bytes / 1024
+                        );
+                        match load_from_edited(entry_path, project_root, outcome.edited) {
+                            Ok(recompiled) => {
+                                {
+                                    let mut rack = self
+                                        .host_rack
+                                        .lock()
+                                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                                    for slot in rack.summaries() {
+                                        let matches_target = match &target {
+                                            SlotTarget::MasterInsert => true,
+                                            SlotTarget::TrackInstrument(n)
+                                            | SlotTarget::NodeInsert(n) => matches!(
+                                                &slot.target,
+                                                SlotTarget::TrackInstrument(id)
+                                                    | SlotTarget::NodeInsert(id)
+                                                    if id == n
+                                            ),
+                                        };
+                                        if matches_target {
+                                            rack.set_bypassed(slot.slot_id, true);
+                                        }
+                                    }
+                                }
+                                self.refresh_plugin_slots();
+                                self.undo_stack.push(prev_source);
+                                if self.undo_stack.len() > 100 {
+                                    self.undo_stack.remove(0);
+                                }
+                                self.redo_stack.clear();
+                                self.edit_error = None;
+                                return self.apply_in_memory_project(recompiled, summary);
+                            }
+                            Err(err) => {
+                                self.edit_error = Some(format!("Freeze load failed: {err}"));
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        self.edit_error = Some(format!("Freeze failed: {err}"));
+                    }
+                }
+                Task::none()
+            }
+
+            Message::OpenSamplerImportDialog => {
+                if self.editing || self.project.is_none() {
+                    return Task::none();
+                }
+                let dir = self
+                    .project
+                    .as_ref()
+                    .map(|p| p.project_root.clone())
+                    .unwrap_or_else(|| PathBuf::from("."));
+                Task::perform(
+                    async move {
+                        rfd::FileDialog::new()
+                            .set_directory(dir)
+                            .add_filter(
+                                "Sample Instruments (SF2 / SFZ)",
+                                &["sf2", "SF2", "sfz", "SFZ"],
+                            )
+                            .pick_file()
+                    },
+                    Message::SamplerFilePicked,
+                )
+            }
+
+            Message::SamplerFilePicked(None) => Task::none(),
+
+            Message::SamplerFilePicked(Some(path)) => {
+                let default_track = self.selected_node_id.clone().or_else(|| {
+                    self.project.as_ref().and_then(|p| {
+                        p.tracks
+                            .iter()
+                            .find(|t| t.note_count > 0)
+                            .map(|t| t.name.clone())
+                    })
+                });
+                let ext = path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map(str::to_ascii_lowercase)
+                    .unwrap_or_default();
+                if ext == "sf2" {
+                    match list_sf2_presets(&path) {
+                        Ok(presets) if presets.len() > 1 => {
+                            self.sf2_picker = Some((path, presets, default_track));
+                            self.show_sidebar = true;
+                            Task::none()
+                        }
+                        Ok(presets) if presets.len() == 1 => {
+                            let p = &presets[0];
+                            self.spawn_sampler_import(
+                                path,
+                                Some((p.bank, p.program)),
+                                default_track,
+                            )
+                        }
+                        Ok(_) => {
+                            self.edit_error = Some("SF2 file contains no presets".into());
+                            Task::none()
+                        }
+                        Err(err) => {
+                            self.edit_error = Some(err);
+                            Task::none()
+                        }
+                    }
+                } else {
+                    self.spawn_sampler_import(path, None, default_track)
+                }
+            }
+
+            Message::SelectSf2TargetTrack(track) => {
+                if let Some((_, _, target)) = self.sf2_picker.as_mut() {
+                    *target = track;
+                }
+                Task::none()
+            }
+
+            Message::ImportSf2Preset { bank, program } => {
+                let Some((path, _, target)) = self.sf2_picker.take() else {
+                    return Task::none();
+                };
+                self.spawn_sampler_import(path, Some((bank, program)), target)
+            }
+
+            Message::CloseSf2Picker => {
+                self.sf2_picker = None;
+                Task::none()
+            }
+
+            Message::SamplerImported {
+                prev_source,
+                summary,
+                result,
+            } => {
+                self.editing = false;
+                match result {
+                    Ok(data) => {
+                        self.undo_stack.push(prev_source);
+                        if self.undo_stack.len() > 100 {
+                            self.undo_stack.remove(0);
+                        }
+                        self.redo_stack.clear();
+                        self.edit_error = None;
+                        return self.apply_in_memory_project(*data, summary);
+                    }
+                    Err(err) => {
+                        self.edit_error = Some(format!("Sampler import failed: {err}"));
+                    }
+                }
+                Task::none()
             }
 
             Message::GainChanged(g) => {
@@ -2343,6 +2768,89 @@ impl StudioApp {
         pb.set_muted_nodes(self.effective_muted_nodes(proj));
     }
 
+    fn refresh_plugin_slots(&mut self) {
+        self.plugin_slots = self
+            .host_rack
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .summaries();
+    }
+
+    fn spawn_sampler_import(
+        &mut self,
+        path: PathBuf,
+        sf2_preset: Option<(u16, u16)>,
+        target_track: Option<String>,
+    ) -> Task<Message> {
+        let Some(proj) = &self.project else {
+            return Task::none();
+        };
+        let Some(prev_source) = proj.bundle.sources.get(&proj.bundle.entry).cloned() else {
+            return Task::none();
+        };
+        let bundle = proj.bundle.clone();
+        let base_plan = proj.plan.clone();
+        let entry_path = proj.entry_path.clone();
+        let project_root = proj.project_root.clone();
+        let limits = proj.limits;
+        self.editing = true;
+        self.edit_error = None;
+        self.last_reload_note = Some("Importing SF2/SFZ instrument into MaaC library...".into());
+        Task::perform(
+            async move {
+                let handle = std::thread::spawn(move || {
+                    let started = Instant::now();
+                    let inst = match sf2_preset {
+                        Some((bank, program)) => parse_sf2_preset(&path, bank, program)?,
+                        None => parse_sfz(&path)?,
+                    };
+                    let (summary, lib_src, lib_assets) =
+                        emit_maac_library(inst, &project_root, &limits)?;
+                    let (edited, action_desc) = wire_imported_library_into_bundle(
+                        &bundle,
+                        &summary,
+                        lib_src,
+                        lib_assets,
+                        target_track.as_deref(),
+                        &limits,
+                        Some(&base_plan),
+                    )?;
+                    let mut recompiled = load_from_edited(entry_path, project_root, edited)?;
+                    recompiled.compile_ms = started.elapsed().as_millis() as u64;
+                    let warn_suffix = if summary.warnings.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" · {}", summary.warnings.join("; "))
+                    };
+                    let note = format!(
+                        "{action_desc} ({} smp / {}/{} zones, {} vals, {} ms){warn_suffix}",
+                        summary.emitted_samples,
+                        summary.emitted_zones,
+                        summary.original_zones,
+                        summary.total_values,
+                        recompiled.compile_ms
+                    );
+                    Ok((Box::new(recompiled), note))
+                });
+                handle
+                    .join()
+                    .unwrap_or_else(|_| Err("sampler import worker panicked".into()))
+            },
+            move |res| match res {
+                Ok((data, summary)) => Message::SamplerImported {
+                    prev_source: prev_source.clone(),
+                    summary,
+                    result: Ok(data),
+                },
+                Err(err) => Message::SamplerImported {
+                    prev_source: prev_source.clone(),
+                    summary: String::new(),
+                    result: Err(err),
+                },
+            },
+        )
+    }
+
     fn apply_compiled_project(&mut self, data: ProjectData, is_reload: bool) -> Task<Message> {
         let same_format = self.project.as_ref().is_some_and(|prev| {
             prev.sample_rate_hz == data.sample_rate_hz && prev.channels == data.channels
@@ -2412,7 +2920,30 @@ impl StudioApp {
         self.velocity_draft = None;
         self.selected_node_id = None;
         self.param_drafts.clear();
+        self.selected_plugin_slot = None;
+        self.plugin_picker = None;
+        self.sf2_picker = None;
         self.edit_error = None;
+        {
+            let mut rack = self
+                .host_rack
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            rack.clear();
+            rack.set_format(
+                f64::from(data.sample_rate_hz),
+                PLAYBACK_CHUNK_FRAMES as usize,
+            );
+            if !self.plugin_catalog.is_empty() {
+                if let Ok(Some(rf)) = load_rack_file(&data.entry_path) {
+                    let warnings = rack.load_rack_file(&rf, &self.plugin_catalog);
+                    if !warnings.is_empty() {
+                        self.edit_error = Some(warnings.join("; "));
+                    }
+                }
+            }
+        }
+        self.refresh_plugin_slots();
 
         let spacing = (data.sample_rate_hz as u64 * CHECKPOINT_SECONDS).max(4_096);
         let policy = SessionPolicy::new(spacing)
@@ -2472,6 +3003,7 @@ impl StudioApp {
         match session.play(start, config) {
             Ok(pb) => {
                 pb.set_muted_nodes(self.effective_muted_nodes(proj));
+                pb.set_host_processor(Some(self.host_rack.clone()));
                 let pb = Arc::new(pb);
                 self.audio
                     .set_playback(Some(Arc::clone(&pb)), proj.sample_rate_hz, proj.channels);
@@ -3938,6 +4470,20 @@ impl StudioApp {
             );
         }
 
+        // External AU / CLAP Plugin Picker, SF2 Preset Picker, and Hosted Plugin Inspector
+        if let Some((target, kind)) = &self.plugin_picker {
+            col = col.push(self.view_plugin_picker_card(target, *kind));
+        }
+        if let Some((path, presets, target_track)) = &self.sf2_picker {
+            col = col.push(self.view_sf2_picker_card(proj, path, presets, target_track.as_deref()));
+        }
+        if let Some(slot) = self
+            .selected_plugin_slot
+            .and_then(|id| self.plugin_slots.iter().find(|s| s.slot_id == id))
+        {
+            col = col.push(self.view_plugin_slot_inspector_card(slot));
+        }
+
         // Declared regions quick jump & loop
         // Quick FX / Bus selector chips & Node/FX Parameter Inspector
         if let Some(node) = self
@@ -4224,23 +4770,34 @@ impl StudioApp {
             .filter(|n| n.category != NodeCategory::Instrument)
             .collect();
 
+        let plugin_count = self.plugin_catalog.len();
         let header = row![
             text("LIVE MIXER & FX CONSOLE")
                 .size(12)
                 .color(Color::from_rgb(0.76, 0.84, 0.96)),
             Space::with_width(10),
             text(format!(
-                "{} Tracks · {} Bus / FX",
+                "{} Tracks · {} Bus / FX · {} AU/CLAP Plugins",
                 instruments.len(),
-                bus_fx.len()
+                bus_fx.len(),
+                plugin_count
             ))
             .size(11)
             .color(Color::from_rgb(0.56, 0.64, 0.76)),
             horizontal_space(),
-            text("Drag sliders & release to apply live · Click strip header to inspect all params")
-                .size(11)
-                .color(Color::from_rgb(0.52, 0.58, 0.68)),
+            button(text("+ Master FX").size(11))
+                .padding([3, 8])
+                .style(|t, s| accent_button_style(Color::from_rgb(0.42, 0.30, 0.72), t, s))
+                .on_press(Message::OpenPluginPicker {
+                    target: SlotTarget::MasterInsert,
+                    kind: PluginKind::Effect,
+                }),
+            button(text("Import SF2 / SFZ...").size(11))
+                .padding([3, 8])
+                .style(|t, s| accent_button_style(Color::from_rgb(0.18, 0.56, 0.50), t, s))
+                .on_press_maybe((!self.editing).then_some(Message::OpenSamplerImportDialog)),
         ]
+        .spacing(6)
         .align_y(Alignment::Center)
         .padding([10, 14]);
 
@@ -4258,6 +4815,78 @@ impl StudioApp {
         }
 
         let mut body = Column::new().spacing(10).padding([2, 14]);
+
+        let master_slots: Vec<&PluginSlotSummary> = self
+            .plugin_slots
+            .iter()
+            .filter(|s| matches!(s.target, SlotTarget::MasterInsert))
+            .collect();
+        if !master_slots.is_empty() {
+            let mut master_row = Row::new().spacing(6).align_y(Alignment::Center);
+            master_row = master_row.push(
+                text(format!("MASTER FX ({})", master_slots.len()))
+                    .size(10.5)
+                    .color(Color::from_rgb(0.76, 0.62, 0.98)),
+            );
+            for slot in &master_slots {
+                let is_sel = self.selected_plugin_slot == Some(slot.slot_id);
+                let bypassed = slot.bypassed;
+                let label = format!(
+                    "[{}] {}{}",
+                    slot.descriptor.format.label(),
+                    slot.descriptor.name,
+                    if bypassed { " (BYP)" } else { "" }
+                );
+                master_row = master_row.push(
+                    button(text(label).size(11))
+                        .padding([3, 9])
+                        .style(move |t, s| {
+                            if is_sel {
+                                accent_button_style(Color::from_rgb(0.54, 0.34, 0.86), t, s)
+                            } else if bypassed {
+                                studio_button_style(t, s)
+                            } else {
+                                accent_button_style(Color::from_rgb(0.34, 0.24, 0.58), t, s)
+                            }
+                        })
+                        .on_press(Message::SelectPluginSlot(Some(slot.slot_id))),
+                );
+            }
+            master_row = master_row.push(
+                button(
+                    text(if self.freezing {
+                        "Freezing..."
+                    } else {
+                        "Freeze Master"
+                    })
+                    .size(10.5),
+                )
+                .padding([3, 8])
+                .style(|t, s| accent_button_style(Color::from_rgb(0.20, 0.54, 0.72), t, s))
+                .on_press_maybe(
+                    (!self.freezing && !self.editing)
+                        .then_some(Message::FreezePluginTarget(SlotTarget::MasterInsert)),
+                ),
+            );
+            body = body.push(
+                container(scrollable(master_row).width(Length::Fill).direction(
+                    scrollable::Direction::Horizontal(
+                        scrollable::Scrollbar::new().width(4).scroller_width(4),
+                    ),
+                ))
+                .padding([5, 10])
+                .width(Length::Fill)
+                .style(|_| container::Style {
+                    background: Some(Background::Color(Color::from_rgb(0.112, 0.108, 0.160))),
+                    border: Border {
+                        color: Color::from_rgba(0.68, 0.52, 0.96, 0.38),
+                        width: 1.0,
+                        radius: 5.0.into(),
+                    },
+                    ..Default::default()
+                }),
+            );
+        }
 
         if !instruments.is_empty() {
             let mut inst_row = Row::new()
@@ -4299,6 +4928,7 @@ impl StudioApp {
             ));
         }
 
+        // External Master Plugin Rack strip (AU / CLAP master inserts)
         let scroll_body = scrollable(body).width(Length::Fill).height(Length::Fill);
 
         container(column![header, scroll_body].height(Length::Fill))
@@ -4382,6 +5012,99 @@ impl StudioApp {
                 })
                 .on_press(Message::ToggleTrackSolo(idx));
             strip = strip.push(row![m_btn, s_btn].spacing(5));
+        }
+
+        // External AU / CLAP instrument & insert FX slots on this strip
+        let ext_inst = self
+            .plugin_slots
+            .iter()
+            .find(|s| matches!(&s.target, SlotTarget::TrackInstrument(id) if id == &node.id));
+        let ext_inserts: Vec<&PluginSlotSummary> = self
+            .plugin_slots
+            .iter()
+            .filter(|s| matches!(&s.target, SlotTarget::NodeInsert(id) if id == &node.id))
+            .collect();
+
+        let mut ext_actions = Row::new().spacing(4);
+        if node.category == NodeCategory::Instrument {
+            ext_actions = ext_actions.push(
+                button(
+                    text(if ext_inst.is_some() {
+                        "Swap Inst"
+                    } else {
+                        "+ Inst"
+                    })
+                    .size(9.5),
+                )
+                .padding([2, 6])
+                .width(Length::FillPortion(1))
+                .style(|t, s| accent_button_style(Color::from_rgb(0.32, 0.24, 0.58), t, s))
+                .on_press(Message::OpenPluginPicker {
+                    target: SlotTarget::TrackInstrument(node.id.clone()),
+                    kind: PluginKind::Instrument,
+                }),
+            );
+        }
+        ext_actions = ext_actions.push(
+            button(text("+ FX").size(9.5))
+                .padding([2, 6])
+                .width(Length::FillPortion(1))
+                .style(|t, s| accent_button_style(Color::from_rgb(0.24, 0.36, 0.54), t, s))
+                .on_press(Message::OpenPluginPicker {
+                    target: SlotTarget::NodeInsert(node.id.clone()),
+                    kind: PluginKind::Effect,
+                }),
+        );
+        strip = strip.push(ext_actions);
+
+        if let Some(slot) = ext_inst {
+            let is_sel = self.selected_plugin_slot == Some(slot.slot_id);
+            let bypassed = slot.bypassed;
+            let lbl = format!(
+                "{} {}{}",
+                slot.descriptor.format.label(),
+                slot.descriptor.name,
+                if bypassed { " [BYP]" } else { "" }
+            );
+            strip = strip.push(
+                button(text(lbl).size(10))
+                    .width(Length::Fill)
+                    .padding([3, 6])
+                    .style(move |t, s| {
+                        if is_sel {
+                            accent_button_style(Color::from_rgb(0.56, 0.34, 0.88), t, s)
+                        } else if bypassed {
+                            studio_button_style(t, s)
+                        } else {
+                            accent_button_style(Color::from_rgb(0.40, 0.24, 0.68), t, s)
+                        }
+                    })
+                    .on_press(Message::SelectPluginSlot(Some(slot.slot_id))),
+            );
+        }
+        for slot in ext_inserts {
+            let is_sel = self.selected_plugin_slot == Some(slot.slot_id);
+            let bypassed = slot.bypassed;
+            let lbl = format!(
+                "FX: {}{}",
+                slot.descriptor.name,
+                if bypassed { " [BYP]" } else { "" }
+            );
+            strip = strip.push(
+                button(text(lbl).size(10))
+                    .width(Length::Fill)
+                    .padding([3, 6])
+                    .style(move |t, s| {
+                        if is_sel {
+                            accent_button_style(Color::from_rgb(0.32, 0.56, 0.84), t, s)
+                        } else if bypassed {
+                            studio_button_style(t, s)
+                        } else {
+                            accent_button_style(Color::from_rgb(0.20, 0.38, 0.58), t, s)
+                        }
+                    })
+                    .on_press(Message::SelectPluginSlot(Some(slot.slot_id))),
+            );
         }
 
         // Show top 5 priority controls right on the channel strip
@@ -4508,6 +5231,346 @@ impl StudioApp {
                 border: Border {
                     color: Color::from_rgba(0.92, 0.68, 0.26, 0.38),
                     width: 1.0,
+                    radius: 5.0.into(),
+                },
+                ..Default::default()
+            })
+            .into()
+    }
+
+    fn view_plugin_picker_card<'a>(
+        &'a self,
+        target: &'a SlotTarget,
+        kind: PluginKind,
+    ) -> Element<'a, Message> {
+        let target_label = match target {
+            SlotTarget::TrackInstrument(n) => format!("{n} (Instrument)"),
+            SlotTarget::NodeInsert(n) => format!("{n} (Insert FX)"),
+            SlotTarget::MasterInsert => "Master (Insert FX)".into(),
+        };
+        let header = row![
+            text(format!(
+                "ADD {} · {target_label}",
+                kind.label().to_uppercase()
+            ))
+            .size(10.5)
+            .color(Color::from_rgb(0.76, 0.62, 0.98)),
+            horizontal_space(),
+            button(text("×").size(11))
+                .padding([1, 6])
+                .style(studio_button_style)
+                .on_press(Message::ClosePluginPicker),
+        ]
+        .align_y(Alignment::Center);
+
+        let search = text_input("Filter AU / CLAP plugins...", &self.plugin_search)
+            .on_input(Message::PluginSearchChanged)
+            .size(11.5)
+            .padding([4, 7]);
+
+        let q = self.plugin_search.trim().to_ascii_lowercase();
+        let matches: Vec<&PluginDescriptor> = self
+            .plugin_catalog
+            .iter()
+            .filter(|d| {
+                d.kind == kind
+                    && (q.is_empty()
+                        || d.name.to_ascii_lowercase().contains(&q)
+                        || d.vendor.to_ascii_lowercase().contains(&q)
+                        || d.format.label().to_ascii_lowercase().contains(&q))
+            })
+            .take(60)
+            .collect();
+
+        let mut list = Column::new().spacing(3);
+        if matches.is_empty() {
+            list = list.push(
+                text(if self.plugin_catalog.is_empty() {
+                    "Scanning installed AU / CLAP plugins..."
+                } else {
+                    "No matching plugins found"
+                })
+                .size(11)
+                .color(Color::from_rgb(0.56, 0.62, 0.72)),
+            );
+        } else {
+            for desc in matches {
+                let lbl = format!(
+                    "[{}] {}  ·  {}",
+                    desc.format.label(),
+                    desc.name,
+                    desc.vendor
+                );
+                list = list.push(
+                    button(text(lbl).size(11))
+                        .width(Length::Fill)
+                        .padding([4, 7])
+                        .style(studio_button_style)
+                        .on_press(Message::AddPluginSlot {
+                            target: target.clone(),
+                            descriptor: desc.clone(),
+                        }),
+                );
+            }
+        }
+
+        let card = column![
+            header,
+            search,
+            scrollable(list)
+                .width(Length::Fill)
+                .height(Length::Fixed(210.0)),
+        ]
+        .spacing(6);
+
+        container(card)
+            .padding(9)
+            .width(Length::Fill)
+            .style(|_| container::Style {
+                background: Some(Background::Color(Color::from_rgb(0.118, 0.112, 0.168))),
+                border: Border {
+                    color: Color::from_rgba(0.70, 0.52, 0.98, 0.45),
+                    width: 1.2,
+                    radius: 5.0.into(),
+                },
+                ..Default::default()
+            })
+            .into()
+    }
+
+    fn view_plugin_slot_inspector_card<'a>(
+        &'a self,
+        slot: &'a PluginSlotSummary,
+    ) -> Element<'a, Message> {
+        let target_label = match &slot.target {
+            SlotTarget::TrackInstrument(n) => format!("{n} · Inst"),
+            SlotTarget::NodeInsert(n) => format!("{n} · Insert FX"),
+            SlotTarget::MasterInsert => "Master · FX".into(),
+        };
+        let bypassed = slot.bypassed;
+        let header = row![
+            text(format!(
+                "[{}] {}",
+                slot.descriptor.format.label(),
+                slot.descriptor.name
+            ))
+            .size(11.5)
+            .color(Color::from_rgb(0.84, 0.72, 0.99)),
+            horizontal_space(),
+            button(text("×").size(11))
+                .padding([1, 6])
+                .style(studio_button_style)
+                .on_press(Message::SelectPluginSlot(None)),
+        ]
+        .align_y(Alignment::Center);
+
+        let actions = row![
+            button(text(if bypassed { "Bypassed" } else { "Active" }).size(10.5))
+                .padding([3, 8])
+                .style(move |t, s| {
+                    if bypassed {
+                        studio_button_style(t, s)
+                    } else {
+                        accent_button_style(Color::from_rgb(0.18, 0.62, 0.42), t, s)
+                    }
+                })
+                .on_press(Message::TogglePluginBypass(slot.slot_id)),
+            button(
+                text(if self.freezing {
+                    "Freezing..."
+                } else {
+                    "Freeze → .maac"
+                })
+                .size(10.5),
+            )
+            .padding([3, 8])
+            .style(|t, s| accent_button_style(Color::from_rgb(0.20, 0.54, 0.72), t, s))
+            .on_press_maybe(
+                (!self.freezing && !self.editing)
+                    .then_some(Message::FreezePluginTarget(slot.target.clone())),
+            ),
+            horizontal_space(),
+            button(text("Remove").size(10.5))
+                .padding([3, 7])
+                .style(|t, s| accent_button_style(Color::from_rgb(0.68, 0.22, 0.26), t, s))
+                .on_press(Message::RemovePluginSlot(slot.slot_id)),
+        ]
+        .spacing(5)
+        .align_y(Alignment::Center);
+
+        let mut params_col = Column::new().spacing(5);
+        if slot.params.is_empty() {
+            params_col = params_col.push(
+                text("No exposed writable parameters")
+                    .size(10.5)
+                    .color(Color::from_rgb(0.56, 0.62, 0.72)),
+            );
+        } else {
+            for p in slot.params.iter().take(32) {
+                let current = slot
+                    .param_values
+                    .iter()
+                    .find(|(id, _)| *id == p.id)
+                    .map(|(_, v)| *v)
+                    .unwrap_or(p.default);
+                let pos = p.to_slider_pos(current);
+                let val_str = p.format_value(current);
+                let p_clone = p.clone();
+                let slot_id = slot.slot_id;
+                let param_id = p.id;
+                params_col = params_col.push(
+                    column![
+                        row![
+                            text(&p.name)
+                                .size(10.5)
+                                .color(Color::from_rgb(0.84, 0.88, 0.96)),
+                            horizontal_space(),
+                            text(val_str)
+                                .size(10.5)
+                                .color(Color::from_rgb(0.58, 0.86, 0.78)),
+                        ]
+                        .align_y(Alignment::Center),
+                        slider(0.0_f32..=1.0_f32, pos, move |new_pos| {
+                            Message::PluginParamChanged {
+                                slot_id,
+                                param_id,
+                                value: p_clone.value_at_slider_pos(new_pos),
+                            }
+                        })
+                        .step(0.005_f32)
+                        .width(Length::Fill),
+                    ]
+                    .spacing(2),
+                );
+            }
+        }
+
+        let card = column![
+            header,
+            text(format!(
+                "{target_label} · {} · {} params (live ~64 ms)",
+                slot.descriptor.vendor,
+                slot.params.len()
+            ))
+            .size(10)
+            .color(Color::from_rgb(0.60, 0.66, 0.78)),
+            actions,
+            scrollable(params_col.padding(iced::Padding {
+                top: 0.0,
+                right: 12.0,
+                bottom: 0.0,
+                left: 0.0,
+            }))
+            .width(Length::Fill)
+            .height(Length::Fixed(220.0)),
+        ]
+        .spacing(6);
+
+        container(card)
+            .padding(9)
+            .width(Length::Fill)
+            .style(|_| container::Style {
+                background: Some(Background::Color(Color::from_rgb(0.115, 0.112, 0.165))),
+                border: Border {
+                    color: Color::from_rgba(0.66, 0.48, 0.96, 0.45),
+                    width: 1.2,
+                    radius: 5.0.into(),
+                },
+                ..Default::default()
+            })
+            .into()
+    }
+
+    fn view_sf2_picker_card<'a>(
+        &'a self,
+        proj: &'a ProjectData,
+        path: &'a std::path::Path,
+        presets: &'a [Sf2PresetInfo],
+        target_track: Option<&'a str>,
+    ) -> Element<'a, Message> {
+        let fname = path
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "SoundFont.sf2".into());
+        let header = row![
+            text(format!("IMPORT SF2 · {fname}"))
+                .size(10.5)
+                .color(Color::from_rgb(0.42, 0.88, 0.78)),
+            horizontal_space(),
+            button(text("×").size(11))
+                .padding([1, 6])
+                .style(studio_button_style)
+                .on_press(Message::CloseSf2Picker),
+        ]
+        .align_y(Alignment::Center);
+
+        let mut track_row = Row::new().spacing(4).align_y(Alignment::Center);
+        track_row = track_row.push(
+            button(text("Import Only").size(10))
+                .padding([2, 6])
+                .style(move |t, s| {
+                    if target_track.is_none() {
+                        accent_button_style(Color::from_rgb(0.18, 0.56, 0.50), t, s)
+                    } else {
+                        studio_button_style(t, s)
+                    }
+                })
+                .on_press(Message::SelectSf2TargetTrack(None)),
+        );
+        for tr in &proj.tracks {
+            let active = target_track == Some(tr.name.as_str());
+            let name = tr.name.clone();
+            track_row = track_row.push(
+                button(text(&tr.name).size(10))
+                    .padding([2, 6])
+                    .style(move |t, s| {
+                        if active {
+                            accent_button_style(Color::from_rgb(0.18, 0.56, 0.50), t, s)
+                        } else {
+                            studio_button_style(t, s)
+                        }
+                    })
+                    .on_press(Message::SelectSf2TargetTrack(Some(name))),
+            );
+        }
+
+        let mut preset_col = Column::new().spacing(3);
+        for p in presets.iter().take(128) {
+            let lbl = format!("[{:03}:{:03}] {}", p.bank, p.program, p.name);
+            preset_col = preset_col.push(
+                button(text(lbl).size(11))
+                    .width(Length::Fill)
+                    .padding([4, 7])
+                    .style(studio_button_style)
+                    .on_press(Message::ImportSf2Preset {
+                        bank: p.bank,
+                        program: p.program,
+                    }),
+            );
+        }
+
+        let card = column![
+            header,
+            text("Assign imported MaaC library to track:")
+                .size(10)
+                .color(Color::from_rgb(0.60, 0.68, 0.78)),
+            scrollable(track_row).direction(scrollable::Direction::Horizontal(
+                scrollable::Scrollbar::new().width(3).scroller_width(3),
+            )),
+            scrollable(preset_col)
+                .width(Length::Fill)
+                .height(Length::Fixed(180.0)),
+        ]
+        .spacing(6);
+
+        container(card)
+            .padding(9)
+            .width(Length::Fill)
+            .style(|_| container::Style {
+                background: Some(Background::Color(Color::from_rgb(0.105, 0.145, 0.148))),
+                border: Border {
+                    color: Color::from_rgba(0.32, 0.84, 0.74, 0.45),
+                    width: 1.2,
                     radius: 5.0.into(),
                 },
                 ..Default::default()

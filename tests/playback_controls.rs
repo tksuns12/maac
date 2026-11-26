@@ -862,3 +862,181 @@ fn live_param_override_changes_audio_in_place_and_hands_off_cleanly() {
     let _ = read_exactly(&play, 4_096, 512);
     assert!(play.status().last_error.is_none());
 }
+
+// ---- external HostProcessor hook -----------------------------------------
+
+#[test]
+fn host_processor_instrument_override_and_master_insert_run_inline() {
+    use maac::dsp::{HostBlockContext, HostNoteEvent, HostProcessor};
+    use std::sync::{Arc, Mutex};
+
+    struct TestHost {
+        override_node: Option<String>,
+        insert_node: Option<String>,
+        master_gain: Option<f64>,
+        note_events_seen: usize,
+        resets: usize,
+    }
+
+    impl HostProcessor for TestHost {
+        fn has_any_active(&self) -> bool {
+            self.override_node.is_some() || self.insert_node.is_some() || self.master_gain.is_some()
+        }
+        fn has_instrument_override(&self, node_id: &str) -> bool {
+            self.override_node.as_deref() == Some(node_id)
+        }
+        fn has_node_insert(&self, node_id: &str) -> bool {
+            self.insert_node.as_deref() == Some(node_id)
+        }
+        fn has_master_insert(&self) -> bool {
+            self.master_gain.is_some()
+        }
+        fn process_instrument(
+            &mut self,
+            _node_id: &str,
+            ctx: HostBlockContext,
+            events: &[HostNoteEvent],
+            channels: usize,
+            out: &mut [f64],
+        ) {
+            self.note_events_seen += events.len();
+            // Emit a clean constant DC/tone signature (0.25) so downstream effects receive it.
+            for frame in 0..ctx.frames {
+                let sample = 0.25 * ((ctx.start_frame + frame as u64) as f64 * 0.05).sin();
+                for ch in 0..channels {
+                    out[frame * channels + ch] = sample;
+                }
+            }
+        }
+        fn process_node_insert(
+            &mut self,
+            _node_id: &str,
+            _ctx: HostBlockContext,
+            _channels: usize,
+            io: &mut [f64],
+        ) {
+            for sample in io {
+                *sample = -*sample;
+            }
+        }
+        fn process_master_insert(
+            &mut self,
+            _ctx: HostBlockContext,
+            _channels: usize,
+            io: &mut [f64],
+        ) {
+            if let Some(gain) = self.master_gain {
+                for sample in io {
+                    *sample *= gain;
+                }
+            }
+        }
+        fn reset(&mut self, _sample_rate_hz: f64, _max_block_frames: usize) {
+            self.resets += 1;
+        }
+    }
+
+    // 1. Test instrument override + master insert on base_song (which has a delay loop).
+    let plan = compile(&base_song(3)).unwrap();
+    let fresh = render_full(&plan);
+    let channels = usize::from(plan.output().channels);
+
+    // Inactive host must be 100% bit-identical to offline render.
+    let inactive_host = Arc::new(Mutex::new(TestHost {
+        override_node: None,
+        insert_node: None,
+        master_gain: None,
+        note_events_seen: 0,
+        resets: 0,
+    }));
+    let bg =
+        BackgroundSession::new_with(&plan, &limits(), SessionPolicy::new(SPACING), false).unwrap();
+    let play = bg
+        .play(
+            0,
+            PlaybackConfig {
+                lead_frames: 2_048,
+                chunk_frames: 512,
+                pause_prerender: false,
+                preview_preroll_frames: 0,
+                approximate_start: false,
+                ..PlaybackConfig::default()
+            },
+        )
+        .unwrap();
+    play.set_host_processor(Some(inactive_host));
+    let untouched = read_exactly(&play, 2_048, 512);
+    assert_eq!(bits(&fresh[..2_048 * channels]), bits(&untouched));
+
+    // Active instrument override + master insert (gain = 0.5).
+    let active_host = Arc::new(Mutex::new(TestHost {
+        override_node: Some("strings".into()),
+        insert_node: None,
+        master_gain: Some(0.5),
+        note_events_seen: 0,
+        resets: 0,
+    }));
+    play.set_host_processor(Some(active_host.clone()));
+    play.seek(0);
+    let rendered = read_exactly(&play, 4_096, 512);
+    let max_diff = rendered
+        .iter()
+        .zip(&fresh[..4_096 * channels])
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0_f64, f64::max);
+    assert!(
+        max_diff > 1e-4,
+        "expected host instrument override + master insert to alter output"
+    );
+    let guard = active_host.lock().unwrap();
+    assert!(
+        guard.note_events_seen > 0,
+        "expected host instrument to receive sample-accurate note events"
+    );
+    assert!(guard.resets >= 1, "expected seek to call host.reset()");
+    drop(guard);
+
+    // 2. Test per-node insert on a delay-free composition (examples/hello.maac).
+    let hello_entry = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/hello.maac");
+    let hello_bundle =
+        maac::bundle_fs::load_bundle(&hello_entry, hello_entry.parent().unwrap()).unwrap();
+    let hello_plan =
+        maac::compiler::compile_bundle_artifact_with_limits(&hello_bundle, &limits()).unwrap();
+    let hello_fresh = render_full(&hello_plan);
+    let hello_ch = usize::from(hello_plan.output().channels);
+
+    let mut engine = DspEngine::new_artifact_with_limits(&hello_plan, &limits()).unwrap();
+    let mut invert_host = TestHost {
+        override_node: None,
+        insert_node: Some("mix".into()),
+        master_gain: None,
+        note_events_seen: 0,
+        resets: 0,
+    };
+    let mut inverted = Vec::new();
+    for start in (0..2_048u64).step_by(512) {
+        engine
+            .render_chunk_with_host(
+                RenderSpan {
+                    start,
+                    end: start + 512,
+                },
+                &mut invert_host,
+                |frame| {
+                    inverted.extend_from_slice(frame);
+                    Ok(())
+                },
+            )
+            .unwrap();
+    }
+    // Polarity-inverting master node insert must exactly negate every sample!
+    let max_inv_err = inverted
+        .iter()
+        .zip(&hello_fresh[..2_048 * hello_ch])
+        .map(|(a, b)| (a + b).abs())
+        .fold(0.0_f64, f64::max);
+    assert!(
+        max_inv_err < 1e-12,
+        "expected polarity-inverted node insert, max_err={max_inv_err}"
+    );
+}

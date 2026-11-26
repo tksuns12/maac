@@ -5,7 +5,9 @@ mod automation;
 mod code_view;
 mod editor;
 mod mixer;
+mod plugins;
 mod project;
+mod sampler_import;
 mod timeline;
 mod watcher;
 

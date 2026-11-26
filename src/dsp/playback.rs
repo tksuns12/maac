@@ -227,6 +227,10 @@ struct Ring {
     /// a plan generation at or above this value (for glitch-free handoff after
     /// committing a live slider tweak to the plan).
     clear_params_at_generation: Option<u64>,
+    /// Optional external host processor (e.g. Studio CLAP/AU plugin rack).
+    /// Never touched by [`Playback::read`].
+    host_epoch: u64,
+    host: Option<Arc<Mutex<dyn HostProcessor>>>,
     /// The producer has put the last frame of the plan in.
     finished: bool,
     underruns: u64,
@@ -294,6 +298,8 @@ impl Playback {
                 live_muted: HashSet::new(),
                 live_params: BTreeMap::new(),
                 clear_params_at_generation: None,
+                host_epoch: 0,
+                host: None,
                 finished: false,
                 underruns: 0,
                 stale: false,
@@ -331,6 +337,8 @@ impl Playback {
             live_epoch: 0,
             live_muted: HashSet::new(),
             live_params: BTreeMap::new(),
+            host_epoch: 0,
+            host: None,
             epoch: 0,
         };
         let pause = config.pause_prerender;
@@ -575,6 +583,19 @@ impl Playback {
         self.play.room.notify_all();
     }
 
+    /// Attach or detach an optional external [`HostProcessor`] (such as a DAW
+    /// plugin rack hosting CLAP/AU instruments or effects).
+    ///
+    /// Runs on the producer thread per chunk; [`Self::read`] remains completely
+    /// allocation-free and lock-free with respect to plugin processing.
+    pub fn set_host_processor(&self, host: Option<Arc<Mutex<dyn HostProcessor>>>) {
+        let mut ring = locked(&self.play.ring);
+        ring.host = host;
+        ring.host_epoch = ring.host_epoch.wrapping_add(1);
+        drop(ring);
+        self.play.room.notify_all();
+    }
+
     pub fn status(&self) -> PlaybackStatus {
         let ring = locked(&self.play.ring);
         PlaybackStatus {
@@ -623,6 +644,8 @@ struct Ctx {
     live_epoch: u64,
     live_muted: HashSet<String>,
     live_params: BTreeMap<(String, String), f64>,
+    host_epoch: u64,
+    host: Option<Arc<Mutex<dyn HostProcessor>>>,
     /// The seek count the producer has taken up.
     epoch: u64,
 }
@@ -660,6 +683,10 @@ impl Ctx {
             self.live_epoch = ring.live_epoch;
             self.live_muted.clone_from(&ring.live_muted);
             self.live_params.clone_from(&ring.live_params);
+            if ring.host_epoch != self.host_epoch {
+                self.host_epoch = ring.host_epoch;
+                self.host = ring.host.clone();
+            }
         }
         if !self.live_muted.is_empty() || engine.has_live_mutes() {
             engine.set_muted_nodes_immediate(&self.live_muted);
@@ -678,6 +705,10 @@ impl Ctx {
     fn sync_live_controls(&mut self, engine: &mut DspEngine<'_>, generation: u64) {
         let (changed, params_changed) = {
             let mut ring = locked(&self.play.ring);
+            if ring.host_epoch != self.host_epoch {
+                self.host_epoch = ring.host_epoch;
+                self.host = ring.host.clone();
+            }
             if ring
                 .clear_params_at_generation
                 .is_some_and(|target| generation >= target)
@@ -706,6 +737,33 @@ impl Ctx {
                 }
             }
         }
+    }
+
+    fn sync_host_ref(&mut self) {
+        let ring = locked(&self.play.ring);
+        if ring.host_epoch != self.host_epoch {
+            self.host_epoch = ring.host_epoch;
+            self.host = ring.host.clone();
+        }
+    }
+
+    fn reset_host(&mut self) {
+        self.sync_host_ref();
+        if let Some(host) = &self.host {
+            let mut guard = host
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            guard.reset(f64::from(self.play.rate), self.chunk as usize);
+        }
+    }
+
+    fn host_is_active(&self) -> bool {
+        self.host.as_ref().is_some_and(|host| {
+            let guard = host
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            guard.has_any_active()
+        })
     }
 }
 
@@ -1175,6 +1233,7 @@ fn take_seek(ctx: &mut Ctx) -> Result<Option<Next>> {
         ring.stale = false;
         ring.approximate = false;
     }
+    ctx.reset_host();
     Ok(Some(Next::Again(Box::new(Setup::new(synced, frame)))))
 }
 
@@ -1265,7 +1324,20 @@ fn produce(
         samples.extend_from_slice(frame);
         Ok(())
     };
-    if approximate {
+    if let Some(host) = &ctx.host {
+        let mut guard = host
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if approximate {
+            engine.render_preview_chunk_with_host(
+                RenderSpan { start: pos, end },
+                &mut *guard,
+                sink,
+            )?;
+        } else {
+            engine.render_chunk_with_host(RenderSpan { start: pos, end }, &mut *guard, sink)?;
+        }
+    } else if approximate {
         engine.render_preview_chunk(RenderSpan { start: pos, end }, sink)?;
     } else {
         engine.render_chunk(RenderSpan { start: pos, end }, sink)?;
@@ -1338,6 +1410,7 @@ fn play_engine(
                 if span.start == 0 {
                     engine.reset();
                     ctx.apply_live_state_to_new_engine(engine, generation);
+                    ctx.reset_host();
                     pos = 0;
                     next_snapshot = HISTORY_EVERY;
                     continue;
@@ -1345,6 +1418,7 @@ fn play_engine(
                 if let Some(cp) = ctx.cached_loop_checkpoint(generation, span.start) {
                     engine.restore_from(&cp)?;
                     ctx.apply_live_state_to_new_engine(engine, generation);
+                    ctx.reset_host();
                     pos = span.start;
                     next_snapshot = (pos / HISTORY_EVERY + 1) * HISTORY_EVERY;
                     continue;
@@ -1446,7 +1520,9 @@ fn play_engine(
                 match produce(ctx, engine, pos, limit, finish, false)? {
                     Produce::Pushed(end) => {
                         pos = end;
-                        let pure_state = !engine.has_live_mutes() && !engine.has_live_params();
+                        let pure_state = !engine.has_live_mutes()
+                            && !engine.has_live_params()
+                            && !ctx.host_is_active();
                         if pure_state {
                             if let Some(span) = effective_loop(ctx.loop_range, total) {
                                 if pos == span.start

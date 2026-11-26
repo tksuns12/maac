@@ -316,11 +316,13 @@ fn parallel_batch_min_nanos() -> u64 {
 
 mod background;
 mod checkpoint;
+mod host;
 mod playback;
 mod pool;
 mod session;
 pub use background::{BackgroundSession, SessionStatus};
 pub use checkpoint::{CheckpointSet, Resumed, Reuse};
+pub use host::{HostBlockContext, HostNoteEvent, HostProcessor};
 pub use playback::{Playback, PlaybackConfig, PlaybackStatus, PlaybackSwitch};
 pub use session::{RenderReport, RenderSession, SessionPolicy, ESTIMATED_CHECKPOINT_BYTES};
 
@@ -1495,31 +1497,15 @@ impl<'a> DspEngine<'a> {
                                 "nonfinite node freeze replacement at frame {frame_index}"
                             )));
                         }
+                        if self.has_live_mutes {
+                            self.apply_live_mute_gain(node_index);
+                        }
                         continue;
                     }
                 }
                 self.process_node(node_index, frame_index)?;
                 if self.has_live_mutes {
-                    let target = if self.live_muted[node_index] {
-                        0.0
-                    } else {
-                        1.0
-                    };
-                    let gain = &mut self.live_mute_gain[node_index];
-                    if *gain != target {
-                        let step = 1.0 / (self.rate * 0.005).max(1.0);
-                        if target < *gain {
-                            *gain = (*gain - step).max(0.0);
-                        } else {
-                            *gain = (*gain + step).min(1.0);
-                        }
-                    }
-                    if *gain < 1.0 {
-                        let g = *gain;
-                        for sample in &mut self.nodes[node_index].output {
-                            *sample *= g;
-                        }
-                    }
+                    self.apply_live_mute_gain(node_index);
                 }
             }
             self.commit_delays()?;
@@ -1760,6 +1746,532 @@ impl<'a> DspEngine<'a> {
             self.resume_frame = Some(span.end);
         }
         result
+    }
+
+    /// Render `span` as one chunk of an exact render with an optional external
+    /// [`HostProcessor`] hook (used by companion DAW hosts such as MaaC Studio).
+    ///
+    /// When `host.has_any_active()` is `false`, delegates directly to
+    /// [`Self::render_chunk`] with zero extra overhead.
+    pub fn render_chunk_with_host<F>(
+        &mut self,
+        span: RenderSpan,
+        host: &mut dyn HostProcessor,
+        callback: F,
+    ) -> Result<()>
+    where
+        F: FnMut(&[f64]) -> Result<()>,
+    {
+        if !host.has_any_active() {
+            return self.render_chunk(span, callback);
+        }
+        if span.start > 0 && self.resume_frame != Some(span.start) {
+            return Err(RenderError::RenderState(
+                "a chunk of an exact render starts at frame 0, at the frame this \
+                 engine was restored to, or where the previous chunk ended"
+                    .into(),
+            ));
+        }
+        self.chunk_with_host(span, host, callback)
+    }
+
+    /// Render `span` as one chunk of an approximate preview with an optional
+    /// external [`HostProcessor`] hook.
+    pub fn render_preview_chunk_with_host<F>(
+        &mut self,
+        span: RenderSpan,
+        host: &mut dyn HostProcessor,
+        callback: F,
+    ) -> Result<()>
+    where
+        F: FnMut(&[f64]) -> Result<()>,
+    {
+        if !host.has_any_active() {
+            return self.render_preview_chunk(span, callback);
+        }
+        let continues = self.resume_frame == Some(span.start) && self.preview_origin.is_some();
+        let begins = self.resume_frame.is_none() && span.start > 0;
+        if !(continues || begins) {
+            return Err(RenderError::RenderState(
+                "a chunk of a preview starts on a reset engine, at a frame after 0, \
+                 or where the previous chunk of the preview ended"
+                    .into(),
+            ));
+        }
+        self.chunk_with_host(span, host, callback)
+    }
+
+    fn apply_live_mute_gain(&mut self, node_index: usize) {
+        let target = if self.live_muted[node_index] {
+            0.0
+        } else {
+            1.0
+        };
+        let gain = &mut self.live_mute_gain[node_index];
+        if *gain != target {
+            let step = 1.0 / (self.rate * 0.005).max(1.0);
+            if target < *gain {
+                *gain = (*gain - step).max(0.0);
+            } else {
+                *gain = (*gain + step).min(1.0);
+            }
+        }
+        if *gain < 1.0 {
+            let g = *gain;
+            for sample in &mut self.nodes[node_index].output {
+                *sample *= g;
+            }
+        }
+    }
+
+    fn bpm_at(&self, frame: u64) -> f64 {
+        let frame_i64 = i64::try_from(frame).unwrap_or(i64::MAX);
+        self.tempo
+            .points
+            .iter()
+            .rev()
+            .find(|p| p.frame <= frame_i64)
+            .or_else(|| self.tempo.points.first())
+            .map_or(120.0, |p| p.bpm)
+    }
+
+    fn collect_host_note_events(
+        &self,
+        node_index: usize,
+        span: RenderSpan,
+        include_carried: bool,
+    ) -> Vec<HostNoteEvent> {
+        let mut out = Vec::new();
+        let frames = (span.end - span.start) as usize;
+        if include_carried && span.start > 0 {
+            for event in &self.events {
+                if event.node == node_index
+                    && event.on_frame < span.start
+                    && event.off_frame.is_some_and(|off| off > span.start)
+                {
+                    if let EventData::Note {
+                        pitch_hz, velocity, ..
+                    } = &event.data
+                    {
+                        let midi = if *pitch_hz > 0.0 {
+                            (69.0 + 12.0 * (pitch_hz / 440.0).log2())
+                                .round()
+                                .clamp(0.0, 127.0) as u8
+                        } else {
+                            60
+                        };
+                        out.push(HostNoteEvent {
+                            frame_offset: 0,
+                            is_note_on: true,
+                            midi_note: midi,
+                            velocity: (*velocity as f32).clamp(0.0, 1.0),
+                            pitch_hz: *pitch_hz,
+                        });
+                    }
+                }
+            }
+        }
+        for (&frame_index, indices) in self.off_events.range(span.start..span.end) {
+            let offset = (frame_index - span.start) as usize;
+            for &event_index in indices {
+                let event = &self.events[event_index];
+                if event.node != node_index {
+                    continue;
+                }
+                if let EventData::Note { pitch_hz, .. } = &event.data {
+                    let midi = if *pitch_hz > 0.0 {
+                        (69.0 + 12.0 * (pitch_hz / 440.0).log2())
+                            .round()
+                            .clamp(0.0, 127.0) as u8
+                    } else {
+                        60
+                    };
+                    out.push(HostNoteEvent {
+                        frame_offset: offset,
+                        is_note_on: false,
+                        midi_note: midi,
+                        velocity: 0.0,
+                        pitch_hz: *pitch_hz,
+                    });
+                }
+            }
+        }
+        for (&frame_index, indices) in self.on_events.range(span.start..span.end) {
+            let offset = (frame_index - span.start) as usize;
+            for &event_index in indices {
+                let event = &self.events[event_index];
+                if event.node != node_index {
+                    continue;
+                }
+                match &event.data {
+                    EventData::Note {
+                        pitch_hz, velocity, ..
+                    } => {
+                        let midi = if *pitch_hz > 0.0 {
+                            (69.0 + 12.0 * (pitch_hz / 440.0).log2())
+                                .round()
+                                .clamp(0.0, 127.0) as u8
+                        } else {
+                            60
+                        };
+                        out.push(HostNoteEvent {
+                            frame_offset: offset,
+                            is_note_on: true,
+                            midi_note: midi,
+                            velocity: (*velocity as f32).clamp(0.0, 1.0),
+                            pitch_hz: *pitch_hz,
+                        });
+                    }
+                    EventData::Hit { key, velocity } => {
+                        let midi = host::hit_key_to_midi(key);
+                        let pitch_hz = 440.0 * 2.0_f64.powf((f64::from(midi) - 69.0) / 12.0);
+                        out.push(HostNoteEvent {
+                            frame_offset: offset,
+                            is_note_on: true,
+                            midi_note: midi,
+                            velocity: (*velocity as f32).clamp(0.0, 1.0),
+                            pitch_hz,
+                        });
+                        if frames > 1 {
+                            out.push(HostNoteEvent {
+                                frame_offset: (offset + 1).min(frames - 1),
+                                is_note_on: false,
+                                midi_note: midi,
+                                velocity: 0.0,
+                                pitch_hz,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        out.sort_by_key(|ev| (ev.frame_offset, ev.is_note_on));
+        out
+    }
+
+    fn chunk_with_host<F>(
+        &mut self,
+        span: RenderSpan,
+        host: &mut dyn HostProcessor,
+        mut callback: F,
+    ) -> Result<()>
+    where
+        F: FnMut(&[f64]) -> Result<()>,
+    {
+        let total = self.plan.output.total_frames;
+        if span.start >= span.end || span.end > total {
+            return Err(RenderError::Plan(PlanError {
+                code: "E_RANGE".into(),
+                path: "span".into(),
+                message: format!(
+                    "render span {}..{} must be nonempty and end within {total} frames",
+                    span.start, span.end
+                ),
+                span: None,
+            }));
+        }
+        let frames = (span.end - span.start) as usize;
+        let ctx = HostBlockContext {
+            start_frame: span.start,
+            frames,
+            sample_rate_hz: self.rate,
+            tempo_bpm: self.bpm_at(span.start),
+        };
+        let include_carried = self.resume_frame.is_none() && span.start > 0;
+
+        // 1. Pre-render any host-overridden instrument nodes for the whole chunk.
+        let mut override_indices = Vec::new();
+        let mut override_buffers: Vec<Vec<f64>> = Vec::new();
+        for &node_index in &self.topo_order {
+            if host.has_instrument_override(&self.nodes[node_index].id) {
+                let ch = self.nodes[node_index].output.len();
+                let events = self.collect_host_note_events(node_index, span, include_carried);
+                let mut buf = vec![0.0_f64; frames * ch];
+                host.process_instrument(&self.nodes[node_index].id, ctx, &events, ch, &mut buf);
+                for sample in &mut buf {
+                    if !sample.is_finite() {
+                        *sample = 0.0;
+                    }
+                }
+                override_indices.push(node_index);
+                override_buffers.push(buf);
+            }
+        }
+
+        // 2. Check whether any per-node insert effects are active on a delay-free graph.
+        let has_delays = self.nodes.iter().any(|n| n.delay.is_some());
+        let insert_nodes: Vec<usize> = if has_delays {
+            Vec::new()
+        } else {
+            self.topo_order
+                .iter()
+                .copied()
+                .filter(|&idx| host.has_node_insert(&self.nodes[idx].id))
+                .collect()
+        };
+
+        self.checkpoint_rule = CheckpointRule::At(vec![span.end]);
+        self.checkpoints.clear();
+
+        let mut chunk_out = Vec::with_capacity(frames * self.channels);
+        let result = if insert_nodes.is_empty() {
+            // Fast path: reuse render_ports_inner + NodeReplacement directly.
+            let output_port = self.plan.output.output.clone();
+            let mut fill = |pos: usize, frame_index: u64, dst: &mut [f64]| -> Result<()> {
+                let offset = (frame_index - span.start) as usize;
+                let ch = dst.len();
+                let src = &override_buffers[pos][offset * ch..(offset + 1) * ch];
+                dst.copy_from_slice(src);
+                Ok(())
+            };
+            let replacement = if override_indices.is_empty() {
+                None
+            } else {
+                Some(NodeReplacement {
+                    indices: override_indices,
+                    fill: &mut fill,
+                })
+            };
+            self.render_ports_inner(
+                &[output_port],
+                &[],
+                false,
+                replacement,
+                Some(span),
+                |outputs, _| {
+                    chunk_out.extend_from_slice(&outputs[0]);
+                    Ok(())
+                },
+            )
+        } else {
+            // Staged chunk execution: split topo_order after each hooked insert node so
+            // external insert effects run once per 512-frame chunk inline in the graph.
+            self.render_staged_chunk_with_host(
+                span,
+                ctx,
+                &override_indices,
+                &override_buffers,
+                &insert_nodes,
+                host,
+                &mut chunk_out,
+            )
+        };
+
+        self.checkpoint_rule = CheckpointRule::Off;
+        result?;
+
+        // 3. Apply optional post-master insert chain.
+        if host.has_master_insert() {
+            host.process_master_insert(ctx, self.channels, &mut chunk_out);
+            for sample in &mut chunk_out {
+                if !sample.is_finite() {
+                    *sample = 0.0;
+                }
+            }
+        }
+
+        // Emit frames to caller callback and update resume state.
+        for frame_slice in chunk_out.chunks_exact(self.channels) {
+            callback(frame_slice)?;
+        }
+        if let Some(last_frame) = chunk_out.chunks_exact(self.channels).next_back() {
+            self.frame.copy_from_slice(last_frame);
+        }
+        self.parameters_settled.fill(false);
+        self.parameters_valid_until.fill(0);
+        self.resume_frame = Some(span.end);
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn render_staged_chunk_with_host(
+        &mut self,
+        span: RenderSpan,
+        ctx: HostBlockContext,
+        override_indices: &[usize],
+        override_buffers: &[Vec<f64>],
+        insert_nodes: &[usize],
+        host: &mut dyn HostProcessor,
+        chunk_out: &mut Vec<f64>,
+    ) -> Result<()> {
+        let resume_frame = self.resume_frame;
+        if resume_frame.is_none() {
+            self.reset();
+        }
+        if resume_frame.is_some_and(|frame| frame != span.start) {
+            return Err(RenderError::RenderState(
+                "a restored engine renders once, from its checkpoint frame; \
+                 restore it again or reset it"
+                    .into(),
+            ));
+        }
+        if resume_frame.is_some() {
+            self.resume_frame = Some(RESUME_SPENT);
+        }
+        let first = resume_frame.is_none();
+        let preview_origin = if first {
+            (span.start > 0).then_some(span.start)
+        } else {
+            self.preview_origin
+        };
+        self.preview_origin = preview_origin;
+        let preview = preview_origin.is_some();
+        let origin = preview_origin.unwrap_or(0);
+
+        let mut carried: Vec<usize> = if preview && first {
+            self.events
+                .iter()
+                .enumerate()
+                .filter(|(_, event)| {
+                    matches!(event.data, EventData::Note { .. })
+                        && event.on_frame < origin
+                        && event.off_frame.is_some_and(|off| off > origin)
+                })
+                .map(|(index, _)| index)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let carried_set: HashSet<usize> = carried.iter().copied().collect();
+        let unstarted: HashSet<(usize, String)> = if preview {
+            self.events
+                .iter()
+                .enumerate()
+                .filter(|(index, event)| {
+                    matches!(event.data, EventData::Note { .. })
+                        && event.on_frame < origin
+                        && !carried_set.contains(index)
+                })
+                .map(|(_, event)| (event.node, event.address.clone()))
+                .collect()
+        } else {
+            HashSet::new()
+        };
+        carried.sort_by(|&left, &right| {
+            let (left, right) = (&self.events[left], &self.events[right]);
+            (left.on_frame, left.order, left.address.as_bytes()).cmp(&(
+                right.on_frame,
+                right.order,
+                right.address.as_bytes(),
+            ))
+        });
+
+        let frames = ctx.frames;
+        let output_node = *self
+            .node_indices
+            .get(&self.plan.output.output.node)
+            .ok_or_else(|| RenderError::RenderState("output node does not exist".into()))?;
+
+        // Partition `topo_order` into contiguous stages ending right after each hooked insert node.
+        let mut stages: Vec<(Vec<usize>, Option<usize>)> = Vec::new();
+        let mut current = Vec::new();
+        for &node_index in &self.topo_order {
+            current.push(node_index);
+            if insert_nodes.contains(&node_index) {
+                stages.push((std::mem::take(&mut current), Some(node_index)));
+            }
+        }
+        if !current.is_empty() {
+            stages.push((current, None));
+        }
+
+        // Per-node chunk buffers storing outputs across stage boundaries.
+        let mut node_bufs: Vec<Vec<f64>> = self
+            .nodes
+            .iter()
+            .map(|n| vec![0.0_f64; frames * n.output.len()])
+            .collect();
+        let mut produced_nodes: Vec<usize> = Vec::new();
+
+        for (stage_idx, (stage_nodes, insert_target)) in stages.iter().enumerate() {
+            for t in 0..frames {
+                let frame_index = span.start + t as u64;
+                self.evaluate_parameters(frame_index)?;
+                if stage_idx == 0 {
+                    if let Some(events) = self.off_events.get(&frame_index).cloned() {
+                        for event_index in events {
+                            let event = &self.events[event_index];
+                            if preview
+                                && event.on_frame < origin
+                                && !carried_set.contains(&event_index)
+                            {
+                                continue;
+                            }
+                            self.release_event(event_index, frame_index)?;
+                        }
+                    }
+                    for node in &mut self.nodes {
+                        node.prune_finished_voices(frame_index, self.rate)?;
+                    }
+                    if frame_index == span.start {
+                        for event_index in std::mem::take(&mut carried) {
+                            self.start_event(event_index, frame_index, true)?;
+                        }
+                    }
+                    if let Some(events) = self.on_events.get(&frame_index).cloned() {
+                        for event_index in events {
+                            let event = &self.events[event_index];
+                            let predecessor_missing = event.join.as_ref().is_some_and(|join| {
+                                unstarted.contains(&(event.node, join.from.clone()))
+                            });
+                            self.start_event(event_index, frame_index, predecessor_missing)?;
+                        }
+                    }
+                    if self.threads > 1 {
+                        self.prefill_instruments(frame_index)?;
+                    }
+                } else {
+                    // Populate upstream node outputs at frame `t` from previous stages' buffers.
+                    for &prev_idx in &produced_nodes {
+                        let ch = self.nodes[prev_idx].output.len();
+                        self.nodes[prev_idx]
+                            .output
+                            .copy_from_slice(&node_bufs[prev_idx][t * ch..(t + 1) * ch]);
+                    }
+                }
+
+                for &node_index in stage_nodes {
+                    if let Some(pos) = override_indices.iter().position(|&idx| idx == node_index) {
+                        let ch = self.nodes[node_index].output.len();
+                        self.nodes[node_index]
+                            .output
+                            .copy_from_slice(&override_buffers[pos][t * ch..(t + 1) * ch]);
+                    } else {
+                        self.process_node(node_index, frame_index)?;
+                    }
+                    if self.has_live_mutes {
+                        self.apply_live_mute_gain(node_index);
+                    }
+                    let ch = self.nodes[node_index].output.len();
+                    node_bufs[node_index][t * ch..(t + 1) * ch]
+                        .copy_from_slice(&self.nodes[node_index].output);
+                }
+            }
+
+            if let Some(target_idx) = insert_target {
+                let ch = self.nodes[*target_idx].output.len();
+                let id = self.nodes[*target_idx].id.clone();
+                host.process_node_insert(&id, ctx, ch, &mut node_bufs[*target_idx]);
+                for sample in &mut node_bufs[*target_idx] {
+                    if !sample.is_finite() {
+                        *sample = 0.0;
+                    }
+                }
+            }
+            produced_nodes.extend_from_slice(stage_nodes);
+        }
+
+        if self.has_live_mutes
+            && !self.live_muted.iter().any(|&muted| muted)
+            && self.live_mute_gain.iter().all(|&gain| gain >= 1.0)
+        {
+            self.has_live_mutes = false;
+        }
+        if self.resume_frame == Some(RESUME_SPENT) {
+            self.resume_frame = None;
+        }
+        chunk_out.extend_from_slice(&node_bufs[output_node]);
+        Ok(())
     }
 
     /// The state after the last [`Self::render_chunk`] (or right after
