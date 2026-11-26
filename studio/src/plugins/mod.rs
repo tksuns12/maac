@@ -1,4 +1,4 @@
-//! External DAW plugin hosting (macOS Audio Unit v2 & CLAP 1.2) for MaaC Studio.
+//! External DAW plugin hosting (macOS Audio Unit v2, CLAP 1.2, & VST3) for MaaC Studio.
 //!
 //! All plugin discovery, instantiation, parameter control, state persistence,
 //! and audio rendering live strictly inside `studio/`, keeping `maac` core pure
@@ -14,6 +14,7 @@ pub mod freeze;
 #[cfg(target_os = "macos")]
 pub mod native_window;
 pub mod rack_file;
+pub mod vst3;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -25,6 +26,7 @@ use serde::{Deserialize, Serialize};
 pub enum PluginFormat {
     Au,
     Clap,
+    Vst3,
 }
 
 impl PluginFormat {
@@ -32,6 +34,7 @@ impl PluginFormat {
         match self {
             Self::Au => "AU",
             Self::Clap => "CLAP",
+            Self::Vst3 => "VST3",
         }
     }
 }
@@ -191,7 +194,7 @@ struct HostedSlot {
     instance: Box<dyn PluginInstance>,
 }
 
-/// Scan all installed plugins (macOS AUv2 + CLAP) sorted cleanly by kind & name.
+/// Scan all installed plugins (macOS AUv2 + CLAP + VST3) sorted cleanly by kind & name.
 pub fn scan_installed_plugins() -> Vec<PluginDescriptor> {
     let mut all = Vec::new();
     #[cfg(target_os = "macos")]
@@ -199,6 +202,7 @@ pub fn scan_installed_plugins() -> Vec<PluginDescriptor> {
         all.extend(au::scan_audio_units());
     }
     all.extend(clap::scan_clap_plugins());
+    all.extend(vst3::scan_vst3_plugins());
     all.sort_by(|a, b| {
         (
             a.kind == PluginKind::Effect,
@@ -228,6 +232,7 @@ pub fn instantiate_plugin(
             return Err("Audio Units are only supported on macOS".into());
         }
         PluginFormat::Clap => Box::new(clap::ClapInstance::new(desc)?),
+        PluginFormat::Vst3 => Box::new(vst3::Vst3Instance::new(desc)?),
     };
     instance.activate(sample_rate, max_block_frames)?;
     Ok(instance)

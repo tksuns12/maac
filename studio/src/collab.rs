@@ -766,7 +766,7 @@ pub fn build_agent_prompt(ctx: &SharedFocusContext, user_instruction: &str) -> S
     }
     if !ctx.mounted_plugins.is_empty() {
         out.push_str(&format!(
-            "- External AU/CLAP Plugins: {}\n",
+            "- External AU/CLAP/VST3 Plugins: {}\n",
             ctx.mounted_plugins.join("; ")
         ));
     }

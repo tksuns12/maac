@@ -5515,7 +5515,7 @@ impl StudioApp {
                 .color(Color::from_rgb(0.76, 0.84, 0.96)),
             Space::with_width(10),
             text(format!(
-                "{} Tracks · {} Bus / FX · {} AU/CLAP Plugins",
+                "{} Tracks · {} Bus / FX · {} AU/CLAP/VST3 Plugins",
                 instruments.len(),
                 bus_fx.len(),
                 plugin_count
@@ -6048,7 +6048,7 @@ impl StudioApp {
         ]
         .align_y(Alignment::Center);
 
-        let search = text_input("Filter AU / CLAP plugins...", &self.plugin_search)
+        let search = text_input("Filter AU / CLAP / VST3 plugins...", &self.plugin_search)
             .on_input(Message::PluginSearchChanged)
             .size(11.5)
             .padding([4, 7]);
@@ -6071,7 +6071,7 @@ impl StudioApp {
         if matches.is_empty() {
             list = list.push(
                 text(if self.plugin_catalog.is_empty() {
-                    "Scanning installed AU / CLAP plugins..."
+                    "Scanning installed AU / CLAP / VST3 plugins..."
                 } else {
                     "No matching plugins found"
                 })
