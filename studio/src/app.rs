@@ -199,6 +199,7 @@ pub enum Message {
         descriptor: PluginDescriptor,
     },
     SelectPluginSlot(Option<u64>),
+    TogglePluginNativeUi(u64),
     TogglePluginBypass(u64),
     RemovePluginSlot(u64),
     PluginParamChanged {
@@ -297,6 +298,7 @@ pub struct StudioApp {
     plugin_catalog: Vec<PluginDescriptor>,
     plugin_slots: Vec<PluginSlotSummary>,
     selected_plugin_slot: Option<u64>,
+    plugin_ui_sync_tick: u8,
     plugin_picker: Option<(SlotTarget, PluginKind)>,
     plugin_search: String,
     freezing: bool,
@@ -379,6 +381,7 @@ impl StudioApp {
             plugin_catalog: Vec::new(),
             plugin_slots: Vec::new(),
             selected_plugin_slot: None,
+            plugin_ui_sync_tick: 0,
             plugin_picker: None,
             plugin_search: String::new(),
             freezing: false,
@@ -1945,6 +1948,30 @@ impl StudioApp {
                 Task::none()
             }
 
+            Message::TogglePluginNativeUi(slot_id) => {
+                let res = self
+                    .host_rack
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .toggle_native_ui(slot_id);
+                match res {
+                    Ok(opened) => {
+                        self.edit_error = None;
+                        self.selected_plugin_slot = Some(slot_id);
+                        self.last_reload_note = Some(if opened {
+                            "Opened native plugin UI window".into()
+                        } else {
+                            "Closed native plugin UI window".into()
+                        });
+                    }
+                    Err(err) => {
+                        self.edit_error = Some(err);
+                    }
+                }
+                self.refresh_plugin_slots();
+                Task::none()
+            }
+
             Message::TogglePluginBypass(slot_id) => {
                 self.host_rack
                     .lock()
@@ -2533,6 +2560,23 @@ impl StudioApp {
                     }
                 }
                 self.peaks = self.audio.peaks();
+
+                // 1b. Pump hosted plugin main-thread callbacks & floating Cocoa UI windows.
+                let poll_res = self
+                    .host_rack
+                    .try_lock()
+                    .ok()
+                    .map(|mut rack| rack.poll_main_thread());
+                if let Some((any_ui_open, changed)) = poll_res {
+                    if changed {
+                        self.refresh_plugin_slots();
+                    } else if any_ui_open {
+                        self.plugin_ui_sync_tick = self.plugin_ui_sync_tick.wrapping_add(1);
+                        if self.plugin_ui_sync_tick.is_multiple_of(6) {
+                            self.refresh_plugin_slots();
+                        }
+                    }
+                }
 
                 // 2. Auto-follow playhead when zoomed in and playing.
                 if self.auto_follow && self.audio.is_playing() && self.zoom > 1.01 {
@@ -4851,6 +4895,21 @@ impl StudioApp {
                         })
                         .on_press(Message::SelectPluginSlot(Some(slot.slot_id))),
                 );
+                if slot.has_native_ui {
+                    let ui_open = slot.native_ui_open;
+                    master_row = master_row.push(
+                        button(text(if ui_open { "UI ●" } else { "UI" }).size(10))
+                            .padding([3, 6])
+                            .style(move |t, s| {
+                                if ui_open {
+                                    accent_button_style(Color::from_rgb(0.76, 0.44, 0.16), t, s)
+                                } else {
+                                    studio_button_style(t, s)
+                                }
+                            })
+                            .on_press(Message::TogglePluginNativeUi(slot.slot_id)),
+                    );
+                }
             }
             master_row = master_row.push(
                 button(
@@ -5066,7 +5125,7 @@ impl StudioApp {
                 slot.descriptor.name,
                 if bypassed { " [BYP]" } else { "" }
             );
-            strip = strip.push(
+            let mut pill_row = Row::new().spacing(4).push(
                 button(text(lbl).size(10))
                     .width(Length::Fill)
                     .padding([3, 6])
@@ -5081,6 +5140,22 @@ impl StudioApp {
                     })
                     .on_press(Message::SelectPluginSlot(Some(slot.slot_id))),
             );
+            if slot.has_native_ui {
+                let ui_open = slot.native_ui_open;
+                pill_row = pill_row.push(
+                    button(text(if ui_open { "UI●" } else { "UI" }).size(9.5))
+                        .padding([3, 6])
+                        .style(move |t, s| {
+                            if ui_open {
+                                accent_button_style(Color::from_rgb(0.76, 0.44, 0.16), t, s)
+                            } else {
+                                studio_button_style(t, s)
+                            }
+                        })
+                        .on_press(Message::TogglePluginNativeUi(slot.slot_id)),
+                );
+            }
+            strip = strip.push(pill_row);
         }
         for slot in ext_inserts {
             let is_sel = self.selected_plugin_slot == Some(slot.slot_id);
@@ -5090,7 +5165,7 @@ impl StudioApp {
                 slot.descriptor.name,
                 if bypassed { " [BYP]" } else { "" }
             );
-            strip = strip.push(
+            let mut pill_row = Row::new().spacing(4).push(
                 button(text(lbl).size(10))
                     .width(Length::Fill)
                     .padding([3, 6])
@@ -5105,6 +5180,22 @@ impl StudioApp {
                     })
                     .on_press(Message::SelectPluginSlot(Some(slot.slot_id))),
             );
+            if slot.has_native_ui {
+                let ui_open = slot.native_ui_open;
+                pill_row = pill_row.push(
+                    button(text(if ui_open { "UI●" } else { "UI" }).size(9.5))
+                        .padding([3, 6])
+                        .style(move |t, s| {
+                            if ui_open {
+                                accent_button_style(Color::from_rgb(0.76, 0.44, 0.16), t, s)
+                            } else {
+                                studio_button_style(t, s)
+                            }
+                        })
+                        .on_press(Message::TogglePluginNativeUi(slot.slot_id)),
+                );
+            }
+            strip = strip.push(pill_row);
         }
 
         // Show top 5 priority controls right on the channel strip
@@ -5364,9 +5455,10 @@ impl StudioApp {
         ]
         .align_y(Alignment::Center);
 
-        let actions = row![
+        let ui_open = slot.native_ui_open;
+        let mut actions = Row::new().spacing(5).align_y(Alignment::Center).push(
             button(text(if bypassed { "Bypassed" } else { "Active" }).size(10.5))
-                .padding([3, 8])
+                .padding([3, 7])
                 .style(move |t, s| {
                     if bypassed {
                         studio_button_style(t, s)
@@ -5375,28 +5467,45 @@ impl StudioApp {
                     }
                 })
                 .on_press(Message::TogglePluginBypass(slot.slot_id)),
-            button(
-                text(if self.freezing {
-                    "Freezing..."
-                } else {
-                    "Freeze → .maac"
-                })
-                .size(10.5),
-            )
-            .padding([3, 8])
-            .style(|t, s| accent_button_style(Color::from_rgb(0.20, 0.54, 0.72), t, s))
-            .on_press_maybe(
-                (!self.freezing && !self.editing)
-                    .then_some(Message::FreezePluginTarget(slot.target.clone())),
-            ),
-            horizontal_space(),
-            button(text("Remove").size(10.5))
+        );
+        if slot.has_native_ui {
+            actions = actions.push(
+                button(text(if ui_open { "Close UI" } else { "Open UI" }).size(10.5))
+                    .padding([3, 7])
+                    .style(move |t, s| {
+                        if ui_open {
+                            accent_button_style(Color::from_rgb(0.76, 0.44, 0.16), t, s)
+                        } else {
+                            accent_button_style(Color::from_rgb(0.46, 0.30, 0.78), t, s)
+                        }
+                    })
+                    .on_press(Message::TogglePluginNativeUi(slot.slot_id)),
+            );
+        }
+        actions = actions
+            .push(
+                button(
+                    text(if self.freezing {
+                        "Freezing..."
+                    } else {
+                        "Freeze"
+                    })
+                    .size(10.5),
+                )
                 .padding([3, 7])
-                .style(|t, s| accent_button_style(Color::from_rgb(0.68, 0.22, 0.26), t, s))
-                .on_press(Message::RemovePluginSlot(slot.slot_id)),
-        ]
-        .spacing(5)
-        .align_y(Alignment::Center);
+                .style(|t, s| accent_button_style(Color::from_rgb(0.20, 0.54, 0.72), t, s))
+                .on_press_maybe(
+                    (!self.freezing && !self.editing)
+                        .then_some(Message::FreezePluginTarget(slot.target.clone())),
+                ),
+            )
+            .push(horizontal_space())
+            .push(
+                button(text("Remove").size(10.5))
+                    .padding([3, 7])
+                    .style(|t, s| accent_button_style(Color::from_rgb(0.68, 0.22, 0.26), t, s))
+                    .on_press(Message::RemovePluginSlot(slot.slot_id)),
+            );
 
         let mut params_col = Column::new().spacing(5);
         if slot.params.is_empty() {

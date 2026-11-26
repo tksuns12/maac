@@ -7,6 +7,7 @@ use std::ptr;
 
 use maac::dsp::{HostBlockContext, HostNoteEvent};
 
+use super::native_window::{open_au_native_window, NativePluginWindow};
 use super::{PluginDescriptor, PluginFormat, PluginInstance, PluginKind, PluginParamDescriptor};
 
 type OSStatus = i32;
@@ -307,27 +308,27 @@ fn cfstring_to_rust(cf: CFStringRef) -> Option<String> {
 }
 
 fn au_unit_label(unit: u32) -> &'static str {
+    // Matches `AudioUnitParameterUnit` in AudioToolbox/AudioUnitProperties.h.
     match unit {
-        1 => "",
-        2 => "%",
-        3 => "s",
-        4 => "frames",
-        5 => "phase",
-        6 => "rate",
-        7 => "Hz",
-        8 => "cents",
-        9 => "semi",
-        10 => "note",
-        12 => "pan",
+        3 => "%",
+        4 => "s",
+        5 => "frames",
+        6 => "deg",
+        7 => "x",
+        8 => "Hz",
+        9 | 20 => "cents",
+        10 => "semi",
+        11 => "note",
         13 => "dB",
         14 => "gain",
         15 => "deg",
-        16 => "ms",
-        17 => "ratio",
-        18 => "oct",
-        21 => "bpm",
-        22 => "beats",
-        25 => "dB",
+        18 => "pan",
+        19 => "m",
+        21 => "oct",
+        22 => "BPM",
+        23 => "beats",
+        24 => "ms",
+        25 => ":1",
         _ => "",
     }
 }
@@ -441,6 +442,7 @@ pub struct AuInstance {
     out_left: Vec<f32>,
     out_right: Vec<f32>,
     render_sample_time: f64,
+    native_ui: Option<NativePluginWindow>,
 }
 
 // SAFETY: `AuInstance` exclusively owns its `AudioComponentInstance` handle and
@@ -480,6 +482,7 @@ impl AuInstance {
             out_left: vec![0.0; 2_048],
             out_right: vec![0.0; 2_048],
             render_sample_time: 0.0,
+            native_ui: None,
         };
         inst.discover_parameters();
         Ok(inst)
@@ -932,10 +935,50 @@ impl PluginInstance for AuInstance {
         }
         Ok(())
     }
+
+    fn has_native_ui(&self) -> bool {
+        true
+    }
+
+    fn is_native_ui_open(&self) -> bool {
+        self.native_ui
+            .as_ref()
+            .is_some_and(NativePluginWindow::is_visible)
+    }
+
+    fn open_native_ui(&mut self, title: &str) -> Result<(), String> {
+        if let Some(win) = &self.native_ui {
+            if win.is_visible() {
+                win.show();
+                return Ok(());
+            }
+            self.close_native_ui();
+        }
+        let win = open_au_native_window(self.unit, title)?;
+        self.native_ui = Some(win);
+        Ok(())
+    }
+
+    fn close_native_ui(&mut self) {
+        if let Some(mut win) = self.native_ui.take() {
+            win.close();
+        }
+    }
+
+    fn poll_main_thread(&mut self) -> bool {
+        if let Some(win) = &self.native_ui {
+            if !win.is_visible() {
+                self.close_native_ui();
+                return true;
+            }
+        }
+        false
+    }
 }
 
 impl Drop for AuInstance {
     fn drop(&mut self) {
+        self.close_native_ui();
         if self.initialized {
             unsafe {
                 AudioUnitUninitialize(self.unit);

@@ -5,11 +5,15 @@ use std::ffi::{c_char, c_void, CStr, CString};
 use std::mem::size_of;
 use std::path::{Path, PathBuf};
 use std::ptr;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 
 use libloading::Library;
 use maac::dsp::{HostBlockContext, HostNoteEvent};
 
 use super::clap_abi::*;
+#[cfg(target_os = "macos")]
+use super::native_window::NativePluginWindow;
 use super::{PluginDescriptor, PluginFormat, PluginInstance, PluginKind, PluginParamDescriptor};
 
 /// Standard system and user directories containing `.clap` bundles/libraries.
@@ -197,11 +201,111 @@ fn scan_clap_bundle(clap_path: &Path) -> Result<Vec<PluginDescriptor>, String> {
 
 // ---- Host callbacks & event queues ---------------------------------------
 
+struct ClapHostState {
+    callback_requested: AtomicBool,
+    flush_requested: AtomicBool,
+    gui_closed: AtomicBool,
+    pending_resize: Mutex<Option<(u32, u32)>>,
+}
+
+impl ClapHostState {
+    fn new() -> Self {
+        Self {
+            callback_requested: AtomicBool::new(false),
+            flush_requested: AtomicBool::new(false),
+            gui_closed: AtomicBool::new(false),
+            pending_resize: Mutex::new(None),
+        }
+    }
+}
+
+unsafe fn host_state<'a>(host: *const clap_host_t) -> Option<&'a ClapHostState> {
+    if host.is_null() {
+        return None;
+    }
+    let data = (*host).host_data;
+    if data.is_null() {
+        return None;
+    }
+    Some(&*(data as *const ClapHostState))
+}
+
+unsafe extern "C" fn host_gui_resize_hints_changed(_host: *const clap_host_t) {}
+
+unsafe extern "C" fn host_gui_request_resize(
+    host: *const clap_host_t,
+    width: u32,
+    height: u32,
+) -> bool {
+    if let Some(state) = host_state(host) {
+        if let Ok(mut guard) = state.pending_resize.lock() {
+            *guard = Some((width, height));
+        }
+        return true;
+    }
+    false
+}
+
+unsafe extern "C" fn host_gui_request_show(_host: *const clap_host_t) -> bool {
+    true
+}
+
+unsafe extern "C" fn host_gui_request_hide(_host: *const clap_host_t) -> bool {
+    true
+}
+
+unsafe extern "C" fn host_gui_closed(host: *const clap_host_t, _was_destroyed: bool) {
+    if let Some(state) = host_state(host) {
+        state.gui_closed.store(true, Ordering::Release);
+    }
+}
+
+unsafe extern "C" fn host_params_rescan(_host: *const clap_host_t, _flags: u32) {}
+
+unsafe extern "C" fn host_params_clear(_host: *const clap_host_t, _param_id: clap_id, _flags: u32) {
+}
+
+unsafe extern "C" fn host_params_request_flush(host: *const clap_host_t) {
+    if let Some(state) = host_state(host) {
+        state.flush_requested.store(true, Ordering::Release);
+    }
+}
+
+static HOST_GUI_EXT: clap_host_gui_t = clap_host_gui_t {
+    resize_hints_changed: Some(host_gui_resize_hints_changed),
+    request_resize: Some(host_gui_request_resize),
+    request_show: Some(host_gui_request_show),
+    request_hide: Some(host_gui_request_hide),
+    closed: Some(host_gui_closed),
+};
+
+static HOST_PARAMS_EXT: clap_host_params_t = clap_host_params_t {
+    rescan: Some(host_params_rescan),
+    clear: Some(host_params_clear),
+    request_flush: Some(host_params_request_flush),
+};
+
 unsafe extern "C" fn host_get_extension(
     _host: *const clap_host_t,
-    _extension_id: *const c_char,
+    extension_id: *const c_char,
 ) -> *const c_void {
+    if extension_id.is_null() {
+        return ptr::null();
+    }
+    let ext = CStr::from_ptr(extension_id);
+    if ext == CLAP_EXT_GUI {
+        return (&HOST_GUI_EXT as *const clap_host_gui_t) as *const c_void;
+    }
+    if ext == CLAP_EXT_PARAMS {
+        return (&HOST_PARAMS_EXT as *const clap_host_params_t) as *const c_void;
+    }
     ptr::null()
+}
+
+unsafe extern "C" fn host_request_callback(host: *const clap_host_t) {
+    if let Some(state) = host_state(host) {
+        state.callback_requested.store(true, Ordering::Release);
+    }
 }
 
 unsafe extern "C" fn host_noop(_host: *const clap_host_t) {}
@@ -294,10 +398,15 @@ pub struct ClapInstance {
     /// Dynamic library handle kept alive until after `plugin.destroy` & `entry.deinit`.
     _lib: Option<Library>,
     entry_deinit: Option<unsafe extern "C" fn()>,
+    host_state: Box<ClapHostState>,
     _host: Box<clap_host_t>,
     plugin: *const clap_plugin_t,
     params_ext: *const clap_plugin_params_t,
     state_ext: *const clap_plugin_state_t,
+    gui_ext: *const clap_plugin_gui_t,
+    gui_created: bool,
+    #[cfg(target_os = "macos")]
+    native_ui: Option<NativePluginWindow>,
     activated: bool,
     processing: bool,
     params: Vec<PluginParamDescriptor>,
@@ -367,9 +476,11 @@ impl ClapInstance {
             .create_plugin
             .ok_or_else(|| "CLAP factory missing create_plugin".to_string())?;
 
+        let mut host_state = Box::new(ClapHostState::new());
+        let host_data_ptr = (&mut *host_state as *mut ClapHostState) as *mut c_void;
         let host = Box::new(clap_host_t {
             clap_version: CLAP_VERSION_INIT,
-            host_data: ptr::null_mut(),
+            host_data: host_data_ptr,
             name: c"MaaC Studio".as_ptr(),
             vendor: c"MaaC".as_ptr(),
             url: c"https://github.com/tksuns12/maac".as_ptr(),
@@ -377,7 +488,7 @@ impl ClapInstance {
             get_extension: Some(host_get_extension),
             request_restart: Some(host_noop),
             request_process: Some(host_noop),
-            request_callback: Some(host_noop),
+            request_callback: Some(host_request_callback),
         });
 
         let plugin_ptr = unsafe { create_plugin(factory_ptr, &*host, id_cstr.as_ptr()) };
@@ -400,15 +511,23 @@ impl ClapInstance {
         let state_ext = plugin.get_extension.map_or(ptr::null(), |f| unsafe {
             f(plugin_ptr, CLAP_EXT_STATE.as_ptr())
         }) as *const clap_plugin_state_t;
+        let gui_ext = plugin.get_extension.map_or(ptr::null(), |f| unsafe {
+            f(plugin_ptr, CLAP_EXT_GUI.as_ptr())
+        }) as *const clap_plugin_gui_t;
 
         let mut inst = Self {
             descriptor: descriptor.clone(),
             _lib: lib,
             entry_deinit: entry.deinit,
+            host_state,
             _host: host,
             plugin: plugin_ptr,
             params_ext,
             state_ext,
+            gui_ext,
+            gui_created: false,
+            #[cfg(target_os = "macos")]
+            native_ui: None,
             activated: false,
             processing: false,
             params: Vec::new(),
@@ -806,10 +925,234 @@ impl PluginInstance for ClapInstance {
         }
         Ok(())
     }
+
+    fn has_native_ui(&self) -> bool {
+        #[cfg(target_os = "macos")]
+        {
+            if self.gui_ext.is_null() {
+                return false;
+            }
+            let gui = unsafe { &*self.gui_ext };
+            gui.is_api_supported.is_some_and(|f| unsafe {
+                f(self.plugin, CLAP_WINDOW_API_COCOA.as_ptr(), false)
+                    || f(self.plugin, CLAP_WINDOW_API_COCOA.as_ptr(), true)
+            })
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            false
+        }
+    }
+
+    fn is_native_ui_open(&self) -> bool {
+        #[cfg(target_os = "macos")]
+        {
+            self.gui_created
+                && self
+                    .native_ui
+                    .as_ref()
+                    .is_none_or(NativePluginWindow::is_visible)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            false
+        }
+    }
+
+    fn open_native_ui(&mut self, title: &str) -> Result<(), String> {
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = title;
+            Err("CLAP native UI is currently implemented for macOS Cocoa".into())
+        }
+        #[cfg(target_os = "macos")]
+        {
+            if self.gui_ext.is_null() {
+                return Err(format!(
+                    "{} does not expose a CLAP GUI extension",
+                    self.descriptor.name
+                ));
+            }
+            if self.gui_created {
+                if let Some(win) = &self.native_ui {
+                    if win.is_visible() {
+                        win.show();
+                        return Ok(());
+                    }
+                }
+                self.close_native_ui();
+            }
+
+            let gui = unsafe { &*self.gui_ext };
+            let supports_embedded = gui
+                .is_api_supported
+                .is_some_and(|f| unsafe { f(self.plugin, CLAP_WINDOW_API_COCOA.as_ptr(), false) });
+            let supports_floating = !supports_embedded
+                && gui.is_api_supported.is_some_and(|f| unsafe {
+                    f(self.plugin, CLAP_WINDOW_API_COCOA.as_ptr(), true)
+                });
+            if !supports_embedded && !supports_floating {
+                return Err(format!(
+                    "{} does not support macOS Cocoa CLAP GUI",
+                    self.descriptor.name
+                ));
+            }
+
+            let Some(create_fn) = gui.create else {
+                return Err("CLAP GUI missing create()".into());
+            };
+            if !unsafe {
+                create_fn(
+                    self.plugin,
+                    CLAP_WINDOW_API_COCOA.as_ptr(),
+                    supports_floating,
+                )
+            } {
+                return Err(format!(
+                    "CLAP gui.create failed for {}",
+                    self.descriptor.name
+                ));
+            }
+            self.gui_created = true;
+            self.host_state.gui_closed.store(false, Ordering::Release);
+
+            if supports_embedded {
+                let mut w: u32 = 800;
+                let mut h: u32 = 520;
+                if let Some(get_size) = gui.get_size {
+                    let mut gw = 0u32;
+                    let mut gh = 0u32;
+                    if unsafe { get_size(self.plugin, &mut gw, &mut gh) } && gw >= 100 && gh >= 80 {
+                        w = gw;
+                        h = gh;
+                    }
+                }
+                let resizable = gui.can_resize.is_some_and(|f| unsafe { f(self.plugin) });
+                let win =
+                    match NativePluginWindow::new(title, f64::from(w), f64::from(h), resizable) {
+                        Ok(win) => win,
+                        Err(err) => {
+                            self.close_native_ui();
+                            return Err(err);
+                        }
+                    };
+                let clap_win = clap_window_t {
+                    api: CLAP_WINDOW_API_COCOA.as_ptr(),
+                    ptr: win.content_view(),
+                };
+                let attached = gui
+                    .set_parent
+                    .is_some_and(|f| unsafe { f(self.plugin, &clap_win) });
+                if !attached {
+                    self.close_native_ui();
+                    return Err(format!(
+                        "CLAP gui.set_parent failed for {}",
+                        self.descriptor.name
+                    ));
+                }
+                if let Some(show) = gui.show {
+                    let _ = unsafe { show(self.plugin) };
+                }
+                win.show();
+                self.native_ui = Some(win);
+            } else {
+                if let Some(suggest) = gui.suggest_title {
+                    if let Ok(c_title) = CString::new(title) {
+                        unsafe { suggest(self.plugin, c_title.as_ptr()) };
+                    }
+                }
+                if let Some(show) = gui.show {
+                    let _ = unsafe { show(self.plugin) };
+                }
+            }
+            Ok(())
+        }
+    }
+
+    fn close_native_ui(&mut self) {
+        if self.gui_created && !self.gui_ext.is_null() {
+            let gui = unsafe { &*self.gui_ext };
+            if let Some(hide) = gui.hide {
+                let _ = unsafe { hide(self.plugin) };
+            }
+            if let Some(destroy) = gui.destroy {
+                unsafe { destroy(self.plugin) };
+            }
+            self.gui_created = false;
+        }
+        #[cfg(target_os = "macos")]
+        if let Some(mut win) = self.native_ui.take() {
+            win.close();
+        }
+        self.host_state.gui_closed.store(false, Ordering::Release);
+    }
+
+    fn poll_main_thread(&mut self) -> bool {
+        let mut changed = false;
+        if self
+            .host_state
+            .callback_requested
+            .swap(false, Ordering::AcqRel)
+            && !self.plugin.is_null()
+        {
+            let plugin = unsafe { &*self.plugin };
+            if let Some(on_main) = plugin.on_main_thread {
+                unsafe { on_main(self.plugin) };
+            }
+        }
+        if self
+            .host_state
+            .flush_requested
+            .swap(false, Ordering::AcqRel)
+            && !self.params_ext.is_null()
+        {
+            let ext = unsafe { &*self.params_ext };
+            if let Some(flush) = ext.flush {
+                let empty: Vec<QueuedEvent> = Vec::new();
+                let in_events = clap_input_events_t {
+                    ctx: (&empty as *const Vec<QueuedEvent>) as *mut c_void,
+                    size: Some(input_events_size),
+                    get: Some(input_events_get),
+                };
+                let out_events = clap_output_events_t {
+                    ctx: ptr::null_mut(),
+                    try_push: Some(output_events_try_push),
+                };
+                unsafe { flush(self.plugin, &in_events, &out_events) };
+            }
+            changed = true;
+        }
+        #[cfg(target_os = "macos")]
+        {
+            if let Ok(mut guard) = self.host_state.pending_resize.lock() {
+                if let Some((w, h)) = guard.take() {
+                    if let Some(win) = &self.native_ui {
+                        win.set_content_size(f64::from(w), f64::from(h));
+                        if !self.gui_ext.is_null() {
+                            let gui = unsafe { &*self.gui_ext };
+                            if let Some(set_size) = gui.set_size {
+                                let _ = unsafe { set_size(self.plugin, w, h) };
+                            }
+                        }
+                    }
+                }
+            }
+            if self.gui_created {
+                let closed_by_plugin = self.host_state.gui_closed.swap(false, Ordering::AcqRel);
+                let closed_by_user = self.native_ui.as_ref().is_some_and(|w| !w.is_visible());
+                if closed_by_plugin || closed_by_user {
+                    self.close_native_ui();
+                    changed = true;
+                }
+            }
+        }
+        changed
+    }
 }
 
 impl Drop for ClapInstance {
     fn drop(&mut self) {
+        self.close_native_ui();
         if !self.plugin.is_null() {
             let plugin = unsafe { &*self.plugin };
             if self.processing {

@@ -11,6 +11,8 @@ pub mod au;
 pub mod clap;
 pub mod clap_abi;
 pub mod freeze;
+#[cfg(target_os = "macos")]
+pub mod native_window;
 pub mod rack_file;
 
 use std::collections::BTreeMap;
@@ -132,6 +134,29 @@ pub trait PluginInstance: Send {
     fn process_effect(&mut self, ctx: HostBlockContext, channels: usize, io: &mut [f64]);
     fn save_state(&self) -> Result<Vec<u8>, String>;
     fn load_state(&mut self, bytes: &[u8]) -> Result<(), String>;
+
+    /// Whether this plugin instance can open a native floating OS window.
+    fn has_native_ui(&self) -> bool {
+        false
+    }
+    /// Whether this plugin's native floating window is currently open.
+    fn is_native_ui_open(&self) -> bool {
+        false
+    }
+    /// Open (or bring to front) this plugin's native floating UI window.
+    /// Must be called on the main GUI thread.
+    fn open_native_ui(&mut self, _title: &str) -> Result<(), String> {
+        Err("native plugin UI is not supported on this platform".into())
+    }
+    /// Close and destroy this plugin's native floating UI window if open.
+    /// Must be called on the main GUI thread.
+    fn close_native_ui(&mut self) {}
+    /// Main-thread tick hook (dispatches CLAP `on_main_thread`, resizes, and
+    /// cleans up windows closed by the user). Returns `true` if UI state changed
+    /// or a native window is open and parameters may have changed.
+    fn poll_main_thread(&mut self) -> bool {
+        false
+    }
 }
 
 /// Where a hosted plugin slot is attached in the project graph.
@@ -153,6 +178,8 @@ pub struct PluginSlotSummary {
     pub target: SlotTarget,
     pub descriptor: PluginDescriptor,
     pub bypassed: bool,
+    pub has_native_ui: bool,
+    pub native_ui_open: bool,
     pub params: Vec<PluginParamDescriptor>,
     pub param_values: Vec<(u32, f32)>,
 }
@@ -241,6 +268,12 @@ impl HostRack {
     pub fn add_slot(&mut self, target: SlotTarget, desc: &PluginDescriptor) -> Result<u64, String> {
         let instance = instantiate_plugin(desc, self.sample_rate, self.max_block_frames)?;
         if let SlotTarget::TrackInstrument(ref node_id) = target {
+            for slot in &mut self.slots {
+                if matches!(&slot.target, SlotTarget::TrackInstrument(existing) if existing == node_id)
+                {
+                    slot.instance.close_native_ui();
+                }
+            }
             self.slots.retain(|s| {
                 !matches!(&s.target, SlotTarget::TrackInstrument(existing) if existing == node_id)
             });
@@ -258,12 +291,59 @@ impl HostRack {
 
     pub fn remove_slot(&mut self, slot_id: u64) -> bool {
         let before = self.slots.len();
+        for slot in &mut self.slots {
+            if slot.slot_id == slot_id {
+                slot.instance.close_native_ui();
+            }
+        }
         self.slots.retain(|s| s.slot_id != slot_id);
         self.slots.len() != before
     }
 
     pub fn clear(&mut self) {
+        for slot in &mut self.slots {
+            slot.instance.close_native_ui();
+        }
         self.slots.clear();
+    }
+
+    pub fn toggle_native_ui(&mut self, slot_id: u64) -> Result<bool, String> {
+        let Some(slot) = self.slots.iter_mut().find(|s| s.slot_id == slot_id) else {
+            return Err("plugin slot no longer exists".into());
+        };
+        if slot.instance.is_native_ui_open() {
+            slot.instance.close_native_ui();
+            return Ok(false);
+        }
+        let target_label = match &slot.target {
+            SlotTarget::TrackInstrument(n) => format!("{n} · Inst"),
+            SlotTarget::NodeInsert(n) => format!("{n} · FX"),
+            SlotTarget::MasterInsert => "Master · FX".into(),
+        };
+        let title = format!(
+            "[{}] {} — {target_label}",
+            slot.instance.descriptor().format.label(),
+            slot.instance.descriptor().name
+        );
+        slot.instance.open_native_ui(&title)?;
+        Ok(true)
+    }
+
+    /// Main-thread UI pump: dispatches CLAP `on_main_thread`, resizes, and
+    /// detects closed floating windows. Returns `(any_ui_open, state_changed)`.
+    pub fn poll_main_thread(&mut self) -> (bool, bool) {
+        let mut any_open = false;
+        let mut changed = false;
+        for slot in &mut self.slots {
+            let was_open = slot.instance.is_native_ui_open();
+            let polled = slot.instance.poll_main_thread();
+            let now_open = slot.instance.is_native_ui_open();
+            any_open |= now_open;
+            if was_open != now_open || polled {
+                changed = true;
+            }
+        }
+        (any_open, changed)
     }
 
     pub fn set_bypassed(&mut self, slot_id: u64, bypassed: bool) {
@@ -307,6 +387,8 @@ impl HostRack {
                     target: slot.target.clone(),
                     descriptor: slot.instance.descriptor().clone(),
                     bypassed: slot.bypassed,
+                    has_native_ui: slot.instance.has_native_ui(),
+                    native_ui_open: slot.instance.is_native_ui_open(),
                     params,
                     param_values,
                 }
