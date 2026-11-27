@@ -14,7 +14,7 @@ use num_traits::{ToPrimitive, Zero};
 use serde_json::{Map, Value};
 
 use crate::diagnostic::Diagnostics;
-use crate::semantic::{origin, supplier, Models, Replaced, Source, Supply, Unplayable};
+use crate::semantic::{origin, supplier, Models, Pitch, Replaced, Source, Supply, Unplayable};
 use crate::syntax::Document;
 
 use crate::compiler::LOCAL_SOURCE;
@@ -1055,12 +1055,12 @@ fn resolve_occurrence(
 
 /// The source mappings of the occurrence at `address` and, for a chord
 /// member, the pitches its chord plays there.
-fn resolve_occurrence_pitches<'a>(
-    reading: &Reading<'a>,
+fn resolve_occurrence_pitches<'r>(
+    reading: &'r Reading<'_>,
     place_id: &str,
     place: &Value,
     address: &str,
-) -> Option<(SourceMappings, Option<Vec<&'a Value>>)> {
+) -> Option<(SourceMappings, Option<Vec<&'r Pitch>>)> {
     let mut supplied = None;
     let (mappings, member) = walk_occurrence(
         reading.objects,
@@ -1275,33 +1275,28 @@ pub(super) fn child_onset(pattern: &Value, child: &Value) -> Option<(BigRational
 /// The pitches that chord `chord` of pattern `pattern` plays (§8.2): its own
 /// `pitches`, those of the voicing it names, or else those `supplied` by its
 /// nearest use or placement, narrowed by `top`, `bottom` or `pick`.
-pub(super) fn chord_pitches<'a>(
-    reading: &Reading<'a>,
+pub(super) fn chord_pitches<'r>(
+    reading: &'r Reading<'_>,
     pattern: &str,
     chord: &str,
     supplied: Option<&Supplied>,
-) -> Option<Vec<&'a Value>> {
+) -> Option<Vec<&'r Pitch>> {
     let played = reading
         .models
         .played
         .get([pattern.to_owned(), chord.to_owned()].as_slice())?;
-    let pattern = reading.objects.get(pattern)?;
-    let chord_id = chord;
-    let chord = pattern["children"].get(chord_id)?;
-    let of_voicing = |id: &str| -> Option<&'a Value> {
-        reading.models.voicings.get(id)?;
-        reading.objects.get(id)?["fields"].get("pitches")
-    };
-    let pitches = match &played.source {
-        Source::Own => chord["fields"].get("pitches")?,
-        Source::Voicing(id) => of_voicing(id)?,
+    let pitches: &[Pitch] = match &played.source {
+        Source::Own(pitches) => pitches,
+        Source::Voicing(id) => &reading.models.voicings.get(id)?.pitches,
         Source::Supplied => {
-            let at = child_onset(pattern, chord)?.0;
-            let given = given_voicing(reading, chord_id, Some(supplied?), &at)?.ok()?;
-            of_voicing(given.voicing)?
+            let pattern_object = reading.objects.get(pattern)?;
+            let chord_object = pattern_object["children"].get(chord)?;
+            let at = child_onset(pattern_object, chord_object)?.0;
+            let given = given_voicing(reading, chord, Some(supplied?), &at)?.ok()?;
+            &reading.models.voicings.get(given.voicing)?.pitches
         }
     };
-    played.keep.of(pitches["items"].as_array()?).ok()
+    played.keep.of(pitches).ok()
 }
 
 /// The occurrence a placement child names: an override's `event`, or the
@@ -1601,7 +1596,7 @@ impl ChordWalk<'_, '_> {
                         continue;
                     };
                     if let (Some(Err(error)), Some(supplied)) = (
-                        reading.models.members_given(&path, voicing.pitches),
+                        reading.models.members_given(&path, voicing.pitches.len()),
                         supplied,
                     ) {
                         return Err(refuse(error.under(&given.origin(supplied))));
@@ -2027,7 +2022,7 @@ fn enumerate_pattern_occurrences(
                     .played
                     .get([pattern_id.to_owned(), child_id.clone()].as_slice())?;
                 match &played.source {
-                    Source::Own => {}
+                    Source::Own(_) => {}
                     Source::Voicing(id) => dependencies.push(vec![id.clone()]),
                     Source::Supplied => {
                         let supplied = supplied?;

@@ -647,6 +647,11 @@ fn constructors_are_accepted_exactly_where_section_3_2_places_them() {
         ("degree(1, &cell)", "E_REFERENCE"),
         ("ratio(0, 440Hz)", RANGE),
         ("0Hz", RANGE),
+        ("key(999999999999999999999999999999999)", "E_RESOURCE_LIMIT"),
+        (
+            "degree(999999999999999999999999999999999, &just)",
+            "E_RESOURCE_LIMIT",
+        ),
     ];
     let mut failures = Vec::new();
     // Pitch locations: a pattern note, an override replacement and an insert.

@@ -38,8 +38,8 @@ use crate::plan_artifact::PlanArtifact;
 use crate::plan_v5::{AudioClip, AudioFadeShape};
 use crate::plan_v6::{ClipEntry, WarpAnchor, WarpClip};
 use crate::semantic::{
-    supplier, Cycle, Groove, InstrumentNodeDescriptor, Models, Played, Replaced, Source, Strum,
-    Supply, Unplayable, Vary, PER_MEMBER,
+    supplier, Cycle, Groove, InstrumentNodeDescriptor, Models, Pitch as SourcePitch, Played,
+    Replaced, Source, Strum, Supply, Unplayable, Vary, PER_MEMBER,
 };
 use crate::syntax::{Document, Field, Object, Reference, Unit, Value, ValueKind};
 
@@ -2285,54 +2285,33 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn parse_pitch(&self, value: &Value, object: &Object, field: Option<&Field>) -> CResult<Pitch> {
-        match &value.kind {
-            ValueKind::Symbol(symbol) | ValueKind::String(symbol) => Pitch::parse_spelled(symbol)
-                .map_err(|error| map_music_error(error, Some(value.span))),
-            ValueKind::Quantity { unit: Unit::Hz, .. }
-            | ValueKind::Quantity {
-                unit: Unit::KHz, ..
-            } => Pitch::hz(self.quantity(value, Unit::Hz, object, field)?)
-                .map_err(|error| map_music_error(error, Some(value.span))),
-            ValueKind::Call { function, args } if function == "key" && args.len() == 1 => {
-                let key = bigint_i64(
-                    &self.rational_value(&args[0], object, field)?,
-                    Some(args[0].span),
-                )?;
-                Ok(Pitch::key(key))
-            }
-            ValueKind::Call { function, args } if function == "degree" && args.len() == 2 => {
-                let index = bigint_i64(
-                    &self.rational_value(&args[0], object, field)?,
-                    Some(args[0].span),
-                )?;
-                let tuning_id = self.one_reference(&args[1], object, field)?;
-                let tuning = self.tunings.get(&tuning_id).ok_or_else(|| {
-                    path_diagnostic(
-                        DiagnosticCode::Reference,
-                        "unknown tuning reference",
-                        object,
-                        field,
-                    )
-                })?;
-                Ok(Pitch::degree(index, tuning.clone()))
-            }
-            ValueKind::Call { function, args } if function == "ratio" && args.len() == 2 => {
-                let ratio = self.rational_value(&args[0], object, field)?;
-                let frequency = self.quantity(&args[1], Unit::Hz, object, field)?;
-                Pitch::ratio(ratio, frequency)
-                    .map_err(|error| map_music_error(error, Some(value.span)))
-            }
-            _ => Err(path_diagnostic(
-                DiagnosticCode::Unit,
-                "invalid pitch value",
+    /// Lower a pitch that semantic analysis read, resolving any `degree`
+    /// tuning reference against `self.tunings`.
+    fn resolve_pitch(
+        &self,
+        pitch: &SourcePitch,
+        object: &Object,
+        field: Option<&Field>,
+    ) -> CResult<Pitch> {
+        pitch.resolve(&self.tunings).ok_or_else(|| {
+            path_diagnostic(
+                DiagnosticCode::Reference,
+                "unknown tuning reference",
                 object,
                 field,
-            )),
-        }
+            )
+        })
     }
 
-    fn parse_note(&self, object: &Object) -> CResult<LeafDef> {
+    /// The pitch semantic analysis read of the `note` at object path `path`.
+    fn note_pitch(&self, path: &[String], object: &Object) -> CResult<Pitch> {
+        let Some(pitch) = self.models.pitches.get(path) else {
+            return Err(unread(object));
+        };
+        self.resolve_pitch(pitch, object, object.field("pitch"))
+    }
+
+    fn parse_note(&self, object: &Object, pitch: Pitch) -> CResult<LeafDef> {
         self.check_fields(
             object,
             &[
@@ -2350,7 +2329,6 @@ impl<'a> Compiler<'a> {
         )?;
         let at_field = self.field(object, "at")?;
         let dur_field = self.field(object, "dur")?;
-        let pitch_field = self.field(object, "pitch")?;
         let at = self.q_value(&at_field.value, object, Some(at_field), false)?;
         let dur = self.q_value(&dur_field.value, object, Some(dur_field), false)?;
         if at.is_negative() || dur <= Rational::zero() {
@@ -2361,7 +2339,6 @@ impl<'a> Compiler<'a> {
                 None,
             ));
         }
-        let pitch = self.parse_pitch(&pitch_field.value, object, Some(pitch_field))?;
         let velocity = self
             .optional(object, "velocity")
             .map(|value| self.rational_value(value, object, object.field("velocity")))
@@ -2533,13 +2510,12 @@ impl<'a> Compiler<'a> {
             ],
         )?;
         let played = self.played(pattern, object)?;
-        let (pitches_field, pitches) = match &played.source {
-            Source::Own => self.pitches_of(object)?,
+        let pitches = match &played.source {
+            Source::Own(pitches) => pitches.as_slice(),
             Source::Voicing(id) => self.voicing_pitches(id)?,
             Source::Supplied => return Ok(None),
         };
-        self.lower_chord(pattern, object, played, pitches_field, pitches)
-            .map(Some)
+        self.lower_chord(pattern, object, played, pitches).map(Some)
     }
 
     /// What semantic analysis read of the pitches that chord `object` of
@@ -2591,8 +2567,8 @@ impl<'a> Compiler<'a> {
         };
         let origin_note = crate::semantic::origin(&supplied.supply, voicing_id, name, &supplied.by);
         let played = self.played(pattern, object)?;
-        let (pitches_field, pitches) = self.voicing_pitches(voicing_id)?;
-        self.lower_chord(pattern, object, played, pitches_field, pitches)
+        let pitches = self.voicing_pitches(voicing_id)?;
+        self.lower_chord(pattern, object, played, pitches)
             .map_err(|diagnostics| {
                 let mut named = Diagnostics::new();
                 for mut diagnostic in diagnostics.into_vec() {
@@ -2631,23 +2607,12 @@ impl<'a> Compiler<'a> {
         Ok(def.chord_within(&position))
     }
 
-    /// The `pitches` of `object`, a chord or a voicing that semantic
-    /// analysis read.
-    fn pitches_of<'v>(&self, object: &'v Object) -> CResult<(&'v Field, &'v [Value])> {
-        let field = self.field(object, "pitches")?;
-        match &field.value.kind {
-            ValueKind::List(items) => Ok((field, items)),
-            _ => Err(unread(object)),
-        }
-    }
-
     /// The pitches of the voicing with ID `id` (§8.2).
-    fn voicing_pitches(&self, id: &str) -> CResult<(&Field, &[Value])> {
-        let voicing = self.object(id)?;
-        if !self.models.voicings.contains_key(id) {
-            return Err(unread(voicing));
-        }
-        self.pitches_of(voicing)
+    fn voicing_pitches(&self, id: &str) -> CResult<&[SourcePitch]> {
+        let Some(voicing) = self.models.voicings.get(id) else {
+            return Err(unread(self.object(id)?));
+        };
+        Ok(&voicing.pitches)
     }
 
     /// Member `k` keeps the chord's onset, gate, order and expressions, takes
@@ -2659,8 +2624,7 @@ impl<'a> Compiler<'a> {
         pattern: &str,
         object: &Object,
         played: &Played,
-        pitches_field: &Field,
-        pitches: &[Value],
+        pitches: &[SourcePitch],
     ) -> CResult<Vec<LeafDef>> {
         // A `top`, `bottom`, `pick` or per-member list that does not fit a
         // supplied voicing is found here.
@@ -2668,6 +2632,7 @@ impl<'a> Compiler<'a> {
             .of(pitches)
             .map_err(|misfit| unplayable(Unplayable::misfit(&misfit), object))?;
         let strum = self.strum_of(pattern, object)?;
+        let pitch_field = object.field("pitches").or_else(|| object.field("voicing"));
         pitches
             .iter()
             .enumerate()
@@ -2679,15 +2644,6 @@ impl<'a> Compiler<'a> {
                 ] {
                     note.fields.remove(name);
                 }
-                note.fields.insert(
-                    "pitch".into(),
-                    Field {
-                        name: "pitch".into(),
-                        span: pitches_field.span,
-                        name_span: pitches_field.name_span,
-                        value: (*pitch).clone(),
-                    },
-                );
                 for name in PER_MEMBER {
                     if let Some(field) = note.fields.get_mut(name) {
                         if let ValueKind::List(items) = &field.value.kind {
@@ -2695,7 +2651,8 @@ impl<'a> Compiler<'a> {
                         }
                     }
                 }
-                let mut leaf = self.parse_note(&note)?;
+                let resolved = self.resolve_pitch(pitch, object, pitch_field)?;
+                let mut leaf = self.parse_note(&note, resolved)?;
                 leaf.id = format!("{}.{member}", object.id);
                 if let Some(strum) = strum {
                     strike(strum, &mut leaf, member, pitches.len(), object)?;
@@ -3216,7 +3173,11 @@ impl<'a> Compiler<'a> {
                     continue;
                 }
                 let parsed = match child.kind.as_str() {
-                    "note" => PatternChild::Leaf(Box::new(self.parse_note(child)?)),
+                    "note" => {
+                        let pitch =
+                            self.note_pitch(&[object.id.clone(), child.id.clone()], child)?;
+                        PatternChild::Leaf(Box::new(self.parse_note(child, pitch)?))
+                    }
                     "use" => PatternChild::Use(Box::new(self.parse_use(&object.id, child)?)),
                     "phrase" => {
                         PatternChild::Phrase(Box::new(self.parse_phrase(&object.id, child)?))
@@ -3583,7 +3544,11 @@ impl<'a> Compiler<'a> {
                             } else if leaf.kind == "message" {
                                 self.parse_message(leaf)?
                             } else {
-                                self.parse_note(leaf)?
+                                let pitch = self.note_pitch(
+                                    &[object.id.clone(), child.id.clone(), leaf.id.clone()],
+                                    leaf,
+                                )?;
+                                self.parse_note(leaf, pitch)?
                             },
                         });
                     }
@@ -4402,7 +4367,7 @@ impl<'a> Compiler<'a> {
         self.models
             .voicings
             .values()
-            .map(|voicing| voicing.pitches as u64)
+            .map(|voicing| voicing.pitches.len() as u64)
             .max()
             .unwrap_or(0)
     }
@@ -4976,7 +4941,19 @@ impl<'a> Compiler<'a> {
                     }
                 }
                 "pitch" => {
-                    let pitch = self.parse_pitch(value, object, None)?;
+                    let override_object = self
+                        .document
+                        .object(&place.id)
+                        .and_then(|place_object| place_object.children.get(&override_def.id))
+                        .unwrap_or(object);
+                    let Some(source_pitch) = self
+                        .models
+                        .pitches
+                        .get([place.id.clone(), override_def.id.clone()].as_slice())
+                    else {
+                        return Err(unread(override_object));
+                    };
+                    let pitch = self.resolve_pitch(source_pitch, object, None)?;
                     if let ExpandedKind::Note(note) = &mut self.events[index].kind {
                         note.pitch = pitch;
                         note.transpose_cents = Rational::zero();

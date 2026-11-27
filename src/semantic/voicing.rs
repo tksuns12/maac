@@ -2,21 +2,19 @@
 //!
 //! A chord names a voicing, or a use or a placement supplies one to the
 //! chords under it. Each pitch is written in any form a note's `pitch`
-//! takes, and lowers like one. The model holds how many pitches there are,
-//! not the pitches.
+//! takes, and lowers like one.
 
 use super::fields::{required, SourceField};
-use super::Validator;
-use crate::diagnostic::DiagnosticCode;
-use crate::syntax::{Field, Object, ValueKind};
+use super::{Pitch, Validator};
+use crate::syntax::Object;
 
 pub(crate) const FIELDS: &[SourceField] = &[required("pitches")];
 
 /// A voicing as its object declares it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Voicing {
-    /// How many pitches it has. There is at least one.
-    pub(crate) pitches: usize,
+    /// Its pitches, in list order. There is at least one.
+    pub(crate) pitches: Vec<Pitch>,
 }
 
 impl Validator<'_> {
@@ -32,45 +30,22 @@ impl Validator<'_> {
         self.check_declared(object, path, FIELDS);
         let pitches = object
             .field("pitches")
-            .and_then(|field| self.validate_pitch_list(field, path));
+            .and_then(|field| self.read_pitch_list(field, path).0);
         self.reject_children(object, path);
         (self.reported() == reported)
             .then_some(pitches)
             .flatten()
             .map(|pitches| Voicing { pitches })
     }
-
-    /// A nonempty list of pitches, as a chord or voicing `pitches`; returns
-    /// its length. Each pitch is checked like a note's `pitch`, and no model
-    /// holds it: a wrong pitch does not hide how many there are.
-    pub(super) fn validate_pitch_list(&mut self, field: &Field, path: &[String]) -> Option<usize> {
-        match &field.value.kind {
-            ValueKind::List(items) if !items.is_empty() => {
-                let before = self.diagnostics.len();
-                for item in items {
-                    self.validate_pitch_value_at(item, path, "pitches");
-                }
-                self.outside_models += self.diagnostics.len() - before;
-                Some(items.len())
-            }
-            _ => {
-                self.push(
-                    DiagnosticCode::Range,
-                    "pitches must be a nonempty list of pitches",
-                    Some(field.value.span),
-                    path.to_vec(),
-                    vec!["pitches".into()],
-                );
-                None
-            }
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
+    use num_rational::BigRational;
+
     use super::super::models_of;
     use super::*;
+    use crate::music::Spelling;
 
     /// The model of `voicing v { ...fields }`, if it has one.
     fn voicing(fields: &str) -> Option<Voicing> {
@@ -78,25 +53,41 @@ mod tests {
         models_of(&document).voicings.remove("v")
     }
 
+    fn spelled(letter: char, accidental: i8, octave: i64) -> Pitch {
+        Pitch::Spelled(Spelling::new(letter, accidental, octave).unwrap())
+    }
+
     #[test]
-    fn a_voicing_reads_how_many_pitches_it_has() {
+    fn a_voicing_reads_its_pitches() {
         assert_eq!(
             voicing(r#"pitches = [G2, 220Hz, D3, D3]; label = "open";"#),
-            Some(Voicing { pitches: 4 })
+            Some(Voicing {
+                pitches: vec![
+                    spelled('G', 0, 2),
+                    Pitch::Frequency(BigRational::from_integer(220.into())),
+                    spelled('D', 0, 3),
+                    spelled('D', 0, 3),
+                ],
+            })
         );
     }
 
-    /// Editing counts the members of a chord in a tree whose imported
-    /// tunings are not resolved.
+    /// Editing reads the pitches of a voicing in an unlinked authored tree
+    /// whose imported tunings are not resolved yet.
     #[test]
-    fn a_wrong_pitch_does_not_hide_how_many_there_are() {
-        for pitches in ["[C4, 1q]", "[degree(1, &elsewhere.just), C4]"] {
-            assert_eq!(
-                voicing(&format!("pitches = {pitches};")),
-                Some(Voicing { pitches: 2 }),
-                "{pitches}"
-            );
-        }
+    fn an_imported_tuning_does_not_hide_a_voicing() {
+        assert_eq!(
+            voicing("pitches = [degree(1, &elsewhere.just), C4];"),
+            Some(Voicing {
+                pitches: vec![
+                    Pitch::Degree {
+                        index: 1,
+                        tuning: vec!["elsewhere".into(), "just".into()],
+                    },
+                    spelled('C', 0, 4),
+                ],
+            })
+        );
     }
 
     #[test]
@@ -104,6 +95,7 @@ mod tests {
         for fields in [
             "pitches = [];",
             "pitches = C4;",
+            "pitches = [C4, 1q];",
             "pitches = [C4]; top = 1;",
             "pitches = [C4]; note n { at = 0q; dur = 1q; pitch = C4; }",
         ] {

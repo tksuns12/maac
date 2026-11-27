@@ -14,6 +14,7 @@ mod harmony;
 mod occurrence;
 mod order;
 mod phrase;
+mod pitch;
 mod played;
 mod repeat;
 mod replace;
@@ -31,6 +32,7 @@ pub(crate) use groove::Groove;
 pub(crate) use harmony::Harmony;
 pub(crate) use occurrence::{origin, supplier, Unplayable};
 pub(crate) use phrase::Phrase;
+pub(crate) use pitch::Pitch;
 pub(crate) use played::{Misfit, Played, Source, PER_MEMBER};
 pub(crate) use replace::Replaced;
 pub(crate) use strum::Strum;
@@ -105,6 +107,10 @@ pub(crate) struct Models {
     /// The pitches each chord plays, by the chord's object path: its
     /// pattern's ID and its own.
     pub(crate) played: BTreeMap<Vec<String>, Played>,
+    /// The pitch of each `note` (by `[pattern, note]` or `[place, insert,
+    /// note]`) and of each `override` whose `set` replaces `pitch` (by
+    /// `[place, override]`).
+    pub(crate) pitches: BTreeMap<Vec<String>, Pitch>,
 }
 
 /// The models of a document that is not checked as a whole: editing reads
@@ -122,11 +128,42 @@ pub(crate) fn models_of(document: &Document) -> Models {
             "voicing" => validator.validate_voicing(object, &path),
             "harmony" => validator.validate_harmony(object, &path),
             "voicings" => validator.validate_voicings(object, &path),
-            "place" => validator.validate_supply(object, &path),
+            "place" => {
+                validator.validate_supply(object, &path);
+                for child in object.children.values() {
+                    let entry_path = child_path(&path, &child.id);
+                    match child.kind.as_str() {
+                        "override" => {
+                            if let Some(ValueKind::Record(fields)) =
+                                child.field("set").map(|field| &field.value.kind)
+                            {
+                                if let Some(replacement) = fields.get("pitch") {
+                                    let set_path = field_path(&entry_path, "set");
+                                    validator.validate_override_pitch(
+                                        &replacement.value,
+                                        &entry_path,
+                                        &set_path,
+                                    );
+                                }
+                            }
+                        }
+                        "insert" => {
+                            for leaf in child.children.values() {
+                                if leaf.kind == "note" {
+                                    let leaf_path = child_path(&entry_path, &leaf.id);
+                                    validator.validate_note_pitch(leaf, &leaf_path);
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
             "pattern" => {
                 for child in object.children.values() {
                     let path = child_path(&path, &child.id);
                     match child.kind.as_str() {
+                        "note" => validator.validate_note_pitch(child, &path),
                         "chord" => {
                             validator.validate_strum(child, &path);
                             validator.validate_played(child, &path);
@@ -1862,9 +1899,7 @@ impl<'a> Validator<'a> {
         );
         self.validate_note_gate(object, path);
         self.validate_join_fields(object, path);
-        if let Some(field) = object.field("pitch") {
-            self.validate_pitch(field, path);
-        }
+        self.validate_note_pitch(object, path);
         self.validate_unit_range_field(
             object,
             path,
@@ -2430,7 +2465,7 @@ impl<'a> Validator<'a> {
                     );
                 }
                 "order" => self.validate_set_order(&replacement.value, path),
-                "pitch" => self.validate_pitch_value(&replacement.value, &set_path),
+                "pitch" => self.validate_override_pitch(&replacement.value, path, &set_path),
                 "label" if !matches!(replacement.value.kind, ValueKind::String(_)) => {
                     self.push_type_value(
                         &replacement.value,
@@ -5850,145 +5885,6 @@ impl<'a> Validator<'a> {
             ValueKind::Number(_) | ValueKind::Quantity { .. }
         ) {
             self.push_type(field, path, name, "a number or quantity");
-        }
-    }
-
-    fn validate_pitch(&mut self, field: &Field, path: &[String]) {
-        self.validate_pitch_value(&field.value, path);
-    }
-
-    fn validate_pitch_value(&mut self, value: &Value, path: &[String]) {
-        self.validate_pitch_value_at(value, path, "pitch");
-    }
-
-    fn validate_pitch_value_at(&mut self, value: &Value, path: &[String], name: &str) {
-        match &value.kind {
-            ValueKind::Symbol(symbol) => {
-                if crate::music::Pitch::parse_spelled(symbol).is_err() {
-                    self.push(
-                        DiagnosticCode::Range,
-                        "pitch symbol must be a valid spelled pitch",
-                        Some(value.span),
-                        path.to_vec(),
-                        vec![name.into()],
-                    );
-                }
-            }
-            ValueKind::Quantity {
-                unit: Unit::Hz | Unit::KHz,
-                value: frequency,
-            } => {
-                if frequency <= &BigRational::zero() {
-                    self.push(
-                        DiagnosticCode::Range,
-                        "pitch frequency must be positive",
-                        Some(value.span),
-                        path.to_vec(),
-                        vec![name.into()],
-                    );
-                }
-            }
-            ValueKind::Call { function, args } if function == "key" => {
-                // §3.2: an integer twelve-tone key index.
-                if !matches!(args.as_slice(), [Value { kind: ValueKind::Number(key), .. }] if is_integer(key))
-                {
-                    self.push(
-                        DiagnosticCode::Range,
-                        "key() requires one integer argument",
-                        Some(value.span),
-                        path.to_vec(),
-                        vec![name.into()],
-                    );
-                }
-            }
-            ValueKind::Call { function, args } if function == "ratio" => {
-                if args.len() != 2
-                    || !matches!(args[0].kind, ValueKind::Number(_))
-                    || !matches!(
-                        args[1].kind,
-                        ValueKind::Quantity {
-                            unit: Unit::Hz | Unit::KHz,
-                            ..
-                        }
-                    )
-                {
-                    self.push(
-                        DiagnosticCode::Unit,
-                        "ratio() requires a dimensionless ratio and Hz base",
-                        Some(value.span),
-                        path.to_vec(),
-                        vec![name.into()],
-                    );
-                } else if let [Value {
-                    kind: ValueKind::Number(ratio),
-                    ..
-                }, Value {
-                    kind: ValueKind::Quantity { value: base, .. },
-                    ..
-                }] = args.as_slice()
-                {
-                    // §3.2: a positive ratio times a positive frequency.
-                    if ratio <= &BigRational::zero() || base <= &BigRational::zero() {
-                        self.push(
-                            DiagnosticCode::Range,
-                            "ratio() requires a positive ratio and positive frequency",
-                            Some(value.span),
-                            path.to_vec(),
-                            vec![name.into()],
-                        );
-                    }
-                }
-            }
-            ValueKind::Call { function, args } if function == "degree" => {
-                if args.len() != 2
-                    || !matches!(args[0].kind, ValueKind::Number(_))
-                    || args[1].reference().is_none()
-                {
-                    self.push(
-                        DiagnosticCode::Reference,
-                        "degree() requires an integer index and tuning reference",
-                        Some(value.span),
-                        path.to_vec(),
-                        vec![name.into()],
-                    );
-                } else {
-                    if let ValueKind::Number(index) = &args[0].kind {
-                        if !index.denom().is_one() {
-                            self.push(
-                                DiagnosticCode::Range,
-                                "degree() index must be an integer",
-                                Some(args[0].span),
-                                path.to_vec(),
-                                vec![name.into()],
-                            );
-                        }
-                    }
-                    let tuning_resolves = args[1].reference().is_some_and(|reference| {
-                        reference.port.is_none()
-                            && reference.path.len() == 1
-                            && self
-                                .document
-                                .object(&reference.path[0])
-                                .is_some_and(|object| object.kind == "tuning")
-                    });
-                    if !tuning_resolves {
-                        self.push(
-                            DiagnosticCode::Reference,
-                            "degree() tuning reference must resolve to a tuning",
-                            Some(args[1].span),
-                            path.to_vec(),
-                            vec![name.into()],
-                        );
-                    }
-                }
-            }
-            _ => self.push(
-                DiagnosticCode::Unit,
-                "pitch must be a spelled pitch, key(), degree(), ratio(), or positive Hz quantity",
-                Some(value.span),
-                path.to_vec(),
-                vec![name.into()],
-            ),
         }
     }
 

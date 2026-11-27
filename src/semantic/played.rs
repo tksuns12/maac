@@ -7,15 +7,15 @@
 
 use num_traits::ToPrimitive;
 
-use super::{ReferenceTarget, Validator};
+use super::{Pitch, ReferenceTarget, Validator};
 use crate::diagnostic::DiagnosticCode;
 use crate::syntax::{Field, Object, Value, ValueKind};
 
 /// Where a chord's pitches come from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Source {
-    /// The chord's own `pitches`.
-    Own,
+    /// The chord's own `pitches`, in list order. There is at least one.
+    Own(Vec<Pitch>),
     /// The voicing with this ID, which the chord names.
     Voicing(String),
     /// The voicing that the nearest use or placement supplies.
@@ -157,7 +157,8 @@ impl Validator<'_> {
                         vec!["voicing".into()],
                     );
                 }
-                (Some(Source::Own), self.validate_pitch_list(field, path))
+                let (pitches, count) = self.read_pitch_list(field, path);
+                (pitches.map(Source::Own), count)
             }
             (None, Some(field)) => {
                 match self.expect_object_ref(field, "voicing", &["voicing"], path) {
@@ -334,6 +335,11 @@ impl Validator<'_> {
 mod tests {
     use super::super::models_of;
     use super::*;
+    use crate::music::Spelling;
+
+    fn spelled(letter: char, accidental: i8, octave: i64) -> Pitch {
+        Pitch::Spelled(Spelling::new(letter, accidental, octave).unwrap())
+    }
 
     /// What `chord c { ...fields }` plays, if that reads.
     fn played(fields: &str) -> Option<Played> {
@@ -350,7 +356,10 @@ mod tests {
     #[test]
     fn a_chord_reads_where_its_pitches_come_from() {
         for (fields, source) in [
-            ("pitches = [C4, E4];", Source::Own),
+            (
+                "pitches = [C4, E4];",
+                Source::Own(vec![spelled('C', 0, 4), spelled('E', 0, 4)]),
+            ),
             ("voicing = &g;", Source::Voicing("g".into())),
             ("", Source::Supplied),
         ] {
@@ -366,24 +375,24 @@ mod tests {
         }
     }
 
-    /// Editing counts the members of a chord in a tree whose imported
-    /// tunings are not resolved.
+    /// Editing reads a chord's pitches in an unlinked authored tree whose
+    /// imported tunings are not resolved yet.
     #[test]
-    fn a_wrong_pitch_does_not_hide_what_a_chord_plays() {
-        for fields in [
-            "pitches = [C4, 1q]; top = 1;",
-            "pitches = [degree(1, &elsewhere.just), C4]; top = 1;",
-        ] {
-            assert_eq!(
-                played(fields),
-                Some(Played {
-                    source: Source::Own,
-                    keep: Keep::Top(1),
-                    lists: Vec::new(),
-                }),
-                "{fields}"
-            );
-        }
+    fn an_imported_tuning_does_not_hide_what_a_chord_plays() {
+        assert_eq!(
+            played("pitches = [degree(1, &elsewhere.just), C4]; top = 1;"),
+            Some(Played {
+                source: Source::Own(vec![
+                    Pitch::Degree {
+                        index: 1,
+                        tuning: vec!["elsewhere".into(), "just".into()],
+                    },
+                    spelled('C', 0, 4),
+                ]),
+                keep: Keep::Top(1),
+                lists: Vec::new(),
+            })
+        );
     }
 
     #[test]
@@ -421,6 +430,7 @@ mod tests {
         for fields in [
             "pitches = [C4]; voicing = &g;",
             "pitches = [];",
+            "pitches = [C4, 1q];",
             "voicing = &nowhere;",
             "voicing = &bar;",
             "voicing = &g; top = 5;",

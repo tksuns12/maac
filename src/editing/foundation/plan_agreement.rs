@@ -3,8 +3,6 @@
 //! to the compiled plan: the address of every event, and the pitch of
 //! every chord member.
 
-use std::collections::BTreeMap;
-
 use serde_json::Value;
 
 use super::{
@@ -86,7 +84,7 @@ fn agree(body: &str) -> usize {
     // What the plan plays for each pitch a note writes, and what editing
     // says each chord member plays.
     let reading = Reading::of(tree).expect("editing reads the document");
-    let mut written: BTreeMap<String, String> = BTreeMap::new();
+    let mut written: Vec<(crate::semantic::Pitch, String)> = Vec::new();
     let mut members = Vec::new();
     for (address, hertz) in &compiled {
         let (place_id, rest) = address.split_once('/').unwrap();
@@ -94,29 +92,38 @@ fn agree(body: &str) -> usize {
         match resolve_occurrence_pitches(&reading, place_id, place, rest) {
             Some((_, Some(pitches))) => {
                 let (_, member) = address.rsplit_once('.').unwrap();
-                let pitch = pitches[member.parse::<usize>().unwrap()];
-                members.push((address, pitch.to_string(), hertz));
+                let pitch = pitches[member.parse::<usize>().unwrap()].clone();
+                members.push((address, pitch, hertz));
             }
             Some((mappings, None)) => {
                 let (path, _) = mappings.last().unwrap();
                 let leaf = object_at(tree, path).unwrap();
                 if leaf["kind"] == "note" {
-                    let pitch = leaf["fields"]["pitch"].to_string();
-                    let earlier = written.insert(pitch.clone(), hertz.clone());
-                    assert!(
-                        earlier.as_ref().is_none_or(|earlier| earlier == hertz),
-                        "{address}: {pitch} plays {hertz} and {earlier:?}"
-                    );
+                    let pitch = reading
+                        .models
+                        .pitches
+                        .get(path)
+                        .unwrap_or_else(|| panic!("{address}: missing note pitch model"))
+                        .clone();
+                    if let Some((_, earlier)) = written.iter().find(|(known, _)| known == &pitch) {
+                        assert_eq!(
+                            earlier, hertz,
+                            "{address}: {pitch:?} plays {hertz} and {earlier}"
+                        );
+                    } else {
+                        written.push((pitch, hertz.clone()));
+                    }
                 }
             }
             None => assert!(names_insert(place, rest), "{address} does not resolve"),
         }
     }
     for (address, pitch, hertz) in &members {
+        let matched = written.iter().find(|(known, _)| known == pitch);
         assert_eq!(
-            written.get(pitch),
+            matched.map(|(_, hz)| hz),
             Some(*hertz),
-            "{address}: editing reads {pitch}, the plan plays {hertz}"
+            "{address}: editing reads {pitch:?}, the plan plays {hertz}"
         );
     }
     members.len()
@@ -259,4 +266,27 @@ place rested { pattern = &rests; track = &t; at = 16q; harmony = &turn; voicings
     // (G, 6) and pair at 3q (D). `rests`: before at 2q (G, 6), after at 7/2q
     // (D, 4), later at 13/2q (D).
     assert_eq!(members, (6 + 2) + (6 + 2 + 4 + 2) + (6 + 2) + (6 + 4 + 2));
+}
+
+#[test]
+fn chords_with_every_pitch_form_agree_with_the_plan() {
+    let members = agree(
+        r#"tuning just { period = 1200ct; steps = [0ct, 386ct, 702ct]; reference_index = 0; reference_frequency = 440Hz; }
+voicing mixed { pitches = [C4, key(64), 440Hz, 1kHz, ratio(3/2, 440Hz), degree(1, &just)]; }
+pattern legend_mixed { length = 8q;
+  note m0 { at = 0q; dur = 1/2q; pitch = key(64); }
+  note m1 { at = 1q; dur = 1/2q; pitch = 440Hz; }
+  note m2 { at = 2q; dur = 1/2q; pitch = 1000Hz; }
+  note m3 { at = 3q; dur = 1/2q; pitch = ratio(3/2, 440Hz); }
+  note m4 { at = 4q; dur = 1/2q; pitch = degree(1, &just); }
+}
+pattern bar { length = 4q;
+  chord own { at = 0q; dur = 1q; pitches = [key(64), 1kHz, ratio(3/2, 440Hz), degree(1, &just)]; }
+  chord named { at = 1q; dur = 1q; voicing = &mixed; pick = [1, 4, 6]; }
+}
+place key_mixed { pattern = &legend_mixed; track = &t; at = 96q; }
+place main { pattern = &bar; track = &t; at = 0q; }
+"#,
+    );
+    assert_eq!(members, 4 + 3);
 }
